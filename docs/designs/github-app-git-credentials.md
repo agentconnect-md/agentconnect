@@ -149,8 +149,8 @@ stale until a network fetch succeeds.
    visibility closes the content plane: list/get returns 404 for restricted
    agents; session fan-out is filtered; workspace files/gitstatus/gitpull are
    gated by organization + `canView`; webchat token minting returns 404; and
-   unauthorized SSE items are discarded. The organization-owner governance
-   exemption still applies. The repository picker filters unauthorized private
+   unauthorized SSE items are discarded. Organization role never widens
+   restricted-resource visibility. The repository picker filters unauthorized private
    repositories, and branch lookup plus agent create/edit fail closed against
    the requesting user's effective GitHub permission. If identity attestation
    is not configured, repository selection uses the organization-level
@@ -1106,12 +1106,10 @@ the cache and stops requesting.
    and never persists a social access or refresh token.
 
    Resource visibility continues to govern agent content independently:
-   `createdByUserId` with creator-forever,
-   `visibility('org'|'restricted')`, `sharedWith[]`, and the
-   organization-owner governance exemption. An organization owner can
-   `canView`/`canEdit` a restricted agent and can therefore reach repository
-   content through that agent. Do not connect a repository to the
-   instance-level App if even the organization owner must not see it.
+   `visibility('org'|'restricted')`, the current ownership arm backed by
+   `createdByUserId`, and `sharedWith[]`. Organization role is not a visibility
+   bypass, so an owner reaches repository content through a restricted agent
+   only when they own it or it is explicitly shared with them.
 
    Personal API keys retain their bound `userId`; the CP resolves that user's
    `oidcSubject` and GitHub identity without requiring a live browser session.
@@ -1199,7 +1197,7 @@ the cache and stops requesting.
 
      API-key principals are covered through
      key->userId->oidcSubject, with no browser session required. The
-     owner-governance exemption is unchanged.
+     resource visibility is unchanged and organization role is not a bypass.
 
    - **Web:** preflight `/access` as soon as a repository is selected. No read
      access shows a red inline error under the field and blocks submission.

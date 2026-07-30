@@ -27,7 +27,7 @@ import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import type { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import type { AnyFrame, CollabRoutesSnapshot, IntegrationUpsert, IntegrationChannel } from '@agentconnect.md/protocol'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -58,7 +58,7 @@ class SpyControl {
 /** Install an integration on a placed agent; returns its id. */
 async function install(app: HttpApp): Promise<string> {
   const agentId = randomUUID()
-  await seedAgent(prisma, agentId, { daemonId: DAEMON })
+  await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
   const res = await app.app.inject({
     method: 'POST',
     url: `${ORG}/integrations`,

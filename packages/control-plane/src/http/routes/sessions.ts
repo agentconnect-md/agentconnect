@@ -15,10 +15,9 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import type { SessionVisibility } from '../../persistence/ports.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf } from '../rbac.js'
-import { canView, canViewSession, identitySetOf } from '../visibility.js'
+import { canChangeSessionVisibility, canView, canViewSession, identitySetOf } from '../../authorization/policy.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
@@ -100,30 +99,6 @@ function hookIdForSession(s: HookSessionRow): string | null {
 
 function sessionRelation(s: { id: string; agentId: string; title: string | null }) {
   return { id: s.id, agentId: s.agentId, title: s.title }
-}
-
-/**
- * Who may re-classify a session (§4.3): its recorded owner (identity match) and
- * org owners — but the org-owner arm holds only WHILE THE ROW IS ORG-VISIBLE
- * (they may pull a channel session private, never read or widen someone else's
- * private one). The condition cannot lean on the route's view-gate alone:
- * `setVisibility` re-runs this predicate against the FOR UPDATE-locked row, and
- * a session tightened (or re-owned by an ancestor cascade) after the unlocked
- * pre-read must refuse a queued org-owner widen — once private, only an
- * identity match qualifies. Collaborators and viewers cannot re-classify other
- * people's sessions — but note this is deliberately NOT the blanket
- * `denyViewerWrite` guard used elsewhere: the grant follows OWNERSHIP, so a
- * viewer-role member who owns a session keeps control of their own DM's
- * visibility.
- */
-function canChangeSessionVisibility(
-  s: { visibility: SessionVisibility; ownerIdentity: string | null },
-  ctx: { role: string; userId: string },
-  identitySet: ReadonlySet<string>
-): boolean {
-  return (
-    (ctx.role === 'owner' && s.visibility === 'org') || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
-  )
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
@@ -386,9 +361,9 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid session cursor' })
         }
 
-        // The set of agents THIS caller may see (owner ⇒ all). Session metadata
-        // inherits visibility from the owning agent, so restricted-agent rows are
-        // hidden before any title/channel/usage metadata reaches the caller.
+        // The set of agents THIS caller may see under the resource policy. Roles
+        // never widen visibility, so restricted-agent rows are hidden before any
+        // title/channel/usage metadata reaches the caller.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const selectedAgentIds = req.query.agentId

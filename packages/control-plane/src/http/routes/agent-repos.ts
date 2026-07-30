@@ -22,7 +22,7 @@ import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView } from '../visibility.js'
+import { canView } from '../../authorization/policy.js'
 import { Tag } from '../plugins/openapi.js'
 import {
   AgentRepoAuthDto,

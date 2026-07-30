@@ -249,7 +249,8 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
     expect(denied.isError).toBe(true)
     expect(toolText(denied)).toContain('404')
 
-    // Owner (governance override) sees it through the same tool.
+    // The resource's creator sees it through the same tool; organization role
+    // alone would not widen visibility.
     const ownerIds = (JSON.parse(toolText(await callTool(app, ownerKey, 'listAgents'))) as Array<{ id: string }>).map(
       (a) => a.id
     )

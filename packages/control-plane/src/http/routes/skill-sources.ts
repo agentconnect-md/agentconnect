@@ -24,7 +24,7 @@ import type { AgentRecord, SkillSourceRecord } from '../../persistence/ports.js'
 import type { OrgId } from '../../domain/ids.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canManageSharing, type ViewCtx } from '../visibility.js'
+import { canView, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { parseSkillRef } from '../../orchestrator/skillSource.js'
 import {

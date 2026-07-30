@@ -11,7 +11,7 @@ import type { Platform } from '@agentconnect.md/protocol'
 import type { CronDef, User } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type { CronRepo, CronRecord, CronReportInput, CronRunRecord, UpsertCronInput, ViewCtx } from '../ports.js'
-import { visibilityWhere } from '../ports.js'
+import { visibilityWhere } from '../../authorization/policy.js'
 import { toDbPlatform } from '../platform.js'
 import { AgentId, CronId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
 
@@ -37,8 +37,8 @@ function toRecord(c: CronWithUsers): CronRecord {
     createdBy: c.createdBy
       ? { userId: c.createdBy.id, displayName: c.createdBy.displayName, email: c.createdBy.email }
       : null,
-    // Raw creator scalar for the visibility creator-arm — independent of the joined
-    // `createdBy` above, which is null once the user row is SetNull-deleted.
+    // Raw creator scalar temporarily supplies the visibility ownership arm,
+    // independent of the joined `createdBy` above. See issue #271.
     createdByUserId: c.createdByUserId,
     visibility: c.visibility,
     sharedWith: c.sharedWith,

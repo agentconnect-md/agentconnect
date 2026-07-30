@@ -18,7 +18,7 @@ import type {
   ResourceVisibility,
   ViewCtx
 } from '../ports.js'
-import { visibilityWhere } from '../ports.js'
+import { visibilityWhere } from '../../authorization/policy.js'
 import { OrgId } from '../../domain/ids.js'
 
 function toRecord(s: SkillSource): SkillSourceRecord {
@@ -66,7 +66,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
   }
 
   // Same visibility filter as agents/MCP: org-visible OR mine OR shared with me
-  // (owners/undefined ⇒ unfiltered). See visibilityWhere.
+  // (undefined ⇒ unfiltered internal read). See visibilityWhere.
   async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]> {
     const rows = await this.db.skillSource.findMany({
       where: { orgId, ...visibilityWhere(viewer) },

@@ -42,7 +42,7 @@ function appAs(userId: string): HttpApp {
 const agentIds = (body: unknown): string[] => (body as Array<{ id: string }>).map((a) => a.id)
 
 describe('agent visibility — list & get', () => {
-  it('a restricted agent is hidden from a non-granted collaborator but visible to creator, grantee, and owner', async () => {
+  it('a restricted agent is visible only to its ownership arm and grantees, regardless of role', async () => {
     const creator = await makeUser('vis-creator', 'collaborator')
     const grantee = await makeUser('vis-grantee', 'collaborator')
     const other = await makeUser('vis-other', 'collaborator')
@@ -56,12 +56,15 @@ describe('agent visibility — list & get', () => {
     expect(agentIds((await otherApp.app.inject({ method: 'GET', url: `${ORG}/agents` })).json())).not.toContain(R)
     expect((await otherApp.app.inject({ method: 'GET', url: `${ORG}/agents/${R}` })).statusCode).toBe(404)
 
-    // Creator, grantee, and owner all see it.
-    for (const u of [creator, grantee, owner]) {
+    // Creator and grantee see it.
+    for (const u of [creator, grantee]) {
       const res = await appAs(u).app.inject({ method: 'GET', url: `${ORG}/agents/${R}` })
       expect(res.statusCode).toBe(200)
       expect(agentIds((await appAs(u).app.inject({ method: 'GET', url: `${ORG}/agents` })).json())).toContain(R)
     }
+    // Organization ownership is not a visibility bypass.
+    expect((await appAs(owner).app.inject({ method: 'GET', url: `${ORG}/agents/${R}` })).statusCode).toBe(404)
+    expect(agentIds((await appAs(owner).app.inject({ method: 'GET', url: `${ORG}/agents` })).json())).not.toContain(R)
   })
 
   it('the list SQL filter and the canView predicate agree (no leak, no false hide)', async () => {
@@ -69,7 +72,7 @@ describe('agent visibility — list & get', () => {
     const other = await makeUser('agree-other', 'collaborator')
     await seedAgent(prisma, randomUUID(), { visibility: 'org' }) // everyone
     await seedAgent(prisma, randomUUID(), { visibility: 'restricted', sharedWith: [grantee] }) // grantee only
-    await seedAgent(prisma, randomUUID(), { visibility: 'restricted', sharedWith: [] }) // owners/creator only
+    await seedAgent(prisma, randomUUID(), { visibility: 'restricted', sharedWith: [] }) // creator only
 
     const granteeList = agentIds((await appAs(grantee).app.inject({ method: 'GET', url: `${ORG}/agents` })).json())
     const otherList = agentIds((await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents` })).json())
@@ -108,7 +111,7 @@ describe('agent visibility — write gates', () => {
 })
 
 describe('agent sharing endpoint (canManageSharing === canEdit, §13.3)', () => {
-  it('a shared collaborator can re-share, a shared viewer cannot, a non-viewer 404s, owner can', async () => {
+  it('a shared collaborator can re-share, a shared viewer cannot, and unshared members 404 regardless of role', async () => {
     const grantee = await makeUser('sh-grantee', 'collaborator')
     const viewer = await makeUser('sh-viewer', 'viewer')
     const other = await makeUser('sh-other', 'collaborator')
@@ -127,7 +130,7 @@ describe('agent sharing endpoint (canManageSharing === canEdit, §13.3)', () => 
     // The grantee's re-share added `other`, who can now see it (widening took effect).
     expect((await appAs(other).app.inject({ method: 'GET', url: `${ORG}/agents/${R}` })).statusCode).toBe(200)
     expect((await share(viewer, [grantee])).statusCode).toBe(403) // viewer read-only, set unchanged
-    expect((await share(owner, [grantee, other])).statusCode).toBe(200) // governance override can manage
+    expect((await share(owner, [grantee, other])).statusCode).toBe(404) // role does not widen visibility
   })
 
   it('sharedWith is intersected with current org members (foreign ids dropped)', async () => {
@@ -167,7 +170,7 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
     })
   }
 
-  it('a restricted provider is hidden from a non-granted collaborator but visible to creator, grantee, owner', async () => {
+  it('a restricted provider is visible only to its ownership arm and grantees, regardless of role', async () => {
     const creator = await makeUser('mcp-creator', 'collaborator')
     const grantee = await makeUser('mcp-grantee', 'collaborator')
     const other = await makeUser('mcp-other', 'collaborator')
@@ -182,17 +185,23 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
 
     expect(ids((await appAs(other).app.inject({ method: 'GET', url: MCP })).json())).not.toContain(P)
     expect((await appAs(other).app.inject({ method: 'GET', url: `${MCP}/${P}` })).statusCode).toBe(404)
-    for (const u of [creator, grantee, owner]) {
+    for (const u of [creator, grantee]) {
       expect((await appAs(u).app.inject({ method: 'GET', url: `${MCP}/${P}` })).statusCode).toBe(200)
     }
+    expect((await appAs(owner).app.inject({ method: 'GET', url: `${MCP}/${P}` })).statusCode).toBe(404)
   })
 
-  it('PUT /mcp-providers/:id/sharing gates on canManageSharing; a non-viewer 404s, owner can widen', async () => {
+  it('PUT /mcp-providers/:id/sharing lets an owner widen only when they own the resource', async () => {
     const owner = await makeUser('mcp-sh-owner', 'owner')
     const member = await makeUser('mcp-sh-member', 'collaborator')
     const other = await makeUser('mcp-sh-other', 'collaborator')
     const P = randomUUID()
-    await seedProvider(P, { name: 'mcp-sh', visibility: 'restricted', sharedWith: [] })
+    await seedProvider(P, {
+      name: 'mcp-sh',
+      visibility: 'restricted',
+      sharedWith: [],
+      createdByUserId: owner
+    })
 
     const share = (u: string, sharedWith: string[]) =>
       appAs(u).app.inject({
@@ -208,12 +217,17 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
     expect((await appAs(member).app.inject({ method: 'GET', url: `${MCP}/${P}` })).statusCode).toBe(200)
   })
 
-  it('the enable-list gate: a user may DISABLE an unseen provider but cannot ADD it back; an owner can', async () => {
+  it('the enable-list gate lets a user disable an unseen provider but only its owner can add it back', async () => {
     const owner = await makeUser('mcp-en-owner', 'owner')
     const other = await makeUser('mcp-en-other', 'collaborator')
     const daemon = randomUUID()
     await seedDaemon(prisma, daemon)
-    await seedProvider(randomUUID(), { name: 'mcp-hidden', visibility: 'restricted', sharedWith: [] })
+    await seedProvider(randomUUID(), {
+      name: 'mcp-hidden',
+      visibility: 'restricted',
+      sharedWith: [],
+      createdByUserId: owner
+    })
     const A = randomUUID()
     await seedAgent(prisma, A, { daemonId: daemon, visibility: 'org' })
     // Pre-enable the hidden provider on the agent (the enable-list lives in runtimeOverrides).
@@ -224,7 +238,7 @@ describe('mcp provider visibility — list, get, sharing, enable-gate', () => {
 
     expect((await patchMcp(other, [])).statusCode).toBe(200) // disable: removal-only, allowed
     expect((await patchMcp(other, ['mcp-hidden'])).statusCode).toBe(403) // add back an unseen provider: denied
-    expect((await patchMcp(owner, ['mcp-hidden'])).statusCode).toBe(200) // owner sees everything: allowed
+    expect((await patchMcp(owner, ['mcp-hidden'])).statusCode).toBe(200) // resource ownership grants access
   })
 })
 
@@ -394,9 +408,14 @@ describe('agent call policy endpoint', () => {
     const visibleCallerId = randomUUID()
     await seedAgent(prisma, targetId, {
       visibility: 'restricted',
-      sharedWith: [collaborator]
+      sharedWith: [collaborator],
+      createdByUserId: owner
     })
-    await seedAgent(prisma, hiddenCallerId, { visibility: 'restricted', sharedWith: [] })
+    await seedAgent(prisma, hiddenCallerId, {
+      visibility: 'restricted',
+      sharedWith: [],
+      createdByUserId: owner
+    })
     await seedAgent(prisma, visibleCallerId, { visibility: 'org' })
 
     const setPolicy = (userId: string, allowedCallerAgentIds: string[]) =>
@@ -430,11 +449,16 @@ describe('member removal prunes the share set (transactional, §8.1)', () => {
 })
 
 describe('derived visibility — daemon keys inherit the daemon visibility', () => {
-  it('a non-viewer 404s on list / mint / revoke of a restricted daemon’s keys; an owner can', async () => {
+  it('a restricted daemon’s keys are hidden from unshared members, including organization owners', async () => {
     const other = await makeUser('k-other', 'collaborator')
-    const owner = await makeUser('k-owner', 'owner')
+    const resourceOwner = await makeUser('k-resource-owner', 'owner')
+    const otherOwner = await makeUser('k-other-owner', 'owner')
     const D = randomUUID()
-    await seedDaemon(prisma, D, { visibility: 'restricted', sharedWith: [] })
+    await seedDaemon(prisma, D, {
+      visibility: 'restricted',
+      sharedWith: [],
+      createdByUserId: resourceOwner
+    })
 
     const otherApp = appAs(other).app
     expect((await otherApp.inject({ method: 'GET', url: `${ORG}/daemons/${D}/keys` })).statusCode).toBe(404)
@@ -443,9 +467,13 @@ describe('derived visibility — daemon keys inherit the daemon visibility', () 
       (await otherApp.inject({ method: 'DELETE', url: `${ORG}/daemons/${D}/keys/${randomUUID()}` })).statusCode
     ).toBe(404)
 
-    // The owner (governance override) still manages the restricted daemon's keys.
-    expect((await appAs(owner).app.inject({ method: 'GET', url: `${ORG}/daemons/${D}/keys` })).statusCode).toBe(200)
-    expect((await appAs(owner).app.inject({ method: 'POST', url: `${ORG}/daemons/${D}/keys` })).statusCode).toBe(201)
+    const otherOwnerApp = appAs(otherOwner).app
+    expect((await otherOwnerApp.inject({ method: 'GET', url: `${ORG}/daemons/${D}/keys` })).statusCode).toBe(404)
+    expect((await otherOwnerApp.inject({ method: 'POST', url: `${ORG}/daemons/${D}/keys` })).statusCode).toBe(404)
+
+    const resourceOwnerApp = appAs(resourceOwner).app
+    expect((await resourceOwnerApp.inject({ method: 'GET', url: `${ORG}/daemons/${D}/keys` })).statusCode).toBe(200)
+    expect((await resourceOwnerApp.inject({ method: 'POST', url: `${ORG}/daemons/${D}/keys` })).statusCode).toBe(201)
   })
 })
 
@@ -481,9 +509,9 @@ describe('reference-write cannot target an invisible daemon', () => {
     // Non-granted collaborator: the restricted daemon reads as absent — same 404 as a
     // nonexistent id, so the endpoint is no existence oracle for restricted daemons.
     expect((await create(other, 'da-agent-other')).statusCode).toBe(404)
-    // Shared collaborator and owner (governance override) can place onto it.
+    // Only the explicitly shared collaborator can place onto it.
     expect((await create(grantee, 'da-agent-grantee')).statusCode).toBe(201)
-    expect((await create(owner, 'da-agent-owner')).statusCode).toBe(201)
+    expect((await create(owner, 'da-agent-owner')).statusCode).toBe(404)
   })
 
   it('an existing agent cannot be moved onto a restricted daemon the caller cannot see', async () => {
@@ -535,7 +563,7 @@ describe('derived visibility — session bodies, usage', () => {
     }
   })
 
-  it('a restricted agent’s usage is absent from a non-viewer’s aggregate but present for an owner', async () => {
+  it('a restricted agent’s usage is absent from every unshared member’s aggregate, including owners', async () => {
     const other = await makeUser('u-other', 'collaborator')
     const owner = await makeUser('u-owner', 'owner')
     const R = randomUUID()
@@ -549,7 +577,7 @@ describe('derived visibility — session bodies, usage', () => {
       return (res.json() as { agents: Array<{ agentId: string }> }).agents.map((a) => a.agentId)
     }
     expect(await usageAgents(other)).not.toContain(R)
-    expect(await usageAgents(owner)).toContain(R)
+    expect(await usageAgents(owner)).not.toContain(R)
   })
 })
 

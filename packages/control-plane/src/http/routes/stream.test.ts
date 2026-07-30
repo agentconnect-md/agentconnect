@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Shareable, ViewCtx } from '../visibility.js'
+import type { Shareable, ViewCtx } from '../../authorization/policy.js'
 import { OrgId } from '../../domain/ids.js'
 import { canStreamAgent } from './stream.js'
 

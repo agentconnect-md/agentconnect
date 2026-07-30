@@ -192,7 +192,7 @@ function integrationSql(q: SessionFilterQuery): Prisma.Sql | null {
 }
 
 /**
- * The SQL mirror of `http/visibility.ts#canViewSession` (session-visibility.md
+ * The SQL mirror of `authorization/policy.ts#canViewSession` (session-visibility.md
  * §5). No role bypass — org owners included, every viewer sees `org` rows plus
  * `private` rows they own; only the internal/daemon-facing callers that pass no
  * viewer read unfiltered. `= ANY(array)` tolerates an empty identity set,
