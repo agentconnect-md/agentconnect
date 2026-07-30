@@ -34,9 +34,13 @@ interface CurrentBotIconState {
 
 function agentIconVersion(agent: AgentRecord): string {
   const icon = agent.icon
-  const iconKey =
-    icon?.kind === 'glyph' ? `${icon.kind}:${icon.glyph}:${icon.color}` : icon?.kind === 'image' ? icon.kind : 'runtime'
-  return `${agent.lastModifiedAt.getTime()}:${agent.runtime ?? ''}:${iconKey}`
+  const iconVersion =
+    icon?.kind === 'glyph'
+      ? `${icon.kind}:${icon.glyph}:${icon.color}`
+      : icon?.kind === 'image'
+        ? `${icon.kind}:${icon.generation ?? 'legacy'}`
+        : 'runtime'
+  return `${agent.lastModifiedAt.getTime()}:${agent.runtime ?? ''}:${iconVersion}`
 }
 
 /** Re-read both sides of the dedicated-bot ownership edge. This is deliberately

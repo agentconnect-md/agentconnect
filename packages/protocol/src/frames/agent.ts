@@ -103,10 +103,11 @@ export const AGENT_ICON_GLYPHS = [
  *    fails to parse and degrades to the runtime mark on every surface.
  *  - `image`   — a user-uploaded avatar. The bytes live in the CP's configured
  *    object store (S3-compatible; see docs/designs/icon-uploads.md), NOT in this
- *    descriptor — `image` carries no URL, it just marks "an upload exists". The
- *    display/serve URL is resolved separately (the object store's public URL for
- *    the owner's key), surfaced as the DTO `iconUrl` / `AgentSpec.iconUrl`. Set
- *    only via the upload route; never via a create/update body.
+ *    descriptor. Its optional opaque generation distinguishes successive writes
+ *    to the stable object key; legacy rows omit it. The display/serve URL is
+ *    resolved separately (the object store's public URL for the owner's key),
+ *    surfaced as the DTO `iconUrl` / `AgentSpec.iconUrl`. Set only via the upload
+ *    route; never via a create/update body.
  * This descriptor is CP-owned + stored on the agent and surfaced to the web
  * console. The daemon never receives it — it gets only the resolved public
  * `AgentSpec.iconUrl` (for the Slack per-message avatar), so it needs no renderer.
@@ -114,7 +115,7 @@ export const AGENT_ICON_GLYPHS = [
 export const AgentIcon = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('runtime') }),
   z.object({ kind: z.literal('glyph'), glyph: z.enum(AGENT_ICON_GLYPHS), color: z.string() }),
-  z.object({ kind: z.literal('image') })
+  z.object({ kind: z.literal('image'), generation: z.string().min(1).max(128).optional() })
 ])
 export type AgentIcon = z.infer<typeof AgentIcon>
 

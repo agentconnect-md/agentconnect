@@ -183,4 +183,59 @@ describe('syncAgentBotIcons', () => {
     expect(applied).toEqual(['#222222', '#111111', '#222222'])
     expect(warn).not.toHaveBeenCalled()
   })
+
+  it('repairs delayed image writes when two uploads share a timestamp', async () => {
+    const discordId = '00000000-0000-4000-8000-000000000012'
+    const membership = integration(discordId, 'discord')
+    const discordBot = bot(discordId, 'discord')
+    const timestamp = new Date(1)
+    const oldAgent = agentRecord({ kind: 'image', generation: 'old-upload' }, timestamp)
+    const newAgent = agentRecord({ kind: 'image', generation: 'new-upload' }, timestamp)
+    let currentAgent = oldAgent
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let firstStarted!: () => void
+    const firstStartedPromise = new Promise<void>((resolve) => {
+      firstStarted = resolve
+    })
+    const applied: string[] = []
+    let calls = 0
+    const discordSync = vi.fn(async (_token: string, snapshot: BotProfileIconAgent) => {
+      const generation = snapshot.icon?.kind === 'image' ? snapshot.icon.generation : undefined
+      calls += 1
+      if (calls === 1) {
+        firstStarted()
+        await firstBlocked
+      }
+      applied.push(generation ?? 'legacy')
+    })
+    const deps = {
+      repos: {
+        agent: { get: async () => currentAgent },
+        integration: {
+          listForAgent: async () => [membership],
+          listForBot: async () => [membership]
+        },
+        bot: { get: async () => discordBot },
+        botSecret: {
+          get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
+        }
+      },
+      syncDiscordBotIcon: discordSync
+    }
+    const warn = vi.fn()
+
+    const stale = syncAgentBotIcons(deps, oldAgent, { warn })
+    await firstStartedPromise
+    currentAgent = newAgent
+    const latest = syncAgentBotIcons(deps, newAgent, { warn })
+    await vi.waitFor(() => expect(applied).toEqual(['new-upload']))
+    releaseFirst()
+    await Promise.all([stale, latest])
+
+    expect(applied).toEqual(['new-upload', 'old-upload', 'new-upload'])
+    expect(warn).not.toHaveBeenCalled()
+  })
 })

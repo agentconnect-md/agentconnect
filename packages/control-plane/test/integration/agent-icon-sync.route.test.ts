@@ -93,8 +93,14 @@ describe('Agent icon bot profile fan-out', () => {
       expect(telegramSync).toHaveBeenCalledTimes(2)
       expect(discordSync).toHaveBeenCalledTimes(2)
     })
-    expect(telegramSync.mock.calls[1]?.[1].icon).toEqual({ kind: 'image' })
-    expect(discordSync.mock.calls[1]?.[1].icon).toEqual({ kind: 'image' })
+    expect(telegramSync.mock.calls[1]?.[1].icon).toEqual({
+      kind: 'image',
+      generation: expect.any(String)
+    })
+    expect(discordSync.mock.calls[1]?.[1].icon).toEqual({
+      kind: 'image',
+      generation: expect.any(String)
+    })
 
     const remove = await running.app.inject({
       method: 'DELETE',

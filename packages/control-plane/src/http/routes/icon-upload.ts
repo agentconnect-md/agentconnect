@@ -12,9 +12,11 @@
  * The CP proxies the upload (browser → CP → store): the raw `image/*` body is
  * sniffed here (magic bytes; SVG rejected) so the client `Content-Type` is never
  * trusted, then written to the store under the owner's stable key. The agent/org
- * row keeps just `{kind:'image'}`; the display URL is the store's public URL.
+ * row keeps an image descriptor; each agent upload gets an opaque generation so
+ * detached platform-profile updates can distinguish rapid overwrites.
  */
 import type { FastifyInstance } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -106,15 +108,16 @@ export function iconUploadRoutes(deps: HttpDeps) {
         if (!v.ok) return reply.code(v.status).send({ error: 'Unsupported', statusCode: v.status, message: v.message })
 
         await iconStore.put(agentIconKey(agent.id), bytes, v.contentType)
+        const imageIcon = { kind: 'image' as const, generation: randomUUID() }
         const updated = await deps.repos.agent.update(AgentId(agent.id), {
-          icon: { kind: 'image' },
+          icon: imageIcon,
           ...(req.principal?.userId ? { lastModifiedByUserId: req.principal.userId } : {})
         })
         void replicateAgent(agent.id)
         void syncAgentBotIcons(deps, updated, app.log)
         return reply.send({
           icon: { kind: 'image' as const },
-          iconUrl: resolveAgentIconUrl(agent.id, { kind: 'image' }, iconBases, updated.lastModifiedAt.getTime())
+          iconUrl: resolveAgentIconUrl(agent.id, imageIcon, iconBases, updated.lastModifiedAt.getTime())
         })
       }
     )

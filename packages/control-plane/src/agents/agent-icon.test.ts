@@ -55,6 +55,10 @@ describe('parseAgentIcon', () => {
       color: '#c62a78'
     })
     expect(parseAgentIcon({ kind: 'image' })).toEqual({ kind: 'image' })
+    expect(parseAgentIcon({ kind: 'image', generation: 'upload-1' })).toEqual({
+      kind: 'image',
+      generation: 'upload-1'
+    })
   })
 
   it('degrades null / invalid to null (⇒ runtime-mark default)', () => {
@@ -88,6 +92,9 @@ describe('resolveAgentIconUrl', () => {
   it('resolves an image icon to the object store URL for the agent key (cache-busted)', () => {
     expect(resolveAgentIconUrl('a1', { kind: 'image' }, { cp, store }, 5)).toBe(
       'https://store.example.com/icon/agents/a1?v=5'
+    )
+    expect(resolveAgentIconUrl('a1', { kind: 'image', generation: 'upload-1' }, { cp, store }, 5)).toBe(
+      'https://store.example.com/icon/agents/a1?v=upload-1'
     )
   })
   it('falls back to the CP endpoint for an image icon when no store base is configured', () => {

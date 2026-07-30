@@ -104,7 +104,7 @@ export interface IconUrlBases {
  *  - `runtime`/`glyph`/null → the public CP icon endpoint, when `bases.cp`
  *    (PUBLIC_CP_URL) is configured; else null (Slack keeps the app default avatar).
  * `version` (e.g. the agent's lastModified epoch) busts the URL-keyed icon cache
- * (Slack, CDN, browser) whenever the icon changes.
+ * (Slack, CDN, browser); an uploaded image's opaque generation takes precedence.
  */
 export function resolveAgentIconUrl(
   agentId: string,
@@ -112,12 +112,13 @@ export function resolveAgentIconUrl(
   bases: IconUrlBases,
   version?: string | number
 ): string | null {
+  const cacheVersion = icon?.kind === 'image' ? (icon.generation ?? version) : version
   if (icon?.kind === 'image' && bases.store) {
-    return joinPublicUrl(bases.store, agentIconKey(agentId), version)
+    return joinPublicUrl(bases.store, agentIconKey(agentId), cacheVersion)
   }
   if (!bases.cp) return null
   const base = bases.cp.replace(/\/+$/, '')
-  const v = version !== undefined ? `?v=${encodeURIComponent(String(version))}` : ''
+  const v = cacheVersion !== undefined ? `?v=${encodeURIComponent(String(cacheVersion))}` : ''
   return `${base}${agentIconPublicPath(agentId)}${v}`
 }
 
@@ -132,11 +133,12 @@ export function resolveOrgIconUrl(
   bases: IconUrlBases,
   version?: string | number
 ): string | null {
+  const cacheVersion = icon?.kind === 'image' ? (icon.generation ?? version) : version
   if (icon?.kind === 'image' && bases.store) {
-    return joinPublicUrl(bases.store, orgIconKey(orgId), version)
+    return joinPublicUrl(bases.store, orgIconKey(orgId), cacheVersion)
   }
   if (!bases.cp) return null
   const base = bases.cp.replace(/\/+$/, '')
-  const v = version !== undefined ? `?v=${encodeURIComponent(String(version))}` : ''
+  const v = cacheVersion !== undefined ? `?v=${encodeURIComponent(String(cacheVersion))}` : ''
   return `${base}${orgIconPublicPath(orgId)}${v}`
 }
