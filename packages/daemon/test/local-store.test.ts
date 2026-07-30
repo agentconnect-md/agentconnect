@@ -495,15 +495,23 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     s.close()
   })
 
-  it('observedChannels/observedUsers: distinct per agent+platform, newest-first, name-joined', () => {
+  it('observedChannels/observedUsers: distinct per physical bot, newest-first, name-joined', () => {
     const s = store()
-    const sess = (key: string, platform: string, channel: string, triggeredBy: string, updatedAt: number) =>
+    const sess = (
+      key: string,
+      platform: string,
+      channel: string,
+      triggeredBy: string,
+      updatedAt: number,
+      transportScope: string | null = 'bot-scope-a'
+    ) =>
       s.upsertSession({
         key,
         agentId: 'bot-a',
         platform,
         channel,
         thread: 't',
+        transportScope,
         acpSessionId: null,
         state: 'idle',
         lastDeliveredTs: null,
@@ -514,10 +522,12 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     sess('k2', 'telegram', '55', 'U1', 3) // same user, newer; distinct channel
     sess('k3', 'telegram', '-100', 'U2', 2) // same channel as k1, newer than k1
     sess('k4', 'slack', 'C9', 'U9', 5) // different platform — excluded
+    sess('k5', 'telegram', '-999', 'U9', 9, 'bot-scope-b') // different physical bot — excluded
+    sess('k6', 'telegram', '-legacy', 'U8', 8, null) // legacy unknown bot — excluded
     s.setDisplayName('-100', 'team chat', 1)
     s.setDisplayName('55', '@bob', 1)
 
-    const chans = s.observedChannels('bot-a', 'telegram')
+    const chans = s.observedChannels('bot-a', 'telegram', 'bot-scope-a')
     // Distinct channels, newest-first by their latest session (55@3 before -100@2), names joined.
     expect(chans).toEqual([
       { id: '55', name: '@bob' },
@@ -526,12 +536,12 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     // Slack session's channel is not in the Telegram set.
     expect(chans.find((c) => c.id === 'C9')).toBeUndefined()
 
-    const users = s.observedUsers('bot-a', 'telegram')
+    const users = s.observedUsers('bot-a', 'telegram', 'bot-scope-a')
     expect(users).toEqual([
       { id: 'U1', name: null }, // U1's latest session @3 (no display name → null)
       { id: 'U2', name: null }
     ])
-    expect(s.observedUsers('bot-a', 'discord')).toEqual([])
+    expect(s.observedUsers('bot-a', 'discord', 'bot-scope-a')).toEqual([])
     s.close()
   })
 

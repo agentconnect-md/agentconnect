@@ -1105,38 +1105,39 @@ export class LocalStore {
       .all() as unknown as SessionListRow[]
   }
 
-  /** Distinct conversation targets this agent has been triggered in on a platform,
-   *  newest first, joined to their cached display name. Backs the `listChannels`
-   *  fallback for platforms whose bot API can't enumerate chats (Telegram): the
-   *  observed session history IS the reachable set. */
-  observedChannels(agentId: string, platform: string): { id: string; name?: string }[] {
+  /** Distinct conversation targets this agent has been triggered in through one
+   *  physical bot, newest first, joined to their cached display name. Backs the
+   *  `listChannels` fallback for platforms whose bot API can't enumerate chats
+   *  (Telegram): only history from the current bot is reachable through it. */
+  observedChannels(agentId: string, platform: string, transportScope: string): { id: string; name?: string }[] {
     return this.db
       .prepare(
         `SELECT s.channel AS id, d.name AS name
          FROM (SELECT channel, MAX(updatedAt) AS updatedAt FROM sessions
-               WHERE agentId = ? AND platform = ? AND channel IS NOT NULL AND channel <> ''
+               WHERE agentId = ? AND platform = ? AND transportScope = ?
+                 AND channel IS NOT NULL AND channel <> ''
                GROUP BY channel) s
          LEFT JOIN display_names d ON d.id = s.channel
          ORDER BY s.updatedAt DESC`
       )
-      .all(agentId, platform) as { id: string; name?: string }[]
+      .all(agentId, platform, transportScope) as { id: string; name?: string }[]
   }
 
-  /** Distinct users this agent has been triggered by on a platform, newest first,
-   *  joined to their cached display name (present for Slack ids and Telegram DM
-   *  chats where chat id == user id; group senders are id-only). Backs `listKnownUsers`
-   *  so an agent can find a user id to DM on a platform with no user directory. */
-  observedUsers(agentId: string, platform: string): { id: string; name?: string }[] {
+  /** Distinct users this agent has been triggered by through one physical bot,
+   *  newest first, joined to their cached display name (present for Slack ids and
+   *  Telegram DM chats where chat id == user id; group senders are id-only). */
+  observedUsers(agentId: string, platform: string, transportScope: string): { id: string; name?: string }[] {
     return this.db
       .prepare(
         `SELECT s.triggeredBy AS id, d.name AS name
          FROM (SELECT triggeredBy, MAX(updatedAt) AS updatedAt FROM sessions
-               WHERE agentId = ? AND platform = ? AND triggeredBy IS NOT NULL AND triggeredBy <> ''
+               WHERE agentId = ? AND platform = ? AND transportScope = ?
+                 AND triggeredBy IS NOT NULL AND triggeredBy <> ''
                GROUP BY triggeredBy) s
          LEFT JOIN display_names d ON d.id = s.triggeredBy
          ORDER BY s.updatedAt DESC`
       )
-      .all(agentId, platform) as { id: string; name?: string }[]
+      .all(agentId, platform, transportScope) as { id: string; name?: string }[]
   }
 
   /** The most recently active addressable session (has an ACP id) for an agent in a

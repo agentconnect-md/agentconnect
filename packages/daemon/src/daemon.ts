@@ -1946,9 +1946,19 @@ export class Daemon {
       setSessionTitle: (req) => this.setSessionTitleFromTool(req),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
-      // (Telegram): the local session store already records every chat + triggering user.
-      observedChannels: (agentId, platform) => this.store.observedChannels(agentId, platform),
-      observedUsers: (agentId, platform) => this.store.observedUsers(agentId, platform),
+      // (Telegram): only the sole current physical bot's scoped history is reachable.
+      observedChannels: (agentId, platform) => {
+        const integrations = this.agents.get(agentId)?.integrations.filter((i) => i.platform === platform) ?? []
+        return integrations.length === 1
+          ? this.store.observedChannels(agentId, platform, this.transportScopeForIntegration(integrations[0]!))
+          : []
+      },
+      observedUsers: (agentId, platform) => {
+        const integrations = this.agents.get(agentId)?.integrations.filter((i) => i.platform === platform) ?? []
+        return integrations.length === 1
+          ? this.store.observedUsers(agentId, platform, this.transportScopeForIntegration(integrations[0]!))
+          : []
+      },
       // Peer discovery goes to the CP (the only authority for the cross-daemon
       // roster). Resolve the client lazily; fail closed when it isn't connected.
       channelAgents: async (req) => {
@@ -2946,7 +2956,10 @@ export class Daemon {
     if (!resolver) return
     for (const row of this.store.listSessions()) {
       if (row.platform !== 'discord' && row.platform !== 'telegram' && row.platform !== 'feishu') continue
-      const integrationId = this.agents.get(row.agentId)?.integrations.find((i) => i.platform === row.platform)?.id
+      // Legacy unscoped sessions cannot be attributed to the current physical bot.
+      // In particular, never use a replacement bot to look up an old bot's chats.
+      if (!row.transportScope) continue
+      const integrationId = this.integrationIdForTransportScope(row.agentId, row.platform, row.transportScope)
       if (!integrationId) continue
       const conn =
         row.platform === 'discord'
@@ -2998,16 +3011,11 @@ export class Daemon {
       for (const platform of ['telegram', 'discord', 'feishu'] as const) {
         const integrations = agent.integrations.filter((i) => i.platform === platform)
         if (integrations.length === 0) continue
-        // observedChannels is agent+platform-scoped, not per-bot (the sessions table
-        // carries no integrationId). With several bots of the same platform on one
-        // agent we can't tell which bot saw which session. Only merge session history
-        // in the common single-integration case; integration-attributed Off rows can
-        // still be refreshed safely when several bots share the agent.
-        const observed =
-          integrations.length === 1
-            ? this.collapseObserved(this.store.observedChannels(agent.id, platform), platform)
-            : []
         for (const integ of integrations) {
+          const observed = this.collapseObserved(
+            this.store.observedChannels(agent.id, platform, this.transportScopeForIntegration(integ)),
+            platform
+          )
           const prior = this.channelSnapshots.get(integ.id)?.channels ?? []
           if (observed.length === 0 && prior.length === 0) continue
           const priorById = new Map(prior.map((c) => [c.id, c]))
