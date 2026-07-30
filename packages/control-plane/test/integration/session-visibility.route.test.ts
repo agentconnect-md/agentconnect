@@ -58,7 +58,8 @@ describe('session visibility — list & detail', () => {
       visibility: 'private',
       ownerIdentity: `user:${theirs}`
     })
-    // No resolvable owner (§2 owner-orphan): visible to no one — fail closed.
+    // No resolvable owner (ownerIdentity null — nothing for identity linking
+    // to match, unlike a §2 owner-orphan's stored tuple): visible to no one.
     const orphanSession = await seedSessionMeta(prisma, `s-orphan-${randomUUID()}`, agentId, {
       visibility: 'private'
     })

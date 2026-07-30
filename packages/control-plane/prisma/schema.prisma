@@ -844,7 +844,7 @@ model SessionMeta {
   // ── session visibility (docs/designs/session-visibility.md §3) ──
   orgId              String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent
   visibility         SessionVisibility @default(org)
-  ownerIdentity      String? // §2 namespaced identity (`user:<id>` | `<platform>:<scope>:<uid>`); null for automation/legacy/owner-orphan rows
+  ownerIdentity      String? // §2 namespaced identity (`user:<id>` | `<platform>:<scope>:<uid>`); null for automation/legacy/unresolved-owner rows (NOT a §2 owner-orphan, whose tuple is stored but unmatched)
   visibilitySource   VisibilitySource  @default(default)
   visibilityRev      Int               @default(0) // dedicated monotonic counter, bumped in the same tx as any visibility change (§5.1)
   visibilityAckedRev Int               @default(-1) // daemon-ack watermark: 'applied' once >= visibilityRev; -1 = never acked (rev 0 is a real revision)

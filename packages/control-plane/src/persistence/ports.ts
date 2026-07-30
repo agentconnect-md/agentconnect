@@ -899,7 +899,7 @@ export interface SessionMetaRecord {
   // ── session visibility (session-visibility.md §3) ──
   orgId: OrgId // denormalized from agent.orgId at ingest
   visibility: SessionVisibility
-  ownerIdentity: string | null // §2 namespaced identity; null for automation/legacy/owner-orphan rows
+  ownerIdentity: string | null // §2 namespaced identity; null for automation/legacy/unresolved-owner rows (NOT a §2 owner-orphan, whose tuple is stored but unmatched)
   visibilitySource: VisibilitySource
   visibilityRev: number // bumped in the same tx as any visibility change (§5.1)
   visibilityAckedRev: number // daemon-ack watermark; 'applied' once >= visibilityRev
