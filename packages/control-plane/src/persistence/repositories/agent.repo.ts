@@ -652,6 +652,11 @@ export class PgAgentRepo implements AgentRepo {
       // and the cascading delete. Hook create/rebind/remove takes this same lock
       // before its per-hook lifecycle lock.
       await lockHookReviewAgentLifecycleScope(tx, agentId)
+      // The lifecycle advisory is the documented outer scope. Take the Agent
+      // row immediately after it so every relational lock below follows
+      // Agent → hook/preset → cascade. A missing row still reaches the Prisma
+      // delete below and preserves its existing not-found error semantics.
+      await lockAgentPlacement(tx, agentId)
       const hooks = new PgHookRepo(tx)
       const removedHooks = await hooks.listForAgent(agentId)
       await hooks.tombstoneReviewProjections(

@@ -182,7 +182,7 @@ export class InvocationAssertionAuthenticator {
         !hasFreshCompletion(invocation.completedAt, observedAt) ||
         !Number.isInteger(invocation.responseStatus) ||
         invocation.responseStatus === null ||
-        invocation.responseStatus < 100 ||
+        invocation.responseStatus < 200 ||
         invocation.responseStatus > 599 ||
         !(invocation.responseBytes instanceof Uint8Array) ||
         invocation.responseBytes.byteLength > MCP_INVOCATION_MAX_RESPONSE_BYTES
@@ -210,9 +210,20 @@ export class InvocationAssertionAuthenticator {
 }
 
 function hasFreshCompletion(completedAt: Date | null, observedAt: number): boolean {
-  if (!(completedAt instanceof Date) || !Number.isFinite(observedAt)) return false
+  if (
+    !(completedAt instanceof Date) ||
+    !Number.isFinite(observedAt) ||
+    observedAt < -MAX_DATE_MS ||
+    observedAt > MAX_DATE_MS
+  ) {
+    return false
+  }
   const completedMs = completedAt.getTime()
-  if (!Number.isFinite(completedMs) || completedMs > MAX_DATE_MS - MCP_INVOCATION_RESPONSE_CACHE_TTL_MS) {
+  if (
+    !Number.isFinite(completedMs) ||
+    completedMs > observedAt ||
+    completedMs > MAX_DATE_MS - MCP_INVOCATION_RESPONSE_CACHE_TTL_MS
+  ) {
     return false
   }
   return observedAt < completedMs + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS

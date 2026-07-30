@@ -52,21 +52,19 @@ async function expectPending(promise: Promise<unknown>): Promise<void> {
   expect(settled).toBe(false)
 }
 
-async function expectDatabaseWait(): Promise<void> {
+async function expectDatabaseWait(minimumBlocked = 1): Promise<void> {
   const deadline = Date.now() + 5_000
   while (Date.now() < deadline) {
-    const [state] = await prisma.$queryRaw<{ blocked: boolean }[]>`
-      SELECT EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE datname = current_database()
-          AND cardinality(pg_blocking_pids(pid)) > 0
-      ) AS blocked
+    const [state] = await prisma.$queryRaw<{ blocked: bigint }[]>`
+      SELECT COUNT(*) AS blocked
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND cardinality(pg_blocking_pids(pid)) > 0
     `
-    if (state?.blocked) return
+    if (state && state.blocked >= BigInt(minimumBlocked)) return
     await new Promise<void>((resolve) => setTimeout(resolve, 10))
   }
-  throw new Error('expected an invocation authority operation to wait on a row lock')
+  throw new Error(`expected at least ${minimumBlocked} invocation authority operations to wait on a database lock`)
 }
 
 function holdGeneralPresetLock(): {
@@ -163,6 +161,7 @@ function claimInput(delegation: { id: string; generation: number }, extra: Recor
 }
 
 type InvocationObservation = 'issued claim' | 'terminal replay'
+type AgentDeleteWinner = 'invocation' | 'delete'
 
 async function prepareObservation(
   repo: PgMcpInvocationRepo,
@@ -240,6 +239,55 @@ async function exerciseAuthorityRace(
 
   await writingFirst
   expect(await observingAfterWrite).toEqual({ kind: 'denied' })
+}
+
+async function exerciseAgentDeleteRace(
+  delegation: { id: string; generation: number },
+  observation: InvocationObservation,
+  winner: AgentDeleteWinner
+): Promise<void> {
+  const repo = invocationRepo(prisma)
+  await prepareObservation(repo, delegation, observation)
+
+  if (winner === 'invocation') {
+    const observed = barrier()
+    const releaseObservation = barrier()
+    const observing = prisma.$transaction(
+      async (tx) => {
+        const result = await invocationRepo(tx).claim(claimInput(delegation))
+        observed.release()
+        await releaseObservation.promise
+        return result
+      },
+      { timeout: 20_000 }
+    )
+    await observed.promise
+
+    const deleting = new PgAgentRepo(prisma).delete(AgentId(AGENT))
+    await expectDatabaseWait()
+    releaseObservation.release()
+
+    await expect(observing).resolves.toMatchObject({
+      kind: observation === 'issued claim' ? 'claimed' : 'existing'
+    })
+    await expect(deleting).resolves.toEqual([])
+  } else {
+    const presetLock = holdGeneralPresetLock()
+    await presetLock.locked
+
+    const deleting = new PgAgentRepo(prisma).delete(AgentId(AGENT))
+    await expectDatabaseWait()
+    const observing = repo.claim(claimInput(delegation))
+    await expectDatabaseWait(2)
+    presetLock.release()
+
+    await presetLock.completed
+    await expect(deleting).resolves.toEqual([])
+    await expect(observing).resolves.toEqual({ kind: 'denied' })
+  }
+
+  expect(await prisma.agent.findUnique({ where: { id: AGENT } })).toBeNull()
+  expect(await prisma.mcpInvocation.findUnique({ where: { id: INVOCATION } })).toBeNull()
 }
 
 describe('PgMcpInvocationRepo (real Postgres)', () => {
@@ -507,6 +555,20 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
           })
         }
       })
+    }
+  )
+
+  it.each([
+    ['issued claim', 'invocation'],
+    ['terminal replay', 'invocation'],
+    ['issued claim', 'delete'],
+    ['terminal replay', 'delete']
+  ] as const)(
+    'linearizes %s against real agent deletion when %s wins without deadlock',
+    async (observation, winner) => {
+      const delegation = await fixtures()
+
+      await exerciseAgentDeleteRace(delegation, observation, winner)
     }
   )
 

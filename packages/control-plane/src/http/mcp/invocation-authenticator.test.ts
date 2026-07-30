@@ -391,7 +391,8 @@ describe('InvocationAssertionAuthenticator', () => {
     ['invalid completion time', { completedAt: new Date(Number.NaN) }],
     ['overflowing completion time', { completedAt: new Date(8.64e15) }],
     ['missing HTTP status', { responseStatus: null }],
-    ['status below HTTP range', { responseStatus: 99 }],
+    ['informational HTTP status', { responseStatus: 100 }],
+    ['status below final HTTP response range', { responseStatus: 199 }],
     ['status above HTTP range', { responseStatus: 600 }],
     ['non-integer HTTP status', { responseStatus: 200.5 }],
     ['missing response bytes', { responseBytes: null }],
@@ -405,6 +406,40 @@ describe('InvocationAssertionAuthenticator', () => {
       responseStatus: 200,
       responseBytes: Buffer.from('cached'),
       ...patch
+    })
+
+    expect(await h.authenticator.claim(h.input())).toEqual({
+      kind: 'denied',
+      reason: 'cached_response_invalid'
+    })
+  })
+
+  it.each(['succeeded', 'ambiguous'] as const)(
+    'fails closed for a future completion time on %s replay',
+    async (status) => {
+      const h = harness()
+      h.state.invocation = invocation(h.minted.persistence.assertionHash, {
+        status,
+        completedAt: new Date(NOW + 1),
+        responseStatus: status === 'succeeded' ? 200 : null,
+        responseBytes: status === 'succeeded' ? Buffer.from('cached') : null
+      })
+
+      expect(await h.authenticator.claim(h.input())).toEqual({
+        kind: 'denied',
+        reason: 'cached_response_invalid'
+      })
+    }
+  )
+
+  it('fails closed when the replay observation is outside the Date range', async () => {
+    const h = harness()
+    h.state.now = -8.64e15 - 1
+    h.state.invocation = invocation(h.minted.persistence.assertionHash, {
+      status: 'succeeded',
+      completedAt: new Date(NOW),
+      responseStatus: 200,
+      responseBytes: Buffer.from('cached')
     })
 
     expect(await h.authenticator.claim(h.input())).toEqual({
