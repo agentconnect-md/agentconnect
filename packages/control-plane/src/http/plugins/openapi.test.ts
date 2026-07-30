@@ -55,6 +55,13 @@ describe('openapi plane', () => {
       const agentsPost = doc.paths?.['/api/v1/orgs/{orgId}/agents']?.post
       expect(agentsPost?.requestBody).toBeTruthy()
       expect(agentsPost?.responses?.['201']).toBeTruthy()
+
+      // A discriminated-union response transforms too, and the operation carries
+      // the naming a docs UI needs (without these it renders as a bare path).
+      const slackIdentity = doc.paths?.['/api/v1/me/social-identities/slack']?.get
+      expect(slackIdentity).toMatchObject({ operationId: 'getMySlackIdentity', tags: ['Profile'] })
+      expect(slackIdentity?.summary).toBeTruthy()
+      expect(slackIdentity?.responses?.['200']?.content?.['application/json']?.schema).toBeTruthy()
     } finally {
       await app.close()
     }

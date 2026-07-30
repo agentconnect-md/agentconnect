@@ -78,6 +78,32 @@ interface CachedLogin {
   expiresAt: number
 }
 
+interface CachedSlack {
+  identity: SlackIdentity | null
+  expiresAt: number
+}
+
+/** The Slack workspace identity behind a console account. Both ids are required —
+ *  a `U…` without its `T…` is not addressable, so a partial read is no read. */
+export interface SlackIdentity {
+  /** Slack workspace id (`T…`). */
+  teamId: string
+  /** Slack user id (`U…`) — scoped to that workspace. */
+  userId: string
+  teamName?: string
+  teamDomain?: string
+}
+
+// Slack namespaces its non-standard OIDC claims. `sub` carries the same user id
+// as `https://slack.com/user_id`; team_name/team_domain are best-effort (Slack's
+// published claim list guarantees only the two ids).
+const SLACK_CLAIM = {
+  teamId: 'https://slack.com/team_id',
+  userId: 'https://slack.com/user_id',
+  teamName: 'https://slack.com/team_name',
+  teamDomain: 'https://slack.com/team_domain'
+} as const
+
 /** The Logto user shape we read — identities metadata only. */
 interface LogtoUser {
   identities?: Record<
@@ -85,10 +111,11 @@ interface LogtoUser {
     {
       userId?: string
       details?: {
-        // The connector's raw profile; Logto's github connector stores the
+        // The connector's raw profile. Logto's github connector stores the
         // GitHub /user response under `rawData` (login at `userInfo.login` on
-        // current connectors; older ones kept the flat `login`).
-        rawData?: { userInfo?: { login?: unknown }; login?: unknown }
+        // current connectors; older ones kept the flat `login`); the slack
+        // connector stores the whole decoded OIDC payload there.
+        rawData?: { userInfo?: { login?: unknown }; login?: unknown } & Record<string, unknown>
       }
     }
   >
@@ -99,6 +126,11 @@ export class LogtoIdentityService {
   private tokenInFlight?: Promise<string>
   private readonly logins = new Map<string, CachedLogin>()
   private readonly loginInFlight = new Map<string, Promise<string | null>>()
+  // Kept separate from the login cache on purpose: githubLoginFor sits on a live
+  // authorization gate, and a display-only Slack read must not be able to shift
+  // what that gate sees (or when it re-asks).
+  private readonly slacks = new Map<string, CachedSlack>()
+  private readonly slackInFlight = new Map<string, Promise<SlackIdentity | null>>()
 
   constructor(
     private readonly cfg: LogtoMgmtConfig,
@@ -119,6 +151,22 @@ export class LogtoIdentityService {
     if (!pending) {
       pending = this.lookupLogin(sub).finally(() => this.loginInFlight.delete(sub))
       this.loginInFlight.set(sub, pending)
+    }
+    return pending
+  }
+
+  /**
+   * The Slack workspace identity behind a local user's OIDC subject, or null
+   * when the account never signed in with (or linked) Slack. Read-only
+   * metadata — no caller may treat this as an authorization decision.
+   */
+  async slackIdentityFor(sub: string): Promise<SlackIdentity | null> {
+    const cached = this.slacks.get(sub)
+    if (cached && cached.expiresAt > this.clock.now()) return cached.identity
+    let pending = this.slackInFlight.get(sub)
+    if (!pending) {
+      pending = this.lookupSlack(sub).finally(() => this.slackInFlight.delete(sub))
+      this.slackInFlight.set(sub, pending)
     }
     return pending
   }
@@ -162,7 +210,7 @@ export class LogtoIdentityService {
       body: JSON.stringify({ connectorId, connectorData })
     })
     if (!res.ok) throw await this.responseError('logto social identity link', res)
-    this.logins.delete(sub)
+    this.invalidate(sub)
   }
 
   /** Remove one provider identity from this Logto user. */
@@ -185,8 +233,33 @@ export class LogtoIdentityService {
         method: 'DELETE'
       })
       if (!res.ok) throw await this.responseError('logto social identity unlink', res)
-      this.logins.delete(sub)
+      this.invalidate(sub)
     })
+  }
+
+  /** Drop every cached identity for one user. Called after a link/unlink, so the
+   *  Profile does not keep showing a method the user just changed. */
+  private invalidate(sub: string): void {
+    this.logins.delete(sub)
+    this.slacks.delete(sub)
+  }
+
+  private async lookupSlack(sub: string): Promise<SlackIdentity | null> {
+    const res = await this.request(`/api/users/${encodeURIComponent(sub)}`)
+    if (res.status === 404) {
+      this.slacks.set(sub, { identity: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
+      return null
+    }
+    if (!res.ok) {
+      throw new LogtoApiError(`logto user lookup failed: ${res.status}`, res.status, res.status >= 500)
+    }
+    const user = (await res.json()) as LogtoUser
+    const identity = slackIdentityOf(user)
+    this.slacks.set(sub, {
+      identity,
+      expiresAt: this.clock.now() + (identity ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
+    })
+    return identity
   }
 
   private async lookupLogin(sub: string): Promise<string | null> {
@@ -283,4 +356,25 @@ export class LogtoIdentityService {
 function firstString(...candidates: unknown[]): string | null {
   for (const c of candidates) if (typeof c === 'string' && c.length > 0) return c
   return null
+}
+
+/** Read the Slack workspace identity out of a Logto user, or null when the
+ *  account has no usable one. */
+function slackIdentityOf(user: LogtoUser): SlackIdentity | null {
+  const identity = user.identities?.slack
+  const raw = identity?.details?.rawData
+  if (!raw) return null
+  const teamId = firstString(raw[SLACK_CLAIM.teamId])
+  // Slack's `sub` IS the user id, so the stored identity key is an equally
+  // authoritative fallback when the namespaced claim is absent.
+  const userId = firstString(raw[SLACK_CLAIM.userId], identity?.userId)
+  if (!teamId || !userId) return null
+  const teamName = firstString(raw[SLACK_CLAIM.teamName])
+  const teamDomain = firstString(raw[SLACK_CLAIM.teamDomain])
+  return {
+    teamId,
+    userId,
+    ...(teamName ? { teamName } : {}),
+    ...(teamDomain ? { teamDomain } : {})
+  }
 }

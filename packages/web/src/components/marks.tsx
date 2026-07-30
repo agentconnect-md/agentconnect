@@ -9,8 +9,10 @@ import newLarkIcon from '@iconify-icons/icon-park/new-lark'
 import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
+import { FcGoogle } from 'react-icons/fc'
 import { SiDiscord, SiGithub, SiTelegram } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 const fill = { width: '60%', height: '60%', display: 'block' } as const
 
@@ -169,6 +171,20 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
       <Icon name="plug" className="h-full w-full" />
     </span>
   )
+}
+
+/**
+ * Brand mark for a social sign-in method — shared by the login page and the
+ * Profile "Sign-in methods" card so a provider added to SOCIAL_LOGIN_PROVIDERS
+ * cannot render correctly in one place and wrong in the other.
+ *
+ * `size` is left unset on the login page, where `.sso svg` sizes the mark.
+ */
+export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; size?: number }) {
+  if (target === 'github') return <SiGithub size={size} aria-hidden />
+  if (target === 'slack')
+    return <IconifyIcon icon={slackIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
+  return <FcGoogle size={size} aria-hidden />
 }
 
 export function Wordmark({ height = 36, inverse = false }: { height?: number; inverse?: boolean }) {

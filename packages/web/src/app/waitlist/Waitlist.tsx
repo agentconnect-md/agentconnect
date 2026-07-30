@@ -19,13 +19,14 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { FaSlack, FaTelegram, FaDiscord } from 'react-icons/fa'
 import { Icon } from '@/components/ui'
-import { Spinner, Wordmark } from '@/components/marks'
+import { SocialLoginMark, Spinner, Wordmark } from '@/components/marks'
 import { getMyAccess, joinWaitlist, type WaitlistIntake } from '@/lib/api'
 import { getUser, isAuthConfigured, login, logout } from '@/lib/auth'
+import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginTarget } from '@/lib/social-login-providers'
 
 type Phase = 'loading' | 'intake' | 'auth' | 'onlist' | 'error'
 type Platform = 'slack' | 'telegram' | 'discord'
-type Provider = 'github' | 'google'
+type Provider = SocialLoginTarget
 
 const DOCS_URL = 'https://docs.agentconnect.md'
 // Verified sender of the activation email. Deploy-time config, so it comes from the
@@ -35,6 +36,9 @@ const FROM_EMAIL_DEFAULT = 'no-reply@agentconnect.md'
 const INTAKE_KEY = 'ac.wl.intake'
 const PROVIDER_KEY = 'ac.wl.provider'
 const TEAM_SIZES = ['Just me', '2–10', '11–50', '51–200', '200+']
+const PROVIDER_LABELS: Record<string, string> = Object.fromEntries(
+  SOCIAL_LOGIN_PROVIDERS.map((p) => [p.target, `via ${p.name}`])
+)
 const PLATFORMS: { id: Platform; label: string; Mark: typeof FaSlack }[] = [
   { id: 'slack', label: 'Slack', Mark: FaSlack },
   { id: 'telegram', label: 'Telegram', Mark: FaTelegram },
@@ -369,14 +373,19 @@ export default function Waitlist() {
                   typing, no spoofing.
                 </p>
                 <div className="mt-[26px] flex max-w-[380px] flex-col gap-3">
-                  <button type="button" className="sso dark" onClick={() => continueWith('github')}>
-                    <GithubMark />
-                    Continue with GitHub
-                  </button>
-                  <button type="button" className="sso" onClick={() => continueWith('google')}>
-                    <GoogleMark />
-                    Continue with Google
-                  </button>
+                  {SOCIAL_LOGIN_PROVIDERS.map((provider) => (
+                    <button
+                      key={provider.target}
+                      type="button"
+                      // GitHub keeps the design's dark primary treatment; the rest
+                      // are the plain light button.
+                      className={provider.target === 'github' ? 'sso dark' : 'sso'}
+                      onClick={() => continueWith(provider.target)}
+                    >
+                      <SocialLoginMark target={provider.target} />
+                      Continue with {provider.name}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -405,7 +414,9 @@ function OnListColumn({
   onSignOut: () => void
   onRefresh: () => void
 }) {
-  const providerLabel = provider === 'github' ? 'via GitHub' : provider === 'google' ? 'via Google' : ''
+  // A stashed provider is unvalidated JSON, so an unknown value degrades to no
+  // label rather than rendering "Verified undefined".
+  const providerLabel = (provider && PROVIDER_LABELS[provider]) || ''
   const lead =
     status === 'approved'
       ? 'You’re approved. Your activation link is on its way — open it to finish setting up your account.'
@@ -662,36 +673,5 @@ function OnListAside() {
         </div>
       </div>
     </aside>
-  )
-}
-
-/* ── Provider marks (verbatim from the design) ────────────────────────────── */
-function GithubMark() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-      <path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 016 0C17 4.7 18 5 18 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.3.8 1 .8 2.1v3.1c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z" />
-    </svg>
-  )
-}
-function GoogleMark() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="#4285F4"
-        d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.7-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.5 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1C3.4 21.4 7.4 24 12 24z"
-      />
-      <path
-        fill="#FBBC05"
-        d="M5.4 14.4c-.2-.7-.4-1.4-.4-2.4s.1-1.6.4-2.4V6.5H1.4C.5 8.2 0 10 0 12s.5 3.8 1.4 5.5l4-3.1z"
-      />
-      <path
-        fill="#EA4335"
-        d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4C17.9 1.2 15.2 0 12 0 7.4 0 3.4 2.6 1.4 6.5l4 3.1C6.3 6.8 8.9 4.8 12 4.8z"
-      />
-    </svg>
   )
 }

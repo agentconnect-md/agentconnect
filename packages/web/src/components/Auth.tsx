@@ -1,9 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { FcGoogle } from 'react-icons/fc'
-import { SiGithub } from 'react-icons/si'
-import { LogoMark, Wordmark } from '@/components/marks'
+import { LogoMark, SocialLoginMark, Wordmark } from '@/components/marks'
 import { isAuthConfigured, login } from '@/lib/auth'
 import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginTarget } from '@/lib/social-login-providers'
 
@@ -52,7 +50,7 @@ export default function Auth() {
             <div className="mt-[26px] flex flex-col gap-[10px]">
               {SOCIAL_LOGIN_PROVIDERS.map((provider) => (
                 <button key={provider.target} className="sso" onClick={() => sso(provider.target)}>
-                  {provider.target === 'github' ? <SiGithub aria-hidden /> : <FcGoogle aria-hidden />}
+                  <SocialLoginMark target={provider.target} />
                   Continue with {provider.name}
                 </button>
               ))}

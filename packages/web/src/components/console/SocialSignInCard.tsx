@@ -2,11 +2,11 @@
 
 import { useEffect, useId, useState } from 'react'
 import useSWR from 'swr'
-import { FcGoogle } from 'react-icons/fc'
-import { SiGithub } from 'react-icons/si'
 import { Avatar, Button, Icon } from '@/components/ui'
+import { SocialLoginMark } from '@/components/marks'
 import { initialsFrom } from '@/lib/auth'
-import { createMySocialIdentityAuthorization, unlinkMySocialIdentity } from '@/lib/api'
+import { createMySocialIdentityAuthorization, fetchMySlackIdentity, unlinkMySocialIdentity } from '@/lib/api'
+import { slackWorkspaceLine } from '@/lib/slack-identity'
 import {
   LogtoAccountError,
   accountErrorMessage,
@@ -21,7 +21,7 @@ import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginProvider } from '@/lib/social-l
 function ProviderMark({ provider }: { provider: SocialLoginProvider }) {
   return (
     <span className="flex h-7 w-7 items-center justify-center rounded-md bg-(--surface-active)">
-      {provider.target === 'github' ? <SiGithub size={19} aria-hidden /> : <FcGoogle size={20} aria-hidden />}
+      <SocialLoginMark target={provider.target} size={19} />
     </span>
   )
 }
@@ -131,6 +131,11 @@ export default function SocialSignInCard({
     revalidateOnReconnect: false,
     shouldRetryOnError: false
   })
+  // The CP's server-side read of the Slack workspace. Deliberately its own key:
+  // an error, or a deployment that cannot resolve identities, must cost nothing
+  // but this one line — never the linking UI it sits in.
+  const { data: slack } = useSWR('me-slack-identity', fetchMySlackIdentity, { shouldRetryOnError: false })
+  const workspaceLine = slackWorkspaceLine(slack)
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
   const currentAccount = error ? undefined : account
@@ -237,6 +242,11 @@ export default function SocialSignInCard({
                           {details?.email ? (
                             <div className="truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                               {details.email}
+                            </div>
+                          ) : null}
+                          {provider.target === 'slack' && workspaceLine ? (
+                            <div className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                              {workspaceLine}
                             </div>
                           ) : null}
                         </div>

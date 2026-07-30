@@ -46,7 +46,8 @@ describe('Logto Account API', () => {
     })
     expect(SOCIAL_LOGIN_PROVIDERS).toEqual([
       { target: 'github', name: 'GitHub' },
-      { target: 'google', name: 'Google' }
+      { target: 'google', name: 'Google' },
+      { target: 'slack', name: 'Slack' }
     ])
     expect(fetchMock).toHaveBeenCalledOnce()
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://login.example.test/api/my-account')
