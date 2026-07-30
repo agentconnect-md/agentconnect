@@ -14,7 +14,7 @@
  * lowercase everywhere so invites and sign-ins can't miss on case.
  */
 import type { PrismaClient } from '../../generated/prisma/client.js'
-import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
   type ProvisionOidcUserInput,
@@ -110,6 +110,17 @@ const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === '
  * Postgres ANY failed statement aborts the WHOLE transaction — the caught P2002
  * would poison every following query with 25P02 and surface as a 500. A read-then-insert
  * has the same flaw, since two concurrent allocations can pick the same free candidate.
+ *
+ * PER-USER SERIALIZATION: the first statement locks the `app_user` row
+ * (`SELECT … FOR UPDATE`), making THIS seam the single serialization point for
+ * every personal-org caller — including callers in the external admin app,
+ * which mirrors this seam over the shared database. Without it, two paths that
+ * otherwise lock disjoint rows (e.g. waitlist redeem, which locks only the
+ * `waitlist_entry` row when the user is ALREADY activated and so skips the
+ * `user.update`, racing an admin-side activation repair) can both observe "no
+ * owner membership" and each mint a personal org + preset. The loser of this
+ * lock resumes after the winner commits; READ COMMITTED re-reads then see the
+ * winner's membership and the call degrades to the idempotent no-op.
  */
 export async function ensurePersonalOrg(
   db: PrismaLike,
@@ -119,6 +130,7 @@ export async function ensurePersonalOrg(
   opts?: { presetAgents?: boolean }
 ): Promise<void> {
   await withAmbientTx(db, async (tx) => {
+    await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "app_user" WHERE "id" = ${userId} FOR UPDATE`)
     const already = await tx.membership.findFirst({ where: { userId, role: 'owner' } })
     if (already) return
     const base = personalOrgBase(displayName, email)
