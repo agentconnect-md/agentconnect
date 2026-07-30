@@ -459,8 +459,11 @@ approval.
 
 The same creation deeplink pre-fills the bot avatar from the Agent's current
 public icon URL. Uploaded icons use their public object-store URL; glyph and
-runtime icons use the public Control Plane PNG endpoint. If neither public base
-is configured, avatar prefill is omitted and app creation continues normally.
+runtime icons use the public Control Plane PNG endpoint. The Control Plane
+response allows anonymous cross-origin reads, and the configured object-store
+origin must do the same, because the Lark launcher rasterizes the avatar
+in-browser. If neither public base is configured, avatar prefill is omitted and
+app creation continues normally.
 
 Manual setup must configure the same bot capability, long-connection event,
 scopes, and publication state. In both paths, adding the bot to a target group

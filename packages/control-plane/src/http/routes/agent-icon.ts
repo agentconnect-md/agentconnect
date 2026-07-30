@@ -31,6 +31,9 @@ export function agentIconRoutes(deps: HttpDeps) {
       async (req, reply): Promise<FastifyReply> => {
         const agent = await deps.repos.agent.get(AgentId(req.params.id)).catch(() => null)
         if (!agent) return reply.code(404).send()
+        // Lark's app launcher loads this with `crossOrigin = "anonymous"` before
+        // rasterizing it on a canvas, so the public image response must allow CORS.
+        reply.header('Access-Control-Allow-Origin', '*')
         // `image` icons live in the object store — iconUrl points straight at the
         // store's public URL, so Slack/browsers normally never hit this endpoint for
         // them. Redirect if reached anyway (when a store base is configured); if it

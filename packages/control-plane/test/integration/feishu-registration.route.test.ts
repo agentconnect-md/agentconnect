@@ -149,6 +149,14 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(avatarUrl.origin).toBe('https://cp.example.test')
     expect(avatarUrl.pathname).toBe(`/v1/agents/${agentId}/icon`)
     expect(avatarUrl.searchParams.has('v')).toBe(true)
+    const avatar = await first.app.inject({
+      method: 'GET',
+      url: `${avatarUrl.pathname}${avatarUrl.search}`,
+      headers: { origin: 'https://open.larksuite.com' }
+    })
+    expect(avatar.statusCode).toBe(200)
+    expect(avatar.headers['content-type']).toMatch(/^image\/png/)
+    expect(avatar.headers['access-control-allow-origin']).toBe('*')
     expect(decodeAddons(authorizationUrl.searchParams.get('addons')!)).toMatchObject({
       preset: true,
       scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
