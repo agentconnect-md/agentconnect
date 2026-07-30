@@ -112,11 +112,12 @@ export interface SocialAccount {
  * The Slack workspace identity behind a console account. Both ids are required —
  * a `U…` without its `T…` is not addressable, so a partial read is no read.
  *
- * IDENTIFY A SLACK HUMAN BY THE PAIR, NEVER BY `userId` ALONE. Slack documents
- * the user id as unique only within its workspace and says to use it together
- * with the team id; a bare `U…` can repeat across workspaces, and one person on
- * Enterprise Grid holds several. Taking just `userId` off this type compiles,
- * reads naturally, and is wrong. See docs/designs/slack-identity.md.
+ * IDENTIFY A SLACK HUMAN BY THE PAIR, NOT BY `userId` ALONE. Slack's Web API
+ * documents the user id as workspace-scoped and says to store it together with
+ * the team id, and Enterprise Grid can give one person more than one id. Taking
+ * just `userId` off this type compiles, reads naturally, and drops the qualifier
+ * Slack asks you to keep. See docs/designs/slack-identity.md for what this does
+ * and does NOT claim about the OIDC `sub`.
  */
 export interface SlackIdentity {
   /** Slack workspace id (`T…`). */

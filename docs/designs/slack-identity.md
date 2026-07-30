@@ -8,22 +8,32 @@ anything reading that identity has to follow.
 Sign in with Slack is OIDC. The ID token carries, besides the usual profile
 claims:
 
-| claim                           | example             | meaning                                                   |
-| ------------------------------- | ------------------- | --------------------------------------------------------- |
-| `sub`                           | `U0EXAMPLE1`        | the Slack user id — **the same value** as `user_id` below |
-| `https://slack.com/user_id`     | `U0EXAMPLE1`        | the user, **within one workspace**                        |
-| `https://slack.com/team_id`     | `T0EXAMPLE1`        | the workspace                                             |
-| `https://slack.com/team_name`   | `Example Workspace` | best-effort label                                         |
-| `https://slack.com/team_domain` | `example-workspace` | best-effort; addresses the workspace on the web           |
+| claim                           | example             | meaning                                         |
+| ------------------------------- | ------------------- | ----------------------------------------------- |
+| `sub`                           | `U0EXAMPLE1`        | the OIDC subject (see the distinction below)    |
+| `https://slack.com/user_id`     | `U0EXAMPLE1`        | Slack's own user id                             |
+| `https://slack.com/team_id`     | `T0EXAMPLE1`        | the workspace                                   |
+| `https://slack.com/team_name`   | `Example Workspace` | best-effort label                               |
+| `https://slack.com/team_domain` | `example-workspace` | best-effort; addresses the workspace on the web |
 
 Only the two ids are guaranteed. The labels are absent often enough that every
-reader needs a fallback — see `slackWorkspaceLine` in the console for the
+reader needs a fallback — see `workspaceLabel` in `SocialSignInCard.tsx` for the
 precedence we use (name → domain → id).
 
-The identity itself is stored by the identity provider, not by us. Logto keeps
+**`sub` and `user_id` carry the same string but are not the same promise.** Slack
+advertises a single OIDC issuer, and OIDC requires `sub` to be unique within an
+issuer and never reassigned — as an OIDC subject it is therefore Slack asserting
+a stable global identifier. `https://slack.com/user_id` is the id from Slack's
+own user model, which its Web API documentation describes as workspace-scoped.
+The two being equal in a token does not merge those two contracts, and the rule
+below rests on the second — not on any claim that the first is unsound.
+
+The sign-in identity is stored by the identity provider, not by us: Logto keeps
 the connector's whole decoded payload under `identities.slack.details.rawData`,
 and `LogtoIdentityService.slackIdentityFor()` is the one server-side path to it.
-Nothing in AgentConnect's own database holds a `T…`/`U…`.
+AgentConnect persists no Slack sign-in identity and no reverse index from a Slack
+user to a console user. It does persist Slack ids elsewhere — see `ownerIdentity`
+below.
 
 ## The rule: key on `teamId` + `userId`, never `userId` alone
 
@@ -33,43 +43,50 @@ Slack's own user object documentation is explicit:
 > the user. Use this field together with `team_id` as a unique key when storing
 > related data or when specifying the user in API requests.
 
-So a bare `U…` is **not** a global identifier. Two people in two different
-workspaces may hold the same one, and on Enterprise Grid a single person holds
-several. Any map, comparison, allowlist, or database column that identifies a
-Slack human must be keyed on the pair.
+So Slack's own data model does not treat a bare `U…` as self-sufficient. Add to
+that Enterprise Grid, where a person can carry both a workspace-local id and an
+org-wide one. Any map, comparison, allowlist, or column that identifies a Slack
+human should therefore be keyed on the pair — not because a collision has been
+demonstrated, but because the pair is what Slack tells you to store and it costs
+nothing to carry.
 
-`SlackIdentity` returns both ids for exactly this reason. Taking only `userId`
-from it compiles, reads naturally, and is wrong.
+`SlackIdentity` returns both ids for that reason. Taking only `userId` from it
+compiles, reads naturally, and quietly drops the qualifier Slack asks you to keep.
 
-### Where this already bites, upstream
+**What is not claimed.** Logto's connector uses the OIDC `sub` as its identity id,
+which is the spec-correct choice, and a live tenant confirms the stored
+`identities.slack.userId` is that bare value with no workspace component. It
+would be easy to read that as "two workspaces could collide into one Logto
+account" — but that would contradict Slack's own single-issuer `sub` contract,
+and no authoritative source here establishes it. Treat the pairing rule as
+hygiene we control, not as a defect claim about the provider.
 
-Logto's Slack connector reports the identity id as `sub`, i.e. the bare `U…`,
-so the tenant stores `identities.slack.userId` with no workspace component
-(verified against a live tenant: the stored key equals the `user_id` claim and
-does not contain the `team_id`). Two Slack accounts colliding on `U…` would
-therefore collapse into one Logto account.
+### Where Slack ids already appear
 
-That is upstream, in `@logto/connector-slack`, and not something this repo can
-fix. It is recorded here because it sets a ceiling on how much a Slack identity
-can be trusted as a _primary_ account key, and because a reader who finds our
-`teamId + userId` discipline should know why the provider does not share it.
+- **`ownerIdentity`** (`session_meta`) is `${platform}:${transportScope}:${triggeredBy}`
+  — for Slack that is `slack:T…:U…`. This is the pair, persisted, and the
+  precedent worth copying: it is unambiguous without any assumption about `U…`
+  on its own.
+- **`allowedUserIds`** (daemon routing) compares a bare sender id:
+  `allowedUserIds.includes(msg.sender.id)` in `router/routing-table.ts`, against
+  a sender the Slack normalizer builds from `message.user` with no team
+  component. **It is dormant** — the CP populates it as `[]` on every path in
+  `orchestrator/placement.ts`, so the guard never fires today.
 
-### Where it does not bite today
+  Do not read the per-integration binding as making it pair-safe. An integration
+  is installed in one workspace, but under Slack Connect a shared-channel message
+  can be authored from another, so the two sides of that comparison are not
+  guaranteed to share a workspace. **Whoever activates this allowlist has to
+  carry the author's team id into the normalized sender first**; until then the
+  path is inert rather than correct.
 
-Two places compare Slack user ids, and both are safe by construction — worth
-knowing so nobody "fixes" them into something slower for no reason:
-
-- **`allowedUserIds`** (daemon routing) is per **integration**, and an
-  integration is bound to one workspace. Both sides of the comparison come from
-  that same workspace, so a bare `U…` is unambiguous there.
 - **`slack_user_config`** is keyed `(orgId, userId)` where `userId` is the
   **console** user, not a Slack one. It stores that person's Slack App
   Configuration token; no Slack id is involved.
 
-Nothing currently maps a Slack sender back to a console user. That was a
-deliberate non-goal when the server-side read was added: it is a read-through,
-not an index, and a reverse lookup would need persistence. Whoever builds it is
-the first caller that must honour the rule above.
+Nothing maps a Slack sender back to a console user. That was a deliberate
+non-goal when the server-side read was added: it is a read-through, not an index,
+and a reverse lookup would need persistence.
 
 ## Linking and unlinking run over different Logto surfaces
 
