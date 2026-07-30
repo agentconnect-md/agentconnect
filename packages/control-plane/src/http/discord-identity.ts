@@ -1,20 +1,10 @@
 /**
- * Discord bot-token verification for the install flow — the Discord analog of
- * slack-identity.ts / telegram-identity.ts.
+ * Discord bot-token verification and required application setup for the install
+ * flow — the Discord analog of slack-identity.ts / telegram-identity.ts.
  *
- * `POST /integrations` calls this to (a) VALIDATE the pasted bot token against
- * Discord before storing it — so a stale / wrong / swapped token fails the request
- * with a 400 instead of silently producing an integration whose Gateway login never
- * succeeds (and whose only symptom is a daemon-log error nobody sees) — and (b)
- * derive the bot's display name from `GET /users/@me` when the install omits one
- * (one call does both, so we don't re-fetch just to name the bot).
- *
- * Best-effort about *reachability*: a network error / timeout / non-2xx OTHER than a
- * definitive 401 is reported as `unreachable` (inconclusive) and MUST NOT block the
- * install — the CP momentarily failing to reach Discord is not evidence the token is
- * bad. Only a 401 Unauthorized is treated as `invalid`.
- *
- * This is the only spot the CP touches the token to reach Discord; it NEVER logs it.
+ * `verifyDiscordBot` validates the pasted token and derives the bot's display name.
+ * `ensureDiscordMessageContentIntent` idempotently enables the limited Message
+ * Content application flag before the integration is stored. Neither logs the token.
  */
 
 /** `GET /users/@me` outcome: a valid token (with the derived bot name), a token
@@ -25,6 +15,7 @@ export type DiscordBotVerification =
   | { status: 'unreachable' } // network / timeout / non-401 non-2xx — inconclusive, do not block
 
 export type DiscordBotVerifier = (botToken: string) => Promise<DiscordBotVerification>
+export type DiscordMessageContentIntentEnsurer = (botToken: string) => Promise<boolean>
 
 /** The application (client) id embedded in a bot token's first segment, or undefined
  *  when the shape is unexpected. A Discord bot token is `<base64url(appId)>.<ts>.<hmac>`
@@ -47,12 +38,29 @@ export function discordAppIdFromBotToken(botToken: string): string | undefined {
 }
 
 const DISCORD_TIMEOUT_MS = 5000
+const DISCORD_API = 'https://discord.com/api/v10'
+const GATEWAY_PRESENCE_LIMITED = 1 << 13
+const GATEWAY_GUILD_MEMBERS_LIMITED = 1 << 15
+const GATEWAY_MESSAGE_CONTENT = 1 << 18
+const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
+const EDITABLE_LIMITED_INTENTS =
+  GATEWAY_PRESENCE_LIMITED | GATEWAY_GUILD_MEMBERS_LIMITED | GATEWAY_MESSAGE_CONTENT_LIMITED
+
+function applicationFlags(body: unknown): number | null {
+  if (!body || typeof body !== 'object' || !('flags' in body)) return null
+  const flags = body.flags
+  return typeof flags === 'number' && Number.isSafeInteger(flags) ? flags : null
+}
+
+function hasMessageContentIntent(flags: number): boolean {
+  return (flags & (GATEWAY_MESSAGE_CONTENT | GATEWAY_MESSAGE_CONTENT_LIMITED)) !== 0
+}
 
 /** `GET /users/@me` with the bot token → validity + the derived name (`username`,
  *  with `#discriminator` for legacy bots, else `global_name`). */
 export const verifyDiscordBot: DiscordBotVerifier = async (botToken) => {
   try {
-    const res = await fetch('https://discord.com/api/v10/users/@me', {
+    const res = await fetch(`${DISCORD_API}/users/@me`, {
       headers: { authorization: `Bot ${botToken}` },
       signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS)
     })
@@ -64,5 +72,37 @@ export const verifyDiscordBot: DiscordBotVerifier = async (botToken) => {
     return { status: 'ok', name }
   } catch {
     return { status: 'unreachable' }
+  }
+}
+
+/** Ensure the app can expose message bodies before its integration goes live.
+ *  Discord lets bot authentication update only the three LIMITED privileged-intent
+ *  flags, so preserve that editable subset and leave Discord-owned flags alone. */
+export const ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer = async (botToken) => {
+  const headers = { authorization: `Bot ${botToken}` }
+  try {
+    const current = await fetch(`${DISCORD_API}/applications/@me`, {
+      headers,
+      signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS)
+    })
+    if (!current.ok) return false
+
+    const currentFlags = applicationFlags(await current.json())
+    if (currentFlags === null) return false
+    if (hasMessageContentIntent(currentFlags)) return true
+
+    const flags = (currentFlags & EDITABLE_LIMITED_INTENTS) | GATEWAY_MESSAGE_CONTENT_LIMITED
+    const updated = await fetch(`${DISCORD_API}/applications/@me`, {
+      method: 'PATCH',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ flags }),
+      signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS)
+    })
+    if (!updated.ok) return false
+
+    const updatedFlags = applicationFlags(await updated.json())
+    return updatedFlags !== null && hasMessageContentIntent(updatedFlags)
+  } catch {
+    return false
   }
 }

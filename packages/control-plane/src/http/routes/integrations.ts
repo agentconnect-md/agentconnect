@@ -389,13 +389,9 @@ export function integrationRoutes(deps: HttpDeps) {
             return reply.code(201).send(toDto(integration))
           }
 
-          // Discord: a single Gateway bot token — no app-level token and no OAuth /
-          // verification funnel. Validate it against Discord BEFORE storing, so a stale /
-          // wrong / reset token fails here (400) instead of silently producing an
-          // integration whose Gateway login never succeeds (its only symptom a daemon-log
-          // error nobody sees). `GET /users/@me` also hands back the bot name, so we don't
-          // re-fetch just to name the bot. Best-effort about reachability: a network blip is
-          // inconclusive (`unreachable`), NOT proof the token is bad — only a 401 blocks it.
+          // Discord: validate the single Gateway bot token, then ensure its application
+          // has Message Content enabled BEFORE storing anything. The flag update is
+          // idempotent; a bot that already has limited or approved access is untouched.
           if (req.body.platform === 'discord') {
             const discord = req.body.discord! // superRefine guarantees it when botId is absent
             const check = deps.verifyDiscordBot ? await deps.verifyDiscordBot(discord.botToken) : null
@@ -405,6 +401,16 @@ export function integrationRoutes(deps: HttpDeps) {
                 statusCode: 400,
                 message:
                   'Discord rejected the bot token — check you pasted the Bot token from the Developer Portal (Bot → Reset Token).'
+              })
+            }
+            const intentReady = await deps.ensureDiscordMessageContentIntent(discord.botToken)
+            if (!intentReady) {
+              return reply.code(400).send({
+                error: 'Bad Request',
+                statusCode: 400,
+                code: 'DISCORD_MESSAGE_CONTENT_INTENT_SETUP_FAILED',
+                message:
+                  'AgentConnect could not enable Message Content Intent automatically. Open the Discord Developer Portal → Bot → Privileged Gateway Intents, turn on Message Content Intent, save, then try again.'
               })
             }
             // Name: operator-typed → users/@me-derived (best-effort) → owning agent. The

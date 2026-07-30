@@ -209,6 +209,11 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
     let iconSync: { botToken: string; agentId: string } | undefined
+    let intentToken: string | undefined
+    app.deps.ensureDiscordMessageContentIntent = async (botToken) => {
+      intentToken = botToken
+      return true
+    }
     app.deps.syncDiscordBotIcon = async (botToken, agent) => {
       iconSync = { botToken, agentId: agent.id }
       throw new Error('fixture rate limit')
@@ -246,6 +251,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // Cosmetic profile updates are attempted after the durable install, but a
     // Discord failure never rolls back or blocks the functional integration.
     expect(iconSync).toEqual({ botToken: DISCORD_TOKEN, agentId })
+    expect(intentToken).toBe(DISCORD_TOKEN)
   })
 
   it('POST rejects a discord bot token Discord refuses (400) and stores nothing', async () => {
@@ -261,6 +267,29 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(res.statusCode).toBe(400)
     expect(await prisma.integration.count()).toBe(0)
     expect(await prisma.bot.count()).toBe(0)
+    expect(spy.upserts).toHaveLength(0)
+  })
+
+  it('POST stops before storing when Discord cannot enable Message Content Intent', async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    app.deps.verifyDiscordBot = async () => ({ status: 'ok', name: 'matrix' })
+    app.deps.ensureDiscordMessageContentIntent = async () => false
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'discord', agentId, discord: { botToken: 'MTA1-bot.token.abc' } }
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({
+      code: 'DISCORD_MESSAGE_CONTENT_INTENT_SETUP_FAILED',
+      message: expect.stringContaining('turn on Message Content Intent')
+    })
+    expect(await prisma.integration.count()).toBe(0)
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.botSecret.count()).toBe(0)
     expect(spy.upserts).toHaveLength(0)
   })
 
