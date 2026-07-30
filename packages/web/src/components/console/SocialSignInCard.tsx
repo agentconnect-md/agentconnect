@@ -186,21 +186,24 @@ function VerifyAccountDialog({
               : `To protect your account, verify it's you with a code sent to ${email ?? 'your email'}.`}
           </p>
           {verificationId ? (
-            <label className="fld mt-4">
-              <span className="fldlbl">Verification code</span>
+            // A short code, not prose: centred, spaced and monospaced so the
+            // digits read as a group. `.inp` is the wrong shape here — it spans
+            // the dialog for a handful of characters, and it defines no focus
+            // style, so it falls back to the browser's own ring.
+            <div className="mt-4 flex justify-center">
               <input
-                className="inp"
+                aria-label="Verification code"
+                className="w-[190px] rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2.5 text-center indent-[0.32em] font-mono text-[19px] font-medium tracking-[0.32em] text-(--text-primary) outline-none focus:border-(--border-focus) focus:ring-[3px] focus:ring-(--brand-ring)"
                 value={code}
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 autoFocus
-                placeholder="Enter code"
                 onChange={(event) => setCode(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') void submit()
                 }}
               />
-            </label>
+            </div>
           ) : null}
           {error ? (
             <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)" role="alert">
@@ -247,9 +250,7 @@ function ExternalLine({ href, mono = false, children }: { href?: string; mono?: 
 function Notice({ notice }: { notice: AccountNotice }) {
   return (
     <div
-      className={`border-b border-(--border-subtle) px-4 py-2.5 font-sans text-[12.5px] font-normal leading-normal ${
-        notice.kind === 'success' ? 'text-(--status-online)' : 'text-(--status-error)'
-      }`}
+      className="border-b border-(--border-subtle) px-4 py-2.5 font-sans text-[12.5px] font-normal leading-normal text-(--status-error)"
       role="status"
     >
       {notice.message}
@@ -321,7 +322,6 @@ export default function SocialSignInCard({
       window.location.assign(authorizationUri)
     } catch (caught) {
       onNotice({
-        kind: 'error',
         message: accountErrorMessage(caught, { providerName: provider.name, linking: true })
       })
       setBusyProvider(undefined)
@@ -332,7 +332,6 @@ export default function SocialSignInCard({
     await unlinkMySocialIdentity(provider.target)
     await mutate()
     setPendingUnlink(undefined)
-    onNotice({ kind: 'success', message: `${provider.name} was unlinked.` })
   }
 
   const shell = mobile

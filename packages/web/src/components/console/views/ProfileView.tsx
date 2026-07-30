@@ -8,7 +8,7 @@
 // the two must agree). Personal access tokens and "last active" have no backend
 // yet: they render the design's demo values only in mock mode, otherwise empty / '—'.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
@@ -22,7 +22,7 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { useOrgs } from '@/lib/org-context'
 import { fmtDate, ROLE_LABELS } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import { takeAccountNotice, type AccountNotice } from '@/lib/logto-account'
+import { type AccountNotice } from '@/lib/logto-account'
 
 function KvRow({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -44,9 +44,8 @@ export default function ProfileView() {
   const { user, me: meProfile } = useProfile()
   const authOn = isAuthConfigured()
   // ProfileView survives its desktop-first hydration switch to the mobile tree,
-  // so it owns the one-shot callback notice instead of either short-lived card.
+  // so it holds the card's failure notice instead of either short-lived card.
   const [socialNotice, setSocialNotice] = useState<AccountNotice>()
-  useEffect(() => setSocialNotice(takeAccountNotice()), [])
   // The signed-in user's membership — the same row the Settings page lists.
   // Matched by userId when the CP profile is known (exact), by email otherwise.
   // With no match (mock mode / CP down) the fields fall back to the design's

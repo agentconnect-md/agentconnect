@@ -53,4 +53,18 @@ describe('Logto Account API', () => {
       })
     ).toBe('That Google account is already linked to another AgentConnect account.')
   })
+
+  // Measured against a live tenant: a session opened before the deployment
+  // granted the identities scope keeps working everywhere else, so "expired"
+  // sends people to retry the same broken thing. Only a fresh sign-in helps.
+  it('tells a scope-stale session to sign out rather than calling it expired', async () => {
+    const { LogtoAccountError, accountErrorMessage } = await import('./logto-account')
+    const unauthorized = new LogtoAccountError('unauthorized', 401)
+
+    expect(accountErrorMessage(unauthorized, { providerName: 'Google', linking: true })).toBe(
+      'This sign-in session cannot change sign-in methods. Sign out, sign in again, and retry.'
+    )
+    // Outside linking a 401 really is a dead session.
+    expect(accountErrorMessage(unauthorized)).toBe('Your sign-in session expired. Sign in again and retry.')
+  })
 })
