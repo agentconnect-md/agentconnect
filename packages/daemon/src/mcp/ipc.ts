@@ -1,4 +1,4 @@
-import type { ToolDescriptor } from './tools.js'
+import type { Tool } from '@modelcontextprotocol/server'
 
 /**
  * Tiny newline-delimited JSON-RPC-ish protocol spoken over the daemon's MCP
@@ -24,7 +24,7 @@ export interface IpcCallToolReq {
 export type IpcRequest = IpcListToolsReq | IpcCallToolReq
 
 export interface IpcListToolsResult {
-  tools: ToolDescriptor[]
+  tools: Tool[]
 }
 
 export interface IpcResponse {

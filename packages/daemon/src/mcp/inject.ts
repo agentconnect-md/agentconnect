@@ -17,10 +17,15 @@ export interface McpStdioServer {
  * token travel via env — they reach only the harness-spawned subprocess, never
  * the model.
  */
-export function buildMcpServers(opts: { socketPath: string; token: string; cliEntry: string }): McpStdioServer[] {
+export function buildMcpServers(opts: {
+  socketPath: string
+  token: string
+  cliEntry: string
+  name?: string
+}): McpStdioServer[] {
   return [
     {
-      name: RESERVED_MCP_SERVER_NAME,
+      name: opts.name ?? RESERVED_MCP_SERVER_NAME,
       command: process.execPath,
       args: [...process.execArgv, opts.cliEntry, 'mcp-bridge'],
       env: [

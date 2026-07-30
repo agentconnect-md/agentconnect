@@ -68,7 +68,11 @@ import type {
   DreamFileReadReq,
   DreamSkillReviewReq,
   DreamSkillReadReq,
-  SessionVisibilityPush
+  SessionVisibilityPush,
+  McpInvocationMint,
+  McpInvocationMinted,
+  WebchatMcpDelegationRevoke,
+  WebchatMcpDelegationRevoked
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -482,6 +486,38 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected github/review-result/ok, got ${rep.type}`, false)
     }
     return rep.payload as GithubReviewResultOk
+  }
+
+  /**
+   * Mint a short-lived assertion for one exact delegated MCP request. The
+   * caller supplies only daemon-owned immutable binding fields; correlation
+   * remains on the authenticated control connection.
+   */
+  async mintMcpInvocation(payload: McpInvocationMint): Promise<McpInvocationMinted> {
+    this.requireReady('mcp/invocation/mint')
+    const rep = await this.request('mcp/invocation/mint', payload)
+    if (rep.type !== 'mcp/invocation/minted') {
+      throw new WireError('INTERNAL', `expected mcp/invocation/minted, got ${rep.type}`, false)
+    }
+    const minted = rep.payload as McpInvocationMinted
+    if (minted.invocationId !== payload.invocationId) {
+      throw new WireError('INTERNAL', 'mcp/invocation/minted invocation id mismatch', false)
+    }
+    return minted
+  }
+
+  /** Best-effort, generation-fenced logical-session delegation revocation. */
+  async revokeWebchatMcpDelegation(payload: WebchatMcpDelegationRevoke): Promise<WebchatMcpDelegationRevoked> {
+    this.requireReady('webchat/mcp-delegation/revoke')
+    const rep = await this.request('webchat/mcp-delegation/revoke', payload)
+    if (rep.type !== 'webchat/mcp-delegation/revoked') {
+      throw new WireError('INTERNAL', `expected webchat/mcp-delegation/revoked, got ${rep.type}`, false)
+    }
+    const revoked = rep.payload as WebchatMcpDelegationRevoked
+    if (revoked.delegationId !== payload.delegationId || revoked.generation !== payload.generation) {
+      throw new WireError('INTERNAL', 'webchat/mcp-delegation/revoked binding mismatch', false)
+    }
+    return revoked
   }
 
   private requireReady(op: string): void {
