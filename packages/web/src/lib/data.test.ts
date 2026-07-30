@@ -9,7 +9,6 @@ import {
   effortChoicesFor,
   effortField,
   fastModeAvailableFor,
-  lifecycleAwareDaemonStatus,
   lifecycleStatus,
   modelCapability,
   modelLabel,
@@ -18,6 +17,7 @@ import {
   PLAYGROUND_CHANNEL_FILTER,
   resolvedPermissionMode,
   permissionModeOptions,
+  presentedDaemonStatus,
   resolveEffortForModel,
   sessionChannelFilterValue,
   type DaemonRow,
@@ -30,13 +30,11 @@ describe('planned daemon lifecycle status', () => {
     expect(lifecycleStatus({ op: 'upgrade', status: 'pending' })).toBe('upgrading')
     expect(lifecycleStatus({ op: 'restart', status: 'pending' })).toBe('restarting')
     expect(lifecycleStatus({ op: 'upgrade', status: 'succeeded' })).toBeUndefined()
-    expect(lifecycleAwareDaemonStatus('offline', { op: 'upgrade', status: 'pending' })).toBe('upgrading')
-    expect(lifecycleAwareDaemonStatus('offline', { op: 'upgrade', status: 'failed' })).toBe('offline')
-
-    expect(effectiveAgentStatus('online', 'upgrading')).toBe('upgrading')
-    expect(effectiveAgentStatus('online', 'restarting')).toBe('restarting')
-    expect(effectiveAgentStatus('online', 'offline')).toBe('offline')
-    expect(effectiveAgentStatus('paused', 'upgrading')).toBe('paused')
+    const upgrading = { status: 'offline' as const, lifecycleStatus: 'upgrading' as const }
+    expect(presentedDaemonStatus(upgrading)).toBe('upgrading')
+    expect(effectiveAgentStatus('online', upgrading)).toBe('upgrading')
+    expect(effectiveAgentStatus('online', { status: 'offline', lifecycleStatus: null })).toBe('offline')
+    expect(effectiveAgentStatus('paused', upgrading)).toBe('paused')
   })
 })
 

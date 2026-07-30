@@ -5,7 +5,8 @@ import type { AgentIcon } from '@/lib/agent-icon'
 import type { MemoryDreamingConfig } from '@/lib/api'
 
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
-export type StatusKey = 'online' | 'paused' | 'offline' | LifecycleStatusKey
+export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
+export type StatusKey = ConnectionStatusKey | LifecycleStatusKey
 
 export interface StatusInfo {
   dot: string
@@ -48,11 +49,8 @@ export function lifecycleStatus(
   return op.op === 'upgrade' ? 'upgrading' : 'restarting'
 }
 
-export function lifecycleAwareDaemonStatus(
-  connectionStatus: StatusKey,
-  op: Pick<DaemonLifecycleOp, 'op' | 'status'> | null | undefined
-): StatusKey {
-  return lifecycleStatus(op) ?? connectionStatus
+export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecycleStatus'>): StatusKey {
+  return daemon.lifecycleStatus ?? daemon.status
 }
 
 // An agent runs *inside* its owning daemon, so it can't really be online when that
@@ -60,10 +58,13 @@ export function lifecycleAwareDaemonStatus(
 // remain intact while the daemon drains and relaunches, so carry that explicit amber
 // transition onto the agent instead of flashing it red. When the owning daemon isn't
 // in the fleet (e.g. the demo agents' placeholder daemons), trust the stored status.
-export function effectiveAgentStatus(agentStatus: StatusKey, owningDaemonStatus: StatusKey | undefined): StatusKey {
-  if (agentStatus === 'online' && owningDaemonStatus !== undefined) {
-    if (owningDaemonStatus === 'upgrading' || owningDaemonStatus === 'restarting') return owningDaemonStatus
-    if (owningDaemonStatus !== 'online') return 'offline'
+export function effectiveAgentStatus(
+  agentStatus: StatusKey,
+  owningDaemon: Pick<DaemonRow, 'status' | 'lifecycleStatus'> | undefined
+): StatusKey {
+  if (agentStatus === 'online' && owningDaemon !== undefined) {
+    if (owningDaemon.lifecycleStatus) return owningDaemon.lifecycleStatus
+    if (owningDaemon.status !== 'online') return 'offline'
   }
   return agentStatus
 }
@@ -1552,7 +1553,10 @@ export interface DaemonRow {
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
-  status: StatusKey
+  /** Actual daemon connection/readiness. Never replaced by a presentation-only lifecycle state. */
+  status: ConnectionStatusKey
+  /** Planned lifecycle presentation while the durable operation is pending. */
+  lifecycleStatus: LifecycleStatusKey | null
   host: string
   cpu: number // 0-100 CPU utilization
   mem: number // 0-100 memory utilization

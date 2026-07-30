@@ -35,7 +35,10 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
-vi.mock('@/lib/onboarding', () => ({ skipOnboarding: vi.fn() }))
+vi.mock('@/lib/onboarding', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/onboarding')>()
+  return { ...actual, skipOnboarding: vi.fn() }
+})
 vi.mock('@/lib/daemon-commands', () => ({ daemonCommands: (command: string) => ({ run: command, login: command }) }))
 vi.mock('@/lib/data', () => ({ agentLabel: () => 'Agent' }))
 vi.mock('@/components/marks', () => ({

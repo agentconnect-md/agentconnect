@@ -9,7 +9,15 @@
 
 import { useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { agentLabel, agentModelDisplay, effectiveAgentStatus, platName, runtimeLabel, status } from '@/lib/data'
+import {
+  agentLabel,
+  agentModelDisplay,
+  effectiveAgentStatus,
+  platName,
+  presentedDaemonStatus,
+  runtimeLabel,
+  status
+} from '@/lib/data'
 import { creatorLabel } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
@@ -79,7 +87,7 @@ export default function DaemonDetailView() {
     )
   }
 
-  const s = status(daemon.status)
+  const s = status(presentedDaemonStatus(daemon))
   const online = daemon.status === 'online'
   // Reconnect + delete are offered for any not-serving daemon. Mid-handshake and
   // reconnect-grace states are normalized to offline by the API mapper, so a dead
@@ -183,7 +191,7 @@ export default function DaemonDetailView() {
         {/* action bar — status-aware: online ⇒ restart/upgrade, offline ⇒ reconnect;
             hidden while a lifecycle op is in flight (the pending badge above shows it). */}
         <div className="flex gap-2 bg-(--surface-card) px-4 pb-4">
-          {offline && (
+          {offline && !pending && (
             <button
               onClick={() => openModal('reconnectDaemon', daemon)}
               className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
@@ -333,7 +341,7 @@ export default function DaemonDetailView() {
           {hosted.length > 0 ? (
             hosted.map((a, i) => {
               // Daemon status is known here, so gate the agent's effective online on it.
-              const as = status(effectiveAgentStatus(a.status, daemon.status))
+              const as = status(effectiveAgentStatus(a.status, daemon))
               return (
                 <button
                   key={a.id}
@@ -466,7 +474,7 @@ export default function DaemonDetailView() {
         </div>
 
         {/* delete — offline-only, matching the desktop menu's guard */}
-        {offline && (
+        {offline && !pending && (
           <div className="mx-4 mt-3">
             <button
               onClick={() => openModal('deleteDaemon', daemon)}
@@ -557,7 +565,7 @@ export default function DaemonDetailView() {
                     Restart
                   </button>
                 )}
-                {offline && (
+                {offline && !pending && (
                   <>
                     <button
                       className="dmi"
@@ -767,7 +775,7 @@ export default function DaemonDetailView() {
                 </div>
                 {hosted.map((a) => {
                   // On this page we know the daemon's status, so gate the agent's online.
-                  const as = status(effectiveAgentStatus(a.status, daemon.status))
+                  const as = status(effectiveAgentStatus(a.status, daemon))
                   return (
                     <div
                       key={a.id}

@@ -8,7 +8,7 @@ import { agentLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { useOrgs } from '@/lib/org-context'
-import { skipOnboarding } from '@/lib/onboarding'
+import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding } from '@/lib/onboarding'
 import { daemonCommands } from '@/lib/daemon-commands'
 import type { DaemonConnectDto } from '@/lib/api'
 
@@ -56,10 +56,10 @@ export default function OnboardingView() {
   const { orgPath } = useOrgs()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
 
-  // Only a serving daemon completes step 1. An offline row may be a provisioned daemon
-  // whose one-time command was lost on reload; the daemon step reconnects it below.
-  const daemonOnline = daemons.some((d) => d.status === 'online')
-  const offlineDaemonId = daemons.find((d) => d.status !== 'online')?.daemonId
+  // A live daemon or a planned relaunch completes step 1. Only an unexpected offline
+  // row is eligible for a replacement connect token.
+  const daemonReady = daemons.some(daemonCompletesOnboarding)
+  const offlineDaemonId = firstReconnectableDaemonId(daemons)
   const hasAgent = agents.length > 0
   const hasIntegration = integrations.length > 0 || agents.some((a) => (a.hookKinds ?? []).length > 0)
 
@@ -75,10 +75,10 @@ export default function OnboardingView() {
   useEffect(() => {
     if (didInit.current || agentsLoading || daemonsLoading) return
     didInit.current = true
-    const s = !daemonOnline ? 0 : !hasAgent ? 1 : !hasIntegration ? 2 : 3
+    const s = !daemonReady ? 0 : !hasAgent ? 1 : !hasIntegration ? 2 : 3
     setStep(s)
     setEntered(s > 0)
-  }, [agentsLoading, daemonsLoading, daemonOnline, hasAgent, hasIntegration])
+  }, [agentsLoading, daemonsLoading, daemonReady, hasAgent, hasIntegration])
 
   // --- Daemon provisioning (step 0), mirrors AddDaemonModal --------------------------
   const [connect, setConnect] = useState<DaemonCommand | null>(null)
@@ -88,7 +88,7 @@ export default function OnboardingView() {
   const createdByWizard = useRef(false)
   const connectedOnce = useRef(false)
   useEffect(() => {
-    if (!entered || step !== 0 || daemonOnline || provisioned.current) return
+    if (!entered || step !== 0 || daemonReady || provisioned.current) return
     provisioned.current = true
     setMintErr(null)
     createdByWizard.current = !offlineDaemonId
@@ -100,7 +100,7 @@ export default function OnboardingView() {
       : provisionDaemon()
     commandPending.current = command
     command.then(setConnect).catch((e) => setMintErr(e instanceof Error ? e.message : String(e)))
-  }, [entered, step, daemonOnline, offlineDaemonId, provisionDaemon, reconnectDaemon])
+  }, [entered, step, daemonReady, offlineDaemonId, provisionDaemon, reconnectDaemon])
 
   const provisionedRow = connect ? daemons.find((d) => d.daemonId === connect.daemonId) : undefined
   useEffect(() => {
@@ -220,7 +220,7 @@ export default function OnboardingView() {
                     Back
                   </Button>
                   <div className="flex-1" />
-                  <Button disabled={!daemonOnline} onClick={() => setStep(1)}>
+                  <Button disabled={!daemonReady} onClick={() => setStep(1)}>
                     Create an agent
                     <Icon name="arrow-right" size={15} />
                   </Button>
@@ -233,7 +233,7 @@ export default function OnboardingView() {
                 name={provisionedRow?.name}
                 host={provisionedRow?.host}
                 version={provisionedRow?.version}
-                resumed={daemonOnline && !provisionedRow}
+                resumed={daemonReady && !provisionedRow}
                 resumedName={daemons.find((d) => d.status === 'online')?.name ?? daemons[0]?.name}
               />
               <div className="mt-[14px] flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
