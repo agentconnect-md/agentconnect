@@ -69,8 +69,9 @@ hygiene we control, not as a defect claim about the provider.
   on its own.
 - **`allowedUserIds`** (daemon routing) compares a bare sender id:
   `allowedUserIds.includes(msg.sender.id)` in `router/routing-table.ts`, against
-  a sender the Slack normalizer builds from `message.user` with no team
-  component. **It is dormant** — the CP populates it as `[]` on every path in
+  a sender built as `message.user ?? message.bot_id` in
+  `packages/message/src/slack-message.ts` — no team component anywhere.
+  **It is dormant** — the CP populates it as `[]` on every path in
   `orchestrator/placement.ts`, so the guard never fires today.
 
   Do not read the per-integration binding as making it pair-safe. An integration
