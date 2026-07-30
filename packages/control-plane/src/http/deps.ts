@@ -46,6 +46,7 @@ import type {
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
+import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
 import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness } from '../ports.js'
 import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
@@ -274,6 +275,9 @@ export interface HttpDeps {
   /** Per-user repo authorization (identity assertion, open question #7); absent ⇒ the
    *  org-level model (installation coverage only) and the permission route 404s. */
   githubUserAuthz?: GithubUserAuthzService
+  /** Server-side Logto identity management for the signed-in user's Profile.
+   *  Absent ⇒ LOGTO_MGMT_* or real OIDC auth is not configured. */
+  logtoIdentity?: LogtoIdentityService
   /** Uploaded-icon object store (docs/designs/icon-uploads.md); absent ⇒ S3_* unset,
    *  the icon upload/delete routes are not mounted and the console hides Upload. */
   iconStore?: IconStore

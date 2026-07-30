@@ -5,6 +5,7 @@ import { FcGoogle } from 'react-icons/fc'
 import { SiGithub } from 'react-icons/si'
 import { LogoMark, Wordmark } from '@/components/marks'
 import { isAuthConfigured, login } from '@/lib/auth'
+import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginTarget } from '@/lib/social-login-providers'
 
 function BrandPanel() {
   return (
@@ -38,7 +39,7 @@ export default function Auth() {
   // With an OIDC issuer configured, the SSO buttons start a real redirect; with
   // auth disabled (the OSS default) they just enter the app.
   const authOn = isAuthConfigured()
-  const sso = (provider: 'github' | 'google') => (authOn ? void login(provider) : router.push('/'))
+  const sso = (provider: SocialLoginTarget) => (authOn ? void login(provider) : router.push('/'))
 
   return (
     <div className="authpage">
@@ -49,14 +50,12 @@ export default function Auth() {
             <h1 className="atitle">Sign in</h1>
             <p className="asub">Welcome back. Continue to your workspace.</p>
             <div className="mt-[26px] flex flex-col gap-[10px]">
-              <button className="sso" onClick={() => sso('github')}>
-                <SiGithub aria-hidden />
-                Continue with GitHub
-              </button>
-              <button className="sso" onClick={() => sso('google')}>
-                <FcGoogle aria-hidden />
-                Continue with Google
-              </button>
+              {SOCIAL_LOGIN_PROVIDERS.map((provider) => (
+                <button key={provider.target} className="sso" onClick={() => sso(provider.target)}>
+                  {provider.target === 'github' ? <SiGithub aria-hidden /> : <FcGoogle aria-hidden />}
+                  Continue with {provider.name}
+                </button>
+              ))}
             </div>
             <p className="mt-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
               Single sign-on only. AgentConnect never stores a password.

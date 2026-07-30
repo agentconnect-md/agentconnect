@@ -3,13 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
-import {
-  accountErrorMessage,
-  saveSocialIdentity,
-  takeSocialLinkFlow,
-  verifySocialVerification,
-  writeAccountNotice
-} from '@/lib/logto-account'
+import { linkMySocialIdentity } from '@/lib/api'
+import { accountErrorMessage, takeSocialLinkFlow, writeAccountNotice } from '@/lib/logto-account'
 
 export default function SocialAccountCallback() {
   const started = useRef(false)
@@ -43,18 +38,11 @@ export default function SocialAccountCallback() {
     }
 
     const connectorData = Object.fromEntries(params.entries())
-    // The provider returns code/state; Logto also needs the exact URI used when
-    // it created the authorization request to exchange that code.
-    connectorData.redirectUri = flow.redirectUri
-    verifySocialVerification(flow.socialVerificationRecordId, connectorData)
-      .then((socialVerificationRecordId) =>
-        saveSocialIdentity(flow.action, socialVerificationRecordId, flow.currentVerificationRecordId)
-      )
+    linkMySocialIdentity(flow.connectorId, connectorData)
       .then(() => {
         writeAccountNotice({
           kind: 'success',
-          message:
-            flow.action === 'add' ? `${flow.providerName} was connected.` : `${flow.providerName} sign-in was changed.`
+          message: `${flow.providerName} was connected.`
         })
         window.location.replace(flow.returnTo)
       })

@@ -50,6 +50,11 @@ export type ResourceVisibility = 'org' | 'restricted'
 /** Which peers may call a target agent as a sub-agent. */
 export type AgentCallPolicy = 'all' | 'selected'
 
+/** Cross-process critical section for one Logto user's social-identity mutations. */
+export interface SocialIdentityMutationGate {
+  runExclusive<T>(oidcSubject: string, mutation: () => Promise<T>): Promise<T>
+}
+
 /** The caller identity a per-resource visibility decision needs: their id + org
  *  role. Built from `req.orgCtx` by `http/rbac.ts#ctxOf`. */
 export interface ViewCtx {

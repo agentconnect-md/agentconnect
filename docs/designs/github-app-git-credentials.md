@@ -1148,9 +1148,11 @@ the cache and stops requesting.
      **GitHub-App is enabled + Logto Management is configured + `OIDC_ISSUER`
      is set**. A devAuth principal has no real identity to attest. If the
      gateway is disabled, selection uses the organization-level installation
-     authorization set. `github/logto-identity.ts` reads only identity
-     metadata, specifically the GitHub login, and never accesses a social
-     token.
+     authorization set. This authorization path in
+     `github/logto-identity.ts` reads only identity metadata, specifically the
+     GitHub login, and never accesses a social token. The same server-side
+     Management API client also backs the Profile's explicit social
+     Link/Unlink actions without exposing its M2M credential.
    - **Decision chain** (`github/user-authz.ts`):
      `app_user.oidcSubject` -> Logto Management M2M ->
      `identities.github.details.rawData` from `GET /api/users/{sub}`, accepting

@@ -20,101 +20,65 @@ describe('Logto Account API', () => {
     vi.unstubAllGlobals()
   })
 
-  it('loads enabled connectors dynamically and joins them to the current identities', async () => {
-    const fetchMock = vi.fn(async (input: URL | RequestInfo, _init?: RequestInit) => {
-      const url = String(input)
-      if (url.includes('/api/my-account')) {
-        return new Response(
-          JSON.stringify({
-            primaryEmail: 'person@example.test',
-            hasSecurityVerificationMethod: true,
-            identities: {
-              github: {
-                userId: 'github-user',
-                details: { name: 'Octo Cat', email: 'octo@example.test' }
-              }
-            }
-          }),
-          { status: 200 }
-        )
-      }
+  it('loads current identities without fetching the static provider list', async () => {
+    const fetchMock = vi.fn(async (_input: URL | RequestInfo, _init?: RequestInit) => {
       return new Response(
         JSON.stringify({
-          socialConnectors: [
-            {
-              id: 'github-connector',
-              target: 'github',
-              name: { en: 'GitHub' },
-              logo: 'data:image/svg+xml,github'
-            },
-            {
-              id: 'google-connector',
-              target: 'google',
-              name: { en: 'Google' },
-              logo: 'data:image/svg+xml,google'
+          identities: {
+            github: {
+              userId: 'github-user',
+              details: { name: 'Octo Cat', email: 'octo@example.test' }
             }
-          ]
+          }
         }),
         { status: 200 }
       )
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const { fetchSignInMethods } = await import('./logto-account')
-    const result = await fetchSignInMethods()
+    const { fetchAccountProfile } = await import('./logto-account')
+    const { SOCIAL_LOGIN_PROVIDERS } = await import('./social-login-providers')
+    const account = await fetchAccountProfile()
 
-    expect(result.account.primaryEmail).toBe('person@example.test')
-    expect(result.account.identities.github?.details).toEqual({
+    expect(account.identities.github?.details).toEqual({
       name: 'Octo Cat',
       email: 'octo@example.test'
     })
-    expect(result.connectors.map(({ id, target, name }) => ({ id, target, name }))).toEqual([
-      { id: 'github-connector', target: 'github', name: 'GitHub' },
-      { id: 'google-connector', target: 'google', name: 'Google' }
+    expect(SOCIAL_LOGIN_PROVIDERS).toEqual([
+      { target: 'github', name: 'GitHub' },
+      { target: 'google', name: 'Google' }
     ])
-    const accountCall = fetchMock.mock.calls.find(([input]) => String(input).includes('/api/my-account'))
-    expect(new Headers(accountCall?.[1]?.headers).get('authorization')).toBe('Bearer opaque-account-token')
-    const connectorsCall = fetchMock.mock.calls.find(([input]) => String(input).includes('social-connectors'))
-    expect(String(connectorsCall?.[0])).toBe('/api/logto/social-connectors')
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://login.example.test/api/my-account')
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer opaque-account-token')
   })
 
-  it('creates and verifies a current-user email verification record', async () => {
-    const requests: RequestInit[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
-        requests.push(init ?? {})
-        return new Response(
-          JSON.stringify({
-            verificationRecordId: requests.length === 1 ? 'pending-verification' : 'verified-user'
-          }),
-          { status: requests.length === 1 ? 201 : 200 }
-        )
-      })
-    )
-
-    const { requestEmailVerification, verifyEmailCode } = await import('./logto-account')
-    await expect(requestEmailVerification('person@example.test')).resolves.toBe('pending-verification')
-    await expect(verifyEmailCode('person@example.test', 'pending-verification', '123456')).resolves.toBe(
-      'verified-user'
-    )
-
-    expect(JSON.parse(String(requests[0]?.body))).toEqual({
-      identifier: { type: 'email', value: 'person@example.test' },
-      templateType: 'UserPermissionValidation'
+  it('keeps only the short-lived connector choice and CSRF state for the callback', async () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key)
     })
-    expect(JSON.parse(String(requests[1]?.body))).toEqual({
-      identifier: { type: 'email', value: 'person@example.test' },
-      verificationId: 'pending-verification',
-      code: '123456'
-    })
+
+    const { writeSocialLinkFlow, takeSocialLinkFlow } = await import('./logto-account')
+    const flow = {
+      state: 'state-123',
+      connectorId: 'google-connector',
+      providerName: 'Google',
+      returnTo: '/agentconnect/profile',
+      createdAt: Date.now()
+    }
+    expect(writeSocialLinkFlow(flow)).toBe(true)
+    expect(takeSocialLinkFlow()).toEqual(flow)
+    expect(takeSocialLinkFlow()).toBeUndefined()
   })
 
   it('explains identity conflicts without offering account merging', async () => {
     const { LogtoAccountError, accountErrorMessage } = await import('./logto-account')
 
     expect(
-      accountErrorMessage(new LogtoAccountError('identity already used', 422, 'user.identity_already_in_use'), {
+      accountErrorMessage(new LogtoAccountError('identity already linked', 409, 'SOCIAL_IDENTITY_IN_USE'), {
         providerName: 'Google',
         linking: true
       })

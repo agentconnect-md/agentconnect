@@ -2,70 +2,42 @@
 
 import { useEffect, useId, useState } from 'react'
 import useSWR from 'swr'
+import { FcGoogle } from 'react-icons/fc'
+import { SiGithub } from 'react-icons/si'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { initialsFrom } from '@/lib/auth'
+import { createMySocialIdentityAuthorization, unlinkMySocialIdentity } from '@/lib/api'
 import {
   LogtoAccountError,
   accountErrorMessage,
   createSocialState,
-  createSocialVerification,
-  fetchSignInMethods,
-  removeSocialIdentity,
-  requestEmailVerification,
+  fetchAccountProfile,
   socialIdentityDetails,
-  verifyEmailCode,
   writeSocialLinkFlow,
-  type AccountNotice,
-  type LogtoAccountProfile,
-  type SocialConnector
+  type AccountNotice
 } from '@/lib/logto-account'
+import { SOCIAL_LOGIN_PROVIDERS, type SocialLoginProvider } from '@/lib/social-login-providers'
 
-type PendingAction = {
-  action: 'add' | 'replace' | 'remove'
-  connector: SocialConnector
-}
-
-function ProviderMark({ connector }: { connector: SocialConnector }) {
-  if (!connector.logo) {
-    return (
-      <span className="flex h-7 w-7 items-center justify-center rounded-md bg-(--surface-active)">
-        <Icon name="link-2" size={15} />
-      </span>
-    )
-  }
+function ProviderMark({ provider }: { provider: SocialLoginProvider }) {
   return (
-    <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white p-1">
-      <img src={connector.logo} alt="" className="max-h-full max-w-full" referrerPolicy="no-referrer" />
+    <span className="flex h-7 w-7 items-center justify-center rounded-md bg-(--surface-active)">
+      {provider.target === 'github' ? <SiGithub size={19} aria-hidden /> : <FcGoogle size={20} aria-hidden />}
     </span>
   )
 }
 
-function VerificationDialog({
-  pending,
-  account,
-  onVerified,
+function UnlinkDialog({
+  provider,
+  onConfirm,
   onClose
 }: {
-  pending: PendingAction
-  account: LogtoAccountProfile
-  onVerified: (verificationRecordId?: string) => Promise<void>
+  provider: SocialLoginProvider
+  onConfirm: () => Promise<void>
   onClose: () => void
 }) {
   const titleId = useId()
-  const [verificationId, setVerificationId] = useState<string>()
-  const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
-  const requiresVerification = account.hasSecurityVerificationMethod
-  const email = account.primaryEmail
-  const isRemove = pending.action === 'remove'
-  const actionLabel =
-    pending.action === 'add'
-      ? `Connect ${pending.connector.name}`
-      : pending.action === 'replace'
-        ? `Change ${pending.connector.name}`
-        : `Remove ${pending.connector.name}`
-  const confirmLabel = isRemove ? `Remove ${pending.connector.name}` : 'Continue'
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -79,32 +51,9 @@ function VerificationDialog({
     setBusy(true)
     setError(undefined)
     try {
-      if (!requiresVerification) {
-        await onVerified()
-        return
-      }
-      if (!email) {
-        throw new LogtoAccountError(
-          'This account needs an email verification method before sign-in methods can change.',
-          0
-        )
-      }
-      if (!verificationId) {
-        setVerificationId(await requestEmailVerification(email))
-        return
-      }
-      if (!code.trim()) {
-        setError('Enter the verification code from your email.')
-        return
-      }
-      await onVerified(await verifyEmailCode(email, verificationId, code.trim()))
+      await onConfirm()
     } catch (caught) {
-      setError(
-        accountErrorMessage(caught, {
-          providerName: pending.connector.name,
-          linking: pending.action !== 'remove'
-        })
-      )
+      setError(accountErrorMessage(caught, { providerName: provider.name }))
     } finally {
       setBusy(false)
     }
@@ -115,10 +64,10 @@ function VerificationDialog({
       <div className="modal max-w-[480px]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="modalhead">
           <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
-            <Icon name={isRemove ? 'unlink' : 'link-2'} size={16} color="var(--brand)" />
+            <Icon name="unlink" size={16} color="var(--brand)" />
           </span>
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
-            {actionLabel}
+            Remove {provider.name}
           </span>
           <button type="button" className="iconbtn" aria-label="Close" disabled={busy} onClick={onClose}>
             <Icon name="x" size={16} />
@@ -126,31 +75,8 @@ function VerificationDialog({
         </div>
         <div className="modalbody">
           <p className="font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-            {requiresVerification
-              ? verificationId
-                ? `Enter the code sent to ${email ?? 'your email'} to continue.`
-                : `To protect your account, verify it's you with a code sent to ${email ?? 'your email'}.`
-              : isRemove
-                ? `${pending.connector.name} will no longer be available for signing in to this account.`
-                : `Continue to ${pending.connector.name} to choose the account you want to connect.`}
+            {provider.name} will no longer be available for signing in to this account.
           </p>
-          {verificationId ? (
-            <label className="fld mt-4">
-              <span className="fldlbl">Verification code</span>
-              <input
-                className="inp"
-                value={code}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                autoFocus
-                placeholder="Enter code"
-                onChange={(event) => setCode(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void submit()
-                }}
-              />
-            </label>
-          ) : null}
           {error ? (
             <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)" role="alert">
               {error}
@@ -162,12 +88,8 @@ function VerificationDialog({
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            variant={isRemove && (!requiresVerification || verificationId) ? 'danger' : 'primary'}
-            disabled={busy}
-            onClick={() => void submit()}
-          >
-            {busy ? 'Working…' : requiresVerification && !verificationId ? 'Send code' : confirmLabel}
+          <Button variant="danger" disabled={busy} onClick={() => void submit()}>
+            {busy ? 'Removing…' : `Remove ${provider.name}`}
           </Button>
         </div>
       </div>
@@ -197,38 +119,50 @@ export default function SocialSignInCard({
   notice?: AccountNotice
   onNotice: (notice: AccountNotice) => void
 }) {
-  const { data, error, isLoading, mutate } = useSWR('logto-account-sign-in-methods', fetchSignInMethods, {
+  const {
+    data: account,
+    error,
+    isLoading,
+    mutate
+  } = useSWR('logto-account-sign-in-methods', fetchAccountProfile, {
     revalidateOnFocus: true
   })
-  const [pending, setPending] = useState<PendingAction>()
+  const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
+  const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
+  const linkedProviderCount = account
+    ? SOCIAL_LOGIN_PROVIDERS.filter((provider) => account.identities[provider.target]).length
+    : 0
 
-  const finishAction = async (verificationRecordId?: string) => {
-    if (!pending || !data) return
-    if (pending.action === 'remove') {
-      await removeSocialIdentity(pending.connector.target, verificationRecordId)
-      await mutate()
-      setPending(undefined)
-      onNotice({ kind: 'success', message: `${pending.connector.name} was disconnected.` })
-      return
+  const startLink = async (provider: SocialLoginProvider) => {
+    setBusyProvider(provider.target)
+    try {
+      const state = createSocialState()
+      const { authorizationUri, connectorId } = await createMySocialIdentityAuthorization(provider.target, state)
+      const stored = writeSocialLinkFlow({
+        state,
+        connectorId,
+        providerName: provider.name,
+        returnTo: `${window.location.pathname}${window.location.search}`,
+        createdAt: Date.now()
+      })
+      if (!stored) {
+        throw new LogtoAccountError('This browser blocked the temporary account-linking state.', 0)
+      }
+      window.location.assign(authorizationUri)
+    } catch (caught) {
+      onNotice({
+        kind: 'error',
+        message: accountErrorMessage(caught, { providerName: provider.name, linking: true })
+      })
+      setBusyProvider(undefined)
     }
+  }
 
-    const state = createSocialState()
-    const redirectUri = `${window.location.origin}/auth/social/callback`
-    const verification = await createSocialVerification(pending.connector.id, redirectUri, state)
-    const stored = writeSocialLinkFlow({
-      state,
-      socialVerificationRecordId: verification.verificationRecordId,
-      ...(verificationRecordId ? { currentVerificationRecordId: verificationRecordId } : {}),
-      action: pending.action,
-      providerName: pending.connector.name,
-      redirectUri,
-      returnTo: `${window.location.pathname}${window.location.search}`,
-      createdAt: Date.now()
-    })
-    if (!stored) {
-      throw new LogtoAccountError('This browser blocked the temporary account-linking state.', 0)
-    }
-    window.location.assign(verification.authorizationUri)
+  const unlink = async (provider: SocialLoginProvider) => {
+    await unlinkMySocialIdentity(provider.target)
+    await mutate()
+    setPendingUnlink(undefined)
+    onNotice({ kind: 'success', message: `${provider.name} was disconnected.` })
   }
 
   const shell = mobile
@@ -258,7 +192,7 @@ export default function SocialSignInCard({
           <div className="px-4 py-5 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
             Loading sign-in methods…
           </div>
-        ) : error || !data ? (
+        ) : error || !account ? (
           <div className="flex items-center justify-between gap-4 px-4 py-4">
             <span className="font-sans text-[13px] font-normal leading-normal text-(--status-error)">
               {accountErrorMessage(error)}
@@ -267,26 +201,23 @@ export default function SocialSignInCard({
               Retry
             </Button>
           </div>
-        ) : data.connectors.length === 0 ? (
-          <div className="px-4 py-5 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            No social sign-in methods are configured.
-          </div>
         ) : (
           <div>
-            {data.connectors.map((connector, index) => {
-              const identity = data.account.identities[connector.target]
+            {SOCIAL_LOGIN_PROVIDERS.map((provider, index) => {
+              const identity = account.identities[provider.target]
               const details = identity ? socialIdentityDetails(identity) : undefined
+              const canUnlink = linkedProviderCount > 1
               return (
                 <div
-                  key={connector.id}
+                  key={provider.target}
                   className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3.5 desktop:grid-cols-[170px_minmax(0,1fr)_auto] ${
                     index > 0 ? 'border-t border-(--border-subtle)' : ''
                   }`}
                 >
                   <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-3">
-                    <ProviderMark connector={connector} />
+                    <ProviderMark provider={provider} />
                     <span className="truncate font-sans text-[13.5px] font-semibold leading-normal">
-                      {connector.name}
+                      {provider.name}
                     </span>
                   </div>
                   <div className="col-span-2 row-start-2 min-w-0 desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
@@ -294,7 +225,7 @@ export default function SocialSignInCard({
                       <div className="flex min-w-0 items-center gap-2.5">
                         <Avatar
                           src={details?.avatar}
-                          initials={initialsFrom(details?.name ?? connector.name, details?.email)}
+                          initials={initialsFrom(details?.name ?? provider.name, details?.email)}
                           size={32}
                           fontSize={11}
                         />
@@ -317,18 +248,25 @@ export default function SocialSignInCard({
                   </div>
                   <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 desktop:col-start-3">
                     {identity ? (
-                      <>
-                        <Button variant="ghost" size="xs" onClick={() => setPending({ action: 'replace', connector })}>
-                          Change
-                        </Button>
-                        <Button variant="ghost" size="xs" onClick={() => setPending({ action: 'remove', connector })}>
+                      <span title={canUnlink ? undefined : 'Connect another sign-in method before removing this one.'}>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          disabled={busyProvider !== undefined || !canUnlink}
+                          onClick={() => setPendingUnlink(provider)}
+                        >
                           <span className="text-(--status-error)">Remove</span>
                         </Button>
-                      </>
+                      </span>
                     ) : (
-                      <Button variant="secondary" size="xs" onClick={() => setPending({ action: 'add', connector })}>
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        disabled={busyProvider !== undefined}
+                        onClick={() => void startLink(provider)}
+                      >
                         <Icon name="plus" size={13} />
-                        Connect
+                        {busyProvider === provider.target ? 'Connecting…' : 'Connect'}
                       </Button>
                     )}
                   </div>
@@ -339,13 +277,12 @@ export default function SocialSignInCard({
         )}
       </section>
 
-      {pending && data ? (
-        <VerificationDialog
-          key={`${pending.action}:${pending.connector.id}`}
-          pending={pending}
-          account={data.account}
-          onVerified={finishAction}
-          onClose={() => setPending(undefined)}
+      {pendingUnlink ? (
+        <UnlinkDialog
+          key={pendingUnlink.target}
+          provider={pendingUnlink}
+          onConfirm={() => unlink(pendingUnlink)}
+          onClose={() => setPendingUnlink(undefined)}
         />
       ) : null}
     </>

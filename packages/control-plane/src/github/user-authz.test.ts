@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
-import type { GithubInstallationRecord } from '../persistence/ports.js'
+import type { GithubInstallationRecord, SocialIdentityMutationGate } from '../persistence/ports.js'
 import { LogtoIdentityService, resolveLogtoMgmtConfig, LogtoApiError } from './logto-identity.js'
 import { GithubUserAuthzService, UserAuthzDeniedError, type RepoPermission } from './user-authz.js'
 
@@ -45,6 +45,9 @@ describe('resolveLogtoMgmtConfig', () => {
 })
 
 const MGMT = { endpoint: 'https://t.logto.app', appId: 'app', appSecret: 'sec', resource: 'https://t.logto.app/api' }
+const MUTATIONS: SocialIdentityMutationGate = {
+  runExclusive: async (_oidcSubject, mutation) => mutation()
+}
 
 /** Fake Logto: one token endpoint + a user directory. Counts calls. */
 function fakeLogto(users: Record<string, unknown>, opts: { tokenTtlSec?: number } = {}) {
@@ -72,7 +75,7 @@ describe('LogtoIdentityService', () => {
     const { fetchImpl } = fakeLogto({
       'sub-1': { identities: { github: { userId: '9', details: { rawData: { userInfo: { login: 'octocat' } } } } } }
     })
-    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), fetchImpl)
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
     expect(await svc.githubLoginFor('sub-1')).toBe('octocat')
   })
 
@@ -80,13 +83,13 @@ describe('LogtoIdentityService', () => {
     const { fetchImpl } = fakeLogto({
       'sub-1': { identities: { github: { details: { rawData: { login: 'flat' } } } } }
     })
-    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), fetchImpl)
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
     expect(await svc.githubLoginFor('sub-1')).toBe('flat')
   })
 
   it('returns null for accounts without a github identity, and for unknown users', async () => {
     const { fetchImpl } = fakeLogto({ 'sub-google': { identities: { google: { userId: 'g' } } } })
-    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), fetchImpl)
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
     expect(await svc.githubLoginFor('sub-google')).toBeNull()
     expect(await svc.githubLoginFor('sub-missing')).toBeNull()
   })
@@ -95,7 +98,7 @@ describe('LogtoIdentityService', () => {
     const clock = new FakeClock(0)
     const users: Record<string, unknown> = {}
     const { fetchImpl, calls } = fakeLogto(users)
-    const svc = new LogtoIdentityService(MGMT, clock, fetchImpl)
+    const svc = new LogtoIdentityService(MGMT, clock, MUTATIONS, fetchImpl)
 
     expect(await svc.githubLoginFor('sub-1')).toBeNull() // 404 → negative cache
     expect(await svc.githubLoginFor('sub-1')).toBeNull() // served from cache
@@ -117,9 +120,75 @@ describe('LogtoIdentityService', () => {
       url.endsWith('/oidc/token')
         ? Response.json({ access_token: 't', expires_in: 3600 })
         : new Response('boom', { status: 503 })
-    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), fetchImpl)
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
     await expect(svc.githubLoginFor('s')).rejects.toThrow(LogtoApiError)
     await expect(svc.githubLoginFor('s')).rejects.toMatchObject({ retryable: true })
+  })
+
+  it('builds a provider authorization URI, then links and unlinks through the same M2M token', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url.endsWith('/oidc/token')) {
+        return Response.json({ access_token: 'mgmt-token', expires_in: 3600 })
+      }
+      requests.push({ url, init })
+      if (url.endsWith('/api/connectors?target=google')) {
+        return Response.json([{ id: 'google connector', target: 'google', type: 'Social' }])
+      }
+      if (url.endsWith('/authorization-uri')) {
+        return Response.json({ redirectTo: 'https://accounts.example.test/authorize' })
+      }
+      if (url.endsWith('/api/users/logto%20user') && !init?.method) {
+        return Response.json({ identities: { google: {}, github: {} } })
+      }
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+      return Response.json({})
+    }
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
+
+    await expect(
+      svc.createSocialAuthorization('google', 'https://app.example.test/auth/social/callback', 'state')
+    ).resolves.toEqual({
+      connectorId: 'google connector',
+      redirectTo: 'https://accounts.example.test/authorize'
+    })
+    await svc.linkSocialIdentity('logto user', 'google connector', { code: 'provider-code', state: 'state' })
+    await svc.unlinkSocialIdentity('logto user', 'google')
+
+    expect(requests.map(({ url, init }) => [url, init?.method])).toEqual([
+      ['https://t.logto.app/api/connectors?target=google', undefined],
+      ['https://t.logto.app/api/connectors/google%20connector/authorization-uri', 'POST'],
+      ['https://t.logto.app/api/users/logto%20user/identities', 'POST'],
+      ['https://t.logto.app/api/users/logto%20user', undefined],
+      ['https://t.logto.app/api/users/logto%20user/identities/google', 'DELETE']
+    ])
+    expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
+      redirectUri: 'https://app.example.test/auth/social/callback',
+      state: 'state'
+    })
+    expect(JSON.parse(String(requests[2]?.init?.body))).toEqual({
+      connectorId: 'google connector',
+      connectorData: { code: 'provider-code', state: 'state' }
+    })
+    expect(requests.every(({ init }) => new Headers(init?.headers).get('authorization') === 'Bearer mgmt-token')).toBe(
+      true
+    )
+  })
+
+  it('refuses to unlink the last social sign-in method', async () => {
+    const methods: Array<string | undefined> = []
+    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url.endsWith('/oidc/token')) return Response.json({ access_token: 'mgmt-token', expires_in: 3600 })
+      methods.push(init?.method)
+      return Response.json({ identities: { google: {} } })
+    }
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
+
+    await expect(svc.unlinkSocialIdentity('logto-user', 'google')).rejects.toMatchObject({
+      status: 409,
+      code: 'LAST_SOCIAL_IDENTITY'
+    })
+    expect(methods).toEqual([undefined])
   })
 })
 

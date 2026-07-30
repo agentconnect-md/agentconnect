@@ -148,12 +148,11 @@ export const AppConfigSchema = z.object({
   // Optional; when set the App JWT uses iss=client_id (GitHub's current
   // recommendation). Unset ⇒ iss=GITHUB_APP_ID (still supported).
   GITHUB_APP_CLIENT_ID: z.string().optional(),
-  // ── Logto Management API (github per-user repo authorization) — opt-in ──
-  // The ONE deliberate Logto coupling (identity assertion, design open question #7):
-  // resolves a console user's GitHub login server-side so repo picks can be
-  // authorized against the USER's GitHub permission, not just the App's grant.
-  // All three must be set — and the feature further requires OIDC_ISSUER and
-  // GITHUB_APP_* (devAuth principals have no real identities to assert).
+  // ── Logto Management API (identity metadata + Profile social sign-in methods) ──
+  // The ONE deliberate Logto coupling: it resolves GitHub identity metadata for
+  // repo authorization and manages the signed-in user's own social identities.
+  // All three must be set; both uses require OIDC_ISSUER, while repo authorization
+  // additionally requires GITHUB_APP_*.
   LOGTO_MGMT_ENDPOINT: z.string().url().optional(), // tenant origin, e.g. https://tenant-id.logto.app
   LOGTO_MGMT_APP_ID: z.string().optional(), // an M2M app with Management API access
   LOGTO_MGMT_APP_SECRET: z.string().optional(),
