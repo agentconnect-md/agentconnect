@@ -262,7 +262,13 @@ export const AgentLaunch = z.object({
   workspaceId: z.string().uuid(),
   capabilities: z.array(z.string()), // the active-capability pin (§8.1)
   spec: AgentSpec, // prompt/model/env — arrives at start, no separate CRUD needed
-  mode: z.enum(['long_lived', 'per_turn']).default('long_lived') // 🅰️ decision #2 knob
+  mode: z.enum(['long_lived', 'per_turn']).default('long_lived'), // 🅰️ decision #2 knob
+  // Web API launch provenance (session-visibility.md §4.4): CP-minted when the
+  // launch was requested by a console user, echoed back by the daemon on the
+  // resulting session's `event/session` so ingest can classify it `private`
+  // with that user as owner. Optional — CLI/orchestration launches and older
+  // CPs omit it. NOT the launchId fence (which is per-launch, not per-user).
+  launchCorrelationId: z.string().uuid().optional()
 })
 export type AgentLaunch = z.infer<typeof AgentLaunch>
 

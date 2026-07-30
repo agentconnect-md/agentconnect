@@ -91,7 +91,9 @@ import type {
   CollabRoutesSnapshot,
   AgentPermissionRequestList,
   AgentPermissionRequestPage,
-  AgentPermissionDecision
+  AgentPermissionDecision,
+  SessionVisibilityPush,
+  SessionVisibilityOk
 } from '@agentconnect.md/protocol'
 import type { LaunchRepo } from '../persistence/ports.js'
 import { ConnectionClosed, type ConnectionRegistry, type DaemonConnState } from '../ws/registry.js'
@@ -358,6 +360,27 @@ export class ControlSender {
   async memoryConnectionRemove(daemonId: string, connectionId: string): Promise<void> {
     const c = this.must(daemonId)
     c.conn.send('memoryconnection/remove', { connectionId }, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Push one session's effective capture gate (session-visibility.md §5.1).
+   *
+   * A single privacy bit + its revision — control signaling, never content. The
+   * revision (not the epoch) is what orders competing pushes, so retransmits and
+   * out-of-order delivery are safe: the daemon acks a stale revision
+   * `superseded` rather than erroring, and the register-time snapshot converges
+   * anything this connection never delivered.
+   */
+  async sessionVisibility(daemonId: string, p: SessionVisibilityPush): Promise<SessionVisibilityOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<SessionVisibilityOk>('session/visibility', p, { epoch: c.sessionEpoch })
+  }
+
+  /** Replay the whole gate set to a (re)connecting daemon (§5.1) — a snapshot,
+   *  not a diff, so a change made while it was offline cannot stay unapplied. */
+  async sessionVisibilitySnapshot(daemonId: string, entries: SessionVisibilityPush[]): Promise<Ack> {
+    const c = this.must(daemonId)
+    return c.conn.request<Ack>('session/visibility/snapshot', { entries }, { epoch: c.sessionEpoch })
   }
 
   /** Sink a cron def to a running daemon (live CRUD, epoch-fenced REQ → ack, §5.4). */

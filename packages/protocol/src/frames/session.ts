@@ -229,3 +229,52 @@ export const ChildSessionStatusProbe = z.object({
   childSessionId: z.string().min(1)
 })
 export type ChildSessionStatusProbe = z.infer<typeof ChildSessionStatusProbe>
+
+/**
+ * C→D REQ → `session/visibility/ok` (session-visibility.md §5.1): the CP pushes
+ * a session's authoritative effective visibility so the owning daemon updates
+ * its local memory-capture gate. Control signaling only — one privacy bit per
+ * session, never content.
+ *
+ * `visibilityRev` is the session's dedicated durable visibility counter
+ * (bumped in the same CP transaction as every visibility change, settlement,
+ * and cascade). It is deliberately NOT the transcript revision nor the WS
+ * `sessionEpoch`/`seq` fences — those are connection/launch-scoped and do not
+ * advance with visibility. Delivery is at-least-once; the rev makes duplicate
+ * and out-of-order application safe on the daemon.
+ */
+export const SessionVisibilityPush = z.object({
+  sessionId: z.string().min(1), // opaque ACP session id (agent-assigned; NOT a wire UUID)
+  visibility: z.enum(['private', 'org']),
+  visibilityRev: z.number().int().nonnegative()
+})
+export type SessionVisibilityPush = z.infer<typeof SessionVisibilityPush>
+
+/**
+ * D→C REP (corr = the push's id). `status` reports how the daemon settled the
+ * push: `applied` = the rev advanced its stored gate state; `superseded` = the
+ * rev is ≤ the stored one, so nothing was reapplied — but the frame is STILL
+ * acknowledged (never answered with an `error` frame): "ignore" must never
+ * mean "don't ACK", or a lost ACK leaves the CP retrying forever. The CP
+ * records the ack watermark on either status.
+ */
+export const SessionVisibilityOk = z.object({
+  sessionId: z.string().min(1),
+  visibilityRev: z.number().int().nonnegative(),
+  status: z.enum(['applied', 'superseded'])
+})
+export type SessionVisibilityOk = z.infer<typeof SessionVisibilityOk>
+
+/**
+ * C→D REQ → generic `ack` (session-visibility.md §5.1): the register-time
+ * replay of the current `(sessionId, visibility, visibilityRev)` set for the
+ * daemon's active sessions — a snapshot, not a diff — closing the window
+ * where a visibility change happened while the daemon was offline. Each entry
+ * applies with the same rev semantics as a single push; a stale entry is
+ * skipped, never an error. Chunked by the CP; ≤ 1000 entries per frame keeps
+ * it far under the frame-size cap.
+ */
+export const SessionVisibilitySnapshot = z.object({
+  entries: z.array(SessionVisibilityPush).max(1000)
+})
+export type SessionVisibilitySnapshot = z.infer<typeof SessionVisibilitySnapshot>

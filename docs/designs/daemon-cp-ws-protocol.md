@@ -824,15 +824,16 @@ described in this document; integrations, relays, collaboration, hooks, review
 delivery, MCP, memory, git credentials, workspace reads, tool bodies, and usage
 have dedicated schemas under `packages/protocol/src/frames/`.
 
-| Family                                                    | Direction     | Request/reply pattern                             | Purpose                                             |
-| --------------------------------------------------------- | ------------- | ------------------------------------------------- | --------------------------------------------------- |
-| `auth`, `register`                                        | D→C           | correlated replies                                | establish identity and reconcile daemon state       |
-| `heartbeat`, `facts/*`, `event/session`, `agent/activity` | D→C           | events                                            | report health, capabilities, metadata, and activity |
-| `route/*`, `agent/*`, `cron/*`, `daemon/*`, `config/push` | C→D or paired | correlated requests, acknowledgements, and events | mutate fenced daemon control state                  |
-| `secrets/*`                                               | paired        | request/grant plus revoke event                   | manage scoped secret leases                         |
-| `session/*`                                               | paired        | correlated paginated reads                        | fetch daemon-local session data                     |
-| `channel/agents`                                          | D→C           | correlated reply                                  | resolve collaboration directory metadata            |
-| `error`, `ack`                                            | either        | correlated replies                                | provide generic protocol outcomes                   |
+| Family                                                    | Direction     | Request/reply pattern                                 | Purpose                                                                       |
+| --------------------------------------------------------- | ------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `auth`, `register`                                        | D→C           | correlated replies                                    | establish identity and reconcile daemon state                                 |
+| `heartbeat`, `facts/*`, `event/session`, `agent/activity` | D→C           | events                                                | report health, capabilities, metadata, and activity                           |
+| `route/*`, `agent/*`, `cron/*`, `daemon/*`, `config/push` | C→D or paired | correlated requests, acknowledgements, and events     | mutate fenced daemon control state                                            |
+| `secrets/*`                                               | paired        | request/grant plus revoke event                       | manage scoped secret leases                                                   |
+| `session/*`                                               | paired        | correlated paginated reads                            | fetch daemon-local session data                                               |
+| `session/visibility`, `session/visibility/snapshot`       | C→D           | correlated requests (`session/visibility/ok` / `ack`) | push CP-authoritative session privacy gate state (session-visibility.md §5.1) |
+| `channel/agents`                                          | D→C           | correlated reply                                      | resolve collaboration directory metadata                                      |
+| `error`, `ack`                                            | either        | correlated replies                                    | provide generic protocol outcomes                                             |
 
 ---
 

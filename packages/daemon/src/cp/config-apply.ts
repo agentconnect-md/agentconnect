@@ -29,7 +29,8 @@ import type {
   DaemonControlAck,
   AgentPermissionRequestList,
   AgentPermissionRequestPage,
-  AgentPermissionDecision
+  AgentPermissionDecision,
+  SessionVisibilityPush
 } from '@agentconnect.md/protocol'
 import type { Config } from '../config/config-schema.js'
 
@@ -90,6 +91,13 @@ export interface ConfigApply {
   applyDaemonRestart(req: DaemonRestart): DaemonControlAck
   /** Drain + exit for a version bump (daemon/upgrade REQ). */
   applyDaemonUpgrade(req: DaemonUpgrade): DaemonControlAck
+  /**
+   * Apply the CP's effective session visibility to the local memory-capture gate
+   * (session-visibility.md §5.1). Idempotent by `visibilityRev`: a revision at or
+   * below the stored one is reported `superseded` and NOT reapplied — but it is
+   * still acknowledged, so a lost ack cannot make the CP retry forever.
+   */
+  applySessionVisibility(p: SessionVisibilityPush): 'applied' | 'superseded'
 }
 
 const LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error'])

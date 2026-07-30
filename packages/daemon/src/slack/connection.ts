@@ -706,6 +706,14 @@ export class SlackConnection {
     if (added.length > 0) this.deps.log?.warn(`slack: bot token missing OAuth scope(s): ${added.join(', ')}`)
   }
 
+  /** The Slack workspace (team) id this connection authenticated into, or ''
+   *  before `auth.test` resolves. A DURABLE tenant id — unlike the bot token it
+   *  survives credential rotation, which is what session-visibility.md §2
+   *  requires of the middle segment of an owner identity. */
+  workspaceId(): string {
+    return this.teamId
+  }
+
   private permissionUpdateUrl(): string | undefined {
     if (!/^A[A-Z0-9]+$/.test(this.appId)) return undefined
     const appId = encodeURIComponent(this.appId)

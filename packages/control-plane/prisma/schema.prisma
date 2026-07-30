@@ -791,41 +791,69 @@ enum ActivityState {
   idle
 }
 
+// Per-session visibility tier (docs/designs/session-visibility.md §1): 'org'
+// (default) = visible to every member who can view the owning agent; 'private'
+// = session owner (identity match) + org owners only. Composes with agent
+// visibility — it never widens it. Share-by-link is deliberately NOT a member
+// of this enum (§8).
+enum SessionVisibility {
+  private
+  org
+}
+
+// How a session's visibility was determined (session-visibility.md §3, §4.5).
+// The A2A reconciliation state machine: settlement flips inherited_pending →
+// inherited iff the row is still pending (CAS on this column); 'explicit' pins
+// the row against settlement but NOT against a tightening cascade (privacy wins).
+enum VisibilitySource {
+  default // classified by the §4.2 ingest rules
+  inherited_pending // A2A child awaiting parent resolution (§4.5)
+  inherited // settled from (or cascaded by) its parent
+  explicit // set by a human via §4.3
+}
+
 model SessionMeta {
-  id              String        @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
-  parentSessionId String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
-  agentId         String        @db.Uuid
-  launchId        String?       @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
-  platform        String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
-  channel         String?
-  thread          String?
-  phase           SessionPhase  @default(start)
-  link            String? // deep-link (NOT a body)
-  summary         String?       @db.Text // short milestone text (NOT the stream)
-  title           String?       @db.Text // daemon-derived display title (NOT a body)
-  status          String?
-  triggeredBy     String?
-  channelName     String?
-  triggeredByName String?
-  threadUrl       String?       @db.Text
+  id                 String            @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
+  parentSessionId    String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
+  agentId            String            @db.Uuid
+  launchId           String?           @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
+  platform           String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
+  channel            String?
+  thread             String?
+  phase              SessionPhase      @default(start)
+  link               String? // deep-link (NOT a body)
+  summary            String?           @db.Text // short milestone text (NOT the stream)
+  title              String?           @db.Text // daemon-derived display title (NOT a body)
+  status             String?
+  triggeredBy        String?
+  channelName        String?
+  triggeredByName    String?
+  threadUrl          String?           @db.Text
   // ── execution-config snapshot (what the session actually ran with) ──
   // Daemon-reported via event/session (session override ?? agent config at run
   // time); null ⇒ never reported / the runtime's own default. Recorded so the
   // console shows what a session USED, not the agent's config at view time.
-  runtime         String?
-  model           String?
-  effort          String? // reasoning effort level (runtime-owned vocabulary)
-  fastMode        Boolean?
-  permissionMode  String? // runtime permission/approval mode
-  outputMode      String? // daemon-side output verbosity (low/medium/high)
-  daemonId        String?       @db.Uuid // daemon that reported the session — stamped by the CP from the authenticated WS conn, never daemon-echoed
-  activityState   ActivityState @default(idle)
+  runtime            String?
+  model              String?
+  effort             String? // reasoning effort level (runtime-owned vocabulary)
+  fastMode           Boolean?
+  permissionMode     String? // runtime permission/approval mode
+  outputMode         String? // daemon-side output verbosity (low/medium/high)
+  daemonId           String?           @db.Uuid // daemon that reported the session — stamped by the CP from the authenticated WS conn, never daemon-echoed
+  activityState      ActivityState     @default(idle)
+  // ── session visibility (docs/designs/session-visibility.md §3) ──
+  orgId              String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent
+  visibility         SessionVisibility @default(org)
+  ownerIdentity      String? // §2 namespaced identity (`user:<id>` | `<platform>:<scope>:<uid>`); null for automation/legacy/owner-orphan rows
+  visibilitySource   VisibilitySource  @default(default)
+  visibilityRev      Int               @default(0) // dedicated monotonic counter, bumped in the same tx as any visibility change (§5.1)
+  visibilityAckedRev Int               @default(-1) // daemon-ack watermark: 'applied' once >= visibilityRev; -1 = never acked (rev 0 is a real revision)
   // Cursor tokens pass through JavaScript Date (millisecond precision), so the
   // complete keyset tuple must use the same precision in Postgres.
-  lastActivityAt  DateTime      @db.Timestamptz(3)
-  startedAt       DateTime      @default(now()) @db.Timestamptz(3)
-  endedAt         DateTime?     @db.Timestamptz(6)
-  updatedAt       DateTime      @updatedAt @db.Timestamptz(6)
+  lastActivityAt     DateTime          @db.Timestamptz(3)
+  startedAt          DateTime          @default(now()) @db.Timestamptz(3)
+  endedAt            DateTime?         @db.Timestamptz(6)
+  updatedAt          DateTime          @updatedAt @db.Timestamptz(6)
 
   agent  Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
   launch AgentLaunch? @relation(fields: [launchId], references: [id], onDelete: SetNull)
@@ -837,6 +865,7 @@ model SessionMeta {
   @@index([agentId, platform, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_platform_page_idx")
   @@index([agentId, channel, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_channel_page_idx")
   @@index([agentId, triggeredBy, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_trigger_page_idx")
+  @@index([orgId, visibility, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_org_visibility_page_idx")
   @@index([parentSessionId])
   @@index([platform, channel])
   @@index([launchId])
@@ -948,6 +977,11 @@ model AgentLaunch {
   runtime            String
   mode               LaunchMode   @default(long_lived)
   acpSessionId       String? // set iff long-lived ACP session
+  // Web API launch provenance (session-visibility.md §4.4) — DISTINCT from the
+  // fencing `id`: the CP mints it, the daemon echoes it on the session's
+  // `event/session` frame, and ingest resolves it back to the launching user.
+  correlationId      String?      @unique @db.Uuid
+  createdByUserId    String? // launching principal; raw scalar (no FK) so a deleted user never breaks provenance
   activeCapabilities String[]     @default([]) // capability pin (AgentCapabilities.active)
   status             LaunchStatus @default(launching)
   launchEpoch        BigInt       @db.BigInt // sessionEpoch the launch was issued under

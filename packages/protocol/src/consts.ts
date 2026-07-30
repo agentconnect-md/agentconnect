@@ -18,6 +18,14 @@ export const CP_WS_PATH = '/daemon/ws'
 export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
 
 /**
+ * Daemon understands the `session/visibility` gate pushes + register-time
+ * snapshot replay (session-visibility.md §5.1). Advertised by the daemon in
+ * `RegisterReq.capabilities.features`; the CP gates all visibility pushes on
+ * it so older daemons never see the frames.
+ */
+export const SESSION_VISIBILITY_FEATURE = 'session-visibility-v1'
+
+/**
  * Exit code a daemon uses for a PLANNED lifecycle exit (drain-then-exit on a
  * `daemon/restart` or `daemon/upgrade`, cli-daemon-split.md §6). It must be
  * non-zero: launchd's `KeepAlive.SuccessfulExit=false` only relaunches on a

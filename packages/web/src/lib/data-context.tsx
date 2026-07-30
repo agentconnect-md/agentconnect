@@ -117,6 +117,9 @@ interface ConsoleData {
   sessionActivityVersionById: Record<string, number>
   /** Advances on every SSE (re)connect so views close any disconnect gap. */
   sessionStreamGeneration: number
+  /** Re-fetch every session list/facet page — used after a mutation that can
+   *  change which sessions a caller may see (e.g. a visibility change). */
+  revalidateSessionLists: () => Promise<unknown>
   crons: CronDto[]
   integrations: IntegrationRow[]
   /** Durable bot identities (freed + in-use) — Add-integration picker + Settings Bots card. */
@@ -1226,6 +1229,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       sessionsNextCursor,
       sessionActivityVersionById,
       sessionStreamGeneration,
+      revalidateSessionLists,
       crons,
       integrations,
       bots,
@@ -1288,6 +1292,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       sessionsNextCursor,
       sessionActivityVersionById,
       sessionStreamGeneration,
+      revalidateSessionLists,
       crons,
       integrations,
       bots,

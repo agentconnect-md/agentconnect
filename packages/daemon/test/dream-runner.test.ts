@@ -58,6 +58,12 @@ class FakeStore implements DreamStorePort {
   dreamSessionSources(): { sessionId: string; channel: string; thread: string }[] {
     return this.sources
   }
+  /** Sessions excluded from agent-memory capture (session-visibility.md §5.1).
+   *  Empty by default; a test adds an id to assert dreams skip private sources. */
+  captureExcluded = new Set<string>()
+  isCaptureExcluded(acpSessionId: string | undefined): boolean {
+    return acpSessionId !== undefined && this.captureExcluded.has(acpSessionId)
+  }
   toolRows: { sender: string; text: string; kind?: string }[] = []
   dreamTranscriptText(
     _c: string,

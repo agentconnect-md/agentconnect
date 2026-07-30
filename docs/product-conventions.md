@@ -175,6 +175,45 @@ selection. That reply remains governed by the existing origin-only session capab
 a permitted one-way delegation can return its result without requiring a reverse
 visibility grant.
 
+## Session visibility
+
+Every session carries its own visibility, composed with — never widening — the visibility
+of the agent that owns it. Platform direct messages, Playground and webchat conversations,
+and sessions launched through the Web API default to **private**: only their owner and org
+owners can see them. Channel sessions, group direct messages, and automation-originated
+sessions (cron, hook, dream, agent-to-agent) default to **org**, visible to every member
+who can already view the agent. A session's initiator is recorded regardless of tier, so
+the person who started a channel conversation may later pull it private, and an org owner
+may reclassify anything.
+
+An agent-to-agent child inherits its parent's visibility, because a delegation copies the
+parent's prompt into the child's transcript. Tightening a session therefore cascades to its
+descendants; publishing one never does — widening a child stays that child's own decision.
+
+A session the caller may not see is reported as missing, not as forbidden: the console must
+not reveal that it exists.
+
+Making a session private hides its transcript immediately, but agent memory is shared
+across the whole agent, so the guarantee about memory is narrower and must be stated
+plainly wherever the change is offered: capture into shared memory stops once the owning
+daemon acknowledges the change (typically sub-second, surfaced as a pending state until
+then), and anything the agent already distilled while the session was org-visible is not
+retracted. Until a session's daemon has confirmed the current state, that daemon withholds
+capture rather than assuming the session is shareable.
+
+The block covers both ways a session reaches shared memory: the automatic post-turn
+distillation, and an explicit write by the agent itself. A private session's memory-write
+tools refuse with an explanation rather than failing silently, and reads stay available —
+recalling what the agent already knows is not a disclosure of the current conversation.
+Dream sessions skip private transcripts entirely.
+
+**Agents on native runtime memory are the exception, and the product must say so.** With
+that backend the runtime persists memory inside its own process for the whole agent, with
+no per-session control, so a private session on such an agent gets the transcript
+guarantee but not the memory one. Anywhere an agent is configured for native memory, the
+private tier must be described as "hides the transcript, not what the agent learns from
+it" — silence is not an option.
+
 ## Runtime memory-provider compatibility
 
 Memory-provider semantics are part of the support contract for every agent harness, not

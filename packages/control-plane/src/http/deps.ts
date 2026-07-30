@@ -54,6 +54,7 @@ import type { WebchatTokenService } from '../registry/webchatToken.js'
 import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
+import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { AgentSpecAssembler } from '../orchestrator/agentSpecAssembler.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
@@ -207,6 +208,10 @@ export interface HttpDeps {
   /** The fencing site for C→D control. REST agent CRUD pushes `agent/upsert`/
    *  `agent/remove` through it to replicate config to the owning daemon. */
   control: ControlSender
+  /** Pushes the per-session memory-capture gate to the owning daemons after a
+   *  §4.3 visibility change, and answers the pending/applied cutover state
+   *  (session-visibility.md §5.1). Absent ⇒ changes converge on register. */
+  visibilityPush?: SessionVisibilityPushService
   /** CP→relay control fan-out — pushes `rc/daemon-revoke` to connected relays when a
    *  daemon key is revoked / a daemon is removed (shared-bot-relay.md §9). */
   relayControl: RelayControlSender

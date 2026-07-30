@@ -10,7 +10,7 @@
  * Idempotent: re-sending `register` re-runs reconcile and yields the same
  * snapshot (CP wins all conflicts) — reconnect is convergence, not replay.
  */
-import { isFrame, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
+import { isFrame, SESSION_LIVE_TAIL_FEATURE, SESSION_VISIBILITY_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
 
@@ -42,9 +42,17 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     ...snap,
     relays,
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
-    serverFeatures: ['hook-report-ack-v1', 'gitcred-actions-v1', SESSION_LIVE_TAIL_FEATURE]
+    serverFeatures: ['hook-report-ack-v1', 'gitcred-actions-v1', SESSION_LIVE_TAIL_FEATURE, SESSION_VISIBILITY_FEATURE]
   })
   deps.connReg.markReady(conn.daemonId, conn)
+
+  // Converge the per-session memory-capture gates (session-visibility.md §5.1).
+  // A visibility change committed while this daemon was offline was never
+  // delivered — the live push is connection-scoped — so the snapshot, not the
+  // push, is what ultimately closes the bypass. Best-effort: the daemon fails
+  // closed (unknown gate ⇒ capture excluded) until it lands, and the next
+  // register retries.
+  await deps.visibilityPush?.replayTo(did).catch(() => {})
 
   // Now that this connection has actually reached READY (reconcile succeeded above),
   // close any CP-commanded restart/upgrade op it was relaunching for (§7). Best-effort

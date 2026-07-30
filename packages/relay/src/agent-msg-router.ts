@@ -124,7 +124,10 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
         // §5.4 report-back request, forwarded opaquely for the same reason: it is an instruction
         // about the caller's OWN lineage, so the relay carries it without minting or validating it.
-        ...(msg.needsReply !== undefined ? { needsReply: msg.needsReply } : {})
+        ...(msg.needsReply !== undefined ? { needsReply: msg.needsReply } : {}),
+        // session-visibility.md §5.1 privacy hint — again the caller's own fact
+        // about its own lineage, forwarded verbatim. The relay stores nothing.
+        ...(msg.parentPrivate !== undefined ? { parentPrivate: msg.parentPrivate } : {})
       })
     } catch (err) {
       // Forward timed out / socket dropped mid-flight → treat as offline (retransmit is

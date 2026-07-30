@@ -47,6 +47,20 @@ export const EventSession = z.object({
   channelName: z.string().optional(),
   triggeredByName: z.string().optional(),
   threadUrl: z.string().optional(),
+  // ── visibility classification inputs (session-visibility.md §4.1) ──
+  // What kind of conversation the session lives in, from the daemon's own
+  // NormalizedMessage.isDm/isGroupDm. Absent (old daemon) ⇒ 'channel' behavior,
+  // i.e. the CP classifies the session `org`.
+  conversationKind: z.enum(['dm', 'group_dm', 'channel']).optional(),
+  // DURABLE workspace/tenant scope for ownerIdentity (§2) — a Slack team id,
+  // Feishu tenant key, or a minted stable per-integration scope. NOT the
+  // daemon's credential-derived transport scope (that rotates with tokens).
+  // Absent ⇒ the CP records no IM owner (fail closed).
+  transportScope: z.string().min(1).max(200).optional(),
+  // Web API launch provenance (§4.4): the correlation id the CP minted on
+  // `agent/launch`, echoed back so ingest can attribute the session to the
+  // launching console user. NOT the launchId fence above.
+  launchCorrelationId: z.string().uuid().optional(),
   // Effective execution-config snapshot: what the session actually ran with
   // (per-session sticky override, else the agent's config at run time; absent ⇒
   // the runtime's own default). Recorded so the console shows what a session

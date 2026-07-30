@@ -31,6 +31,12 @@ import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 /** 'org' = visible to every org member (default); 'restricted' = creator + org
  *  owners + the `sharedWith` set. */
 export const ResourceVisibilityEnum = z.enum(['org', 'restricted'])
+/** Per-SESSION visibility (docs/designs/session-visibility.md §1) — a different
+ *  tier vocabulary from `ResourceVisibilityEnum`: sessions have no share set,
+ *  their owner is a namespaced identity string (§2). */
+export const SessionVisibilityEnum = z.enum(['private', 'org'])
+/** Whether a visibility change has reached the daemons that enforce it (§5.1). */
+export const SessionVisibilityStateEnum = z.enum(['pending', 'applied'])
 /** `PUT /{agents|daemons|crons}/:id/sharing` — set a resource's visibility + share
  *  set. Gated exactly like a content edit (`canEdit`, decision §13.3). */
 export const SetSharingBody = z
@@ -1984,7 +1990,8 @@ export const SessionDto = z.object({
   fastMode: z.boolean().nullable(),
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
-  daemonId: z.string().nullable()
+  daemonId: z.string().nullable(),
+  visibility: SessionVisibilityEnum
 })
 export const SessionListDto = z.array(SessionDto)
 export const SessionFacetsDto = z.object({
@@ -2052,8 +2059,29 @@ export const SessionDetailDto = z.object({
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),
   activityState: z.string(),
+  // ── session visibility (docs/designs/session-visibility.md) ──
+  visibility: SessionVisibilityEnum,
+  /** §5.1 cutover: `pending` until every affected daemon has acked the change —
+   *  CP read gates apply at commit, the memory boundary at acknowledgement. */
+  visibilityState: SessionVisibilityStateEnum,
+  /** Whether THIS caller may use `PUT /sessions/:id/visibility` (§4.3). Computed
+   *  server-side; the console never re-derives permissions from identity. */
+  canChangeVisibility: z.boolean(),
   startedAt: z.string(), // ISO-8601
   endedAt: z.string().nullable()
+})
+
+/** `PUT /sessions/:id/visibility` (session-visibility.md §4.3). */
+export const SetSessionVisibilityBody = z.object({ visibility: SessionVisibilityEnum }).strict()
+export type SetSessionVisibilityBodyT = z.infer<typeof SetSessionVisibilityBody>
+
+export const SessionVisibilityDto = z.object({
+  id: z.string(),
+  visibility: SessionVisibilityEnum,
+  visibilityRev: z.number().int().nonnegative(),
+  /** Descendants a tightening cascade rewrote (§4.5); empty when widening. */
+  cascadedSessionIds: z.array(z.string()),
+  state: SessionVisibilityStateEnum
 })
 
 /** One message page returned by `GET /sessions/:id/messages` (proxied from the daemon).

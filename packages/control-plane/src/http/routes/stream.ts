@@ -13,8 +13,15 @@ import type { HttpDeps } from '../deps.js'
 import type { SessionEventEnvelope } from '../../events/sink.js'
 import { Tag } from '../plugins/openapi.js'
 import { ctxOf } from '../rbac.js'
-import { canView, type Shareable, type ViewCtx } from '../visibility.js'
-import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
+import {
+  canView,
+  canViewSession,
+  identitySetOf,
+  type SessionViewable,
+  type Shareable,
+  type ViewCtx
+} from '../visibility.js'
+import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 
 const KEEPALIVE_MS = 25_000
 
@@ -22,6 +29,23 @@ export function canStreamAgent(agent: (Shareable & { orgId: OrgId }) | null, org
   // `canView` assumes its caller already selected the current tenant. This org
   // check applies even to owners: their governance override is path-org scoped.
   return !!agent && agent.orgId === orgId && canView(agent, ctx)
+}
+
+/**
+ * Session-level gate for the live feed (session-visibility.md §5). BOTH envelope
+ * variants are session-scoped and both must pass it: the milestone carries a
+ * content-derived `summary`, and the activity invalidation still exposes the
+ * session's existence, revision, and live activity.
+ *
+ * A row that cannot be read is dropped — an activity event whose milestone never
+ * committed has no visibility to check, so fail closed like the agent arm does.
+ */
+export function canStreamSession(
+  session: SessionViewable | null,
+  ctx: ViewCtx,
+  identitySet: ReadonlySet<string>
+): boolean {
+  return !!session && canViewSession(session, ctx, identitySet)
 }
 
 function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
@@ -87,11 +111,23 @@ export function streamRoutes(deps: HttpDeps) {
           return ok
         }
 
+        // Session visibility is deliberately NOT memoized: a §4.3 tightening must
+        // hide the session from a live subscriber at commit, and a long-lived SSE
+        // connection holding a cached verdict would keep leaking it. Sessions are
+        // per-event unique anyway, so a cache would rarely hit.
+        const identitySet = identitySetOf(ctx)
+        const canSeeSession = async (sessionId: string): Promise<boolean> => {
+          const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
+          return canStreamSession(session, ctx, identitySet)
+        }
+
         const unsubscribe = deps.events.subscribe((envelope) => {
           void (async () => {
             if (!(await inOrg(envelope.daemonId))) return
             const agentId = envelope.activity?.agentId ?? envelope.event?.agentId
             if (!agentId || !(await canSeeAgent(agentId))) return
+            const sessionId = envelope.activity?.sessionId ?? envelope.event?.sessionId
+            if (!sessionId || !(await canSeeSession(sessionId))) return
             writeEvent(reply, envelope)
           })()
         })

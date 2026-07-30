@@ -30,6 +30,7 @@ import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
@@ -561,6 +562,10 @@ export default function SessionsView() {
                 <span className="min-w-0 truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                   {s.title}
                 </span>
+                <RestrictedLock
+                  show={s.visibility === 'private'}
+                  title="Private session — visible only to its owner and org owners"
+                />
                 {/* Status as a compact pill — the design's badge, driven by the real
                     status (soft bg + saturated text from STATUS_MAP). */}
                 <span
@@ -594,8 +599,14 @@ export default function SessionsView() {
               </span>
               {/* ── desktop arrangement (≥769px): the 6 grid cells ────────────── */}
               <div className="hidden min-w-0 desktop:block">
-                <div className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                  {s.title}
+                <div className="flex min-w-0 items-center gap-[6px]">
+                  <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                    {s.title}
+                  </span>
+                  <RestrictedLock
+                    show={s.visibility === 'private'}
+                    title="Private session — visible only to its owner and org owners"
+                  />
                 </div>
                 <div className="mono text-[11px] text-(--text-tertiary)">
                   {s.time} · {renderTrigger(s)}

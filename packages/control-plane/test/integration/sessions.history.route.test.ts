@@ -64,6 +64,7 @@ async function seedSession(agentId = AGENT): Promise<void> {
     data: {
       id: SESSION,
       agentId,
+      orgId: DEFAULT_ORG_ID,
       platform: 'slack',
       channel: '#deploys',
       phase: 'start',
@@ -80,6 +81,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
       data: {
         id: SESSION,
         agentId: AGENT,
+        orgId: DEFAULT_ORG_ID,
         platform: 'slack',
         channel: '#deploys',
         thread: 'T1',
@@ -147,6 +149,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
       data: {
         id: SESSION,
         agentId: AGENT,
+        orgId: DEFAULT_ORG_ID,
         platform: 'slack',
         channel: '#deploys',
         phase: 'start',
@@ -172,6 +175,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: older,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#ops',
           phase: 'start',
@@ -180,6 +184,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: newer,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#ops',
           phase: 'start',
@@ -208,6 +213,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: oldest,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#ops',
           phase: 'start',
@@ -216,6 +222,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: tieA,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#ops',
           phase: 'start',
@@ -225,6 +232,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: tieM,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#ops',
           phase: 'start',
@@ -234,6 +242,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: tieZ,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#ops',
           phase: 'start',
@@ -275,6 +284,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: older,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: 'C-OLDER',
           channelName: 'older',
@@ -286,6 +296,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: newer,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: 'C-NEWER',
           channelName: 'newer',
@@ -341,6 +352,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: randomUUID(),
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: 'C-A-SLACK',
           triggeredBy: 'U-A-SLACK',
@@ -350,6 +362,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: randomUUID(),
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'discord',
           channel: 'C-A-DISCORD',
           triggeredBy: 'U-A-DISCORD',
@@ -359,6 +372,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: randomUUID(),
           agentId: secondAgent,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: 'C-B-SLACK',
           triggeredBy: 'U-B-SLACK',
@@ -450,6 +464,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: firstSession,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: 'C-FIRST',
           triggeredBy: `hook:${firstHook}`,
@@ -460,6 +475,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: secondSession,
           agentId: secondAgent,
+          orgId: DEFAULT_ORG_ID,
           platform: 'hook',
           channel: secondHook,
           triggeredBy: `hook:${secondHook}`,
@@ -470,6 +486,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: otherSession,
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'hook',
           channel: otherHook,
           triggeredBy: `hook:${otherHook}`,
@@ -514,6 +531,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: randomUUID(),
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#deploys',
           phase: 'start',
@@ -522,6 +540,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
         {
           id: randomUUID(),
           agentId: AGENT,
+          orgId: DEFAULT_ORG_ID,
           platform: 'slack',
           channel: '#ops',
           phase: 'start',

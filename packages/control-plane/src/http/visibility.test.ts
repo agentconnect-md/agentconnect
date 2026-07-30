@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { canView, canEdit, canManageSharing, visibilityWhere, type Shareable, type ViewCtx } from './visibility.js'
+import {
+  canView,
+  canEdit,
+  canManageSharing,
+  canViewSession,
+  identitySetOf,
+  visibilityWhere,
+  type SessionViewable,
+  type Shareable,
+  type ViewCtx
+} from './visibility.js'
 import type { OrgMemberRole } from '../persistence/ports.js'
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -83,6 +93,65 @@ describe('canManageSharing (relaxed to === canEdit, §13.3)', () => {
     expect(canManageSharing(restricted, ctx(GRANTEE, 'collaborator'))).toBe(true)
     expect(canManageSharing(restricted, ctx(GRANTEE, 'viewer'))).toBe(false)
     expect(canManageSharing(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
+  })
+})
+
+describe('identitySetOf', () => {
+  it('is exactly the console identity today (identity linking grows it later)', () => {
+    expect(identitySetOf(ctx(OTHER, 'collaborator'))).toEqual(new Set([`user:${OTHER}`]))
+  })
+})
+
+describe('canViewSession (session-visibility.md §5)', () => {
+  const owned = (visibility: SessionViewable['visibility'], ownerIdentity: string | null): SessionViewable => ({
+    visibility,
+    ownerIdentity
+  })
+  const idsOf = (c: ViewCtx) => identitySetOf(c)
+
+  it('org session is visible to every role, owner-match or not', () => {
+    const s = owned('org', `user:${CREATOR}`)
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+  })
+
+  it('org session with no recorded owner (automation) stays org-visible', () => {
+    expect(canViewSession(owned('org', null), ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(true)
+  })
+
+  it('private session is visible to its identity-matched owner, any role', () => {
+    const s = owned('private', `user:${CREATOR}`)
+    expect(canViewSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(true)
+    expect(canViewSession(s, ctx(CREATOR, 'viewer'), idsOf(ctx(CREATOR, 'viewer')))).toBe(true)
+  })
+
+  it('private session hides from a non-matching non-owner', () => {
+    const s = owned('private', `user:${CREATOR}`)
+    expect(canViewSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(false)
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
+  })
+
+  it('private session is visible to any org owner — governance override', () => {
+    const s = owned('private', `user:${CREATOR}`)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+  })
+
+  it('matches a linked platform identity once the identity set carries it', () => {
+    const s = owned('private', 'slack:T024BE7LD:U0123ABCD')
+    const c = ctx(OTHER, 'collaborator')
+    // Pre-linking: the platform owner is an owner-orphan for this viewer.
+    expect(canViewSession(s, c, idsOf(c))).toBe(false)
+    // Post-linking (§7): the set grows; the stored ownerIdentity already matches.
+    const linked = new Set([...idsOf(c), 'slack:T024BE7LD:U0123ABCD'])
+    expect(canViewSession(s, c, linked)).toBe(true)
+  })
+
+  it('an owner-orphan private session (ownerIdentity null) is owner-role-only — fail closed', () => {
+    const s = owned('private', null)
+    expect(canViewSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(false)
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
   })
 })
 

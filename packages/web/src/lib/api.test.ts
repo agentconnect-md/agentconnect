@@ -12,6 +12,7 @@ import {
   fetchMemoryAdminSurface,
   fmtCountCompact,
   invalidateGithubRepoRosterCache,
+  putSessionVisibility,
   listMemoryRecordHistory,
   listMemoryFileHistory,
   listMemoryRecords,
@@ -171,6 +172,41 @@ describe('raw-blob helper errors', () => {
       status: 502,
       code: undefined
     })
+  })
+})
+
+describe('putSessionVisibility', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('PUTs the tier to the org-scoped session route and returns the cutover state', async () => {
+    setApiOrgId('org-1')
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            id: 'acp-1',
+            visibility: 'private',
+            visibilityRev: 3,
+            cascadedSessionIds: ['acp-child'],
+            state: 'pending'
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await putSessionVisibility('acp-1', 'private')
+
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(String(url)).toContain('/orgs/org-1/sessions/acp-1/visibility')
+    expect(init?.method).toBe('PUT')
+    expect(JSON.parse(String(init?.body))).toEqual({ visibility: 'private' })
+    // `state: 'pending'` is what the detail view renders as "Applying…": the CP
+    // read gates already apply, but no daemon has acked the capture change yet.
+    expect(result).toMatchObject({ visibility: 'private', visibilityRev: 3, state: 'pending' })
   })
 })
 
