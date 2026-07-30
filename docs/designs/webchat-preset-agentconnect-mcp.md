@@ -595,6 +595,16 @@ reference. The CP compares all of those fields at assertion mint, so moving a va
 reference from one same-daemon conversation to another can at most make the
 descriptor appear; it cannot authorize a tool call.
 
+This counter is intentionally delegation-scoped rather than reusing
+`sessionEpoch`/`seq`/`launchId`. Those standard fences order daemon placement and
+control-stream ownership, while a delegation may survive a browser reconnect, relay
+redelivery, daemon process restart, and unchanged placement. The CP transactionally
+increments `generation` whenever that logical conversation's user authority rotates;
+the daemon binds it together with the delegation id, agent id, and conversation id,
+and every mint and claim rechecks the same tuple. A higher generation therefore
+invalidates all older authority without coupling its lifetime to an ACP process or
+control-connection launch.
+
 The relay remains trusted for webchat content delivery: a fully compromised relay
 can inject or suppress content in a conversation it routes, as it can without this
 feature. That residual ingress risk does not let a leaked delegation reference call
