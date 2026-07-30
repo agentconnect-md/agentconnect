@@ -585,7 +585,8 @@ export class AcpHost {
             resolved,
             spawnArgs,
             this.opts.sandbox.writable,
-            this.opts.sandbox.delegatedCellMount
+            this.opts.sandbox.delegatedCellMount,
+            this.opts.sandbox.maskedReadRoots
           )
         : sandboxWrap(resolved, spawnArgs, this.opts.sandbox)
       : { cmd: resolved, args: spawnArgs }

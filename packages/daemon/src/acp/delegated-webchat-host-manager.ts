@@ -105,10 +105,7 @@ export class DelegatedWebchatHostManager {
   }
 
   async startHost(input: StartDelegatedWebchatHost): Promise<DelegatedWebchatHost> {
-    if (this.stopped) throw new Error('delegated webchat host manager is stopped')
-    if (!this.deps.isolationHealthy()) {
-      throw new Error('delegated webchat isolation is unavailable')
-    }
+    this.assertCanStart()
     const key = logicalKey(input)
     const pending = this.pending.get(key)
     if (pending) {
@@ -148,6 +145,7 @@ export class DelegatedWebchatHostManager {
     if (this.stopped) return
     this.stopped = true
     this.unsubscribeBridgeDisconnect()
+    await Promise.allSettled([...this.pending.values()].map(({ promise }) => promise))
     await Promise.all([...this.active.values()].map((record) => this.teardown(record)))
   }
 
@@ -175,6 +173,7 @@ export class DelegatedWebchatHostManager {
         delegationId: input.delegationId,
         generation: input.generation
       }
+      this.assertCanStart()
       const mount = this.deps.broker.getCellMount(isolationCellId)
       if (!mount || !strictlyInside(this.deps.brokerSourceRoot, mount.sourceDirectory)) {
         throw new Error('delegated webchat broker returned an invalid cell mount')
@@ -211,7 +210,7 @@ export class DelegatedWebchatHostManager {
       }
       this.active.set(key, record)
       await host.start()
-      if (this.active.get(key) !== record || record.teardown) {
+      if (this.stopped || !this.deps.isolationHealthy() || this.active.get(key) !== record || record.teardown) {
         throw new Error('delegated webchat host terminated during startup')
       }
       return this.publicHost(record)
@@ -238,6 +237,13 @@ export class DelegatedWebchatHostManager {
     const runtimeHome = await mkdtemp(join(this.deps.runtimeHomeRoot, 'cell-'))
     await chmod(runtimeHome, 0o700)
     return runtimeHome
+  }
+
+  private assertCanStart(): void {
+    if (this.stopped) throw new Error('delegated webchat host manager is stopped')
+    if (!this.deps.isolationHealthy()) {
+      throw new Error('delegated webchat isolation is unavailable')
+    }
   }
 
   private async onBridgeDisconnect(event: SessionMcpBridgeDisconnected): Promise<void> {

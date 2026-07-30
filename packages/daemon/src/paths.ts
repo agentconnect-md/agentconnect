@@ -41,6 +41,17 @@ export function mcpSocketPath(root: string): string {
   return join(root, 'run', 'mcp.sock')
 }
 
+/** Daemon-private source tree for conversation-scoped admin MCP sockets. Every
+ * untrusted bwrap host masks this root; an entitled cell binds back one child. */
+export function delegatedMcpBrokerRoot(root: string): string {
+  return join(root, 'run', 'mcp-cells')
+}
+
+/** Parent for per-conversation ACP runtime homes. */
+export function delegatedMcpRuntimeHomeRoot(root: string): string {
+  return join(root, 'run', 'webchat-hosts')
+}
+
 export function daemonLogPath(root: string): string {
   return join(root, 'logs', 'daemon.log')
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -120,7 +120,7 @@ function harness(
       return overrides.hostFactory?.(input) ?? fakeHost(input, starts, stops)
     }
   })
-  return { manager, broker, starts, stops, factoryInputs }
+  return { manager, broker, runtimeHomeRoot, starts, stops, factoryInputs }
 }
 
 describe('DelegatedWebchatHostManager', () => {
@@ -220,6 +220,18 @@ describe('DelegatedWebchatHostManager', () => {
     expect(registration.factoryInputs).toHaveLength(0)
     expect(registrationBroker.releases).toHaveLength(0)
     expect(registration.manager.debugStats().activeHosts).toBe(0)
+    expect(readdirSync(registration.runtimeHomeRoot)).toEqual([])
+
+    const initialization = harness({
+      hostFactory: () => {
+        throw new Error('host construction failed')
+      }
+    })
+    await expect(initialization.manager.startHost(cellInput('host-construction-fail'))).rejects.toThrow(
+      'host construction failed'
+    )
+    expect(initialization.broker.releases).toHaveLength(1)
+    expect(readdirSync(initialization.runtimeHomeRoot)).toEqual([])
 
     const hostFailure = harness({
       hostFactory: () =>
@@ -233,6 +245,52 @@ describe('DelegatedWebchatHostManager', () => {
     await expect(hostFailure.manager.startHost(cellInput('host-fail'))).rejects.toThrow('initialize failed')
     expect(hostFailure.broker.releases).toHaveLength(1)
     expect(hostFailure.manager.debugStats().activeHosts).toBe(0)
+    expect(readdirSync(hostFailure.runtimeHomeRoot)).toEqual([])
+  })
+
+  it('drains an in-progress allocation on manager stop without starting a late host', async () => {
+    const broker = new FakeBroker()
+    const register = broker.registerCell.bind(broker)
+    let releaseRegistration!: () => void
+    const registrationGate = new Promise<void>((resolve) => (releaseRegistration = resolve))
+    broker.registerCell = async (input) => {
+      await registrationGate
+      return register(input)
+    }
+    const h = harness({ broker })
+    const starting = h.manager.startHost(cellInput('stopping'))
+    await vi.waitFor(() => expect(h.manager.debugStats().pendingStarts).toBe(1))
+    const stopping = h.manager.stop()
+    releaseRegistration()
+    await expect(starting).rejects.toThrow(/stopped|unavailable/i)
+    await stopping
+    expect(h.factoryInputs).toHaveLength(0)
+    expect(h.broker.releases).toHaveLength(1)
+    expect(h.manager.debugStats()).toEqual({ activeHosts: 0, pendingStarts: 0, stopped: true })
+  })
+
+  it('fails closed when the isolation probe becomes unhealthy during allocation', async () => {
+    let healthy = true
+    const broker = new FakeBroker()
+    const register = broker.registerCell.bind(broker)
+    broker.registerCell = async (input) => {
+      const descriptor = await register(input)
+      healthy = false
+      return descriptor
+    }
+    const runtimeHomeRoot = mkdtempSync(join(tmpdir(), 'ac-delegated-host-test-'))
+    tempRoots.push(runtimeHomeRoot)
+    const hostFactory = vi.fn()
+    const manager = new DelegatedWebchatHostManager({
+      broker,
+      brokerSourceRoot: '/trusted/broker',
+      runtimeHomeRoot,
+      isolationHealthy: () => healthy,
+      hostFactory
+    })
+    await expect(manager.startHost(cellInput('probe-loss'))).rejects.toThrow(/isolation.*unavailable/i)
+    expect(hostFactory).not.toHaveBeenCalled()
+    expect(broker.releases).toHaveLength(1)
   })
 
   it('tears down on a fenced authenticated bridge disconnect and ignores stale events/stops', async () => {

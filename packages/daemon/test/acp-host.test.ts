@@ -609,6 +609,31 @@ describe('AcpHost delegated sandbox launch', () => {
     expect(args[bind + 1]).toBe(join(realpathSync(fixture.root), 'private-endpoint'))
   }, 15_000)
 
+  it('rejects an entitled bind unless its broker source root is in the daemon-wide mask set', async () => {
+    const fixture = fakeBwrap()
+    const otherRoot = join(fixture.root, 'other-broker')
+    mkdirSync(otherRoot)
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: { PATH: fixture.bin, AC_BWRAP_ARGS: fixture.argsFile },
+        inheritProcessEnv: false,
+        sandbox: {
+          mechanism: 'bwrap',
+          writable: [fixture.runtimeHome],
+          maskedReadRoots: [otherRoot],
+          delegatedCellMount: {
+            maskedRoot: fixture.maskedRoot,
+            sourceDir: fixture.sourceDir,
+            targetDir: join(fixture.root, 'private-endpoint')
+          }
+        }
+      }
+    )
+    await expect(host.start()).rejects.toThrow(/delegated cell mount/i)
+  })
+
   it('reports child terminal exactly once after an unexpected host crash', async () => {
     const onTerminal = vi.fn()
     const host = new AcpHost(

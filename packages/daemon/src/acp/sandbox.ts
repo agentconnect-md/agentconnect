@@ -223,18 +223,23 @@ export function delegatedCellSandboxWrap(
   cmd: string,
   args: string[],
   baseWritable: string[],
-  mount: DelegatedCellMount
+  mount: DelegatedCellMount,
+  maskedReadRoots: string[] = [mount.maskedRoot]
 ): { cmd: string; args: string[] } {
   const maskedRoot = existingDelegatedMountDirectory(mount.maskedRoot)
   const sourceDir = existingDelegatedMountDirectory(mount.sourceDir)
   if (!strictlyInside(maskedRoot, sourceDir)) {
     throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
   }
+  const validatedMaskedRoots = maskedReadRoots.map(existingDelegatedMountDirectory)
+  if (!validatedMaskedRoots.includes(maskedRoot)) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
 
   const wrapped = sandboxWrap(cmd, args, {
     mechanism: 'bwrap',
     writable: baseWritable,
-    maskedReadRoots: [maskedRoot]
+    maskedReadRoots: validatedMaskedRoots
   })
   const separator = wrapped.args.indexOf('--')
   const targetDir = canonicalTarget(mount.targetDir)

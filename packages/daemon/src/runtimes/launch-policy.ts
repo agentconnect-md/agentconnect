@@ -123,6 +123,7 @@ export function composeRuntimeLaunch(opts: {
   runInSandbox: boolean
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
+  maskedReadRoots?: string[]
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -145,7 +146,8 @@ export function composeRuntimeLaunch(opts: {
     stateSourceEnv: opts.stateSourceEnv,
     hostEnv: opts.hostEnv,
     sandboxMechanism: opts.sandboxMechanism,
-    mcpSocketPath: opts.mcpSocketPath
+    mcpSocketPath: opts.mcpSocketPath,
+    maskedReadRoots: opts.maskedReadRoots
   })
   const composed: RuntimeDef = { ...opts.runtime, args: [...opts.runtime.args], env: [...opts.runtime.env] }
 

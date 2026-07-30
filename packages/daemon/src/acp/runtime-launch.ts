@@ -7,7 +7,7 @@ export interface PreparedRuntimeLaunch {
   /** Sandboxed launches carry a sanitized environment; unsandboxed launches inherit the daemon environment. */
   inheritProcessEnv: boolean
   runtimeHome?: string
-  sandbox?: { mechanism: SandboxMechanism; writable: string[] }
+  sandbox?: { mechanism: SandboxMechanism; writable: string[]; maskedReadRoots?: string[] }
 }
 
 /** Daemon policy overrides the per-agent preference. Without an available host
@@ -36,7 +36,12 @@ export function prepareRuntimeLaunch(opts: {
   hostEnv?: NodeJS.ProcessEnv
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
+  /** Daemon-private roots every untrusted bwrap child must see as empty. */
+  maskedReadRoots?: string[]
 }): PreparedRuntimeLaunch {
+  if ((opts.maskedReadRoots?.length ?? 0) > 0 && (!opts.runInSandbox || opts.sandboxMechanism !== 'bwrap')) {
+    throw new Error('daemon-private read roots can only be masked by an enforced bwrap launch')
+  }
   if (!opts.runInSandbox && !opts.isolateHome) {
     return { env: opts.explicitEnv ?? {}, inheritProcessEnv: true }
   }
@@ -64,6 +69,10 @@ export function prepareRuntimeLaunch(opts: {
     env,
     inheritProcessEnv: false,
     runtimeHome,
-    sandbox: { mechanism: opts.sandboxMechanism!, writable }
+    sandbox: {
+      mechanism: opts.sandboxMechanism!,
+      writable,
+      ...(opts.maskedReadRoots?.length ? { maskedReadRoots: opts.maskedReadRoots } : {})
+    }
   }
 }

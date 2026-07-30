@@ -26,6 +26,7 @@ export interface ModelEnumeratorDeps {
   isolateAccountApps?: boolean
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
+  maskedReadRoots?: string[]
   /** Test seam — mirrors ProbeOptions.hostFactory. */
   hostFactory?: (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpHost
 }
@@ -56,7 +57,8 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
           hostEnv: process.env,
           runInSandbox: deps.sandboxMechanism !== undefined,
           sandboxMechanism: deps.sandboxMechanism,
-          mcpSocketPath: deps.mcpSocketPath
+          mcpSocketPath: deps.mcpSocketPath,
+          maskedReadRoots: deps.maskedReadRoots
         })
       } catch (err) {
         deps.log?.debug(`catalog: ${runtimeId} isolation unavailable, skipping enumeration: ${(err as Error).message}`)
