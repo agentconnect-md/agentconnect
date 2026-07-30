@@ -64,7 +64,7 @@ export default function AgentsView() {
   // its own — a combined "daemon · repo" cell truncated the repo whenever the daemon
   // name ran long.)
   const cols =
-    'grid-cols-[minmax(148px,1.6fr)_72px_minmax(80px,.85fr)_72px_minmax(90px,1.2fr)_minmax(140px,.95fr)_108px_88px_80px_28px]'
+    'grid-cols-[minmax(148px,1.6fr)_92px_minmax(80px,.85fr)_72px_minmax(90px,1.2fr)_minmax(140px,.95fr)_108px_88px_80px_28px]'
   // Resolve an agent's owning daemonId to the daemon's display name (never the raw
   // UUID/host); short id if it's not in the fleet, '—' if unplaced.
   const daemonName = (id: string) =>
@@ -621,9 +621,12 @@ export default function AgentsView() {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-[7px]">
+                <div className="flex min-w-0 items-center gap-[7px] overflow-hidden">
                   <span className="dot" style={{ background: s.dot }} />
-                  <span className="font-sans text-[12.5px] font-medium leading-normal" style={{ color: s.text }}>
+                  <span
+                    className="truncate font-sans text-[12.5px] font-medium leading-normal"
+                    style={{ color: s.text }}
+                  >
                     {s.label}
                   </span>
                 </div>
