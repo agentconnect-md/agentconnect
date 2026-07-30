@@ -108,6 +108,9 @@ export default function AddDaemonModal({
   const [saveErr, setSaveErr] = useState<string | null>(null)
   const provisioned = useRef(false)
   const provisionPending = useRef<Promise<DaemonConnectDto> | null>(null)
+  // Set the moment a dismissal is honoured, so an in-flight save can't act on a
+  // dialog the operator has already left.
+  const dismissed = useRef(false)
 
   // Mint a daemon + its API key + start command once when the modal opens. The ref
   // guard dedupes StrictMode's double-invoke so only one key is minted; we
@@ -138,8 +141,13 @@ export default function AddDaemonModal({
   // row so it doesn't linger as an offline daemon in the fleet. Once it has
   // connected we keep it (that path shows Done instead of Cancel).
   const cancel = useCallback(async () => {
-    if (cancelling) return
+    // Mid-save the write owns the dialog: dismissing now would strand the error
+    // banner a failure needs to render, and let a success chain into Edit agent
+    // after the operator asked to leave. The save settles in a moment and closes
+    // (or reports) on its own, so Escape is a no-op until then.
+    if (cancelling || saving) return
     setCancelling(true)
+    dismissed.current = true
     const pending = connect ?? (await provisionPending.current?.catch(() => null))
     if (pending && !connected) {
       try {
@@ -149,7 +157,7 @@ export default function AddDaemonModal({
       }
     }
     onClose()
-  }, [cancelling, connect, connected, deleteDaemon, onClose])
+  }, [cancelling, saving, connect, connected, deleteDaemon, onClose])
 
   useEffect(() => registerDismiss(() => void cancel()), [cancel, registerDismiss])
 
@@ -165,8 +173,14 @@ export default function AddDaemonModal({
       const next = name.trim()
       if (next && next !== row?.name) await renameDaemon(connect.daemonId, next)
       if (!sameSharing(sharing, DEFAULT_SHARING)) await saveSharing('daemons', connect.daemonId, sharing)
+      // A dialog dismissed while this was in flight must stay dismissed — closing
+      // again is harmless, but chaining into Edit agent would reopen a surface the
+      // operator already left. (`cancel` fences on `saving`, so this only catches a
+      // dismissal that raced the flag; the guard makes the ordering irrelevant.)
+      if (dismissed.current) return
       ;(onDone ?? onClose)()
     } catch (e) {
+      if (dismissed.current) return
       setSaveErr(e instanceof Error ? e.message : String(e))
       setSaving(false)
     }

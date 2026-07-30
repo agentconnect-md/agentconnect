@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   daemons: [] as Array<Record<string, unknown>>,
   provisionDaemon: vi.fn(),
   deleteDaemon: vi.fn(),
+  renameDaemon: vi.fn(),
+  saveSharing: vi.fn(),
   refresh: vi.fn()
 }))
 
@@ -17,6 +19,8 @@ vi.mock('@/lib/data-context', () => ({
     members: [],
     provisionDaemon: mocks.provisionDaemon,
     deleteDaemon: mocks.deleteDaemon,
+    renameDaemon: mocks.renameDaemon,
+    saveSharing: mocks.saveSharing,
     refresh: mocks.refresh
   })
 }))
@@ -45,6 +49,8 @@ beforeEach(() => {
   mocks.daemons = []
   mocks.provisionDaemon.mockReset()
   mocks.deleteDaemon.mockReset().mockResolvedValue(undefined)
+  mocks.renameDaemon.mockReset().mockResolvedValue(undefined)
+  mocks.saveSharing.mockReset().mockResolvedValue(undefined)
   mocks.refresh.mockReset()
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -87,5 +93,55 @@ describe('ModalProvider dismissal', () => {
 
     expect(mocks.deleteDaemon).toHaveBeenCalledWith('dmn_pending')
     expect(host.textContent).not.toContain('Cancelling…')
+  })
+
+  // Once the daemon is connected, Done writes the optional name / visibility. Escape
+  // must not dismiss out from under that write: the dialog owes the operator either
+  // its error banner or the chained follow-up, and a dismissed dialog can deliver
+  // neither.
+  it('ignores Escape while the connected daemon’s name is being saved', async () => {
+    mocks.provisionDaemon.mockResolvedValue({
+      daemonId: 'dmn_live',
+      command: 'npx -y @agentconnect.md/daemon run --api-url https://example.test --api-key test'
+    })
+    mocks.daemons = [{ daemonId: 'dmn_live', name: 'edge-1', status: 'online' }]
+    let settleRename!: () => void
+    mocks.renameDaemon.mockReturnValue(
+      new Promise<void>((resolve) => {
+        settleRename = () => resolve()
+      })
+    )
+
+    await act(async () =>
+      root.render(
+        <ModalProvider>
+          <Harness />
+        </ModalProvider>
+      )
+    )
+    await act(async () => host.querySelector<HTMLButtonElement>('button')?.click())
+    expect(host.textContent).toContain('Daemon connected')
+
+    // Rename it, then commit — React tracks the input's value, so set it through the
+    // native setter and let the synthetic onChange see the new value.
+    const nameInput = host.querySelector('input')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(nameInput, 'edge-2')
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const done = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Done')!
+    await act(async () => done.click())
+    expect(mocks.renameDaemon).toHaveBeenCalledWith('dmn_live', 'edge-2')
+
+    await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+    expect(host.textContent).toContain('Saving…')
+    expect(mocks.deleteDaemon).not.toHaveBeenCalled()
+
+    // Settling the write is what closes the dialog (the Harness trigger stays).
+    await act(async () => {
+      settleRename()
+      await Promise.resolve()
+    })
+    expect(host.textContent).not.toContain('Daemon connected')
   })
 })
