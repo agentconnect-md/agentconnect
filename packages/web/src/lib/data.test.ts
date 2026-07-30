@@ -5,9 +5,11 @@ import {
   agentPermissionDisplay,
   displayedEffort,
   enrichSessionWithAgent,
+  effectiveAgentStatus,
   effortChoicesFor,
   effortField,
   fastModeAvailableFor,
+  lifecycleStatus,
   modelCapability,
   modelLabel,
   permissionModeChoicesFor,
@@ -15,12 +17,35 @@ import {
   PLAYGROUND_CHANNEL_FILTER,
   resolvedPermissionMode,
   permissionModeOptions,
+  presentedDaemonStatus,
   resolveEffortForModel,
   sessionChannelFilterValue,
+  status,
   type DaemonRow,
   type RuntimeModelCatalog,
   type Session
 } from './data'
+
+describe('planned daemon lifecycle status', () => {
+  it('keeps online agents in the explicit restart or upgrade transition', () => {
+    expect(lifecycleStatus({ op: 'upgrade', status: 'pending' })).toBe('upgrading')
+    expect(lifecycleStatus({ op: 'restart', status: 'pending' })).toBe('restarting')
+    expect(lifecycleStatus({ op: 'upgrade', status: 'succeeded' })).toBeUndefined()
+    const upgrading = { status: 'offline' as const, lifecycleStatus: 'upgrading' as const }
+    expect(presentedDaemonStatus(upgrading)).toBe('upgrading')
+    expect(effectiveAgentStatus('online', upgrading)).toBe('upgrading')
+    expect(effectiveAgentStatus('online', { status: 'offline', lifecycleStatus: null })).toBe('offline')
+    expect(effectiveAgentStatus('paused', upgrading)).toBe('paused')
+  })
+
+  it('uses the transition tone while a pending daemon is still connected', () => {
+    const restarting = { status: 'online' as const, lifecycleStatus: 'restarting' as const }
+    expect(status(presentedDaemonStatus(restarting))).toMatchObject({
+      label: 'restarting',
+      text: '#9a6500'
+    })
+  })
+})
 
 describe('sessionChannelFilterValue', () => {
   it('groups live and persisted Playground conversations under one filter value', () => {

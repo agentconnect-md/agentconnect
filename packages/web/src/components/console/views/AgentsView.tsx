@@ -17,7 +17,7 @@ import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { AgentReachabilityOverview } from '@/components/console/AgentReachabilityOverview'
-import { isOnboardingSkipped, needsOnboarding } from '@/lib/onboarding'
+import { daemonCompletesOnboarding, isOnboardingSkipped, needsOnboarding } from '@/lib/onboarding'
 
 // Two-letter avatar initials for a creator name — first letters of the first two
 // words, or the first two chars of a single token.
@@ -33,8 +33,9 @@ function initialsOf(label: string): string {
 // with no natural order).
 type SortKey = 'agent' | 'status' | 'daemon' | 'creator' | 'repo' | 'sessions' | 'tokens' | 'cost'
 const NUMERIC_KEYS: SortKey[] = ['sessions', 'tokens', 'cost']
-// Status column sort order: live agents first, then paused, then offline.
-const STATUS_RANK: Record<string, number> = { online: 0, paused: 1, offline: 2 }
+// Status column sort order: live agents first, planned transitions next, then
+// deliberately paused agents and finally unexpected outages.
+const STATUS_RANK: Record<string, number> = { online: 0, upgrading: 1, restarting: 1, paused: 2, offline: 3 }
 
 // Parse a compact/formatted figure ("1.2M", "128K", "$3.40") back to a number so the
 // Tokens/Cost columns can sort by the mock/demo strings when live usage is absent.
@@ -93,7 +94,11 @@ export default function AgentsView() {
   const creatorText = (a: Agent) => creatorLabel(a.createdBy || null, me)
   const repoText = (a: Agent) => (a.workspace.mode === 'github' ? a.repo : 'scratch')
   const onlineCount = agents.filter(
-    (a) => effectiveAgentStatus(a.status, daemons.find((d) => d.daemonId === a.daemon)?.status) === 'online'
+    (a) =>
+      effectiveAgentStatus(
+        a.status,
+        daemons.find((d) => d.daemonId === a.daemon)
+      ) === 'online'
   ).length
   const currency = usage24h?.totals.costCurrency ?? undefined
   const isMobile = useIsMobile()
@@ -118,7 +123,7 @@ export default function AgentsView() {
     agentsLoading,
     daemonsLoading,
     agents.length,
-    daemons.some((daemon) => daemon.status === 'online')
+    daemons.some(daemonCompletesOnboarding)
   )
   const redirectToOnboarding = notInitialized && onboardingSkipped === false
   useEffect(() => {
@@ -151,14 +156,24 @@ export default function AgentsView() {
   const filtered = agents.filter((a) => {
     if (scope === 'mine' && (!me?.userId || a.createdBy !== me.userId)) return false
     if (seg === 'all') return true
-    const eff = effectiveAgentStatus(a.status, daemons.find((d) => d.daemonId === a.daemon)?.status)
-    return eff === seg
+    const eff = effectiveAgentStatus(
+      a.status,
+      daemons.find((d) => d.daemonId === a.daemon)
+    )
+    // A lifecycle transition is a temporary processing pause, not an outage.
+    // Keep it discoverable under Paused while its row names the exact operation.
+    return (eff === 'upgrading' || eff === 'restarting' ? 'paused' : eff) === seg
   })
   // Desktop sort applied on top of the scope/status filter. Mobile has no sort headers,
   // so it keeps `filtered` (natural order). A stable comparator on a copy — never mutate
   // the SWR-backed array.
   const statusRank = (a: Agent) =>
-    STATUS_RANK[effectiveAgentStatus(a.status, daemons.find((d) => d.daemonId === a.daemon)?.status)] ?? 3
+    STATUS_RANK[
+      effectiveAgentStatus(
+        a.status,
+        daemons.find((d) => d.daemonId === a.daemon)
+      )
+    ] ?? 3
   const visible = (() => {
     if (!sort) return filtered
     const dir = sort.dir === 'asc' ? 1 : -1
@@ -382,7 +397,7 @@ export default function AgentsView() {
             {filtered.map((a, i) => {
               const owning = daemons.find((d) => d.daemonId === a.daemon)
               const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
-              const s = status(effectiveAgentStatus(a.status, owning?.status))
+              const s = status(effectiveAgentStatus(a.status, owning))
               const agentInts = integrations.filter((int) => int.agentId === a.id)
               const first = agentInts[0]
               const n24 = sessions24h(a.id)
@@ -544,7 +559,7 @@ export default function AgentsView() {
           visible.map((a) => {
             const owning = daemons.find((d) => d.daemonId === a.daemon)
             const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
-            const s = status(effectiveAgentStatus(a.status, owning?.status))
+            const s = status(effectiveAgentStatus(a.status, owning))
             const sessionCount = sessions24h(a.id)
             // Keep the resolved name for sorting, assistive text, and the avatar's hint.
             const creatorName = creatorText(a)

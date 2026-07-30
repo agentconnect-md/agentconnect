@@ -338,7 +338,7 @@ export function AgentReachabilityOverview({
               const agent = agentById.get(agentId)!
               const node = layout.nodes.get(agentId)!
               const owningDaemon = daemons.find((daemon) => daemon.daemonId === agent.daemon)
-              const agentStatus = status(effectiveAgentStatus(agent.status, owningDaemon?.status))
+              const agentStatus = status(effectiveAgentStatus(agent.status, owningDaemon))
               const isFocus = focusAgentId === agentId
               const isFocusedCycleMember = focusedCycleAgentIds?.has(agentId) ?? false
               const dimmed = highlightedAgentIds !== null && !highlightedAgentIds.has(agentId)

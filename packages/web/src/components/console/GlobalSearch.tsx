@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { useRouter } from 'next/navigation'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { agentLabel, effectiveAgentStatus, status } from '@/lib/data'
+import { agentLabel, effectiveAgentStatus, presentedDaemonStatus, status } from '@/lib/data'
 import { cronHuman } from '@/lib/cron'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
@@ -88,7 +88,7 @@ export function GlobalSearch({
       // Gate "online" on the owning daemon being connected (as the Agents view does),
       // and surface the daemon's display NAME — never its host.
       const owning = daemonById.get(a.daemon)
-      const s = status(effectiveAgentStatus(a.status, owning?.status))
+      const s = status(effectiveAgentStatus(a.status, owning))
       return {
         key: `agent:${a.id}`,
         kind: 'agent',
@@ -115,7 +115,7 @@ export function GlobalSearch({
         kind: 'daemon',
         title: d.name,
         meta: [d.version || undefined, `${hosted} agent${hosted === 1 ? '' : 's'}`].filter(Boolean).join(' · '),
-        aux: status(d.status).label,
+        aux: status(presentedDaemonStatus(d)).label,
         href: orgPath(`/daemons/${d.daemonId}`)
       }
     })

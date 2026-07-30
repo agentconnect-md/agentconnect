@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { status, type DaemonRow } from '@/lib/data'
+import { presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
@@ -98,7 +98,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   const [saving, setSaving] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
 
-  const s = status(m.status)
+  const s = status(presentedDaemonStatus(m))
   const online = m.status === 'online'
   const load = Math.max(m.cpu, m.mem)
   const barColor = loadBarColor(load)
@@ -258,7 +258,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                     Restart
                   </button>
                 )}
-                {offline && (
+                {offline && !pending && (
                   <>
                     <button
                       className="dmi"

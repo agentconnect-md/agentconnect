@@ -13,6 +13,15 @@ empty states, toasts, or error messages. Rewrite the copy around what the user c
 needs to know; if an implementation detail does not change either, omit it. Technical
 component names belong in logs, developer tooling, and architecture documentation.
 
+## Planned daemon lifecycle status
+
+A pending daemon upgrade or restart is a planned transition, not an unexpected outage.
+While that lifecycle operation is pending, the console shows the daemon and its active
+placed agents as `upgrading` or `restarting` with the paused-state color. An agent that
+an operator explicitly paused remains `paused`. Once the operation succeeds, fails, or
+expires, the console returns to the daemon's current connection status; a daemon that
+did not return then reads `offline`.
+
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack
