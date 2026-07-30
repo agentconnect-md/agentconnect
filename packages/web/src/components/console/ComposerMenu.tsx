@@ -26,6 +26,8 @@ export function ComposerMenu({
   align = 'right',
   placement = 'up',
   leading,
+  trailing,
+  footer,
   triggerClassName,
   tooltips = true,
   onOpenChange,
@@ -41,6 +43,10 @@ export function ComposerMenu({
   placement?: 'up' | 'down'
   /** Optional node rendered before the label (e.g. an agent avatar / model mark). */
   leading?: ReactNode
+  /** Optional node rendered after the label, before the chevron (e.g. a "fast" badge). */
+  trailing?: ReactNode
+  /** Optional row rendered below the options, behind a divider (e.g. the Fast-mode toggle). */
+  footer?: ReactNode
   /** Overrides the default trigger look (e.g. the Home composer's design pills). */
   triggerClassName?: string
   /** Hover-tooltip the trigger + options (via the console Tooltip layer). Turn off
@@ -107,6 +113,7 @@ export function ComposerMenu({
       >
         {leading}
         <span>{selected?.label ?? value}</span>
+        {trailing}
         <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
       </button>
       {open && (
@@ -152,6 +159,7 @@ export function ComposerMenu({
                 )
               })}
             </div>
+            {footer && <div className="mt-1 border-t border-(--border-subtle)">{footer}</div>}
           </div>
         </>
       )}
