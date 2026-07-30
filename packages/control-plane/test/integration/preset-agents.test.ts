@@ -105,6 +105,7 @@ describe('org-creation seam (POST /orgs)', () => {
     ])
     const store: IconStore = {
       put: vi.fn(async () => undefined),
+      get: vi.fn(async () => null),
       delete: vi.fn(async () => undefined),
       publicUrl: vi.fn(() => 'https://images.example.test/x')
     }

@@ -17,7 +17,7 @@ public origin, and credentials are operator-supplied runtime configuration; the
 CP has no blob store of its own to fall back on. The contract here is:
 
 - **A neutral S3-compatible store.** The CP speaks the plain S3 REST subset
-  (`PutObject` / `DeleteObject`, SigV4 via `aws4fetch`), so any S3-compatible backend
+  (`PutObject` / `GetObject` / `DeleteObject`, SigV4 via `aws4fetch`), so any S3-compatible backend
   (a cloud object store in prod, a local one in dev/CI) works by pointing `S3_ENDPOINT` at
   it. Nothing is vendor-bound.
 - **Config-gated / opt-in.** The store is assembled only when the full `S3_*` group is
@@ -108,7 +108,7 @@ the fallback. (Org icons are console-only and need no daemon push.)
 
 **Client UX** (`AgentIconPicker`, reused for org): an _Upload_ button → file input
 (`accept="image/png,image/jpeg,image/webp"`) → **client-side square crop + resize to
-≤256×256** on a `<canvas>` → `canvas.toBlob('image/webp')` → `fetch(url, {method:'PUT',
+≤256×256** on a `<canvas>` → `canvas.toBlob('image/png')` → `fetch(url, {method:'PUT',
 body: blob})`. Resizing client-side means the server never needs `sharp`.
 
 **Server validation / security (client resizing is untrusted).** A caller can POST
@@ -133,6 +133,9 @@ arbitrary bytes straight at the API, so the CP re-validates independently:
   busted by `?v=<lastModified>`); glyph/runtime → rasterized PNG via `@resvg/resvg-js`.
   For an `image` icon the resolved `iconUrl` is the store URL directly, so Slack/browsers
   normally fetch the store and never hit this endpoint; the redirect is the fallback.
+  Registering a new Discord bot also applies these same bytes to both the bot-user
+  avatar and application icon. That external profile sync is cosmetic and best-effort:
+  a Discord or object-store failure is logged without rolling back the integration.
 - **Org** — `GET /v1/orgs/:id/icon`, mirroring the agent endpoint (public, unauth,
   version-root + `/v1` alias — an `<img src>` can't send a bearer, and a logo isn't
   sensitive). `image` → store URL; glyph → rasterized; null → deterministic default glyph.
@@ -150,5 +153,7 @@ arbitrary bytes straight at the API, so the CP re-validates independently:
 - A stored `image` variant that still carries `url` degrades gracefully to the
   runtime/glyph fallback. `Org.icon` is additive; existing orgs read null → the
   deterministic default.
+- Existing stored WebP agent icons remain displayable but Discord profile sync logs a
+  best-effort compatibility warning. Re-uploading normalizes the image to PNG.
 - The `AGENT_ICON_GLYPHS` / `AGENT_ICON_COLORS` vocab stays hand-mirrored across
   `protocol`, CP `agent-icon.ts`, and web `lib/agent-icon.ts` (unchanged here).

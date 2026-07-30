@@ -101,6 +101,7 @@ describe('PATCH /me', () => {
   it('uploads and removes a custom profile photo without losing the OIDC fallback', async () => {
     const store: IconStore = {
       put: vi.fn(async () => undefined),
+      get: vi.fn(async () => null),
       delete: vi.fn(async () => undefined),
       publicUrl: vi.fn((key, version) => `https://images.example.test/${key}?v=${version}`)
     }

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId } from '../../domain/ids.js'
-import { buildAgentIconSvg } from '../../agents/agent-icon-render.js'
+import { renderAgentIconPng } from '../../agents/agent-icon-render.js'
 import { agentIconKey, joinPublicUrl } from '../../icons/icon-store.js'
 
 /**
@@ -46,13 +46,9 @@ export function agentIconRoutes(deps: HttpDeps) {
           )
           return reply.redirect(url, 302)
         }
-        const svg = buildAgentIconSvg(agent.icon?.kind === 'image' ? null : agent.icon, agent.runtime)
         let png: Buffer
         try {
-          // Lazy import so a rasterizer load failure degrades this one endpoint
-          // (500) rather than blocking CP boot.
-          const { Resvg } = await import('@resvg/resvg-js')
-          png = new Resvg(svg, { fitTo: { mode: 'width', value: 128 } }).render().asPng()
+          png = await renderAgentIconPng(agent.icon?.kind === 'image' ? null : agent.icon, agent.runtime)
         } catch (err) {
           req.log.error({ err }, 'agent icon render failed')
           return reply.code(500).send()

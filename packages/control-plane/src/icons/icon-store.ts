@@ -24,6 +24,8 @@ export interface IconStoreConfig {
 export interface IconStore {
   /** Overwrite the object at `key` with `bytes` (path-style PUT). Throws on non-2xx. */
   put(key: string, bytes: Uint8Array, contentType: string): Promise<void>
+  /** Read the object at `key` for a platform profile sync. Null means absent. */
+  get(key: string): Promise<{ bytes: Uint8Array; contentType: string } | null>
   /** Delete the object at `key`. A 404 is treated as success (idempotent). */
   delete(key: string): Promise<void>
   /** The public URL an `<img>`/Slack fetches. `version` cache-busts (e.g. updatedAt epoch). */
@@ -96,6 +98,18 @@ class S3IconStore implements IconStore {
       const detail = await res.text().catch(() => '')
       throw new Error(`icon store PUT ${key} failed: ${res.status} ${detail.slice(0, 200)}`)
     }
+  }
+
+  async get(key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+    const res = await this.aws.fetch(this.objectUrl(key))
+    if (res.status === 404) return null
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`icon store GET ${key} failed: ${res.status} ${detail.slice(0, 200)}`)
+    }
+    const contentType = res.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+    if (!contentType) throw new Error(`icon store GET ${key} returned no content type`)
+    return { bytes: new Uint8Array(await res.arrayBuffer()), contentType }
   }
 
   async delete(key: string): Promise<void> {

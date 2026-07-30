@@ -105,3 +105,13 @@ export function buildAgentIconSvg(icon: AgentIcon | null, runtime: string | null
   // runtime kind (and null/legacy default): the brand mark on a dark plate.
   return `${open}<rect width="64" height="64" fill="${DARK_PLATE}"/>${centered(runtimeMarkInner(runtime ?? ''), 0.62)}</svg>`
 }
+
+/** Rasterize the console descriptor for consumers that require uploaded image
+ * bytes rather than an SVG or public URL (the icon endpoint and Discord bot setup).
+ * Keep the native module lazy so a load failure degrades only the calling feature,
+ * never Control Plane boot. */
+export async function renderAgentIconPng(icon: AgentIcon | null, runtime: string | null, width = 128): Promise<Buffer> {
+  const { Resvg } = await import('@resvg/resvg-js')
+  const svg = buildAgentIconSvg(icon, runtime)
+  return Buffer.from(new Resvg(svg, { fitTo: { mode: 'width', value: width } }).render().asPng())
+}
