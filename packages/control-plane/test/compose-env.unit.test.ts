@@ -20,6 +20,18 @@ function serviceEnv(name: string): string[] {
 }
 
 describe('compose.yaml service environment', () => {
+  it('passes self-hosted preset and platform Slack configuration to the control plane', () => {
+    expect(serviceEnv('control-plane')).toEqual(
+      expect.arrayContaining([
+        'PRESET_AGENTS_ENABLED',
+        'SLACK_PLATFORM_APP_ID',
+        'SLACK_PLATFORM_CLIENT_ID',
+        'SLACK_PLATFORM_CLIENT_SECRET',
+        'SLACK_PLATFORM_SIGNING_SECRET'
+      ])
+    )
+  })
+
   it('passes SOCIAL_PROVIDERS to the console, which owns the decision', () => {
     expect(serviceEnv('web')).toContain('SOCIAL_PROVIDERS')
   })
