@@ -56,7 +56,8 @@ The blob write and the owner-row `icon` update are two systems, so ordering is c
 transient failure **never leaves a broken avatar** — at worst an orphaned object, which the
 next upload to the same (stable) key overwrites:
 
-- **Upload (PUT):** write the object **first**, then flip the descriptor to `{kind:'image'}`.
+- **Upload (PUT):** write the object **first**, then flip the descriptor to `image`
+  (agent uploads also receive a fresh opaque generation).
   - store OK, DB fails → descriptor unchanged (still the old glyph); the fresh object is
     orphaned but harmless. The user keeps a working icon; a retry re-runs cleanly.
   - store fails → return the error before any DB write; nothing changed.
@@ -73,12 +74,13 @@ next upload to the same (stable) key overwrites:
 
 The wire union stays a discriminated union on `kind`, with two changes:
 
-- `image` **carries no URL**. `{ kind: 'image' }` means "an uploaded icon in the object
-  store". The display/serve URL is resolved separately (the store's public URL for the
-  owner's key) and surfaced as the DTO `iconUrl` / the daemon-facing `AgentSpec.iconUrl`.
-  It is set **only** by the upload route (it carries bytes), never a create/update body —
-  so the create/update DTO (`AgentIconBody`) omits `image`; the output DTO
-  (`AgentIconDto`) includes it.
+- `image` **carries no URL**. It means "an uploaded icon in the object store" and may
+  include an opaque `generation` that distinguishes successive writes to an agent's
+  stable object key (legacy rows omit it). The display/serve URL is resolved separately
+  (the store's public URL for the owner's key) and surfaced as the DTO `iconUrl` / the
+  daemon-facing `AgentSpec.iconUrl`. It is set **only** by the upload route (it carries
+  bytes), never a create/update body — so the create/update DTO (`AgentIconBody`) omits
+  `image`; the output DTO (`AgentIconDto`) includes it.
 - `runtime` **stays in the union and the renderer** as the meaning of a null/legacy icon
   and the render fallback — but it is **removed from the picker**. (Dropping the union
   member would break every legacy agent whose icon is null or `runtime`.)

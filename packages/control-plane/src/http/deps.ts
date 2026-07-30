@@ -264,8 +264,8 @@ export interface HttpDeps {
   /** Validates a Telegram token, derives its bot name, and checks that Group Privacy
    *  Mode is disabled before the integration is installed. */
   verifyTelegramBot: TelegramBotVerifier
-  /** Applies a newly registered Telegram bot's Agent icon to its profile.
-   *  Cosmetic and best-effort: install survives a sync failure. */
+  /** Applies an Agent icon to a Telegram bot profile.
+   *  Cosmetic and best-effort: install/icon updates survive a sync failure. */
   syncTelegramBotIcon?: TelegramBotIconSyncer
   /** Validates a pasted Discord bot token against `GET /users/@me` (and derives the bot
    *  name from it when the install omits one). Optional/injectable so tests stay offline
@@ -274,8 +274,8 @@ export interface HttpDeps {
   /** Ensures the Discord application has Message Content enabled before credentials
    *  are stored. Test composition injects an offline success stub. */
   ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer
-  /** Applies a newly registered Discord bot's Agent icon to its bot-user avatar and
-   *  application icon. Cosmetic and best-effort: install survives a sync failure. */
+  /** Applies an Agent icon to a Discord bot-user avatar and application icon.
+   *  Cosmetic and best-effort: install/icon updates survive a sync failure. */
   syncDiscordBotIcon?: DiscordBotIconSyncer
   /** Validates a pasted Feishu appId + appSecret via the tenant-access-token exchange
    *  (and derives the bot name from `bot/v3/info` when the install omits one).

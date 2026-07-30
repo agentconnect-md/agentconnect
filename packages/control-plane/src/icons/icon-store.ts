@@ -4,8 +4,9 @@
  * A neutral S3-compatible client (SigV4 over `aws4fetch`), never bound to a vendor:
  * hosted services and local development stores differ only by the configured
  * `endpoint`. Uploaded icon bytes live here, NOT in Postgres; the
- * agent/org row keeps just the `{kind:'image'}` descriptor, and the display/serve
- * URL is the store's public URL for the owner's key (→ `<img src>` + Slack icon_url).
+ * agent/org row keeps only the image descriptor (plus an optional opaque generation),
+ * and the display/serve URL is the store's public URL for the owner's key
+ * (→ `<img src>` + Slack icon_url).
  *
  * Assembled ONLY when the full `S3_*` config is present (see container.ts). Absent ⇒
  * `undefined`, the upload routes are not mounted, and the console hides Upload.
