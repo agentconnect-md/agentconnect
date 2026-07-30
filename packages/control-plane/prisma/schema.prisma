@@ -793,9 +793,9 @@ enum ActivityState {
 
 // Per-session visibility tier (docs/designs/session-visibility.md §1): 'org'
 // (default) = visible to every member who can view the owning agent; 'private'
-// = session owner (identity match) + org owners only. Composes with agent
-// visibility — it never widens it. Share-by-link is deliberately NOT a member
-// of this enum (§8).
+// = session owner (identity match) ONLY — no role override, org owners
+// included. Composes with agent visibility — it never widens it. Share-by-link
+// is deliberately NOT a member of this enum (§8).
 enum SessionVisibility {
   private
   org

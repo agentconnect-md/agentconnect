@@ -103,7 +103,10 @@ function sessionRelation(s: { id: string; agentId: string; title: string | null 
 
 /**
  * Who may re-classify a session (§4.3): its recorded owner (identity match) and
- * org owners. Collaborators and viewers cannot re-classify other people's
+ * org owners. The route view-gates first and private sessions carry no role
+ * override, so the org-owner arm effectively reaches only org-visible sessions
+ * (they may pull a channel session private, never read or widen someone else's
+ * private one). Collaborators and viewers cannot re-classify other people's
  * sessions — but note this is deliberately NOT the blanket `denyViewerWrite`
  * guard used elsewhere: the grant follows OWNERSHIP, so a viewer-role member who
  * owns a session keeps control of their own DM's visibility.
@@ -619,7 +622,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Set session visibility',
           description:
-            'Reclassifies a session as private or org-visible. Allowed for the session owner and org owners. Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.',
+            'Reclassifies a session as private or org-visible. Allowed for the session owner, and for org owners on sessions they can view (private sessions are visible only to their owner). Tightening cascades to descendant sessions and stops future agent-memory capture once the owning daemons acknowledge; memory already distilled is not retracted.',
           operationId: 'setSessionVisibility',
           params: IdParam,
           body: SetSessionVisibilityBody,

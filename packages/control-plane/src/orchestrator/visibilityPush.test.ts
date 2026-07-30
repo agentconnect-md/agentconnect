@@ -21,6 +21,7 @@ function session(over: Partial<SessionMetaRecord> = {}): SessionMetaRecord {
     agentId: AGENT,
     visibility: 'private',
     ownerIdentity: 'user:u1',
+    visibilitySource: 'explicit',
     visibilityRev: 2,
     visibilityAckedRev: -1,
     ...over
@@ -435,9 +436,26 @@ describe('isApplied — the §4.3 cutover state', () => {
   })
 
   it('treats revision 0 as needing an ack — -1 means never acknowledged', async () => {
+    // Rev 0 rows that ARE pushed at ingest (A2A children: inherited /
+    // inherited_pending) genuinely wait for their daemon's confirmation.
     const { push } = deps()
-    expect(await push.isApplied([session({ visibilityRev: 0, visibilityAckedRev: -1 })])).toBe(false)
-    expect(await push.isApplied([session({ visibilityRev: 0, visibilityAckedRev: 0 })])).toBe(true)
+    expect(
+      await push.isApplied([session({ visibilitySource: 'inherited', visibilityRev: 0, visibilityAckedRev: -1 })])
+    ).toBe(false)
+    expect(
+      await push.isApplied([session({ visibilitySource: 'inherited', visibilityRev: 0, visibilityAckedRev: 0 })])
+    ).toBe(true)
+  })
+
+  it('is vacuously applied for an initial §4.2 classification — nothing was pushed', async () => {
+    // A default-classified row is never pushed at ingest (the daemon holds the
+    // layer-1 local state already), so its -1 watermark is not a pending
+    // cutover. Without this, every fresh webchat/DM session shows "Applying…"
+    // until its daemon happens to re-register.
+    const { push } = deps()
+    expect(
+      await push.isApplied([session({ visibilitySource: 'default', visibilityRev: 0, visibilityAckedRev: -1 })])
+    ).toBe(true)
   })
 
   it('is vacuously applied ONLY for an unplaced agent — nothing runs it, nothing captures', async () => {

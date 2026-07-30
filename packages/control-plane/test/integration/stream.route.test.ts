@@ -65,8 +65,9 @@ describe('session event stream', () => {
     })
     await seedSessionMeta(prisma, 'session-shared', agentId, { daemonId })
 
-    // devAuth's principal is DEFAULT_OWNER_ID, whose org role is `owner` — the
-    // governance exception would see everything, so subscribe as a collaborator.
+    // Subscribe as a collaborator whose identity does not match the session's
+    // ownerIdentity — the only thing that grants private-session reads (there
+    // is no role override on sessions).
     const email = 'stream-collaborator@acme.dev'
     const { userId } = await new PgUserRepo(prisma).provisionOidcUser({
       oidcSubject: 'stream-collaborator',

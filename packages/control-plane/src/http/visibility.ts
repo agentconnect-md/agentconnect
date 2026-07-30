@@ -64,13 +64,16 @@ export function identitySetOf(ctx: ViewCtx): Set<string> {
   return new Set([`user:${ctx.userId}`])
 }
 
-/** Can this caller SEE the session? Any one arm suffices. An unowned private
- *  session (`ownerIdentity` null — an owner-orphan) is visible to org owners
- *  only: fail closed, never widen because ownership could not be resolved. */
+/** Can this caller SEE the session? Any one arm suffices. Unlike `canView`
+ *  there is deliberately NO org-owner governance override: a private session
+ *  is a DM-grade transcript, so only its identity-matched owner reads it —
+ *  role grants no access. An unowned private session (`ownerIdentity` null —
+ *  an owner-orphan) is therefore visible to NO ONE: fail closed, never widen
+ *  because ownership could not be resolved (identity linking, §7, is what
+ *  lights such rows up retroactively). */
 export function canViewSession(s: SessionViewable, ctx: ViewCtx, identitySet: ReadonlySet<string>): boolean {
   return (
-    ctx.role === 'owner' || // governance override — owners see everything
     s.visibility === 'org' || // default: visible to whoever can view the agent
-    (s.ownerIdentity != null && identitySet.has(s.ownerIdentity)) // private: owner match
+    (s.ownerIdentity != null && identitySet.has(s.ownerIdentity)) // private: owner match only
   )
 }

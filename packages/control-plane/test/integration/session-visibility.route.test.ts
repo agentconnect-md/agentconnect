@@ -58,7 +58,7 @@ describe('session visibility — list & detail', () => {
       visibility: 'private',
       ownerIdentity: `user:${theirs}`
     })
-    // No resolvable owner (§2 owner-orphan): org owners only.
+    // No resolvable owner (§2 owner-orphan): visible to no one — fail closed.
     const orphanSession = await seedSessionMeta(prisma, `s-orphan-${randomUUID()}`, agentId, {
       visibility: 'private'
     })
@@ -74,10 +74,15 @@ describe('session visibility — list & detail', () => {
     expect((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions/${otherSession}` })).statusCode).toBe(404)
     expect((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions/${orphanSession}` })).statusCode).toBe(404)
 
-    // The governance exception: an org owner sees every session in the org.
+    // No governance override on sessions: an org owner filters exactly like any
+    // other member — a private transcript is its owner's, role grants nothing.
     const ownerApp = appAs(owner)
     const asOwner = sessionIds((await ownerApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json())
-    expect(asOwner).toEqual(expect.arrayContaining([orgSession, ownSession, otherSession, orphanSession]))
+    expect(asOwner).toContain(orgSession)
+    expect(asOwner).not.toContain(ownSession)
+    expect(asOwner).not.toContain(otherSession)
+    expect(asOwner).not.toContain(orphanSession)
+    expect((await ownerApp.app.inject({ method: 'GET', url: `${ORG}/sessions/${otherSession}` })).statusCode).toBe(404)
   })
 
   it('keeps keyset pagination stable under the visibility predicate', async () => {
@@ -140,7 +145,7 @@ describe('session visibility — list & detail', () => {
 })
 
 describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
-  it('lets the recorded owner pull an org session private, and org owners reclassify anything', async () => {
+  it('lets the recorded owner pull an org session private and publish it back', async () => {
     const initiator = await makeUser('sv-put-owner', 'collaborator')
     const orgOwner = await makeUser('sv-put-admin', 'owner')
     const daemonId = await seedDaemon(prisma, randomUUID())
@@ -150,7 +155,8 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     })
 
     // The initiator of an `org` channel session may pull it private…
-    const res = await appAs(initiator).app.inject({
+    const initiatorApp = appAs(initiator)
+    const res = await initiatorApp.app.inject({
       method: 'PUT',
       url: `${ORG}/sessions/${session}/visibility`,
       payload: { visibility: 'private' }
@@ -158,8 +164,18 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ id: session, visibility: 'private', visibilityRev: 1 })
 
-    // …and an org owner may publish it back (widening is explicit, never cascaded).
-    const back = await appAs(orgOwner).app.inject({
+    // …after which even an org owner cannot reach it (no view ⇒ no reclassify;
+    // 404, never 403 — no existence oracle)…
+    const denied = await appAs(orgOwner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${session}/visibility`,
+      payload: { visibility: 'org' }
+    })
+    expect(denied.statusCode).toBe(404)
+
+    // …and only the owner themselves may publish it back (widening is explicit,
+    // never cascaded).
+    const back = await initiatorApp.app.inject({
       method: 'PUT',
       url: `${ORG}/sessions/${session}/visibility`,
       payload: { visibility: 'org' }
@@ -323,7 +339,11 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
 
-    const root = await seedSessionMeta(prisma, `s-root-${randomUUID()}`, agentId, {})
+    // The root keeps the acting user's identity: once tightened, only its
+    // identity-matched owner can still see it to widen it back.
+    const root = await seedSessionMeta(prisma, `s-root-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${owner}`
+    })
     const child = await seedSessionMeta(prisma, `s-kid-${randomUUID()}`, agentId, { parentSessionId: root })
     const grandchild = await seedSessionMeta(prisma, `s-grandkid-${randomUUID()}`, agentId, {
       parentSessionId: child

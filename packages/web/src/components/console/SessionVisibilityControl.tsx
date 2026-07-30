@@ -23,7 +23,7 @@ import { Spinner } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { putSessionVisibility, type SessionVisibility } from '@/lib/api'
 
-export const SESSION_PRIVATE_TITLE = 'Private session — visible only to its owner and org owners'
+export const SESSION_PRIVATE_TITLE = 'Private session — visible only to its owner'
 
 export function SessionVisibilityControl({
   sessionId,
