@@ -126,8 +126,16 @@ already-sized page.
 `ownerUserId` supplies the resource-ownership arm; `createdByUserId` remains
 immutable creation attribution. Removing a member transfers every owned
 visibility carrier to a selected remaining organization owner and prunes every
-share vector before deleting the membership. Concurrent last-owner mutation
-remains tracked in
+share vector before deleting the membership.
+
+Removal locks the departing and recipient memberships exclusively, in stable
+order, before scanning resources. Resource creates and sharing writes hold
+compatible shared membership locks and recheck the actor, initial owner, and
+share targets inside the resource-write transaction. This prevents a queued
+write from persisting a departed stable user ID after the removal scan, and
+prevents a concurrent removal from invalidating the selected recipient.
+
+Concurrent last-owner mutation remains tracked in
 [#271](https://github.com/agentconnect-md/agentconnect/issues/271).
 
 ## 7. Verification

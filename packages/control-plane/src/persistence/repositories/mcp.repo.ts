@@ -13,7 +13,7 @@
 import { mintGrantKey } from '../../orchestrator/mcpProvider.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { McpProvider, McpGrant } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   McpProviderRepo,
   McpProviderRecord,
@@ -31,6 +31,7 @@ import type {
 import { visibilityWhere } from '../../authorization/policy.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
+import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
 function toProviderRecord(p: McpProvider): McpProviderRecord {
   return {
@@ -54,20 +55,28 @@ export class PgMcpProviderRepo implements McpProviderRepo {
 
   async create(input: CreateMcpProviderInput): Promise<McpProviderRecord> {
     const ownerUserId = input.ownerUserId ?? input.createdByUserId
-    const p = await this.db.mcpProvider.create({
-      data: {
+    return withAmbientTx(this.db, async (tx) => {
+      const memberships = await lockResourceWriteMemberships(tx, {
         orgId: input.orgId,
-        name: input.name,
-        url: input.url,
-        ...(input.kind ? { kind: input.kind } : {}),
-        ...(input.transport ? { transport: input.transport } : {}),
-        ...(input.visibility ? { visibility: input.visibility } : {}),
-        ...(input.sharedWith ? { sharedWith: input.sharedWith } : {}),
-        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
-        ...(ownerUserId ? { ownerUserId } : {})
-      }
+        actorUserId: input.createdByUserId,
+        ownerUserId,
+        sharedWith: input.sharedWith
+      })
+      const p = await tx.mcpProvider.create({
+        data: {
+          orgId: input.orgId,
+          name: input.name,
+          url: input.url,
+          ...(input.kind ? { kind: input.kind } : {}),
+          ...(input.transport ? { transport: input.transport } : {}),
+          ...(input.visibility ? { visibility: input.visibility } : {}),
+          ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
+          ...(ownerUserId ? { ownerUserId } : {})
+        }
+      })
+      return toProviderRecord(p)
     })
-    return toProviderRecord(p)
   }
 
   async get(id: string): Promise<McpProviderRecord | null> {
@@ -87,13 +96,22 @@ export class PgMcpProviderRepo implements McpProviderRepo {
 
   async setSharing(
     id: string,
-    sharing: { visibility: ResourceVisibility; sharedWith: string[] }
+    sharing: { visibility: ResourceVisibility; sharedWith: string[] },
+    byUserId?: string
   ): Promise<McpProviderRecord> {
-    const p = await this.db.mcpProvider.update({
-      where: { id },
-      data: { visibility: sharing.visibility, sharedWith: sharing.sharedWith }
+    return withAmbientTx(this.db, async (tx) => {
+      const existing = await tx.mcpProvider.findUniqueOrThrow({ where: { id }, select: { orgId: true } })
+      const memberships = await lockResourceWriteMemberships(tx, {
+        orgId: existing.orgId,
+        actorUserId: byUserId,
+        sharedWith: sharing.sharedWith
+      })
+      const p = await tx.mcpProvider.update({
+        where: { id },
+        data: { visibility: sharing.visibility, sharedWith: memberships.sharedWith ?? [] }
+      })
+      return toProviderRecord(p)
     })
-    return toProviderRecord(p)
   }
 
   async listAll(): Promise<McpProviderRecord[]> {

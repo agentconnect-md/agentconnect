@@ -8,7 +8,7 @@
  * epochs (§3.1, §3.13). The first auth creates the row at epoch 1.
  */
 import type { Prisma, Daemon, User } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   DaemonRepo,
   DaemonRecord,
@@ -21,6 +21,7 @@ import type {
 import { visibilityWhere } from '../../authorization/policy.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import type { Heartbeat, FactsMcpServer } from '@agentconnect.md/protocol'
+import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
 // The daemon row plus its joined creator + last-modifier users — every read that
 // feeds `toRecord` carries both joins so the console never needs a second query.
@@ -65,20 +66,27 @@ export class PgDaemonRepo implements DaemonRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async provision(daemonId: DaemonId, orgId: OrgId, createdByUserId?: string): Promise<DaemonRecord> {
-    const daemon = await this.db.daemon.create({
-      data: {
-        id: daemonId,
+    return withAmbientTx(this.db, async (tx) => {
+      await lockResourceWriteMemberships(tx, {
         orgId,
-        status: 'provisioned', // sessionEpoch defaults to 0 (§4.1)
-        // Console-provisioned: the provisioning principal is both creator and first
-        // last-modifier (lastModifiedAt defaults to now = createdAt).
-        ...(createdByUserId
-          ? { createdByUserId, ownerUserId: createdByUserId, lastModifiedByUserId: createdByUserId }
-          : {})
-      },
-      include: withUsers
+        actorUserId: createdByUserId,
+        ownerUserId: createdByUserId
+      })
+      const daemon = await tx.daemon.create({
+        data: {
+          id: daemonId,
+          orgId,
+          status: 'provisioned', // sessionEpoch defaults to 0 (§4.1)
+          // Console-provisioned: the provisioning principal is both creator and
+          // first last-modifier (lastModifiedAt defaults to now = createdAt).
+          ...(createdByUserId
+            ? { createdByUserId, ownerUserId: createdByUserId, lastModifiedByUserId: createdByUserId }
+            : {})
+        },
+        include: withUsers
+      })
+      return toRecord(daemon)
     })
-    return toRecord(daemon)
   }
 
   async upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }> {
@@ -175,19 +183,27 @@ export class PgDaemonRepo implements DaemonRepo {
     sharing: { visibility: DaemonRecord['visibility']; sharedWith: string[] },
     byUserId?: string
   ): Promise<DaemonRecord> {
-    // A sharing change is a human edit — advance the last-modified audit (editor
-    // stamped when known; absent under devAuth ⇒ leave the prior editor as-is).
-    const daemon = await this.db.daemon.update({
-      where: { id: daemonId },
-      data: {
-        visibility: sharing.visibility,
-        sharedWith: sharing.sharedWith,
-        lastModifiedAt: new Date(),
-        ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
-      },
-      include: withUsers
+    return withAmbientTx(this.db, async (tx) => {
+      const existing = await tx.daemon.findUniqueOrThrow({ where: { id: daemonId }, select: { orgId: true } })
+      const memberships = await lockResourceWriteMemberships(tx, {
+        orgId: existing.orgId,
+        actorUserId: byUserId,
+        sharedWith: sharing.sharedWith
+      })
+      // A sharing change is a human edit — advance the last-modified audit
+      // (editor stamped when known; absent under devAuth ⇒ leave it unchanged).
+      const daemon = await tx.daemon.update({
+        where: { id: daemonId },
+        data: {
+          visibility: sharing.visibility,
+          sharedWith: memberships.sharedWith ?? [],
+          lastModifiedAt: new Date(),
+          ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+        },
+        include: withUsers
+      })
+      return toRecord(daemon)
     })
-    return toRecord(daemon)
   }
 
   async delete(daemonId: DaemonId): Promise<void> {

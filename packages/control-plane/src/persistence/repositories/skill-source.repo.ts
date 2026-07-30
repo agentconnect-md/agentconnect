@@ -9,7 +9,7 @@
  * token path. A Shareable, so the same visibility policy as agents/MCP applies.
  */
 import type { SkillSource } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   SkillSourceRepo,
   SkillSourceRecord,
@@ -20,6 +20,7 @@ import type {
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import { OrgId } from '../../domain/ids.js'
+import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
 function toRecord(s: SkillSource): SkillSourceRecord {
   return {
@@ -45,22 +46,30 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
 
   async create(input: CreateSkillSourceInput): Promise<SkillSourceRecord> {
     const ownerUserId = input.ownerUserId ?? input.createdByUserId
-    const s = await this.db.skillSource.create({
-      data: {
+    return withAmbientTx(this.db, async (tx) => {
+      const memberships = await lockResourceWriteMemberships(tx, {
         orgId: input.orgId,
-        name: input.name,
-        source: input.source,
-        ...(input.githubRepoId !== undefined ? { githubRepoId: input.githubRepoId } : {}),
-        ...(input.ref !== undefined ? { ref: input.ref } : {}),
-        ...(input.subDir !== undefined ? { subDir: input.subDir } : {}),
-        ...(input.skills ? { skills: input.skills } : {}),
-        ...(input.visibility ? { visibility: input.visibility } : {}),
-        ...(input.sharedWith ? { sharedWith: input.sharedWith } : {}),
-        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
-        ...(ownerUserId ? { ownerUserId } : {})
-      }
+        actorUserId: input.createdByUserId,
+        ownerUserId,
+        sharedWith: input.sharedWith
+      })
+      const s = await tx.skillSource.create({
+        data: {
+          orgId: input.orgId,
+          name: input.name,
+          source: input.source,
+          ...(input.githubRepoId !== undefined ? { githubRepoId: input.githubRepoId } : {}),
+          ...(input.ref !== undefined ? { ref: input.ref } : {}),
+          ...(input.subDir !== undefined ? { subDir: input.subDir } : {}),
+          ...(input.skills ? { skills: input.skills } : {}),
+          ...(input.visibility ? { visibility: input.visibility } : {}),
+          ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
+          ...(ownerUserId ? { ownerUserId } : {})
+        }
+      })
+      return toRecord(s)
     })
-    return toRecord(s)
   }
 
   async get(id: string): Promise<SkillSourceRecord | null> {
@@ -85,13 +94,22 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
 
   async setSharing(
     id: string,
-    sharing: { visibility: ResourceVisibility; sharedWith: string[] }
+    sharing: { visibility: ResourceVisibility; sharedWith: string[] },
+    byUserId?: string
   ): Promise<SkillSourceRecord> {
-    const s = await this.db.skillSource.update({
-      where: { id },
-      data: { visibility: sharing.visibility, sharedWith: sharing.sharedWith }
+    return withAmbientTx(this.db, async (tx) => {
+      const existing = await tx.skillSource.findUniqueOrThrow({ where: { id }, select: { orgId: true } })
+      const memberships = await lockResourceWriteMemberships(tx, {
+        orgId: existing.orgId,
+        actorUserId: byUserId,
+        sharedWith: sharing.sharedWith
+      })
+      const s = await tx.skillSource.update({
+        where: { id },
+        data: { visibility: sharing.visibility, sharedWith: memberships.sharedWith ?? [] }
+      })
+      return toRecord(s)
     })
-    return toRecord(s)
   }
 
   async update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord> {

@@ -6,7 +6,7 @@
  * are provisioned + added to the default org with a role; agents are seeded with
  * a visibility + share set. Every request runs through the real HTTP stack.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
@@ -521,6 +521,89 @@ describe('member removal transfers resource ownership (transactional, §8)', () 
     expect(
       (await appAs(DEFAULT_OWNER_ID).app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).statusCode
     ).toBe(200)
+  })
+
+  it('serializes removal ahead of a queued resource create so reinviting cannot restore ownership', async () => {
+    const sub = `ownership-race-${randomUUID()}`
+    const email = `${sub}@acme.dev`
+    const departing = await makeUser(sub, 'collaborator')
+    const agentName = `ownership-race-${randomUUID().slice(0, 8)}`
+    const blockerAgentId = randomUUID()
+    await seedAgent(prisma, blockerAgentId, {
+      visibility: 'restricted',
+      createdByUserId: departing,
+      ownerUserId: departing
+    })
+    const ownerApp = appAs(DEFAULT_OWNER_ID)
+    const departingApp = appAs(departing)
+
+    let releaseAgent!: () => void
+    let markAgentLocked!: () => void
+    const release = new Promise<void>((resolve) => (releaseAgent = resolve))
+    const agentLocked = new Promise<void>((resolve) => (markAgentLocked = resolve))
+    const blocker = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "agent"
+          WHERE "id" = ${blockerAgentId}
+          FOR UPDATE
+        `
+        markAgentLocked()
+        await release
+      },
+      { timeout: 20_000 }
+    )
+    await agentLocked
+
+    let released = false
+    const unlock = () => {
+      if (released) return
+      released = true
+      releaseAgent()
+    }
+    const waitingLocks = async () => {
+      const rows = await prisma.$queryRaw<Array<{ waiting: bigint }>>`
+        SELECT count(*)::bigint AS "waiting"
+        FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock'
+      `
+      return Number(rows[0]?.waiting ?? 0n)
+    }
+
+    const pending: Promise<unknown>[] = []
+    try {
+      const removal = ownerApp.app.inject({ method: 'DELETE', url: `${ORG}/members/${departing}` })
+      pending.push(removal)
+      // Removal has already locked the departing membership FOR UPDATE, then
+      // parks while transferring this existing agent row.
+      await vi.waitFor(async () => expect(await waitingLocks()).toBeGreaterThanOrEqual(1))
+
+      // This request can still pass org-scope's MVCC read, but its persistence
+      // transaction must queue on removal's exclusive membership lock.
+      const create = departingApp.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents`,
+        payload: { name: agentName, runtime: 'claude', visibility: 'restricted' }
+      })
+      pending.push(create)
+      await vi.waitFor(async () => expect(await waitingLocks()).toBeGreaterThanOrEqual(2))
+
+      unlock()
+      const [removed, created] = await Promise.all([removal, create])
+      expect(removed.statusCode).toBe(204)
+      expect(created.statusCode).toBe(404)
+
+      await users().addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+      expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: agentName } })).toBeNull()
+      expect(
+        (await departingApp.app.inject({ method: 'GET', url: `${ORG}/agents/${blockerAgentId}` })).statusCode
+      ).toBe(404)
+    } finally {
+      unlock()
+      await blocker
+      await Promise.allSettled(pending)
+    }
   })
 })
 

@@ -2973,8 +2973,9 @@ export interface UserRepo {
   addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord>
 
   /** Remove a member, transfer all of their resource ownership, and prune their
-   *  share grants atomically. Rejects with Prisma P2025 (→ 404) when absent.
-   *  Callers enforce owner-only access and the last-owner guard. */
+   *  share grants atomically. Rejects with a not-found-shaped error when the
+   *  target or transfer recipient is no longer eligible. Callers enforce
+   *  owner-only access and the last-owner guard. */
   removeMember(orgId: string, userId: string, transferToUserId: string): Promise<void>
 
   /** Re-attach a known user to an org (the last-owner compensation path). */
@@ -3179,7 +3180,11 @@ export interface McpProviderRepo {
    *  for unfiltered internal reads. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<McpProviderRecord[]>
   /** Set visibility + share set (console access only; never crosses the wire). */
-  setSharing(id: string, sharing: { visibility: ResourceVisibility; sharedWith: string[] }): Promise<McpProviderRecord>
+  setSharing(
+    id: string,
+    sharing: { visibility: ResourceVisibility; sharedWith: string[] },
+    byUserId?: string
+  ): Promise<McpProviderRecord>
   update(id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
   delete(id: string): Promise<void>
   /**
@@ -3287,7 +3292,11 @@ export interface SkillSourceRepo {
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]>
   /** Look up a source by its org-unique name (used to resolve an agent's enable-list). */
   getByName(orgId: OrgId, name: string): Promise<SkillSourceRecord | null>
-  setSharing(id: string, sharing: { visibility: ResourceVisibility; sharedWith: string[] }): Promise<SkillSourceRecord>
+  setSharing(
+    id: string,
+    sharing: { visibility: ResourceVisibility; sharedWith: string[] },
+    byUserId?: string
+  ): Promise<SkillSourceRecord>
   update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
   delete(id: string): Promise<void>
 }

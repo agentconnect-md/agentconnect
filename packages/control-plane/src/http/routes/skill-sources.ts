@@ -452,10 +452,14 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // against source visibility INSIDE that chain (routes/agents.ts), so a sharing
         // flip must not land between their check and their commit.
         const source = await serializeBySkillSource(orgOf(req), existing.name, () =>
-          deps.repos.skillSource.setSharing(existing.id, {
-            visibility: req.body.visibility,
-            sharedWith
-          })
+          deps.repos.skillSource.setSharing(
+            existing.id,
+            {
+              visibility: req.body.visibility,
+              sharedWith
+            },
+            req.principal?.userId
+          )
         )
         return toDto(source, ctxOf(req))
       }

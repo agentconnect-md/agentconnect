@@ -82,3 +82,17 @@ export class AgentWorkspaceIntegrationConflict extends Error {
     this.name = 'AgentWorkspaceIntegrationConflict'
   }
 }
+
+/**
+ * A membership-dependent transaction reached persistence after one of its
+ * required organization memberships disappeared. HTTP maps this to the same
+ * not-found shape as the org-scope guard; non-HTTP callers can match the code.
+ */
+export class OrgMembershipMissing extends Error {
+  readonly code = 'ORG_MEMBERSHIP_MISSING' as const
+
+  constructor() {
+    super('required organization membership no longer exists')
+    this.name = 'OrgMembershipMissing'
+  }
+}

@@ -25,6 +25,7 @@ import {
   isSyntheticEmail
 } from '../ports.js'
 import { provisionPresetAgents } from '../preset-agents.js'
+import { OrgMembershipMissing } from '../errors.js'
 
 // app_user row → the caller's own profile. Synthetic placeholder emails read as
 // "no email" (never displayed), same as the member record below.
@@ -369,17 +370,32 @@ export class PgUserRepo implements UserRepo {
     // membership in ONE transaction (docs/designs/resource-visibility.md §8).
     // createdByUserId is immutable audit attribution and is deliberately untouched.
     const run = async (tx: PrismaLike): Promise<void> => {
-      // The recipient must still own this organization when the transfer starts.
-      await tx.membership.findFirstOrThrow({
-        where: { orgId, userId: transferToUserId, role: 'owner' },
-        select: { id: true }
-      })
+      // Common serialization point with resource create/sharing writes. Lock both
+      // ends in stable order: the departing membership fences its writes, while
+      // the recipient lock prevents another removal from invalidating the transfer
+      // target. Resource writes hold FOR SHARE on every membership whose authority
+      // they persist, so these locks close the scan→delete window.
+      const memberIds = [...new Set([userId, transferToUserId])].sort()
+      const locked = await tx.$queryRaw<Array<{ userId: string; role: string }>>(Prisma.sql`
+        SELECT "userId", "role"::text AS "role"
+        FROM "membership"
+        WHERE "orgId" = ${orgId}
+          AND "userId" IN (${Prisma.join(memberIds)})
+        ORDER BY "userId"
+        FOR UPDATE
+      `)
+      const byUserId = new Map(locked.map((member) => [member.userId, member]))
+      // The target must still exist and the distinct recipient must still own the
+      // organization at this transaction's serialization point.
+      if (userId === transferToUserId || !byUserId.has(userId) || byUserId.get(transferToUserId)?.role !== 'owner') {
+        throw new OrgMembershipMissing()
+      }
       await tx.$executeRaw`UPDATE "agent" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       await tx.$executeRaw`UPDATE "daemon" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       await tx.$executeRaw`UPDATE "cron_def" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       await tx.$executeRaw`UPDATE "mcp_provider" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
       await tx.$executeRaw`UPDATE "skill_source" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
-      // Throws Prisma P2025 when the membership is absent → 404 at the route.
+      // The row is still locked here; deletion completes the same transaction.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
     }
     // Compose under an ambient transaction when given one (TransactionClient has no

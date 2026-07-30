@@ -7,10 +7,11 @@ import type { UserRepo } from '../persistence/ports.js'
 /**
  * Intersect a requested `sharedWith` set with the org's CURRENT members, de-duped
  * and order-preserving. Non-members (stale ids after a member left, foreign ids, a
- * picker race) are silently dropped so the stored set is always clean and can never
- * grant a non-member — the design leans on org-scope 404ing non-members for read
- * correctness, and this keeps the array itself tidy without relying solely on the
- * member-removal prune. An empty request clears the set.
+ * picker race) are silently dropped. This is the early HTTP normalization; each
+ * resource repository repeats the intersection while holding membership row locks
+ * in the write transaction, so a member cannot leave between this read and commit.
+ * The design also leans on org-scope 404ing non-members for read correctness. An
+ * empty request clears the set.
  */
 export async function resolveShareSet(users: UserRepo, orgId: string, requested: string[]): Promise<string[]> {
   if (requested.length === 0) return []

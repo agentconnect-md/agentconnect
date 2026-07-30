@@ -9,11 +9,12 @@
  */
 import type { Platform } from '@agentconnect.md/protocol'
 import type { CronDef, User } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type { CronRepo, CronRecord, CronReportInput, CronRunRecord, UpsertCronInput, ViewCtx } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import { toDbPlatform } from '../platform.js'
 import { AgentId, CronId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
+import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
 // The cron row plus its joined creator + last-modifier users — reads surface both
 // for the console (same model as agents/daemons).
@@ -66,31 +67,39 @@ export class PgCronRepo implements CronRepo {
       trigger: input.trigger,
       enabled: input.enabled ?? true
     }
-    const c = await this.db.cronDef.upsert({
-      where: { id: input.cronId },
-      // Creator only on CREATE — a later edit through the same PUT upsert never
-      // reassigns the cron to its editor. The last-modified audit, by contrast, is
-      // stamped on BOTH paths: on create the editor == creator (lastModifiedAt
-      // defaults to now = createdAt); on edit it advances to this upsert's actor.
-      create: {
-        id: input.cronId,
-        ...data,
-        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
-        ...(ownerUserId ? { ownerUserId } : {}),
-        ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {}),
-        // Initial visibility on create only (mirrors createdByUserId); the update
-        // branch never touches sharing — that's the setSharing / PUT /sharing path.
-        ...(input.visibility ? { visibility: input.visibility } : {}),
-        ...(input.sharedWith ? { sharedWith: input.sharedWith } : {})
-      },
-      update: {
-        ...data,
-        lastModifiedAt: new Date(),
-        ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {})
-      },
-      include: withUsers
+    return withAmbientTx(this.db, async (tx) => {
+      const memberships = await lockResourceWriteMemberships(tx, {
+        orgId: input.orgId,
+        actorUserId: input.lastModifiedByUserId ?? input.createdByUserId,
+        ownerUserId,
+        sharedWith: input.sharedWith
+      })
+      const c = await tx.cronDef.upsert({
+        where: { id: input.cronId },
+        // Creator only on CREATE — a later edit through the same PUT upsert never
+        // reassigns the cron to its editor. The last-modified audit, by contrast,
+        // is stamped on BOTH paths: on create the editor == creator; on edit it
+        // advances to this upsert's actor.
+        create: {
+          id: input.cronId,
+          ...data,
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
+          ...(ownerUserId ? { ownerUserId } : {}),
+          ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {}),
+          // Initial visibility on create only; the update branch never touches
+          // sharing — that goes through setSharing / PUT /sharing.
+          ...(input.visibility ? { visibility: input.visibility } : {}),
+          ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {})
+        },
+        update: {
+          ...data,
+          lastModifiedAt: new Date(),
+          ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {})
+        },
+        include: withUsers
+      })
+      return toRecord(c)
     })
-    return toRecord(c)
   }
 
   async setSharing(
@@ -98,19 +107,27 @@ export class PgCronRepo implements CronRepo {
     sharing: { visibility: CronRecord['visibility']; sharedWith: string[] },
     byUserId?: string
   ): Promise<CronRecord> {
-    // A sharing change is a human edit — advance the last-modified audit (editor
-    // stamped when known; absent under devAuth ⇒ leave the prior editor as-is).
-    const c = await this.db.cronDef.update({
-      where: { id: cronId },
-      data: {
-        visibility: sharing.visibility,
-        sharedWith: sharing.sharedWith,
-        lastModifiedAt: new Date(),
-        ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
-      },
-      include: withUsers
+    return withAmbientTx(this.db, async (tx) => {
+      const existing = await tx.cronDef.findUniqueOrThrow({ where: { id: cronId }, select: { orgId: true } })
+      const memberships = await lockResourceWriteMemberships(tx, {
+        orgId: existing.orgId,
+        actorUserId: byUserId,
+        sharedWith: sharing.sharedWith
+      })
+      // A sharing change is a human edit — advance the last-modified audit
+      // (editor stamped when known; absent under devAuth ⇒ leave it unchanged).
+      const c = await tx.cronDef.update({
+        where: { id: cronId },
+        data: {
+          visibility: sharing.visibility,
+          sharedWith: memberships.sharedWith ?? [],
+          lastModifiedAt: new Date(),
+          ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+        },
+        include: withUsers
+      })
+      return toRecord(c)
     })
-    return toRecord(c)
   }
 
   async remove(cronId: CronId): Promise<void> {

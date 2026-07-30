@@ -446,6 +446,25 @@ CronDef, McpProvider, and SkillSource, the transaction:
 3. leaves `createdByUserId` unchanged;
 4. deletes the membership last.
 
+The transaction first locks both the departing membership and the transfer
+recipient `FOR UPDATE`, in stable user-ID order, and verifies that the recipient
+is still a distinct organization owner. Every ownership-bearing resource create
+and dedicated sharing write uses the matching persistence seam: in the same
+transaction as the resource mutation it first protects the parent organization
+`FOR KEY SHARE`, then locks the current actor, initial owner, and requested share
+targets `FOR SHARE`, rechecks membership, and intersects `sharedWith` again. The
+parent-first order remains compatible with organization deletion; the
+shared/exclusive membership lock pair establishes a commit order:
+
+- if the resource write commits first, removal waits and then transfers or
+  prunes that row;
+- if removal commits first, the queued write observes the missing actor/owner
+  and fails, while a departed share target is omitted.
+
+The HTTP `resolveShareSet` call remains useful early normalization, but it is
+not the correctness boundary because membership can change before the resource
+write commits.
+
 The existing guard continues to reject removal of the final organization
 owner. Serializing competing last-owner removals and demotions remains a
 separate part of [#271](https://github.com/agentconnect-md/agentconnect/issues/271).
