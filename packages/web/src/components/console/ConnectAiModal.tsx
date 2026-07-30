@@ -28,17 +28,24 @@ const TAGLINE = 'Connects as you — your role, your permissions'
 // pane. It is drawn from our own tokens rather than shipped as a raster: a
 // captured PNG would be light-mode only under a console that themes, and it
 // would age out the next time that pane is restyled. Three frames — find
-// Connectors, fill the dialog, press Connect — cycle in place, since the last
-// of them is a separate step the sentence above doesn't have room to name.
+// Connectors, fill the dialog, press Connect — cycle in place. Every step they
+// show is named in the sentence above, so the film illustrates and never
+// carries instructions on its own: it is aria-hidden, and it holds on one
+// static frame under reduced motion.
 const FILM_MS = 2600
+const DIALOG_FRAME = 1
 
 function ConnectorFilm({ url }: { url: string }) {
   const [frame, setFrame] = useState(0)
 
   useEffect(() => {
     // The globals.css reduced-motion block only collapses transitions; a
-    // self-advancing cycle has to stop itself.
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    // self-advancing cycle has to stop itself. Settle on the dialog — the one
+    // frame that shows where the URL goes — rather than whichever came first.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      setFrame(DIALOG_FRAME)
+      return
+    }
     const t = setInterval(() => setFrame((f) => (f + 1) % 3), FILM_MS)
     return () => clearInterval(t)
   }, [])
@@ -194,7 +201,8 @@ export default function ConnectAiModal({ onClose, moreUrl }: { onClose: () => vo
             <div className="flex flex-col gap-[7px]">
               <span className="font-sans text-[13.5px] font-normal leading-normal text-(--text-secondary)">
                 Settings → Connectors →&#32;
-                <strong className="font-semibold text-(--text-primary)">Add custom connector</strong>
+                <strong className="font-semibold text-(--text-primary)">Add custom connector</strong>, then&#32;
+                <strong className="font-semibold text-(--text-primary)">Connect</strong>
               </span>
               <ConnectorFilm url={url} />
             </div>
