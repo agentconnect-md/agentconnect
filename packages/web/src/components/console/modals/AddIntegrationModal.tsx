@@ -189,26 +189,6 @@ const GUIDE: Record<
   }
 }
 
-// Discord needs a few app/invite-level settings beyond the token that aren't obvious
-// and each fails silently if missed — surfaced as a checklist on the Discord path.
-const DISCORD_REQS: { icon: string; title: string; desc: string }[] = [
-  {
-    icon: 'message-square',
-    title: 'Message Content Intent',
-    desc: 'AgentConnect checks this during install and turns it on when needed. If it can’t be changed automatically, you’ll be asked to enable it manually.'
-  },
-  {
-    icon: 'terminal',
-    title: 'Invite with the applications.commands scope',
-    desc: 'Use the “Add to Discord” button below the token — it requests the bot and applications.commands scopes so /status, /models … appear in Discord’s slash menu. A bot-only invite must be re-authorized.'
-  },
-  {
-    icon: 'git-branch',
-    title: 'Create Public Threads permission',
-    desc: 'Grant it in the invite (or on the channel) so a reply opens a thread instead of flooding the channel.'
-  }
-]
-
 // Feishu needs a few app-level settings beyond the credentials that aren't obvious
 // and each fails silently if missed — surfaced as a checklist on the Feishu path.
 const FEISHU_REQS: { icon: string; title: string; desc: string }[] = [
@@ -702,7 +682,7 @@ const TG_STEPS: WalkthroughStep[] = [
 ]
 
 // Discord's Developer Portal walkthrough stops after token copy. AgentConnect handles
-// Message Content Intent during install; the checklist explains the automatic fallback.
+// Message Content Intent during install.
 const DISCORD_STEPS: WalkthroughStep[] = [
   {
     label: 'New app',
@@ -3483,24 +3463,6 @@ export default function AddIntegrationModal({
             </div>
             <ul className="flex flex-col gap-[10px]">
               {FEISHU_REQS.map((r) => (
-                <li key={r.title} className="flex items-start gap-2">
-                  <Icon name={r.icon} size={14} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-                  <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    <span className="font-medium text-(--text-secondary)">{r.title}</span> — {r.desc}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {platform === 'discord' && (
-          <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-            <div className="mb-[11px] flex items-center gap-2 font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)">
-              <Icon name="shield-check" size={14} color="var(--brand)" className="flex-none" />
-              Discord setup checklist
-            </div>
-            <ul className="flex flex-col gap-[10px]">
-              {DISCORD_REQS.map((r) => (
                 <li key={r.title} className="flex items-start gap-2">
                   <Icon name={r.icon} size={14} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
                   <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
