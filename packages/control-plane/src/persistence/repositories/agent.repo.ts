@@ -16,7 +16,7 @@ import type {
   UpdateAgentInput,
   ViewCtx
 } from '../ports.js'
-import { visibilityWhere } from '../ports.js'
+import { visibilityWhere } from '../../authorization/policy.js'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
 import {
@@ -153,8 +153,8 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     createdBy: a.createdBy
       ? { userId: a.createdBy.id, displayName: a.createdBy.displayName, email: a.createdBy.email }
       : null,
-    // Raw creator scalar for the visibility creator-arm — independent of the joined
-    // `createdBy` above, which is null once the user row is SetNull-deleted.
+    // Raw creator scalar temporarily supplies the visibility ownership arm,
+    // independent of the joined `createdBy` above. See issue #271.
     createdByUserId: a.createdByUserId,
     visibility: a.visibility,
     sharedWith: a.sharedWith,

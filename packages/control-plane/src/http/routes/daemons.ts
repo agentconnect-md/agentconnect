@@ -18,7 +18,7 @@ import type { DaemonView, DaemonLiveness, DaemonRegistry } from '../../ports.js'
 import { isSyntheticEmail } from '../../persistence/ports.js'
 import { DaemonId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canEdit, canManageSharing, type ViewCtx } from '../visibility.js'
+import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import {
   DaemonListDto,
@@ -163,9 +163,8 @@ function toDto(
     visibility: view.visibility,
     sharedWith: view.sharedWith,
     canManageSharing: canManageSharing(view, ctx),
-    // Restart/upgrade are operational edits on the daemon — available to anyone who can
-    // EDIT it (its creator + collaborators + owners; viewers excluded), NOT org-owner-only.
-    // Mirrors canManageSharing/canEdit so the console shows the controls to the daemon's owner.
+    // Restart/upgrade are operational edits on the daemon. They follow the same
+    // visibility + non-viewer gate as content edits and sharing management.
     canManageLifecycle: canEdit(view, ctx)
   }
 }
@@ -386,8 +385,8 @@ export function daemonRoutes(deps: HttpDeps) {
       if (!existing) {
         return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
       }
-      // Restart/upgrade are edits on the daemon — its creator/collaborators/owners may run
-      // them; a viewer (or someone who can't edit a restricted daemon) may not.
+      // Restart/upgrade use the ordinary daemon edit policy: the resource must
+      // be visible and the caller must not be a viewer.
       if (!canEdit(existing, ctxOf(req))) {
         return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot manage this daemon' })
       }

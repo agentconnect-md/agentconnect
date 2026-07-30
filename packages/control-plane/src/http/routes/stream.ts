@@ -20,14 +20,14 @@ import {
   type SessionViewable,
   type Shareable,
   type ViewCtx
-} from '../visibility.js'
+} from '../../authorization/policy.js'
 import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 
 const KEEPALIVE_MS = 25_000
 
 export function canStreamAgent(agent: (Shareable & { orgId: OrgId }) | null, orgId: OrgId, ctx: ViewCtx): boolean {
   // `canView` assumes its caller already selected the current tenant. This org
-  // check applies even to owners: their governance override is path-org scoped.
+  // check applies before the resource policy for every role.
   return !!agent && agent.orgId === orgId && canView(agent, ctx)
 }
 

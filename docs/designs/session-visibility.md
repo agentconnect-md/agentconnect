@@ -23,8 +23,8 @@ platform DMs and other members' Playground conversations. `session_meta` has no
 This design gives every session its own visibility:
 
 - **`private`** — visible only to the session owner (identity match).
-  Deliberately **no org-owner governance override**, unlike resource
-  visibility: a private session is a DM-grade transcript, and role grants no
+  Like restricted-resource visibility, there is **no org-owner governance
+  override**: a private session is a DM-grade transcript, and role grants no
   access to it. Default for platform **DM** sessions, **Playground /
   webchat** sessions, and sessions launched through the **Web API**.
 - **`org`** — visible to every org member who can view the owning agent.

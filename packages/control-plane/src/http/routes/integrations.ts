@@ -24,7 +24,7 @@ import type { HttpDeps } from '../deps.js'
 import type { AgentRecord, IntegrationRecord, IntegrationChannelRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canEdit } from '../visibility.js'
+import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { pickChannelOwner } from '../../orchestrator/httpBot.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -673,7 +673,7 @@ export function integrationRoutes(deps: HttpDeps) {
       },
       async (req) => {
         // Derived visibility: only integrations whose parent agent the caller can
-        // see (owner ⇒ all). A restricted agent's integration never leaks here.
+        // see. A restricted agent's integration never leaks here, regardless of role.
         const rows = await deps.repos.integration.listForOrg(orgIdOf(req), ctxOf(req))
         const hydrated = await Promise.all(
           rows.map(async (integration) => ({

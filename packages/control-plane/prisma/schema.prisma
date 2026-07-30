@@ -142,8 +142,8 @@ enum OrgRole {
 }
 
 // Per-resource visibility (docs/designs/resource-visibility.md §1): 'org' (default)
-// = visible to every org member (current behavior); 'restricted' = creator + org
-// owners + the `sharedWith` set only. Enforced ONLY on console read/write paths —
+// = visible to every org member (current behavior); 'restricted' = current
+// ownership arm + the `sharedWith` set only. Enforced ONLY on console read/write paths —
 // never crosses the daemon↔CP wire (a restricted-but-active resource still runs).
 enum ResourceVisibility {
   org
@@ -300,7 +300,7 @@ model Daemon {
   lastModifiedAt       DateTime @default(now()) @db.Timestamptz(6) // defaults to createdAt; app-bumped on each human edit
 
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
-  visibility ResourceVisibility @default(org) // 'org' = all members; 'restricted' = creator + owners + sharedWith
+  visibility ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
   sharedWith String[]           @default([]) // app_user.id set granted view when visibility='restricted'
 
   // ── fencing root ──
@@ -600,7 +600,7 @@ model Agent {
   lastModifiedByUserId  String? // WebUI user who last edited the agent (null ⇒ never edited by a human)
   lastModifiedAt        DateTime           @default(now()) @db.Timestamptz(6) // defaults to createdAt; app-bumped on each PATCH
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
-  visibility            ResourceVisibility @default(org) // 'org' = all members; 'restricted' = creator + owners + sharedWith
+  visibility            ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
   sharedWith            String[]           @default([]) // app_user.id set granted view when visibility='restricted'
   // ── inbound agent-call policy (UI: Agent visibility) ──
   callPolicy            AgentCallPolicy    @default(all) // 'all' = any org peer agent may call this as a sub-agent
@@ -1053,7 +1053,7 @@ model CronDef {
   lastModifiedByUserId String? // WebUI user who last edited the cron (null ⇒ never edited by a human)
   lastModifiedAt       DateTime           @default(now()) @db.Timestamptz(6) // defaults to createdAt; app-bumped on each upsert-edit
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
-  visibility           ResourceVisibility @default(org) // 'org' = all members; 'restricted' = creator + owners + sharedWith
+  visibility           ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
   sharedWith           String[]           @default([]) // app_user.id set granted view when visibility='restricted'
   createdAt            DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
@@ -1890,7 +1890,7 @@ model McpProvider {
   url             String // upstream endpoint (non-secret; may appear in DTOs)
   // Console visibility — same Shareable model as Agent/Daemon/Cron
   // (docs/designs/resource-visibility.md): 'org' = every member sees it; 'restricted'
-  // = creator + owners + sharedWith. Governs console access only — an agent that
+  // = ownership arm + sharedWith. Governs console access only — an agent that
   // already enabled a provider keeps reaching it regardless (never crosses the wire).
   visibility      ResourceVisibility @default(org)
   sharedWith      String[]           @default([]) // app_user.id set granted view when visibility='restricted'

@@ -28,8 +28,8 @@ import {
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
-/** 'org' = visible to every org member (default); 'restricted' = creator + org
- *  owners + the `sharedWith` set. */
+/** 'org' = visible to every org member (default); 'restricted' = the current
+ *  ownership arm + the `sharedWith` set. */
 export const ResourceVisibilityEnum = z.enum(['org', 'restricted'])
 /** Per-SESSION visibility (docs/designs/session-visibility.md §1) — a different
  *  tier vocabulary from `ResourceVisibilityEnum`: sessions have no share set,
