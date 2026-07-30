@@ -50,18 +50,18 @@
   <a href="#explore">Explore</a>
 </p>
 
-AgentConnect is an open-source platform for teams to run and manage multiple AI
-agents together. Connect Claude Code, Codex, Gemini CLI, and other
-ACP-compatible runtimes to Slack, Telegram, Discord, Lark / Feishu, and
-webchat, or start work from GitHub events, webhooks, and schedules.
+AgentConnect is an open-source platform where teams and AI agents work together
+across the tools they already use, including Slack, Telegram, Discord, and
+GitHub. Connect Claude Code, Codex, Gemini CLI, or any ACP-compatible runtime,
+then start work from a conversation, pull request, issue, webhook, or schedule.
 
-Give each agent its own identity, runtime, model, workspace, memory, tools,
-skills, permissions, and placement. Agents can call one another while your team
-follows the work in shared channels and from one console.
+Give each agent a role, then choose the runtime, model, workspace, memory,
+tools, skills, permissions, and machine it needs. Agents can call one another
+while your team follows the work in shared channels and from one console.
 
-Agent execution stays in the environment you operate. The Control Plane
-coordinates the fleet without storing message bodies or sitting in the live
-message path.
+A small daemon runs the agents in the environment you operate. One console lets
+your team configure the fleet, connect channels and triggers, control access,
+and follow the work they are allowed to see.
 
 ## Why AgentConnect?
 
