@@ -345,8 +345,16 @@ two layers:
    (`isDm`, `platform === 'webchat'`, §4.4 launch correlation) memory capture
    is excluded from the first turn, with no CP round-trip. For an A2A child,
    the delegation command carries the parent session's current privacy flag,
-   so a private parent's children start excluded even across daemons; a
-   delegation whose parent flag is unavailable starts excluded (fail closed).
+   but the flag is **one-directional — it can only tighten**: a `private`
+   hint excludes the child immediately; an `org` hint (or a missing flag)
+   does **not** enable capture. An A2A child always starts excluded and
+   capture enables only once the CP-confirmed gate state for that child
+   (the frame pushed after the child's ingest classification) says `org`.
+   This is what makes the §4.3 cutover causally sound: a stale-`org`
+   delegation already in flight when its parent daemon acks `private`
+   cannot open capture on the receiving daemon, because opening requires a
+   CP confirmation — and by then the CP has classified the child under the
+   post-cascade parent state (§4.5 serialization guarantees `private`).
 2. **CP-pushed effective state.** The CP is the authority on effective
    visibility (§4.3 changes, §4.5 settlements and cascades). On every change
    it sends a `session/visibility` control frame over the existing daemon WS
@@ -363,7 +371,11 @@ two layers:
      visibility change, settlement, and cascade. It is deliberately **not**
      the transcript revision (a daemon-local cursor) nor the WS
      `sessionEpoch`/`seq` fences (connection-scoped); neither advances with
-     visibility. The daemon ignores frames whose rev is ≤ its stored rev.
+     visibility. Delivery is at-least-once, so duplicate handling is
+     explicit: a frame whose rev is ≤ the stored rev is **not reapplied but
+     is still acknowledged** (as already-satisfied/superseded) — "ignore"
+     must never mean "don't ACK", or a lost ACK leaves the CP retrying
+     forever.
    - The daemon **acknowledges** the frame and persists the gate state (with
      its rev) in its local store alongside the session; the CP retries
      unacked frames, per the WS channel's existing command semantics.
