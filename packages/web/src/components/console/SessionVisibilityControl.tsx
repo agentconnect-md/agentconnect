@@ -30,6 +30,7 @@ export function SessionVisibilityControl({
   visibility,
   state,
   canChange,
+  nativeMemory = false,
   onChanged
 }: {
   sessionId: string
@@ -38,6 +39,10 @@ export function SessionVisibilityControl({
   /** §5.1 tighten cutover state; 'pending' renders the spinner pill. */
   state?: 'pending' | 'applied' | null
   canChange: boolean
+  /** The owning agent persists memory inside its runtime (provider `native`),
+   *  which has no per-session gate — so the copy must NOT promise that going
+   *  private stops what the agent learns. See docs/product-conventions.md. */
+  nativeMemory?: boolean
   /** Reflect the PUT response into the caller's caches (detail SWR + lists). */
   onChanged: (next: { visibility: SessionVisibility; state: 'pending' | 'applied' }) => void
 }) {
@@ -111,7 +116,11 @@ export function SessionVisibilityControl({
       </span>
       {state === 'pending' && (
         <span
-          title="Waiting for the owning daemon to confirm the change — capture stops at daemon acknowledgement"
+          title={
+            nativeMemory
+              ? 'Waiting for the owning daemon to confirm the change'
+              : 'Waiting for the owning daemon to confirm the change — capture stops at daemon acknowledgement'
+          }
           className="inline-flex flex-none items-center gap-1 rounded-full border border-(--brand) bg-(--surface-sunken) py-[1px] pr-[7px] pl-[5px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand)"
         >
           <Spinner size={10} />
@@ -135,8 +144,19 @@ export function SessionVisibilityControl({
             setError(null)
           }}
         >
-          Making this session private stops it from feeding shared agent memory once the daemon confirms, and hides the
-          transcript immediately. Anything the agent already learned while it was org-visible is not removed.
+          {nativeMemory ? (
+            <>
+              Making this session private hides the transcript from other members immediately. It does{' '}
+              <strong>not</strong> affect this agent&rsquo;s memory: it runs on its runtime&rsquo;s own memory, which
+              has no per-session control, so what the agent learns here can still surface in other people&rsquo;s
+              sessions.
+            </>
+          ) : (
+            <>
+              Making this session private stops it from feeding shared agent memory once the daemon confirms, and hides
+              the transcript immediately. Anything the agent already learned while it was org-visible is not removed.
+            </>
+          )}
         </ConfirmationDialog>
       )}
     </span>

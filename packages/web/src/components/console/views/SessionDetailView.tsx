@@ -835,6 +835,9 @@ export default function SessionDetailView() {
         visibility={sessionDetail.visibility ?? undefined}
         state={sessionDetail.visibilityState}
         canChange={sessionDetail.canChangeVisibility === true}
+        // Native runtime memory has no per-session gate, so the copy must not
+        // promise a memory boundary this tier cannot deliver.
+        nativeMemory={owner?.memoryProvider === 'native'}
         onChanged={({ visibility, state }) => {
           // Reflect the new tier locally, then re-read: the detail row also
           // carries the authoritative pending/applied state, and the lists must

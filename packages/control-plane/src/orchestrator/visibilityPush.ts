@@ -27,18 +27,18 @@
  * closed (unknown gate state ⇒ capture excluded).
  */
 import { SESSION_VISIBILITY_FEATURE, type SessionVisibilityPush } from '@agentconnect.md/protocol'
-import type { AgentRepo, SessionMetaRecord, SessionRepo } from '../persistence/ports.js'
+import type { AgentRepo, SessionMetaRecord, SessionRepo, SessionVisibilityState } from '../persistence/ports.js'
 import { SessionId, type DaemonId } from '../domain/ids.js'
 import type { ConnectionRegistry } from '../ws/registry.js'
 import { NoConnection, type ControlSender } from './outbound.js'
 
-/** How many sessions one register-time snapshot covers, newest-active first.
- *  Older rows converge to the daemon's fail-closed default (capture excluded),
- *  which under-captures rather than leaking. */
-const SNAPSHOT_LIMIT = 2000
 /** Entries per snapshot frame. The schema caps at 1000; stay well under the
  *  256 KiB frame ceiling. */
 const SNAPSHOT_CHUNK = 500
+/** Runaway guard on the paging loop below. Each round acks its page, so the
+ *  unacknowledged set shrinks by up to SNAPSHOT_CHUNK per round; this bounds a
+ *  pathological daemon at 100k gates per register rather than looping forever. */
+const MAX_SNAPSHOT_ROUNDS = 200
 
 export interface VisibilityPushDeps {
   repos: { session: SessionRepo; agent: AgentRepo }
@@ -101,36 +101,41 @@ export class SessionVisibilityPushService {
    */
   async replayTo(daemonId: DaemonId): Promise<void> {
     if (!this.supports(daemonId)) return
-    const snapshot = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_LIMIT)
-    if (snapshot.length === 0) return
-    // The snapshot is bounded, but ordered unacknowledged-first, so a change made
-    // while this daemon was offline is always in it. If the cap still bit, say so
-    // rather than let a truncated replay read as full convergence.
-    if (snapshot.length === SNAPSHOT_LIMIT) {
-      const unacked = await this.deps.repos.session.countUnackedVisibility(daemonId)
-      if (unacked > SNAPSHOT_LIMIT) {
-        this.deps.log?.warn(
-          { daemonId, unacked, limit: SNAPSHOT_LIMIT },
-          'session visibility snapshot truncated: unacknowledged gates exceed the replay cap'
-        )
-      }
+    // Page until nothing is left unacknowledged. Ordering alone is not enough:
+    // with more unacked rows than one page holds, a single pass would ack the
+    // first page and leave the rest carrying a stale gate until some LATER
+    // register happened to run — which, for a daemon that stays connected, may
+    // be never. Each round acks its page, so the unacked set strictly shrinks.
+    for (let round = 0; round < MAX_SNAPSHOT_ROUNDS; round++) {
+      const snapshot = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK)
+      if (snapshot.length === 0) return
+      if (!(await this.sendSnapshotChunk(daemonId, snapshot))) return // offline / rejected: next register retries
+      if (snapshot.length < SNAPSHOT_CHUNK) return // the page was not full: nothing behind it
+      if ((await this.deps.repos.session.countUnackedVisibility(daemonId)) === 0) return
     }
-    for (let i = 0; i < snapshot.length; i += SNAPSHOT_CHUNK) {
-      const chunk = snapshot.slice(i, i + SNAPSHOT_CHUNK)
-      try {
-        const ack = await this.deps.control.sessionVisibilitySnapshot(daemonId, chunk)
-        if (!ack.ok) {
-          this.deps.log?.warn({ daemonId, reason: ack.reason }, 'session visibility snapshot rejected')
-          return
-        }
-        for (const entry of chunk) {
-          await this.deps.repos.session.recordVisibilityAck(entry.sessionId, entry.visibilityRev)
-        }
-      } catch (err) {
-        if (err instanceof NoConnection) return
-        this.deps.log?.warn({ daemonId, err: (err as Error).message }, 'session visibility snapshot failed')
-        return
+    this.deps.log?.warn(
+      { daemonId, rounds: MAX_SNAPSHOT_ROUNDS },
+      'session visibility replay hit the round cap with gates still unacknowledged'
+    )
+  }
+
+  /** One snapshot frame + its acks. False ⇒ stop replaying (the daemon is gone
+   *  or refused); the next register converges. */
+  private async sendSnapshotChunk(daemonId: DaemonId, chunk: SessionVisibilityState[]): Promise<boolean> {
+    try {
+      const ack = await this.deps.control.sessionVisibilitySnapshot(daemonId, chunk)
+      if (!ack.ok) {
+        this.deps.log?.warn({ daemonId, reason: ack.reason }, 'session visibility snapshot rejected')
+        return false
       }
+      for (const entry of chunk) {
+        await this.deps.repos.session.recordVisibilityAck(entry.sessionId, entry.visibilityRev)
+      }
+      return true
+    } catch (err) {
+      if (err instanceof NoConnection) return false
+      this.deps.log?.warn({ daemonId, err: (err as Error).message }, 'session visibility snapshot failed')
+      return false
     }
   }
 
@@ -156,8 +161,8 @@ export class SessionVisibilityPushService {
   }
 }
 
-/** How much of a subtree one cutover-state read will consider. Beyond this the
- *  answer stays `pending` rather than silently ignoring the tail. */
+/** How much of a subtree one cutover-state read evaluates. A subtree larger than
+ *  this reports `pending` rather than claiming a cutover it did not verify. */
 const SUBTREE_LIMIT = 500
 
 /**
@@ -174,7 +179,12 @@ export async function visibilityStateOf(
   if (!push) return 'applied'
   const rows = new Map<string, SessionMetaRecord>()
   for (const id of sessionIds) {
-    for (const row of await repos.session.visibilitySubtree(id, SUBTREE_LIMIT)) rows.set(row.id, row)
+    // One over the cap: if the extra row exists the subtree is larger than we
+    // will evaluate, and an unseen descendant may still be behind — so the
+    // honest answer is `pending`, not an `applied` based on a partial read.
+    const page = await repos.session.visibilitySubtree(id, SUBTREE_LIMIT + 1)
+    if (page.length > SUBTREE_LIMIT) return 'pending'
+    for (const row of page) rows.set(row.id, row)
   }
   return (await push.isApplied([...rows.values()])) ? 'applied' : 'pending'
 }

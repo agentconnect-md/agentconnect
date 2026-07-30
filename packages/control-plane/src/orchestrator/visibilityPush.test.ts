@@ -5,7 +5,10 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { SESSION_VISIBILITY_FEATURE } from '@agentconnect.md/protocol'
-import { SessionVisibilityPushService } from './visibilityPush.js'
+import { SessionVisibilityPushService, visibilityStateOf } from './visibilityPush.js'
+
+/** One past the cutover-state read cap (SUBTREE_LIMIT = 500). */
+const SUBTREE_OVERFLOW = 501
 import { NoConnection } from './outbound.js'
 import type { SessionMetaRecord } from '../persistence/ports.js'
 
@@ -35,7 +38,16 @@ function connReg(opts: { connected?: boolean; feature?: boolean } = {}) {
   } as never
 }
 
-function deps(over: { connReg?: never; sessionVisibility?: unknown; daemonId?: string | null } = {}) {
+function deps(
+  over: {
+    connReg?: never
+    sessionVisibility?: unknown
+    daemonId?: string | null
+    /** Successive snapshot pages the repo hands back, newest call first. */
+    snapshotPages?: Array<Array<{ sessionId: string; visibility: 'private' | 'org'; visibilityRev: number }>>
+    unackedAfter?: number[]
+  } = {}
+) {
   const recordVisibilityAck = vi.fn(async () => {})
   const sessionVisibility =
     over.sessionVisibility ??
@@ -45,19 +57,27 @@ function deps(over: { connReg?: never; sessionVisibility?: unknown; daemonId?: s
       status: 'applied' as const
     }))
   const daemonId = over.daemonId === undefined ? DAEMON : over.daemonId
+  const pages = [...(over.snapshotPages ?? [[]])]
+  const unacked = [...(over.unackedAfter ?? [0])]
+  const visibilitySnapshotForDaemon = vi.fn(async () => pages.shift() ?? [])
+  const countUnackedVisibility = vi.fn(async () => unacked.shift() ?? 0)
+  const sessionVisibilitySnapshot = vi.fn(async () => ({ ok: true }))
   return {
     recordVisibilityAck,
     sessionVisibility,
+    visibilitySnapshotForDaemon,
+    sessionVisibilitySnapshot,
     push: new SessionVisibilityPushService({
       repos: {
         session: {
           recordVisibilityAck,
-          visibilitySnapshotForDaemon: vi.fn(async () => []),
+          visibilitySnapshotForDaemon,
+          countUnackedVisibility,
           get: vi.fn(async () => null)
         } as never,
         agent: { get: vi.fn(async () => (daemonId ? { id: AGENT, daemonId } : { id: AGENT })) } as never
       },
-      control: { sessionVisibility, sessionVisibilitySnapshot: vi.fn(async () => ({ ok: true })) } as never,
+      control: { sessionVisibility, sessionVisibilitySnapshot } as never,
       connReg: over.connReg ?? connReg(),
       log: { warn: vi.fn() }
     })
@@ -115,6 +135,82 @@ describe('notifySessions', () => {
     const { push, recordVisibilityAck } = deps({ sessionVisibility })
     await push.notifySessions([session({ id: 'acp-bad' }), session({ id: 'acp-good' })])
     expect(recordVisibilityAck).toHaveBeenCalledWith('acp-good', 2)
+  })
+})
+
+describe('replayTo — register-time convergence', () => {
+  const page = (n: number, from = 0) =>
+    Array.from({ length: n }, (_, i) => ({
+      sessionId: `acp-${from + i}`,
+      visibility: 'private' as const,
+      visibilityRev: 1
+    }))
+
+  it('keeps paging until nothing is left unacknowledged', async () => {
+    // A full page means there may be more behind it; ordering alone would ack
+    // the first page and leave the rest carrying a stale gate until some later
+    // register — which for a daemon that stays connected may never come.
+    const d = deps({ snapshotPages: [page(500), page(2, 500), []], unackedAfter: [2, 0] })
+    await d.push.replayTo(DAEMON as never)
+    expect(d.sessionVisibilitySnapshot).toHaveBeenCalledTimes(2)
+    expect(d.recordVisibilityAck).toHaveBeenCalledTimes(502)
+  })
+
+  it('stops after a partial page — nothing is behind it', async () => {
+    const d = deps({ snapshotPages: [page(3)] })
+    await d.push.replayTo(DAEMON as never)
+    expect(d.sessionVisibilitySnapshot).toHaveBeenCalledTimes(1)
+    expect(d.visibilitySnapshotForDaemon).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops paging when the daemon drops mid-replay — the next register retries', async () => {
+    const d = deps({ snapshotPages: [page(500), page(500, 500)], unackedAfter: [500, 0] })
+    d.sessionVisibilitySnapshot.mockImplementationOnce(async () => {
+      throw new NoConnection(DAEMON)
+    })
+    await d.push.replayTo(DAEMON as never)
+    expect(d.sessionVisibilitySnapshot).toHaveBeenCalledTimes(1)
+    expect(d.recordVisibilityAck).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing to a daemon that does not advertise the feature', async () => {
+    const d = deps({ snapshotPages: [page(3)], connReg: connReg({ feature: false }) as never })
+    await d.push.replayTo(DAEMON as never)
+    expect(d.visibilitySnapshotForDaemon).not.toHaveBeenCalled()
+  })
+})
+
+describe('visibilityStateOf — subtree scope', () => {
+  const subtreeDeps = (rows: SessionMetaRecord[]) => {
+    const d = deps()
+    return {
+      push: d.push,
+      repos: { session: { visibilitySubtree: vi.fn(async (_id: string, limit: number) => rows.slice(0, limit)) } }
+    }
+  }
+
+  it('covers descendants, so an acked root with a behind child is still pending', async () => {
+    const { push, repos } = subtreeDeps([
+      session({ id: 'root', visibilityRev: 1, visibilityAckedRev: 1 }),
+      session({ id: 'child', visibilityRev: 1, visibilityAckedRev: -1 })
+    ])
+    expect(await visibilityStateOf(push, repos as never, ['root' as never])).toBe('pending')
+  })
+
+  it('reports pending when the subtree is larger than one read evaluates', async () => {
+    // All 501 rows are fully acked: the ONLY reason to report pending is that we
+    // could not see the whole subtree, and claiming a verified cutover from a
+    // partial read would be a false promise.
+    const rows = Array.from({ length: SUBTREE_OVERFLOW }, (_, i) =>
+      session({ id: `s-${i}`, visibilityRev: 1, visibilityAckedRev: 1 })
+    )
+    const { push, repos } = subtreeDeps(rows)
+    expect(await visibilityStateOf(push, repos as never, ['root' as never])).toBe('pending')
+  })
+
+  it('reports applied for a fully acked subtree within the cap', async () => {
+    const { push, repos } = subtreeDeps([session({ id: 'root', visibilityRev: 1, visibilityAckedRev: 1 })])
+    expect(await visibilityStateOf(push, repos as never, ['root' as never])).toBe('applied')
   })
 })
 
