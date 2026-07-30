@@ -102,7 +102,15 @@ export function ModalProvider({ children }: { children: ReactNode }) {
             }
           >
             {open.kind === 'agent' && <AddAgentModal onClose={close} />}
-            {open.kind === 'daemon' && <AddDaemonModal onClose={close} />}
+            {/* Opened from an unplaced agent's "Add daemon" chip: once the daemon
+                connects, Continue chains back into that agent's edit dialog, where
+                the fresh (and only) daemon is auto-preselected by its autofill. */}
+            {open.kind === 'daemon' && (
+              <AddDaemonModal
+                onClose={close}
+                onDone={open.target ? () => openModal('editAgent', open.target, open.opts) : undefined}
+              />
+            )}
             {open.kind === 'integration' && open.target && (
               <AddIntegrationModal agent={open.target as Agent} initialPlatform={open.opts?.platform} onClose={close} />
             )}

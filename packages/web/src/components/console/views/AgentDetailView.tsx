@@ -11,6 +11,7 @@ import {
   agentPermissionDisplay,
   effectiveAgentStatus,
   effortField,
+  enrichSessionWithAgent,
   flattenFiles,
   MOCK_MODE,
   MOCK_PREFIX,
@@ -44,6 +45,7 @@ import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
+import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
@@ -123,7 +125,23 @@ export default function AgentDetailView() {
     useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
-  const { total: agentSessionTotal } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
+  const {
+    sessions: agentSessionRows,
+    total: agentSessionTotal,
+    isLoading: agentSessionsLoading
+  } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
+  // The Recent-sessions card reads the agent-filtered page above, NOT the
+  // org-wide loaded window (`getSessions`) — a busy org's newest 50 may not
+  // include this agent at all, which would render a false "No sessions yet"
+  // beside a nonzero header count. Mock mode has no CP to filter server-side,
+  // so it keeps the demo rows. Rows are display-enriched like data-context does.
+  const recentSessions = useMemo(
+    () =>
+      MOCK_MODE
+        ? getSessions(id)
+        : agentSessionRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
+    [agentSessionRows, getAgent, getSessions, id]
+  )
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
@@ -507,7 +525,9 @@ export default function AgentDetailView() {
                 type="button"
                 className="addchip border-0"
                 onClick={() =>
-                  daemons.length === 0 ? openModal('daemon') : openModal('editAgent', da, { focusSection: 'runtime' })
+                  daemons.length === 0
+                    ? openModal('daemon', da, { focusSection: 'runtime' })
+                    : openModal('editAgent', da, { focusSection: 'runtime' })
                 }
               >
                 <Icon name="plus" size={13} />
@@ -761,7 +781,7 @@ export default function AgentDetailView() {
                       className="addchip border-0"
                       onClick={() =>
                         daemons.length === 0
-                          ? openModal('daemon')
+                          ? openModal('daemon', da, { focusSection: 'runtime' })
                           : openModal('editAgent', da, { focusSection: 'runtime' })
                       }
                     >
@@ -1071,7 +1091,9 @@ export default function AgentDetailView() {
 
       {/* Integrations tab — moved out of Configuration into its own tab. */}
       {tab === 'integrations' && (
-        <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">
+        // Two-up on desktop (Home's dashboard split): integration cards left,
+        // this agent's recent sessions right. Mobile keeps the single stack.
+        <div className="grid grid-cols-1 gap-4 p-4 desktop:grid-cols-[1.5fr_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
           <div className="card overflow-hidden max-desktop:rounded-lg">
             <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
               <span className="font-sans text-[14px] font-semibold leading-normal">Integrations</span>
@@ -1490,6 +1512,17 @@ export default function AgentDetailView() {
               </div>
             )}
           </div>
+
+          {/* This agent's recent sessions — same card as Home's Recent list. */}
+          <RecentSessionsCard
+            title="Recent sessions"
+            sessions={recentSessions}
+            limit={12}
+            loading={agentSessionsLoading}
+            allHref={orgPath(`/sessions?agent=${da.id}`)}
+            emptyText="No sessions yet."
+            className="max-desktop:rounded-lg"
+          />
         </div>
       )}
 

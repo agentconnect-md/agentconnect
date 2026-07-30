@@ -7,7 +7,7 @@
 // do I ask": Recent sessions, Agents you use (ranked by 24h session count),
 // and Scheduled runs.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useOrgs } from '@/lib/org-context'
@@ -15,8 +15,9 @@ import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
 import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { Card, CardLink, EmptyRow, RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { Icon } from '@/components/ui'
-import { AgentIconView, ModelMark, PlatformMark, LoadingState } from '@/components/marks'
+import { AgentIconView, ModelMark, LoadingState } from '@/components/marks'
 import {
   agentLabel,
   modelLabel,
@@ -31,7 +32,6 @@ import {
   permissionModeChoicesFor,
   resolvedPermissionMode,
   supportsModes,
-  sessionPlatform,
   type Agent
 } from '@/lib/data'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
@@ -55,38 +55,6 @@ function fmtAgo(iso: string | null): string {
   const h = Math.round(m / 60)
   if (h < 24) return `${h}h ago`
   return `${Math.round(h / 24)}d ago`
-}
-
-function Card({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="card overflow-hidden">
-      <div className="cardhead justify-between">
-        <span className="cardtitle">{title}</span>
-        {action}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function CardLink({ href, children }: { href: string; children: ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center gap-1 font-sans text-[12px] font-medium leading-normal text-(--text-brand) hover:underline"
-    >
-      {children}
-      <Icon name="arrow-right" size={12} color="var(--text-brand)" />
-    </Link>
-  )
-}
-
-function EmptyRow({ children }: { children: ReactNode }) {
-  return (
-    <div className="px-4 py-5 text-center font-sans text-[12.5px] leading-normal text-(--text-tertiary)">
-      {children}
-    </div>
-  )
 }
 
 export default function HomeView() {
@@ -201,19 +169,6 @@ export default function HomeView() {
     setInput('')
     router.push(orgPath(`/sessions/${id}`))
   }
-
-  // Same readiness gate as the composer: starting a chat with a not-ready agent would
-  // open a dead session, so select it in Home instead and let the banner explain why.
-  const startChat = (a: Agent) => {
-    if (!agentReady(a)) {
-      setAgentId(a.id)
-      return
-    }
-    const id = openPlayground(a)
-    router.push(orgPath(`/sessions/${id}`))
-  }
-
-  const recent = allSessions.slice(0, 6)
 
   const sessionsByAgent = useMemo(
     () => new Map((usage24h?.agents ?? []).map((u) => [u.agentId, u.sessions])),
@@ -415,41 +370,12 @@ export default function HomeView() {
 
       {/* Dashboard grid. */}
       <div className="grid grid-cols-1 gap-4 desktop:grid-cols-[1.5fr_1fr]">
-        <Card title="Recent" action={<CardLink href={orgPath('/sessions')}>All sessions</CardLink>}>
-          {recent.length === 0 ? (
-            <EmptyRow>No sessions yet — ask an agent above to start one.</EmptyRow>
-          ) : (
-            recent.map((s) => {
-              const owner = s.agentId ? getAgent(s.agentId) : undefined
-              return (
-                <Link key={s.id} href={orgPath(`/sessions/${s.id}`)} className="row click grid-cols-[1fr_auto] gap-3">
-                  <span className="min-w-0">
-                    <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                      {s.title}
-                    </span>
-                    <span className="mt-[3px] flex items-center gap-[6px] text-(--text-tertiary)">
-                      <span className="av h-[15px] w-[15px] rounded-xs">
-                        <AgentIconView icon={owner?.icon} runtime={owner?.runtime ?? s.runtime ?? 'claude'} size={15} />
-                      </span>
-                      <span className="truncate font-sans text-[11.5px] leading-normal">{s.agentName || '—'}</span>
-                      {s.channel && (
-                        <>
-                          <span className="imark h-4 w-4 rounded-xs">
-                            <PlatformMark platform={sessionPlatform(s)} fillPct={90} />
-                          </span>
-                          <span className="mono truncate text-[11px]">{s.channel}</span>
-                        </>
-                      )}
-                    </span>
-                  </span>
-                  <span className="mono self-start whitespace-nowrap text-[11.5px] text-(--text-tertiary)">
-                    {s.time}
-                  </span>
-                </Link>
-              )
-            })
-          )}
-        </Card>
+        <RecentSessionsCard
+          sessions={allSessions}
+          loading={loading}
+          allHref={orgPath('/sessions')}
+          emptyText="No sessions yet — ask an agent above to start one."
+        />
 
         <div className="flex flex-col gap-4">
           <Card title="Agents you use" action={<CardLink href={orgPath('/agents')}>All agents</CardLink>}>
@@ -459,16 +385,11 @@ export default function HomeView() {
               rankedAgents.map((a) => {
                 const ready = agentReady(a)
                 return (
-                  <button
+                  <Link
                     key={a.id}
-                    type="button"
-                    onClick={() => startChat(a)}
-                    title={
-                      ready
-                        ? `Start a chat with ${agentLabel(a)}`
-                        : `${agentLabel(a)} isn't ready — select it to see why`
-                    }
-                    className={`row click w-full grid-cols-[auto_1fr_auto] gap-3 text-left ${ready ? '' : 'opacity-60'}`}
+                    href={orgPath(`/agents/${a.id}`)}
+                    title={agentLabel(a)}
+                    className={`row click grid-cols-[auto_1fr_auto] gap-3 ${ready ? '' : 'opacity-60'}`}
                   >
                     <span className="av h-7 w-7 rounded-md">
                       <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
@@ -489,7 +410,7 @@ export default function HomeView() {
                     <span className="mono whitespace-nowrap text-[12px] text-(--text-secondary)">
                       {sessionsByAgent.get(a.id) ?? 0}
                     </span>
-                  </button>
+                  </Link>
                 )
               })
             )}

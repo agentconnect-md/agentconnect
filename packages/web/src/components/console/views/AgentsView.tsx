@@ -625,7 +625,7 @@ export default function AgentsView() {
                       onClick={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        if (daemons.length === 0) openModal('daemon')
+                        if (daemons.length === 0) openModal('daemon', a)
                         else openModal('editAgent', a)
                       }}
                     >
