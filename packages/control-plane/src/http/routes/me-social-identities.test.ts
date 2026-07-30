@@ -6,18 +6,18 @@ import { installZod } from '../plugins/zod.js'
 import { enabledSocialTargets, meSocialIdentityRoutes } from './me-social-identities.js'
 
 describe('enabledSocialTargets', () => {
-  it('treats unset and `*` as the whole catalog', () => {
-    expect(enabledSocialTargets(undefined)).toEqual(new Set(['github', 'google', 'slack']))
-    expect(enabledSocialTargets('*')).toEqual(new Set(['github', 'google', 'slack']))
+  it('reads unset, blank and `*` as no restriction', () => {
+    // Same convention as connectors/filter.ts#parseWhitelist.
+    expect(enabledSocialTargets(undefined)).toBeNull()
+    expect(enabledSocialTargets('   ')).toBeNull()
+    expect(enabledSocialTargets('*')).toBeNull()
   })
 
-  it('narrows to the configured targets and drops unknown ones', () => {
+  it('narrows to exactly the configured targets', () => {
+    // No catalog intersection on purpose: a second copy of the console's list is
+    // the drift this variable exists to remove.
     expect(enabledSocialTargets('github, slack')).toEqual(new Set(['github', 'slack']))
-    expect(enabledSocialTargets('github,facebook')).toEqual(new Set(['github']))
-  })
-
-  it('reads a setting naming nothing usable as the whole catalog', () => {
-    expect(enabledSocialTargets('facebook')).toEqual(new Set(['github', 'google', 'slack']))
+    expect(enabledSocialTargets('github,,')).toEqual(new Set(['github']))
   })
 })
 
@@ -117,11 +117,29 @@ describe('my social identities routes', () => {
     }
   })
 
-  it('rejects a target the console does not offer', async () => {
-    const identity = { socialConnectorIdFor: vi.fn(async () => 'nope') }
+  it('fails closed on an unknown target when the deployment sets no list', async () => {
+    // With no list configured the schema does not second-guess the target; the
+    // tenant does, one step later. That is the fail-closed point, not a catalog
+    // in this file duplicating the console's.
+    const identity = {
+      socialConnectorIdFor: vi.fn(async () => {
+        throw new LogtoApiError('social connector not found', 404, false)
+      })
+    }
     const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
     try {
       const res = await app.inject({ method: 'GET', url: '/me/social-identities/connectors/facebook' })
+      expect(res.statusCode).toBe(404)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('rejects a target that is not a connector slug at all', async () => {
+    const identity = { socialConnectorIdFor: vi.fn(async () => 'nope') }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities/connectors/Not%20A%20Target' })
       expect(res.statusCode).toBe(400)
       expect(identity.socialConnectorIdFor).not.toHaveBeenCalled()
     } finally {

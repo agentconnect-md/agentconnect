@@ -27,28 +27,29 @@ import { Tag } from '../plugins/openapi.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 
 const ConnectorId = z.string().trim().min(1).max(128)
-// Must stay in step with the console's SOCIAL_LOGIN_PROVIDERS: a target the UI
-// offers but this rejects is a Connect button that 400s.
-// Every target the console can render. Which of them a deployment actually
-// offers comes from SOCIAL_PROVIDERS — the same variable the console reads, so
-// the two sides cannot drift into a button this route would refuse.
-const SOCIAL_TARGET_CATALOG = ['github', 'google', 'slack'] as const
+const ConnectorDto = z.object({ connectorId: ConnectorId })
+/** Unlink takes any stored target, including one this deployment has since
+ *  stopped offering — you must always be able to remove what you linked. */
+const TargetParam = z.object({ target: z.string().trim().min(1).max(128) })
 
-/** Targets this deployment will link. Unset / `*` ⇒ the whole catalog, matching
- *  connectors/filter.ts#parseWhitelist. */
-export function enabledSocialTargets(raw: string | undefined): Set<string> {
+// Which targets this deployment will link, from the SOCIAL_PROVIDERS variable
+// the console reads too, so its buttons and this allowlist cannot drift apart.
+//
+// Deliberately NOT intersected with a catalog of "targets we know": that would
+// be a second copy of the console's list to keep in step, and the CP does not
+// need to know what the console can draw. Unset ⇒ no restriction, and an
+// unconfigured target still fails closed one step later, where
+// socialConnectorIdFor finds no Social connector in the tenant and 404s.
+/** Unset / blank / `*` ⇒ null (no restriction), matching connectors/filter.ts. */
+export function enabledSocialTargets(raw: string | undefined): Set<string> | null {
   const trimmed = raw?.trim()
-  if (!trimmed || trimmed === '*') return new Set(SOCIAL_TARGET_CATALOG)
+  if (!trimmed || trimmed === '*') return null
   const entries = trimmed
     .split(',')
     .map((entry) => entry.trim())
-    .filter((entry) => (SOCIAL_TARGET_CATALOG as readonly string[]).includes(entry))
-  // A value naming only targets we cannot render would make every provider
-  // unlinkable; read a broken setting as the full catalog instead.
-  return entries.length > 0 ? new Set(entries) : new Set(SOCIAL_TARGET_CATALOG)
+    .filter(Boolean)
+  return entries.length > 0 ? new Set(entries) : null
 }
-const ConnectorDto = z.object({ connectorId: ConnectorId })
-const TargetParam = z.object({ target: z.string().trim().min(1).max(128) })
 
 /** The Slack workspace behind the caller's account. `linked: false` is a real
  *  answer (no Slack identity), not an error — a Logto 404 for the user resolves
@@ -151,9 +152,15 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
   return async function meSocialIdentityRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const enabled = enabledSocialTargets(deps.config?.SOCIAL_PROVIDERS)
-    const SocialTarget = z.enum(SOCIAL_TARGET_CATALOG).refine((target) => enabled.has(target), {
-      message: 'this deployment does not offer that sign-in method'
-    })
+    const SocialTarget = z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9_-]+$/, 'not a connector target')
+      .refine((target) => !enabled || enabled.has(target), {
+        message: 'this deployment does not offer that sign-in method'
+      })
     const TargetParamStrict = z.object({ target: SocialTarget })
     const unavailable = {
       error: 'Service Unavailable',

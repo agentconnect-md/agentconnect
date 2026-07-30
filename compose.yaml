@@ -84,6 +84,10 @@ services:
       - GITHUB_APP_PRIVATE_KEY_B64
       - GITHUB_APP_SLUG
       - GITHUB_APP_CLIENT_ID
+      # Which social sign-in methods to offer (comma-separated Logto connector
+      # targets; unset => all). The web service below reads the SAME variable, so
+      # both stay in step from one entry in your .env.
+      - SOCIAL_PROVIDERS
       - LOGTO_MGMT_ENDPOINT
       - LOGTO_MGMT_APP_ID
       - LOGTO_MGMT_APP_SECRET
@@ -159,6 +163,8 @@ services:
       - LOGTO_ENDPOINT
       - LOGTO_APP_ID
       - LOGTO_API_RESOURCE
+      # Must match the control-plane service above.
+      - SOCIAL_PROVIDERS
     healthcheck:
       test:
         - CMD

@@ -707,28 +707,7 @@ export function buildContainer(
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     ...(slackPlatformApp ? { slackPlatformApp } : {}),
-    config: {
-      DEFAULT_OWNER_ID,
-      NODE_ENV: config.NODE_ENV,
-      WS_PATH: config.WS_PATH,
-      HOST: config.HOST,
-      PORT: config.PORT,
-      // Reconnect grace for the daemon read model: mirror the watchdog's freeze
-      // threshold (missed-beats × heartbeat) so a CP restart shows daemons as
-      // `connecting` for the few seconds they take to re-handshake, not `offline`.
-      DAEMON_OFFLINE_GRACE_MS: config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000,
-      ...(config.PUBLIC_CP_URL ? { PUBLIC_CP_URL: config.PUBLIC_CP_URL } : {}),
-      ...(config.PUBLIC_MCP_URL ? { PUBLIC_MCP_URL: config.PUBLIC_MCP_URL } : {}),
-      ...(config.DAEMON_DIST_TAG ? { DAEMON_DIST_TAG: config.DAEMON_DIST_TAG } : {}),
-      ...(config.OIDC_ISSUER ? { OIDC_ISSUER: config.OIDC_ISSUER } : {}),
-      ...(config.OIDC_AUDIENCE ? { OIDC_AUDIENCE: config.OIDC_AUDIENCE } : {}),
-      WAITLIST_MODE: config.WAITLIST_MODE,
-      ...(config.CORS_ORIGIN !== undefined ? { CORS_ORIGIN: config.CORS_ORIGIN } : {}),
-      ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
-      ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
-      ...(config.S3_PUBLIC_BASE_URL ? { S3_PUBLIC_BASE_URL: config.S3_PUBLIC_BASE_URL } : {}),
-      RELAY_STALE_MS: relayStaleMs
-    }
+    config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
   const http = buildHttpServer(httpDeps, opts.fastify)
 
@@ -1211,5 +1190,43 @@ export function buildContainer(
       ])
       await prisma.$disconnect()
     }
+  }
+}
+
+/**
+ * Project the validated environment onto the HTTP layer's config slice.
+ *
+ * Extracted and exported so this seam is testable on its own: it is an explicit
+ * field list, tests elsewhere hand-build `HttpDeps`, and a variable forgotten
+ * here therefore reads as unset in production while every focused test still
+ * passes. That has happened.
+ */
+export function httpServerConfigFrom(
+  config: AppConfig,
+  extras: { DEFAULT_OWNER_ID: string; relayStaleMs: number }
+): HttpDeps['config'] {
+  const { DEFAULT_OWNER_ID, relayStaleMs } = extras
+  return {
+    DEFAULT_OWNER_ID,
+    NODE_ENV: config.NODE_ENV,
+    WS_PATH: config.WS_PATH,
+    HOST: config.HOST,
+    PORT: config.PORT,
+    // Reconnect grace for the daemon read model: mirror the watchdog's freeze
+    // threshold (missed-beats × heartbeat) so a CP restart shows daemons as
+    // `connecting` for the few seconds they take to re-handshake, not `offline`.
+    DAEMON_OFFLINE_GRACE_MS: config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000,
+    ...(config.PUBLIC_CP_URL ? { PUBLIC_CP_URL: config.PUBLIC_CP_URL } : {}),
+    ...(config.PUBLIC_MCP_URL ? { PUBLIC_MCP_URL: config.PUBLIC_MCP_URL } : {}),
+    ...(config.DAEMON_DIST_TAG ? { DAEMON_DIST_TAG: config.DAEMON_DIST_TAG } : {}),
+    ...(config.OIDC_ISSUER ? { OIDC_ISSUER: config.OIDC_ISSUER } : {}),
+    ...(config.OIDC_AUDIENCE ? { OIDC_AUDIENCE: config.OIDC_AUDIENCE } : {}),
+    WAITLIST_MODE: config.WAITLIST_MODE,
+    ...(config.CORS_ORIGIN !== undefined ? { CORS_ORIGIN: config.CORS_ORIGIN } : {}),
+    ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
+    ...(config.SOCIAL_PROVIDERS ? { SOCIAL_PROVIDERS: config.SOCIAL_PROVIDERS } : {}),
+    ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
+    ...(config.S3_PUBLIC_BASE_URL ? { S3_PUBLIC_BASE_URL: config.S3_PUBLIC_BASE_URL } : {}),
+    RELAY_STALE_MS: relayStaleMs
   }
 }
