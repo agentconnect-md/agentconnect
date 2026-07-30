@@ -125,14 +125,16 @@ export default function OnboardingView() {
   // A transient mint failure must not strand the single blocking step. AWAIT the fleet
   // refresh before re-arming: if the failed provision actually succeeded server-side
   // (response lost), the refreshed list contains that daemon as an offline row, so the
-  // re-run reconnects it via `offlineDaemonId` instead of minting a duplicate. A failed
-  // refresh still re-arms — retrying against the stale list beats staying stranded.
+  // re-run reconnects it via `offlineDaemonId` instead of minting a duplicate. A FAILED
+  // refresh must NOT re-arm — the stale snapshot is exactly what could duplicate an
+  // ambiguously-successful provision; stay latched and keep the Retry on screen.
   const retryMint = async () => {
     setMintErr(null)
     try {
       await refreshDaemons()
     } catch {
-      /* stale list — the retry below is still better than a dead end */
+      setMintErr('Could not refresh the daemon list — check your connection and retry.')
+      return
     }
     provisioned.current = false
     commandPending.current = null

@@ -175,6 +175,17 @@ describe('onboarding — connect step', () => {
     expect(host.textContent).toContain('agentconnect run')
   })
 
+  // A failed refresh leaves the stale snapshot — re-arming against it could duplicate
+  // an ambiguously-successful provision. Stay latched, show the error, keep Retry.
+  it('does not re-arm provisioning when the fleet refresh itself fails', async () => {
+    mocks.provisionDaemon.mockRejectedValueOnce(new Error('cp unreachable'))
+    mocks.refreshDaemons.mockRejectedValue(new Error('network down'))
+    await render()
+    await click('Retry')
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1) // no second mint
+    expect(host.textContent).toContain('Could not refresh the daemon list')
+  })
+
   // Ambiguous success: the failed provision actually landed server-side. Retry must
   // observe the refreshed fleet (the new offline row) and reconnect it — never mint
   // a second daemon against the stale empty list.
