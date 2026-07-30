@@ -44,7 +44,7 @@ export default function ProfileView() {
   const { user, me: meProfile } = useProfile()
   const authOn = isAuthConfigured()
   // ProfileView survives its desktop-first hydration switch to the mobile tree,
-  // so it owns the one-shot callback notice instead of either short-lived card.
+  // so it holds the card's failure notice instead of either short-lived card.
   const [socialNotice, setSocialNotice] = useState<AccountNotice>()
   // The signed-in user's membership — the same row the Settings page lists.
   // Matched by userId when the CP profile is known (exact), by email otherwise.

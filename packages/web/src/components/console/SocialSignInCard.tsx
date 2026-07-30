@@ -193,7 +193,7 @@ function VerifyAccountDialog({
             <div className="mt-4 flex justify-center">
               <input
                 aria-label="Verification code"
-                className="w-[190px] rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2.5 text-center indent-[0.32em] font-mono text-[19px] font-medium tracking-[0.32em] text-(--text-primary) outline-none transition-[border-color,box-shadow] focus:border-(--brand) focus:shadow-[0_0_0_3px_var(--brand-soft)]"
+                className="w-[190px] rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2.5 text-center indent-[0.32em] font-mono text-[19px] font-medium tracking-[0.32em] text-(--text-primary) outline-none focus:border-(--border-focus) focus:ring-[3px] focus:ring-(--brand-ring)"
                 value={code}
                 inputMode="numeric"
                 autoComplete="one-time-code"
