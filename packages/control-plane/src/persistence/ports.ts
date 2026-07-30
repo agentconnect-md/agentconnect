@@ -1141,7 +1141,6 @@ export interface ClaimMcpInvocationInput {
   orgId: OrgId
   agentId: AgentId
   daemonId: DaemonId
-  now: Date
 }
 
 export type ClaimMcpInvocationResult =

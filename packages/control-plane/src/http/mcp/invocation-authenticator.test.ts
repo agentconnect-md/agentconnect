@@ -143,12 +143,12 @@ function harness() {
           state.delegation.agentId === input.agentId &&
           state.delegation.daemonId === input.daemonId &&
           state.delegation.revokedAt === null &&
-          state.delegation.expiresAt.getTime() > input.now.getTime() &&
+          state.delegation.expiresAt.getTime() > state.now &&
           state.presetAgentId === input.agentId
         if (!exactAuthority) return { kind: 'denied' }
         if (current.status !== 'issued') return { kind: 'existing', invocation: current }
         if (state.now >= current.assertionExpires.getTime()) return { kind: 'expired' }
-        state.invocation = { ...current, status: 'running', startedAt: input.now }
+        state.invocation = { ...current, status: 'running', startedAt: new Date(state.now) }
         return { kind: 'claimed', invocation: state.invocation }
       })
     },
@@ -270,8 +270,7 @@ describe('InvocationAssertionAuthenticator', () => {
         userId: USER_ID,
         orgId: ORG_ID,
         agentId: AGENT_ID,
-        daemonId: DAEMON_ID,
-        now: new Date(NOW)
+        daemonId: DAEMON_ID
       }
     ])
   })
@@ -281,10 +280,10 @@ describe('InvocationAssertionAuthenticator', () => {
     h.state.now = NOW + 30_000
 
     expect(await h.authenticator.claim(h.input())).toEqual({ kind: 'denied', reason: 'assertion_expired' })
-    expect(h.claimInputs[0]?.now).toEqual(new Date(NOW + 30_000))
+    expect(h.deps.invocations.claim).toHaveBeenCalledOnce()
   })
 
-  it('uses a fresh CAS timestamp after asynchronous live checks and MCP parsing', async () => {
+  it('lets the repository use a fresh timestamp after asynchronous liveness checks and MCP parsing', async () => {
     const h = harness()
 
     const result = await h.authenticator.claim(
@@ -297,7 +296,7 @@ describe('InvocationAssertionAuthenticator', () => {
     )
 
     expect(result).toEqual({ kind: 'denied', reason: 'assertion_expired' })
-    expect(h.claimInputs[0]?.now).toEqual(new Date(NOW + 30_000))
+    expect(h.deps.invocations.claim).toHaveBeenCalledOnce()
   })
 
   it('has one CAS execution winner and returns in_progress to the same assertion replay', async () => {

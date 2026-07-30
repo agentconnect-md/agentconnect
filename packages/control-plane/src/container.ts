@@ -230,7 +230,7 @@ export function buildContainer(
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
     webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma),
-    mcpInvocation: new PgMcpInvocationRepo(prisma),
+    mcpInvocation: new PgMcpInvocationRepo(prisma, clock),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),

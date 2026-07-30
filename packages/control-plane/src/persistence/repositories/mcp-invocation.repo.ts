@@ -3,6 +3,7 @@
  * status-predicated compare-and-set; responses are retained byte-for-byte.
  */
 import { Prisma, type McpInvocation } from '../../generated/prisma/client.js'
+import { systemClock, type Clock } from '../../domain/clock.js'
 import { canView } from '../../domain/visibility.js'
 import type { PrismaLike } from '../prisma.js'
 import {
@@ -27,7 +28,10 @@ const isP2003 = (error: unknown): boolean => (error as { code?: string }).code =
 const toRecord = (row: McpInvocation): McpInvocationRecord => ({ ...row })
 
 export class PgMcpInvocationRepo implements McpInvocationRepo {
-  constructor(private readonly db: PrismaLike) {}
+  constructor(
+    private readonly db: PrismaLike,
+    private readonly clock: Pick<Clock, 'now'> = systemClock
+  ) {}
 
   private inTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     if ('$transaction' in this.db) return this.db.$transaction(fn)
@@ -172,8 +176,8 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
       // SHARE conflicts with direct revocation, expiry shortening, generation
       // rotation, and cascade deletion. Check the complete immutable binding so
       // caller-supplied ids can never transplant an assertion to another parent.
-      const parent = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
-        SELECT "id"
+      const [parent] = await tx.$queryRaw<{ id: string; expiresAt: Date }[]>(Prisma.sql`
+        SELECT "id", "expiresAt"
         FROM "webchat_mcp_delegation"
         WHERE "id" = ${input.delegationId}
           AND "generation" = ${input.generation}
@@ -183,10 +187,9 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
           AND "agentId" = ${input.agentId}
           AND "daemonId" = ${input.daemonId}
           AND "revokedAt" IS NULL
-          AND "expiresAt" > ${input.now}
         FOR SHARE
       `)
-      if (parent.length === 0) return { kind: 'denied' }
+      if (!parent) return { kind: 'denied' }
 
       const [preset] = await tx.$queryRaw<{ agentId: string | null }[]>(Prisma.sql`
         SELECT "agentId"
@@ -197,15 +200,22 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
       `)
       if (!preset || preset.agentId !== input.agentId) return { kind: 'denied' }
 
+      const claimNowMs = this.clock.now()
+      const claimNow = new Date(claimNowMs)
+      if (!Number.isFinite(claimNowMs) || !Number.isFinite(claimNow.getTime())) {
+        return { kind: 'denied' }
+      }
+      if (parent.expiresAt.getTime() <= claimNowMs) return { kind: 'denied' }
+
       const claimed = await tx.mcpInvocation.updateMany({
         where: {
           id: input.invocationId,
           delegationId: input.delegationId,
           assertionHash: input.assertionHash,
           status: 'issued',
-          assertionExpires: { gt: input.now }
+          assertionExpires: { gt: claimNow }
         },
-        data: { status: 'running', startedAt: input.now }
+        data: { status: 'running', startedAt: claimNow }
       })
       const invocation = await tx.mcpInvocation.findFirst({
         where: {

@@ -158,7 +158,7 @@ export function buildHttpApp(
   const orgRepo = new PgOrgRepo(prisma)
   const webchatConversationRepo = new PgWebchatConversationRepo(prisma)
   const webchatMcpDelegationRepo = new PgWebchatMcpDelegationRepo(prisma)
-  const mcpInvocationRepo = new PgMcpInvocationRepo(prisma)
+  const mcpInvocationRepo = new PgMcpInvocationRepo(prisma, clock)
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)

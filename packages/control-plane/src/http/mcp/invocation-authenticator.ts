@@ -125,12 +125,6 @@ export class InvocationAssertionAuthenticator {
       orgId: delegation.orgId,
       userId: delegation.userId
     }
-    // Delegation/liveness prechecks and lazy JSON parsing may take time. The
-    // repository's deadline predicates must use the instant of the CAS attempt,
-    // not request admission time, or a near-expiry assertion could start after
-    // 30 seconds.
-    const claimNowMs = this.deps.clock.now()
-    if (!Number.isFinite(claimNowMs)) return this.deny('claim_denied')
     const claimed = await this.deps.invocations.claim({
       invocationId: invocation.id,
       assertionHash,
@@ -140,8 +134,7 @@ export class InvocationAssertionAuthenticator {
       userId: delegation.userId,
       orgId: OrgId(delegation.orgId),
       agentId: AgentId(delegation.agentId),
-      daemonId: DaemonId(delegation.daemonId),
-      now: new Date(claimNowMs)
+      daemonId: DaemonId(delegation.daemonId)
     })
     if (claimed.kind === 'claimed') {
       return sameInvocation(claimed.invocation, invocation)
