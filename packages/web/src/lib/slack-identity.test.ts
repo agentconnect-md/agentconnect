@@ -5,17 +5,17 @@ import { slackWorkspaceLine } from '@/lib/slack-identity'
 const LINKED = { linked: true as const, teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 
 describe('slackWorkspaceLine', () => {
-  it('prefers the workspace name Slack sent, keeping the team id alongside', () => {
-    expect(slackWorkspaceLine({ ...LINKED, teamName: 'Example Workspace' })).toBe('Example Workspace · T0EXAMPLE1')
+  it('shows the workspace name Slack sent, and nothing else', () => {
+    // The raw id is deliberately absent: this line is read by people managing
+    // their own sign-in methods, to whom `T…` is noise.
+    expect(slackWorkspaceLine({ ...LINKED, teamName: 'Example Workspace' })).toBe('Example Workspace')
   })
 
   it('falls back to the workspace domain when there is no name', () => {
-    expect(slackWorkspaceLine({ ...LINKED, teamDomain: 'example-workspace' })).toBe(
-      'example-workspace.slack.com · T0EXAMPLE1'
-    )
+    expect(slackWorkspaceLine({ ...LINKED, teamDomain: 'example-workspace' })).toBe('example-workspace.slack.com')
   })
 
-  it('shows the bare team id when Slack sent neither label', () => {
+  it('shows the bare team id only when Slack sent neither label', () => {
     expect(slackWorkspaceLine(LINKED)).toBe('T0EXAMPLE1')
   })
 

@@ -4,10 +4,14 @@
 import type { MySlackIdentityDto } from '@/lib/api'
 
 /**
- * The workspace line for an account's Slack row. Prefers the human label Slack
- * sent, falls back to the workspace domain, and always keeps the `T…` id
- * visible: it is what someone matching this account against a Slack workspace
- * actually needs, and it is the only field Slack always sends.
+ * The workspace line for an account's Slack row: which Slack workspace this
+ * account signs in from, named the way its members would recognize it.
+ *
+ * The raw `T…` id appears ONLY as a last resort. It was previously shown
+ * alongside the name on the grounds that it is the field Slack always sends —
+ * but this line is read by people managing their own sign-in methods, and to
+ * them an opaque id is noise, not information. Anything that needs to match
+ * accounts to workspaces reads the API, which still returns `teamId`.
  *
  * Undefined when there is nothing to say — not linked, or the read failed /
  * this deployment cannot do it. Callers render nothing in that case; the line
@@ -15,6 +19,5 @@ import type { MySlackIdentityDto } from '@/lib/api'
  */
 export function slackWorkspaceLine(slack: MySlackIdentityDto | undefined): string | undefined {
   if (!slack?.linked) return undefined
-  const label = slack.teamName ?? (slack.teamDomain ? `${slack.teamDomain}.slack.com` : undefined)
-  return label ? `${label} · ${slack.teamId}` : slack.teamId
+  return slack.teamName ?? (slack.teamDomain ? `${slack.teamDomain}.slack.com` : slack.teamId)
 }
