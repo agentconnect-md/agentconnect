@@ -49,19 +49,22 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         return null
       }
 
-      const latest = await tx.webchatMcpDelegation.findFirst({
-        where: { conversationId: input.conversationId },
-        orderBy: { generation: 'desc' }
-      })
+      // Preserve the global Agent → Conversation → Delegation lock order. The
+      // current row must be re-read under UPDATE lock so revocation and
+      // establishment have a single commit order.
+      const [latest] = await tx.$queryRaw<WebchatMcpDelegation[]>(Prisma.sql`
+        SELECT *
+        FROM "webchat_mcp_delegation"
+        WHERE "conversationId" = ${input.conversationId}
+        ORDER BY "generation" DESC
+        LIMIT 1
+        FOR UPDATE
+      `)
       const sameAuthority =
         latest?.userId === input.userId &&
         latest.orgId === input.orgId &&
         latest.agentId === input.agentId &&
         latest.daemonId === input.daemonId
-      // Revocation is terminal for the same live authority. In particular, a
-      // reconnect that races and loses to revocation must not create a fresh
-      // generation after observing the winner.
-      if (latest?.revokedAt && sameAuthority) return null
       if (latest && !latest.revokedAt && latest.expiresAt.getTime() > input.now.getTime() && sameAuthority) {
         if (input.expiresAt.getTime() < latest.expiresAt.getTime()) {
           const shortened = await tx.webchatMcpDelegation.updateMany({

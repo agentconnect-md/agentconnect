@@ -3,11 +3,10 @@
  * (docs/designs/resource-visibility.md).
  *
  * Fastify-free PURE functions so they unit-test like `orchestrator/fencing.ts`
- * (colocated `visibility.test.ts`, `test:unit`, zero I/O). This module is the
- * SINGLE policy source: the route guards use `canView`/`canEdit` here and the repo
- * WHERE builders use `visibilityWhere` (defined next to the records in
- * `persistence/ports.ts`, re-exported below), so the SQL filter and the in-app
- * checks can never diverge.
+ * (colocated `visibility.test.ts`, `test:unit`, zero I/O). The shared
+ * `canView` policy and its types live in `domain/visibility.ts`; this HTTP
+ * adapter adds edit/session predicates and re-exports the persistence
+ * `visibilityWhere` mirror.
  *
  * Access DERIVES FROM THE ORG ROLE — sharing controls only WHO can SEE a resource;
  * whether they may edit follows their existing role (viewer read-only,
@@ -18,8 +17,7 @@
 import { canView, type Shareable, type ViewCtx } from '../domain/visibility.js'
 import type { SessionVisibility } from '../persistence/ports.js'
 
-// Re-export the shared visibility primitives so route code has a single import
-// site (`http/visibility.js`) while the repo layer imports them from `ports.js`.
+// Re-export the shared visibility primitives so route code has one import site.
 export { visibilityWhere } from '../persistence/ports.js'
 export { canView }
 export type { Shareable, ViewCtx }

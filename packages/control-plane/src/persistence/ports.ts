@@ -37,6 +37,9 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type { Shareable, ViewCtx } from '../domain/visibility.js'
+
+export type { Shareable, ViewCtx } from '../domain/visibility.js'
 
 // ───────────────────────────────────────────────────────────────────────────
 // Shared enums (string unions mirroring the Prisma enums; kept transport-free)
@@ -53,22 +56,6 @@ export type AgentCallPolicy = 'all' | 'selected'
 /** Cross-process critical section for one Logto user's social-identity mutations. */
 export interface SocialIdentityMutationGate {
   runExclusive<T>(oidcSubject: string, mutation: () => Promise<T>): Promise<T>
-}
-
-/** The caller identity a per-resource visibility decision needs: their id + org
- *  role. Built from `req.orgCtx` by `http/rbac.ts#ctxOf`. */
-export interface ViewCtx {
-  userId: string
-  role: OrgMemberRole
-}
-
-/** The visibility-bearing fields every shareable resource carries.
- *  `createdByUserId` is the RAW FK scalar (not the joined creator object, which is
- *  null once the user row is SetNull-deleted) — the creator-arm reads this. */
-export interface Shareable {
-  createdByUserId: string | null
-  visibility: ResourceVisibility
-  sharedWith: string[]
 }
 
 /**
