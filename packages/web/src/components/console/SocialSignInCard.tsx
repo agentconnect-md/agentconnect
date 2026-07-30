@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { SocialLoginMark } from '@/components/marks'
 import { initialsFrom } from '@/lib/auth'
 import { fetchMySlackIdentity, resolveMySocialConnectorId, unlinkMySocialIdentity } from '@/lib/api'
-import { slackWorkspaceLine } from '@/lib/slack-identity'
+import { slackWorkspaceLine, slackWorkspaceUrl } from '@/lib/slack-identity'
 import {
   LogtoAccountError,
   accountErrorMessage,
@@ -211,6 +211,28 @@ function VerifyAccountDialog({
   )
 }
 
+/**
+ * A secondary detail line that becomes a link when we can address the thing it
+ * names. Falls back to plain text rather than a dead link — a provider that
+ * gave us no handle (a GitHub identity with no login, a Slack workspace with no
+ * domain) should still read normally.
+ */
+function ExternalLine({ href, mono = false, children }: { href?: string; mono?: boolean; children: ReactNode }) {
+  const type = mono ? 'font-mono text-[11.5px]' : 'font-sans text-[11.5px]'
+  const base = `block truncate ${type} font-normal leading-normal text-(--text-tertiary)`
+  if (!href) return <div className={base}>{children}</div>
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`${base} hover:text-(--text-secondary) hover:underline`}
+    >
+      {children}
+    </a>
+  )
+}
+
 function Notice({ notice }: { notice: AccountNotice }) {
   return (
     <div
@@ -250,6 +272,7 @@ export default function SocialSignInCard({
   // but this one line — never the linking UI it sits in.
   const { data: slack } = useSWR('me-slack-identity', fetchMySlackIdentity, { shouldRetryOnError: false })
   const workspaceLine = slackWorkspaceLine(slack)
+  const workspaceUrl = slackWorkspaceUrl(slack)
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
   const [pendingVerify, setPendingVerify] = useState<SocialLoginProvider>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
@@ -344,7 +367,7 @@ export default function SocialSignInCard({
         <div aria-busy={isValidating}>
           {SOCIAL_LOGIN_PROVIDERS.map((provider, index) => {
             const identity = currentAccount?.identities[provider.target]
-            const details = identity ? socialIdentityDetails(identity) : undefined
+            const details = identity ? socialIdentityDetails(provider.target, identity) : undefined
             const canUnlink = linkedProviderCount > 1
             return (
               <div
@@ -372,14 +395,12 @@ export default function SocialSignInCard({
                             {details?.name ?? 'Linked'}
                           </div>
                           {details?.email ? (
-                            <div className="truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                            <ExternalLine href={details.profileUrl} mono>
                               {details.email}
-                            </div>
+                            </ExternalLine>
                           ) : null}
                           {provider.target === 'slack' && workspaceLine ? (
-                            <div className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                              {workspaceLine}
-                            </div>
+                            <ExternalLine href={workspaceUrl}>{workspaceLine}</ExternalLine>
                           ) : null}
                         </div>
                       </div>

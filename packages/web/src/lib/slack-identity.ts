@@ -21,3 +21,13 @@ export function slackWorkspaceLine(slack: MySlackIdentityDto | undefined): strin
   if (!slack?.linked) return undefined
   return slack.teamName ?? (slack.teamDomain ? `${slack.teamDomain}.slack.com` : slack.teamId)
 }
+
+/**
+ * The workspace's own Slack URL, so the label can open the place it names.
+ * Only the domain addresses a workspace on the web — the `T…` id does not — so
+ * this is undefined when Slack sent no domain, and the label stays plain text.
+ */
+export function slackWorkspaceUrl(slack: MySlackIdentityDto | undefined): string | undefined {
+  if (!slack?.linked || !slack.teamDomain) return undefined
+  return `https://${slack.teamDomain}.slack.com`
+}
