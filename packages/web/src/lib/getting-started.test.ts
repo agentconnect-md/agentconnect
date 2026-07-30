@@ -13,26 +13,23 @@ const agent = (over: Partial<Agent> = {}): Agent =>
     workspace: { mode: 'scratch' },
     ...over
   }) as Agent
-const daemon = (
-  status: DaemonRow['status'],
-  runtimeModels: { runtime: string; authRequired?: boolean; models?: string[] }[] = []
-) => ({ daemonId: 'd1', status, runtimeModels: runtimeModels.map((r) => ({ models: ['m1'], ...r })) }) as DaemonRow
+const daemon = (status: DaemonRow['status']): DaemonRow => ({ daemonId: 'd1', status }) as DaemonRow
 const empty = { agents: [], daemons: [], integrations: [], sessions: [], members: [], authOn: true }
 
 describe('computeGettingStarted', () => {
   it('starts all-incomplete for a fresh org and reports progress', () => {
     const gs = computeGettingStarted(empty)
     expect(gs.done).toBe(0)
-    expect(gs.total).toBe(7) // 6 core + invite (auth mode)
+    expect(gs.total).toBe(6) // 5 core + invite (auth mode)
     expect(gs.fraction).toBe(0)
     expect(gs.allDone).toBe(false)
-    expect(gs.hasWarn).toBe(false) // no online daemon ⇒ the daemon step owns the attention
   })
 
-  it('orders the steps per the design: daemon, runtime, agent, slack, github, conversation, invite', () => {
+  it('orders the steps per the design: daemon, agent, slack, github, conversation, invite', () => {
+    // The "Runtime signed in" step is deferred until the explicit probe-status
+    // signal ships (neither authRequired nor advertised models encode readiness).
     expect(computeGettingStarted(empty).items.map((i) => i.key)).toEqual([
       'daemon',
-      'runtime',
       'agent',
       'slack',
       'github',
@@ -42,7 +39,7 @@ describe('computeGettingStarted', () => {
   })
 
   it('drops the invite item in no-auth mode', () => {
-    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(6)
+    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(5)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'invite')).toBe(false)
   })
 
@@ -51,28 +48,6 @@ describe('computeGettingStarted', () => {
       computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'daemon')!.done
     expect(done([daemon('offline')])).toBe(false)
     expect(done([daemon('online')])).toBe(true)
-  })
-
-  it('turns the runtime step amber only when a daemon is online with nothing signed in', () => {
-    const rt = (rows: DaemonRow[]) =>
-      computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'runtime')!
-    // no online daemon: open but calm
-    expect(rt([daemon('offline')])).toMatchObject({ done: false, warn: false })
-    // online, every runtime auth-required: needs attention
-    const warned = rt([daemon('online', [{ runtime: 'claude', authRequired: true }])])
-    expect(warned).toMatchObject({ done: false, warn: true })
-    expect(warned.action).toEqual({ kind: 'runtime', daemonId: 'd1' })
-    // probe pending/failed (no advertised models) is NOT signed in — authRequired
-    // absence alone must not tick the step
-    expect(rt([daemon('online', [{ runtime: 'claude', models: [] }])])).toMatchObject({ done: false, warn: true })
-    // online with a probed, signed-in runtime: done
-    expect(rt([daemon('online', [{ runtime: 'claude' }])]).done).toBe(true)
-    // hasWarn surfaces the amber state
-    const gs = computeGettingStarted({
-      ...empty,
-      daemons: [daemon('online', [{ runtime: 'claude', authRequired: true }])]
-    })
-    expect(gs.hasWarn).toBe(true)
   })
 
   it('marks agent done only once some agent is placed (daemon + runtime)', () => {
@@ -133,7 +108,7 @@ describe('computeGettingStarted', () => {
   it('reaches allDone with a full ring when every signal is satisfied', () => {
     const gs = computeGettingStarted({
       agents: [agent({ workspace: { mode: 'github', repo: 'acme/x' } as Agent['workspace'], hookKinds: ['github'] })],
-      daemons: [daemon('online', [{ runtime: 'claude' }])],
+      daemons: [daemon('online')],
       integrations: [{ platform: 'slack', name: 's' } as IntegrationRow],
       sessions: [{ id: 's1', statusLabel: 'completed' } as Session],
       members: [{ userId: 'u1' } as MemberDto, { userId: 'u2' } as MemberDto],

@@ -38,10 +38,6 @@ export function useGsActions() {
       switch (action.kind) {
         case 'daemon':
           return openModal('daemon')
-        case 'runtime':
-          // Sign-in happens on the daemon host; the daemon detail page carries the
-          // auth-required warning strip with the exact login command.
-          return router.push(orgPath(action.daemonId ? `/daemons/${action.daemonId}` : '/daemons'))
         case 'agent':
           return builtinAgent ? openModal('editAgent', builtinAgent, { focusSection: 'basics' }) : openModal('agent')
         case 'slack': {
@@ -102,14 +98,10 @@ export function GsRows({
       >
         <span
           className={`mt-[1px] flex h-[18px] w-[18px] flex-none items-center justify-center rounded-full ${
-            it.done
-              ? 'bg-(--brand) text-white'
-              : it.warn
-                ? 'bg-(--status-paused-soft) text-(--amber-500)'
-                : 'border-[1.5px] border-(--border-strong)'
+            it.done ? 'bg-(--brand) text-white' : 'border-[1.5px] border-(--border-strong)'
           }`}
         >
-          {it.done ? <Icon name="check" size={12} /> : it.warn ? <Icon name="triangle-alert" size={11} /> : null}
+          {it.done && <Icon name="check" size={12} />}
         </span>
         <div className="min-w-0 flex-1">
           <span
@@ -119,11 +111,6 @@ export function GsRows({
           >
             {it.label}
           </span>
-          {!it.done && it.warn && (
-            <span className="ml-2 font-sans text-[12px] font-medium leading-normal text-(--amber-500)">
-              Needs attention
-            </span>
-          )}
           {open && (
             <>
               <div className="mt-[5px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">

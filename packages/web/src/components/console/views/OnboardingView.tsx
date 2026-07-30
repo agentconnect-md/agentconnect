@@ -47,7 +47,8 @@ export default function OnboardingView() {
     deleteDaemon,
     updateAgent,
     moveAgent,
-    refresh
+    refresh,
+    refreshDaemons
   } = useConsoleData()
   const { orgPath } = useOrgs()
   const { runAction } = useGsActions()
@@ -121,14 +122,20 @@ export default function OnboardingView() {
     command.then(setConnect).catch((e) => setMintErr(e instanceof Error ? e.message : String(e)))
   }, [agentsLoading, daemonsLoading, daemonReady, offlineDaemonId, provisionDaemon, reconnectDaemon, mintAttempt])
 
-  // A transient mint failure must not strand the single blocking step: re-arm the
-  // one-shot guard and re-run the effect (refresh first so an ambiguous success shows
-  // up as an offline row and the retry reconnects it rather than minting a duplicate).
-  const retryMint = () => {
+  // A transient mint failure must not strand the single blocking step. AWAIT the fleet
+  // refresh before re-arming: if the failed provision actually succeeded server-side
+  // (response lost), the refreshed list contains that daemon as an offline row, so the
+  // re-run reconnects it via `offlineDaemonId` instead of minting a duplicate. A failed
+  // refresh still re-arms — retrying against the stale list beats staying stranded.
+  const retryMint = async () => {
+    setMintErr(null)
+    try {
+      await refreshDaemons()
+    } catch {
+      /* stale list — the retry below is still better than a dead end */
+    }
     provisioned.current = false
     commandPending.current = null
-    setMintErr(null)
-    refresh()
     setMintAttempt((n) => n + 1)
   }
 
@@ -193,7 +200,7 @@ export default function OnboardingView() {
           mintErr={mintErr}
           copied={copied}
           onCopy={copy}
-          onRetry={retryMint}
+          onRetry={() => void retryMint()}
           listeningId={listeningId}
           elapsedLabel={elapsedLabel}
           onExplore={goConsole}

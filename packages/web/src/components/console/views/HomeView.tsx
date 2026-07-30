@@ -419,7 +419,6 @@ export default function HomeView() {
           ) : (
             recent.map((s) => {
               const owner = s.agentId ? getAgent(s.agentId) : undefined
-              console.log('recent session', s, owner)
               return (
                 <Link key={s.id} href={orgPath(`/sessions/${s.id}`)} className="row click grid-cols-[1fr_auto] gap-3">
                   <span className="min-w-0">

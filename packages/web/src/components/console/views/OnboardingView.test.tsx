@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   updateAgent: vi.fn(),
   moveAgent: vi.fn(),
   refresh: vi.fn(),
+  refreshDaemons: vi.fn(),
   push: vi.fn(),
   skipOnboarding: vi.fn()
 }))
@@ -40,7 +41,8 @@ vi.mock('@/lib/data-context', () => ({
     deleteDaemon: mocks.deleteDaemon,
     updateAgent: mocks.updateAgent,
     moveAgent: mocks.moveAgent,
-    refresh: mocks.refresh
+    refresh: mocks.refresh,
+    refreshDaemons: mocks.refreshDaemons
   })
 }))
 // RuntimeSelect pulls the ACP registry context + AgentMark; stub it to the picked value.
@@ -108,6 +110,7 @@ beforeEach(() => {
   mocks.reconnectDaemon.mockReset()
   mocks.deleteDaemon.mockReset().mockResolvedValue(undefined)
   mocks.refresh.mockReset()
+  mocks.refreshDaemons.mockReset().mockResolvedValue(undefined)
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
   mocks.moveAgent.mockReset().mockResolvedValue(undefined)
   mocks.push.mockReset()
@@ -167,8 +170,25 @@ describe('onboarding — connect step', () => {
     await render()
     expect(host.textContent).toContain('cp unreachable')
     await click('Retry')
+    expect(mocks.refreshDaemons).toHaveBeenCalled()
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(2)
     expect(host.textContent).toContain('agentconnect run')
+  })
+
+  // Ambiguous success: the failed provision actually landed server-side. Retry must
+  // observe the refreshed fleet (the new offline row) and reconnect it — never mint
+  // a second daemon against the stale empty list.
+  it('retries via reconnect when the failed provision succeeded server-side', async () => {
+    mocks.provisionDaemon.mockRejectedValueOnce(new Error('response lost'))
+    mocks.refreshDaemons.mockImplementation(async () => {
+      mocks.daemons = [{ daemonId: 'dmn_ghost', status: 'offline' }]
+    })
+    mocks.reconnectDaemon.mockResolvedValue({ command: 'agentconnect run --resume' })
+    await render()
+    expect(host.textContent).toContain('response lost')
+    await click('Retry')
+    expect(mocks.reconnectDaemon).toHaveBeenCalledWith('dmn_ghost')
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
   })
 })
 

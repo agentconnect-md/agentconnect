@@ -69,10 +69,9 @@ export default function GettingStarted() {
   // Modals (add daemon, set up agent, connect Slack) stack above the drawer (their scrim
   // is z-900, the drawer z-80), so the checklist stays open behind them — the user returns
   // to it when the modal closes. Only close the drawer for actions that navigate the page
-  // away (runtime sign-in, GitHub workspace, Home chat, invite teammates → router.push).
+  // away (GitHub workspace, Home chat, invite teammates → router.push).
   const runFromDrawer = (action: GsAction) => {
-    const navigates =
-      action.kind === 'runtime' || action.kind === 'github' || action.kind === 'chat' || action.kind === 'members'
+    const navigates = action.kind === 'github' || action.kind === 'chat' || action.kind === 'members'
     if (navigates) setDrawerOpen(false)
     runAction(action)
   }

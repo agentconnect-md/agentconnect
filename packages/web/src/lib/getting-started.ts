@@ -4,11 +4,13 @@
 // item is incomplete and vanishes for good once the list is complete — there is no
 // manual dismiss, so the only state this module owns is the pure derivation.
 //
-// Seven steps, in the design's order: daemon → runtime signed in → meet your agent →
-// Slack → GitHub+repo (one merged step) → first conversation → invite. "Runtime signed
-// in" is the needs-attention item: it derives from the daemons' probe-reported
-// `authRequired` and turns amber when a daemon is online but no runtime can take a
-// session. Still not derivable client-side (left out rather than faked): the per-item
+// Steps in the design's order: daemon → meet your agent → Slack → GitHub+repo (one
+// merged step) → first conversation → invite. Still not derivable client-side (left
+// out rather than faked, preset-agents.md §6.2): the "Runtime signed in"
+// needs-attention item — neither `authRequired` (absence also means probe
+// pending/failed) nor advertised models (a usable runtime may legitimately have no
+// model selector) encode readiness; add it when the explicit
+// pending|ready|auth_required|failed probe status ships. Same for the per-item
 // "Ask agentconnect" automation (§6.3/§6.4 delegated writes).
 
 import { agentIsPlaced } from './data'
@@ -19,7 +21,6 @@ import type { MemberDto } from './api'
 // (open a modal, route to a page) so this stays pure and testable.
 export type GsAction =
   | { kind: 'daemon' }
-  | { kind: 'runtime'; daemonId: string | null }
   | { kind: 'agent' }
   | { kind: 'slack'; agentId: string | null }
   | { kind: 'github'; agentId: string | null }
@@ -32,8 +33,6 @@ export interface GsItem {
   /** One-line explanation shown when the row is expanded. */
   expl: string
   done: boolean
-  /** Needs-attention: the step is blocking (amber mark + note) rather than merely open. */
-  warn?: boolean
   ctaLabel: string
   action: GsAction
 }
@@ -47,8 +46,6 @@ export interface GettingStarted {
   /** `stroke-dasharray` value for a r=10.5 progress ring (dash then a full-circle gap). */
   ring: string
   allDone: boolean
-  /** Some item is in the needs-attention state (drives the amber banner / pill tint). */
-  hasWarn: boolean
 }
 
 // r=10.5 matches every ring svg in the design (pill, drawer header, rail).
@@ -74,36 +71,14 @@ export function computeGettingStarted(input: {
   // backfills) fall back to "some agent is placed".
   const placedAgent = builtin ? agentIsPlaced(builtin) : agents.some(agentIsPlaced)
 
-  // Runtime sign-in state, from the daemons' probe reports. `authRequired` alone can't
-  // distinguish "signed in" from "probe pending/failed" (absence is stored as false), so
-  // done additionally requires probe evidence — an advertised model list, which empties
-  // on probe failure and is empty before the first probe. Amber only when a daemon is
-  // online yet nothing is provably signed in — with no online daemon the daemon step
-  // already owns the attention.
-  const onlineDaemons = daemons.filter((d) => d.status === 'online')
-  const runtimes = (d: DaemonRow) => d.runtimeModels ?? []
-  const runtimeSignedIn = onlineDaemons.some((d) => runtimes(d).some((r) => !r.authRequired && r.models.length > 0))
-  const runtimeWarn = onlineDaemons.length > 0 && !runtimeSignedIn
-  const signInDaemon =
-    onlineDaemons.find((d) => runtimes(d).some((r) => r.authRequired))?.daemonId ?? onlineDaemons[0]?.daemonId ?? null
-
   const items: GsItem[] = [
     {
       key: 'daemon',
       label: 'Connect a daemon',
       expl: 'Run one command on the host where your agents should live. It stays connected and runs agents locally over ACP.',
-      done: onlineDaemons.length > 0,
+      done: daemons.some((d) => d.status === 'online'),
       ctaLabel: 'Add a daemon',
       action: { kind: 'daemon' }
-    },
-    {
-      key: 'runtime',
-      label: 'Sign in an AI runtime',
-      expl: 'Agents can’t take a session until a runtime (Claude, Codex, …) is signed in on the daemon host. Open the daemon page for the sign-in command.',
-      done: runtimeSignedIn,
-      warn: runtimeWarn,
-      ctaLabel: 'Sign in',
-      action: { kind: 'runtime', daemonId: signInDaemon }
     },
     {
       key: 'agent',
@@ -162,7 +137,6 @@ export function computeGettingStarted(input: {
     total,
     fraction,
     ring: `${(fraction * RING_CIRCUMFERENCE).toFixed(2)} ${RING_CIRCUMFERENCE.toFixed(2)}`,
-    allDone: done === total,
-    hasWarn: items.some((i) => !i.done && i.warn)
+    allDone: done === total
   }
 }

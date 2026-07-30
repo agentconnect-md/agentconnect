@@ -216,6 +216,10 @@ interface ConsoleData {
   /** Revalidate ONLY the session lists — for after an action known to mint a session
    *  (e.g. a Playground send), without re-pulling every console read model. */
   refreshSessions: () => void
+  /** Revalidate ONLY the daemon fleet and resolve once the fresh list is committed —
+   *  for flows that must observe the post-refresh fleet before acting (e.g. the
+   *  onboarding mint retry, which reconnects an ambiguously-provisioned row). */
+  refreshDaemons: () => Promise<void>
   /** True until the very first pull of ALL read models has settled (any org switch re-arms it). */
   loading: boolean
   /** Per-model first-load flags — each clears when ITS pull settles, so a slow
@@ -726,6 +730,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const refreshSessions = useCallback(() => {
     void revalidateSessionLists()
   }, [revalidateSessionLists])
+  const refreshDaemons = useCallback(() => mutateDaemons().then(() => undefined), [mutateDaemons])
 
   const drainSessionRefreshes = useCallback(
     async (generation: number) => {
@@ -1278,6 +1283,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       upgradeDaemon,
       refresh,
       refreshSessions,
+      refreshDaemons,
       loading,
       agentsLoading,
       sessionsLoading,
@@ -1341,6 +1347,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       upgradeDaemon,
       refresh,
       refreshSessions,
+      refreshDaemons,
       loading,
       agentsLoading,
       sessionsLoading,
