@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Platform } from '@agentconnect.md/protocol'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
-import type { BotRecord, IntegrationRecord } from '../persistence/ports.js'
+import type { AgentRecord, BotRecord, IntegrationRecord } from '../persistence/ports.js'
 import type { BotProfileIconAgent } from './bot-profile-icon.js'
 import { syncAgentBotIcons } from './agent-bot-icon-sync.js'
 
@@ -14,11 +14,20 @@ const agent: BotProfileIconAgent = {
   runtime: 'codex'
 }
 
-function integration(botId: string, platform: Platform): IntegrationRecord {
+function agentRecord(icon: AgentRecord['icon'], lastModifiedAt = new Date(1)): AgentRecord {
+  return {
+    ...agent,
+    orgId: ORG_ID,
+    lastModifiedAt,
+    icon
+  } as AgentRecord
+}
+
+function integration(botId: string, platform: Platform, agentId = AGENT_ID): IntegrationRecord {
   return {
     id: IntegrationId(`10000000-0000-4000-8000-${botId.slice(-12)}`),
     orgId: ORG_ID,
-    agentId: AGENT_ID,
+    agentId,
     botId: BotId(botId),
     platform,
     name: platform,
@@ -84,12 +93,20 @@ describe('syncAgentBotIcons', () => {
     const discordSync = vi.fn(async () => {})
     const secretGets: string[] = []
     const warn = vi.fn()
+    const currentAgent = agentRecord(agent.icon)
 
     await expect(
       syncAgentBotIcons(
         {
           repos: {
-            integration: { listForAgent: async () => integrations },
+            agent: { get: async () => currentAgent },
+            integration: {
+              listForAgent: async () => integrations,
+              listForBot: async (id) => {
+                const membership = integrations.find((item) => item.botId === id)
+                return membership ? [membership] : []
+              }
+            },
             bot: { get: async (id) => bots.get(id) ?? null },
             botSecret: {
               get: async (id) => {
@@ -107,10 +124,63 @@ describe('syncAgentBotIcons', () => {
     ).resolves.toBeUndefined()
 
     expect(telegramSync).toHaveBeenCalledOnce()
-    expect(telegramSync).toHaveBeenCalledWith(`token-${telegramId}`, agent)
+    expect(telegramSync).toHaveBeenCalledWith(`token-${telegramId}`, expect.objectContaining(agent))
     expect(discordSync).toHaveBeenCalledOnce()
-    expect(discordSync).toHaveBeenCalledWith(`token-${discordId}`, agent)
+    expect(discordSync).toHaveBeenCalledWith(`token-${discordId}`, expect.objectContaining(agent))
     expect(secretGets.sort()).toEqual([telegramId, discordId].sort())
     expect(warn).toHaveBeenCalledOnce()
+  })
+
+  it('repairs a delayed stale write with the latest Agent icon', async () => {
+    const discordId = '00000000-0000-4000-8000-000000000011'
+    const membership = integration(discordId, 'discord')
+    const discordBot = bot(discordId, 'discord')
+    const oldAgent = agentRecord({ kind: 'glyph', glyph: 'bot', color: '#111111' }, new Date(1))
+    const newAgent = agentRecord({ kind: 'glyph', glyph: 'bot', color: '#222222' }, new Date(2))
+    let currentAgent = oldAgent
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let firstStarted!: () => void
+    const firstStartedPromise = new Promise<void>((resolve) => {
+      firstStarted = resolve
+    })
+    const applied: string[] = []
+    let calls = 0
+    const discordSync = vi.fn(async (_token: string, snapshot: BotProfileIconAgent) => {
+      calls += 1
+      if (calls === 1) {
+        firstStarted()
+        await firstBlocked
+      }
+      applied.push(snapshot.icon?.kind === 'glyph' ? snapshot.icon.color : 'other')
+    })
+    const deps = {
+      repos: {
+        agent: { get: async () => currentAgent },
+        integration: {
+          listForAgent: async () => [membership],
+          listForBot: async () => [membership]
+        },
+        bot: { get: async () => discordBot },
+        botSecret: {
+          get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
+        }
+      },
+      syncDiscordBotIcon: discordSync
+    }
+    const warn = vi.fn()
+
+    const stale = syncAgentBotIcons(deps, oldAgent, { warn })
+    await firstStartedPromise
+    currentAgent = newAgent
+    const latest = syncAgentBotIcons(deps, newAgent, { warn })
+    await vi.waitFor(() => expect(applied).toEqual(['#222222']))
+    releaseFirst()
+    await Promise.all([stale, latest])
+
+    expect(applied).toEqual(['#222222', '#111111', '#222222'])
+    expect(warn).not.toHaveBeenCalled()
   })
 })
