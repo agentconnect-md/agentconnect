@@ -188,7 +188,10 @@ describe('executeTool: sendMessage (channel post)', () => {
     it('names the parent session to reply into when the post lands on the parent’s conversation', async () => {
       const d = rootPostDeps({ rootPostRelation: () => parentRelation })
       const res = await send(d, { platform: 'telegram', channel: '-100123' }, dualCtx)
-      expect(res.notice).toContain('opened a NEW session')
+      // The claim is about what a ROOT post does — a separate context, not an answer. The seed
+      // itself is dispatched fire-and-forget, so the notice never states a session as fact.
+      expect(res.notice).toContain('starts a separate context there instead of answering')
+      expect(res.notice).not.toMatch(/opened a (NEW )?session/)
       expect(res.notice).toContain('{"to":{"sessionId":"sess-parent"}}')
     })
 

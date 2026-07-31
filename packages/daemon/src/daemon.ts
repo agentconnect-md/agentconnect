@@ -5801,15 +5801,15 @@ export class Daemon {
    * Conversation identity is the daemon's to decide, which is why this lives here and not in ops:
    * a channel id is only unique within one physical bot, so two integrations can name the same id
    * and mean different conversations. The comparison therefore includes the transport scope on
-   * both sides. Likewise the caller's session key uses its platform string verbatim — NOT
-   * {@link narrowPlatform}, whose fallback folds `feishu` onto `slack` and would look up a row
-   * that does not exist.
+   * both sides, and the caller's session key uses its platform string verbatim.
    *
    * The parent link is read from the CURRENT turn's trusted call metadata when present, else from
    * the DURABLE origin on the session row (§5.3) — the load-bearing half, since relaying an answer
-   * happens on a later human-triggered turn with no metadata. Its coords come from the parent's
-   * own row either way: only the row carries a transport scope. This widens nothing — it answers
-   * about coordinates the caller itself just named.
+   * happens on a later human-triggered turn with no metadata. Coords come from the parent's own
+   * row, the only place a transport scope is recorded; a CROSS-DAEMON parent has no local row, so
+   * there the live wake's `originCoords` answer instead. Those carry no scope (the parent's scope
+   * belongs to its own daemon and means nothing here), which is why the row is preferred whenever
+   * one exists. This widens nothing — it answers about coordinates the caller itself just named.
    */
   private rootPostRelation(req: {
     callerAgentId: string
@@ -5836,10 +5836,17 @@ export class Daemon {
       req.callerAgentId,
       req.callerTransportScope
     )
-    const parentSessionId =
-      this.activeTurnCallMeta.get(key)?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
+    const inbound = this.activeTurnCallMeta.get(key)
+    const parentSessionId = inbound?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
     const parent = parentSessionId ? this.store.getSessionByAcpId(parentSessionId) : undefined
-    if (parentSessionId && parent && isTarget(parent.platform, parent.channel, parent.transportScope)) {
+    const parentCoords = parent
+      ? { platform: parent.platform, channel: parent.channel, scope: parent.transportScope }
+      : inbound?.originSessionId === parentSessionId && inbound?.originCoords
+        ? // Cross-daemon parent: no local row to read, so take the live wake's coords. Scope is
+          // unknowable (it is the source daemon's), so this compares coordinates alone.
+          { platform: inbound.originCoords.platform, channel: inbound.originCoords.channel, scope: targetScope }
+        : undefined
+    if (parentSessionId && parentCoords && isTarget(parentCoords.platform, parentCoords.channel, parentCoords.scope)) {
       return { kind: 'parent', sessionId: parentSessionId }
     }
     if (isTarget(req.platform, req.callerChannel, req.callerTransportScope)) return { kind: 'self' }
@@ -6011,7 +6018,11 @@ export class Daemon {
    *  falls back to 'slack' for an unrecognized value (coords still resolve — the union is
    *  a routing/key detail, not the trust basis). */
   private narrowPlatform(p: string): NormalizedMessage['platform'] {
-    return p === 'telegram' || p === 'webchat' || p === 'discord' || p === 'hook' ? p : 'slack'
+    // Every caller turns a platform string off a session/orchestration row back into the union, to
+    // key a session or synthesize a message. `feishu` was missing from the list long after the
+    // platform shipped, so all of them silently produced a `slack:` key for a session ingress
+    // records under `feishu:` — a session nothing could then continue.
+    return p === 'telegram' || p === 'webchat' || p === 'discord' || p === 'feishu' || p === 'hook' ? p : 'slack'
   }
 
   // ══════════════════════════ §3.4/§6.8 main-agent orchestration ══════════════════════════

@@ -1033,6 +1033,28 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     await daemon.stop()
   })
 
+  it('keys a Feishu spawn as feishu, not the narrowPlatform fallback', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    // `narrowPlatform` predated Feishu and folded it onto `slack`, so this dispatched a `slack:`
+    // message for a channel Feishu ingress records under `feishu:` — a session nothing could
+    // continue. Every other caller of that helper had the same hole.
+    ;(daemon as any).spawnChannelRootSession({
+      agentId: 'bot-a',
+      platform: 'feishu',
+      channel: 'oc_42',
+      thread: 'om_42',
+      text: 'posted into a Feishu group',
+      originPlatform: 'feishu',
+      originChannel: 'oc_42',
+      originThread: 'om_1'
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.msg.platform).toBe('feishu')
+    await daemon.stop()
+  })
+
   it('resolves the origin session across platforms (Telegram turn → Slack post keeps the parent)', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
@@ -1244,6 +1266,34 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       kind: 'parent',
       sessionId: 'acp-parent-unscoped'
     })
+    await daemon.stop()
+  })
+
+  it('answers for a CROSS-DAEMON parent, which has no local row to read', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    seed(daemon, {
+      key: callerKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1'
+    })
+    // Woken over the relay: the parent session lives on another daemon, so `getSessionByAcpId`
+    // finds nothing and only the trusted wake carries its coords. Requiring a row here made the
+    // notice silent for exactly the escalation shape the relay exists to serve.
+    ;(daemon as any).activeTurnCallMeta.set(callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-remote-parent',
+      originCoords: { platform: 'telegram', channel: '-100123', thread: 'tg:9' }
+    })
+    expect(ask(daemon)).toEqual({ kind: 'parent', sessionId: 'acp-remote-parent' })
+    // Still only for the conversation it actually names.
+    expect(ask(daemon, { targetChannel: '-100999' })).toBeUndefined()
     await daemon.stop()
   })
 

@@ -345,8 +345,10 @@ export interface OpsDeps {
    *  Only called for a root post (no thread) with no toAgent. Fire-and-forget; the daemon creates
    *  the session without running a model turn, then replays the root as context on the first real
    *  reply. Absent in the chat CLI / tests (no daemon) — then a root post is a plain post with no
-   *  session spawn. Returns whether a session was actually seeded: the daemon declines at the
-   *  agent-call hop limit, and nothing downstream may then claim a session opened. */
+   *  session spawn. Returns whether the daemon ACCEPTED the post as a seed — `false` when it
+   *  declines outright (the agent-call hop limit). Acceptance is not completion: the seed itself
+   *  is dispatched fire-and-forget and can still fail later, so nothing downstream may state a
+   *  session as an accomplished fact. */
   spawnChannelRootSession?: (req: {
     agentId: string
     platform: string
@@ -798,13 +800,14 @@ export async function executeTool(
           : undefined
         if (relation?.kind === 'parent') {
           notice =
-            `This posted at the root of the conversation your parent session occupies, which opened a NEW ` +
-            `session on the post — the conversation waiting on you did not receive it. To answer it, call ` +
-            `sendMessage with {"to":{"sessionId":"${relation.sessionId}"}}.`
+            `This posted at the ROOT of the conversation your parent session occupies, so it starts a separate ` +
+            `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
+            `it, call sendMessage with {"to":{"sessionId":"${relation.sessionId}"}}.`
         } else if (relation?.kind === 'self') {
           notice =
-            `This posted at the root of the conversation this session is already in, which opened a NEW session ` +
-            `on the post. Your ordinary reply for this turn already reaches this conversation — no sendMessage needed.`
+            `This posted at the ROOT of the conversation this session is already in, so it starts a separate ` +
+            `context instead of continuing it. Your ordinary reply for this turn already reaches this conversation ` +
+            `— no sendMessage needed.`
         }
       }
     }
