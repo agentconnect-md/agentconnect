@@ -661,10 +661,10 @@ catalog only to a private, user-owned webchat session. It never attaches this
 catalog to an arbitrary agent, an IM session, automation, or an agent-to-agent
 session.
 
-The daemon admits the descriptor only when the selected runtime proves it can keep
-private HTTPS MCP headers scoped to one ACP session and out of model context,
-transcripts, and diagnostics. The host operating system and daemon sandbox policy
-are irrelevant to this feature.
+The daemon admits the descriptor only when the selected runtime supports the
+standard ACP HTTPS MCP descriptor. AgentConnect defines no private ACP capability
+or runtime-generated retry header. The host operating system and daemon sandbox
+policy are irrelevant to this feature.
 
 On success, daemon registration advertises `webchat_remote_mcp_v1`. The relay
 delivers only a non-secret entitlement. The daemon obtains a short-lived opaque
@@ -675,8 +675,8 @@ proxy MCP requests, mint per-request assertions, or run an administrative broker
 
 The runtime calls the standard CP `POST /api/v1/mcp` endpoint directly. The CP
 derives the actor from the stored grant and durable webchat owner, re-runs live
-authorization, and provides conversation-scoped request idempotency across
-authority generations. Tool catalog execution is therefore a control operation; browser messages and ACP
+authorization, and owns confirmation plus exactly-once execution for every
+operation with side effects. Tool catalog execution is therefore a control operation; browser messages and ACP
 `session/update` streams remain on the relay↔daemon/daemon-local data path and
 never cross the CP.
 
@@ -1003,7 +1003,7 @@ control channel.
     "platforms": ["slack", "telegram", "discord", "feishu"], // Implemented platform drivers
     "runtimes": ["claude", "codex"], // Object.keys(resolveRuntimes); validate executables at startup
     "acp": true,
-    "features": ["session-visibility-v1", "webchat_remote_mcp_v1"] // Advertised only when the runtime supports private, session-scoped remote MCP headers.
+    "features": ["session-visibility-v1", "webchat_remote_mcp_v1"] // Advertised when an installed runtime supports the standard HTTPS MCP descriptor.
   },
   "maxAgents": 32,
   "localState": {
@@ -1032,18 +1032,19 @@ WebSocket drop -> CP-Client enters DEGRADED and reconnects with backoff. Daemon 
 This feature is operator opt-in and the CP gate defaults off. Before setting
 `WEBCHAT_PRESET_MCP_ENABLED=true`, deploy compatible CP, relay, daemon, and runtime
 builds; verify private webchat session enforcement, credential redaction, exact
-grant revocation, revision-fenced descriptor activation, and conversation-scoped
-cross-generation idempotency; then confirm live
+grant revocation, revision-fenced descriptor activation, and CP-owned operation
+idempotency; then confirm live
 registration advertises both `session-visibility-v1` and
 `webchat_remote_mcp_v1`.
 
-No OS sandbox package or Linux kernel setting is a feature prerequisite. Instead,
-the runtime probe must prove that remote MCP Authorization headers are private,
-session-scoped configuration and never model input or diagnostics.
+No OS sandbox package, Linux kernel setting, private ACP field, or runtime-generated
+idempotency header is a feature prerequisite. Runtime integration coverage verifies
+standard descriptor installation and replacement; CP-owned operations provide the
+write execution fence.
 
-Start with a canary and observe grant, descriptor, request, invocation, and
+Start with a canary and observe grant, descriptor, request, operation, and
 confirmation metrics. Labels are closed outcomes/reasons only; they exclude user,
-organization, agent, conversation, grant, invocation, token, Authorization header,
+organization, agent, conversation, grant, operation, token, Authorization header,
 request body, tool arguments, response body, and transcript values.
 
 Rollback sets `WEBCHAT_PRESET_MCP_ENABLED=false`, stops issuance, and invokes the
