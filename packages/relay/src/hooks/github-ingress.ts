@@ -94,6 +94,7 @@ interface GithubPayload {
     in_reply_to_id?: number | null
     body?: string
     html_url?: string
+    user?: { login?: string }
     author_association?: string
   }
   // push ("commits") deliveries — no subject, no action.
@@ -141,10 +142,11 @@ export interface GithubMatchCtx {
   installationId: string | undefined // String(payload.installation.id); absent ⇒ never matches
   labels: string[] // the subject's CURRENT labels (not payload.label)
   senderType: string | undefined // 'User' | 'Bot' | …
-  // P3 gating inputs: the thread author's login and the event's authored text —
+  // P3 gating inputs: content/thread authors and the event's authored text —
   // comment body, else issue/PR body, else the head commit message. Handles are
   // matched locally, but actor permission is always resolved live by the CP.
   subjectAuthorLogin?: string
+  commentAuthorLogin?: string
   mentionText: string | undefined
   /** GitHub's native reviewer request target. Only this App's `[bot]` login
    * turns `pull_request:review_requested` into a manual review request. */
@@ -761,6 +763,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         labels: (subject?.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
         senderType: payload.sender?.type,
         subjectAuthorLogin: subject?.user?.login,
+        commentAuthorLogin: payload.comment?.user?.login,
         requestedReviewerLogin: payload.requested_reviewer?.login,
         commentSubjectFamily:
           event === 'pull_request_review_comment'
@@ -963,27 +966,44 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         return reply.code(202).send({ deliveryKey })
       }
 
-      for (const { rule, verdict } of matched) {
-        if (verdict === 'trusted') {
-          dispatchRule(rule)
-          continue
-        }
+      for (const { rule, verdict } of matched) if (verdict === 'trusted') dispatchRule(rule)
+
+      const needsAuthz = matched.filter((candidate) => candidate.verdict === 'needs-authz').map(({ rule }) => rule)
+      const queueAuthorizedFanout = (
+        fanout: RcHookAssign[],
+        actorLogin: string | undefined,
+        requireSubjectAuthor = false
+      ): void => {
+        if (fanout.length === 0) return
         // Never hold GitHub's HTTP request open on the CP/GitHub permission
-        // lookup. Every rule resolves independently and every rejection is
-        // contained so it cannot become an unhandled process rejection.
-        const summoned = githubRuleIsSummoned(rule, ctx)
+        // lookup. One repository-scoped decision fences the complete matching
+        // fan-out, and every rejection is contained locally.
         void authorizeAndDispatch(
-          [rule],
+          fanout,
           {
-            senderLogin: payload.sender?.login,
-            ...(!summoned && isGithubThreadComment(ctx)
-              ? { subjectAuthorLogin: ctx.subjectAuthorLogin, requireSubjectAuthor: true }
-              : {})
+            senderLogin: actorLogin,
+            ...(requireSubjectAuthor ? { subjectAuthorLogin: ctx.subjectAuthorLogin, requireSubjectAuthor: true } : {})
           },
           'skip'
         ).catch((err) => {
-          deps.log.warn(`github ingress: authz task failed ${rule.hookId}:${deliveryKey}: ${String(err)}`)
+          deps.log.warn(`github ingress: authz task failed ${fanout[0]!.hookId}:${deliveryKey}: ${String(err)}`)
         })
+      }
+
+      if (isGithubThreadComment(ctx)) {
+        queueAuthorizedFanout(
+          needsAuthz.filter((rule) => githubRuleIsSummoned(rule, ctx)),
+          ctx.commentAuthorLogin
+        )
+        queueAuthorizedFanout(
+          needsAuthz.filter((rule) => !githubRuleIsSummoned(rule, ctx)),
+          ctx.commentAuthorLogin,
+          true
+        )
+      } else {
+        // Native reviewer requests authorize the action actor. Issue/PR
+        // lifecycle events already returned through the subject-author batch.
+        queueAuthorizedFanout(needsAuthz, payload.sender?.login)
       }
       return reply.code(202).send({ deliveryKey })
     })

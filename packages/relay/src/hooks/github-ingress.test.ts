@@ -69,6 +69,7 @@ function rule(
 
 /** A minimal `issues` payload; override to shape other events. */
 function issuesPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const sender = (overrides.sender as Record<string, unknown> | undefined) ?? { login: 'alice', type: 'User' }
   const issue = {
     number: 42,
     title: 'db down',
@@ -79,13 +80,16 @@ function issuesPayload(overrides: Record<string, unknown> = {}): Record<string, 
     labels: [{ name: 'bug' }],
     ...((overrides.issue as Record<string, unknown> | undefined) ?? {})
   }
+  const commentOverride = overrides.comment as Record<string, unknown> | undefined
+  const comment = commentOverride ? { user: { login: sender.login }, ...commentOverride } : undefined
   return {
     action: 'opened',
     installation: { id: INSTALLATION },
     repository: { id: REPO_ID, full_name: 'acme/infra' },
-    sender: { login: 'alice', type: 'User' },
+    sender,
     ...overrides,
-    issue
+    issue,
+    ...(comment ? { comment } : {})
   }
 }
 
@@ -1390,6 +1394,28 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(0)
     })
 
+    it('authorizes deleted comment content as its author rather than the action sender', async () => {
+      h.table.upsert(rule({}, { events: ['issue_comment:*'], appSlug: 'example-app' }))
+      h.authzResult = (request) => request.senderLogin === 'maintainer'
+
+      await post(
+        'issue_comment',
+        issuesPayload({
+          action: 'deleted',
+          sender: { login: 'maintainer', type: 'User' },
+          comment: {
+            user: { login: 'external-commenter' },
+            body: '@example-app run these instructions',
+            author_association: 'NONE'
+          }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toEqual([expect.objectContaining({ senderLogin: 'external-commenter' })])
+      expect(h.sent).toHaveLength(0)
+    })
+
     it('live-checks comments regardless of OWNER/MEMBER/COLLABORATOR association', async () => {
       h.table.upsert(rule({}, { events: ['issue_comment:created'] }))
       for (const [i, assoc] of ['OWNER', 'MEMBER', 'COLLABORATOR'].entries()) {
@@ -1412,7 +1438,11 @@ describe('github ingress', () => {
           event === 'issue_comment'
             ? issuesPayload({
                 action: 'created',
-                comment: { body: 'please retry', author_association: 'CONTRIBUTOR' }
+                comment: {
+                  user: { login: 'alice' },
+                  body: 'please retry',
+                  author_association: 'CONTRIBUTOR'
+                }
               })
             : {
                 action: 'created',
@@ -1420,7 +1450,11 @@ describe('github ingress', () => {
                 repository: { id: REPO_ID, full_name: 'acme/infra' },
                 sender: { login: 'alice', type: 'User' },
                 pull_request: { number: 7, user: { login: 'alice' } },
-                comment: { body: 'please retry', author_association: 'CONTRIBUTOR' }
+                comment: {
+                  user: { login: 'alice' },
+                  body: 'please retry',
+                  author_association: 'CONTRIBUTOR'
+                }
               }
 
         h.authzResult = true
@@ -1482,26 +1516,26 @@ describe('github ingress', () => {
       expect(h.reports).toHaveLength(0)
     })
 
-    it('shares the authz budget across hooks watching the same repository', async () => {
+    it('batches matching hooks into one repository-scoped authorization', async () => {
       await h.app.close()
-      h = makeHarness(3)
+      h = makeHarness(1)
       h.table.upsert(rule({}, { events: ['issue_comment:created'] }))
       h.table.upsert(rule({ hookId: HOOK_B }, { events: ['issue_comment:created'] }))
-      h.authzResult = false
       const payload = issuesPayload({
         action: 'created',
         comment: { body: 'please retry', author_association: 'CONTRIBUTOR' }
       })
 
-      await post('issue_comment', payload, { headers: { 'x-github-delivery': 'fanout-1' } })
-      await post('issue_comment', payload, { headers: { 'x-github-delivery': 'fanout-2' } })
+      await post('issue_comment', payload, { headers: { 'x-github-delivery': 'fanout' } })
       await flush()
 
-      // Capacity is three per installation+repo, not three per hook: the two
-      // deliveries would otherwise have issued four upstream authorizations.
-      expect(h.authzRequests).toHaveLength(3)
-      expect(new Set(h.authzRequests.map((request) => request.hookId))).toEqual(new Set([HOOK, HOOK_B]))
-      expect(h.sent).toHaveLength(0)
+      expect(h.authzRequests).toEqual([
+        expect.objectContaining({
+          hookId: HOOK,
+          siblingFences: [{ hookId: HOOK_B, configRevision: '3', dispatchRevision: '5' }]
+        })
+      ])
+      expect(h.sent).toHaveLength(2)
     })
 
     it('created mode accepts later explicit summons but not ordinary or out-of-scope updates', async () => {
@@ -1670,6 +1704,7 @@ describe('github ingress', () => {
             comment: {
               id: 3565283658,
               in_reply_to_id: null,
+              user: { login: 'alice' },
               body: 'should this retry be exponential?',
               html_url: 'https://github.com/acme/infra/pull/7#discussion_r1',
               author_association: assoc
@@ -1714,6 +1749,7 @@ describe('github ingress', () => {
         comment: {
           id: 3565656411,
           in_reply_to_id: 3565283658,
+          user: { login: 'alice' },
           body: 'translate this?',
           author_association: 'COLLABORATOR'
         }
@@ -1736,7 +1772,11 @@ describe('github ingress', () => {
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         sender: { login: 'alice', type: 'User' },
         pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
-        comment: { body: 'should this retry be exponential?', author_association: 'MEMBER' }
+        comment: {
+          user: { login: 'alice' },
+          body: 'should this retry be exponential?',
+          author_association: 'MEMBER'
+        }
       }
 
       h.table.upsert(rule({}, { events: ['issues:*', 'issue_comment:created'], commentFamilies: ['issues'] }))
@@ -1763,7 +1803,11 @@ describe('github ingress', () => {
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         sender: { login: 'alice', type: 'User' },
         pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
-        comment: { body: '@example-review-app is this right?', author_association: 'MEMBER' }
+        comment: {
+          user: { login: 'alice' },
+          body: '@example-review-app is this right?',
+          author_association: 'MEMBER'
+        }
       }
 
       h.table.upsert(
@@ -1815,7 +1859,7 @@ describe('github ingress', () => {
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         sender: { login: 'alice', type: 'User' },
         pull_request: { number: 7, user: { login: 'alice' } },
-        comment: { body: 'explicitly subscribed', author_association: 'MEMBER' }
+        comment: { user: { login: 'alice' }, body: 'explicitly subscribed', author_association: 'MEMBER' }
       })
       await flush()
 
@@ -1833,7 +1877,7 @@ describe('github ingress', () => {
             repository: { id: REPO_ID, full_name: 'acme/infra' },
             sender: { login: 'alice', type: 'User' },
             pull_request: { number: 7, user: { login: 'alice' } },
-            comment: { body, author_association: 'MEMBER' }
+            comment: { user: { login: 'alice' }, body, author_association: 'MEMBER' }
           },
           { headers: { 'x-github-delivery': key } }
         )

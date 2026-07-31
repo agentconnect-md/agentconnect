@@ -130,6 +130,8 @@ export const RcGithubCommentAuthz = z
     installationId: z.string().regex(/^[1-9]\d*$/),
     repoId: z.string().regex(/^[1-9]\d*$/),
     repoFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+    // Legacy field name: comment deliveries carry `comment.user.login`, not
+    // the top-level webhook action sender. Maintainer controls carry the actor.
     senderLogin: z.string().min(1),
     // An unmentioned thread comment may continue automatically only when both
     // its commenter and the issue/PR author still have write authority. An

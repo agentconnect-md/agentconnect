@@ -225,12 +225,14 @@ and `COLLABORATOR` can still represent read or triage access and never bypass
 the current repository-permission lookup.
 
 Issue and pull-request lifecycle events require current write/admin authority
-from the subject author. Every comment requires it from the commenter. An
-unmentioned comment also requires current write/admin authority from the
-Issue/PR author; an explicit mention by an authorized maintainer omits that
-second requirement and can summon the Agent onto an externally authored
-thread. Missing identity metadata, denial, timeout, or an unavailable lookup
-fails closed.
+from the subject author. Every comment requires it from `comment.user`, not the
+top-level action `sender`; this distinction prevents a maintainer edit/delete
+action from authorizing someone else's content. An unmentioned comment also
+requires current write/admin authority from the Issue/PR author; an explicit
+mention by an authorized maintainer omits that second requirement and can summon
+the Agent onto an externally authored thread. Missing identity metadata, denial,
+timeout, or an unavailable lookup fails closed. Matching comment rules with the
+same actor requirement share one fenced authorization decision.
 
 A native `pull_request:review_requested` event can explicitly request the App
 bot as reviewer. It bypasses cadence, labels, and mention filters only after a

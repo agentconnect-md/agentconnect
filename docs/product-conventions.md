@@ -367,11 +367,13 @@ even when its body mentions the Agent or App. A current `write`/`admin` maintain
 explicitly `@` the Agent or App in a comment to request the first turn on that external
 thread; the same mention from a read-only user does nothing.
 
-Every comment sender is checked live. An unmentioned comment follows the configured
-cadence only when both the commenter and the Issue/PR author still have `write` or
-`admin` permission. This keeps automatic follow-ups on maintainer-owned threads while
-requiring an explicit maintainer summon for externally authored threads. Native review
-requests and Check reruns use the same current-maintainer boundary.
+Every comment author is checked live from the comment object; for edit/delete actions,
+the top-level webhook sender is not treated as the content author. An unmentioned
+comment follows the configured cadence only when both the commenter and the Issue/PR
+author still have `write` or `admin` permission. This keeps automatic follow-ups on
+maintainer-owned threads while requiring an explicit maintainer summon for externally
+authored threads. Native review requests and Check reruns use the same
+current-maintainer boundary.
 
 Trigger authorization is separate from effect authorization. A formal PR review still
 requires the active HookRun, review policy, Agent repository grant, and GitHub App
