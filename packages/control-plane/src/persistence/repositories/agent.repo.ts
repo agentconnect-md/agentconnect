@@ -173,6 +173,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     env: ov.env ?? {},
     mcpServers: ov.mcpServers ?? [],
     skills: ov.skills ?? [],
+    managedSkills: a.managedSkills,
     memory: ov.memory ?? null,
     status: a.status as AgentRecord['status'],
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
@@ -234,6 +235,7 @@ export class PgAgentRepo implements AgentRepo {
           description: input.description ?? null,
           runtime: input.runtime,
           ...(input.daemonId ? { daemonId: input.daemonId, status: 'active' } : {}),
+          ...(input.managedSkills ? { managedSkills: input.managedSkills } : {}),
           ...(input.model ||
           input.reasoningEffort ||
           input.outputMode ||
@@ -412,6 +414,7 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.restrictFileAccess !== undefined ? { restrictFileAccess: patch.restrictFileAccess } : {}),
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),
         ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
+        ...(patch.managedSkills !== undefined ? { managedSkills: patch.managedSkills ?? [] } : {}),
         ...(overrides !== undefined ? { runtimeOverrides: overrides } : {}),
         // A PATCH is a human edit — advance the last-modified audit. The editor is
         // stamped when known (absent under devAuth ⇒ leave the prior editor as-is).

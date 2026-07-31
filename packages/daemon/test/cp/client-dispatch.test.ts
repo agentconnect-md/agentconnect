@@ -349,6 +349,7 @@ describe('CpClient dispatch', () => {
         model: 'opus',
         mcpServers: [],
         skills: [],
+        managedSkills: [],
         allowedCallerAgentIds: []
       }
     })
@@ -385,7 +386,7 @@ describe('CpClient dispatch', () => {
     await tick()
     expect(configApply.applyAgentActivate).toHaveBeenCalledWith({
       ...payload,
-      spec: { name: 'helper', mcpServers: [], skills: [], allowedCallerAgentIds: [] }
+      spec: { name: 'helper', mcpServers: [], skills: [], managedSkills: [], allowedCallerAgentIds: [] }
     })
     expect(JSON.parse(t.sent[0]!)).toMatchObject({
       type: 'ack',

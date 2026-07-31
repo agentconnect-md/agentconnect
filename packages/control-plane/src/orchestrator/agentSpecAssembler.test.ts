@@ -25,6 +25,8 @@ const AGENT: AgentRecord = {
   pause: null,
   env: {},
   mcpServers: [],
+  skills: [],
+  managedSkills: [],
   memory: null,
   status: 'active',
   daemonId: null,

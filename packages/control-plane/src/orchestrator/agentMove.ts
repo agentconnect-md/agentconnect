@@ -17,6 +17,7 @@ import {
   type Ack,
   type AgentActivate,
   type AgentSkillEntry,
+  type ManagedSkillEntry,
   type CronUpsert,
   type IntegrationSpec
 } from '@agentconnect.md/protocol'
@@ -95,6 +96,8 @@ interface MoveBundle {
   /** Resolved skill entries (shared-skills.md) — pinned so the authoritative
    *  `agent/activate` ships them; a bare project() would clear skills on the target. */
   skills: AgentSkillEntry[]
+  /** Exact accepted managed-skill revisions, pinned across the activation ACK. */
+  managedSkills: ManagedSkillEntry[]
 }
 
 interface ActivationSnapshot {
@@ -533,11 +536,12 @@ export class AgentMoveService {
 
   /** Read every placement-dependent wire definition. */
   private async snapshot(agent: AgentRecord): Promise<MoveBundle> {
-    const [integrations, cronRows, secrets, skills] = await Promise.all([
+    const [integrations, cronRows, secrets, skills, managedSkills] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
       this.deps.specs.secretsOf(agent),
-      this.deps.specs.skillsOf(agent)
+      this.deps.specs.skillsOf(agent),
+      this.deps.specs.managedSkillsOf(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -569,7 +573,8 @@ export class AgentMoveService {
       crons,
       httpBotIds: [...new Set(specs.filter((s) => s.http).map((s) => s.botId))].sort(),
       secrets,
-      skills
+      skills,
+      managedSkills
     }
   }
 
@@ -578,7 +583,7 @@ export class AgentMoveService {
       agentId: agent.id,
       // project() (not assemble()): the snapshot pinned the secrets + skills into the
       // bundle so the activation fingerprint compares stable inputs.
-      spec: this.deps.specs.project(agent, bundle.secrets, bundle.skills),
+      spec: this.deps.specs.project(agent, bundle.secrets, bundle.skills, bundle.managedSkills),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons
     }

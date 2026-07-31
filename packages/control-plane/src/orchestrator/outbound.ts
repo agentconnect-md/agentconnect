@@ -8,6 +8,7 @@
  * `ConnectionRegistry` — it never imports `ws`. There is no CP→daemon prompt
  * delivery: the daemon prompts from its own ingress, never the CP.
  */
+import { createHash } from 'node:crypto'
 import type {
   Ack,
   AgentLaunch,
@@ -86,6 +87,10 @@ import type {
   DreamSkillReviewReq,
   DreamSkillReadReq,
   DreamSkillContent,
+  OrganizationSuggestionReadReq,
+  OrganizationSuggestionChunk,
+  OrganizationSuggestionContent,
+  OrganizationSuggestionReviewReq,
   DreamState,
   RelayRosterEntry,
   CollabRoutesSnapshot,
@@ -94,6 +99,12 @@ import type {
   AgentPermissionDecision,
   SessionVisibilityPush,
   SessionVisibilityOk
+} from '@agentconnect.md/protocol'
+import {
+  MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
+  ORGANIZATION_SUGGESTION_CHUNK_BYTES,
+  OrganizationSuggestionContentBody,
+  organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
 import type { LaunchRepo } from '../persistence/ports.js'
 import { ConnectionClosed, type ConnectionRegistry, type DaemonConnState } from '../ws/registry.js'
@@ -113,6 +124,17 @@ export class NoConnection extends Error {
     super(`no live connection for daemon ${daemonId}`)
     this.name = 'NoConnection'
   }
+}
+
+function decodeCanonicalBase64(value: string): Buffer {
+  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new ProtocolError('BAD_PAYLOAD', 'daemon returned non-canonical suggestion content')
+  }
+  const decoded = Buffer.from(value, 'base64')
+  if (decoded.toString('base64') !== value) {
+    throw new ProtocolError('BAD_PAYLOAD', 'daemon returned non-canonical suggestion content')
+  }
+  return decoded
 }
 
 /** The classified outcome of a lifecycle command send (see {@link ControlSender.daemonRestart}). */
@@ -601,6 +623,96 @@ export class ControlSender {
   async dreamFileRead(daemonId: string, req: DreamFileReadReq): Promise<DreamFileReadContent> {
     const c = this.must(daemonId)
     return c.conn.request<DreamFileReadContent>('memory/dream/file/read', req, { epoch: c.sessionEpoch })
+  }
+
+  // ── organization Knowledge suggestion bodies (daemon-local until review) ──
+
+  async organizationSuggestionRead(
+    daemonId: string,
+    req: Omit<OrganizationSuggestionReadReq, 'offset' | 'limit'>
+  ): Promise<OrganizationSuggestionContent> {
+    const c = this.must(daemonId)
+    const chunks: Buffer[] = []
+    let offset = 0
+    let size: number | undefined
+    let digest: string | undefined
+    while (size === undefined || offset < size) {
+      const chunk = await c.conn.request<OrganizationSuggestionChunk>(
+        'knowledge/suggestion/read',
+        { ...req, offset, limit: ORGANIZATION_SUGGESTION_CHUNK_BYTES },
+        { epoch: c.sessionEpoch }
+      )
+      if (
+        chunk.sourceAgentId !== req.sourceAgentId ||
+        chunk.dreamId !== req.dreamId ||
+        chunk.candidateId !== req.candidateId
+      ) {
+        throw new ProtocolError('BAD_PAYLOAD', 'daemon returned mismatched suggestion identity')
+      }
+      if (!chunk.exists) {
+        if (offset !== 0) throw new ProtocolError('BAD_PAYLOAD', 'suggestion disappeared during content read')
+        return {
+          sourceAgentId: req.sourceAgentId,
+          dreamId: req.dreamId,
+          candidateId: req.candidateId,
+          digest: chunk.digest,
+          exists: false
+        }
+      }
+      if (
+        chunk.offset !== offset ||
+        chunk.size > MAX_ORGANIZATION_SUGGESTION_BODY_BYTES ||
+        (size !== undefined && chunk.size !== size) ||
+        (digest !== undefined && chunk.digest !== digest)
+      ) {
+        throw new ProtocolError('BAD_PAYLOAD', 'daemon returned mismatched suggestion chunk metadata')
+      }
+      size ??= chunk.size
+      digest ??= chunk.digest
+      const bytes = decodeCanonicalBase64(chunk.data)
+      if (
+        bytes.byteLength > ORGANIZATION_SUGGESTION_CHUNK_BYTES ||
+        chunk.nextOffset !== offset + bytes.byteLength ||
+        chunk.nextOffset > size ||
+        chunk.truncated !== chunk.nextOffset < size ||
+        (offset < size && bytes.byteLength === 0)
+      ) {
+        throw new ProtocolError('BAD_PAYLOAD', 'daemon returned an invalid suggestion content chunk')
+      }
+      chunks.push(bytes)
+      offset = chunk.nextOffset
+    }
+    const raw = Buffer.concat(chunks)
+    if (raw.byteLength !== size || digest === undefined) {
+      throw new ProtocolError('BAD_PAYLOAD', 'daemon returned an incomplete suggestion body')
+    }
+    let json: unknown
+    try {
+      json = JSON.parse(raw.toString('utf8'))
+    } catch {
+      throw new ProtocolError('BAD_PAYLOAD', 'daemon returned malformed suggestion JSON')
+    }
+    const body = OrganizationSuggestionContentBody.safeParse(json)
+    if (!body.success) throw new ProtocolError('BAD_PAYLOAD', 'daemon returned an invalid suggestion body')
+    const actualDigest = `sha256:${createHash('sha256')
+      .update(organizationSuggestionCanonical(body.data))
+      .digest('hex')}`
+    if (actualDigest !== digest) {
+      throw new ProtocolError('BAD_PAYLOAD', 'daemon returned suggestion content with a mismatched digest')
+    }
+    return {
+      sourceAgentId: req.sourceAgentId,
+      dreamId: req.dreamId,
+      candidateId: req.candidateId,
+      digest,
+      exists: true,
+      body: body.data
+    }
+  }
+
+  async organizationSuggestionReview(daemonId: string, req: OrganizationSuggestionReviewReq): Promise<Ack> {
+    const c = this.must(daemonId)
+    return c.conn.request<Ack>('knowledge/suggestion/review', req, { epoch: c.sessionEpoch })
   }
 
   /**

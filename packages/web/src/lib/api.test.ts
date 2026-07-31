@@ -16,6 +16,16 @@ import {
   listMemoryRecordHistory,
   listMemoryFileHistory,
   listMemoryRecords,
+  listOrganizationKnowledge,
+  listOrganizationKnowledgeRevisions,
+  listManagedSkills,
+  listManagedSkillRevisions,
+  listOrganizationSuggestions,
+  fetchOrganizationSuggestionContent,
+  createOrganizationKnowledge,
+  updateOrganizationKnowledge,
+  setOrganizationKnowledgeArchived,
+  reviewOrganizationSuggestion,
   mintWebchatToken,
   searchMemoryRecords,
   setApiOrgId,
@@ -316,7 +326,7 @@ describe('GitHub installation repositories', () => {
   })
 
   it('publishes pages progressively and reuses the completed roster', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const page = new URL(String(input)).searchParams.get('page')
       const repos =
         page === '1'
@@ -524,6 +534,105 @@ describe('managed-memory history API', () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
       `/orgs/org-1/agents/agent-1/memory/history?path=release+notes.md&cursor=${cursor}&limit=5`
     )
+  })
+})
+
+describe('organization knowledge API', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('uses the organization-scoped library, suggestion, and review routes', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+      Promise.resolve(
+        new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    setApiOrgId('org-1')
+
+    await listOrganizationKnowledge(true)
+    await listManagedSkills(false)
+    await listOrganizationSuggestions({ kind: 'skill', state: 'pending', query: 'deploy now' })
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/orgs/org-1/knowledge?includeArchived=true')
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/orgs/org-1/managed-skills?includeArchived=false')
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain(
+      '/orgs/org-1/knowledge-suggestions?kind=skill&state=pending&query=deploy+now'
+    )
+  })
+
+  it('sends immutable revision and review bodies without losing optional fields', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const path = String(input)
+      const body = path.endsWith('/content')
+        ? {
+            kind: 'knowledge',
+            digest: `sha256:${'a'.repeat(64)}`,
+            snapshotToken: `sha256:${'b'.repeat(64)}`,
+            content: '# Safe',
+            summary: null,
+            tags: []
+          }
+        : {
+            id: '11111111-1111-4111-8111-111111111111',
+            title: 'Safe deploy',
+            content: '# Safe',
+            summary: null,
+            tags: [],
+            currentRevision: 1
+          }
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    setApiOrgId('org-1')
+
+    await createOrganizationKnowledge({ title: 'Safe deploy', content: '# Safe', tags: ['deploy'] })
+    await updateOrganizationKnowledge('knowledge one', {
+      title: 'Safe deploy',
+      content: '# Safer',
+      summary: 'Runbook',
+      tags: ['deploy'],
+      expectedRevision: 3
+    })
+    await setOrganizationKnowledgeArchived('knowledge one', true)
+    await listOrganizationKnowledgeRevisions('knowledge one')
+    await listManagedSkillRevisions('skill one')
+    await fetchOrganizationSuggestionContent('suggestion one')
+    await reviewOrganizationSuggestion('suggestion one', 'reject', 'Duplicates the runbook')
+
+    const calls = fetchMock.mock.calls.map(([input, init]) => ({
+      path: String(input),
+      method: init?.method ?? 'GET',
+      body: init?.body ? JSON.parse(String(init.body)) : undefined
+    }))
+    expect(calls[0]).toMatchObject({
+      method: 'POST',
+      body: { title: 'Safe deploy', content: '# Safe', tags: ['deploy'] }
+    })
+    expect(calls[1]).toMatchObject({
+      path: expect.stringContaining('/knowledge/knowledge%20one'),
+      method: 'PATCH',
+      body: expect.objectContaining({ expectedRevision: 3, summary: 'Runbook' })
+    })
+    expect(calls[2]).toMatchObject({ method: 'POST', body: { archived: true } })
+    expect(calls[3]).toMatchObject({
+      path: expect.stringContaining('/knowledge/knowledge%20one/revisions'),
+      method: 'GET'
+    })
+    expect(calls[4]).toMatchObject({
+      path: expect.stringContaining('/managed-skills/skill%20one/revisions'),
+      method: 'GET'
+    })
+    expect(calls[5]).toMatchObject({
+      path: expect.stringContaining('/knowledge-suggestions/suggestion%20one/content'),
+      method: 'GET'
+    })
+    expect(calls[6]).toMatchObject({
+      method: 'POST',
+      body: { decision: 'reject', reason: 'Duplicates the runbook' }
+    })
   })
 })
 

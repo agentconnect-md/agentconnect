@@ -59,6 +59,7 @@ import {
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
   PgSkillSourceRepo,
+  PgOrganizationKnowledgeRepo,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -249,6 +250,7 @@ export function buildContainer(
     mcpProviderSecret: new PgMcpProviderSecretStore(prisma, secretCipher),
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
     skillSource: new PgSkillSourceRepo(prisma),
+    organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
@@ -351,7 +353,12 @@ export function buildContainer(
   // The ONE assembler of CP→daemon AgentSpecs — owns secret loading (the only
   // AgentSecretStore VALUE reader) + icon bases, shared by every emission path:
   // reconcile roster, agent/upsert replicate, icon refresh, move activation.
-  const agentSpecs = new AgentSpecAssembler(repos.agentSecret, iconBases, repos.skillSource)
+  const agentSpecs = new AgentSpecAssembler(
+    repos.agentSecret,
+    iconBases,
+    repos.skillSource,
+    repos.organizationKnowledge
+  )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
   // {userId, user, agentId, orgId, conversationId}. The relay delegates verification
@@ -697,6 +704,7 @@ export function buildContainer(
       mcpProviderSecret: repos.mcpProviderSecret,
       mcpGrant: repos.mcpGrant,
       skillSource: repos.skillSource,
+      organizationKnowledge: repos.organizationKnowledge,
       memoryPluginInstallation: repos.memoryPluginInstallation,
       externalMemoryConnection: repos.externalMemoryConnection,
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,
@@ -921,6 +929,7 @@ export function buildContainer(
     cron: repos.cron,
     hook: repos.hook,
     agent: repos.agent,
+    organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
     ...(github ? { github } : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),

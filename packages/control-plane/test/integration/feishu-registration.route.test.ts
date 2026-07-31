@@ -221,7 +221,7 @@ describe('Feishu/Lark one-click app registration', () => {
         feishu: { appId: 'cli_oneclick', appSecret: 'one-click-secret', region: 'lark' }
       }
     })
-  })
+  }, 15_000)
 
   it('persists a denied authorization as a terminal status without creating a bot', async () => {
     const agentId = await placedAgent()

@@ -28,7 +28,12 @@ import type {
   DreamFilesPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
-import { MAX_WORKSPACE_EDIT_BYTES, gitRepoLabel, normalizeGitUrl } from '@agentconnect.md/protocol'
+import {
+  MAX_WORKSPACE_EDIT_BYTES,
+  ORGANIZATION_KNOWLEDGE_FEATURE,
+  gitRepoLabel,
+  normalizeGitUrl
+} from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../persistence/ports.js'
@@ -171,6 +176,10 @@ function dreamingSupportedOn(daemon: DaemonView | null): boolean {
   return !!daemon?.capabilities.features.includes(DREAMING_FEATURE)
 }
 
+function organizationKnowledgeSupportedOn(daemon: DaemonView | null): boolean {
+  return !!daemon?.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE)
+}
+
 function toDto(
   a: AgentRecord,
   ctx: ViewCtx,
@@ -205,6 +214,7 @@ function toDto(
     secretKeys: [...secretKeys].sort(),
     mcpServers: a.mcpServers,
     skills: a.skills,
+    managedSkills: a.managedSkills,
     memory: a.memory,
     status: a.status,
     daemonId: a.daemonId,
@@ -716,6 +726,18 @@ export function agentRoutes(deps: HttpDeps) {
       return null
     }
 
+    const validateManagedSkills = async (
+      ids: readonly string[] | null | undefined,
+      orgId: OrgId
+    ): Promise<string | null> => {
+      if (!ids || ids.length === 0) return null
+      const repo = deps.repos.organizationKnowledge
+      if (!repo) return 'managed skills are unavailable on this control plane'
+      const rows = await Promise.all([...new Set(ids)].map((id) => repo.getManagedSkill(id)))
+      const invalid = rows.some((row) => !row || row.orgId !== orgId || row.archivedAt !== null)
+      return invalid ? 'managed skill not found, archived, or outside this organization' : null
+    }
+
     const externalMemoryConnectionIds = (...memories: Array<AgentRecord['memory'] | null | undefined>): string[] => [
       ...new Set(memories.flatMap((memory) => (memory?.provider === 'external' ? [memory.connectionId] : [])))
     ]
@@ -863,6 +885,9 @@ export function agentRoutes(deps: HttpDeps) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
         }
+        if (req.body.managedSkills?.length && placedDaemon && !organizationKnowledgeSupportedOn(placedDaemon)) {
+          return conflict('managed skills require a daemon that supports organization knowledge')
+        }
         const sandboxPolicy = sandboxPolicyOf(placedDaemon)
         if (sandboxPolicy.required && req.body.restrictFileAccess === false) {
           return conflict('Run in sandbox is required by this daemon')
@@ -952,6 +977,10 @@ export function agentRoutes(deps: HttpDeps) {
           const denied = await enablingUnseenSkillDenied(orgOf(req), ctxOf(req), [], req.body.skills)
           if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
         }
+        const managedSkillError = await validateManagedSkills(req.body.managedSkills, orgOf(req))
+        if (managedSkillError) {
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: managedSkillError })
+        }
         const memoryRelease = deps.memoryConnectionMutations.tryBeginMutation(
           externalMemoryConnectionIds(req.body.memory)
         )
@@ -1023,6 +1052,7 @@ export function agentRoutes(deps: HttpDeps) {
                     ...(req.body.env !== undefined ? { env: req.body.env } : {}),
                     ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
                     ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
+                    ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
                     ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
                     ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
                     ...(workspace !== undefined ? { workspace } : {}),
@@ -1448,6 +1478,23 @@ export function agentRoutes(deps: HttpDeps) {
             const denied = await enablingUnseenSkillDenied(orgOf(req), ctxOf(req), existing.skills, req.body.skills)
             if (denied) return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: denied })
           }
+          const managedSkillError = await validateManagedSkills(req.body.managedSkills, orgOf(req))
+          if (managedSkillError) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: managedSkillError })
+          }
+          const addsManagedSkill =
+            Array.isArray(req.body.managedSkills) &&
+            req.body.managedSkills.some((id) => !existing.managedSkills.includes(id))
+          if (addsManagedSkill && existing.daemonId) {
+            const daemon = await deps.registry.get(existing.daemonId)
+            if (!organizationKnowledgeSupportedOn(daemon)) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'managed skills require a daemon that supports organization knowledge'
+              })
+            }
+          }
           const memoryError = await validateExternalMemoryBinding(targetMemory ?? undefined, orgOf(req))
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
@@ -1696,6 +1743,9 @@ export function agentRoutes(deps: HttpDeps) {
         if (!moveReady(target.daemonId)) return conflict('target daemon is not ready')
         if (!target.capabilities.features.includes(MOVE_FEATURE)) {
           return conflict('target daemon does not support agent moves')
+        }
+        if (existing.managedSkills.length > 0 && !organizationKnowledgeSupportedOn(target)) {
+          return conflict('target daemon does not support organization knowledge managed skills')
         }
         const targetRuntime = target.runtimeProfiles.find((p) => p.runtime === existing.runtime)
         if (target.runtimeProfiles.length > 0 && !targetRuntime) {

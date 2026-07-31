@@ -57,11 +57,13 @@
     "commander": "^15.0.0",
     "croner": "^10.0.1",
     "discord.js": "^14.27.0",
+    "fflate": "^0.8.3",
     "grammy": "^1.45.1",
     "simple-git": "^3.36.0",
     "systeminformation": "^5.33.1",
     "undici": "^7.29.0",
     "ws": "^8.21.1",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

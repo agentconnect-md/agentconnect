@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentMemoryBinding, AgentSkillEntry, FeishuRegion } from '@agentconnect.md/protocol'
+import { AgentMemoryBinding, AgentSkillEntry, FeishuRegion, ManagedSkillEntry } from '@agentconnect.md/protocol'
 
 export const BindMatchSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention') }),
@@ -208,6 +208,10 @@ export const AgentSchema = z.object({
   // needs nothing but agent.json to install. Supersedes the deprecated
   // `workspace.skills` string list below (which is now an unused no-op).
   skills: z.array(AgentSkillEntry).default([]),
+  // Centrally accepted immutable `.skill` revisions. Content stays in the
+  // daemon-owned cache and is materialized into the workspace before session
+  // creation; this metadata is the exact CP-authorized revision set.
+  managedSkills: z.array(ManagedSkillEntry).default([]),
   // Agent→agent call authorization (design §2.5), replicated from the CP so the
   // daemon enforces it LOCALLY when another agent uses `messageAgent` to wake this
   // one. `all` (the default) ⇒ any org peer may call; `selected` ⇒ only agents in

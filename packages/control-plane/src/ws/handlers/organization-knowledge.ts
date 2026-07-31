@@ -1,0 +1,141 @@
+import { isFrame, ORGANIZATION_KNOWLEDGE_FEATURE } from '@agentconnect.md/protocol'
+import { AgentId, DaemonId } from '../../domain/ids.js'
+import type { DaemonView } from '../../ports.js'
+import type { Handler } from './index.js'
+
+async function featureDaemon(
+  frameId: string,
+  conn: Parameters<Handler>[1],
+  deps: Parameters<Handler>[2]
+): Promise<DaemonView | null> {
+  const daemon = await deps.registry.get(DaemonId(conn.daemonId))
+  if (!daemon || !daemon.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE)) {
+    conn.sendError(frameId, 'SCOPE_DENIED', 'daemon did not advertise organization knowledge support', false)
+    return null
+  }
+  return daemon
+}
+
+function clampUtf8(text: string, maxBytes: number): { content: string; truncated: boolean; bytes: number } {
+  const source = Buffer.from(text, 'utf8')
+  if (source.byteLength <= maxBytes) return { content: text, truncated: false, bytes: source.byteLength }
+  let end = Math.max(0, maxBytes)
+  while (end > 0 && (source[end]! & 0xc0) === 0x80) end -= 1
+  const content = source.subarray(0, end).toString('utf8')
+  return { content, truncated: true, bytes: Buffer.byteLength(content) }
+}
+
+/** On-demand search. Organization membership is derived from the placed
+ * requester, never from daemon-supplied org input. */
+export const handleKnowledgeSearch: Handler = async (frame, conn, deps) => {
+  if (!isFrame('knowledge/search')(frame)) return
+  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const repo = deps.organizationKnowledge
+  if (!repo) {
+    conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
+    return
+  }
+  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
+    return
+  }
+
+  const rows = await repo.searchKnowledge(requester.orgId, {
+    query: frame.payload.query,
+    ...(frame.payload.tags !== undefined ? { tags: frame.payload.tags } : {}),
+    limit: frame.payload.limit
+  })
+  let remaining = frame.payload.maxBytes
+  const items = []
+  for (const row of rows) {
+    if (remaining <= 0) break
+    const body = clampUtf8(row.content, remaining)
+    remaining -= body.bytes
+    items.push({
+      id: row.id,
+      title: row.title,
+      summary: row.summary,
+      tags: row.tags,
+      revision: row.currentRevision,
+      updatedAt: row.updatedAt.toISOString(),
+      content: body.content,
+      truncated: body.truncated
+    })
+  }
+  conn.replyTo(frame, 'knowledge/search/ok', { items })
+}
+
+/** Reconnect/completion inventory upsert. Only currently placed agents may
+ * publish metadata; CP review state stays authoritative. */
+export const handleOrganizationSuggestionsSync: Handler = async (frame, conn, deps) => {
+  if (!isFrame('knowledge/suggestions/sync')(frame)) return
+  const daemon = await featureDaemon(frame.id, conn, deps)
+  if (!daemon) return
+  const repo = deps.organizationKnowledge
+  if (!repo) {
+    conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
+    return
+  }
+  const agents = await deps.agent.list(daemon.orgId)
+  const allowed = new Set(
+    agents.filter((agent) => agent.daemonId === DaemonId(conn.daemonId)).map((agent) => String(agent.id))
+  )
+  const proposed = frame.payload.suggestions.filter(
+    (suggestion) => suggestion.state === 'proposed' && allowed.has(suggestion.sourceAgentId)
+  )
+  const records = await repo.syncSuggestions(daemon.orgId, conn.daemonId, proposed)
+  conn.replyTo(frame, 'knowledge/suggestions/sync/ok', {
+    decisions: records
+      .filter((row) => row.state !== 'pending')
+      .map((row) => ({
+        sourceAgentId: row.sourceAgentId,
+        dreamId: row.dreamId,
+        candidateId: row.candidateId,
+        state: row.state as 'accepted' | 'rejected'
+      }))
+  })
+}
+
+/** Download one immutable ZIP revision only for an agent that explicitly has
+ * the managed skill enabled. */
+export const handleManagedSkillRead: Handler = async (frame, conn, deps) => {
+  if (!isFrame('managed-skill/read')(frame)) return
+  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const repo = deps.organizationKnowledge
+  if (!repo) {
+    conn.sendError(frame.id, 'INTERNAL', 'managed skills are unavailable', true)
+    return
+  }
+  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  if (
+    !requester ||
+    requester.daemonId !== DaemonId(conn.daemonId) ||
+    !requester.managedSkills.includes(frame.payload.managedSkillId)
+  ) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'managed skill is not enabled for this agent', false)
+    return
+  }
+  const skill = await repo.getManagedSkill(frame.payload.managedSkillId)
+  const revision = await repo.getManagedSkillRevision(frame.payload.managedSkillId, frame.payload.revision)
+  if (!skill || skill.orgId !== requester.orgId || skill.archivedAt !== null || !revision) {
+    conn.sendError(frame.id, 'BAD_PAYLOAD', 'managed skill revision not found', false)
+    return
+  }
+  if (frame.payload.offset > revision.archive.byteLength) {
+    conn.sendError(frame.id, 'BAD_PAYLOAD', 'managed skill offset exceeds archive size', false)
+    return
+  }
+  const end = Math.min(revision.archive.byteLength, frame.payload.offset + frame.payload.limit)
+  const data = revision.archive.subarray(frame.payload.offset, end)
+  conn.replyTo(frame, 'managed-skill/chunk', {
+    managedSkillId: frame.payload.managedSkillId,
+    revision: frame.payload.revision,
+    digest: revision.digest,
+    size: revision.archive.byteLength,
+    offset: frame.payload.offset,
+    nextOffset: end,
+    data: Buffer.from(data).toString('base64'),
+    truncated: end < revision.archive.byteLength
+  })
+}

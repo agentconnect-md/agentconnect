@@ -702,6 +702,7 @@ export class LocalStore {
         snapshotWrites TEXT,              -- JSON {total, nonDistill} write-ledger marks
         instructions TEXT,
         skills TEXT,                      -- JSON DreamSkillInfo[]
+        organizationSuggestions TEXT,     -- JSON DreamOrganizationSuggestionInfo[] (metadata only)
         usage TEXT,                       -- JSON DreamUsage (tokens/cost + bounded byte counts)
         error TEXT,                       -- JSON {type, message}
         createdAt TEXT NOT NULL,
@@ -712,6 +713,7 @@ export class LocalStore {
     this.migrateDreamSnapshotWrites()
     this.migrateDreamSupersededStatus()
     this.migrateDreamObservability()
+    this.migrateDreamOrganizationSuggestions()
     this.migrateSessionUsage()
     this.migrateSessionMutes()
     this.migrateSessionGates()
@@ -845,6 +847,13 @@ export class LocalStore {
     if (!names.has('runtime')) this.db.exec('ALTER TABLE dreams ADD COLUMN runtime TEXT')
     if (!names.has('model')) this.db.exec('ALTER TABLE dreams ADD COLUMN model TEXT')
     if (!names.has('stopReason')) this.db.exec('ALTER TABLE dreams ADD COLUMN stopReason TEXT')
+  }
+
+  private migrateDreamOrganizationSuggestions(): void {
+    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
+    if (!cols.some((column) => column.name === 'organizationSuggestions')) {
+      this.db.exec('ALTER TABLE dreams ADD COLUMN organizationSuggestions TEXT')
+    }
   }
 
   /** Extend the dream lifecycle without stranding proposals created before the
@@ -1944,6 +1953,7 @@ export class LocalStore {
       snapshotWrites: dream.snapshotWrites ? JSON.stringify(dream.snapshotWrites) : null,
       instructions: dream.instructions ?? null,
       skills: dream.skills ? JSON.stringify(dream.skills) : null,
+      organizationSuggestions: dream.organizationSuggestions ? JSON.stringify(dream.organizationSuggestions) : null,
       usage: dream.usage ? JSON.stringify(dream.usage) : null,
       error: dream.error ? JSON.stringify(dream.error) : null,
       createdAt: dream.createdAt,
@@ -1968,6 +1978,13 @@ export class LocalStore {
         : {}),
       ...(row.instructions ? { instructions: row.instructions as string } : {}),
       ...(row.skills ? { skills: JSON.parse(row.skills as string) as DreamInfo['skills'] } : {}),
+      ...(row.organizationSuggestions
+        ? {
+            organizationSuggestions: JSON.parse(
+              row.organizationSuggestions as string
+            ) as DreamInfo['organizationSuggestions']
+          }
+        : {}),
       ...(row.usage ? { usage: JSON.parse(row.usage as string) as DreamInfo['usage'] } : {}),
       ...(row.error ? { error: JSON.parse(row.error as string) as DreamInfo['error'] } : {}),
       createdAt: row.createdAt as string,
@@ -1979,9 +1996,11 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO dreams (dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
-           executionSessionId, runtime, model, stopReason, snapshotWrites, instructions, skills, usage, error, createdAt, endedAt)
+           executionSessionId, runtime, model, stopReason, snapshotWrites, instructions, skills, organizationSuggestions,
+           usage, error, createdAt, endedAt)
          VALUES (@dreamId, @agentId, @status, @triggerKind, @sessionIds, @snapshotDigest,
-           @executionSessionId, @runtime, @model, @stopReason, @snapshotWrites, @instructions, @skills, @usage, @error, @createdAt, @endedAt)`
+           @executionSessionId, @runtime, @model, @stopReason, @snapshotWrites, @instructions, @skills,
+           @organizationSuggestions, @usage, @error, @createdAt, @endedAt)`
       )
       .run(this.dreamToRow(dream))
   }
@@ -1996,7 +2015,8 @@ export class LocalStore {
         `UPDATE dreams SET status = @status, triggerKind = @triggerKind, sessionIds = @sessionIds,
            snapshotDigest = @snapshotDigest, executionSessionId = @executionSessionId, runtime = @runtime,
            model = @model, stopReason = @stopReason, snapshotWrites = @snapshotWrites, instructions = @instructions,
-           skills = @skills, usage = @usage, error = @error, createdAt = @createdAt, endedAt = @endedAt
+           skills = @skills, organizationSuggestions = @organizationSuggestions, usage = @usage, error = @error,
+           createdAt = @createdAt, endedAt = @endedAt
          WHERE dreamId = @dreamId AND agentId = @agentId`
       )
       .run(this.dreamToRow(dream))
@@ -2014,6 +2034,23 @@ export class LocalStore {
         .prepare('SELECT * FROM dreams WHERE agentId = ? ORDER BY createdAt DESC, dreamId DESC LIMIT ?')
         .all(agentId, limit) as Record<string, unknown>[]
     ).map((row) => this.dreamFromRow(row))
+  }
+
+  organizationSuggestionDreams(limit: number): DreamInfo[] {
+    return (
+      (
+        this.db
+          .prepare(
+            `SELECT * FROM dreams WHERE organizationSuggestions LIKE '%"state":"proposed"%'
+             ORDER BY createdAt DESC, dreamId DESC LIMIT ?`
+          )
+          .all(limit) as Record<string, unknown>[]
+      )
+        // The LIKE is only a bounded pre-filter. Decode and decide on the
+        // structured value so terminal rows can never consume the inventory.
+        .map((row) => this.dreamFromRow(row))
+        .filter((dream) => (dream.organizationSuggestions ?? []).some((suggestion) => suggestion.state === 'proposed'))
+    )
   }
 
   /** Dreams still holding an unreviewed skill candidate, newest first. Scanned

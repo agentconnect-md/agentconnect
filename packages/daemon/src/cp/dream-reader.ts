@@ -20,7 +20,11 @@ import type {
   DreamSkillReviewReq,
   DreamSkillReadReq,
   DreamSkillContent,
-  DreamState
+  DreamState,
+  OrganizationSuggestionReadReq,
+  OrganizationSuggestionChunk,
+  OrganizationSuggestionReviewReq,
+  Ack
 } from '@agentconnect.md/protocol'
 import { fitToBudget, utf8Boundary } from './wire-slice.js'
 import type { DreamRunner } from '../agents/dream-runner.js'
@@ -39,6 +43,8 @@ export interface DreamReader {
   skillRead(req: DreamSkillReadReq): Promise<DreamSkillContent>
   skillAccept(req: DreamSkillReviewReq): Promise<DreamState>
   skillDismiss(req: DreamSkillReviewReq): Promise<DreamState>
+  organizationSuggestionRead(req: OrganizationSuggestionReadReq): Promise<OrganizationSuggestionChunk>
+  organizationSuggestionReview(req: OrganizationSuggestionReviewReq): Promise<Ack>
 }
 
 export function createDreamReader(runner: DreamRunner): DreamReader {
@@ -123,6 +129,14 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
 
     async skillDismiss(req) {
       return { dream: await runner.skillDismiss(req.agentId, req.dreamId, req.name) }
+    },
+
+    async organizationSuggestionRead(req) {
+      return runner.organizationSuggestionRead(req)
+    },
+
+    async organizationSuggestionReview(req) {
+      return runner.organizationSuggestionReview(req)
     }
   }
 }

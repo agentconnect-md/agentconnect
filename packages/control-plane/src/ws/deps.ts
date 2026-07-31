@@ -21,7 +21,8 @@ import type {
   ExternalMemoryConnectionRepo,
   WebchatConversationRepo,
   WebchatMcpDelegationRepo,
-  LaunchRepo
+  LaunchRepo,
+  OrganizationKnowledgeRepo
 } from '../persistence/ports.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { RelayRosterEntry } from '@agentconnect.md/protocol'
@@ -86,6 +87,8 @@ export interface DaemonWsDeps {
   /** Viewer-free agent reads for the `gitcred/request` placement check — a DATA-PLANE
    *  path (resource-visibility §9): restricted-but-active agents must keep minting. */
   agent: AgentRepo
+  /** Accepted Knowledge/skills and retained suggestion metadata. */
+  organizationKnowledge?: OrganizationKnowledgeRepo
   /** Revision-fenced sink for daemon external-memory conformance facts. */
   externalMemoryConnection?: ExternalMemoryConnectionRepo
   /** github-app workspaces façade; absent ⇒ gitcred/request answers SCOPE_DENIED. */

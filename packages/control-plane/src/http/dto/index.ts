@@ -423,6 +423,10 @@ const SkillEnableBody = z.array(
     message: 'must be "<source>", "<source>/<skill>", or "<source>/*" (skill may not start with "-")'
   })
 )
+const ManagedSkillEnableBody = z
+  .array(z.string().uuid())
+  .max(64)
+  .refine((ids) => new Set(ids).size === ids.length, { message: 'managed skill ids must be unique' })
 // Memory backend selection (design: docs/designs/memory-evolution.md). External
 // carries only a connection reference + product policy; credentials and plugin
 // transport stay on the daemon-private connection data plane.
@@ -469,6 +473,7 @@ export const CreateAgentBody = z.object({
   // is rejected here so a misconfiguration fails at the API, not as a daemon warn.
   mcpServers: McpServerNamesBody.optional(),
   skills: SkillEnableBody.optional(),
+  managedSkills: ManagedSkillEnableBody.optional(),
   memory: MemoryConfigBody.optional(), // memory backend; absent ⇒ managed default
   daemonId: z.string().optional(), // the owning daemon, if chosen at create
   workspace: AgentWorkspaceInputBody.optional(), // absent ⇒ scratch; the cold editor can replace either mode later
@@ -519,6 +524,7 @@ export const UpdateAgentBody = z
     secrets: AgentSecretsPatchBody.optional(),
     mcpServers: McpServerNamesBody.nullable().optional(), // replaced wholesale; null clears
     skills: SkillEnableBody.nullable().optional(), // enabled skills; replaced wholesale; null clears
+    managedSkills: ManagedSkillEnableBody.nullable().optional(), // accepted managed-skill ids; null clears
     memory: MemoryConfigBody.nullable().optional() // memory backend; null clears (revert to managed)
   })
   .strict()
@@ -573,6 +579,7 @@ export const AgentDto = z.object({
   secretKeys: z.array(z.string()),
   mcpServers: z.array(z.string()), // enabled daemon-configured MCP server names ([] ⇒ none)
   skills: z.array(z.string()), // enabled shared-skills "<source>/<skill>" / "<source>/*" ([] ⇒ none)
+  managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
   memory: MemoryConfigBody.nullable(), // memory backend (null ⇒ managed default)
   status: z.string(),
   daemonId: z.string().nullable(),
@@ -945,6 +952,176 @@ export const AgentSkillSourceDto = z.object({
   skills: z.array(z.string()) // the source's own skill filter ([] ⇒ all)
 })
 export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
+
+// ── organization Knowledge + managed Agent Skills ─────────────────────────
+
+export const OrganizationArtifactSourceDto = z.enum(['manual', 'dream'])
+
+export const OrganizationKnowledgeDto = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  content: z.string(),
+  summary: z.string().nullable(),
+  tags: z.array(z.string()),
+  currentRevision: z.number().int().positive(),
+  digest: z.string(),
+  source: OrganizationArtifactSourceDto,
+  sourceAgentId: z.string().nullable(),
+  sourceDreamId: z.string().nullable(),
+  sourceSessionIds: z.array(z.string()),
+  createdByUserId: z.string().nullable(),
+  reviewedByUserId: z.string().nullable(),
+  archivedAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  revisionCreatedAt: z.string(),
+  canManage: z.boolean()
+})
+export const OrganizationKnowledgeListDto = z.array(OrganizationKnowledgeDto)
+
+export const OrganizationKnowledgeRevisionDto = z.object({
+  knowledgeId: z.string().uuid(),
+  revision: z.number().int().positive(),
+  content: z.string(),
+  summary: z.string().nullable(),
+  tags: z.array(z.string()),
+  digest: z.string(),
+  source: OrganizationArtifactSourceDto,
+  sourceAgentId: z.string().nullable(),
+  sourceDreamId: z.string().nullable(),
+  sourceSessionIds: z.array(z.string()),
+  createdByUserId: z.string().nullable(),
+  reviewedByUserId: z.string().nullable(),
+  createdAt: z.string()
+})
+export const OrganizationKnowledgeRevisionListDto = z.array(OrganizationKnowledgeRevisionDto)
+
+export const CreateOrganizationKnowledgeBody = z
+  .object({
+    title: z.string().trim().min(1).max(128),
+    content: z
+      .string()
+      .min(1)
+      .max(262_144)
+      .refine((content) => Buffer.byteLength(content, 'utf8') <= 262_144, {
+        message: 'content must be at most 262144 UTF-8 bytes'
+      }),
+    summary: z.string().trim().max(1024).optional(),
+    tags: z.array(z.string().trim().min(1).max(64)).max(16).default([])
+  })
+  .strict()
+
+export const UpdateOrganizationKnowledgeBody = CreateOrganizationKnowledgeBody.extend({
+  expectedRevision: z.number().int().positive()
+}).strict()
+
+export const SetOrganizationArtifactArchivedBody = z.object({ archived: z.boolean() }).strict()
+
+export const ManagedSkillDto = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  description: z.string(),
+  currentRevision: z.number().int().positive(),
+  digest: z.string(),
+  compressedBytes: z.number().int().nonnegative(),
+  expandedBytes: z.number().int().nonnegative(),
+  fileCount: z.number().int().nonnegative(),
+  manifest: z.record(z.string(), z.unknown()),
+  archivedAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  canManage: z.boolean()
+})
+export const ManagedSkillListDto = z.array(ManagedSkillDto)
+
+export const ManagedSkillRevisionDto = z.object({
+  managedSkillId: z.string().uuid(),
+  revision: z.number().int().positive(),
+  digest: z.string(),
+  compressedBytes: z.number().int().nonnegative(),
+  expandedBytes: z.number().int().nonnegative(),
+  fileCount: z.number().int().nonnegative(),
+  manifest: z.record(z.string(), z.unknown()),
+  source: OrganizationArtifactSourceDto,
+  sourceAgentId: z.string().nullable(),
+  sourceDreamId: z.string().nullable(),
+  sourceSessionIds: z.array(z.string()),
+  createdByUserId: z.string().nullable(),
+  reviewedByUserId: z.string().nullable(),
+  createdAt: z.string()
+})
+export const ManagedSkillRevisionListDto = z.array(ManagedSkillRevisionDto)
+
+export const OrganizationSuggestionDto = z.object({
+  id: z.string().uuid(),
+  sourceAgentId: z.string().uuid(),
+  sourceAgentName: z.string().nullable(),
+  sourceDaemonId: z.string().nullable(),
+  dreamId: z.string(),
+  candidateId: z.string().uuid(),
+  kind: z.enum(['knowledge', 'skill']),
+  operation: z.enum(['create', 'update']),
+  targetArtifactId: z.string().nullable(),
+  targetRevision: z.number().int().nullable(),
+  title: z.string(),
+  summary: z.string().nullable(),
+  tags: z.array(z.string()),
+  digest: z.string(),
+  contentBytes: z.number().int().nonnegative(),
+  sessionIds: z.array(z.string()),
+  state: z.enum(['pending', 'accepted', 'rejected']),
+  contentAvailable: z.boolean(),
+  reviewedAt: z.string().nullable(),
+  reviewReason: z.string().nullable(),
+  acceptedArtifactId: z.string().nullable(),
+  acceptedArtifactRevision: z.number().int().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+})
+export const OrganizationSuggestionListDto = z.array(OrganizationSuggestionDto)
+
+export const OrganizationSuggestionListQuery = z.object({
+  kind: z.enum(['knowledge', 'skill']).optional(),
+  state: z.enum(['pending', 'accepted', 'rejected']).optional(),
+  query: z.string().trim().max(128).optional()
+})
+
+export const SkillBundleFileDto = z.object({
+  path: z.string(),
+  encoding: z.enum(['utf8', 'base64']),
+  content: z.string()
+})
+export const OrganizationSuggestionContentDto = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('knowledge'),
+    digest: z.string(),
+    snapshotToken: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    content: z.string(),
+    summary: z.string().nullable(),
+    tags: z.array(z.string())
+  }),
+  z.object({
+    kind: z.literal('skill'),
+    digest: z.string(),
+    snapshotToken: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    files: z.array(SkillBundleFileDto)
+  })
+])
+
+export const ReviewOrganizationSuggestionBody = z.discriminatedUnion('decision', [
+  z
+    .object({
+      decision: z.literal('accept'),
+      snapshotToken: z.string().regex(/^sha256:[0-9a-f]{64}$/)
+    })
+    .strict(),
+  z
+    .object({
+      decision: z.literal('reject'),
+      reason: z.string().trim().max(1024).optional()
+    })
+    .strict()
+])
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────
 /** Whether the open-connector integration is configured on this CP (drives the

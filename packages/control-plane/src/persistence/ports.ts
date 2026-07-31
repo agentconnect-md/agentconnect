@@ -22,7 +22,8 @@ import type {
   FeishuRegion,
   BindRule,
   AgentIcon,
-  AgentMemoryBinding
+  AgentMemoryBinding,
+  OrganizationSuggestionInfo
 } from '@agentconnect.md/protocol'
 import type {
   DaemonId,
@@ -524,6 +525,7 @@ export interface CreateAgentInput {
   // the AgentSecretStore seam (routes write them there after create).
   mcpServers?: string[] // daemon-configured MCP server names to attach at session/new (AgentSpec.mcpServers)
   skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
+  managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
   icon?: AgentIcon // console avatar; absent ⇒ the repo assigns a random glyph+color combo
   daemonId?: DaemonId // the owning machine, if chosen at create time
@@ -575,6 +577,7 @@ export interface UpdateAgentInput {
   // them through the AgentSecretStore seam (key-by-key; see AgentSecretStore.merge).
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
+  managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
   // Workspace repository identity is not a generic PATCH field. The dedicated
   // cold editor drains the daemon and reconciles its local materialization;
@@ -616,6 +619,7 @@ export interface AgentRecord {
   // values only from AgentSecretStore.get on the wire-projection paths.
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
+  managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
   status: 'active' | 'inactive' | 'paused'
   daemonId: DaemonId | null
@@ -3525,6 +3529,207 @@ export interface SkillSourceRepo {
   ): Promise<SkillSourceRecord>
   update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
   delete(id: string): Promise<void>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Organization Knowledge + immutable managed Agent Skills revisions
+// (docs/designs/organization-knowledge.md)
+// ───────────────────────────────────────────────────────────────────────────
+
+export type OrganizationArtifactSource = 'manual' | 'dream'
+export type OrganizationSuggestionKind = 'knowledge' | 'skill'
+export type OrganizationSuggestionOperation = 'create' | 'update'
+export type OrganizationSuggestionState = 'pending' | 'accepted' | 'rejected'
+
+export interface OrganizationKnowledgeRecord {
+  id: string
+  orgId: OrgId
+  title: string
+  currentRevision: number
+  archivedAt: Date | null
+  archivedByUserId: string | null
+  createdAt: Date
+  updatedAt: Date
+  content: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  source: OrganizationArtifactSource
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceCandidateId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  revisionCreatedAt: Date
+}
+
+export interface OrganizationKnowledgeRevisionRecord {
+  knowledgeId: string
+  revision: number
+  content: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  source: OrganizationArtifactSource
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceCandidateId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: Date
+}
+
+export interface ManagedSkillRecord {
+  id: string
+  orgId: OrgId
+  name: string
+  description: string
+  currentRevision: number
+  archivedAt: Date | null
+  archivedByUserId: string | null
+  createdAt: Date
+  updatedAt: Date
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: Record<string, unknown>
+}
+
+export interface ManagedSkillRevisionRecord {
+  managedSkillId: string
+  revision: number
+  archive: Uint8Array
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: Record<string, unknown>
+  source: OrganizationArtifactSource
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceCandidateId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: Date
+}
+
+export interface OrganizationSuggestionRecord {
+  id: string
+  orgId: OrgId
+  sourceAgentId: string
+  sourceDaemonId: string | null
+  dreamId: string
+  candidateId: string
+  kind: OrganizationSuggestionKind
+  operation: OrganizationSuggestionOperation
+  targetArtifactId: string | null
+  targetRevision: number | null
+  title: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  contentBytes: number
+  sessionIds: string[]
+  state: OrganizationSuggestionState
+  reviewedByUserId: string | null
+  reviewedAt: Date | null
+  reviewReason: string | null
+  acceptedArtifactId: string | null
+  acceptedArtifactRevision: number | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface OrganizationArtifactProvenance {
+  source: OrganizationArtifactSource
+  sourceAgentId?: string
+  sourceDreamId?: string
+  sourceCandidateId?: string
+  sourceSessionIds?: string[]
+  createdByUserId?: string
+  reviewedByUserId?: string
+}
+
+export type AcceptOrganizationSuggestionResult =
+  | { outcome: 'accepted'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'not_pending'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'metadata_changed'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'stale_target'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'target_missing'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'name_conflict'; suggestion: OrganizationSuggestionRecord }
+
+export interface OrganizationKnowledgeRepo {
+  listKnowledge(orgId: OrgId, includeArchived?: boolean): Promise<OrganizationKnowledgeRecord[]>
+  getKnowledge(id: string): Promise<OrganizationKnowledgeRecord | null>
+  listKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionRecord[]>
+  searchKnowledge(
+    orgId: OrgId,
+    input: { query: string; tags?: string[]; limit: number }
+  ): Promise<OrganizationKnowledgeRecord[]>
+  createKnowledge(
+    orgId: OrgId,
+    input: { title: string; content: string; summary?: string; tags?: string[] },
+    provenance: OrganizationArtifactProvenance
+  ): Promise<OrganizationKnowledgeRecord>
+  updateKnowledge(
+    id: string,
+    expectedRevision: number,
+    input: { title: string; content: string; summary?: string; tags?: string[] },
+    provenance: OrganizationArtifactProvenance
+  ): Promise<OrganizationKnowledgeRecord | null>
+  setKnowledgeArchived(id: string, archived: boolean, byUserId?: string): Promise<OrganizationKnowledgeRecord>
+
+  listManagedSkills(orgId: OrgId, includeArchived?: boolean): Promise<ManagedSkillRecord[]>
+  getManagedSkill(id: string): Promise<ManagedSkillRecord | null>
+  getManagedSkillRevision(id: string, revision: number): Promise<ManagedSkillRevisionRecord | null>
+  listManagedSkillRevisions(id: string): Promise<ManagedSkillRevisionRecord[]>
+  setManagedSkillArchived(id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord>
+
+  syncSuggestions(
+    orgId: OrgId,
+    sourceDaemonId: string,
+    suggestions: (OrganizationSuggestionInfo & { sourceAgentId: string; dreamId: string })[]
+  ): Promise<OrganizationSuggestionRecord[]>
+  listSuggestions(
+    orgId: OrgId,
+    filters?: { kind?: OrganizationSuggestionKind; state?: OrganizationSuggestionState; query?: string }
+  ): Promise<OrganizationSuggestionRecord[]>
+  getSuggestion(id: string): Promise<OrganizationSuggestionRecord | null>
+  rejectSuggestion(
+    id: string,
+    reviewedByUserId: string | undefined,
+    reason?: string
+  ): Promise<OrganizationSuggestionRecord>
+  acceptKnowledgeSuggestion(
+    id: string,
+    body: { title: string; content: string; summary: string | null; tags: string[] },
+    expectedSnapshotToken: string,
+    reviewedByUserId?: string
+  ): Promise<AcceptOrganizationSuggestionResult>
+  acceptSkillSuggestion(
+    id: string,
+    body: {
+      archive: Uint8Array
+      /** Digest advertised by the daemon for the staged candidate tree. */
+      candidateDigest: string
+      /** Digest of the canonical `.skill` ZIP persisted centrally. */
+      digest: string
+      compressedBytes: number
+      expandedBytes: number
+      fileCount: number
+      manifest: Record<string, unknown>
+      /** Manifest metadata read from the exact staged tree. Both fields fence a
+       * concurrent suggestion-inventory refresh before executable content lands. */
+      name: string
+      description: string
+    },
+    expectedSnapshotToken: string,
+    reviewedByUserId?: string
+  ): Promise<AcceptOrganizationSuggestionResult>
 }
 
 // ── External-memory plugin control plane (memory-evolution M-5A) ──

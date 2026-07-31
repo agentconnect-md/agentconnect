@@ -20,9 +20,10 @@ import {
   normalizeGithubRepoUrl,
   redactGitUrlSecrets,
   type AgentSkillEntry,
+  type ManagedSkillEntry,
   type AgentSpec
 } from '@agentconnect.md/protocol'
-import type { AgentRecord, AgentSecretStore, SkillSourceRepo } from '../persistence/ports.js'
+import type { AgentRecord, AgentSecretStore, OrganizationKnowledgeRepo, SkillSourceRepo } from '../persistence/ports.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { resolveAgentSkillEntries } from './skillSource.js'
 
@@ -35,16 +36,20 @@ export class AgentSpecAssembler {
     private readonly iconBases: IconUrlBases = {},
     // Optional: resolves the agent's skill enable-list into self-contained
     // AgentSpec.skills entries. Absent (some tests / minimal graphs) ⇒ no skills.
-    private readonly skillSources?: SkillSourceRepo
+    private readonly skillSources?: SkillSourceRepo,
+    // Optional for older/minimal test graphs. Production resolves explicitly
+    // enabled centrally-managed skill ids into immutable revision metadata.
+    private readonly organizationKnowledge?: OrganizationKnowledgeRepo
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
-    const [secrets, skillEntries] = await Promise.all([
+    const [secrets, skillEntries, managedSkillEntries] = await Promise.all([
       this.secrets.get(a.id),
-      resolveAgentSkillEntries(a, this.skillSources)
+      resolveAgentSkillEntries(a, this.skillSources),
+      this.managedSkillsOf(a)
     ])
-    return this.project(a, secrets, skillEntries)
+    return this.project(a, secrets, skillEntries, managedSkillEntries)
   }
 
   /** Batch form for the reconcile roster (one store read per owned agent).
@@ -81,6 +86,27 @@ export class AgentSpecAssembler {
     return resolveAgentSkillEntries(a, this.skillSources)
   }
 
+  /** Resolve enabled managed-skill ids into the exact immutable revisions the
+   * daemon must fetch. Missing/archived/foreign ids are omitted defensively; the
+   * HTTP write path rejects them, while this keeps legacy rows from breaking a
+   * daemon's entire reconcile roster. */
+  async managedSkillsOf(a: Pick<AgentRecord, 'orgId' | 'managedSkills'>): Promise<ManagedSkillEntry[]> {
+    if (!this.organizationKnowledge || a.managedSkills.length === 0) return []
+    const rows = await Promise.all(a.managedSkills.map((id) => this.organizationKnowledge!.getManagedSkill(id)))
+    return rows.flatMap((row) =>
+      row !== null && row.orgId === a.orgId && row.archivedAt === null
+        ? [
+            {
+              id: row.id,
+              name: row.name,
+              revision: row.currentRevision,
+              digest: row.digest
+            }
+          ]
+        : []
+    )
+  }
+
   /**
    * Pure projection over ALREADY-FETCHED secrets. The agent-move path calls this
    * with its snapshotted `MoveBundle.secrets` so the activation fingerprint
@@ -91,8 +117,13 @@ export class AgentSpecAssembler {
    * a silent default would wipe skills on every move/workspace edit. The move bundle
    * snapshots the resolved entries and passes them here; callers with none pass [].
    */
-  project(a: AgentRecord, secrets: Record<string, string>, skillEntries: AgentSkillEntry[]): AssembledAgentSpec {
-    return agentRecordToSpec(a, secrets, this.iconBases, skillEntries)
+  project(
+    a: AgentRecord,
+    secrets: Record<string, string>,
+    skillEntries: AgentSkillEntry[],
+    managedSkillEntries: ManagedSkillEntry[] = []
+  ): AssembledAgentSpec {
+    return agentRecordToSpec(a, secrets, this.iconBases, skillEntries, managedSkillEntries)
   }
 }
 
@@ -108,7 +139,8 @@ export function agentRecordToSpec(
   a: AgentRecord,
   secrets: Record<string, string>,
   iconBases?: IconUrlBases,
-  skillEntries: AgentSkillEntry[] = []
+  skillEntries: AgentSkillEntry[] = [],
+  managedSkillEntries: ManagedSkillEntry[] = []
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // App-backed GitHub workspaces have one implicit repo. Scratch workspaces have
@@ -182,6 +214,9 @@ export function agentRecordToSpec(
     // enable-list against the org SkillSource registry. Always shipped (even []) so
     // disabling the last skill replicates.
     skills: skillEntries,
+    // Immutable centrally-managed bundle metadata. Content is fetched separately
+    // in bounded chunks, keeping reconcile/upsert frames small.
+    managedSkills: managedSkillEntries,
     // Agent→agent call authorization (§2.5), replicated so the owning daemon enforces
     // it locally on same-daemon `messageAgent` delivery. Always ship both (allowedCallerAgentIds
     // even []) so a policy loosen/tighten or an emptied allow-list replicates.

@@ -12,6 +12,7 @@ export {
   CP_SUBPROTOCOL,
   CP_WS_PATH,
   DELEGATED_MCP_ASSERTION_FEATURE,
+  ORGANIZATION_KNOWLEDGE_FEATURE,
   RESERVED_RESTART_CODE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_VISIBILITY_FEATURE
@@ -40,6 +41,7 @@ export * from './frames/session.js'
 export * from './frames/channel.js'
 export * from './frames/workspace.js'
 export * from './frames/memory.js'
+export * from './frames/organization-knowledge.js'
 export * from './frames/telemetry.js'
 export * from './frames/error.js'
 export * from './frames/webchat.js'
