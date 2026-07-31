@@ -1571,9 +1571,30 @@ export const MemberDto = z.object({
   picture: z.string().nullable(), // OIDC `picture` avatar URL; null until they've signed in with one
   role: MemberRole,
   isCurrentUser: z.boolean(),
-  joinedAt: z.string() // ISO-8601 (user createdAt — memberships carry no timestamps)
+  joinedAt: z.string() // ISO-8601 — when they joined THIS org
 })
 export const MemberListDto = z.array(MemberDto)
+
+/** `GET /members/:id/removal-preview` — what leaving/removal would do, for the
+ *  confirmation dialog. Advisory: nothing is locked, and the real decision is
+ *  re-derived inside the DELETE transaction. */
+export const MemberRemovalPreviewDto = z.object({
+  // Null when removal would be refused anyway (the last owner has no successor).
+  transferTo: MemberDto.nullable(),
+  resources: z.array(
+    z.object({
+      kind: z.enum(['agent', 'daemon', 'cron', 'mcpProvider', 'skillSource']),
+      owned: z.number().int(),
+      // Not org-visible: reached through ownership or an explicit share.
+      restricted: z.number().int(),
+      // The subset of `restricted` with no OTHER member on its share list, so
+      // after the transfer only `transferTo` could see it. This is the part that
+      // silently disappears from everyone else's console; the rest stay visible
+      // to the members they are already shared with.
+      recipientOnly: z.number().int()
+    })
+  )
+})
 
 /** `PATCH /members/:id` — change a member's role (owner-only; multiple owners OK). */
 export const UpdateMemberBody = z.object({
@@ -2499,6 +2520,7 @@ export type MeDtoT = z.infer<typeof MeDto>
 export type MeAccessDtoT = z.infer<typeof MeAccessDto>
 export type UserApiKeyDtoT = z.infer<typeof UserApiKeyDto>
 export type MemberDtoT = z.infer<typeof MemberDto>
+export type MemberRemovalPreviewDtoT = z.infer<typeof MemberRemovalPreviewDto>
 export type OrgInviteLinkDtoT = z.infer<typeof OrgInviteLinkDto>
 export type AcceptedOrgInviteLinkDtoT = z.infer<typeof AcceptedOrgInviteLinkDto>
 export type OrgDtoT = z.infer<typeof OrgDto>

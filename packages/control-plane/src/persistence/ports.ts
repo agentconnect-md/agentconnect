@@ -3035,8 +3035,38 @@ export interface OrgMemberRecord {
   /** Set when this member selected an uploaded profile photo. */
   profilePictureUpdatedAt: Date | null
   role: OrgMemberRole
-  /** `membership` carries no timestamps — this is the user row's `createdAt`. */
+  /** When this user joined THIS org (`membership.createdAt`). */
   joinedAt: Date
+}
+
+/** The five resource kinds whose ownership transfers when a member leaves. */
+export type OwnedResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
+
+/**
+ * What removing one member would do, read before the fact (resource-visibility.md
+ * §8.2). The console shows it in the leave/remove confirmation so the transfer is
+ * predictable rather than discovered afterwards: a restricted resource is reached
+ * through its ownership arm OR an explicit share, so where the arm lands decides
+ * who can still find the ones nobody else was given.
+ */
+export interface MemberRemovalPreview {
+  /** The member who inherits ownership; null when removal would be refused
+   *  (the departing member is the last owner). */
+  transferTo: OrgMemberRecord | null
+  /** Per-kind counts of the departing member's owned resources; kinds they own
+   *  nothing of are omitted. */
+  resources: Array<{
+    kind: OwnedResourceKind
+    owned: number
+    /** Not org-visible: reachable only via ownership or `sharedWith`. */
+    restricted: number
+    /** The subset of `restricted` that `transferTo` alone would be able to see —
+     *  no remaining member holds a share. This, not `restricted`, is what
+     *  disappears from everyone else's console, so it is the number the dialog
+     *  warns about. Counted against CURRENT membership: a `sharedWith` id that
+     *  is no longer a member cannot see anything either. */
+    recipientOnly: number
+  }>
 }
 
 /** The caller's own profile (the console `/me` surface). */
@@ -3148,6 +3178,13 @@ export interface UserRepo {
    * the acting owner's role. Refuses to remove the final owner before committing.
    */
   removeMember(orgId: string, userId: string, actingUserId: string): Promise<void>
+
+  /**
+   * Dry-run of `removeMember` for the confirmation dialog: the same recipient
+   * rule, plus what that member currently owns. Racy by nature (nothing is
+   * locked) — advisory display only, never an authorization input.
+   */
+  previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview>
 
   /** Attach a known user to an org. */
   addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void>

@@ -17,8 +17,10 @@ import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
   type ProvisionOidcUserInput,
+  type MemberRemovalPreview,
   type OrgMemberRecord,
   type OrgMemberRole,
+  type OwnedResourceKind,
   type UserProfileRecord,
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
@@ -100,6 +102,65 @@ function mergeResourceAuthoritySql(table: (typeof RESOURCE_AUTHORITY_TABLES)[num
   `
 }
 
+/** Kind label (the API's vocabulary) → the table ownership transfers from. */
+const OWNED_RESOURCE_KINDS = [
+  ['agent', 'agent'],
+  ['daemon', 'daemon'],
+  ['cron', 'cron_def'],
+  ['mcpProvider', 'mcp_provider'],
+  ['skillSource', 'skill_source']
+] as const satisfies ReadonlyArray<readonly [OwnedResourceKind, (typeof RESOURCE_AUTHORITY_TABLES)[number]]>
+
+interface OwnedResourceCountRow {
+  kind: OwnedResourceKind
+  owned: number
+  restricted: number
+  recipientOnly: number
+}
+
+/**
+ * One kind's slice of the removal preview: how much of `table` this member owns,
+ * how much of it is restricted, and how much of THAT only `recipient` would be
+ * left able to see.
+ *
+ * The last number is the one worth warning about, and it is not simply
+ * "restricted": `canView` admits the ownership arm OR an explicit share, and
+ * removal prunes only the departing id from `sharedWith` (§8.1), so a resource
+ * shared with anyone still in the organization does not vanish for them. The
+ * share set is intersected with CURRENT membership here for the same reason a
+ * role never widens visibility — an id that is no longer a member cannot see
+ * anything, so counting it as a viewer would suppress a warning that is due.
+ */
+function ownedResourceCountsSql(
+  table: (typeof RESOURCE_AUTHORITY_TABLES)[number],
+  kind: OwnedResourceKind,
+  orgId: string,
+  ownerUserId: string,
+  recipientUserId: string
+) {
+  return Prisma.sql`
+    SELECT
+      ${kind} AS "kind",
+      count(*)::int AS "owned",
+      (count(*) FILTER (WHERE resource."visibility" = 'restricted'))::int AS "restricted",
+      (count(*) FILTER (
+        WHERE resource."visibility" = 'restricted'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[])) AS shared(user_id)
+            JOIN "membership" AS other
+              ON other."userId" = shared.user_id
+             AND other."orgId" = resource."orgId"
+            WHERE shared.user_id <> ${ownerUserId}
+              AND shared.user_id <> ${recipientUserId}
+          )
+      ))::int AS "recipientOnly"
+    FROM ${Prisma.raw(`"public"."${table}"`)} AS resource
+    WHERE resource."orgId" = ${orgId}
+      AND resource."ownerUserId" = ${ownerUserId}
+  `
+}
+
 // app_user row → the caller's own profile. Synthetic placeholder emails read as
 // "no email" (never displayed), same as the member record below.
 function toProfileRecord(u: {
@@ -123,12 +184,12 @@ function toProfileRecord(u: {
 function toMemberRecord(m: {
   userId: string
   role: string
+  createdAt: Date
   user: {
     email: string
     displayName: string | null
     picture: string | null
     profilePictureUpdatedAt: Date | null
-    createdAt: Date
   }
 }): OrgMemberRecord {
   return {
@@ -138,8 +199,29 @@ function toMemberRecord(m: {
     picture: m.user.picture,
     profilePictureUpdatedAt: m.user.profilePictureUpdatedAt,
     role: m.role as OrgMemberRole,
-    joinedAt: m.user.createdAt
+    joinedAt: m.createdAt
   }
+}
+
+/**
+ * Who inherits a departing member's resources (resource-visibility.md §8.2).
+ *
+ * Removing someone else hands their resources to the acting owner — they made
+ * the decision, so they carry what it leaves behind. A member leaving on their
+ * own has no such actor, so the org's LONGEST-STANDING owner inherits: the
+ * closest available stand-in for "whoever runs this organization", and stable
+ * against a later join or promotion. `snapshot` must already be ordered by
+ * membership age (ties by `userId`, so the choice is deterministic under
+ * same-instant joins). Null ⇒ nobody qualifies, which only happens when the
+ * departing member is the last owner and the caller must refuse.
+ */
+function chooseTransferRecipient(
+  snapshot: readonly { userId: string; role: OrgMemberRole }[],
+  departingUserId: string,
+  actingUserId: string
+): string | null {
+  if (departingUserId !== actingUserId) return actingUserId
+  return snapshot.find((m) => m.role === 'owner' && m.userId !== departingUserId)?.userId ?? null
 }
 
 /** `Dana Reyes <dana@acme.dev>` → base label `dana` for the personal-org name/slug. */
@@ -545,7 +627,7 @@ export class PgUserRepo implements UserRepo {
     const rows = await this.db.membership.findMany({
       where: { orgId },
       include: { user: true },
-      orderBy: { user: { createdAt: 'asc' } }
+      orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
     })
     return rows.map(toMemberRecord)
   }
@@ -601,16 +683,14 @@ export class PgUserRepo implements UserRepo {
       const membershipSnapshot = await tx.membership.findMany({
         where: { orgId },
         select: { userId: true, role: true },
-        orderBy: { userId: 'asc' }
+        orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
       })
       const actor = membershipSnapshot.find((membership) => membership.userId === actingUserId)
       const departing = membershipSnapshot.find((membership) => membership.userId === userId)
       const leaving = userId === actingUserId
       if (!departing || (!leaving && actor?.role !== 'owner')) throw new OrgMembershipMissing()
 
-      const transferToUserId = leaving
-        ? membershipSnapshot.find((membership) => membership.role === 'owner' && membership.userId !== userId)?.userId
-        : actingUserId
+      const transferToUserId = chooseTransferRecipient(membershipSnapshot, userId, actingUserId)
       if (!transferToUserId) throw new OrgOwnerRequired()
 
       // Fence ownership-bearing resource writes on both ends, then recheck the
@@ -630,6 +710,43 @@ export class PgUserRepo implements UserRepo {
       // The row is still locked here; deletion completes the same transaction.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
     })
+  }
+
+  async previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview> {
+    // Unlocked and outside any transaction: this only feeds a confirmation
+    // dialog. `removeMember` re-derives everything under the transition lock.
+    const rows = await this.db.membership.findMany({
+      where: { orgId },
+      include: { user: true },
+      orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
+    })
+    if (!rows.some((row) => row.userId === userId)) throw new OrgMembershipMissing()
+
+    const recipientId = chooseTransferRecipient(
+      rows.map((row) => ({ userId: row.userId, role: row.role as OrgMemberRole })),
+      userId,
+      actingUserId
+    )
+    const recipient = rows.find((row) => row.userId === recipientId)
+
+    const counts = await this.db.$queryRaw<OwnedResourceCountRow[]>(
+      Prisma.join(
+        OWNED_RESOURCE_KINDS.map(([kind, table]) =>
+          ownedResourceCountsSql(table, kind, orgId, userId, recipientId ?? '')
+        ),
+        ' UNION ALL '
+      )
+    )
+    // UNION ALL has no defined order; re-impose the declared one so the dialog
+    // always lists kinds the same way.
+    const byKind = new Map(counts.map((row) => [row.kind, row]))
+
+    return {
+      transferTo: recipient ? toMemberRecord(recipient) : null,
+      resources: OWNED_RESOURCE_KINDS.map(([kind]) => byKind.get(kind)).filter(
+        (row) => row !== undefined && row.owned > 0
+      ) as MemberRemovalPreview['resources']
+    }
   }
 
   async addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void> {

@@ -7,6 +7,8 @@
  *                          unknown addresses become invited rows, claimed on
  *                          first SSO sign-in)
  *   PATCH  /members/:id  → change a member's role (owner-only)
+ *   GET    /members/:id/removal-preview
+ *                        → who would inherit their resources, and how many
  *   DELETE /members/:id  → leave the org; owners may remove another member
  *
  * All scoped to `req.principal.orgId` (the console's active org). The
@@ -23,6 +25,7 @@ import { Tag } from '../plugins/openapi.js'
 import {
   MemberDto,
   MemberListDto,
+  MemberRemovalPreviewDto,
   UpdateMemberBody,
   AddMemberBody,
   IdParam,
@@ -104,6 +107,29 @@ export function memberRoutes(deps: HttpDeps) {
         const userId = req.params.id
         const updated = await deps.repos.user.setMemberRole(orgId, userId, req.body.role, req.orgCtx!.userId)
         return toDto(updated, req.orgCtx!.userId, deps)
+      }
+    )
+
+    r.get(
+      '/members/:id/removal-preview',
+      {
+        schema: {
+          tags: [Tag.Members],
+          summary: 'Preview a leave or removal',
+          description:
+            'What DELETE /members/:id would do: which member inherits the departing member’s resources, and how many they own — split into the restricted ones (reached through ownership or an explicit share) and the `recipientOnly` subset of those that no remaining member is shared with, which only the recipient would still be able to see. Same authorization as the removal itself. Advisory only: nothing is locked, and the removal re-derives its recipient inside the transaction.',
+          operationId: 'previewMemberRemoval',
+          params: IdParam,
+          response: { 200: MemberRemovalPreviewDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyMemberRemoval(req, reply, req.params.id)) return
+        const preview = await deps.repos.user.previewMemberRemoval(req.orgCtx!.orgId, req.params.id, req.orgCtx!.userId)
+        return {
+          transferTo: preview.transferTo ? toDto(preview.transferTo, req.orgCtx!.userId, deps) : null,
+          resources: preview.resources
+        }
       }
     )
 
