@@ -675,10 +675,11 @@ proxy MCP requests, mint per-request assertions, or run an administrative broker
 
 The runtime calls the standard CP `POST /api/v1/mcp` endpoint directly. The CP
 derives the actor from the stored grant and durable webchat owner, re-runs live
-authorization, and owns confirmation plus exactly-once execution for every
-operation with side effects. Standard JSON-RPC request ids index durable transport
-receipts only; CP-owned operation and execution-attempt fences provide the durable
-execution identity. Tool catalog execution is therefore a control operation; browser messages and ACP
+authorization, and owns confirmation plus fail-closed at-most-once execution for
+every operation with side effects, surfacing uncertain outcomes as explicit
+ambiguous terminal states. Standard JSON-RPC request ids index grant-scoped
+transport receipts only; CP-owned operation and execution-attempt fences provide
+the durable execution identity. Tool catalog execution is therefore a control operation; browser messages and ACP
 `session/update` streams remain on the relay↔daemon/daemon-local data path and
 never cross the CP.
 
