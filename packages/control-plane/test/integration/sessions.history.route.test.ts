@@ -576,6 +576,7 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
           {
             seq: 1,
             sender: '@dana',
+            trustedAgentBot: true,
             ts: '1718000000.000100',
             kind: 'text',
             text: 'ship it',
@@ -595,12 +596,13 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
     })
     expect(res.statusCode).toBe(200)
     const body = res.json() as {
-      messages: Array<{ text: string; attachments?: Array<{ name: string }> }>
+      messages: Array<{ text: string; trustedAgentBot?: boolean; attachments?: Array<{ name: string }> }>
       nextCursor: string | null
       liveCursor: string | null
       liveMore: boolean
     }
     expect(body.messages[0]!.text).toBe('ship it')
+    expect(body.messages[0]!.trustedAgentBot).toBe(true)
     expect(body.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
     expect(body.nextCursor).toBe('c-50')
     expect(body.liveCursor).toBe('77')
