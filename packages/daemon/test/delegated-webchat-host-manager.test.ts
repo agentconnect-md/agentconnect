@@ -18,6 +18,7 @@ import type {
 } from '../src/mcp/session-mcp-broker.js'
 import { SessionMcpBroker } from '../src/mcp/session-mcp-broker.js'
 import { decodeFrames, encodeFrame, type IpcResponse } from '../src/mcp/ipc.js'
+import type { DelegatedMcpMetrics } from '../src/mcp/delegated-metrics.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = realpathSync(resolve(here, '../../..'))
@@ -110,6 +111,7 @@ function harness(
     healthy?: boolean
     randomCellId?: () => string
     hostFactory?: (input: DelegatedWebchatHostFactoryInput) => AcpHost
+    metrics?: Pick<DelegatedMcpMetrics, 'isolation'>
   } = {}
 ) {
   const runtimeHomeRoot = mkdtempSync(join(tmpdir(), 'ac-delegated-host-test-'))
@@ -127,6 +129,7 @@ function harness(
     runtimeHomeRoot,
     isolationHealthy: () => overrides.healthy ?? true,
     randomCellId: overrides.randomCellId,
+    metrics: overrides.metrics,
     hostFactory: (input) => {
       factoryInputs.push(input)
       return overrides.hostFactory?.(input) ?? fakeHost(input, starts, stops)
@@ -310,6 +313,20 @@ describe('DelegatedWebchatHostManager', () => {
     expect(hostFailure.broker.releases).toHaveLength(1)
     expect(hostFailure.manager.debugStats().activeHosts).toBe(0)
     expect(readdirSync(hostFailure.runtimeHomeRoot)).toEqual([])
+  })
+
+  it('does not duplicate a broker-owned cell creation failure', async () => {
+    const isolationMetric = vi.fn()
+    const broker = new FakeBroker()
+    broker.registerCell = async () => {
+      isolationMetric('failed', 'cell_creation')
+      throw new Error('listen failed')
+    }
+    const h = harness({ broker, metrics: { isolation: isolationMetric } })
+
+    await expect(h.manager.startHost(cellInput('broker-owned-failure'))).rejects.toThrow('listen failed')
+
+    expect(isolationMetric.mock.calls).toEqual([['failed', 'cell_creation']])
   })
 
   it('drains an in-progress allocation on manager stop without starting a late host', async () => {
@@ -918,6 +935,35 @@ describe('DelegatedWebchatHostManager', () => {
     expect(removeAttempts).toBe(2)
     expect(existsSync(live.runtimeHome)).toBe(false)
     expect(manager.debugStats().drainingHosts).toBe(0)
+  })
+
+  it('reports one cleanup failure metric per cell across failed steps and retries', async () => {
+    const isolationMetric = vi.fn()
+    let stopAttempts = 0
+    const h = harness({
+      metrics: { isolation: isolationMetric },
+      hostFactory: () =>
+        ({
+          start: async () => {},
+          stop: async () => {
+            stopAttempts += 1
+            if (stopAttempts < 3) throw new Error('retry cleanup')
+          }
+        }) as unknown as AcpHost
+    })
+    const live = await h.manager.startHost(cellInput('cleanup-metric-once'))
+    const stop = () =>
+      h.manager.stopHost({
+        isolationCellId: live.isolationCellId,
+        agentId: 'agent-1',
+        conversationId: 'cleanup-metric-once'
+      })
+
+    await expect(stop()).rejects.toBeInstanceOf(AggregateError)
+    await expect(stop()).rejects.toBeInstanceOf(AggregateError)
+    await expect(stop()).resolves.toBe(true)
+
+    expect(isolationMetric.mock.calls).toEqual([['failed', 'cleanup']])
   })
 
   it('contains disconnect cleanup rejection without an unhandled promise', async () => {

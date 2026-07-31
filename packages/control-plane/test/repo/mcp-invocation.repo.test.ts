@@ -762,8 +762,8 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
 
     await repo.mint(mintInput(delegation.id, { assertionExpires: at(5_000) }))
     expect(await delegations.reapExpired(at(10_000))).toBe(0)
-    expect(await repo.reap(at(4_999))).toEqual({ markedAmbiguous: 0, deleted: 0 })
-    expect(await repo.reap(at(5_000))).toEqual({ markedAmbiguous: 0, deleted: 1 })
+    expect(await repo.reap(at(4_999))).toEqual({ markedAmbiguous: 0, deleted: 0, expiredAssertions: 0 })
+    expect(await repo.reap(at(5_000))).toEqual({ markedAmbiguous: 0, deleted: 1, expiredAssertions: 1 })
     expect(await delegations.reapExpired(at(10_000))).toBe(1)
 
     const liveDelegation = await delegations.establish({
@@ -793,12 +793,14 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
 
     expect(await repo.reap(at(13_000 + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS - 1))).toEqual({
       markedAmbiguous: 0,
-      deleted: 0
+      deleted: 0,
+      expiredAssertions: 0
     })
     expect(await repo.get(OTHER_INVOCATION)).not.toBeNull()
     expect(await repo.reap(at(13_000 + MCP_INVOCATION_RESPONSE_CACHE_TTL_MS))).toEqual({
       markedAmbiguous: 0,
-      deleted: 1
+      deleted: 1,
+      expiredAssertions: 0
     })
   })
 
@@ -1127,11 +1129,13 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
 
     expect(await repo.reap(at(1_000 + MCP_INVOCATION_EXECUTION_TIMEOUT_MS - 1))).toEqual({
       markedAmbiguous: 0,
-      deleted: 0
+      deleted: 0,
+      expiredAssertions: 0
     })
     expect(await repo.reap(at(1_000 + MCP_INVOCATION_EXECUTION_TIMEOUT_MS))).toEqual({
       markedAmbiguous: 1,
-      deleted: 0
+      deleted: 0,
+      expiredAssertions: 0
     })
     expect(await repo.get(INVOCATION)).toMatchObject({ status: 'ambiguous' })
   })
@@ -1182,7 +1186,8 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
 
     expect(await invocationRepo(prisma).reap(now)).toEqual({
       markedAmbiguous: MCP_INVOCATION_REAP_BATCH_SIZE,
-      deleted: MCP_INVOCATION_REAP_BATCH_SIZE * 2
+      deleted: MCP_INVOCATION_REAP_BATCH_SIZE * 2,
+      expiredAssertions: MCP_INVOCATION_REAP_BATCH_SIZE
     })
     expect(await prisma.mcpInvocation.groupBy({ by: ['status'], _count: true })).toEqual(
       expect.arrayContaining([
@@ -1194,7 +1199,8 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
 
     expect(await invocationRepo(prisma).reap(now)).toEqual({
       markedAmbiguous: 1,
-      deleted: 2
+      deleted: 2,
+      expiredAssertions: 1
     })
     expect(await prisma.mcpInvocation.groupBy({ by: ['status'], _count: true })).toEqual([
       { status: 'ambiguous', _count: count }
@@ -1232,12 +1238,20 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     await locked.promise
 
     const first = await invocationRepo(prisma).reap(now)
-    expect(first).toEqual({ markedAmbiguous: 0, deleted: MCP_INVOCATION_REAP_BATCH_SIZE })
+    expect(first).toEqual({
+      markedAmbiguous: 0,
+      deleted: MCP_INVOCATION_REAP_BATCH_SIZE,
+      expiredAssertions: MCP_INVOCATION_REAP_BATCH_SIZE
+    })
     expect(await prisma.mcpInvocation.findUnique({ where: { id: ids[0]! } })).not.toBeNull()
     release.release()
     await holder
 
-    expect(await invocationRepo(prisma).reap(now)).toEqual({ markedAmbiguous: 0, deleted: 1 })
+    expect(await invocationRepo(prisma).reap(now)).toEqual({
+      markedAmbiguous: 0,
+      deleted: 1,
+      expiredAssertions: 1
+    })
     expect(await prisma.mcpInvocation.count()).toBe(0)
   })
 
@@ -1262,12 +1276,13 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
 
     expect(await invocations.reap(now)).toEqual({
       markedAmbiguous: 0,
-      deleted: MCP_INVOCATION_REAP_BATCH_SIZE
+      deleted: MCP_INVOCATION_REAP_BATCH_SIZE,
+      expiredAssertions: MCP_INVOCATION_REAP_BATCH_SIZE
     })
     expect(await delegations.reapExpired(now)).toBe(0)
     expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).not.toBeNull()
 
-    expect(await invocations.reap(now)).toEqual({ markedAmbiguous: 0, deleted: 1 })
+    expect(await invocations.reap(now)).toEqual({ markedAmbiguous: 0, deleted: 1, expiredAssertions: 1 })
     expect(await delegations.reapExpired(now)).toBe(1)
     expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).toBeNull()
   })

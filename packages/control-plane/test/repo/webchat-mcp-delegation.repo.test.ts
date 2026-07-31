@@ -4,6 +4,8 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgWebchatMcpDelegationRepo } from '../../src/persistence/repositories/webchat-mcp-delegation.repo.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
+import { McpInvocationReaper } from '../../src/orchestrator/mcpInvocationReaper.js'
+import { FakeClock } from '../fakes/fake-clock.js'
 
 const CONVERSATION = 'c1111111-1111-4111-8111-111111111111'
 const AGENT = 'a1111111-1111-4111-8111-111111111111'
@@ -348,17 +350,29 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
   it('rotates an expired active row even when placement is unchanged', async () => {
     await fixtures()
     const delegationMetric = vi.fn()
-    const repo = new PgWebchatMcpDelegationRepo(prisma, { delegation: delegationMetric })
+    const assertionMetric = vi.fn()
+    const invocationMetric = vi.fn()
+    const metrics = { delegation: delegationMetric, assertion: assertionMetric, invocation: invocationMetric }
+    const repo = new PgWebchatMcpDelegationRepo(prisma, metrics)
     const first = await repo.establish(establishInput(DAEMON, at(1_000)))
 
     const rotated = await repo.establish({ ...establishInput(DAEMON, at(120_000)), now: at(1_000) })
-
     expect(rotated).toMatchObject({ generation: 2, daemonId: DAEMON })
     expect(await repo.get(first!.id)).toMatchObject({
       revokedAt: at(1_000),
       revokedReason: 'expired'
     })
-    expect(delegationMetric.mock.calls.map(([event]) => event)).toEqual(['established', 'expired', 'rotated'])
+
+    const reaper = new McpInvocationReaper(
+      { reap: async () => ({ markedAmbiguous: 0, deleted: 0, expiredAssertions: 0 }) },
+      repo,
+      new FakeClock(at(1_000).getTime()),
+      undefined,
+      metrics
+    )
+    await reaper.tick()
+
+    expect(delegationMetric.mock.calls.map(([event]) => event)).toEqual(['established', 'rotated', 'expired'])
   })
 
   it('rejects a foreign owner binding instead of minting authority', async () => {

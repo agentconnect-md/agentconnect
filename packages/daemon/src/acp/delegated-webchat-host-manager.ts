@@ -63,6 +63,7 @@ interface CellRecord extends ReleaseSessionMcpCell {
   hostStopped: boolean
   released: boolean
   homeRemoved: boolean
+  cleanupFailureMetricReported: boolean
   teardown?: Promise<void>
 }
 
@@ -336,7 +337,8 @@ export class DelegatedWebchatHostManager {
       drained: false,
       hostStopped: false,
       released: false,
-      homeRemoved: false
+      homeRemoved: false,
+      cleanupFailureMetricReported: false
     }
     pending.record = record
     try {
@@ -416,7 +418,7 @@ export class DelegatedWebchatHostManager {
       return this.publicHost(record)
     } catch (error) {
       record.hostCreationSettled = true
-      this.reportIsolation('failed', record.registered ? 'host_start' : 'broker_registration')
+      if (record.registered) this.reportIsolation('failed', 'host_start')
       await this.teardown(record, 'startup').catch(() => undefined)
       throw error
     } finally {
@@ -549,7 +551,7 @@ export class DelegatedWebchatHostManager {
         await run()
       } catch {
         failures.push(new Error(`delegated cleanup step failed: ${name}`))
-        this.reportCleanupError({ source, step: name, retryable: true })
+        this.reportCleanupError(record, { source, step: name, retryable: true })
       }
     }
     const fence: ReleaseSessionMcpCell = {
@@ -627,7 +629,7 @@ export class DelegatedWebchatHostManager {
     )
   }
 
-  private reportCleanupError(event: DelegatedHostCleanupError): void {
+  private reportCleanupError(record: CellRecord, event: DelegatedHostCleanupError): void {
     try {
       this.deps.log?.warn(`delegated webchat cleanup failed at ${event.step}; retry retained`)
     } catch {
@@ -638,7 +640,10 @@ export class DelegatedWebchatHostManager {
     } catch {
       // Observability callbacks are containment boundaries.
     }
-    this.reportIsolation('failed', 'cleanup')
+    if (!record.cleanupFailureMetricReported) {
+      record.cleanupFailureMetricReported = true
+      this.reportIsolation('failed', 'cleanup')
+    }
   }
 
   private reportIsolation(

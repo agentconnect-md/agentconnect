@@ -1,7 +1,7 @@
 import { metrics } from '@opentelemetry/api'
 
 export type DelegatedIsolationEvent = 'created' | 'resumed' | 'destroyed' | 'failed'
-export type DelegatedIsolationFailureReason = 'cell_creation' | 'host_start' | 'cleanup' | 'broker_registration'
+export type DelegatedIsolationFailureReason = 'cell_creation' | 'host_start' | 'cleanup'
 export type DelegatedIsolationDenialReason =
   'broker_validation' | 'fence' | 'capacity' | 'token_mismatch' | 'capability_probe_failed'
 export type DelegatedMcpRequestStage = 'mint_ws' | 'mcp_http'

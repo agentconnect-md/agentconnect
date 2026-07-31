@@ -1166,6 +1166,8 @@ export interface CompleteMcpInvocationInput {
 export interface ReapMcpInvocationsResult {
   markedAmbiguous: number
   deleted: number
+  /** Issued, never-claimed assertions deleted after their one-time authority expired. */
+  expiredAssertions: number
 }
 
 export interface McpInvocationRepo {

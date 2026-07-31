@@ -343,7 +343,8 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
       `)
       return {
         markedAmbiguous: marked.length,
-        deleted: expiredIssued.length + expiredTerminal.length
+        deleted: expiredIssued.length + expiredTerminal.length,
+        expiredAssertions: expiredIssued.length
       }
     })
   }

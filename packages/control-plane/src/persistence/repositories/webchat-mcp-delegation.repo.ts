@@ -118,14 +118,14 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
       })
       return {
         record: toRecord(created),
-        events: [...(expired ? (['expired'] as const) : []), latest ? ('rotated' as const) : ('established' as const)]
+        events: [latest ? ('rotated' as const) : ('established' as const)]
       }
     })
     for (const event of outcome.events) this.observeDelegation(event)
     return outcome.record
   }
 
-  private observeDelegation(event: 'established' | 'reused' | 'rotated' | 'expired'): void {
+  private observeDelegation(event: 'established' | 'reused' | 'rotated'): void {
     try {
       this.metrics?.delegation(event)
     } catch {

@@ -27,7 +27,7 @@ export class McpInvocationReaper {
     private readonly delegations: Pick<WebchatMcpDelegationRepo, 'reapExpired'>,
     private readonly clock: Clock,
     private readonly log?: ReaperLog,
-    private readonly metrics?: Pick<WebchatMcpMetrics, 'delegation' | 'invocation'>
+    private readonly metrics?: Pick<WebchatMcpMetrics, 'delegation' | 'assertion' | 'invocation'>
   ) {}
 
   start(): void {
@@ -77,6 +77,9 @@ export class McpInvocationReaper {
       const now = new Date(this.clock.now())
       const invocationResult = await this.invocations.reap(now)
       this.observe(() => this.metrics?.invocation('ambiguous', invocationResult.markedAmbiguous))
+      if (invocationResult.expiredAssertions > 0) {
+        this.observe(() => this.metrics?.assertion('expired', undefined, invocationResult.expiredAssertions))
+      }
       if (this.shutdownRequested) return
       const deletedDelegations = await this.delegations.reapExpired(now)
       this.observe(() => this.metrics?.delegation('expired', undefined, deletedDelegations))

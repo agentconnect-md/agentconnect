@@ -29,7 +29,7 @@ function setup() {
   const invocations = {
     reap: vi.fn(async (now: Date) => {
       calls.push(`invocations:${now.toISOString()}`)
-      return { markedAmbiguous: 1, deleted: 2 }
+      return { markedAmbiguous: 1, deleted: 2, expiredAssertions: 1 }
     })
   }
   const delegations = {
@@ -39,12 +39,17 @@ function setup() {
     })
   }
   const delegationMetric = vi.fn()
+  const assertionMetric = vi.fn()
   const invocationMetric = vi.fn()
-  const reaper = new McpInvocationReaper(invocations, delegations, clock, undefined, {
+  const metrics = {
     delegation: delegationMetric,
+    assertion: assertionMetric,
     invocation: invocationMetric
+  }
+  const reaper = new McpInvocationReaper(invocations, delegations, clock, undefined, {
+    ...metrics
   })
-  return { calls, clock, invocations, delegations, reaper, delegationMetric, invocationMetric }
+  return { calls, clock, invocations, delegations, reaper, delegationMetric, assertionMetric, invocationMetric }
 }
 
 describe('McpInvocationReaper', () => {
@@ -55,7 +60,7 @@ describe('McpInvocationReaper', () => {
   })
 
   it('reaps issued/running/terminal invocation state before deleting expired delegations', async () => {
-    const { calls, invocations, delegations, reaper, delegationMetric, invocationMetric } = setup()
+    const { calls, invocations, delegations, reaper, delegationMetric, assertionMetric, invocationMetric } = setup()
 
     await reaper.tick()
 
@@ -63,7 +68,35 @@ describe('McpInvocationReaper', () => {
     expect(delegations.reapExpired).toHaveBeenCalledWith(new Date(NOW))
     expect(calls).toEqual(['invocations:2026-07-30T00:00:00.000Z', 'delegations:2026-07-30T00:00:00.000Z'])
     expect(invocationMetric).toHaveBeenCalledWith('ambiguous', 1)
+    expect(assertionMetric).toHaveBeenCalledWith('expired', undefined, 1)
     expect(delegationMetric).toHaveBeenCalledWith('expired', undefined, 3)
+  })
+
+  it('does not report assertion expiry for terminal-cache deletion or an empty issued batch', async () => {
+    const clock = new FakeClock(NOW)
+    const assertionMetric = vi.fn()
+    const metrics = {
+      delegation: vi.fn(),
+      assertion: assertionMetric,
+      invocation: vi.fn()
+    }
+    const reaper = new McpInvocationReaper(
+      {
+        reap: vi
+          .fn()
+          .mockResolvedValueOnce({ markedAmbiguous: 0, deleted: 4, expiredAssertions: 0 })
+          .mockResolvedValueOnce({ markedAmbiguous: 0, deleted: 0, expiredAssertions: 0 })
+      },
+      { reapExpired: vi.fn(async () => 0) },
+      clock,
+      undefined,
+      metrics
+    )
+
+    await reaper.tick()
+    await reaper.tick()
+
+    expect(assertionMetric).not.toHaveBeenCalled()
   })
 
   it('applies issued, exact-running, terminal-cache, and dependent-delegation boundaries from a fake clock', async () => {
@@ -103,6 +136,7 @@ describe('McpInvocationReaper', () => {
       reap: vi.fn(async (now: Date) => {
         let markedAmbiguous = 0
         let deleted = 0
+        let expiredAssertions = 0
         for (const row of rows) {
           if (
             row.status === 'running' &&
@@ -124,9 +158,10 @@ describe('McpInvocationReaper', () => {
           if (expiredIssued || expiredTerminal) {
             rows.splice(index, 1)
             deleted += 1
+            if (expiredIssued) expiredAssertions += 1
           }
         }
-        return { markedAmbiguous, deleted }
+        return { markedAmbiguous, deleted, expiredAssertions }
       })
     }
     const delegations = {
@@ -205,7 +240,7 @@ describe('McpInvocationReaper', () => {
 
   it('settles one in-flight tick on shutdown and performs no later delegation or DB work', async () => {
     const clock = new FakeClock(NOW)
-    const invocationWork = deferred<{ markedAmbiguous: number; deleted: number }>()
+    const invocationWork = deferred<{ markedAmbiguous: number; deleted: number; expiredAssertions: number }>()
     const invocations = { reap: vi.fn(() => invocationWork.promise) }
     const delegations = { reapExpired: vi.fn(async () => 0) }
     const reaper = new McpInvocationReaper(invocations, delegations, clock)
@@ -224,7 +259,7 @@ describe('McpInvocationReaper', () => {
     expect(stopped).toBe(false)
     expect(delegations.reapExpired).not.toHaveBeenCalled()
 
-    invocationWork.resolve({ markedAmbiguous: 0, deleted: 0 })
+    invocationWork.resolve({ markedAmbiguous: 0, deleted: 0, expiredAssertions: 0 })
     await stopping
     expect(delegations.reapExpired).not.toHaveBeenCalled()
     expect(clock.pendingTimers()).toBe(0)
@@ -237,7 +272,7 @@ describe('McpInvocationReaper', () => {
 
   it('settles shutdown when the in-flight repository call rejects', async () => {
     const clock = new FakeClock(NOW)
-    const invocationWork = deferred<{ markedAmbiguous: number; deleted: number }>()
+    const invocationWork = deferred<{ markedAmbiguous: number; deleted: number; expiredAssertions: number }>()
     const reaper = new McpInvocationReaper(
       { reap: () => invocationWork.promise },
       { reapExpired: vi.fn(async () => 0) },
