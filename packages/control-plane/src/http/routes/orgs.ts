@@ -44,6 +44,7 @@ function toDto(o: OrgRecord, deps: HttpDeps): OrgDtoT {
     iconUploadEnabled: !!deps.iconStore,
     role: o.role,
     memberCount: o.memberCount,
+    daemonCount: o.daemonCount,
     createdAt: o.createdAt.toISOString()
   }
 }

@@ -2,8 +2,9 @@
 
 // Fresh-workspace redirect to the full-screen /onboarding route, shared by every
 // console landing surface (Home is the default landing, Agents keeps it for deep
-// links). A fresh org = no placed agent AND no serving daemon (needsOnboarding);
-// the per-tab "Explore the console first" skip flag suppresses the bounce-back.
+// links). A fresh org = no placed agent AND no serving daemon AND no daemon in ANY
+// of the caller's orgs (needsOnboarding); the per-tab "Explore the console first"
+// skip flag suppresses the bounce-back.
 //
 // Returns true while the caller should hold a spinner instead of rendering: either
 // the redirect is in flight, or the sessionStorage skip flag hasn't been read yet
@@ -12,6 +13,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useConsoleData } from '@/lib/data-context'
+import { useOrgs } from '@/lib/org-context'
 import { agentIsPlaced } from '@/lib/data'
 import { daemonCompletesOnboarding, isOnboardingSkipped, needsOnboarding } from '@/lib/onboarding'
 
@@ -20,6 +22,7 @@ export function useOnboardingRedirect(): boolean {
   const params = useParams()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
   const { agents, daemons, agentsLoading, daemonsLoading } = useConsoleData()
+  const { orgs } = useOrgs()
   const [skipState, setSkipState] = useState<{ orgKey: string; skipped: boolean } | null>(null)
   const skipped = skipState?.orgKey === orgKey ? skipState.skipped : null
   useEffect(() => {
@@ -29,7 +32,8 @@ export function useOnboardingRedirect(): boolean {
     agentsLoading,
     daemonsLoading,
     agents.some(agentIsPlaced),
-    daemons.some(daemonCompletesOnboarding)
+    daemons.some(daemonCompletesOnboarding),
+    orgs.some((org) => (org.daemonCount ?? 0) > 0)
   )
   const redirect = notInitialized && skipped === false
   useEffect(() => {

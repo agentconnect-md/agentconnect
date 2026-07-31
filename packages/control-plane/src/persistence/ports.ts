@@ -2898,6 +2898,8 @@ export interface OrgRecord {
   /** The asking user's role in it. */
   role: OrgMemberRole
   memberCount: number
+  /** Registered daemons (any status) — the console's cross-org onboarding signal. */
+  daemonCount: number
   createdAt: Date
   /** Last update — the icon endpoint's `?v=` cache-buster for an uploaded org icon. */
   updatedAt: Date
