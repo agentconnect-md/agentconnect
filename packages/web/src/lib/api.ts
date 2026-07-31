@@ -334,6 +334,7 @@ export interface SessionListPage {
 export interface SessionRelationDto {
   id: string
   agentId: string
+  platform: string
   title: string | null
 }
 

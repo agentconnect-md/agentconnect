@@ -243,6 +243,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       ...base,
       sessionId: firstChild,
       parentSessionId: parent,
+      platform: 'telegram',
       title: 'Check the database',
       ts: '2026-07-05T00:01:00.000Z'
     })
@@ -250,6 +251,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       ...base,
       sessionId: secondChild,
       parentSessionId: parent,
+      platform: 'discord',
       title: 'Check the API',
       ts: '2026-07-05T00:02:00.000Z'
     })
@@ -257,19 +259,27 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     const parentRes = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${parent}` })
     expect(parentRes.statusCode).toBe(200)
     expect(
-      (parentRes.json() as { parentSession: unknown; childSessions: Array<{ id: string; title: string | null }> })
-        .childSessions
+      (
+        parentRes.json() as {
+          parentSession: unknown
+          childSessions: Array<{ id: string; platform: string; title: string | null }>
+        }
+      ).childSessions
     ).toEqual([
-      { id: firstChild, agentId: AGENT, title: 'Check the database' },
-      { id: secondChild, agentId: AGENT, title: 'Check the API' }
+      { id: firstChild, agentId: AGENT, platform: 'telegram', title: 'Check the database' },
+      { id: secondChild, agentId: AGENT, platform: 'discord', title: 'Check the API' }
     ])
     expect((parentRes.json() as { parentSession: unknown }).parentSession).toBeNull()
 
     const childRes = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${firstChild}` })
     expect(childRes.statusCode).toBe(200)
-    expect((childRes.json() as { parentSession: { id: string; title: string | null } | null }).parentSession).toEqual({
+    expect(
+      (childRes.json() as { parentSession: { id: string; platform: string; title: string | null } | null })
+        .parentSession
+    ).toEqual({
       id: parent,
       agentId: AGENT,
+      platform: 'slack',
       title: 'Coordinate the rollout'
     })
     expect((childRes.json() as { childSessions: unknown[] }).childSessions).toEqual([])

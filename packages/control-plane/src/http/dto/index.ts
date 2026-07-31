@@ -2043,6 +2043,7 @@ export const SessionListPageDto = z.object({
 export const SessionRelationDto = z.object({
   id: z.string(),
   agentId: z.string(),
+  platform: z.string(),
   title: z.string().nullable()
 })
 
