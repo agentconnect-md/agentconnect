@@ -12,6 +12,7 @@
  * tab. Styling lives under `.mdtxt` (compact, inline — distinct from `.md-body`).
  */
 
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
@@ -22,7 +23,11 @@ import { slackToMarkdown } from './slack-mrkdwn'
 // large strings, so above this cap we skip parsing and render cheap pre-wrapped text.
 const MAX_PARSE = 100_000
 
-export function MessageText({ text }: { text: string }) {
+// memo: the transcript re-renders on every unrelated state change in
+// SessionDetailView (composer keystrokes, the 1s duration tick, expanding one turn's
+// work), and without this EVERY row re-runs slackToMarkdown + the remark pipeline.
+// The only prop is a string, so shallow compare is exact.
+export const MessageText = memo(function MessageText({ text }: { text: string }) {
   if (text.length > MAX_PARSE) {
     return (
       <div className="mdtxt">
@@ -46,4 +51,4 @@ export function MessageText({ text }: { text: string }) {
       </ReactMarkdown>
     </div>
   )
-}
+})

@@ -671,7 +671,9 @@ export default function SessionDetailView() {
   const [msgErr, setMsgErr] = useState<string | null>(null)
   const [tailReady, setTailReady] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
-  // Which bot turns have their collapsed "work" expanded (keyed by turn index).
+  // Bot turns whose "work" panel the user toggled AWAY from its default state
+  // (keyed by turn index) — so a work-only turn, which defaults to open, can
+  // still be collapsed by clicking its toggle.
   const [expandedWork, setExpandedWork] = useState<Set<number>>(() => new Set())
   const toggleWork = (ti: number) =>
     setExpandedWork((prev) => {
@@ -1565,8 +1567,10 @@ export default function SessionDetailView() {
                   const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                   const summary = workSummary(thinkCount, toolCount, editCount)
                   // Auto-open while a turn has produced only work (mid-stream), so the
-                  // live agent isn't hidden; collapse once its answer text lands.
-                  const openWork = expandedWork.has(ti) || textSteps.length === 0
+                  // live agent isn't hidden; collapse once its answer text lands. Either
+                  // default stays user-overridable, so thinking-only turns can be closed.
+                  const autoOpen = textSteps.length === 0
+                  const openWork = expandedWork.has(ti) ? !autoOpen : autoOpen
                   return (
                     <div key={ti} className="flex items-start gap-[9px]">
                       <span className="av h-[26px] w-[26px] flex-none rounded-md">
