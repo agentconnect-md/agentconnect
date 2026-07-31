@@ -170,6 +170,11 @@ model Membership {
   orgId  String
   userId String
   role   OrgRole @default(collaborator)
+  // When this user joined THIS org — not their account signup. The console's
+  // "joined" column reads it, and removal picks the ownership-transfer
+  // recipient by it (resource-visibility.md §8.2). Pre-existing rows were
+  // backfilled from the cuid embedded in `id`, which is that same instant.
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

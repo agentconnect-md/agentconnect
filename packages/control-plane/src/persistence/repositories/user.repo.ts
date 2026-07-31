@@ -17,6 +17,7 @@ import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
   type ProvisionOidcUserInput,
+  type MemberRemovalPreview,
   type OrgMemberRecord,
   type OrgMemberRole,
   type UserProfileRecord,
@@ -123,12 +124,12 @@ function toProfileRecord(u: {
 function toMemberRecord(m: {
   userId: string
   role: string
+  createdAt: Date
   user: {
     email: string
     displayName: string | null
     picture: string | null
     profilePictureUpdatedAt: Date | null
-    createdAt: Date
   }
 }): OrgMemberRecord {
   return {
@@ -138,8 +139,29 @@ function toMemberRecord(m: {
     picture: m.user.picture,
     profilePictureUpdatedAt: m.user.profilePictureUpdatedAt,
     role: m.role as OrgMemberRole,
-    joinedAt: m.user.createdAt
+    joinedAt: m.createdAt
   }
+}
+
+/**
+ * Who inherits a departing member's resources (resource-visibility.md §8.2).
+ *
+ * Removing someone else hands their resources to the acting owner — they made
+ * the decision, so they carry what it leaves behind. A member leaving on their
+ * own has no such actor, so the org's LONGEST-STANDING owner inherits: the
+ * closest available stand-in for "whoever runs this organization", and stable
+ * against a later join or promotion. `snapshot` must already be ordered by
+ * membership age (ties by `userId`, so the choice is deterministic under
+ * same-instant joins). Null ⇒ nobody qualifies, which only happens when the
+ * departing member is the last owner and the caller must refuse.
+ */
+function chooseTransferRecipient(
+  snapshot: readonly { userId: string; role: OrgMemberRole }[],
+  departingUserId: string,
+  actingUserId: string
+): string | null {
+  if (departingUserId !== actingUserId) return actingUserId
+  return snapshot.find((m) => m.role === 'owner' && m.userId !== departingUserId)?.userId ?? null
 }
 
 /** `Dana Reyes <dana@acme.dev>` → base label `dana` for the personal-org name/slug. */
@@ -545,7 +567,7 @@ export class PgUserRepo implements UserRepo {
     const rows = await this.db.membership.findMany({
       where: { orgId },
       include: { user: true },
-      orderBy: { user: { createdAt: 'asc' } }
+      orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
     })
     return rows.map(toMemberRecord)
   }
@@ -601,16 +623,14 @@ export class PgUserRepo implements UserRepo {
       const membershipSnapshot = await tx.membership.findMany({
         where: { orgId },
         select: { userId: true, role: true },
-        orderBy: { userId: 'asc' }
+        orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
       })
       const actor = membershipSnapshot.find((membership) => membership.userId === actingUserId)
       const departing = membershipSnapshot.find((membership) => membership.userId === userId)
       const leaving = userId === actingUserId
       if (!departing || (!leaving && actor?.role !== 'owner')) throw new OrgMembershipMissing()
 
-      const transferToUserId = leaving
-        ? membershipSnapshot.find((membership) => membership.role === 'owner' && membership.userId !== userId)?.userId
-        : actingUserId
+      const transferToUserId = chooseTransferRecipient(membershipSnapshot, userId, actingUserId)
       if (!transferToUserId) throw new OrgOwnerRequired()
 
       // Fence ownership-bearing resource writes on both ends, then recheck the
@@ -630,6 +650,54 @@ export class PgUserRepo implements UserRepo {
       // The row is still locked here; deletion completes the same transaction.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
     })
+  }
+
+  async previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview> {
+    // Unlocked and outside any transaction: this only feeds a confirmation
+    // dialog. `removeMember` re-derives everything under the transition lock.
+    const rows = await this.db.membership.findMany({
+      where: { orgId },
+      include: { user: true },
+      orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
+    })
+    if (!rows.some((row) => row.userId === userId)) throw new OrgMembershipMissing()
+
+    const recipientId = chooseTransferRecipient(
+      rows.map((row) => ({ userId: row.userId, role: row.role as OrgMemberRole })),
+      userId,
+      actingUserId
+    )
+    const recipient = rows.find((row) => row.userId === recipientId)
+
+    const owned = { orgId, ownerUserId: userId }
+    const [agent, daemon, cron, mcpProvider, skillSource] = await Promise.all([
+      this.db.agent.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
+      this.db.daemon.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
+      this.db.cronDef.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
+      this.db.mcpProvider.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
+      this.db.skillSource.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } })
+    ])
+
+    return {
+      transferTo: recipient ? toMemberRecord(recipient) : null,
+      resources: (
+        [
+          ['agent', agent],
+          ['daemon', daemon],
+          ['cron', cron],
+          ['mcpProvider', mcpProvider],
+          ['skillSource', skillSource]
+        ] as const
+      )
+        .map(([kind, groups]) => ({
+          kind,
+          owned: groups.reduce((total, group) => total + group._count._all, 0),
+          restricted: groups
+            .filter((group) => group.visibility === 'restricted')
+            .reduce((total, group) => total + group._count._all, 0)
+        }))
+        .filter((entry) => entry.owned > 0)
+    }
   }
 
   async addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void> {

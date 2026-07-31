@@ -451,7 +451,7 @@ restore shared access upon reinvitation.
 CronDef, McpProvider, and SkillSource, the transaction:
 
 1. changes `ownerUserId` from the departing member to the selected remaining
-   organization owner;
+   organization owner (§8.2);
 2. removes the departing ID from `sharedWith`;
 3. leaves `createdByUserId` unchanged;
 4. deletes the membership last.
@@ -507,6 +507,47 @@ post-transaction compensation is used.
 
 This workflow covers managed membership removal only. Direct deletion of an
 `app_user` row is unsupported and does not run ownership transfer.
+
+### 8.2 Choosing the recipient, and showing it before the fact
+
+Transfer keeps a resource inside the organization, but for a **restricted** one
+it also decides who can still see it: visibility follows the ownership arm, and
+no role overrides it (§4). "Which owner inherits" is therefore a
+user-visible outcome, not an implementation detail — an unlucky choice reads as
+data loss to everyone else, including other owners.
+
+Two cases, one rule each:
+
+- **An owner removes someone else** — the acting owner inherits. They made the
+  decision, so they carry what it leaves behind, and they can immediately
+  re-share or re-classify.
+- **A member leaves on their own** — there is no actor to inherit, so the
+  organization's **longest-standing owner** does: `membership.createdAt`
+  ascending, ties broken by `userId` so concurrent joins still resolve
+  deterministically. It is the closest available stand-in for "whoever runs this
+  organization", and unlike a role-order or id-order pick it does not move when
+  someone is promoted or a new owner joins.
+
+`membership.createdAt` exists for this. Before it, the table carried no
+timestamps, so both this choice (`ORDER BY "userId"` over timestamp-prefixed
+cuids) and the console's "joined" column silently ranked **global account signup
+order** — a property of the person's first day on the platform, unrelated to the
+organization they are leaving. Existing rows were backfilled from the cuid in
+`membership.id`, which encodes the row's own creation instant, so the ordering
+is historically accurate rather than merely well-defined going forward; rows
+whose id is not a cuid fall back to `max(account, organization)` creation.
+
+Because the choice is consequential, it is also **shown before it happens**.
+`GET /members/:id/removal-preview` returns the prospective recipient plus the
+departing member's owned-resource counts per kind, with the restricted subset
+called out, and the console renders it in the leave/remove confirmation. The
+preview takes no locks and is never an authorization input: it shares the
+removal's authorization (§8.1) but the transaction re-derives the recipient
+itself, so a race can only make the dialog stale, never the transfer wrong.
+
+This does not extend visibility to the other owners. A restricted resource stays
+restricted across a transfer; the recipient may widen it afterwards through the
+ordinary sharing route.
 
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 

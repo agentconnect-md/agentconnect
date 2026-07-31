@@ -898,7 +898,18 @@ export interface MemberDto {
   picture: string | null // custom uploaded profile photo, or the OIDC `picture` fallback
   role: MemberRole
   isCurrentUser: boolean
-  joinedAt: string // ISO-8601
+  joinedAt: string // ISO-8601 — when they joined THIS org
+}
+
+// What leaving / removing a member would do, shown in the confirmation dialog.
+// Ownership of everything they own moves to ONE member; anything restricted is
+// visible only through that owner, so this is the difference between "moved" and
+// "gone" for whoever is watching.
+export type OwnedResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
+
+export interface MemberRemovalPreviewDto {
+  transferTo: MemberDto | null // null only when there is no successor (last owner)
+  resources: { kind: OwnedResourceKind; owned: number; restricted: number }[]
 }
 
 export interface OrgInviteLinkDto {
@@ -2850,6 +2861,12 @@ export async function addMember(email: string, role: MemberRole): Promise<Member
   const member = await apiPost<MemberDto>(`${orgBase()}/members`, { email, role })
   track('member_added', { org_id: apiOrgId, role })
   return member
+}
+
+// What that removal would do, for the confirmation dialog (GET
+// /members/:id/removal-preview). Same authorization as the removal itself.
+export async function fetchMemberRemovalPreview(userId: string): Promise<MemberRemovalPreviewDto> {
+  return apiGet<MemberRemovalPreviewDto>(`${orgBase()}/members/${encodeURIComponent(userId)}/removal-preview`)
 }
 
 // Remove a membership. Any member can remove themselves; only owners can remove

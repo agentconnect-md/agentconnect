@@ -3035,8 +3035,27 @@ export interface OrgMemberRecord {
   /** Set when this member selected an uploaded profile photo. */
   profilePictureUpdatedAt: Date | null
   role: OrgMemberRole
-  /** `membership` carries no timestamps — this is the user row's `createdAt`. */
+  /** When this user joined THIS org (`membership.createdAt`). */
   joinedAt: Date
+}
+
+/** The five resource kinds whose ownership transfers when a member leaves. */
+export type OwnedResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
+
+/**
+ * What removing one member would do, read before the fact (resource-visibility.md
+ * §8.2). The console shows it in the leave/remove confirmation so the transfer is
+ * predictable rather than discovered afterwards — a restricted resource is
+ * visible ONLY through its ownership arm, so "which owner inherits it" decides
+ * whether anyone can still find it.
+ */
+export interface MemberRemovalPreview {
+  /** The member who inherits ownership; null when removal would be refused
+   *  (the departing member is the last owner). */
+  transferTo: OrgMemberRecord | null
+  /** Per-kind counts of the departing member's owned resources; kinds they own
+   *  nothing of are omitted. `restricted` is the subset only the owner can see. */
+  resources: Array<{ kind: OwnedResourceKind; owned: number; restricted: number }>
 }
 
 /** The caller's own profile (the console `/me` surface). */
@@ -3148,6 +3167,13 @@ export interface UserRepo {
    * the acting owner's role. Refuses to remove the final owner before committing.
    */
   removeMember(orgId: string, userId: string, actingUserId: string): Promise<void>
+
+  /**
+   * Dry-run of `removeMember` for the confirmation dialog: the same recipient
+   * rule, plus what that member currently owns. Racy by nature (nothing is
+   * locked) — advisory display only, never an authorization input.
+   */
+  previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview>
 
   /** Attach a known user to an org. */
   addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void>

@@ -4,9 +4,17 @@
 // member; every member can open their own row and leave. The CP refuses to
 // demote/remove the LAST owner (409), and the dialog pre-disables those paths.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Avatar, Button, Icon } from '@/components/ui'
-import { updateMemberRole, removeMember, ApiError, type MemberRole } from '@/lib/api'
+import {
+  updateMemberRole,
+  removeMember,
+  fetchMemberRemovalPreview,
+  ApiError,
+  type MemberRole,
+  type MemberRemovalPreviewDto,
+  type OwnedResourceKind
+} from '@/lib/api'
 
 /** What the member list row hands the dialog (display fields precomputed). */
 export interface MemberTarget {
@@ -39,6 +47,51 @@ const ROLE_TILES: { role: MemberRole; icon: string; title: string; desc: string 
   { role: 'viewer', icon: 'eye', title: 'Viewer', desc: 'Read-only — view agents, sessions and usage.' }
 ]
 
+const KIND_LABEL: Record<OwnedResourceKind, [one: string, many: string]> = {
+  agent: ['agent', 'agents'],
+  daemon: ['daemon', 'daemons'],
+  cron: ['schedule', 'schedules'],
+  mcpProvider: ['MCP provider', 'MCP providers'],
+  skillSource: ['skill source', 'skill sources']
+}
+
+/** `2 agents, 1 daemon and 3 schedules` — omitting kinds they own none of. */
+function countPhrase(resources: MemberRemovalPreviewDto['resources']): string {
+  const parts = resources.map((r) => `${r.owned} ${KIND_LABEL[r.kind][r.owned === 1 ? 0 : 1]}`)
+  if (parts.length <= 1) return parts[0] ?? ''
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
+
+/**
+ * The danger card's subtitle: exactly where this member's resources land.
+ *
+ * Ownership decides who can see a RESTRICTED resource at all, so a transfer the
+ * departing member can't predict reads as data loss. Named recipient first,
+ * private count second — the two facts you can't recover after the fact.
+ */
+function transferSentence(preview: MemberRemovalPreviewDto, leaving: boolean): string {
+  // No successor ⇒ the last owner, which the CP refuses anyway (the button is
+  // already disabled); say why rather than describe a transfer that can't run.
+  const to = preview.transferTo
+  if (!to) return 'An organization needs at least one owner — promote another member first.'
+
+  const possessive = leaving ? 'Your' : 'Their'
+  if (preview.resources.length === 0) {
+    return `${leaving ? 'You own' : 'They own'} nothing here, so nothing transfers.`
+  }
+
+  const recipient = to.isCurrentUser ? 'you' : (to.name ?? to.email ?? 'the longest-standing owner')
+  const total = preview.resources.reduce((count, r) => count + r.owned, 0)
+  const moved = `${possessive} ${countPhrase(preview.resources)} ${total === 1 ? 'transfers' : 'transfer'} to ${recipient}.`
+  const restricted = preview.resources.reduce((count, r) => count + r.restricted, 0)
+  if (restricted === 0) return moved
+  // Restricted resources are reachable ONLY through their owner, so this is the
+  // difference between "moved" and "gone" for everyone else in the org.
+  return restricted === 1
+    ? `${moved} 1 is private — afterwards only ${recipient} can see it.`
+    : `${moved} ${restricted} are private — afterwards only ${recipient} can see them.`
+}
+
 const dotOn = 'mt-[3px] h-[14px] w-[14px] flex-none rounded-full border-4 border-(--brand) bg-(--surface-card)'
 const dotOff =
   'mt-[3px] h-[14px] w-[14px] flex-none rounded-full border-[1.5px] border-(--border-strong) bg-(--surface-card)'
@@ -60,6 +113,19 @@ export default function EditMemberModal({
   const [busy, setBusy] = useState(false)
   const [removeArmed, setRemoveArmed] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [preview, setPreview] = useState<MemberRemovalPreviewDto | null>(null)
+
+  // Advisory read — a failure just leaves the generic copy in place rather than
+  // blocking the dialog (the removal itself re-derives all of this server-side).
+  useEffect(() => {
+    let live = true
+    void fetchMemberRemovalPreview(member.userId)
+      .then((p) => live && setPreview(p))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [member.userId])
 
   const fail = (e: unknown) => {
     if (e instanceof ApiError && e.status === 409) setErr('An organization needs at least one owner.')
@@ -165,9 +231,11 @@ export default function EditMemberModal({
               {onLeave ? 'Leave organization' : 'Remove from organization'}
             </div>
             <div className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-              {onLeave
-                ? 'Resources you own stay with the organization and transfer to an owner.'
-                : 'Removes their membership. Their sessions stay in history.'}
+              {preview
+                ? transferSentence(preview, Boolean(onLeave))
+                : onLeave
+                  ? 'Resources you own stay with the organization and transfer to an owner.'
+                  : 'Removes their membership. Their sessions stay in history.'}
             </div>
           </div>
           <button
