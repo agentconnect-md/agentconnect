@@ -525,8 +525,8 @@ function SessionRelationLink({
         bordered ? 'border-t border-(--border-subtle)' : ''
       }`}
     >
-      <span className="av h-6 w-6 flex-none rounded-sm">
-        {agent ? <AgentIconView icon={agent.icon} runtime={agent.runtime} size={24} /> : <Icon name="bot" size={14} />}
+      <span className="imark h-6 w-6 flex-none rounded-sm">
+        <PlatformMark platform={relation.platform} />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
         <span className="truncate font-sans text-[12.5px] font-semibold leading-normal">{title}</span>

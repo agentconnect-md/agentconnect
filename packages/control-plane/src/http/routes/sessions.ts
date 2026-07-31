@@ -97,8 +97,8 @@ function hookIdForSession(s: HookSessionRow): string | null {
   return HookIdString.safeParse(id).success ? id : null
 }
 
-function sessionRelation(s: { id: string; agentId: string; title: string | null }) {
-  return { id: s.id, agentId: s.agentId, title: s.title }
+function sessionRelation(s: { id: string; agentId: string; platform: string | null; title: string | null }) {
+  return { id: s.id, agentId: s.agentId, platform: s.platform ?? 'slack', title: s.title }
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
