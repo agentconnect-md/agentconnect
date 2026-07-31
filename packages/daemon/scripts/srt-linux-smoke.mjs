@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,17 +18,25 @@ if (process.platform !== 'linux') throw new Error('SRT smoke test requires Linux
 const entry = resolve(process.argv[2] ?? fileURLToPath(new URL('../dist/index.js', import.meta.url)))
 if (!isAbsolute(entry)) throw new Error('daemon entry must be absolute')
 
-let defaultBase = dirname(entry)
+// SRT creates an internal Unix socket below the private HOME. Keep the fixture
+// path short enough for Linux sun_path while placing it under a real host HOME
+// that the policy below hides and selectively carves back.
+let defaultBase = homedir()
 try {
   accessSync(defaultBase, constants.W_OK)
 } catch {
-  // Installed package directories may be read-only; overlapping /tmp denies
-  // remain a valid fallback and exercise the same carve-back ordering.
-  defaultBase = tmpdir()
+  defaultBase = dirname(entry)
+  try {
+    accessSync(defaultBase, constants.W_OK)
+  } catch {
+    // Installed package directories may be read-only; overlapping /tmp denies
+    // remain a valid fallback and exercise the same carve-back ordering.
+    defaultBase = tmpdir()
+  }
 }
 const base = resolve(process.env.AGENTCONNECT_SRT_SMOKE_BASE ?? defaultBase)
 mkdirSync(base, { recursive: true })
-const root = mkdtempSync(join(base, 'agentconnect-srt-smoke-'))
+const root = mkdtempSync(join(base, 'ac-srt-'))
 const sharedTmp = mkdtempSync(join(tmpdir(), 'agentconnect-srt-shared-'))
 const sharedVarTmp = mkdtempSync('/var/tmp/agentconnect-srt-shared-')
 let orphanProviderPid
@@ -79,7 +87,7 @@ try {
     )
     return sorted.filter((path, index) => !sorted.slice(0, index).some((parent) => contains(parent, path)))
   }
-  const denyRead = compact([daemonRoot, hostHome, tmpdir(), '/var/tmp'])
+  const denyRead = compact([daemonRoot, hostHome, homedir(), tmpdir(), '/var/tmp'])
   const runtimeBin = realpathSync(dirname(process.execPath))
   writeFileSync(
     settingsPath,
