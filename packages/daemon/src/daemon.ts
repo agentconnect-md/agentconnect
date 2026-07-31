@@ -2008,7 +2008,7 @@ export class Daemon {
       preflightWake: (req) => this.wakeRejectionReason(req),
       replyToSession: (req) => this.replyToSession(req),
       viewSessionStatus: (req) => Promise.resolve(this.viewSessionStatus(req)),
-      parentSession: (req) => this.parentSessionCoords(req),
+      rootPostRelation: (req) => this.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.spawnChannelRootSession(req),
       startOrchestration: (req) => this.startOrchestration(req),
       getOrchestration: (req) => Promise.resolve(this.getOrchestrationForOwner(req)),
@@ -5795,39 +5795,55 @@ export class Daemon {
   }
 
   /**
-   * The caller session's parent (origin): its stable id plus the coords it occupies, or undefined
-   * when the session has no parent. Precedence mirrors {@link replyToSession}'s authorizer — the
-   * CURRENT turn's trusted call metadata first, then the DURABLE link persisted on the session row,
-   * which is all a later human-triggered turn has (§5.3). That later turn is exactly when an agent
-   * relays an answer back, so the persisted fallback is the load-bearing one here.
+   * Whether a channel-ROOT post just made by `caller` landed on a conversation that session is
+   * ALREADY part of — its parent's, its own, or neither. Backs `sendMessage`'s root-post notice.
    *
-   * Backs `sendMessage`'s root-post notice only. It widens nothing: the notice fires solely when
-   * these coords MATCH a channel the caller already named in its own call, so it can never disclose
-   * a parent the caller could not already see.
+   * Conversation identity is the daemon's to decide, which is why this lives here and not in ops:
+   * a channel id is only unique within one physical bot, so two integrations can name the same id
+   * and mean different conversations. The comparison therefore includes the transport scope on
+   * both sides. Likewise the caller's session key uses its platform string verbatim — NOT
+   * {@link narrowPlatform}, whose fallback folds `feishu` onto `slack` and would look up a row
+   * that does not exist.
+   *
+   * The parent link is read from the CURRENT turn's trusted call metadata when present, else from
+   * the DURABLE origin on the session row (§5.3) — the load-bearing half, since relaying an answer
+   * happens on a later human-triggered turn with no metadata. Its coords come from the parent's
+   * own row either way: only the row carries a transport scope. This widens nothing — it answers
+   * about coordinates the caller itself just named.
    */
-  private parentSessionCoords(req: {
+  private rootPostRelation(req: {
     callerAgentId: string
     platform: string
     callerTransportScope?: string
     callerChannel: string
     callerThread: string
-  }): { sessionId: string; platform: string; channel: string } | undefined {
+    targetPlatform: string
+    targetChannel: string
+    targetIntegrationId?: string
+  }): { kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined {
+    const targetScope = this.transportScopeForIntegrationIds(
+      req.targetIntegrationId !== undefined ? [req.targetIntegrationId] : undefined
+    )
+    const isTarget = (platform: string, channel: string, scope?: string | null): boolean =>
+      platform === req.targetPlatform &&
+      channel === req.targetChannel &&
+      (scope ?? undefined) === (targetScope ?? undefined)
+
     const key = sessionKey(
-      this.narrowPlatform(req.platform),
+      req.platform,
       req.callerChannel,
       req.callerThread,
       req.callerAgentId,
       req.callerTransportScope
     )
-    const inbound = this.activeTurnCallMeta.get(key)
-    const sessionId = inbound?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
-    if (!sessionId) return undefined
-    // A live wake carries the origin's coords; a durable link has to read the parent's own row —
-    // which may belong to ANOTHER agent, since a peer's wake is a valid parent.
-    const coords = inbound?.originCoords
-    if (coords) return { sessionId, platform: coords.platform, channel: coords.channel }
-    const rec = this.store.getSessionByAcpId(sessionId)
-    return rec ? { sessionId, platform: rec.platform, channel: rec.channel } : undefined
+    const parentSessionId =
+      this.activeTurnCallMeta.get(key)?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
+    const parent = parentSessionId ? this.store.getSessionByAcpId(parentSessionId) : undefined
+    if (parentSessionId && parent && isTarget(parent.platform, parent.channel, parent.transportScope)) {
+      return { kind: 'parent', sessionId: parentSessionId }
+    }
+    if (isTarget(req.platform, req.callerChannel, req.callerTransportScope)) return { kind: 'self' }
+    return undefined
   }
 
   /**
@@ -5849,7 +5865,7 @@ export class Daemon {
     originTransportScope?: string
     originChannel: string
     originThread: string
-  }): void {
+  }): boolean {
     const platform = this.narrowPlatform(req.platform)
     // The post's raw ts is the new thread's root. On Telegram that ts is a bare numeric
     // message id, but inbound reply-based sessions key `tg:<root>` (see
@@ -5873,7 +5889,7 @@ export class Daemon {
     const hopCount = inbound ? inbound.hopCount + 1 : 1
     if (hopCount > MAX_AGENT_CALL_HOPS) {
       this.log.info(`channel-root session: hop limit reached for agent "${req.agentId}" — not spawning`)
-      return
+      return false
     }
     const originSessionId = this.store.getSession(originKey)?.acpSessionId ?? undefined
     const originCoordPlatform = originPlatform === 'hook' ? 'slack' : originPlatform
@@ -5922,6 +5938,7 @@ export class Daemon {
     this.log.info(
       `channel-root session: "${req.agentId}" initialized new session ${targetSession} (origin ${originSessionId ?? 'none'}, hop ${hopCount})`
     )
+    return true
   }
 
   /**

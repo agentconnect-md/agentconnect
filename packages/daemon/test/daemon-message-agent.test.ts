@@ -1106,51 +1106,144 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
 })
 
 /**
- * `parentSessionCoords` — where the parent conversation actually LIVES, which is what lets
- * `sendMessage` notice that a channel-root post just forked it instead of answering it. The
- * durable fallback is the load-bearing half: an agent relays an answer on a human-triggered turn,
- * which carries no CallMeta at all.
+ * `rootPostRelation` — whether a channel-ROOT post landed on a conversation the posting session
+ * is already part of, which is what lets `sendMessage` say it forked one instead of answering it.
+ * The durable parent link is the load-bearing half: an agent relays an answer on a human-triggered
+ * turn, which carries no CallMeta at all.
  */
-describe('parentSessionCoords: the coords a relayed answer should have gone to', () => {
+describe('rootPostRelation: did this post fork a conversation we are already in', () => {
+  const seed = (daemon: any, over: Record<string, unknown>) =>
+    daemon.store.upsertSession({
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      ...over
+    })
   const ask = (daemon: any, over: Record<string, unknown> = {}) =>
-    daemon.parentSessionCoords({
+    daemon.rootPostRelation({
       callerAgentId: 'bot-b',
       platform: 'slack',
       callerChannel: 'C2',
       callerThread: '200.1',
+      targetPlatform: 'telegram',
+      targetChannel: '-100123',
       ...over
     })
 
-  it('reads the parent’s channel off the persisted link when the turn has no CallMeta', async () => {
+  it('finds the parent through the persisted link when the turn has no CallMeta', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     // The parent conversation — a Telegram customer chat owned by ANOTHER agent, which is the
     // ordinary escalation shape: whoever asked is not whoever answers.
-    ;(daemon as any).store.upsertSession({
+    seed(daemon, {
       key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a'),
       agentId: 'bot-a',
       platform: 'telegram',
       channel: '-100123',
       thread: 'tg:170',
-      acpSessionId: 'acp-parent-1',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: Date.now()
+      acpSessionId: 'acp-parent-1'
     })
-    ;(daemon as any).store.upsertSession({
+    seed(daemon, {
       key: sessionKey('slack', 'C2', '200.1', 'bot-b'),
       agentId: 'bot-b',
       platform: 'slack',
       channel: 'C2',
       thread: '200.1',
       acpSessionId: 'acp-child-1',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: Date.now(),
       originSessionId: 'acp-parent-1'
     })
 
-    expect(ask(daemon)).toEqual({ sessionId: 'acp-parent-1', platform: 'telegram', channel: '-100123' })
+    expect(ask(daemon)).toEqual({ kind: 'parent', sessionId: 'acp-parent-1' })
+    // A post somewhere else is an ordinary new topic, not a fork.
+    expect(ask(daemon, { targetChannel: '-100999' })).toBeUndefined()
+    // The caller's OWN conversation, which its turn reply already reaches.
+    expect(ask(daemon, { targetPlatform: 'slack', targetChannel: 'C2' })).toEqual({ kind: 'self' })
+    await daemon.stop()
+  })
+
+  it('resolves a Feishu caller, whose platform string is not one narrowPlatform keeps', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    // narrowPlatform folds `feishu` onto `slack`; keying the lookup through it looked up a row
+    // that never existed, so a Feishu session could never resolve its parent.
+    seed(daemon, {
+      key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'telegram',
+      channel: '-100123',
+      thread: 'tg:170',
+      acpSessionId: 'acp-parent-1'
+    })
+    seed(daemon, {
+      key: sessionKey('feishu', 'oc_42', 'om_1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'feishu',
+      channel: 'oc_42',
+      thread: 'om_1',
+      acpSessionId: 'acp-child-feishu',
+      originSessionId: 'acp-parent-1'
+    })
+
+    expect(ask(daemon, { platform: 'feishu', callerChannel: 'oc_42', callerThread: 'om_1' })).toEqual({
+      kind: 'parent',
+      sessionId: 'acp-parent-1'
+    })
+    await daemon.stop()
+  })
+
+  it('treats the same channel id under a different bot as a different conversation', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    // Channel ids are only unique within one physical bot (Telegram DMs reuse the user's id
+    // across bots), so identity has to include the transport scope on both sides. The parent
+    // here lives under one bot's scope; the post goes out on a channel id that merely LOOKS the
+    // same, so comparing raw platform+channel would mislabel it as the parent's conversation.
+    seed(daemon, {
+      key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a', 'scope-bot-1'),
+      agentId: 'bot-a',
+      platform: 'telegram',
+      channel: '-100123',
+      thread: 'tg:170',
+      transportScope: 'scope-bot-1',
+      acpSessionId: 'acp-parent-scoped'
+    })
+    seed(daemon, {
+      key: sessionKey('slack', 'C2', '200.1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1',
+      originSessionId: 'acp-parent-scoped'
+    })
+    expect(ask(daemon)).toBeUndefined()
+
+    // Control: an unscoped parent on the same coords IS the conversation the post landed on, so
+    // the silence above is the scope doing the work and not a broken lookup.
+    seed(daemon, {
+      key: sessionKey('telegram', '-100123', 'tg:171', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'telegram',
+      channel: '-100123',
+      thread: 'tg:171',
+      acpSessionId: 'acp-parent-unscoped'
+    })
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C3', '300.1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C3',
+      thread: '300.1',
+      acpSessionId: 'acp-child-2',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      originSessionId: 'acp-parent-unscoped'
+    })
+    expect(ask(daemon, { callerChannel: 'C3', callerThread: '300.1' })).toEqual({
+      kind: 'parent',
+      sessionId: 'acp-parent-unscoped'
+    })
     await daemon.stop()
   })
 
@@ -1158,21 +1251,26 @@ describe('parentSessionCoords: the coords a relayed answer should have gone to',
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
-    ;(daemon as any).store.upsertSession({
+    seed(daemon, {
       key: callerKey,
       agentId: 'bot-b',
       platform: 'slack',
       channel: 'C2',
       thread: '200.1',
-      acpSessionId: 'acp-child-1',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: Date.now()
+      acpSessionId: 'acp-child-1'
     })
-    // No parent link anywhere ⇒ nothing to compare a post against.
+    // No parent link anywhere ⇒ a post into an unrelated channel relates to nothing.
     expect(ask(daemon)).toBeUndefined()
 
     // A live wake names its own origin, matching the precedence replyToSession authorizes on.
+    seed(daemon, {
+      key: sessionKey('telegram', '-100999', 'tg:9', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'telegram',
+      channel: '-100999',
+      thread: 'tg:9',
+      acpSessionId: 'acp-parent-2'
+    })
     ;(daemon as any).activeTurnCallMeta.set(callerKey, {
       callFrom: 'bot-a',
       hopCount: 1,
@@ -1180,7 +1278,7 @@ describe('parentSessionCoords: the coords a relayed answer should have gone to',
       originSessionId: 'acp-parent-2',
       originCoords: { platform: 'telegram', channel: '-100999', thread: 'tg:9' }
     })
-    expect(ask(daemon)).toEqual({ sessionId: 'acp-parent-2', platform: 'telegram', channel: '-100999' })
+    expect(ask(daemon, { targetChannel: '-100999' })).toEqual({ kind: 'parent', sessionId: 'acp-parent-2' })
     await daemon.stop()
   })
 })
