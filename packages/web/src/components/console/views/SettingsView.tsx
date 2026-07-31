@@ -29,6 +29,7 @@ import {
   fetchGithubInstallations,
   fetchMembers,
   fetchOrgInviteLink,
+  fetchSlackSessionAccess,
   memberDisplayName,
   refreshSlackBot,
   getSlackPlatformInstall,
@@ -36,6 +37,7 @@ import {
   ROLE_LABELS,
   syncGithubInstallations,
   startSlackPlatformInstall,
+  putSlackSessionAccess,
   updateOrg,
   uploadOrgIcon,
   type BotDto,
@@ -488,6 +490,29 @@ export default function SettingsView() {
   const [editing, setEditing] = useState<MemberTarget | null>(null)
   const [inviting, setInviting] = useState(false)
   const [deletingBot, setDeletingBot] = useState<BotDto | null>(null)
+  const slackAccessKey = consoleKeys.slackSessionAccess(activeOrg?.id)
+  const {
+    data: slackAccess,
+    error: slackAccessLoadError,
+    mutate: mutateSlackAccess
+  } = useSWR(slackAccessKey, ([, orgId]) => fetchSlackSessionAccess(orgId))
+  const [slackAccessBusy, setSlackAccessBusy] = useState(false)
+  const [slackAccessError, setSlackAccessError] = useState<string | null>(null)
+  const hiddenSlackSessions = slackAccess?.hiddenSessions ?? 0
+
+  const setSlackAccess = async (enabled: boolean) => {
+    if (!activeOrg || !isOwner || slackAccessBusy) return
+    setSlackAccessBusy(true)
+    setSlackAccessError(null)
+    try {
+      const next = await putSlackSessionAccess(enabled, activeOrg.id)
+      await mutateSlackAccess(next, { revalidate: false })
+    } catch (e) {
+      setSlackAccessError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSlackAccessBusy(false)
+    }
+  }
 
   // `?invite=1` auto-opens the invite-members dialog (the getting-started "Invite
   // teammates" CTA lands here with it). One-shot: the param is stripped immediately
@@ -576,6 +601,55 @@ export default function SettingsView() {
             </div>
             <div className="mono mt-[2px] text-[11.5px] text-(--text-tertiary)">{activeOrg?.slug ?? ''}</div>
           </div>
+        </div>
+      </div>
+
+      <div className="card mt-[18px]">
+        <div className="cardhead">
+          <span className="cardtitle">Session access</span>
+        </div>
+        <div className="flex items-center gap-3 px-4 py-[15px]">
+          <span className="flex h-9 w-9 flex-none items-center justify-center rounded-[9px] bg-(--surface-active)">
+            <PlatformMark platform="slack" fillPct={100} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="font-sans text-[13px] font-semibold leading-normal">Follow Slack conversation access</div>
+            <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+              {slackAccess?.available === false && !slackAccess.enabled
+                ? 'Requires OIDC and Logto linked identities. Until then, shared sessions remain visible to Everyone who can view the agent.'
+                : slackAccess?.enabled
+                  ? 'Each shared session is visible only to current members of its Slack conversation. DMs remain private. Agent memory learned earlier is not erased.'
+                  : 'New shared sessions are visible to Everyone who can view the agent. Previously synced sessions keep following Slack. DMs remain private.'}
+            </div>
+            {(slackAccess?.state === 'degraded' || hiddenSlackSessions > 0) && (
+              <div className="mt-1 font-sans text-[11.5px] font-medium leading-normal text-(--status-paused)">
+                {hiddenSlackSessions > 0
+                  ? `${hiddenSlackSessions} historical session${hiddenSlackSessions === 1 ? '' : 's'} lack a trusted Slack scope and remain hidden.`
+                  : 'Slack access is degraded; unresolved sessions remain hidden.'}
+              </div>
+            )}
+            {(slackAccessError || slackAccessLoadError) && (
+              <div
+                role="alert"
+                className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)"
+              >
+                {slackAccessError ?? 'Could not load Slack session access.'}
+              </div>
+            )}
+          </div>
+          <span title={isOwner ? undefined : 'Only organization owners can change this setting'}>
+            <Toggle
+              checked={slackAccess?.enabled === true}
+              disabled={
+                !isOwner ||
+                !slackAccess ||
+                slackAccessBusy ||
+                (slackAccess.available === false && slackAccess.enabled === false)
+              }
+              ariaLabel="Follow Slack conversation access"
+              onChange={(next) => void setSlackAccess(next)}
+            />
+          </span>
         </div>
       </div>
 

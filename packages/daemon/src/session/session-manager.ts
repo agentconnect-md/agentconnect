@@ -336,6 +336,10 @@ export class SessionManager {
       /** Extra descriptors bound to the exact overridden host (for example the
        * cell-private AgentConnect admin MCP bridge). */
       additionalMcpServers?: McpServer[]
+      /** Trusted source gate: this runtime must not read agent/org shared
+       * memory. Computed by the daemon before any transcript or prompt body is
+       * handed to this method. */
+      sharedMemoryExcluded?: boolean
     } = {}
   ): Promise<{
     sessionId: string
@@ -502,9 +506,10 @@ export class SessionManager {
     // a fresh session (a resumed session already carries it from its first turn).
     // Routed to exactly one place: Claude carries it via `_meta.systemPrompt` (metaContext,
     // passed to newSession); other runtimes get it folded into the inline system block below.
-    const memoryIndex = memoryEnabled
-      ? (await abortable(() => this.deps.memory.standingContextAtSessionStart({ agentId }), signal)).trim()
-      : ''
+    const memoryIndex =
+      memoryEnabled && options.sharedMemoryExcluded !== true
+        ? (await abortable(() => this.deps.memory.standingContextAtSessionStart({ agentId }), signal)).trim()
+        : ''
     const memoryAppend = memoryIndex
       ? `# Persistent memory\n` +
         `You keep a persistent memory across sessions. Your context is periodically ` +
@@ -953,7 +958,7 @@ export class SessionManager {
     const turnId = stableTurnId(agentId, msg)
     const recallScope = { agentId, sessionId: rec.acpSessionId! }
     const recallPolicy = memoryEnabled ? this.deps.memory.recallPolicy(recallScope) : undefined
-    if (captureInput && recallPolicy?.mode === 'auto') {
+    if (captureInput && options.sharedMemoryExcluded !== true && recallPolicy?.mode === 'auto') {
       const recallAbort = new AbortController()
       const recallReq = {
         turnId,

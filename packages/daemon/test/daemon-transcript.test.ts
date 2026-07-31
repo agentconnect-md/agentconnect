@@ -81,6 +81,7 @@ function makeRoutable(daemon: Daemon) {
   ]
   let n = 0
   const conn = {
+    workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
     // Hand back a distinct ts per post so transcript rows don't collide on PK.
     postMessage: vi.fn(async () => `reply-${++n}`),
@@ -106,9 +107,13 @@ const dm = (ts: string, text: string) => ({
   trigger: 'dm' as const
 })
 
-/** Same conversation, but a CHANNEL: org-visible, so agent-memory capture stays
- *  enabled (a DM is private and excluded — session-visibility.md §4.2/§5.1). */
+/** Same conversation, but a human-triggered Slack channel. It is bound to the
+ * external Slack audience and therefore isolated from shared agent memory. */
 const channelMsg = (ts: string, text: string) => ({ ...dm(ts, text), isDm: false, trigger: 'mention' as const })
+
+/** A daemon-originated shared turn is not external input and remains eligible
+ * for ordinary provider-neutral post-turn capture. */
+const agentMsg = (ts: string, text: string) => ({ ...channelMsg(ts, text), source: 'agent' as const })
 
 function transcript(daemon: Daemon): TranscriptEntry[] {
   return (daemon as any).store.transcriptSince(TRANSCRIPT_CHANNEL, 'T1', null)
@@ -166,7 +171,7 @@ describe('Daemon transcript records the agent reply', () => {
     ;(daemon as any).memory.recordTurnForBinding = recordTurn
     const capturedBinding = (daemon as any).agents.get('bot-a').memory
 
-    const turn = (daemon as any).dispatch('bot-a', channelMsg('100', 'question?'), 'int-a')
+    const turn = (daemon as any).dispatch('bot-a', agentMsg('100', 'question?'), 'int-a')
     await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalled())
     expect(recordTurn).not.toHaveBeenCalled()
 
@@ -176,13 +181,76 @@ describe('Daemon transcript records the agent reply', () => {
     expect(recordTurn).toHaveBeenCalledWith(
       { agentId: 'bot-a', sessionId: 'acp-1' },
       {
-        turnId: stableTurnId('bot-a', channelMsg('100', 'question?')),
+        turnId: stableTurnId('bot-a', agentMsg('100', 'question?')),
         sessionId: 'acp-1',
-        input: '[U1] question?',
+        input: 'question?',
         output: 'here is my answer'
       },
       capturedBinding,
       undefined
+    )
+    await daemon.stop()
+  }, 15_000)
+
+  it('never captures post-turn memory from a shared Slack input', async () => {
+    const { factory } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+    const recordTurn = vi.fn(async () => {})
+    ;(daemon as any).memory.recordTurnForBinding = recordTurn
+
+    await (daemon as any).dispatch('bot-a', channelMsg('100', 'question?'), 'int-a')
+
+    expect((daemon as any).store.isCaptureExcluded('acp-1')).toBe(true)
+    expect(recordTurn).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('rejects a Slack audience change on a session created from another source', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', agentMsg('100', 'scheduled context'), 'int-a')
+    await (daemon as any).dispatch('bot-a', channelMsg('200', 'human reply'), 'int-a')
+
+    expect(host.prompt).toHaveBeenCalledOnce()
+    expect(conn.postMessage).toHaveBeenLastCalledWith(
+      'C1',
+      'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.',
+      'T1'
+    )
+    await daemon.stop()
+  }, 15_000)
+
+  it('reuses an external runtime only for the same inherited Slack source', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const callMeta = (resourceKey: string) => ({
+      callFrom: 'caller-agent',
+      hopCount: 1,
+      deliveryId: `delivery-${resourceKey}`,
+      externalOrigin: {
+        provider: 'slack',
+        realmKey: 'T1',
+        resourceKind: 'conversation',
+        resourceKey
+      }
+    })
+
+    await (daemon as any).dispatch('bot-a', channelMsg('100', 'human context'), 'int-a')
+    await (daemon as any).dispatch('bot-a', agentMsg('200', 'same audience'), 'int-a', undefined, callMeta('C1'))
+    await (daemon as any).dispatch('bot-a', agentMsg('300', 'different audience'), 'int-a', undefined, callMeta('C2'))
+
+    expect(host.prompt).toHaveBeenCalledTimes(2)
+    expect(conn.postMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('already belongs to a session created from another source'),
+      'T1'
     )
     await daemon.stop()
   }, 15_000)

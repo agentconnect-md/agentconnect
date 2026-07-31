@@ -13,7 +13,7 @@
  * daemon, and an existing sessionId remains bound to its first agent.
  */
 import { isFrame, type EventSession } from '@agentconnect.md/protocol'
-import { AgentId, DaemonId, LaunchId, SessionId } from '../../domain/ids.js'
+import { AgentId, BotId, DaemonId, IntegrationId, LaunchId, SessionId } from '../../domain/ids.js'
 import { classifySession } from '../../domain/session-visibility.js'
 import type { DaemonWsDeps } from '../deps.js'
 import type { Handler } from './index.js'
@@ -48,13 +48,70 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
   })
 }
 
+async function externalCandidate(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
+  const origin = p.externalOrigin
+  if (!origin) {
+    // During a homogeneous upgrade every new daemon reports the trusted source
+    // tuple. Keep mixed-version ingest fail-closed too: an older root Slack
+    // channel/group-DM milestone is a durable unresolved candidate, never an
+    // ordinary org row once the owner enables the read fence. A2A children are
+    // excluded here because their audience is inherited from the parent.
+    const legacySharedSlack =
+      !p.parentSessionId &&
+      (p.platform === 'slack' || p.platform === undefined) &&
+      p.channel !== undefined &&
+      (p.conversationKind === 'channel' ||
+        p.conversationKind === 'group_dm' ||
+        (p.conversationKind === undefined && !p.channel.startsWith('D')))
+    return legacySharedSlack ? { provider: 'slack', resolution: 'pending' as const } : undefined
+  }
+  const pending = { provider: origin.provider, resolution: 'pending' as const }
+  if (!origin.integrationId || !origin.realmKey) return pending
+  const integration = await deps.integration.get(IntegrationId(origin.integrationId))
+  if (
+    !integration ||
+    integration.agentId !== agentId ||
+    integration.platform !== origin.provider ||
+    integration.status !== 'active'
+  ) {
+    return { provider: origin.provider, resolution: 'invalid' as const }
+  }
+  const bot = await deps.bot?.get(BotId(integration.botId))
+  const realmKey = bot?.workspaceId ?? bot?.teamId
+  if (
+    !bot ||
+    bot.orgId !== integration.orgId ||
+    bot.platform !== origin.provider ||
+    bot.revokedAt !== null ||
+    !realmKey ||
+    realmKey !== origin.realmKey ||
+    origin.resourceKey !== p.channel
+  ) {
+    return { provider: origin.provider, resolution: 'invalid' as const }
+  }
+  return {
+    provider: origin.provider,
+    resolution: 'settled' as const,
+    scope: {
+      realmKey,
+      resourceKind: origin.resourceKind,
+      resourceKey: origin.resourceKey,
+      credentialKind: 'bot',
+      credentialId: bot.id
+    }
+  }
+}
+
 export const handleEventSession: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session')(frame)) return
   const p = frame.payload
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
   await runForReportingAgent(agentId, daemonId, deps, async () => {
-    const classification = await classifyMilestone(p, agentId, deps)
+    const [classification, candidate] = await Promise.all([
+      classifyMilestone(p, agentId, deps),
+      externalCandidate(p, agentId, deps)
+    ])
     const { recorded, session, settled } = await deps.session.recordMilestone({
       sessionId: SessionId(p.sessionId),
       ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
@@ -82,6 +139,7 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
       ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
       ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
       ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
+      ...(candidate ? { externalCandidate: candidate } : {}),
       classification,
       // The reporting daemon comes from the AUTHENTICATED connection, not the
       // frame payload.

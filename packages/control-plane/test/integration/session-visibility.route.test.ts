@@ -14,7 +14,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { SessionId } from '../../src/domain/ids.js'
+import { AgentId, OrgId, SessionId } from '../../src/domain/ids.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -32,8 +32,8 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
   return userId
 }
 
-function appAs(userId: string): HttpApp {
-  const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
+function appAs(userId: string, deps?: Parameters<typeof buildHttpApp>[4]): HttpApp {
+  const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, undefined, undefined, deps)
   opened.push(app)
   return app
 }
@@ -171,6 +171,201 @@ describe('session visibility — list & detail', () => {
     }
     expect(body.childSessions.map((c) => c.id)).toEqual([visibleChild])
     expect(body.childSessions.map((c) => c.id)).not.toContain(hiddenChild)
+  })
+})
+
+describe('session visibility — Slack conversation audience', () => {
+  it('lets only owners change sync and withholds hidden-session diagnostics from other members', async () => {
+    const owner = await makeUser(`sv-slack-owner-${randomUUID()}`, 'owner')
+    const collaborator = await makeUser(`sv-slack-collab-${randomUUID()}`, 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    await repo.recordMilestone({
+      sessionId: SessionId(`s-slack-hidden-${randomUUID()}`),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_UNRESOLVED',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: { provider: 'slack', resolution: 'pending' }
+    })
+
+    const collaboratorApp = appAs(collaborator)
+    const read = (await collaboratorApp.app.inject({ method: 'GET', url: `${ORG}/session-access/slack` })).json()
+    expect(read).not.toHaveProperty('hiddenSessions')
+    expect(
+      (
+        await collaboratorApp.app.inject({
+          method: 'PUT',
+          url: `${ORG}/session-access/slack`,
+          payload: { enabled: true }
+        })
+      ).statusCode
+    ).toBe(403)
+
+    const unavailable = await appAs(owner).app.inject({
+      method: 'PUT',
+      url: `${ORG}/session-access/slack`,
+      payload: { enabled: true }
+    })
+    expect(unavailable.statusCode).toBe(409)
+
+    const ownerResponse = await appAs(owner, {
+      logtoIdentity: {} as never,
+      slackSessionAccess: { resolve: async () => ({ allowedScopes: [], degraded: false }) }
+    }).app.inject({
+      method: 'PUT',
+      url: `${ORG}/session-access/slack`,
+      payload: { enabled: true }
+    })
+    expect(ownerResponse.statusCode).toBe(200)
+    expect(ownerResponse.json()).toMatchObject({ enabled: true, state: 'degraded', hiddenSessions: 1 })
+  })
+
+  it('keeps the creation-time scope fixed and applies current membership only after enable', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const sessionId = `s-slack-scope-${randomUUID()}`
+    const credentialId = randomUUID()
+    const repo = new PgSessionRepo(prisma)
+    const pending = await repo.recordMilestone({
+      sessionId: SessionId(sessionId),
+      agentId: AgentId(agentId),
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_PRIVATE',
+      at: new Date(),
+      // A migration-marked shared row may retain a legacy explicit source. Once
+      // it carries the external candidate marker, that source is provenance,
+      // not authority, and a trusted retry must still settle its scope.
+      classification: { visibility: 'org', ownerIdentity: null, source: 'explicit' },
+      externalCandidate: {
+        provider: 'slack',
+        resolution: 'pending'
+      }
+    })
+    expect(pending.session).toMatchObject({
+      visibility: 'org',
+      externalProvider: 'slack',
+      externalResolution: 'pending'
+    })
+
+    const recorded = await repo.recordMilestone({
+      sessionId: SessionId(sessionId),
+      agentId: AgentId(agentId),
+      phase: 'plan',
+      platform: 'slack',
+      channel: 'C_PRIVATE',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: {
+        provider: 'slack',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'T_INSTALL',
+          resourceKind: 'conversation',
+          resourceKey: 'C_PRIVATE',
+          credentialKind: 'bot',
+          credentialId
+        }
+      }
+    })
+    expect(recorded.session).toMatchObject({
+      visibility: 'org',
+      externalProvider: 'slack',
+      externalResolution: 'settled'
+    })
+
+    const baselineViewer = {
+      role: 'owner' as const,
+      identitySet: [],
+      externalAccess: {
+        policies: [{ provider: 'slack', readFenceRev: null }],
+        allowedScopes: [],
+        decisionAt: new Date()
+      }
+    }
+    expect(
+      (await repo.listPage({ agentIds: [AgentId(agentId)], limit: 10, includeTotal: false, viewer: baselineViewer }))
+        .sessions
+    ).toHaveLength(1)
+
+    const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    expect(enabled.policy.state).toBe('enabled')
+    const external = await repo.get(SessionId(sessionId))
+    expect(external).toMatchObject({ visibility: 'external', externalResolution: 'settled' })
+
+    const denied = await repo.listPage({
+      agentIds: [AgentId(agentId)],
+      limit: 10,
+      includeTotal: false,
+      viewer: {
+        ...baselineViewer,
+        externalAccess: {
+          policies: [{ provider: 'slack', readFenceRev: enabled.policy.readFenceRev }],
+          allowedScopes: [],
+          decisionAt: new Date()
+        }
+      }
+    })
+    expect(denied.sessions).toHaveLength(0)
+
+    const [scope] = await repo.getExternalScopes([external!.externalScopeId!])
+    const allowed = await repo.listPage({
+      agentIds: [AgentId(agentId)],
+      limit: 10,
+      includeTotal: false,
+      viewer: {
+        ...baselineViewer,
+        externalAccess: {
+          policies: [{ provider: 'slack', readFenceRev: enabled.policy.readFenceRev }],
+          allowedScopes: [{ id: scope!.id, aclRevision: scope!.aclRevision }],
+          decisionAt: new Date()
+        }
+      }
+    })
+    expect(allowed.sessions.map((session) => session.id)).toEqual([sessionId])
+
+    const repeated = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    expect(repeated.policy.currentRev).toBe(enabled.policy.currentRev)
+    expect(repeated.affected).toEqual([])
+
+    const retrySessionId = `s-slack-retry-${randomUUID()}`
+    await repo.recordMilestone({
+      sessionId: SessionId(retrySessionId),
+      agentId: AgentId(agentId),
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_RETRY',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: { provider: 'slack', resolution: 'pending' }
+    })
+    expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('degraded')
+
+    await repo.recordMilestone({
+      sessionId: SessionId(retrySessionId),
+      agentId: AgentId(agentId),
+      phase: 'plan',
+      platform: 'slack',
+      channel: 'C_RETRY',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: {
+        provider: 'slack',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'T_INSTALL',
+          resourceKind: 'conversation',
+          resourceKey: 'C_RETRY',
+          credentialKind: 'bot',
+          credentialId
+        }
+      }
+    })
+    expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('enabled')
   })
 })
 
@@ -386,7 +581,7 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
 
     expect(await repo.countUnackedVisibility(daemonId)).toBe(1)
     const capped = await repo.visibilitySnapshotForDaemon(daemonId, 1)
-    expect(capped).toEqual([{ sessionId: stale, visibility: 'private', visibilityRev: 1 }])
+    expect(capped).toEqual([{ sessionId: stale, visibility: 'private', sharedMemoryExcluded: true, visibilityRev: 1 }])
   })
 
   it('reports the cutover as pending while a DESCENDANT daemon is still behind', async () => {
@@ -428,8 +623,8 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
 
     const snapshot = await new PgSessionRepo(prisma).visibilitySnapshotForDaemon(daemonId, 10)
     expect(snapshot).toEqual([
-      { sessionId: newer, visibility: 'private', visibilityRev: 0 },
-      { sessionId: older, visibility: 'org', visibilityRev: 0 }
+      { sessionId: newer, visibility: 'private', sharedMemoryExcluded: true, visibilityRev: 0 },
+      { sessionId: older, visibility: 'org', sharedMemoryExcluded: false, visibilityRev: 0 }
     ])
   })
 })

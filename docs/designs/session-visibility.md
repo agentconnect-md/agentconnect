@@ -1,24 +1,22 @@
 # Session Visibility
 
-> **Status:** Proposed. Nothing in this document is implemented yet.
+> **Status:** Implemented for direct `private` / `org` visibility and the first
+> external-audience adapter (Slack conversations). Share-by-link and additional
+> providers remain future work.
 >
-> **Scope:** protocol + control-plane + daemon + web. Daemon changes: three
-> optional fields on the existing `event/session` telemetry frame (§4.1), a
-> memory-capture gate driven by local origin plus a CP-pushed per-session
-> privacy bit (§5.1), and a privacy flag on A2A delegation commands. Console
-> authorization itself is enforced only on CP/BFF read paths; live platform
-> messages and ACP update streams never carry visibility, consistent with
-> [resource-visibility.md](resource-visibility.md).
+> **Scope:** protocol + control-plane + daemon + web. Console authorization is
+> enforced on CP/BFF read paths. The daemon reports immutable source metadata,
+> enforces source lineage, and receives a CP-pushed per-session shared-memory
+> exclusion bit. Live platform messages and ACP update streams never pass
+> through the CP, consistent with [resource-visibility.md](resource-visibility.md).
 
 ## 1. Background and goals
 
-Sessions currently have **no visibility of their own** — they derive entirely
-from the owning agent (see the taxonomy in
-[resource-visibility.md §2](resource-visibility.md)). Any org member who can
-view an agent sees **every** session of that agent, including other members'
-platform DMs and other members' Playground conversations. `session_meta` has no
-`orgId`, no owner column, and no `visibility` column; the only tenancy anchor is
-`agentId → agent.orgId`.
+Before this design, sessions had no visibility of their own and derived it
+entirely from the owning agent (see the taxonomy in
+[resource-visibility.md §2](resource-visibility.md)). That exposed every
+session of a visible agent to every allowed org viewer, including another
+member's platform DM or Playground conversation.
 
 This design gives every session its own visibility:
 
@@ -28,8 +26,13 @@ This design gives every session its own visibility:
   access to it. Default for platform **DM** sessions, **Playground /
   webchat** sessions, and sessions launched through the **Web API**.
 - **`org`** — visible to every org member who can view the owning agent.
-  Default for IM **channel** sessions and automation-originated sessions
-  (cron, hook, dream, agent-to-agent).
+  Default for automation-originated sessions and shared IM sessions when the
+  corresponding external-audience policy is disabled.
+- **`external`** — visible only when the viewer currently belongs to the
+  immutable external source scope recorded when the session was created.
+  Phase one supports Slack channel and group-DM conversations. The stored
+  scope is `(workspace, conversation)`; Slack remains authoritative for its
+  changing member list, which the CP resolves at read time.
 - **Share-by-link ("public")** — future work; a session with an active share
   link is readable by anyone holding the link. Deliberately **not** a member of
   the visibility enum; see §8.
@@ -102,6 +105,7 @@ New enum beside `ResourceVisibility`:
 enum SessionVisibility {
   private
   org
+  external
 }
 ```
 
@@ -114,6 +118,10 @@ ownerIdentity    String?           // §2 format; null for automation/legacy row
 visibilitySource VisibilitySource  @default(default)
 visibilityRev    Int               @default(0) // monotonic, bumped in the same
                                                // tx as any visibility change (§5.1)
+externalProvider String?            // null for direct private/org sessions
+externalScopeId  String?            // immutable source-scope reference
+externalResolution ExternalResolution? // pending | settled | invalid
+classifiedPolicyRev BigInt?         // provider-policy revision at classification
 ```
 
 `visibilityRev` is a **dedicated counter**: the existing transcript revision
@@ -139,12 +147,19 @@ enum VisibilitySource {
 - No `sharedWith String[]` on sessions in this iteration. Per-session
   member-sharing can be added later with the same GIN pattern as agents;
   share-by-link (§8) covers the near-term "share this session" ask.
+- `ExternalScope` stores only the stable provider resource identity and the
+  credential locator needed to ask the provider. It never stores provider ACLs.
+  Slack membership decisions are bounded, short-lived in-process cache entries;
+  user-to-Slack identity remains provider-owned and is resolved from Logto per
+  request rather than copied into the AgentConnect database.
+- `SessionExternalAccessPolicy` is per organization and provider. Its revision
+  and read fence make enablement fail closed while historical rows converge.
 
-**Migration / backfill:** existing rows get `orgId` from their agent and
-`visibility = 'org'`. Do **not** retro-classify DMs: the `thread === 'dm'`
-convention is Slack/Discord-only (Feishu writes the chat id), and wrongly
-flipping a session to `private` yanks it from members who can see it today.
-Visibility tightening applies to **new sessions only**.
+**Migration / backfill:** the original visibility migration populated `orgId`
+and kept legacy rows `org`; it did not guess DM ownership. The Slack-audience
+migration separately tags historical Slack-shaped shared sessions as provider
+candidates. Their source scope cannot be reconstructed safely, so enabling the
+Slack policy hides unresolved history instead of guessing an audience.
 
 ## 4. Classifying sessions at ingest
 
@@ -159,9 +174,26 @@ transportScope?: string // trusted workspace/tenant scope for ownerIdentity, §2
 launchCorrelationId?: string // Web API launch provenance, §4.4
 ```
 
-The daemon already knows this (`NormalizedMessage.isDm` / `isGroupDm`,
-`packages/daemon/src/messages/normalized.ts`); it is currently daemon-local and
-never reaches the CP. The `thread === 'dm'` heuristic and an
+Shared-source sessions additionally report an `externalOrigin` tuple:
+
+```ts
+{
+  provider: 'slack'
+  realmKey: string          // Slack workspace/team id
+  resourceKind: 'conversation'
+  resourceKey: string       // Slack conversation id
+  integrationId?: string    // direct ingress only; stripped from A2A lineage
+}
+```
+
+The daemon pins that tuple on first use. A later input from a different source
+is rejected rather than silently reusing the session. A2A descendants carry
+the audience identity (without credentials) and inherit the parent's access
+boundary across daemons.
+
+The daemon derives this from `NormalizedMessage.isDm` / `isGroupDm`
+(`packages/daemon/src/messages/normalized.ts`) and reports the normalized fact
+to the CP. The `thread === 'dm'` heuristic and an
 `IntegrationChannel.kind` join were both considered and rejected: the former is
 platform-inconsistent, the latter does not cover webhook/generic ingress and
 moves a write-time fact to read time. All three fields are optional ⇒ old
@@ -175,15 +207,15 @@ The CP classifies once, in the `event/session` ingest path
 (`ws/handlers/event-session.ts` → `session.recordMilestone`), first-wins like
 the other origin scalars:
 
-| Origin (how detected)                                 | `visibility`    | `ownerIdentity`                                                                                                                       |
-| ----------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Webchat / Playground (`platform === 'webchat'`)       | `private`       | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
-| Web API session launch (§4.4 correlation)             | `private`       | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
-| IM DM (`conversationKind` = `dm`)                     | `private`       | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| IM group DM (`conversationKind` = `group_dm`)         | `org`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| IM channel (`conversationKind` = `channel` or absent) | `org`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Agent-to-agent child (`triggeredBy` is an agent UUID) | inherits parent | inherits parent's `ownerIdentity`; parent unresolved ⇒ `private`, `null` (fail closed)                                                |
-| Automation: cron / hook / dream                       | `org`           | `null`                                                                                                                                |
+| Origin (how detected)                                  | `visibility`        | `ownerIdentity`                                                                                                                       |
+| ------------------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Webchat / Playground (`platform === 'webchat'`)        | `private`           | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
+| Web API session launch (§4.4 correlation)              | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
+| IM DM (`conversationKind` = `dm`)                      | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Slack group DM / channel with trusted `externalOrigin` | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
+| Other IM group DM / channel (or absent kind)           | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Agent-to-agent child (`triggeredBy` is an agent UUID)  | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
+| Automation: cron / hook / dream                        | `org`               | `null`                                                                                                                                |
 
 Notes:
 
@@ -204,10 +236,9 @@ Notes:
   of visibility** (DM, group DM, and channel alike). It is orthogonal to the
   visibility default: for `org` sessions it is provenance and the anchor for
   §4.3 reclassification rights, not an access gate.
-- `group_dm` defaults to `org`, like a channel: a multi-party conversation
-  treated as `private` would hide it from its own participants, since the
-  predicate can match only one owner. The initiator can pull it `private`
-  via §4.3.
+- A provider-bound group DM or channel never uses one initiator as its access
+  owner. With Slack sync enabled, its current conversation membership is the
+  audience; with sync disabled, new shared Slack sessions remain `org`.
 - **Agent-to-agent children inherit.** A delegation from a private DM or
   Playground session copies the delegated prompt into the child transcript;
   classifying children `org` would expose that to every viewer of the target
@@ -223,12 +254,15 @@ owner (identity match) — roles grant no re-classification rights in either
 direction, mirroring the view predicate: an org owner pulling someone's
 published session back to `private` would override the owner's own decision,
 so the org-owner arm was removed deliberately. A row with no recorded owner is
-re-classifiable by no one. This is the escape hatch for both directions:
-publishing a useful DM transcript to the org, or pulling a channel/group-DM
-session private (its recorded initiator — once identity linking makes them
-matchable).
+re-classifiable by no one. For direct sessions this is the escape hatch for
+both directions, such as publishing a useful DM transcript to the org or
+tightening an owned non-provider session.
 
-An explicit change sets `visibilitySource = 'explicit'`, which pins the row
+Provider-bound sessions are immutable through this endpoint: no single human
+owns a shared Slack conversation, and changing such a row to `private` or
+`org` would detach it from its source audience.
+
+For direct sessions, an explicit change sets `visibilitySource = 'explicit'`, which pins the row
 against any later automatic reclassification (§4.5). **Tightening cascades to
 descendants** (§4.5); the CP also notifies the owning daemon of the new
 effective state (§5.1). The response/UI must surface the memory caveat from
@@ -313,19 +347,27 @@ The authoritative predicate, mirroring `canView`:
 ```ts
 canViewSession(s, ctx, identitySet) =
   // deliberately NO role-based governance exception — private is owner-only
-  s.visibility === 'org' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
+  s.externalProvider != null
+    ? currentExternalAudienceAllows(s, ctx)
+    : s.visibility === 'org' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
 ```
+
+`currentExternalAudienceAllows` requires a settled scope, a linked Slack
+identity, current Slack conversation membership, and matching durable policy /
+scope revisions. Provider errors, timeouts, unresolved history, and stale
+revisions deny access. Organization roles, including owner, never bypass this
+predicate.
 
 All of these already gate on agent visibility; each additionally applies the
 session predicate:
 
-| Surface                       | Where                                                                                     | Change                                                                                                                                                                                                                                                                                             |
-| ----------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))`, applied to every viewer (no org-owner bypass)                                                                                                                                                                                    |
-| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | apply `canViewSession` after the agent gate; fail as 404                                                                                                                                                                                                                                           |
-| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; invisible parent already renders `null`                                                                                                                                                                                                                                            |
-| SSE                           | `http/routes/stream.ts`                                                                   | today filters per **agent**; must apply the session predicate to **every session-scoped envelope variant** — both `event/session` milestones and `event/session-activity` invalidations (the latter still expose `sessionId`, revision, and live activity), plus any future session-bearing frames |
-| Usage                         | `http/routes/usage.ts`                                                                    | same predicate on session-grained reads; org-aggregate rollups stay org-visible                                                                                                                                                                                                                    |
+| Surface                       | Where                                                                                     | Change                                                                                                                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))`, applied to every viewer (no org-owner bypass)                                                                                      |
+| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | apply `canViewSession` after the agent gate; fail as 404                                                                                                                                             |
+| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; invisible parent already renders `null`                                                                                                                                              |
+| SSE                           | `http/routes/stream.ts`                                                                   | applies the predicate to every session-scoped envelope (`event/session` milestones and `event/session-activity` invalidations), and rechecks live org membership and agent visibility for each event |
+| Usage                         | `http/routes/usage.ts`                                                                    | same predicate on every session-backed aggregate                                                                                                                                                     |
 
 Invariants preserved:
 
@@ -346,11 +388,9 @@ distilled into agent memory (including by dream sessions) and later surface —
 via memory reads or recall in someone else's session — to any user who can
 view the agent, bypassing every gate in the table above.
 
-Origin inference alone cannot carry this: once §4.3 exists, **origin is not
-effective visibility** — a channel session pulled `private` still looks like a
-channel to the daemon, and a cross-daemon A2A child cannot infer its inherited
-privacy from `isDm`/webchat/launch-correlation at all. The gate therefore has
-two layers:
+Origin inference alone cannot carry this: effective visibility can change, and
+a cross-daemon A2A child cannot infer its inherited privacy or external source
+from `isDm`/webchat/launch-correlation alone. The gate therefore has two layers:
 
 1. **Daemon-local initial state.** For turns the daemon can classify itself
    (`isDm`, `platform === 'webchat'`, §4.4 launch correlation) memory capture
@@ -424,6 +464,13 @@ the guarantee is "private hides the transcript at CP commit and stops
 feeding shared memory once every affected daemon has acked (`applied`)",
 not retroactive amnesia.
 
+Shared external sessions are always excluded from managed shared-memory
+capture and recall, even while the Slack access-sync switch is disabled. This
+prevents a provider-scoped conversation from feeding a broader organization
+memory namespace. The gate covers AgentConnect-managed and external memory
+paths; a runtime's own opaque/native memory cannot be isolated per session by
+AgentConnect and must not be presented as covered by this guarantee.
+
 Per-owner memory namespaces are a possible future relaxation, but the
 exclusion gate is the shipping requirement — the `private` tier's guarantee
 is dishonest without it. If it is deferred, the product docs must explicitly
@@ -432,10 +479,15 @@ learned from it"); silence is not an option.
 
 ## 6. Web console
 
-- Session list / homepage: no new affordance needed for correctness — the BFF
-  simply returns fewer rows. Add a visibility badge (lock icon for `private`)
-  and, on the session detail page, the visibility toggle from §4.3 for those
-  allowed to use it.
+- Session list / homepage correctness comes from the BFF returning fewer rows.
+  The session detail page renders a lock badge for `private`, a provider badge
+  for `external`, and the §4.3 visibility control only for direct-session
+  owners allowed to use it.
+- Settings exposes an owner-only Slack access-sync switch, disabled by default.
+  When enabled, shared Slack session history follows current Slack conversation
+  membership. The detail page renders provider-bound visibility as read-only;
+  unresolved historical rows and transient provider failures are surfaced
+  without widening access.
 - The existing client-side "mine" heuristic
   (`packages/web/src/lib/session-trigger.ts` email/userId matching) stays as a
   display concern (the "you" label) but is no longer doing authorization work.
@@ -471,7 +523,7 @@ same bounded transcript reads the BFF already does. "Public" is therefore a
 property of an active link's existence, not a third enum member — revoking the
 link ends public access without touching the session row.
 
-## 9. Test plan
+## 9. Test coverage
 
 - **Unit (`test:unit`):** `canViewSession` truth table (role × visibility ×
   identity match × orphan owner); ingest classification table from §4.2,
@@ -500,3 +552,9 @@ link ends public access without touching the session row.
   tighten never opens capture; duplicate delivery — losing the first ACK
   and retrying with an equal revision yields a fresh ACK without
   reapplying state.
+- **Slack external audience:** disabled baseline and owner-only enablement;
+  linked-identity and current-membership allow/deny/error behavior; Slack
+  Connect home-team validation; unresolved-history hiding; list, detail,
+  relationships, transcript/tool-body reauthorization, SSE, and usage parity;
+  immutable direct source binding; A2A lineage across local and relay paths;
+  managed-memory recall, mutation, automatic recall, capture, and Dream gates.

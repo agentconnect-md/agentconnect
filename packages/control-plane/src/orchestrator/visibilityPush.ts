@@ -26,7 +26,11 @@
  * reports the tighten as `pending` until it does, and the daemon meanwhile fails
  * closed (unknown gate state ⇒ capture excluded).
  */
-import { SESSION_VISIBILITY_FEATURE, type SessionVisibilityPush } from '@agentconnect.md/protocol'
+import {
+  SESSION_VISIBILITY_FEATURE,
+  SLACK_SESSION_AUDIENCE_FEATURE,
+  type SessionVisibilityPush
+} from '@agentconnect.md/protocol'
 import type { AgentRepo, SessionMetaRecord, SessionRepo, SessionVisibilityState } from '../persistence/ports.js'
 import { SessionId, type DaemonId } from '../domain/ids.js'
 import { ConnectionClosed, type ConnectionRegistry } from '../ws/registry.js'
@@ -50,7 +54,12 @@ export interface VisibilityPushDeps {
 }
 
 function toPush(s: SessionMetaRecord): SessionVisibilityPush {
-  return { sessionId: s.id, visibility: s.visibility, visibilityRev: s.visibilityRev }
+  return {
+    sessionId: s.id,
+    visibility: s.visibility,
+    sharedMemoryExcluded: s.visibility !== 'org' || s.externalProvider != null,
+    visibilityRev: s.visibilityRev
+  }
 }
 
 export class SessionVisibilityPushService {
@@ -88,6 +97,11 @@ export class SessionVisibilityPushService {
     return c?.capabilities?.features?.includes(SESSION_VISIBILITY_FEATURE) ?? false
   }
 
+  private supportsExternal(daemonId: string): boolean {
+    const c = this.deps.connReg.get(daemonId)
+    return c?.capabilities?.features?.includes(SLACK_SESSION_AUDIENCE_FEATURE) ?? false
+  }
+
   /**
    * Push the current gate state for these sessions to whichever daemons run
    * them, recording each ack. Descendants of a cascade legitimately live on
@@ -103,7 +117,9 @@ export class SessionVisibilityPushService {
         byAgent.set(s.agentId, agent?.daemonId ?? null)
       }
       const daemonId = byAgent.get(s.agentId)
-      if (!daemonId || !this.supports(daemonId)) continue
+      if (!daemonId || !this.supports(daemonId) || (s.externalProvider != null && !this.supportsExternal(daemonId))) {
+        continue
+      }
       try {
         const ok = await this.deps.control.sessionVisibility(daemonId, toPush(s))
         await this.deps.repos.session.recordVisibilityAck(SessionId(ok.sessionId), ok.visibilityRev)
@@ -149,9 +165,10 @@ export class SessionVisibilityPushService {
    */
   private async replayPages(daemonId: DaemonId): Promise<void> {
     let previousUnacked = Number.POSITIVE_INFINITY
+    const includeExternal = this.supportsExternal(daemonId)
     for (;;) {
       if (this.stopped) return // shutdown: the next process converges on register
-      const page = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK)
+      const page = await this.deps.repos.session.visibilitySnapshotForDaemon(daemonId, SNAPSHOT_CHUNK, includeExternal)
       if (page.length === 0) return
       const outcome = await this.sendSnapshotChunk(daemonId, page)
       if (outcome === 'gone') return // disconnected: its next register replays
@@ -162,7 +179,7 @@ export class SessionVisibilityPushService {
         return
       }
       if (page.length < SNAPSHOT_CHUNK) return // the page was not full: nothing behind it
-      const unacked = await this.deps.repos.session.countUnackedVisibility(daemonId)
+      const unacked = await this.deps.repos.session.countUnackedVisibility(daemonId, includeExternal)
       if (unacked === 0) return
       if (unacked >= previousUnacked) {
         // Not converging — new changes are arriving at least as fast as we ack.
@@ -245,11 +262,11 @@ export class SessionVisibilityPushService {
    * takes effect at ACK, so the §4.3 endpoint reports `pending` until then.
    *
    * A row still on its initial §4.2 classification (`visibilitySource ===
-   * 'default'`) has no cutover in flight: nothing was pushed at ingest (the
-   * daemon classified the turn locally — layer 1 — or fails closed), so its
-   * `-1` watermark is bookkeeping that converges at the next register replay,
-   * not a pending change. Reporting it `pending` would pin "Applying…" on
-   * every freshly ingested session until its daemon happens to reconnect.
+   * 'default'`, revision 0) has no cutover in flight: nothing was pushed at
+   * ingest (the daemon classified the turn locally — layer 1 — or fails
+   * closed), so its `-1` watermark is bookkeeping that converges at the next
+   * register replay, not a pending change. Once a policy transition bumps that
+   * row's revision, it must wait for the daemon ACK like every other cutover.
    *
    * Only an UNPLACED agent counts as vacuously applied: nothing is running it,
    * so nothing can capture. A placed daemon that is merely offline is still
@@ -260,7 +277,7 @@ export class SessionVisibilityPushService {
    */
   async isApplied(sessions: SessionMetaRecord[]): Promise<boolean> {
     for (const s of sessions) {
-      if (s.visibilitySource === 'default') continue // initial classification — nothing staged, nothing to ack
+      if (s.visibilitySource === 'default' && s.visibilityRev === 0) continue // initial classification — nothing staged
       if (s.visibilityAckedRev >= s.visibilityRev) continue
       const agent = await this.deps.repos.agent.get(s.agentId)
       if (!agent?.daemonId) continue // unplaced: no daemon runs it, nothing to stop

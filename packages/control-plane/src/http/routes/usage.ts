@@ -14,6 +14,7 @@ import type { HttpDeps } from '../deps.js'
 import { orgOf, ctxOf } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import { UsageQueryDto, UsageDto } from '../dto/index.js'
+import { makeSessionAccessResolver } from '../session-access.js'
 
 const RANGE_DAYS = { d1: 1, d7: 7, d30: 30, d90: 90 } as const
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -21,6 +22,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 export function usageRoutes(deps: HttpDeps) {
   return async function usageRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const sessionAccess = makeSessionAccessResolver(deps)
 
     r.get(
       '/usage',
@@ -37,10 +39,24 @@ export function usageRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const since = new Date(Date.now() - RANGE_DAYS[req.query.range] * DAY_MS)
-        // Viewer-scoped: a restricted agent the caller can't see drops out of both
-        // the totals and the per-agent breakdown (owner ⇒ full org rollup).
-        const agg = await deps.repos.sessionUsage.aggregate(orgOf(req), since, ctxOf(req), req.query.tz)
-        return { range: req.query.range, totals: agg.totals, agents: agg.agents, series: agg.series }
+        // Viewer-scoped: both agent visibility and the request-time Session
+        // predicate apply to counts, tokens, costs, and buckets. Roles do not
+        // widen either resource boundary.
+        const ctx = ctxOf(req)
+        const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctx)).map((agent) => agent.id)
+        const access = await sessionAccess.forQuery(req, { agentIds: visibleAgentIds })
+        const agg = await deps.repos.sessionUsage.aggregate(orgOf(req), since, ctx, req.query.tz, {
+          role: ctx.role,
+          identitySet: [...access.identitySet],
+          externalAccess: access.externalAccess
+        })
+        return {
+          range: req.query.range,
+          accessSyncDegraded: access.degraded,
+          totals: agg.totals,
+          agents: agg.agents,
+          series: agg.series
+        }
       }
     )
   }

@@ -76,7 +76,9 @@ export type SessionPhase = 'start' | 'plan' | 'problem' | 'end'
 export type ActivityState = 'thinking' | 'tool_call' | 'awaiting_permission' | 'idle'
 /** Per-session visibility tier (session-visibility.md §1). Distinct from
  *  `ResourceVisibility` — sessions have no `restricted`/`sharedWith` tier. */
-export type SessionVisibility = 'private' | 'org'
+export type SessionVisibility = 'private' | 'org' | 'external'
+export type ExternalResolution = 'pending' | 'settled' | 'invalid'
+export type ExternalAccessPolicyState = 'disabled' | 'enabling' | 'enabled' | 'degraded'
 /** How a session's visibility was determined — the §4.5 A2A reconciliation
  *  state marker; `explicit` pins the row against settlement (not cascades). */
 export type VisibilitySource = 'default' | 'inherited_pending' | 'inherited' | 'explicit'
@@ -842,6 +844,20 @@ export interface EventSessionInput {
   conversationKind?: SessionConversationKind
   transportScope?: string // durable tenant scope for ownerIdentity (§2), NOT the credential-derived hash
   launchCorrelationId?: string // Web API launch provenance (§4.4)
+  /** Validated supported shared input. Presence is the durable candidate marker;
+   *  an unresolved binding stays pending/invalid rather than falling back to a
+   *  direct session. */
+  externalCandidate?: {
+    provider: string
+    resolution: ExternalResolution
+    scope?: {
+      realmKey: string
+      resourceKind: string
+      resourceKey: string
+      credentialKind?: string
+      credentialId?: string
+    }
+  }
   /** The §4.2 verdict the ingest handler computed (its ownership lookups are
    *  already resolved). Absent ⇒ the row is classified `org` with no owner —
    *  the pre-visibility behavior, kept for internal callers and fixtures. */
@@ -879,7 +895,38 @@ export interface SessionVisibilityChange {
 export interface SessionVisibilityState {
   sessionId: SessionId
   visibility: SessionVisibility
+  sharedMemoryExcluded: boolean
   visibilityRev: number
+}
+
+export interface ExternalScopeRecord {
+  id: string
+  orgId: OrgId
+  provider: string
+  realmKey: string
+  resourceKind: string
+  resourceKey: string
+  credentialKind: string | null
+  credentialId: string | null
+  aclRevision: bigint
+  revokedAt: Date | null
+}
+
+export interface SessionExternalAccessPolicyRecord {
+  orgId: OrgId
+  provider: string
+  state: ExternalAccessPolicyState
+  currentRev: bigint
+  readFenceRev: bigint | null
+  migrationCursor: string | null
+}
+
+/** One request-local external authorization snapshot. Scope allows are tied to
+ *  the exact ACL revision observed during provider resolution. */
+export interface SessionExternalAccessSnapshot {
+  policies: Array<{ provider: string; readFenceRev: bigint | null }>
+  allowedScopes: Array<{ id: string; aclRevision: bigint }>
+  decisionAt: Date
 }
 
 export interface SessionMetaRecord {
@@ -915,6 +962,10 @@ export interface SessionMetaRecord {
   visibilitySource: VisibilitySource
   visibilityRev: number // bumped in the same tx as any visibility change (§5.1)
   visibilityAckedRev: number // daemon-ack watermark; 'applied' once >= visibilityRev
+  externalProvider: string | null
+  externalScopeId: string | null
+  externalResolution: ExternalResolution | null
+  classifiedPolicyRev: bigint | null
   startedAt: Date
   endedAt: Date | null
 }
@@ -938,10 +989,14 @@ export interface SessionFilterQuery extends SessionQuery {
   githubHookIds?: HookId[]
   hookTriggerIds?: HookId[]
   /** Session-visibility predicate inputs (session-visibility.md §5): human
-   *  viewers see `org` rows plus `private` rows whose ownerIdentity is in their
-   *  identity set. Absent ⇒ no session predicate — the internal fail-open,
-   *  mirroring `visibilityWhere(undefined)`. */
-  viewer?: { role: OrgMemberRole; identitySet: string[] }
+   *  viewers see baseline `org`, identity-owned `private`, and request-resolved
+   *  provider `external` rows. Absent ⇒ no session predicate — the internal
+   *  fail-open, mirroring `visibilityWhere(undefined)`. */
+  viewer?: {
+    role: OrgMemberRole
+    identitySet: string[]
+    externalAccess?: SessionExternalAccessSnapshot
+  }
 }
 
 export interface SessionPageQuery extends SessionFilterQuery {
@@ -996,13 +1051,31 @@ export interface SessionRepo {
   listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex>
   list(q: SessionQuery): Promise<SessionListRecord[]>
   get(id: SessionId): Promise<SessionMetaRecord | null>
+  /** Distinct settled scopes referenced by external rows matching the non-page
+   *  filters. Called before ORDER/LIMIT so membership filtering is pagination-safe. */
+  listExternalScopes(q: SessionFilterQuery): Promise<ExternalScopeRecord[]>
+  getExternalScopes(ids: string[]): Promise<ExternalScopeRecord[]>
+  getExternalAccessPolicy(orgId: OrgId, provider: string): Promise<SessionExternalAccessPolicyRecord | null>
+  countExternalUnresolved(orgId: OrgId, provider: string): Promise<number>
+  /** Owner-only HTTP route calls this transactional transition. Enabling places
+   *  the read fence before classifying legacy candidates; unresolved history is
+   *  retained as degraded and hidden. Disabling never widens historical rows. */
+  setExternalAccessEnabled(
+    orgId: OrgId,
+    provider: string,
+    enabled: boolean
+  ): Promise<{
+    policy: SessionExternalAccessPolicyRecord
+    hiddenSessions: number
+    affected: SessionMetaRecord[]
+  }>
   /** Visible-child lookup for the session detail page. Parent ids are opaque and
    *  deliberately not foreign-keyed, so this remains a metadata query. `viewer`
    *  applies the same session predicate as the list (absent ⇒ internal fail-open). */
   listChildren(
     parentSessionId: SessionId,
     agentIds: AgentId[],
-    viewer?: { role: OrgMemberRole; identitySet: string[] }
+    viewer?: SessionFilterQuery['viewer']
   ): Promise<SessionMetaRecord[]>
   /** §4.3 reclassification. Widening touches only the target row; tightening
    *  cascades to every descendant (transitively, `explicit` ones included —
@@ -1014,7 +1087,11 @@ export interface SessionRepo {
     /** Re-checked against the LOCKED row, closing the gap between the route's
      *  authorization read and this write: a concurrent ancestor cascade can
      *  re-own the session in between. Denied ⇒ `forbidden`, nothing written. */
-    authorize?: (row: { visibility: SessionVisibility; ownerIdentity: string | null }) => boolean
+    authorize?: (row: {
+      visibility: SessionVisibility
+      ownerIdentity: string | null
+      externalProvider: string | null
+    }) => boolean
   ): Promise<SessionVisibilityChange>
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
    *  revision never lowers it, so the tighten stays `applied`. */
@@ -1022,10 +1099,14 @@ export interface SessionRepo {
   /** The §5.1 register-time gate snapshot for one daemon: the current
    *  `(sessionId, visibility, visibilityRev)` set for the sessions it reported,
    *  newest first and bounded. A snapshot, not a diff. */
-  visibilitySnapshotForDaemon(daemonId: DaemonId, limit: number): Promise<SessionVisibilityState[]>
+  visibilitySnapshotForDaemon(
+    daemonId: DaemonId,
+    limit: number,
+    includeExternal?: boolean
+  ): Promise<SessionVisibilityState[]>
   /** How many of a daemon's sessions still owe an ack — used to report when a
    *  bounded snapshot could not carry them all (never a silent truncation). */
-  countUnackedVisibility(daemonId: DaemonId): Promise<number>
+  countUnackedVisibility(daemonId: DaemonId, includeExternal?: boolean): Promise<number>
   /** A session plus every descendant — the set a tightening cascade rewrote, so
    *  the detail view's cutover state covers the whole subtree, not just the root. */
   visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]>
@@ -1296,7 +1377,13 @@ export interface SessionUsageRepo {
    *  via the `agent` relation — undefined alone is unfiltered).
    *  `tzOffsetMin` (UTC − local, as `getTimezoneOffset()` reports) aligns the spend
    *  `series` buckets to the viewer's local day/hour; 0 (default) ⇒ UTC. */
-  aggregate(orgId: OrgId, since: Date, viewer?: ViewCtx, tzOffsetMin?: number): Promise<UsageAggregate>
+  aggregate(
+    orgId: OrgId,
+    since: Date,
+    viewer?: ViewCtx,
+    tzOffsetMin?: number,
+    sessionViewer?: SessionFilterQuery['viewer']
+  ): Promise<UsageAggregate>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

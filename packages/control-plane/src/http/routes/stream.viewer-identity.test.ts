@@ -68,8 +68,13 @@ describe('stream route × viewer identity (live unlink)', () => {
     const deps = {
       registry: { get: async () => ({ orgId: ORG_ID }) },
       repos: {
+        org: { roleOf: async () => 'collaborator' },
         agent: { get: async () => agent },
-        session: { get: async (id: string) => sessions[id] ?? null }
+        session: {
+          get: async (id: string) => sessions[id] ?? null,
+          getExternalScopes: async () => [],
+          getExternalAccessPolicy: async () => null
+        }
       },
       events: {
         subscribe: (cb: (e: SessionEventEnvelope) => void) => {
@@ -77,6 +82,7 @@ describe('stream route × viewer identity (live unlink)', () => {
           return () => {}
         }
       },
+      clock: { now: () => Date.now() },
       logtoIdentity: { slackIdentityFor: async () => linked }
     } as unknown as HttpDeps
 

@@ -34,7 +34,9 @@ export const ResourceVisibilityEnum = z.enum(['org', 'restricted'])
 /** Per-SESSION visibility (docs/designs/session-visibility.md §1) — a different
  *  tier vocabulary from `ResourceVisibilityEnum`: sessions have no share set,
  *  their owner is a namespaced identity string (§2). */
-export const SessionVisibilityEnum = z.enum(['private', 'org'])
+export const SessionVisibilityEnum = z.enum(['private', 'org', 'external'])
+/** Only identity-owned direct sessions can be reclassified manually. */
+export const MutableSessionVisibilityEnum = z.enum(['private', 'org'])
 /** Whether a visibility change has reached the daemons that enforce it (§5.1). */
 export const SessionVisibilityStateEnum = z.enum(['pending', 'applied'])
 /** `PUT /{agents|daemons|crons}/:id/sharing` — set a resource's visibility + share
@@ -2203,7 +2205,9 @@ export const SessionDto = z.object({
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),
-  visibility: SessionVisibilityEnum
+  visibility: SessionVisibilityEnum,
+  externalProvider: z.string().nullable(),
+  externalResolution: z.enum(['pending', 'settled', 'invalid']).nullable()
 })
 export const SessionListDto = z.array(SessionDto)
 export const SessionFacetsDto = z.object({
@@ -2236,7 +2240,9 @@ export const SessionListPageDto = z.object({
   // Org-level "any session exists" boolean (first page only) — deliberately a bare
   // boolean so the getting-started checklist can derive its conversation step
   // org-wide without exposing metadata of sessions the caller cannot see.
-  orgHasSessions: z.boolean().optional()
+  orgHasSessions: z.boolean().optional(),
+  /** True when any provider membership decision failed closed for this page. */
+  accessSyncDegraded: z.boolean().optional()
 })
 
 /** `GET /sessions/:id` — the deep-link detail view, served from CP-stored
@@ -2278,18 +2284,21 @@ export const SessionDetailDto = z.object({
   activityState: z.string(),
   // ── session visibility (docs/designs/session-visibility.md) ──
   visibility: SessionVisibilityEnum,
+  externalProvider: z.string().nullable(),
+  externalResolution: z.enum(['pending', 'settled', 'invalid']).nullable(),
   /** §5.1 cutover: `pending` until every affected daemon has acked the change —
    *  CP read gates apply at commit, the memory boundary at acknowledgement. */
   visibilityState: SessionVisibilityStateEnum,
   /** Whether THIS caller may use `PUT /sessions/:id/visibility` (§4.3). Computed
    *  server-side; the console never re-derives permissions from identity. */
   canChangeVisibility: z.boolean(),
+  accessSyncDegraded: z.boolean(),
   startedAt: z.string(), // ISO-8601
   endedAt: z.string().nullable()
 })
 
 /** `PUT /sessions/:id/visibility` (session-visibility.md §4.3). */
-export const SetSessionVisibilityBody = z.object({ visibility: SessionVisibilityEnum }).strict()
+export const SetSessionVisibilityBody = z.object({ visibility: MutableSessionVisibilityEnum }).strict()
 export type SetSessionVisibilityBodyT = z.infer<typeof SetSessionVisibilityBody>
 
 export const SessionVisibilityDto = z.object({
@@ -2300,6 +2309,22 @@ export const SessionVisibilityDto = z.object({
   cascadedSessionIds: z.array(z.string()),
   state: SessionVisibilityStateEnum
 })
+
+export const SessionExternalAccessStateEnum = z.enum(['disabled', 'enabling', 'enabled', 'degraded'])
+export const SessionExternalAccessDto = z.object({
+  provider: z.literal('slack'),
+  /** False when this deployment cannot resolve linked Slack identities and
+   *  live conversation membership. An already-enabled policy still reads
+   *  fail-closed and may be disabled while unavailable. */
+  available: z.boolean(),
+  enabled: z.boolean(),
+  state: SessionExternalAccessStateEnum,
+  currentRevision: z.string().regex(/^\d+$/),
+  readFenceRevision: z.string().regex(/^\d+$/).nullable(),
+  /** Owner-only migration diagnostic; omitted for other members. */
+  hiddenSessions: z.number().int().nonnegative().optional()
+})
+export const SetSessionExternalAccessBody = z.object({ enabled: z.boolean() }).strict()
 
 /** One message page returned by `GET /sessions/:id/messages` (proxied from the daemon).
  *  The tool-body fields are optional (text/reasoning rows and old daemons omit them);
@@ -2653,6 +2678,7 @@ export const UsageAgentDto = z.object({
 })
 export const UsageDto = z.object({
   range: UsageRange,
+  accessSyncDegraded: z.boolean().optional(),
   totals: z.object({
     sessions: z.number(),
     totalTokens: z.number(),

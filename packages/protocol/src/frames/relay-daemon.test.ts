@@ -451,6 +451,37 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RdAgentMsgFwd.parse({ ...fwd, parentPrivate: true }).parentPrivate).toBe(true)
   })
 
+  it('carries an immutable Slack source through both A2A wire legs', () => {
+    const externalOrigin = {
+      provider: 'slack' as const,
+      realmKey: 'T123',
+      resourceKind: 'conversation' as const,
+      resourceKey: 'C123'
+    }
+    const msg = {
+      claimedFromAgentId: AGENT_ID,
+      toAgentId: '44444444-4444-4444-8444-444444444444',
+      text: 'delegate this',
+      coords: { platform: 'slack' as const, channel: 'C123' },
+      hopCount: 0,
+      deliveryId: 'delivery-1',
+      externalOrigin
+    }
+    expect(RdAgentMsg.parse(msg).externalOrigin).toEqual(externalOrigin)
+
+    const fwd = {
+      trustedFromAgentId: AGENT_ID,
+      orgId: ORG_ID,
+      toAgentId: msg.toAgentId,
+      text: msg.text,
+      coords: msg.coords,
+      hopCount: 1,
+      deliveryId: msg.deliveryId,
+      externalOrigin
+    }
+    expect(RdAgentMsgFwd.parse(fwd).externalOrigin).toEqual(externalOrigin)
+  })
+
   it('rd/chat streams webchat output and done events verbatim', () => {
     const output = {
       chatId: CONV_ID,

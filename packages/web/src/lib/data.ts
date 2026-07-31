@@ -797,7 +797,7 @@ export interface Session {
   hookKind?: 'webhook' | 'github'
   /** Session-level visibility (lock badge / detail toggle). Absent on mock and
    *  pre-feature CP rows — treated as 'org', matching the server-side backfill. */
-  visibility?: 'private' | 'org'
+  visibility?: 'private' | 'org' | 'external'
   duration: string
   tokens: string
   cost: string

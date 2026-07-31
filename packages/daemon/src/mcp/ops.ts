@@ -274,12 +274,11 @@ export interface SubmitGithubReviewReq extends SubmitGithubReviewInput {
   transportScope?: string
 }
 
-/** Refusal surfaced to the model when a private session tries to write shared
- *  agent memory (session-visibility.md §5.1). Phrased so the agent stops
- *  retrying and does not paraphrase the content into its reply instead. */
-export const MEMORY_WRITE_BLOCKED =
-  'This session is private, so it cannot write to the agent memory shared with other users. Keep the information in ' +
-  'this conversation instead; do not retry.'
+/** Refusal surfaced to the model when an isolated session tries to access
+ *  agent memory shared with other users. Phrased so the agent stops retrying
+ *  instead of attempting to reconstruct or persist the content another way. */
+export const MEMORY_ACCESS_BLOCKED =
+  'Shared agent memory is unavailable in this session. Keep the information in this conversation instead; do not retry.'
 
 /**
  * A peer-discovery request, i.e. `ChannelAgentsReq` plus the caller's own session
@@ -423,13 +422,12 @@ export interface OpsDeps {
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
-  /** Session-visibility capture gate (session-visibility.md §5.1) for the tool
-   *  path. Automatic post-turn distillation is gated in the daemon, but an agent
-   *  can also write agent-scoped memory EXPLICITLY — and agent memory is shared
-   *  across users, so a private session must not be able to. Checked at CALL
-   *  time, not session/new, so a session tightened mid-life is covered too.
-   *  Absent ⇒ allowed (no gate wired, e.g. in unit fixtures). */
-  memoryWriteAllowed?: (ctx: SessionContext) => boolean
+  /** Session-isolation gate for the explicit memory-tool path. Agent memory is
+   *  shared across users, so an isolated session may neither recall nor mutate
+   *  it. Automatic recall, post-turn capture, and Dream selection are gated at
+   *  their own boundaries. Checked at CALL time so a mid-session policy change
+   *  takes effect immediately. Absent ⇒ allowed (e.g. in unit fixtures). */
+  memoryAccessAllowed?: (ctx: SessionContext) => boolean
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -559,8 +557,8 @@ export async function executeTool(
   // Memory tools are universal (every agent has memory) and daemon-local — handle
   // them before the platform-gateway gate so an agent with no platform integration works.
   if (name === 'readMemory' || name === 'writeMemory') {
+    if (deps.memoryAccessAllowed?.(ctx) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const scope = { agentId: ctx.agentId }
-    if (name === 'writeMemory' && deps.memoryWriteAllowed?.(ctx) === false) throw new Error(MEMORY_WRITE_BLOCKED)
     try {
       if (name === 'readMemory') {
         const path = optionalString(args, 'path') ?? 'MEMORY.md'
@@ -613,16 +611,12 @@ export async function executeTool(
   // provider on every call so a stale session tool cannot cross a provider or
   // capability change. The trusted agent scope is always ctx.agentId.
   if (['searchMemory', 'saveMemory', 'getMemory', 'updateMemory', 'deleteMemory'].includes(name)) {
+    if (deps.memoryAccessAllowed?.(ctx) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const surface = deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface()
     if (!surface || surface.shape !== 'records') throw new Error('record memory is not available for this agent')
     const scope = { agentId: ctx.agentId }
     const requireCapability = (operation: 'recall' | 'create' | 'get' | 'update' | 'delete'): void => {
       if (!surface.capabilities.has(operation)) throw new Error(`record memory does not support ${operation}`)
-      // Record memory is agent-scoped and shared just like the file kind, so the
-      // same gate applies to every MUTATION (reads stay available — recalling
-      // what the agent already knows is not a disclosure of THIS session).
-      const mutates = operation === 'create' || operation === 'update' || operation === 'delete'
-      if (mutates && deps.memoryWriteAllowed?.(ctx) === false) throw new Error(MEMORY_WRITE_BLOCKED)
     }
     if (name === 'searchMemory') {
       requireCapability('recall')
