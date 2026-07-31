@@ -160,6 +160,7 @@ import { installedRuntimeCatalog, installedRuntimes } from './runtimes/probe.js'
 import {
   probeAllRuntimes,
   isAuthRequiredError,
+  sweepStaleProbeRoots,
   type ProbeOptions,
   type RuntimeProbeResult
 } from './runtimes/runtime-prober.js'
@@ -1845,6 +1846,10 @@ export class Daemon {
     }
     this.log = makeLogger(cfg.logging.level)
     this.log.info(`starting daemon (root=${root})`)
+    // Reclaim probe temp roots orphaned by an earlier lifetime (a hard kill mid-sweep,
+    // or a runtime that kept writing after its adapter was reaped). Each can hold a
+    // private runtime HOME, so without this they accumulate until the disk fills.
+    sweepStaleProbeRoots({ log: this.log })
     this.log.info(
       `control plane: ${cfg.controlPlane?.enabled ? `enabled (${cfg.controlPlane.url ?? 'no url'})` : 'disabled — running local'}`
     )

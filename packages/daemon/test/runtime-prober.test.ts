@@ -1,5 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lutimesSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +18,7 @@ import {
   curatedProbeEnvironment,
   probeRuntime,
   probeAllRuntimes,
+  sweepStaleProbeRoots,
   type ProbeHostPolicy
 } from '../src/runtimes/runtime-prober.js'
 import { modelOptionsFrom, type AcpHost } from '../src/acp/acp-host.js'
@@ -352,6 +364,35 @@ describe('probeAllRuntimes', () => {
     expect(await probeAllRuntimes({})).toEqual([])
   })
 
+  it('removes its temp root even when a runtime re-creates it after teardown', async () => {
+    // Models the real leak: omp's own daemon escapes the adapter's process group, so
+    // it is still writing when stop() resolves and its next write restores the tree
+    // rmSync just deleted. A one-shot cleanup loses that race.
+    let probeRoot = ''
+    const results = await probeAllRuntimes(
+      { a: rt },
+      {
+        hostFactory: (_runtime, _id, cwd) => {
+          probeRoot = dirname(dirname(cwd))
+          return fakeHost({
+            onStop: () => {
+              // Land the write AFTER the first rmSync (cleanup runs as soon as stop()
+              // resolves), so only the retry can reclaim it. 50ms sits inside the first
+              // 250ms backoff step.
+              setTimeout(() => mkdirSync(join(cwd, 'late-write'), { recursive: true }), 50).unref()
+            }
+          })
+        }
+      }
+    )
+    expect(results.map((r) => r.ok)).toEqual([true])
+    expect(probeRoot).not.toBe('')
+    // Well past the 50ms re-create and the first retry step, so a root that only a
+    // one-shot rmSync touched is still observable here.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(existsSync(probeRoot)).toBe(false)
+  })
+
   it('uses a disposable protected curated launch and leaves host state unchanged', async () => {
     const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-host-'))
     const hostHermes = join(hostHome, '.hermes')
@@ -419,5 +460,46 @@ describe('probeAllRuntimes', () => {
 
     expect(results[0]?.ok).toBe(true)
     expect(readFileSync(join(hostConfig, 'mcp.toml'), 'utf8')).toContain('unsafe')
+  })
+})
+
+describe('sweepStaleProbeRoots', () => {
+  const probeRootAged = (tmpRoot: string, name: string, ageMs: number): string => {
+    const path = join(tmpRoot, name)
+    mkdirSync(join(path, 'runtime', 'home'), { recursive: true })
+    writeFileSync(join(path, 'runtime', 'home', 'natives.bin'), 'x')
+    const when = new Date(Date.now() - ageMs)
+    utimesSync(path, when, when)
+    return path
+  }
+
+  it('removes abandoned roots past the age cutoff and keeps fresh ones', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'ac-probe-sweeptest-'))
+    const abandoned = probeRootAged(tmpRoot, 'ac-probe-oldone', 2 * 60 * 60_000)
+    // A live sweep by a concurrent daemon must survive, as must unrelated temp dirs.
+    const fresh = probeRootAged(tmpRoot, 'ac-probe-freshy', 30_000)
+    const unrelated = probeRootAged(tmpRoot, 'ac-sm-something', 2 * 60 * 60_000)
+
+    expect(sweepStaleProbeRoots({ tmpRoot })).toBe(1)
+    expect(existsSync(abandoned)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    expect(existsSync(unrelated)).toBe(true)
+  })
+
+  it('skips a symlink planted under the probe prefix instead of following it', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'ac-probe-sweeptest-'))
+    const victim = mkdtempSync(join(tmpdir(), 'ac-probe-sweepvictim-'))
+    writeFileSync(join(victim, 'keep.txt'), 'keep')
+    const link = join(tmpRoot, 'ac-probe-evilink')
+    symlinkSync(victim, link)
+    const when = new Date(Date.now() - 2 * 60 * 60_000)
+    lutimesSync(link, when, when)
+
+    expect(sweepStaleProbeRoots({ tmpRoot })).toBe(0)
+    expect(existsSync(join(victim, 'keep.txt'))).toBe(true)
+  })
+
+  it('returns 0 when the temp root cannot be read', () => {
+    expect(sweepStaleProbeRoots({ tmpRoot: join(tmpdir(), 'ac-probe-absent-xyz') })).toBe(0)
   })
 })

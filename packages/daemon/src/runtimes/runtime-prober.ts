@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   unlinkSync,
   writeFileSync
@@ -163,6 +164,95 @@ export interface ProbeOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_CONCURRENCY = 3
+
+/** Probe temp roots are `ac-probe-<random>` directly under the OS temp dir. */
+const PROBE_ROOT_PREFIX = 'ac-probe-'
+/** Re-check schedule after a probe root's initial removal (see removeProbeRoot). The
+ *  first entry is paid by every sweep; the rest only when the root keeps coming back. */
+const PROBE_ROOT_RECHECK_MS = [250, 1_000, 3_000]
+/** How long a probe root may linger before {@link sweepStaleProbeRoots} treats it as
+ *  abandoned. Comfortably above one sweep's worst case (per-runtime timeout plus the
+ *  AcpHost stop escalation), so a concurrent daemon's live root is never touched. */
+const STALE_PROBE_ROOT_MS = 60 * 60_000
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Remove one probe root, then confirm it STAYS removed.
+ *
+ * A runtime that escapes the adapter's process group can still be mid-write when
+ * `stop()` resolves — omp registers its own daemon under the private HOME, so
+ * `AcpHost.stop()`'s process-group SIGTERM/SIGKILL cannot reach it — and its next
+ * write RE-CREATES the tree we just removed. So a single best-effort `rmSync` loses
+ * the race and leaks the whole root, private runtime HOMEs included (~270MB once omp
+ * has materialized its natives). Crucially, "gone right now" proves nothing either:
+ * the orphan's write may still be seconds out, which is why each pass re-checks after
+ * a delay rather than returning on the first empty stat. Anything still reappearing
+ * after the last pass is left to {@link sweepStaleProbeRoots}.
+ *
+ * Never throws — a cleanup failure must not discard probe results we already have.
+ */
+async function removeProbeRoot(root: string, log?: Logger): Promise<void> {
+  let lastError: unknown
+  const remove = (): void => {
+    try {
+      rmSync(root, { recursive: true, force: true })
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  remove()
+  for (const delay of PROBE_ROOT_RECHECK_MS) {
+    await sleep(delay)
+    if (!existsSync(root)) return
+    remove()
+  }
+  if (!existsSync(root) && !lastError) return
+  const detail = lastError ? `: ${(lastError as Error).message}` : ' — it kept reappearing'
+  log?.debug(`probe: temp cwd cleanup failed for ${root}${detail}`)
+}
+
+/**
+ * Remove probe roots abandoned by an earlier daemon lifetime. `probeAllRuntimes`
+ * cleans up its own root, but a hard kill mid-sweep — or a runtime that outlives the
+ * retries in {@link removeProbeRoot} — leaves one behind. Each can hold a private
+ * runtime HOME, so an unattended host accumulates them fast (269MB per omp probe),
+ * which is how a single busy hour reached ~57GB of leaked roots.
+ *
+ * Best effort and never throws: a root owned by another user, or removed by a
+ * concurrent daemon between the stat and the unlink, is skipped. Returns the number
+ * of roots actually removed.
+ */
+export function sweepStaleProbeRoots(opts: { log?: Logger; maxAgeMs?: number; tmpRoot?: string } = {}): number {
+  const tmpRoot = opts.tmpRoot ?? tmpdir()
+  const cutoff = Date.now() - (opts.maxAgeMs ?? STALE_PROBE_ROOT_MS)
+  let entries: string[]
+  try {
+    entries = readdirSync(tmpRoot)
+  } catch (err) {
+    opts.log?.debug(`probe: stale-root sweep could not read ${tmpRoot}: ${(err as Error).message}`)
+    return 0
+  }
+
+  let removed = 0
+  for (const name of entries) {
+    if (!name.startsWith(PROBE_ROOT_PREFIX)) continue
+    const path = join(tmpRoot, name)
+    try {
+      // lstat, never stat: the OS temp dir is world-writable, so a symlink planted
+      // under our prefix must be skipped rather than followed out of the temp root.
+      const stat = lstatSync(path)
+      if (!stat.isDirectory() || stat.mtimeMs > cutoff) continue
+      rmSync(path, { recursive: true, force: true })
+      removed++
+    } catch (err) {
+      opts.log?.debug(`probe: could not remove stale probe root ${path}: ${(err as Error).message}`)
+    }
+  }
+  if (removed > 0) opts.log?.info(`probe: removed ${removed} stale probe temp root(s) under ${tmpRoot}`)
+  return removed
+}
 
 function makeHost(
   rt: RuntimeDef,
@@ -463,13 +553,10 @@ export async function probeAllRuntimes(
   try {
     await Promise.all(Array.from({ length: Math.min(limit, ids.length) }, () => worker()))
   } finally {
-    // Best-effort cleanup — a temp-dir removal failure (e.g. Windows EBUSY) must
-    // never discard the probe results we already gathered.
-    try {
-      rmSync(cwd, { recursive: true, force: true })
-    } catch (err) {
-      opts.log?.debug(`probe: temp cwd cleanup failed for ${cwd}: ${(err as Error).message}`)
-    }
+    // Best-effort cleanup — a temp-dir removal failure (e.g. Windows EBUSY, or a
+    // runtime still writing from outside the adapter's process group) must never
+    // discard the probe results we already gathered.
+    await removeProbeRoot(cwd, opts.log)
   }
   return results
 }
