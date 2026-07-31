@@ -1680,6 +1680,7 @@ export const MEMBERS: Member[] = [
 // platform display name
 export function platName(p: string): string {
   const x = (p || '').toLowerCase()
+  if (x.includes('sched')) return 'Schedule'
   if (x.includes('github')) return 'GitHub'
   if (x.includes('dream')) return 'Memory dream'
   if (x.includes('hook')) return 'Webhook'
@@ -1697,6 +1698,22 @@ export function platName(p: string): string {
 export function sessionPlatform(s: { platform: string; hookKind?: 'webhook' | 'github' }): string {
   if (s.platform === 'playground') return 'webchat'
   return s.platform === 'hook' && s.hookKind === 'github' ? 'github' : s.platform
+}
+
+/** Channel-cell identity (mark + label) for a session row. A headless schedule
+ * fire has no real channel — the daemon keys it `cron:<scheduleId>` on the
+ * legacy 'slack' platform — so resolve it to the schedule's name under a
+ * schedule mark instead of a raw uuid with a Slack icon. `cronName` looks up
+ * the schedule (the crons list may still be loading → short-id fallback). */
+export function sessionChannelDisplay(
+  s: { platform: string; channel: string; hookKind?: 'webhook' | 'github' },
+  cronName: (id: string) => string | null | undefined
+): { platform: string; label: string } {
+  if (s.channel.startsWith('cron:')) {
+    const id = s.channel.slice('cron:'.length)
+    return { platform: 'schedule', label: cronName(id)?.trim() || `Schedule ${id.slice(0, 8)}` }
+  }
+  return { platform: sessionPlatform(s), label: s.channel }
 }
 
 /** Playground conversations have unique internal ids but share one user-facing

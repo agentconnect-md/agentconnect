@@ -21,6 +21,7 @@ import {
   platName,
   preferredModelFor,
   runtimeLabel,
+  sessionChannelDisplay,
   sessionPlatform,
   speaker,
   status,
@@ -910,6 +911,8 @@ export default function SessionDetailView() {
   // it in place. `isLive` gates the composer/typing affordance for both.
   const isWebchat = session.platform === 'webchat'
   const sessionIntegration = sessionPlatform(session)
+  // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
+  const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
   const isLive = isPg || isWebchat
   // Composer state is per-session in the provider — bind it to THIS session's id so a
@@ -1247,7 +1250,7 @@ export default function SessionDetailView() {
         )}
         <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
           <span className="imark h-4 w-4 flex-none rounded-xs">
-            <PlatformMark platform={sessionIntegration} fillPct={100} />
+            <PlatformMark platform={channelDisplay.platform} fillPct={100} />
           </span>
           {session.threadUrl ? (
             <a
@@ -1257,10 +1260,10 @@ export default function SessionDetailView() {
               rel="noopener noreferrer"
               title={`Open the ${platName(sessionIntegration)} thread`}
             >
-              {session.channel}
+              {channelDisplay.label}
             </a>
           ) : (
-            <span className="mono truncate text-[12px]">{session.channel}</span>
+            <span className="mono truncate text-[12px]">{channelDisplay.label}</span>
           )}
         </span>
         {headerCron ? (

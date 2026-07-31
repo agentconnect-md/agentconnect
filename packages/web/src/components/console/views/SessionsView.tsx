@@ -10,6 +10,7 @@ import {
   agentLabel,
   enrichSessionWithAgent,
   platName,
+  sessionChannelDisplay,
   sessionChannelFilterValue,
   sessionPlatform,
   status,
@@ -205,7 +206,9 @@ export default function SessionsView() {
         channel: channel.label,
         channelId: channel.value
       }),
-      { label: channel.label, platform: channel.platform }
+      // Headless-schedule channels keep their raw `cron:<id>` filter value but
+      // render as the schedule's name under the schedule mark.
+      sessionChannelDisplay({ platform: channel.platform, channel: channel.label }, (id) => cronById.get(id)?.name)
     ])
   )
   const triggerSources = new Map(
@@ -547,6 +550,7 @@ export default function SessionsView() {
         )}
         {filtered.map((s, i) => {
           const ss = status(s.status)
+          const ch = sessionChannelDisplay(s, (id) => cronById.get(id)?.name)
           return (
             <Link
               key={s.id}
@@ -587,10 +591,10 @@ export default function SessionsView() {
                 </span>
                 <span className="ml-auto inline-flex min-w-0 flex-1 items-center justify-end gap-[5px]">
                   <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                    <PlatformMark platform={sessionPlatform(s)} fillPct={100} />
+                    <PlatformMark platform={ch.platform} fillPct={100} />
                   </span>
                   <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                    {s.channel}
+                    {ch.label}
                   </span>
                 </span>
               </span>
@@ -615,9 +619,9 @@ export default function SessionsView() {
               </div>
               <div className="hidden min-w-0 items-center gap-2 desktop:flex">
                 <span className="imark h-5 w-5 rounded-[5px]">
-                  <PlatformMark platform={sessionPlatform(s)} />
+                  <PlatformMark platform={ch.platform} />
                 </span>
-                <span className="mono truncate text-[12px] text-(--text-secondary)">{s.channel}</span>
+                <span className="mono truncate text-[12px] text-(--text-secondary)">{ch.label}</span>
               </div>
               <div className="hidden items-center gap-[7px] desktop:flex">
                 <span className="dot" style={{ background: ss.dot }} />

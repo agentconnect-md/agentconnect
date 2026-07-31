@@ -11,7 +11,7 @@ import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
-import { sessionPlatform, type Session } from '@/lib/data'
+import { sessionChannelDisplay, type Session } from '@/lib/data'
 import { useIsMobile } from '@/lib/use-is-mobile'
 
 export function Card({
@@ -103,7 +103,7 @@ export function RecentSessionsCard({
   fillHeight?: boolean
 }) {
   const { orgPath } = useOrgs()
-  const { getAgent } = useConsoleData()
+  const { getAgent, crons } = useConsoleData()
   const cardRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [fit, setFit] = useState<number | null>(null)
@@ -142,6 +142,7 @@ export function RecentSessionsCard({
         ) : (
           recent.map((s) => {
             const owner = s.agentId ? getAgent(s.agentId) : undefined
+            const ch = sessionChannelDisplay(s, (id) => crons.find((c) => c.id === id)?.name)
             return (
               <Link key={s.id} href={orgPath(`/sessions/${s.id}`)} className="row click grid-cols-[1fr_auto] gap-3">
                 <span className="min-w-0">
@@ -164,9 +165,9 @@ export function RecentSessionsCard({
                     {s.channel && (
                       <>
                         <span className="imark h-4 w-4 rounded-xs">
-                          <PlatformMark platform={sessionPlatform(s)} fillPct={90} />
+                          <PlatformMark platform={ch.platform} fillPct={90} />
                         </span>
-                        <span className="mono truncate text-[11px]">{s.channel}</span>
+                        <span className="mono truncate text-[11px]">{ch.label}</span>
                       </>
                     )}
                   </span>
