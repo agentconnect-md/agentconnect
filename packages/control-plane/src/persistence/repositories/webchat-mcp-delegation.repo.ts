@@ -195,9 +195,9 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
           AND delegation."expiresAt" <= ${expiredBefore}
           AND NOT EXISTS (
             SELECT 1
-            FROM "webchat_mcp_access_grant" AS grant
-            JOIN "mcp_invocation" AS invocation ON invocation."grantId" = grant."id"
-            WHERE grant."authorityId" = delegation."id"
+            FROM "webchat_mcp_access_grant" AS access_grant
+            JOIN "mcp_invocation" AS invocation ON invocation."grantId" = access_grant."id"
+            WHERE access_grant."authorityId" = delegation."id"
           )
         RETURNING delegation."revokedAt", delegation."revokedReason"
       `)
