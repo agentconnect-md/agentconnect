@@ -1294,6 +1294,14 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     expect(ask(daemon)).toEqual({ kind: 'parent', sessionId: 'acp-remote-parent' })
     // Still only for the conversation it actually names.
     expect(ask(daemon, { targetChannel: '-100999' })).toBeUndefined()
+    // Matching is coordinates-only here BY DESIGN — the remote scope is credential-derived and
+    // never crosses the wire — so a target integration's own scope does not suppress the match.
+    // Over-matching costs a hint naming the caller's real parent; silence would cost the hint
+    // entirely on the cross-daemon escalation path.
+    expect(ask(daemon, { targetIntegrationId: 'int-tg-1' })).toEqual({
+      kind: 'parent',
+      sessionId: 'acp-remote-parent'
+    })
     await daemon.stop()
   })
 

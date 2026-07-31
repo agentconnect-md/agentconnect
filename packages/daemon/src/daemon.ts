@@ -5806,10 +5806,9 @@ export class Daemon {
    * The parent link is read from the CURRENT turn's trusted call metadata when present, else from
    * the DURABLE origin on the session row (§5.3) — the load-bearing half, since relaying an answer
    * happens on a later human-triggered turn with no metadata. Coords come from the parent's own
-   * row, the only place a transport scope is recorded; a CROSS-DAEMON parent has no local row, so
-   * there the live wake's `originCoords` answer instead. Those carry no scope (the parent's scope
-   * belongs to its own daemon and means nothing here), which is why the row is preferred whenever
-   * one exists. This widens nothing — it answers about coordinates the caller itself just named.
+   * row wherever one exists, because only a row records a transport scope; the cross-daemon case
+   * and its deliberate imprecision are spelled out at the branch below. This widens nothing — it
+   * answers about coordinates the caller itself just named.
    */
   private rootPostRelation(req: {
     callerAgentId: string
@@ -5839,15 +5838,23 @@ export class Daemon {
     const inbound = this.activeTurnCallMeta.get(key)
     const parentSessionId = inbound?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
     const parent = parentSessionId ? this.store.getSessionByAcpId(parentSessionId) : undefined
-    const parentCoords = parent
-      ? { platform: parent.platform, channel: parent.channel, scope: parent.transportScope }
-      : inbound?.originSessionId === parentSessionId && inbound?.originCoords
-        ? // Cross-daemon parent: no local row to read, so take the live wake's coords. Scope is
-          // unknowable (it is the source daemon's), so this compares coordinates alone.
-          { platform: inbound.originCoords.platform, channel: inbound.originCoords.channel, scope: targetScope }
-        : undefined
-    if (parentSessionId && parentCoords && isTarget(parentCoords.platform, parentCoords.channel, parentCoords.scope)) {
+    // A LOCAL parent's row records its transport scope, so its identity is exact.
+    if (parentSessionId && parent && isTarget(parent.platform, parent.channel, parent.transportScope)) {
       return { kind: 'parent', sessionId: parentSessionId }
+    }
+    // A CROSS-DAEMON parent has no row here, and its scope cannot be obtained: the value is
+    // derived from the owning daemon's live credential and deliberately never crosses the wire
+    // (see the note on the durable scope in protocol telemetry) — it would also rotate with that
+    // daemon's tokens, so a forwarded copy could not be compared reliably anyway. Identity here is
+    // therefore COORDINATES ONLY, which can over-match where one channel id is reachable through
+    // two bots. That trade is deliberate: the cost of over-matching is a hint naming the caller's
+    // real parent — where a relayed answer belongs regardless — while staying silent would drop
+    // the hint for precisely the escalation shape the relay exists to serve.
+    if (parentSessionId && !parent && inbound?.originCoords) {
+      const { platform, channel } = inbound.originCoords
+      if (platform === req.targetPlatform && channel === req.targetChannel) {
+        return { kind: 'parent', sessionId: parentSessionId }
+      }
     }
     if (isTarget(req.platform, req.callerChannel, req.callerTransportScope)) return { kind: 'self' }
     return undefined
