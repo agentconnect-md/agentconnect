@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { refreshMySocialIdentities } from '@/lib/api'
+import { forgetOwnershipProof } from '@/lib/ownership-proof'
 import {
   LogtoAccountError,
   accountErrorMessage,
-  forgetOwnershipProof,
   saveSocialIdentity,
   takeSocialLinkFlow,
   verifySocialVerification
@@ -48,7 +48,16 @@ export default function SocialAccountCallback() {
     // with, so echo it back alongside the provider's own response params.
     const connectorData = { ...Object.fromEntries(params.entries()), redirectUri: flow.redirectUri }
     verifySocialVerification(flow.verificationRecordId, connectorData)
-      .then((verified) => saveSocialIdentity(verified, flow.currentVerificationRecordId))
+      .then((verified) =>
+        saveSocialIdentity(verified, flow.currentVerificationRecordId).catch((caught: unknown) => {
+          // Only the SAVE step's refusal implicates the ownership proof; a
+          // failure verifying the provider response says nothing about it.
+          if (caught instanceof LogtoAccountError && (caught.status === 401 || caught.status === 403)) {
+            forgetOwnershipProof()
+          }
+          throw caught
+        })
+      )
       // Best-effort: the link already succeeded, so a failure here must not be
       // reported as one. It only costs a stale row until the cache expires.
       .then(() => refreshMySocialIdentities().catch(() => undefined))
@@ -56,11 +65,6 @@ export default function SocialAccountCallback() {
       // says it better than a banner that outlives the action.
       .then(() => window.location.replace(flow.returnTo))
       .catch((caught) => {
-        // A refused ownership proof must not be reused: it would fail the same
-        // way every time. Dropping it makes the next attempt ask for a code.
-        if (caught instanceof LogtoAccountError && (caught.status === 403 || caught.status === 401)) {
-          forgetOwnershipProof()
-        }
         setError(accountErrorMessage(caught, { providerName: flow.providerName, linking: true }))
       })
   }, [])

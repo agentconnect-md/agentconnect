@@ -27,17 +27,6 @@ export interface AccountNotice {
 const SOCIAL_FLOW_KEY = 'ac.social-link.flow'
 const SOCIAL_FLOW_TTL_MS = 10 * 60 * 1000
 
-const OWNERSHIP_PROOF_KEY = 'ac.social-link.proof'
-// Logto expires a verification record 10 minutes after it is issued, and lets
-// it authorize more than one change in that window — so linking a second
-// provider need not ask for a second code.
-const OWNERSHIP_PROOF_TTL_MS = 10 * 60 * 1000
-// But a reused proof must still be valid when the CALLBACK saves the identity,
-// and the provider's consent screen sits in between. Spending the last of the
-// window is how someone who pauses there gets a 403 instead of a link, so hand
-// one back only while this much is left.
-const OWNERSHIP_PROOF_MIN_REMAINING_MS = 5 * 60 * 1000
-
 export class LogtoAccountError extends Error {
   constructor(
     message: string,
@@ -90,16 +79,20 @@ async function accountRequest<T>(path: string, init: RequestInit = {}): Promise<
   return (await response.json()) as T
 }
 
-/** Send an ownership-proof code to the account's own email. */
-export async function requestEmailVerification(email: string): Promise<string> {
-  const result = await accountRequest<{ verificationRecordId: string }>('/api/verifications/verification-code', {
-    method: 'POST',
-    body: JSON.stringify({
-      identifier: { type: 'email', value: email },
-      templateType: 'UserPermissionValidation'
-    })
-  })
-  return result.verificationRecordId
+/** Send an ownership-proof code to the account's own email. `expiresAt` is when
+ *  the record dies — the clock is already running when this returns. */
+export async function requestEmailVerification(email: string): Promise<{ verificationId: string; expiresAt: string }> {
+  const result = await accountRequest<{ verificationRecordId: string; expiresAt: string }>(
+    '/api/verifications/verification-code',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        identifier: { type: 'email', value: email },
+        templateType: 'UserPermissionValidation'
+      })
+    }
+  )
+  return { verificationId: result.verificationRecordId, expiresAt: result.expiresAt }
 }
 
 /** Redeem that code; the returned record is what `logto-verification-id` names. */
@@ -168,47 +161,6 @@ export function createSocialState(): string {
 }
 
 /** Save only the short-lived connector choice and CSRF state in this tab. */
-/**
- * Keep the account-ownership proof so a second link in the same sitting does
- * not ask for a second code. Only the record id is stored — the same thing the
- * in-flight link already parks here — never the code itself.
- *
- * The trade: one code authorizes any link for the rest of Logto's 10-minute
- * window, rather than exactly one round trip.
- */
-export function rememberOwnershipProof(recordId: string): void {
-  try {
-    sessionStorage.setItem(OWNERSHIP_PROOF_KEY, JSON.stringify({ recordId, createdAt: Date.now() }))
-  } catch {
-    // Storage is optional here: without it the next link just asks for a code.
-  }
-}
-
-/** The stored proof, but only while enough of its window is left to survive the
- *  provider round trip. Undefined ⇒ the caller must collect a fresh code. */
-export function reusableOwnershipProof(): string | undefined {
-  try {
-    const value = sessionStorage.getItem(OWNERSHIP_PROOF_KEY)
-    if (!value) return undefined
-    const proof = asRecord(JSON.parse(value))
-    if (typeof proof.recordId !== 'string' || typeof proof.createdAt !== 'number') return undefined
-    const age = Date.now() - proof.createdAt
-    if (age < 0 || age > OWNERSHIP_PROOF_TTL_MS - OWNERSHIP_PROOF_MIN_REMAINING_MS) return undefined
-    return proof.recordId
-  } catch {
-    return undefined
-  }
-}
-
-/** Drop the stored proof — it expired, or Logto refused it. */
-export function forgetOwnershipProof(): void {
-  try {
-    sessionStorage.removeItem(OWNERSHIP_PROOF_KEY)
-  } catch {
-    // Nothing to do; a refused proof is re-collected on the next attempt anyway.
-  }
-}
-
 export function writeSocialLinkFlow(flow: SocialLinkFlow): boolean {
   try {
     const value = JSON.stringify(flow)

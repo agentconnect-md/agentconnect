@@ -181,7 +181,10 @@ describe('SocialSignInCard account state', () => {
       primaryEmail: 'phil@example.test'
     })
     // Standing in for a code entered moments ago on the first link.
-    sessionStorage.setItem('ac.social-link.proof', JSON.stringify({ recordId: 'proof-1', createdAt: Date.now() }))
+    sessionStorage.setItem(
+      'ac.social-link.proof',
+      JSON.stringify({ recordId: 'proof-1', expiresAt: new Date(Date.now() + 9 * 60_000).toISOString() })
+    )
 
     await renderCard()
     await waitUntil(() => container?.textContent?.includes('Not linked') === true)

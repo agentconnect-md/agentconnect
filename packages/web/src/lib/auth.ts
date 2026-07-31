@@ -22,6 +22,7 @@
 import LogtoClient, { isLogtoRequestError, UserScope } from '@logto/browser'
 import { MOCK_MODE } from '@/lib/data'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
+import { forgetOwnershipProof } from '@/lib/ownership-proof'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 declare global {
@@ -154,6 +155,9 @@ function clearLocalSessionMetadata(): void {
   // The next sign-in may be a different user, so do not carry the previous
   // user's organization selection into the new session.
   document.cookie = 'ac.org=; path=/; max-age=0'
+  // A link proof belongs to the session that earned it. Left behind, the next
+  // user in this tab would start a link Logto can only reject at the callback.
+  forgetOwnershipProof()
 }
 
 async function clearInvalidGrantSession(c: LogtoClient): Promise<void> {
