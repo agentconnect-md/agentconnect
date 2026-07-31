@@ -23,6 +23,7 @@ interface MemberBody {
   email: string | null
   name: string | null
   role: string
+  isCurrentUser: boolean
   joinedAt: string
 }
 
@@ -88,8 +89,10 @@ describe('GET /members', () => {
       const body = res.json() as MemberBody[]
       expect(body.map((m) => m.userId)).toEqual([DEFAULT_OWNER_ID, dana.userId])
       expect(body[0]!.role).toBe('owner')
+      expect(body[0]!.isCurrentUser).toBe(true)
       expect(body[0]!.email).toBe(DEFAULT_OWNER_EMAIL)
       expect(body[1]!.role).toBe('collaborator')
+      expect(body[1]!.isCurrentUser).toBe(false)
     } finally {
       await close()
     }
@@ -191,6 +194,52 @@ describe('PATCH /members/:id — role changes', () => {
 })
 
 describe('DELETE /members/:id — removal', () => {
+  it('lets a collaborator leave and transfers their resources to an owner', async () => {
+    const dana = await signup('sub-dana', 'dana@acme.dev')
+    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      visibility: 'restricted',
+      createdByUserId: dana.userId,
+      ownerUserId: dana.userId,
+      sharedWith: [DEFAULT_OWNER_ID, dana.userId]
+    })
+    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
+    try {
+      const res = await app.inject({ method: 'DELETE', url: `${ORG}/members/${dana.userId}` })
+      expect(res.statusCode).toBe(204)
+
+      expect(
+        await prisma.membership.findUnique({
+          where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: dana.userId } }
+        })
+      ).toBeNull()
+      expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
+        ownerUserId: DEFAULT_OWNER_ID,
+        sharedWith: [DEFAULT_OWNER_ID]
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('does not let a non-owner remove another member', async () => {
+    const dana = await signup('sub-dana', 'dana@acme.dev')
+    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'viewer')
+    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
+    try {
+      const res = await app.inject({ method: 'DELETE', url: `${ORG}/members/${DEFAULT_OWNER_ID}` })
+      expect(res.statusCode).toBe(403)
+      expect(
+        await prisma.membership.findUnique({
+          where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+        })
+      ).not.toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
   it('removes a member for good — the next sign-in does NOT re-add them', async () => {
     const dana = await signup('sub-dana', 'dana@acme.dev')
     await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')

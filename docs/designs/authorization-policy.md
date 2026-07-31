@@ -66,6 +66,10 @@ The action vocabulary represents the distinct OSS policies that exist today:
 | `session.view`              | tier, owner identity, identity set | org-visible or identity-owned                                 |
 | `session.visibility.change` | tier, owner identity, identity set | identity-owned, or an org owner while the session remains org |
 
+Membership removal uses the target-aware `organization.membership.remove`
+action: every role may remove itself, while removing another member requires
+the owner role.
+
 The vocabulary can gain finer-grained OSS actions when the product adds a new
 role or capability. The principal and resource shapes do not need to change.
 
@@ -130,18 +134,20 @@ already-sized page.
 `ownerUserId` supplies the resource-ownership arm; `createdByUserId` remains
 immutable creation attribution. Removing a member transfers every owned
 visibility carrier to a selected remaining organization owner and prunes every
-share vector before deleting the membership.
+share vector before deleting the membership. Any member may remove their own
+membership; removing another member requires the owner role.
 
 Owner demotion, removal, and invited-identity role merge first lock the
-organization `FOR NO KEY UPDATE`, then recheck the acting owner and lock the
-affected memberships. This serializes competing last-owner transitions without
-conflicting with ordinary resource writers' parent `FOR KEY SHARE`. Removal
-selects its transfer recipient from an authoritative membership snapshot inside
-that transaction before scanning resources. Resource creates and sharing writes
-hold shared membership locks and recheck the actor, initial owner, and share
-targets inside their own resource-write transaction. A queued write therefore
-cannot persist a departed stable user ID, and a transfer recipient cannot lose
-owner status before the transfer commits.
+organization `FOR NO KEY UPDATE`, then recheck the actor's membership and any
+required owner role before locking the affected memberships. This serializes
+competing last-owner transitions without conflicting with ordinary resource
+writers' parent `FOR KEY SHARE`. Removal selects its transfer recipient from an
+authoritative membership snapshot inside that transaction before scanning
+resources. Resource creates and sharing writes hold shared membership locks and
+recheck the actor, initial owner, and share targets inside their own
+resource-write transaction. A queued write therefore cannot persist a departed
+stable user ID, and a transfer recipient cannot lose owner status before the
+transfer commits.
 
 ## 7. Verification
 

@@ -2,12 +2,11 @@
 
 // Settings page (design: `isSettings`). Everything here is REAL and scoped to
 // the active org: the Organization card (rename via PATCH /orgs/:id, owners
-// only), Members & roles (GET /members; owners can invite-by-email, re-role
-// and remove members — the CP enforces owner-only writes and the last-owner
-// guard), the Bots card (the org's durable bot identities; free ones can be
-// deleted here — the Add-integration picker only offers them for reuse), and
-// the Roles explainer. In no-auth mode the devAuth principal owns the local
-// default org, so the page is fully editable with no picker.
+// only), self-service organization leave, Members & roles (GET /members;
+// owners can invite-by-email, re-role and remove members — the CP enforces the
+// last-owner guard), the Bots card (the org's durable bot identities; free ones
+// can be deleted here — the Add-integration picker only offers them for reuse),
+// and the Roles explainer.
 
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
@@ -82,6 +81,7 @@ interface MemberRowView {
   roleBg: string
   roleText: string
   role: MemberRole
+  isCurrentUser: boolean
 }
 
 function rowFromDto(m: MemberDto): MemberRowView {
@@ -98,7 +98,8 @@ function rowFromDto(m: MemberDto): MemberRowView {
     roleLabel: ROLE_LABELS[m.role],
     roleBg: owner ? 'var(--brand-soft)' : 'var(--surface-active)',
     roleText: owner ? 'var(--brand-soft-text)' : 'var(--text-secondary)',
-    role: m.role
+    role: m.role,
+    isCurrentUser: m.isCurrentUser
   }
 }
 
@@ -471,7 +472,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
 export default function SettingsView() {
   const targetBotId = useSearchParams().get('bot')
   const { me } = useProfile()
-  const { activeOrg, myRole, refreshOrgs, error: orgError } = useOrgs()
+  const { activeOrg, myRole, refreshOrgs, leaveOrg, error: orgError } = useOrgs()
   const { openModal } = useModal()
   const isOwner = myRole === 'owner'
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
@@ -521,6 +522,7 @@ export default function SettingsView() {
       avBg: r.avBg,
       avText: r.avText,
       role: r.role,
+      isCurrentUser: r.isCurrentUser,
       lastOwner: r.role === 'owner' && ownerCount <= 1
     })
   }
@@ -604,8 +606,12 @@ export default function SettingsView() {
             <span className="badge self-center justify-self-start" style={{ background: p.roleBg, color: p.roleText }}>
               {p.roleLabel}
             </span>
-            {isOwner ? (
-              <button className="iconbtn h-7 w-7 self-center" title="Edit member" onClick={() => edit(p)}>
+            {isOwner || p.isCurrentUser ? (
+              <button
+                className="iconbtn h-7 w-7 self-center"
+                title={isOwner ? 'Edit member' : 'Manage membership'}
+                onClick={() => edit(p)}
+              >
                 <Icon name="pencil" size={14} />
               </button>
             ) : (
@@ -646,7 +652,13 @@ export default function SettingsView() {
       {editing && (
         <div className="scrim" onClick={() => setEditing(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <EditMemberModal member={editing} onClose={() => setEditing(null)} onChanged={onMembersChanged} />
+            <EditMemberModal
+              member={editing}
+              canEditRole={isOwner}
+              onLeave={editing.isCurrentUser ? () => leaveOrg(editing.userId) : undefined}
+              onClose={() => setEditing(null)}
+              onChanged={onMembersChanged}
+            />
           </div>
         </div>
       )}

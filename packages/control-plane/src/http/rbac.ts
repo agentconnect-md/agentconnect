@@ -4,9 +4,10 @@
  * The org-scope guard (`http/org-scope.ts`) verifies the caller's membership
  * in the PATH org (`/orgs/:orgId/…`) and attaches `req.orgCtx = { orgId,
  * role }`: `owner` edits everything plus members/org info, `collaborator`
- * edits everything except members/org info, `viewer` is read-only. Routes call
- * these tiny guards at the top of a handler; a `true` return means the reply
- * was already sent (403) and the handler must bail.
+ * edits everything except members/org info, `viewer` is read-only. Every role
+ * may remove its own membership. Routes call these tiny guards at the top of a
+ * handler; a `true` return means the reply was already sent (403) and the
+ * handler must bail.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { OrgId } from '../domain/ids.js'
@@ -40,5 +41,19 @@ export function denyViewerWrite(req: FastifyRequest, reply: FastifyReply): boole
 export function denyNonOwner(req: FastifyRequest, reply: FastifyReply): boolean {
   if (can(ctxOf(req), { action: AuthorizationAction.OrganizationManage })) return false
   forbid(reply, 'only an organization owner can do this')
+  return true
+}
+
+/** Every member may leave; removing a different member remains owner-only. */
+export function denyMemberRemoval(req: FastifyRequest, reply: FastifyReply, targetUserId: string): boolean {
+  if (
+    can(ctxOf(req), {
+      action: AuthorizationAction.OrganizationMembershipRemove,
+      targetUserId
+    })
+  ) {
+    return false
+  }
+  forbid(reply, 'only an organization owner can remove another member')
   return true
 }

@@ -7,18 +7,18 @@
  *                          unknown addresses become invited rows, claimed on
  *                          first SSO sign-in)
  *   PATCH  /members/:id  → change a member's role (owner-only)
- *   DELETE /members/:id  → remove a member (owner-only)
+ *   DELETE /members/:id  → leave the org; owners may remove another member
  *
  * All scoped to `req.principal.orgId` (the console's active org). The
  * last-owner guard keeps an org from orphaning itself: the final owner can't
- * be demoted or removed.
+ * be demoted or leave.
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { OrgMemberRecord } from '../../persistence/ports.js'
-import { denyNonOwner } from '../rbac.js'
+import { denyMemberRemoval, denyNonOwner } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import {
   MemberDto,
@@ -31,13 +31,14 @@ import {
 } from '../dto/index.js'
 import { resolveProfilePictureUrl } from '../../icons/icon-store.js'
 
-function toDto(m: OrgMemberRecord, deps: HttpDeps): MemberDtoT {
+function toDto(m: OrgMemberRecord, currentUserId: string, deps: HttpDeps): MemberDtoT {
   return {
     userId: m.userId,
     email: m.email,
     name: m.displayName,
     picture: resolveProfilePictureUrl(m.userId, m.picture, m.profilePictureUpdatedAt, deps.iconStore),
     role: m.role,
+    isCurrentUser: m.userId === currentUserId,
     joinedAt: m.joinedAt.toISOString()
   }
 }
@@ -59,7 +60,7 @@ export function memberRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.user.listMembers(req.orgCtx!.orgId)
-        return rows.map((row) => toDto(row, deps))
+        return rows.map((row) => toDto(row, req.orgCtx!.userId, deps))
       }
     )
 
@@ -79,7 +80,7 @@ export function memberRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         const added = await deps.repos.user.addMemberByEmail(req.orgCtx!.orgId, req.body.email, req.body.role)
-        return reply.code(201).send(toDto(added, deps))
+        return reply.code(201).send(toDto(added, req.orgCtx!.userId, deps))
       }
     )
 
@@ -102,7 +103,7 @@ export function memberRoutes(deps: HttpDeps) {
         const orgId = req.orgCtx!.orgId
         const userId = req.params.id
         const updated = await deps.repos.user.setMemberRole(orgId, userId, req.body.role, req.orgCtx!.userId)
-        return toDto(updated, deps)
+        return toDto(updated, req.orgCtx!.userId, deps)
       }
     )
 
@@ -111,19 +112,19 @@ export function memberRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Members],
-          summary: 'Remove a member',
+          summary: 'Leave or remove a member',
           description:
-            'Owner-only. Removes a member from the org; the last owner can’t be removed, which would orphan the org.',
+            'Any member can remove their own membership to leave the org. Only owners can remove another member. The last owner can’t leave, which would orphan the org.',
           operationId: 'removeMember',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
-        if (denyNonOwner(req, reply)) return
         const orgId = req.orgCtx!.orgId
         const userId = req.params.id
         const actingUserId = req.orgCtx!.userId
+        if (denyMemberRemoval(req, reply, userId)) return
         await deps.repos.user.removeMember(orgId, userId, actingUserId)
         return reply.code(204).send(null)
       }
