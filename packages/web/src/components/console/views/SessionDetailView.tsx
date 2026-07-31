@@ -58,7 +58,7 @@ import { mergeSessionMessages } from '@/lib/session-transcript'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
-import { WORK_LANES, workCounts, workSummary } from '@/components/console/session-work'
+import { WORK_LANES, toggleWorkPanel, workCounts, workPanelOpen, workSummary } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import {
@@ -671,15 +671,12 @@ export default function SessionDetailView() {
   const [msgErr, setMsgErr] = useState<string | null>(null)
   const [tailReady, setTailReady] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
-  // Which bot turns have their collapsed "work" expanded (keyed by turn index).
-  const [expandedWork, setExpandedWork] = useState<Set<number>>(() => new Set())
-  const toggleWork = (ti: number) =>
-    setExpandedWork((prev) => {
-      const next = new Set(prev)
-      if (next.has(ti)) next.delete(ti)
-      else next.add(ti)
-      return next
-    })
+  // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
+  // by turn index), overriding the default that turn's content implies. Stored as the
+  // explicit desired state, so a hidden panel stays hidden when streaming flips the
+  // default — see workPanelOpen().
+  const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
+  const toggleWork = (ti: number, autoOpen: boolean) => setWorkOverride((prev) => toggleWorkPanel(prev, ti, autoOpen))
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -1565,8 +1562,10 @@ export default function SessionDetailView() {
                   const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                   const summary = workSummary(thinkCount, toolCount, editCount)
                   // Auto-open while a turn has produced only work (mid-stream), so the
-                  // live agent isn't hidden; collapse once its answer text lands.
-                  const openWork = expandedWork.has(ti) || textSteps.length === 0
+                  // live agent isn't hidden; collapse once its answer text lands. Either
+                  // default stays user-overridable, so thinking-only turns can be closed.
+                  const autoOpen = textSteps.length === 0
+                  const openWork = workPanelOpen(workOverride.get(ti), autoOpen)
                   return (
                     <div key={ti} className="flex items-start gap-[9px]">
                       <span className="av h-[26px] w-[26px] flex-none rounded-md">
@@ -1595,7 +1594,7 @@ export default function SessionDetailView() {
                           <>
                             <button
                               type="button"
-                              onClick={() => toggleWork(ti)}
+                              onClick={() => toggleWork(ti, autoOpen)}
                               className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
                               title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
                             >

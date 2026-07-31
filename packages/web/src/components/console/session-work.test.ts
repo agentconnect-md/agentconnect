@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { workCounts, workSummary } from './session-work'
+import { toggleWorkPanel, workCounts, workPanelOpen, workSummary } from './session-work'
 
 const step = (lane: string, files: string[] = []) => ({ lane, files: files.map((path) => ({ path })) })
 
@@ -49,5 +49,32 @@ describe('workSummary', () => {
 
   it('is empty when there is no work', () => {
     expect(workSummary(0, 0, 0)).toBe('')
+  })
+})
+
+describe('work panel visibility', () => {
+  it('defaults to open only while a turn has no answer text', () => {
+    expect(workPanelOpen(undefined, true)).toBe(true)
+    expect(workPanelOpen(undefined, false)).toBe(false)
+  })
+
+  it('lets the user collapse a work-only turn, whose default is open', () => {
+    const after = toggleWorkPanel(new Map(), 0, true)
+    expect(workPanelOpen(after.get(0), true)).toBe(false)
+  })
+
+  it('keeps a hidden panel hidden when the answer text lands and flips the default', () => {
+    // Work-only turn (autoOpen = true) that the user hides mid-stream...
+    const after = toggleWorkPanel(new Map(), 0, true)
+    // ...then its answer arrives, so the default becomes closed. The stored choice must
+    // not read as "flipped from the default" here, or the panel would re-open itself.
+    expect(workPanelOpen(after.get(0), false)).toBe(false)
+  })
+
+  it('re-expands on a second click, and only for the toggled turn', () => {
+    const hidden = toggleWorkPanel(new Map(), 3, true)
+    const shown = toggleWorkPanel(hidden, 3, true)
+    expect(workPanelOpen(shown.get(3), true)).toBe(true)
+    expect(workPanelOpen(shown.get(4), false)).toBe(false)
   })
 })

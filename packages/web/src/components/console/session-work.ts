@@ -28,6 +28,28 @@ export function workCounts(steps: { lane: string; files: { path: string }[] }[])
   return { thinkCount: steps.length - toolCount - editStepCount, toolCount, editCount: editPaths.size + bareEdits }
 }
 
+/** Is a turn's work panel open? `autoOpen` is the default the turn's own content
+ *  implies (a turn with no answer text yet defaults OPEN so a mid-stream agent isn't
+ *  hidden); `override` is the visibility the user last chose for it, if any.
+ *
+ *  The user's choice is stored as the explicit desired state rather than as "flipped
+ *  from the default" — otherwise, when a work-only turn's answer text lands and the
+ *  default flips, a "flipped" bit would silently re-open a panel the user had hidden. */
+export function workPanelOpen(override: boolean | undefined, autoOpen: boolean): boolean {
+  return override ?? autoOpen
+}
+
+/** Record the user's toggle of turn `ti`, as the state opposite to what they see now. */
+export function toggleWorkPanel(
+  prev: ReadonlyMap<number, boolean>,
+  ti: number,
+  autoOpen: boolean
+): Map<number, boolean> {
+  const next = new Map(prev)
+  next.set(ti, !workPanelOpen(prev.get(ti), autoOpen))
+  return next
+}
+
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /** One-line label for the collapsed work: reasoning steps, tool commands, and file
