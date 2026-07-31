@@ -73,6 +73,7 @@ export const SLACK_BOT_EVENTS = [
 /** Fallback name so the manifest / deep link are always valid before the user types one. */
 export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
 export const DEFAULT_SLACK_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
+export const SLACK_APP_DESCRIPTION_MAX_CHARACTERS = 100
 export const SLACK_APP_DESCRIPTION_MAX_BYTES = 300
 
 const ELLIPSIS = '…'
@@ -80,6 +81,10 @@ const UTF8_ENCODER = new TextEncoder()
 
 function utf8ByteLength(value: string): number {
   return UTF8_ENCODER.encode(value).byteLength
+}
+
+function codePointLength(value: string): number {
+  return [...value].length
 }
 
 export interface SlackAppManifest {
@@ -120,15 +125,26 @@ export interface SlackManifestOpts {
 
 function slackAppDescription(description: string | null | undefined): string {
   const value = description?.trim() || DEFAULT_SLACK_APP_DESCRIPTION
-  if (utf8ByteLength(value) <= SLACK_APP_DESCRIPTION_MAX_BYTES) return value
+  if (
+    codePointLength(value) <= SLACK_APP_DESCRIPTION_MAX_CHARACTERS &&
+    utf8ByteLength(value) <= SLACK_APP_DESCRIPTION_MAX_BYTES
+  ) {
+    return value
+  }
 
   let head = ''
   let bytes = utf8ByteLength(ELLIPSIS)
+  let characters = 1
   for (const character of value) {
     const characterBytes = utf8ByteLength(character)
-    if (bytes + characterBytes > SLACK_APP_DESCRIPTION_MAX_BYTES) break
+    if (
+      characters + 1 > SLACK_APP_DESCRIPTION_MAX_CHARACTERS ||
+      bytes + characterBytes > SLACK_APP_DESCRIPTION_MAX_BYTES
+    )
+      break
     head += character
     bytes += characterBytes
+    characters += 1
   }
   return `${head.trimEnd()}${ELLIPSIS}`
 }

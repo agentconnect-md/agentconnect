@@ -6,6 +6,7 @@ import {
   SLACK_BOT_EVENTS,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   DEFAULT_SLACK_APP_DESCRIPTION,
+  SLACK_APP_DESCRIPTION_MAX_CHARACTERS,
   SLACK_APP_DESCRIPTION_MAX_BYTES
 } from './slack-manifest'
 
@@ -64,16 +65,22 @@ describe('buildSlackManifest', () => {
   })
 
   it('uses the agent description with a fallback and a Unicode-safe platform limit', () => {
-    const description = `${'a'.repeat(297)}😀`
     const utf8 = new TextEncoder()
-    expect(description.length).toBeLessThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
-    expect(utf8.encode(description).byteLength).toBeGreaterThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
+    const longDescription = 'a'.repeat(SLACK_APP_DESCRIPTION_MAX_CHARACTERS + 1)
+    const wideDescription = `${'😀'.repeat(75)}a`
+    expect([...wideDescription]).toHaveLength(76)
+    expect(utf8.encode(wideDescription).byteLength).toBeGreaterThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
 
-    const custom = buildSlackManifest({ name: 'acme' }, { description })
+    const long = buildSlackManifest({ name: 'acme' }, { description: longDescription })
+    const wide = buildSlackManifest({ name: 'acme' }, { description: wideDescription })
     const fallback = buildSlackManifest({ name: 'acme' }, { description: '   ' })
 
-    expect(custom.features.agent_view.agent_description).toBe(`${'a'.repeat(297)}…`)
-    expect(utf8.encode(custom.features.agent_view.agent_description).byteLength).toBe(SLACK_APP_DESCRIPTION_MAX_BYTES)
+    expect(long.features.agent_view.agent_description).toBe(`${'a'.repeat(99)}…`)
+    expect([...long.features.agent_view.agent_description]).toHaveLength(SLACK_APP_DESCRIPTION_MAX_CHARACTERS)
+    expect(wide.features.agent_view.agent_description).toBe(`${'😀'.repeat(74)}…`)
+    expect(utf8.encode(wide.features.agent_view.agent_description).byteLength).toBeLessThanOrEqual(
+      SLACK_APP_DESCRIPTION_MAX_BYTES
+    )
     expect(fallback.features.agent_view.agent_description).toBe(DEFAULT_SLACK_APP_DESCRIPTION)
   })
 

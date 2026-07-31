@@ -101,8 +101,8 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(authorizationUrl.hostname).toBe(LARK_LAUNCHER_DOMAIN)
     expect(authorizationUrl.searchParams.get('user_code')).toBe('LARK')
     expect(authorizationUrl.searchParams.get('avatar')).toBe('https://cdn.example.test/agent.png')
-    expect(authorizationUrl.searchParams.get('desc')).toBe(`${'a'.repeat(117)}😀…`)
-    expect(authorizationUrl.searchParams.get('desc')!.length).toBe(120)
+    expect(authorizationUrl.searchParams.get('desc')).toBe(`${'a'.repeat(99)}…`)
+    expect(authorizationUrl.searchParams.get('desc')!.length).toBe(100)
     expect(begun.providerDomain).toBe(FEISHU_REGISTRATION_DOMAIN)
   })
 
