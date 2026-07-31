@@ -6247,7 +6247,13 @@ export class Daemon {
     platform: string
     integrationId?: string
     channel: string
+    /** The post's session-thread key, already canonicalized by {@link threadKeyForPost} at the
+     *  one seam that converts a platform ts into a thread segment — the same key an inbound
+     *  reply to this post resolves to, so the reply meets this session instead of opening a
+     *  second one. */
     thread: string
+    /** The post's RAW platform ts, which on Telegram differs from `thread`. */
+    postTs: string
     text: string
     originPlatform?: string
     originTransportScope?: string
@@ -6255,12 +6261,6 @@ export class Daemon {
     originThread: string
   }): boolean {
     const platform = this.narrowPlatform(req.platform)
-    // The post's raw ts is the new thread's root. On Telegram that ts is a bare numeric
-    // message id, but inbound reply-based sessions key `tg:<root>` (see
-    // canonicalizeTelegramThread) — key the spawned session the same way, or a customer
-    // reply to the post can never land in it and opens yet another session. The transcript
-    // seed below still carries the RAW ts (it must stay a real, comparable platform ts).
-    const thread = platform === 'telegram' && /^\d+$/.test(req.thread) ? `tg:${req.thread}` : req.thread
     // The origin session may live on a DIFFERENT platform than this post (e.g. a Telegram
     // turn posting to Slack). Key the origin lookup by the ORIGIN's platform, not the target's,
     // or the caller session is never found and the new session loses its parent lineage.
@@ -6306,12 +6306,13 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: req.channel,
-      thread,
+      thread: req.thread,
       ...(transportScope !== undefined ? { transportScope } : {}),
       // The seed's transcript ts MUST be the post's real ts (the new thread's root), not the
       // random deliveryId — otherwise the session's lastDeliveredTs becomes a non-ts string and
       // a later real reply in this thread is mis-compared and wrongly skipped as already-delivered.
-      transcriptTs: req.thread,
+      // On Telegram that raw ts is NOT the thread key, hence the separate field.
+      transcriptTs: req.postTs,
       sender: { id: req.agentId, isBot: true },
       text: req.text,
       mentionedBots: [],
@@ -6319,7 +6320,7 @@ export class Daemon {
       // No model turn runs for this seed; headless is retained as a transport backstop.
       headless: true
     }
-    const targetSession = sessionKey(platform, req.channel, thread, req.agentId, transportScope)
+    const targetSession = sessionKey(platform, req.channel, req.thread, req.agentId, transportScope)
     void this.dispatch(req.agentId, normalized, req.integrationId, undefined, callMeta).catch((err) =>
       this.log.error(`channel-root session spawn failed for agent "${req.agentId}": ${formatErr(err)}`)
     )

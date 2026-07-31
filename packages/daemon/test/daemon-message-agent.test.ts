@@ -979,6 +979,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       integrationId: 'int-a',
       channel: 'C1',
       thread: '1784297789.871789', // the root post's ts → the new session's thread
+      postTs: '1784297789.871789',
       text: 'root spawn 🌿',
       originChannel: 'C1',
       originThread: '100.1'
@@ -1016,6 +1017,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       integrationId: 'int-a',
       channel: 'C1',
       thread: '1784297789.871789',
+      postTs: '1784297789.871789',
       text: 'root spawn 🌿',
       originChannel: 'C1',
       originThread: '100.1'
@@ -1039,19 +1041,30 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     // `narrowPlatform` predated Feishu and folded it onto `slack`, so this dispatched a `slack:`
     // message for a channel Feishu ingress records under `feishu:` — a session nothing could
     // continue. Every other caller of that helper had the same hole.
+    // A Feishu DM root post, the shape where the key and the raw ts differ most: ops resolves the
+    // thread key to the CHAT id (what Feishu ingress keys a p2p conversation under) while the
+    // post's own message id stays the transcript ts.
     ;(daemon as any).spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'feishu',
       channel: 'oc_42',
-      thread: 'om_42',
-      text: 'posted into a Feishu group',
+      thread: 'oc_42',
+      postTs: 'om_900',
+      text: 'posted into a Feishu chat',
       originPlatform: 'feishu',
       originChannel: 'oc_42',
       originThread: 'om_1'
     })
 
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.msg.platform).toBe('feishu')
+    const { msg } = calls[0]!
+    // End-to-end through the real handler, not a stubbed callback: the dispatched message is what
+    // the session is keyed on, so `slack` here would key `slack:oc_42:oc_42` for a conversation
+    // Feishu ingress records under `feishu:oc_42:oc_42` — the same post, two logical sessions.
+    expect(msg.platform).toBe('feishu')
+    expect(msg.thread).toBe('oc_42')
+    expect(msg.transcriptTs).toBe('om_900')
+    expect(sessionKey(msg.platform, msg.channel, msg.thread!, 'bot-a')).toBe('feishu:oc_42:oc_42:bot-a')
     await daemon.stop()
   })
 
@@ -1079,6 +1092,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
       integrationId: 'int-a',
       channel: 'C-AI-PLAYGROUND',
       thread: '1784381296.193959',
+      postTs: '1784381296.193959',
       text: 'hello from telegram',
       originPlatform: 'telegram',
       originChannel: '-100999',
@@ -1098,19 +1112,19 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     await daemon.stop()
   })
 
-  it('keys a Telegram spawn by the canonical tg:<ts> thread, keeping the raw ts as transcriptTs', async () => {
+  it('seeds the caller-supplied thread key while the transcript keeps the raw platform ts', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
 
-    // A Slack turn posting into a Telegram group: postMessage returned the bare
-    // message id '172'. Inbound replies to that post canonicalize to `tg:172`
-    // (canonicalizeTelegramThread), so the spawned session must key the same way —
-    // pre-fix it was keyed by the raw '172' and a customer reply opened a NEW session.
+    // A Slack turn posting into a Telegram group: postMessage returned the bare message id
+    // '172', which ops.ts converts to the canonical `tg:172` (threadKeyForPost) before calling
+    // here — the two are separate fields precisely because they differ on Telegram.
     ;(daemon as any).spawnChannelRootSession({
       agentId: 'bot-a',
       platform: 'telegram',
-      channel: '-1004418558261',
-      thread: '172',
+      channel: '-100123',
+      thread: 'tg:172',
+      postTs: '172',
       text: 'answer relayed to the customer',
       originPlatform: 'slack',
       originChannel: 'C1',

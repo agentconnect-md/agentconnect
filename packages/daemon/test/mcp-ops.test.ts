@@ -152,7 +152,9 @@ describe('executeTool: sendMessage (channel post)', () => {
       ok: true,
       post: { platform: 'slack', channel: 'C_CURRENT', thread: null, ts: 'ts-123' }
     })
-    expect(recorded).toEqual([{ channel: 'C_CURRENT', thread: undefined, text: 'hi', ts: 'ts-123' }])
+    // The transcript row lands in the thread the post CREATED (its own ts), not the caller's —
+    // that key is what a later reply to this post resolves back onto.
+    expect(recorded).toEqual([{ channel: 'C_CURRENT', thread: 'ts-123', text: 'hi', ts: 'ts-123' }])
   })
 
   it('posts inside a thread when one is named explicitly', async () => {
@@ -167,6 +169,149 @@ describe('executeTool: sendMessage (channel post)', () => {
     const { deps: d } = deps(gw)
     await executeTool(ctx, 'sendMessage', { to: { channel: 'C_OTHER', thread: '' }, message: 'yo' }, d)
     expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined)
+  })
+
+  describe('root post: one canonical thread key for every consumer', () => {
+    // A post whose key differs from what the next inbound reply resolves to opens a session that
+    // reply can never reach. threadKeyForPost is the ONE place a post becomes a thread segment,
+    // and it has to follow each platform's conversation model — Telegram groups thread off the
+    // root message (`tg:<id>`), Discord conversations ARE the channel, and a DM is one continuous
+    // conversation that a post joins rather than forks.
+    const withIntegration = (platform: string, id: string): SessionContext => ({
+      ...ctx,
+      integrations: [...ctx.integrations!, { id, platform }]
+    })
+    const tgCtx = withIntegration('telegram', 'int-tg')
+    const tgDeps = (over: Partial<OpsDeps> = {}, gw: Partial<MessageGateway> = {}) => {
+      const spawns: Record<string, unknown>[] = []
+      const recorded: Record<string, unknown>[] = []
+      const wakes: MessageAgentReq[] = []
+      const d = makeDeps({
+        gatewayFor: () => fakeGateway({ postMessage: vi.fn(async () => '172'), ...gw }),
+        recordOutbound: (_c, channel, thread, text, ts) => recorded.push({ channel, thread, text, ts }),
+        spawnChannelRootSession: (req) => {
+          spawns.push(req)
+          return true
+        },
+        messageAgent: async (req) => {
+          wakes.push(req)
+          return { delivered: true, targetSession: 'stub' }
+        },
+        now: () => 1000,
+        ...over
+      })
+      return { d, spawns, recorded, wakes }
+    }
+
+    it('keys the spawned session and its transcript row alike', async () => {
+      const { d, spawns, recorded } = tgDeps()
+      await executeTool(tgCtx, 'sendMessage', { to: { platform: 'telegram', channel: '-100123' }, message: 'hi' }, d)
+      // The session key is canonical; the RAW ts travels beside it for the transcript row, which
+      // must stay a real, comparable platform ts.
+      expect(spawns[0]).toMatchObject({ thread: 'tg:172', postTs: '172' })
+      expect(recorded[0]).toMatchObject({ thread: 'tg:172', ts: '172' })
+    })
+
+    it('anchors a peer wake to that same key', async () => {
+      // #295 canonicalized only the spawn and left this path on the raw ts, so ONE post yielded
+      // two different session keys. A peer wake always posts on the caller's own platform, so
+      // this is the Telegram-session case.
+      const tgSession: SessionContext = {
+        ...ctx,
+        platform: 'telegram',
+        integrationId: 'int-tg',
+        channel: '-100123',
+        thread: 'tg:100',
+        integrations: [{ id: 'int-tg', platform: 'telegram' }]
+      }
+      const { d, wakes } = tgDeps()
+      await executeTool(tgSession, 'sendMessage', { to: { toAgent: 'peer-1', channel: '-100123' }, message: 'hi' }, d)
+      expect(wakes[0]).toMatchObject({ thread: 'tg:172', transcriptTs: '172' })
+    })
+
+    it('leaves an explicit thread and non-Telegram platforms untouched', async () => {
+      // An explicit numeric thread is a forum TOPIC id and drives message_thread_id at post
+      // time — canonicalizing it would silently move the post to another conversation.
+      const topic = tgDeps()
+      await executeTool(
+        tgCtx,
+        'sendMessage',
+        { to: { platform: 'telegram', channel: '-100123', thread: '172' }, message: 'hi' },
+        topic.d
+      )
+      expect(topic.recorded[0]).toMatchObject({ thread: '172' })
+      expect(topic.spawns).toHaveLength(0)
+
+      // Slack's ts already IS the thread segment.
+      const slack = tgDeps({ gatewayFor: () => fakeGateway() })
+      await executeTool(ctx, 'sendMessage', { to: { channel: 'C_X' }, message: 'hi' }, slack.d)
+      expect(slack.spawns[0]).toMatchObject({ thread: 'ts-123', postTs: 'ts-123' })
+    })
+
+    it('keys a Discord post by its channel, which is what a Discord conversation is', async () => {
+      // Every inbound Discord message keys the channel id (discord-message.ts), so a post there
+      // cannot open a thread of its own — keying it by the message id made a session unreachable.
+      const discord = tgDeps({}, { postMessage: vi.fn(async () => '900') })
+      await executeTool(
+        withIntegration('discord', 'int-dc'),
+        'sendMessage',
+        { to: { platform: 'discord', channel: 'C42' }, message: 'hi' },
+        discord.d
+      )
+      expect(discord.spawns[0]).toMatchObject({ thread: 'C42', postTs: '900' })
+      expect(discord.recorded[0]).toMatchObject({ thread: 'C42', ts: '900' })
+    })
+
+    it('joins a DM instead of forking it, on each platform that keeps DMs continuous', async () => {
+      // A DM is one stream: Telegram keys it `dm`, Feishu keys it by the chat. Only the platform
+      // knows which chats those are, so ops asks — and asks only where the answer changes the key.
+      const asDm = { getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: true })) }
+      const tgDm = tgDeps({}, asDm)
+      await executeTool(tgCtx, 'sendMessage', { to: { platform: 'telegram', channel: '555' }, message: 'hi' }, tgDm.d)
+      expect(tgDm.spawns[0]).toMatchObject({ thread: 'dm', postTs: '172' })
+
+      const feishuDm = tgDeps({}, asDm)
+      await executeTool(
+        withIntegration('feishu', 'int-fs'),
+        'sendMessage',
+        { to: { platform: 'feishu', channel: 'oc_42' }, message: 'hi' },
+        feishuDm.d
+      )
+      expect(feishuDm.spawns[0]).toMatchObject({ thread: 'oc_42', postTs: '172' })
+
+      // A Feishu GROUP threads off the message, like Slack.
+      const feishuGroup = tgDeps()
+      await executeTool(
+        withIntegration('feishu', 'int-fs'),
+        'sendMessage',
+        { to: { platform: 'feishu', channel: 'oc_43' }, message: 'hi' },
+        feishuGroup.d
+      )
+      expect(feishuGroup.spawns[0]).toMatchObject({ thread: '172', postTs: '172' })
+    })
+
+    it('does not interrogate the platform where the answer cannot change the key', async () => {
+      // Slack and Discord key the same way for DMs and channels, and an explicit thread settles
+      // it outright — so no send pays for a lookup it does not need.
+      const getChannelInfo = vi.fn(async (id: string) => ({ id, isIm: true }))
+      const slack = tgDeps({}, { getChannelInfo })
+      await executeTool(ctx, 'sendMessage', { to: { channel: 'C_X' }, message: 'hi' }, slack.d)
+      const threaded = tgDeps({}, { getChannelInfo })
+      await executeTool(
+        tgCtx,
+        'sendMessage',
+        { to: { platform: 'telegram', channel: '555', thread: '9' }, message: 'hi' },
+        threaded.d
+      )
+      expect(getChannelInfo).not.toHaveBeenCalled()
+    })
+
+    it('falls back to a non-DM key when the platform lookup fails', async () => {
+      // The post already happened; a failed classification must not fail the call.
+      const flaky = tgDeps({}, { getChannelInfo: vi.fn(async () => Promise.reject(new Error('rate limited'))) })
+      await executeTool(tgCtx, 'sendMessage', { to: { platform: 'telegram', channel: '555' }, message: 'hi' }, flaky.d)
+      expect(flaky.spawns[0]).toMatchObject({ thread: 'tg:172', postTs: '172' })
+    })
   })
 
   describe('root-post notice: the post forked a conversation this agent is already in', () => {
@@ -291,7 +436,9 @@ describe('executeTool: sendMessage (channel post)', () => {
     )) as { post: Record<string, unknown> }
     expect(gw.postMessage).toHaveBeenCalledWith('-100123', 'hi', undefined)
     expect(res.post).toMatchObject({ platform: 'telegram', integrationId: 'int-tg', channel: '-100123' })
-    expect(recorded).toEqual([{ channel: '-100123', thread: undefined, text: 'hi', ts: 'ts-123' }])
+    // Pre-fix this row carried the CALLER's Slack thread under a Telegram channel — coords that
+    // belong to no session, and a trap for the reply-owner lookup. It now keys the post's own.
+    expect(recorded).toEqual([{ channel: '-100123', thread: 'ts-123', text: 'hi', ts: 'ts-123' }])
   })
 
   it('rejects a platform-only target with repairable examples and no side effect', async () => {
@@ -352,8 +499,8 @@ describe('executeTool: sendMessage (channel post)', () => {
     await executeTool(ctx, 'sendMessage', { to: { channel: 'C_CURRENT', toUser: '<@U9>' }, message: 'again' }, d)
     expect(gw.postMessage).toHaveBeenLastCalledWith('C_CURRENT', '<@U9> again', undefined)
     expect(recorded).toEqual([
-      { channel: 'C_CURRENT', thread: undefined, text: '<@U9> ping', ts: 'ts-123' },
-      { channel: 'C_CURRENT', thread: undefined, text: '<@U9> again', ts: 'ts-123' }
+      { channel: 'C_CURRENT', thread: 'ts-123', text: '<@U9> ping', ts: 'ts-123' },
+      { channel: 'C_CURRENT', thread: 'ts-123', text: '<@U9> again', ts: 'ts-123' }
     ])
 
     // toUser is Slack-only for now — on another platform it throws (nothing posted).
@@ -674,7 +821,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     // Visible root post through the gateway (no identity on this ctx → 3-arg call).
     expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'over to you', undefined)
     expect(res.post).toEqual({ platform: 'slack', integrationId: 'int-1', channel: 'C_X', thread: null, ts: 'ts-123' })
-    expect(recorded).toEqual([{ channel: 'C_X', thread: undefined, text: 'over to you', ts: 'ts-123' }])
+    expect(recorded).toEqual([{ channel: 'C_X', thread: 'ts-123', text: 'over to you', ts: 'ts-123' }])
     // The peer is woken INTO the post's ts, and the post ts is carried through as the wake's
     // transcriptTs so the wake row collapses onto the recorded post's PK (no duplicate hand-off).
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: 'ts-123', transcriptTs: 'ts-123' })
