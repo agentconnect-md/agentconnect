@@ -1075,6 +1075,34 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     })
     await daemon.stop()
   })
+
+  it('keys a Telegram spawn by the canonical tg:<ts> thread, keeping the raw ts as transcriptTs', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+
+    // A Slack turn posting into a Telegram group: postMessage returned the bare
+    // message id '172'. Inbound replies to that post canonicalize to `tg:172`
+    // (canonicalizeTelegramThread), so the spawned session must key the same way —
+    // pre-fix it was keyed by the raw '172' and a customer reply opened a NEW session.
+    ;(daemon as any).spawnChannelRootSession({
+      agentId: 'bot-a',
+      platform: 'telegram',
+      channel: '-1004418558261',
+      thread: '172',
+      text: 'answer relayed to the customer',
+      originPlatform: 'slack',
+      originChannel: 'C1',
+      originThread: '100.1'
+    })
+
+    expect(calls).toHaveLength(1)
+    const { msg } = calls[0]!
+    expect(msg.thread).toBe('tg:172')
+    // The transcript seed keeps the RAW platform ts — it must stay comparable with
+    // later real reply ts values (see the dedup note in spawnChannelRootSession).
+    expect(msg.transcriptTs).toBe('172')
+    await daemon.stop()
+  })
 })
 
 /**
