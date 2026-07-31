@@ -16,11 +16,11 @@ import { ctxOf } from '../rbac.js'
 import {
   canView,
   canViewSession,
-  identitySetOf,
   type SessionViewable,
   type Shareable,
   type ViewCtx
 } from '../../authorization/policy.js'
+import { makeViewerIdentitySet } from '../viewer-identity.js'
 import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 
 const KEEPALIVE_MS = 25_000
@@ -59,6 +59,7 @@ function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
 
 export function streamRoutes(deps: HttpDeps) {
   return async function streamRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity)
     app.get(
       '/stream',
       {
@@ -114,8 +115,11 @@ export function streamRoutes(deps: HttpDeps) {
         // Session visibility is deliberately NOT memoized: a §4.3 tightening must
         // hide the session from a live subscriber at commit, and a long-lived SSE
         // connection holding a cached verdict would keep leaking it. Sessions are
-        // per-event unique anyway, so a cache would rarely hit.
-        const identitySet = identitySetOf(ctx)
+        // per-event unique anyway, so a cache would rarely hit. The identity set
+        // IS fixed per connection: it can only grow (linking), and an unlink
+        // takes effect on the next connection — that is a lost read grant, not a
+        // leak, so it does not need the per-event treatment.
+        const identitySet = await identitySetFor(req)
         const canSeeSession = async (sessionId: string): Promise<boolean> => {
           const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
           return canStreamSession(session, ctx, identitySet)

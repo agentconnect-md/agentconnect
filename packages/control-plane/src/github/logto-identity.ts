@@ -199,8 +199,15 @@ export class LogtoIdentityService {
 
   /**
    * The Slack workspace identity behind a local user's OIDC subject, or null
-   * when the account never signed in with (or linked) Slack. Read-only
-   * metadata — no caller may treat this as an authorization decision.
+   * when the account never signed in with (or linked) Slack.
+   *
+   * This IS an identity assertion: the record exists in Logto only after a
+   * Slack OIDC sign-in, or an Account API link driven by the user's own
+   * authenticated session — so the session-visibility identity set
+   * (`http/viewer-identity.ts`) may match it against `ownerIdentity`. It is
+   * NOT an org/role statement: callers still compose it with org scoping.
+   * Served from the shared user cache; a just-landed link is surfaced by the
+   * console's refresh call (`forgetUser`).
    */
   async slackIdentityFor(sub: string): Promise<SlackIdentity | null> {
     return slackIdentityOf(await this.logtoUser(sub))
