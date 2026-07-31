@@ -103,9 +103,13 @@ runtime.
    reuses an open operation bound to the conversation, authority generation, acting
    user, canonical intent hash, and confirmation policy. Only browser approval may
    atomically claim that operation for one execution.
-9. The feature never falls back to a daemon API key, organization principal, user
-   API key, system-prompt secret, or unscoped MCP credential.
-10. Disabling or failing delegated MCP removes only `agentconnect-admin`; ordinary
+9. Every side-effecting MCP request has a conversation-scoped transport receipt
+   bound to its standard JSON-RPC request id and exact request hash. The receipt
+   permanently resolves to one operation, including after that operation becomes
+   terminal.
+10. The feature never falls back to a daemon API key, organization principal, user
+    API key, system-prompt secret, or unscoped MCP credential.
+11. Disabling or failing delegated MCP removes only `agentconnect-admin`; ordinary
     webchat and daemon-local MCP tools continue.
 
 ## 4. Architecture
@@ -353,12 +357,30 @@ AgentConnect does not require `Idempotency-Key`, a private ACP capability, or an
 other runtime-specific retry contract. Read-only tools are ordinary idempotent MCP
 requests. A tool with side effects never executes in its initiating MCP request.
 
-The CP canonicalizes the tool name and arguments into an `intentHash`, then creates
-or reuses the one open operation with the same `(conversationId, intentHash)`.
-Consequently, an HTTP retry that arrives before the pending response is observed
-gets the same operation instead of creating a second approval. A unique partial
-index enforces this rule for nonterminal operations; it does not permanently merge
-two later, deliberate user intents that happen to have identical arguments.
+The CP canonicalizes the standard MCP JSON-RPC request id, tool name, and validated
+arguments. It first creates a durable transport receipt keyed by
+`(conversationId, jsonRpcRequestId)`, bound to the exact request hash and one
+operation. Standard HTTP retry resends the same JSON-RPC body, so a retry finds that
+receipt and observes the same operation even if the original pending response was
+lost and the operation has since become terminal. A different request hash under
+the same receipt key is rejected. String and numeric JSON-RPC ids have distinct
+canonical encodings; null, fractional/unsafe numeric, oversized string, and absent
+ids are rejected for side-effecting delegated calls.
+
+The JSON-RPC id is only a transport-replay coordinate; it never authorizes or claims
+execution. A later deliberate tool call receives a new JSON-RPC id and may create a
+new operation even when its arguments are identical. Receipts remain as bounded
+tombstones for the durable conversation lifetime. If a runtime restarts and reuses
+an old JSON-RPC id, the CP safely replays the identical request or rejects a
+different one instead of risking a duplicate write. This fail-closed collision is
+preferable to requiring a private runtime extension.
+
+The first delivery creates the receipt and selects or creates its operation in one
+transaction. Separately, a unique
+partial index on `(conversationId, intentHash)` for `awaiting_confirmation` rows
+coalesces two concurrent model requests for the same still-open intent into one
+browser confirmation. Once that operation is terminal, a genuinely new JSON-RPC
+request may create a new operation.
 
 The pending MCP result includes a random, non-secret `operationId`. Tool schemas may
 accept that id only as a status/replay selector: supplying it can observe the bound
@@ -373,26 +395,57 @@ interface WebchatMcpOperation {
   operationId: string
   createdAuthorityGeneration: number
   sourceGrantId: string
+  toolName: string
+  canonicalArguments: JsonValue
   intentHash: string
   status: 'awaiting_confirmation' | 'executing' | 'completed' | 'failed' | 'ambiguous' | 'stale'
+  executionAttemptId: string | null
+  claimedAt: Date | null
+  recoveryDeadline: Date | null
   boundedResponse: Uint8Array | null
   createdAt: Date
   confirmationExpiresAt: Date
   completedAt: Date | null
 }
+
+interface WebchatMcpTransportReceipt {
+  conversationId: string
+  jsonRpcRequestId: string
+  requestHash: string
+  operationId: string
+  createdAt: Date
+}
 ```
+
+`canonicalArguments` is the bounded, schema-validated representation used both for
+the confirmation display and eventual dispatch. The CP recomputes `intentHash`
+from `toolName + canonicalArguments` before approval and execution; a mismatch is a
+terminal integrity failure. Catalog limits reject an operation whose canonical
+payload is too large. The payload may contain ordinary administrative input but
+never credentials because credential-bearing tools are excluded from this catalog.
 
 The execution rules are:
 
 - the initiating request always stops at `awaiting_confirmation`;
-- a duplicate open intent returns the same `operationId`;
+- a duplicate transport receipt returns the same `operationId` in every operation
+  state;
+- a concurrent duplicate open intent with a different JSON-RPC id shares the same
+  pending operation;
 - an explicit lookup by `operationId` returns pending, executing, or the bounded
   terminal result and rejects any mismatched conversation or intent;
 - a completed, failed, or ambiguous operation can never dispatch again;
 - a nonterminal operation from an older authority generation atomically becomes
   `stale` and can never dispatch, including an old pending confirmation;
-- a crash after the execution claim becomes `ambiguous` and is never automatically
-  dispatched a second time; and
+- an approval CAS writes a fresh `executionAttemptId`, `claimedAt`, and bounded
+  `recoveryDeadline` together with `status='executing'` before dispatch;
+- no worker or recovery path may claim an `executing` operation again;
+- after `recoveryDeadline`, a reaper may CAS only
+  `(operationId, status='executing', executionAttemptId)` to `ambiguous`;
+- a worker may record success or failure only with the same CAS tuple. Whichever
+  terminal transition commits first wins, so a late completion cannot overwrite
+  `ambiguous`, and the reaper cannot overwrite an already recorded result;
+- process loss or an uncertain external outcome therefore becomes `ambiguous` and
+  is never automatically dispatched a second time; and
 - operation identity and terminal status are retained for the conversation
   lifetime; bounded response bytes may be evicted separately.
 
@@ -439,9 +492,11 @@ execution claimant:
    entitlement, placement, catalog scope, host-agent denial, and feature-gate checks.
 4. It CAS-transitions the row to `executing`. Revocation and generation rotation
    serialize on the same authority fence, so only one ordering can win.
-5. The elected approval worker dispatches exactly once. Success or ordinary failure
-   records a terminal response; a crash or uncertain outcome after `executing`
-   becomes `ambiguous`, never retryable execution.
+5. That same CAS writes the unique execution attempt and recovery deadline. The
+   elected approval worker dispatches the persisted canonical payload exactly once.
+6. Success or ordinary failure records a terminal response only when the operation
+   is still `executing` under that exact attempt. A reaper applies the same attempt-
+   fenced CAS to mark an overdue execution `ambiguous`; it never retries dispatch.
 
 Concurrent approvals and MCP lookups only observe `executing` or its terminal
 result. Denial, confirmation expiry, failed live authorization, revoked grant, or
@@ -500,6 +555,7 @@ organization, and global feature revocation without requiring daemon isolation.
 | User removed or visibility changed                | Next request fails under live authorization.                                      |
 | Agent moved or authority generation changed       | Old grants fail; reconnect or session update installs the new descriptor.         |
 | Duplicate open write intent                       | Returns the same pending operation; execution still requires browser approval.    |
+| Retry after the operation became terminal         | The transport receipt replays that operation; it never creates another write.     |
 | Ambiguous write                                   | Report ambiguous; do not retry execution automatically.                           |
 | Feature disabled                                  | Stop issuance, revoke active grants, and omit/remove descriptors.                 |
 | Credential appears in a log or transcript         | Treat as a security incident and revoke the access grant or authority generation. |
@@ -597,6 +653,7 @@ The implementation adds:
 - exact-session, revision-fenced remote MCP descriptor lifecycle;
 - delegated Bearer authentication at `/api/v1/mcp`;
 - conversation-scoped CP operation idempotency across authority generations;
+- durable standard-JSON-RPC transport receipts for side-effecting calls;
 - standard HTTPS MCP transport capability checks; and
 - credential redaction tests across CP, relay, daemon, and runtime adapters.
 
