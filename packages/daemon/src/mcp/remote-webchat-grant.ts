@@ -11,6 +11,7 @@ import type {
 } from '@agentconnect.md/protocol'
 
 const SERVER_NAME = 'agentconnect-admin'
+const RENEW_BEFORE_EXPIRY_MS = 5 * 60_000
 
 export interface RemoteWebchatGrantClient {
   issueWebchatMcpGrant(input: WebchatMcpGrantIssue): Promise<WebchatMcpGrantIssued>
@@ -58,9 +59,21 @@ export class RemoteWebchatGrantManager {
     entitlement: WebchatRemoteMcpEntitlement,
     now = Date.now()
   ): Promise<McpServer> {
+    return (await this.provision(conversationId, entitlement, now)).server
+  }
+
+  async provision(
+    conversationId: string,
+    entitlement: WebchatRemoteMcpEntitlement,
+    now = Date.now()
+  ): Promise<{ server: McpServer; changed: boolean }> {
     const current = this.active.get(conversationId)
-    if (current && current.expiresAt > now && sameEntitlement(current.entitlement, entitlement)) {
-      return current.server
+    if (
+      current &&
+      current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS &&
+      sameEntitlement(current.entitlement, entitlement)
+    ) {
+      return { server: current.server, changed: false }
     }
 
     const descriptorInstanceId = current?.descriptorInstanceId ?? stableDescriptorId(conversationId)
@@ -107,7 +120,7 @@ export class RemoteWebchatGrantManager {
       expiresAt,
       server
     })
-    return server
+    return { server, changed: true }
   }
 
   async revoke(

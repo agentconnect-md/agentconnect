@@ -721,7 +721,14 @@ export class AcpHost {
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     const mcp = init.agentCapabilities?.mcpCapabilities
-    this.mcpCaps = { http: mcp?.http ?? false, sse: mcp?.sse ?? false }
+    const extendedMcp = mcp as
+      { http?: boolean; sse?: boolean; privateSessionHeaders?: boolean; stableInvocationId?: boolean } | undefined
+    this.mcpCaps = {
+      http: extendedMcp?.http ?? false,
+      sse: extendedMcp?.sse ?? false,
+      ...(extendedMcp?.privateSessionHeaders === true ? { privateSessionHeaders: true } : {}),
+      ...(extendedMcp?.stableInvocationId === true ? { stableInvocationId: true } : {})
+    }
     // agentInfo is optional per the ACP spec; keep only the fields we surface.
     this.agentInfo = init.agentInfo
       ? {
@@ -946,6 +953,14 @@ export class AcpHost {
   /** True iff THIS agent process created or loaded `sessionId` in its current lifetime. */
   hasSession(sessionId: string): boolean {
     return this.live.has(sessionId)
+  }
+
+  /** Force the next exact-session turn through session/load/new so a rotated
+   * session-scoped MCP descriptor is installed before another prompt. */
+  forgetSession(sessionId: string): void {
+    this.live.delete(sessionId)
+    this.loadingSessions.delete(sessionId)
+    this.sessionConfigs.delete(sessionId)
   }
 
   /** Whether the agent advertised the `loadSession` capability (session/load is usable). */

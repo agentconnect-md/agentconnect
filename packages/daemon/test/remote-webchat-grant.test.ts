@@ -60,4 +60,28 @@ describe('RemoteWebchatGrantManager', () => {
     })
     await expect(manager.descriptor(conversationId, entitlement, 0)).rejects.toThrow(/mismatched/)
   })
+
+  it('rotates five minutes before expiry and reports that session reload is required', async () => {
+    const firstExpiry = Date.parse('2030-01-01T00:00:00.000Z')
+    let revision = 0
+    const manager = new RemoteWebchatGrantManager({
+      issueWebchatMcpGrant: vi.fn(async (input: any) => {
+        revision += 1
+        return {
+          ...input,
+          grantId: revision === 1 ? grantId : '55555555-5555-4555-8555-555555555555',
+          grantRevision: revision,
+          token: `secret-token-${revision}-that-is-longer-than-thirty-two-bytes`,
+          expiresAt: new Date(firstExpiry + (revision - 1) * 30 * 60_000).toISOString(),
+          mcpUrl: 'https://cp.example/api/v1/mcp'
+        }
+      }),
+      acceptWebchatMcpGrant: vi.fn(async (input: any) => ({ ...input, activated: true })),
+      revokeWebchatMcpGrant: vi.fn(async (input: any) => ({ ...input, revoked: true }))
+    })
+
+    expect((await manager.provision(conversationId, entitlement, 0)).changed).toBe(true)
+    expect((await manager.provision(conversationId, entitlement, firstExpiry - 6 * 60_000)).changed).toBe(false)
+    expect((await manager.provision(conversationId, entitlement, firstExpiry - 4 * 60_000)).changed).toBe(true)
+  })
 })

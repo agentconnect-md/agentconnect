@@ -8978,11 +8978,16 @@ export class Daemon {
         remoteCaps.stableInvocationId
       ) {
         try {
-          remoteMcpServer = await this.remoteWebchatGrants.descriptor(
+          const provisioned = await this.remoteWebchatGrants.provision(
             webchat.conversationId,
             webchat.remoteMcp,
             this.clock.now()
           )
+          remoteMcpServer = provisioned.server
+          if (provisioned.changed) {
+            const existing = this.store.getSession(key)
+            if (existing?.acpSessionId) entry.selectedHost?.host.forgetSession(existing.acpSessionId)
+          }
         } catch (error) {
           this.log.warn(`remote MCP descriptor attachment failed (${formatErr(error)})`)
         }
