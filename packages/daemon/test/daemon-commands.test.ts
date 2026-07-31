@@ -273,6 +273,44 @@ describe('Daemon in-conversation commands', () => {
     expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
   })
 
+  it('dedups shared-bot retries per bot while dispatching the same Slack message for two bots', () => {
+    const daemon = new Daemon()
+    const dispatch = vi.fn(async () => {})
+    ;(daemon as any).agents.set('bot-a', {})
+    ;(daemon as any).agents.set('bot-b', {})
+    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).dispatch = dispatch
+    const frame = (agentId: string, botId: string, integrationId: string): RdMsgIm => ({
+      source: 'im',
+      agentId,
+      sessionKey: 'C1/1700000000.000100',
+      msgId: 'slack:C1:1700000000.000100',
+      botId,
+      integrationId,
+      chatId: 'C1',
+      payload: dm('1700000000.000100', 'hello both bots')
+    })
+    const botA = frame('bot-a', '11111111-1111-4111-8111-111111111111', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+    const botB = frame('bot-b', '22222222-2222-4222-8222-222222222222', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+
+    expect((daemon as any).handleRelayMsg(botA, () => {})).toEqual({
+      msgId: botA.msgId,
+      accepted: true
+    })
+    expect((daemon as any).handleRelayMsg(botA, () => {})).toEqual({
+      msgId: botA.msgId,
+      accepted: true
+    })
+    expect((daemon as any).handleRelayMsg(botB, () => {})).toEqual({
+      msgId: botB.msgId,
+      accepted: true
+    })
+
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    expect(dispatch).toHaveBeenNthCalledWith(1, 'bot-a', botA.payload, botA.integrationId)
+    expect(dispatch).toHaveBeenNthCalledWith(2, 'bot-b', botB.payload, botB.integrationId)
+  })
+
   it('discovers an unroutable gated Feishu callback before the last-hop gate drops it', () => {
     const daemon = new Daemon()
     const discover = vi.fn()

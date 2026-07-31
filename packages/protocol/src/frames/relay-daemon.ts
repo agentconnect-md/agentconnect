@@ -142,7 +142,8 @@ export type WireNormalizedMessage = NormalizedPlatformMessage
 // daemon takes the explicit-agent short-circuit into dispatch (no local
 // arbitration — the routing happened in the relay, §10). `msgId` is the platform
 // event id (Slack event_id / TG update_id) — the idempotency key that survives a
-// relay re-assign (§12). Dedup scope is (sessionKey, msgId).
+// relay re-assign (§12). Dedup scope is (botId, sessionKey, msgId): separate bot
+// assignments may receive the same platform event and must wake independently.
 export const RdMsgIm = z.object({
   source: z.literal('im'),
   agentId: z.string().uuid(),

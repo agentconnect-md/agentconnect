@@ -11,7 +11,8 @@
  *  - every other POST is demuxed to a bot AND authenticated in one step by the Slack
  *    request signature (HMAC over the raw bytes, keyed by that bot's signing secret) —
  *    `resolveVerified`; a request that no assigned bot's secret verifies ⇒ 401;
- *  - Events are deduped by `event_id` (Slack redelivers on a slow/again-seen 200),
+ *  - Events are deduped by `(api_app_id, team_id, event_id)` (Slack redelivers on a
+ *    slow/again-seen 200, while separate apps may receive the same underlying event),
  *    then ACK'd 200 and forwarded ASYNC (Slack's 3s window). Interactions run the
  *    handler to completion because `block_suggestion` must return its options on the
  *    200 body; all other interaction side-effects run after the return value.
@@ -55,6 +56,11 @@ export interface SlackHttpIngressDeps {
 
 function headerString(v: string | string[] | undefined): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined
+}
+
+function eventDedupKey(body: SlackEventEnvelope): string | undefined {
+  if (!body.event_id) return undefined
+  return `${body.api_app_id ?? ''}\0${body.team_id ?? ''}\0${body.event_id}`
 }
 
 /** The subset of a Slack Events API envelope the route reads for demux + dispatch. */
@@ -114,9 +120,10 @@ export function registerSlackHttpIngress(app: FastifyInstance, deps: SlackHttpIn
       })
       if (!ingest) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
 
-      // Slack redelivers the same event_id (incremented X-Slack-Retry-Num) until it
-      // sees a fast 200 — one already handled here or by a sibling pod. Ack + drop.
-      if (deps.dedup.seen(body.event_id)) return reply.code(200).send()
+      // A retry for one app/install reuses this composite identity. Do not dedup on
+      // event_id alone: one Slack message may be delivered to several explicitly
+      // mentioned apps, and those callbacks must each reach their own agent.
+      if (deps.dedup.seen(eventDedupKey(body))) return reply.code(200).send()
 
       // Ack NOW (Slack's 3s window); forward async. A forward miss is bounded loss.
       // `event_time` is seconds → ms for the CP's revocation fence.

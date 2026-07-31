@@ -5055,10 +5055,10 @@ export class Daemon {
 
   // Bounded, ephemeral reconnect state keyed by the browser-known turn id.
   private readonly webchatStreams = new Map<string, WebchatTurnStream>()
-  // Idempotency cache for the at-least-once rd/* wire: (sessionKey:msgId) → the ack we
-  // already returned. Bounded like `seenMsgIds`. A relay retransmit replays this instead
-  // of re-dispatching. (design §7.2 RdMsgWebchat: "the daemon drops an already-seen
-  // (sessionKey, msgId)".)
+  // Idempotency cache for the at-least-once rd/* wire. IM deliveries additionally
+  // include the authenticated bot assignment: two Slack apps mentioned in one
+  // platform message share sessionKey + msgId but must wake independently. Bounded
+  // like `seenMsgIds`; a genuine relay retransmit replays the cached ack.
   private readonly relayMsgAcks = new Map<string, RdAck>()
   /** Hook admission crosses an async anchor + durable-inbox barrier. Coalesce a
    * retransmit that arrives before that barrier settles instead of dispatching
@@ -5114,7 +5114,7 @@ export class Daemon {
    * the same replay absorbs a GitHub/manual REDELIVERY of the same deliveryKey.
    */
   private handleRelayMsg(msg: RdMsg, chat: (event: RdChatEvent) => void): RdAck | Promise<RdAck> {
-    const dedupKey = `${msg.sessionKey}:${msg.msgId}`
+    const dedupKey = `${msg.source === 'im' ? `${msg.botId}:` : ''}${msg.sessionKey}:${msg.msgId}`
     const prior = this.relayMsgAcks.get(dedupKey)
     if (prior) {
       this.log.debug(`relay: duplicate rd/msg ${dedupKey} — replaying ack (no re-dispatch)`)

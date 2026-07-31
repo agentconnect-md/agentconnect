@@ -1,9 +1,10 @@
 /**
- * `SlackEventDedup` — bounded, TTL'd `event_id` dedup for the shared Slack HTTP
- * ingress. Slack redelivers the same Events API envelope (same `event_id`, an
+ * `SlackEventDedup` — bounded, TTL'd event-identity dedup for the shared Slack HTTP
+ * ingress. Slack redelivers the same Events API envelope (same composite app,
+ * workspace, and `event_id`, with an
  * incremented `X-Slack-Retry-Num`) whenever it doesn't see a fast 200 — a retry a
  * relay pod already ack'd, or one another pod behind the same LB handled. Marking
- * the id on first sight and answering 200 on a repeat keeps one user message from
+ * the identity on first sight and answering 200 on a repeat keeps one user message from
  * fanning out to the daemon twice. State is bounded by a hard-cap flush (the daemon
  * dedup-map precedent) so a hostile/id-churning stream can't grow it without bound.
  */
@@ -29,15 +30,15 @@ export class SlackEventDedup {
     this.maxEntries = opts.maxEntries ?? 50_000
   }
 
-  /** True iff `id` was seen (and not expired); otherwise marks it and returns false.
-   *  An absent id is never deduped (some envelopes carry none) — false. */
-  seen(id: string | undefined): boolean {
-    if (!id) return false
+  /** True iff `identity` was seen (and not expired); otherwise marks it and returns
+   *  false. An absent identity is never deduped (some envelopes carry no event id). */
+  seen(identity: string | undefined): boolean {
+    if (!identity) return false
     const now = this.clock.now()
-    const expiry = this.seenAt.get(id)
+    const expiry = this.seenAt.get(identity)
     if (expiry !== undefined && expiry > now) return true
     if (this.seenAt.size >= this.maxEntries) this.seenAt.clear()
-    this.seenAt.set(id, now + this.ttlMs)
+    this.seenAt.set(identity, now + this.ttlMs)
     return false
   }
 }
