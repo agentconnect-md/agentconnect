@@ -33,6 +33,9 @@ export interface DelegatedWebchatHost {
   runtimeHome: string
   adminMcpServer: McpStdioServer
   mount: SessionMcpCellMount
+  /** Observe manager-owned cleanup for this exact immutable cell, including
+   * terminal/bridge teardown that was not initiated through the daemon wrapper. */
+  waitForCleanup: () => Promise<void>
 }
 
 type CleanupSource = 'startup' | 'manager_stop' | 'explicit_stop' | 'bridge_disconnect' | 'host_terminal'
@@ -636,6 +639,23 @@ export class DelegatedWebchatHostManager {
     }
   }
 
+  private async waitForRecordCleanup(record: CellRecord): Promise<void> {
+    // ACP stream failure may reject prompt immediately before the child-exit
+    // observer starts terminal teardown. Cross one event-loop boundary, then
+    // inspect the exact record so that just-after-observation terminal callbacks
+    // are included without holding normal successful turns until host shutdown.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    if (record.teardown) {
+      await record.teardown
+      return
+    }
+    // A failed manager-owned teardown keeps the record draining for retry. Never
+    // report cleanup complete merely because its previous promise has settled.
+    if (this.draining.get(record.key) === record) {
+      await this.teardown(record, 'explicit_stop')
+    }
+  }
+
   private publicHost(record: CellRecord): DelegatedWebchatHost {
     if (!record.host || !record.adminMcpServer || !record.mount) {
       throw new Error('delegated webchat host is not fully initialized')
@@ -645,7 +665,8 @@ export class DelegatedWebchatHostManager {
       host: record.host,
       runtimeHome: record.runtimeHome,
       adminMcpServer: record.adminMcpServer,
-      mount: record.mount
+      mount: record.mount,
+      waitForCleanup: () => this.waitForRecordCleanup(record)
     }
   }
 

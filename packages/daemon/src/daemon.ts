@@ -3759,7 +3759,12 @@ export class Daemon {
             isolationCellId: delegatedHost.isolationCellId
           })
         })()),
-      waitForCleanup: () => cleanup ?? Promise.resolve()
+      waitForCleanup: async () => {
+        await cleanup
+        // Manager-owned terminal and bridge cleanup bypasses stop() above. The
+        // returned delegated handle observes the exact immutable cell record.
+        await delegatedHost.waitForCleanup?.()
+      }
     }
   }
 

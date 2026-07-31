@@ -110,6 +110,7 @@ function harness(
     healthy?: boolean
     randomCellId?: () => string
     hostFactory?: (input: DelegatedWebchatHostFactoryInput) => AcpHost
+    removeRuntimeHome?: (path: string) => Promise<void>
   } = {}
 ) {
   const runtimeHomeRoot = mkdtempSync(join(tmpdir(), 'ac-delegated-host-test-'))
@@ -127,6 +128,7 @@ function harness(
     runtimeHomeRoot,
     isolationHealthy: () => overrides.healthy ?? true,
     randomCellId: overrides.randomCellId,
+    removeRuntimeHome: overrides.removeRuntimeHome,
     hostFactory: (input) => {
       factoryInputs.push(input)
       return overrides.hostFactory?.(input) ?? fakeHost(input, starts, stops)
@@ -789,6 +791,42 @@ describe('DelegatedWebchatHostManager', () => {
     await vi.waitFor(() => expect(h.broker.releases).toHaveLength(1))
     expect(existsSync(live.runtimeHome)).toBe(false)
     expect(h.broker.stop).not.toHaveBeenCalled()
+  })
+
+  it('observes exact-cell terminal cleanup even when teardown starts just after waiting', async () => {
+    let terminal!: () => void
+    let cleanupEntered!: () => void
+    const cleanupStarted = new Promise<void>((resolve) => {
+      cleanupEntered = resolve
+    })
+    let releaseCleanup!: () => void
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve
+    })
+    const h = harness({
+      hostFactory: (input) => {
+        terminal = input.onTerminal
+        return fakeHost(input, [], [])
+      },
+      removeRuntimeHome: async () => {
+        cleanupEntered()
+        await cleanupGate
+      }
+    })
+    const live = await h.manager.startHost(cellInput('terminal-observer'))
+
+    let observationSettled = false
+    const observed = live.waitForCleanup().then(() => {
+      observationSettled = true
+    })
+    queueMicrotask(terminal)
+    await cleanupStarted
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(observationSettled).toBe(false)
+    releaseCleanup()
+    await observed
+    expect(h.broker.releases).toHaveLength(1)
   })
 
   it('ignores a stale terminal callback instead of replacing a newer draining record', async () => {
