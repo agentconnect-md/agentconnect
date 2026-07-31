@@ -1,5 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lutimesSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +18,7 @@ import {
   curatedProbeEnvironment,
   probeRuntime,
   probeAllRuntimes,
+  sweepStaleProbeRoots,
   type ProbeHostPolicy
 } from '../src/runtimes/runtime-prober.js'
 import { modelOptionsFrom, type AcpHost } from '../src/acp/acp-host.js'
@@ -352,6 +364,48 @@ describe('probeAllRuntimes', () => {
     expect(await probeAllRuntimes({})).toEqual([])
   })
 
+  // Models the real leak: omp's own daemon escapes the adapter's process group, so it
+  // is still writing when stop() resolves and its next write restores the tree rmSync
+  // just deleted. Both delays matter: 50ms lands before the first observation point
+  // (250ms), 500ms lands AFTER it — the case an early return on a momentarily-clean
+  // stat would leak, since cleanup would already have declared success.
+  it.each([50, 500])(
+    'removes its temp root when a runtime re-creates it %dms after teardown',
+    async (delayMs) => {
+      let probeRoot = ''
+      const results = await probeAllRuntimes(
+        { a: rt },
+        {
+          hostFactory: (_runtime, _id, cwd) => {
+            probeRoot = dirname(dirname(cwd))
+            return fakeHost({
+              onStop: () => {
+                setTimeout(() => mkdirSync(join(cwd, 'late-write'), { recursive: true }), delayMs).unref()
+              }
+            })
+          }
+        }
+      )
+      expect(results.map((r) => r.ok)).toEqual([true])
+      expect(probeRoot).not.toBe('')
+
+      // Wait for the re-creation to actually land first — asserting before it does would
+      // pass against any implementation, including one that never looks again.
+      await new Promise((resolve) => setTimeout(resolve, delayMs + 150))
+      expect(existsSync(probeRoot)).toBe(true)
+
+      // Then let the background watch reclaim it. Polling rather than hardcoding which
+      // observation point catches this delay; a cleanup that stopped early never removes
+      // the root again, so it is still there when the deadline expires.
+      const deadline = Date.now() + 8_000
+      while (existsSync(probeRoot) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      expect(existsSync(probeRoot)).toBe(false)
+    },
+    15_000
+  )
+
   it('uses a disposable protected curated launch and leaves host state unchanged', async () => {
     const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-host-'))
     const hostHermes = join(hostHome, '.hermes')
@@ -419,5 +473,46 @@ describe('probeAllRuntimes', () => {
 
     expect(results[0]?.ok).toBe(true)
     expect(readFileSync(join(hostConfig, 'mcp.toml'), 'utf8')).toContain('unsafe')
+  })
+})
+
+describe('sweepStaleProbeRoots', () => {
+  const probeRootAged = (tmpRoot: string, name: string, ageMs: number): string => {
+    const path = join(tmpRoot, name)
+    mkdirSync(join(path, 'runtime', 'home'), { recursive: true })
+    writeFileSync(join(path, 'runtime', 'home', 'natives.bin'), 'x')
+    const when = new Date(Date.now() - ageMs)
+    utimesSync(path, when, when)
+    return path
+  }
+
+  it('removes abandoned roots past the age cutoff and keeps fresh ones', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'ac-probe-sweeptest-'))
+    const abandoned = probeRootAged(tmpRoot, 'ac-probe-oldone', 2 * 60 * 60_000)
+    // A live sweep by a concurrent daemon must survive, as must unrelated temp dirs.
+    const fresh = probeRootAged(tmpRoot, 'ac-probe-freshy', 30_000)
+    const unrelated = probeRootAged(tmpRoot, 'ac-sm-something', 2 * 60 * 60_000)
+
+    expect(sweepStaleProbeRoots({ tmpRoot })).toBe(1)
+    expect(existsSync(abandoned)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    expect(existsSync(unrelated)).toBe(true)
+  })
+
+  it('skips a symlink planted under the probe prefix instead of following it', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'ac-probe-sweeptest-'))
+    const victim = mkdtempSync(join(tmpdir(), 'ac-probe-sweepvictim-'))
+    writeFileSync(join(victim, 'keep.txt'), 'keep')
+    const link = join(tmpRoot, 'ac-probe-evilink')
+    symlinkSync(victim, link)
+    const when = new Date(Date.now() - 2 * 60 * 60_000)
+    lutimesSync(link, when, when)
+
+    expect(sweepStaleProbeRoots({ tmpRoot })).toBe(0)
+    expect(existsSync(join(victim, 'keep.txt'))).toBe(true)
+  })
+
+  it('returns 0 when the temp root cannot be read', () => {
+    expect(sweepStaleProbeRoots({ tmpRoot: join(tmpdir(), 'ac-probe-absent-xyz') })).toBe(0)
   })
 })
