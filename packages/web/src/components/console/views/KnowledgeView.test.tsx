@@ -236,15 +236,17 @@ describe('immutable organization artifact history', () => {
       updatedAt: '2026-07-31T00:00:00.000Z',
       canManage: true
     }
+    let knowledgeCurrentRevision = 2
+    let skillCurrentRevision = 2
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       const body = url.includes('/knowledge/')
         ? [
             {
               knowledgeId: knowledge.id,
-              revision: 2,
-              content: '# Current',
-              summary: 'Current summary',
+              revision: knowledgeCurrentRevision,
+              content: knowledgeCurrentRevision === 2 ? '# Current' : '# Newly published',
+              summary: knowledgeCurrentRevision === 2 ? 'Current summary' : 'New summary',
               tags: ['release'],
               digest: knowledge.digest,
               source: 'manual',
@@ -274,12 +276,17 @@ describe('immutable organization artifact history', () => {
         : [
             {
               managedSkillId: skill.id,
-              revision: 2,
+              revision: skillCurrentRevision,
               digest: skill.digest,
               compressedBytes: 120,
               expandedBytes: 300,
               fileCount: 2,
-              manifest: skill.manifest,
+              manifest:
+                skillCurrentRevision === 2
+                  ? skill.manifest
+                  : {
+                      files: [{ path: 'references/latest.md', bytes: 100, digest: `sha256:${'3'.repeat(64)}` }]
+                    },
               source: 'dream',
               sourceAgentId: 'agent-1',
               sourceDreamId: 'dream-2',
@@ -343,5 +350,27 @@ describe('immutable organization artifact history', () => {
         expect.stringContaining(`/managed-skills/${skill.id}/revisions`)
       ])
     )
+
+    knowledgeCurrentRevision = 3
+    skillCurrentRevision = 3
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <KnowledgeEntry
+            record={{ ...knowledge, currentRevision: 3 }}
+            canManage={false}
+            onEdit={() => undefined}
+            onArchive={() => undefined}
+          />
+          <ManagedSkillEntry skill={{ ...skill, currentRevision: 3 }} canManage={false} onArchive={() => undefined} />
+        </SWRConfig>
+      )
+    })
+    await settleUntil(
+      () =>
+        host.textContent?.includes('# Newly published') === true && host.textContent.includes('references/latest.md')
+    )
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/revisions'))).toHaveLength(4)
+    expect(host.textContent).not.toContain('Revision history is unavailable.')
   })
 })

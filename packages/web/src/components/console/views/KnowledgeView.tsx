@@ -336,7 +336,7 @@ export function KnowledgeEntry({
   const [open, setOpen] = useState(false)
   const [selectedRevision, setSelectedRevision] = useState(record.currentRevision)
   useEffect(() => setSelectedRevision(record.currentRevision), [record.currentRevision])
-  const history = useSWR(open ? ['organization-knowledge-revisions', record.id] : null, () =>
+  const history = useSWR(open ? ['organization-knowledge-revisions', record.id, record.currentRevision] : null, () =>
     listOrganizationKnowledgeRevisions(record.id)
   )
   const selected = history.data?.find((revision) => revision.revision === selectedRevision)
@@ -433,7 +433,9 @@ export function ManagedSkillEntry({
   const [open, setOpen] = useState(false)
   const [selectedRevision, setSelectedRevision] = useState(skill.currentRevision)
   useEffect(() => setSelectedRevision(skill.currentRevision), [skill.currentRevision])
-  const history = useSWR(open ? ['managed-skill-revisions', skill.id] : null, () => listManagedSkillRevisions(skill.id))
+  const history = useSWR(open ? ['managed-skill-revisions', skill.id, skill.currentRevision] : null, () =>
+    listManagedSkillRevisions(skill.id)
+  )
   const selected = history.data?.find((revision) => revision.revision === selectedRevision)
 
   return (
