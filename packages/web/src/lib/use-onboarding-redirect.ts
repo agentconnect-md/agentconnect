@@ -21,20 +21,27 @@ export function useOnboardingRedirect(): boolean {
   const router = useRouter()
   const params = useParams()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
-  const { agents, daemons, agentsLoading, daemonsLoading } = useConsoleData()
-  const { orgs } = useOrgs()
+  const { agents, daemons, agentsLoading, daemonsLoading, error } = useConsoleData()
+  const { orgs, activeOrg, loading: orgsLoading, error: orgsError } = useOrgs()
   const [skipState, setSkipState] = useState<{ orgKey: string; skipped: boolean } | null>(null)
   const skipped = skipState?.orgKey === orgKey ? skipState.skipped : null
   useEffect(() => {
     setSkipState({ orgKey, skipped: isOnboardingSkipped(orgKey) })
   }, [orgKey])
-  const notInitialized = needsOnboarding(
-    agentsLoading,
-    daemonsLoading,
-    agents.some(agentIsPlaced),
-    daemons.some(daemonCompletesOnboarding),
-    orgs.some((org) => (org.daemonCount ?? 0) > 0)
-  )
+  // Every request must have settled SUCCESSFULLY before judging the org fresh:
+  // a failed or never-issued fetch (org list down, CP error, unresolved slug)
+  // leaves empty rows with the loading flags false — that must not read as
+  // "no agents, no daemons" and bounce the user into the wizard.
+  const settled = !orgsLoading && orgsError == null && activeOrg != null && error == null
+  const notInitialized =
+    settled &&
+    needsOnboarding(
+      agentsLoading,
+      daemonsLoading,
+      agents.some(agentIsPlaced),
+      daemons.some(daemonCompletesOnboarding),
+      orgs.some((org) => (org.daemonCount ?? 0) > 0)
+    )
   const redirect = notInitialized && skipped === false
   useEffect(() => {
     if (redirect) router.replace(`/${orgKey}/onboarding`)
