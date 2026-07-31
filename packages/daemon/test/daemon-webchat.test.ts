@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { delegatedMcpInCellSocketDirectory } from '../src/acp/sandbox.js'
 import type { WebchatOutput, WebchatDone, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
 
 // A webchat conversation/agent target. agentId is a real UUID because the protocol
@@ -1202,7 +1203,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       mount: {
         sourceDirectory: '/private/source',
         sourceSocketPath: '/private/source/mcp.sock',
-        targetDirectory: '/run/agentconnect-admin'
+        targetDirectory: delegatedMcpInCellSocketDirectory()
       }
     }))
     ;(daemon as any).delegatedWebchatHosts = { startHost, stop: vi.fn(async () => {}) }

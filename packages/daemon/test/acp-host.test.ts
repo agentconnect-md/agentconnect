@@ -19,6 +19,7 @@ import {
   turnFailureCode,
   turnFailureReason
 } from '../src/acp/acp-host.js'
+import { delegatedMcpInCellSocketDirectory } from '../src/acp/sandbox.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
@@ -596,7 +597,7 @@ describe('AcpHost delegated sandbox launch', () => {
 
   it('reveals exactly its validated private cell bind after masking the common broker root', async () => {
     const fixture = fakeBwrap()
-    const targetDir = join(fixture.root, 'private-endpoint')
+    const targetDir = delegatedMcpInCellSocketDirectory()
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },
       {
@@ -629,7 +630,7 @@ describe('AcpHost delegated sandbox launch', () => {
     const bind = args.findIndex((arg, index) => arg === realpathSync(fixture.sourceDir) && args[index - 1] === '--bind')
     expect(mask).toBeGreaterThan(0)
     expect(bind).toBeGreaterThan(mask)
-    expect(args[bind + 1]).toBe(join(realpathSync(fixture.root), 'private-endpoint'))
+    expect(args[bind + 1]).toBe(join(realpathSync(tmpdir()), 'agentconnect-admin'))
     const homeMask = args.findIndex(
       (arg, index) => arg === realpathSync(fixture.runtimeHomeRoot) && args[index - 1] === '--tmpfs'
     )
@@ -658,7 +659,7 @@ describe('AcpHost delegated sandbox launch', () => {
           delegatedCellMount: {
             maskedRoot: fixture.maskedRoot,
             sourceDir: fixture.sourceDir,
-            targetDir: join(fixture.root, 'private-endpoint')
+            targetDir: delegatedMcpInCellSocketDirectory()
           }
         }
       }
@@ -684,7 +685,7 @@ describe('AcpHost delegated sandbox launch', () => {
           delegatedCellMount: {
             maskedRoot: fixture.maskedRoot,
             sourceDir: fixture.sourceDir,
-            targetDir: join(fixture.root, 'private-endpoint')
+            targetDir: delegatedMcpInCellSocketDirectory()
           },
           delegatedRuntimeHomeMount: {
             maskedRoot: fixture.runtimeHomeRoot,

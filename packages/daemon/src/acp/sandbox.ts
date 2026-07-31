@@ -40,6 +40,13 @@ export class SandboxError extends Error {}
 
 const INVALID_DELEGATED_CELL_MOUNT = 'invalid delegated cell mount'
 
+/** The path injected into delegated bridge descriptors. Filesystem validation is
+ * intentionally deferred until delegated launch so a bad TMPDIR cannot crash an
+ * otherwise unrelated daemon startup. */
+export function delegatedMcpInCellSocketDirectory(): string {
+  return join(tmpdir(), 'agentconnect-admin')
+}
+
 /**
  * Delegated MCP requires enforced Linux mount/PID isolation. A present but optional
  * sandbox is insufficient because any unconfined ACP host could read another cell's
@@ -92,6 +99,10 @@ export function detectSandbox(env: NodeJS.ProcessEnv = process.env): SandboxMech
 function strictlyInside(root: string, p: string): boolean {
   const abs = resolve(p)
   return abs.startsWith(root + sep)
+}
+
+function overlaps(a: string, b: string): boolean {
+  return a === b || strictlyInside(a, b) || strictlyInside(b, a)
 }
 
 /** Canonicalize the existing prefix too, so a missing leaf below a symlink cannot
@@ -252,10 +263,31 @@ export function delegatedCellSandboxWrap(
   ) {
     throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
   }
+  let privateTmpRoot: string
+  try {
+    privateTmpRoot = realpathSync(tmpdir())
+    if (!statSync(privateTmpRoot).isDirectory()) throw new Error('not a directory')
+  } catch {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  const targetDir = canonicalTarget(mount.targetDir)
+  const designatedTarget = join(privateTmpRoot, 'agentconnect-admin')
+  if (
+    targetDir !== designatedTarget ||
+    dirname(targetDir) !== privateTmpRoot ||
+    [maskedRoot, sourceDir, runtimeHomeRoot, runtimeHomeSource, runtimeHomeTarget].some((path) =>
+      overlaps(path, targetDir)
+    )
+  ) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
   const privateRoots = new Set([maskedRoot, runtimeHomeRoot])
   const safeBaseWritable = baseWritable.filter((path) => {
     const canonicalPath = canonicalTarget(path)
-    return ![...privateRoots].some((root) => canonicalPath === root || strictlyInside(root, canonicalPath))
+    return (
+      !overlaps(canonicalPath, targetDir) &&
+      ![...privateRoots].some((root) => canonicalPath === root || strictlyInside(root, canonicalPath))
+    )
   })
 
   const wrapped = sandboxWrap(cmd, args, {
@@ -264,10 +296,6 @@ export function delegatedCellSandboxWrap(
     maskedReadRoots: validatedMaskedRoots
   })
   const separator = wrapped.args.indexOf('--')
-  const targetDir = canonicalTarget(mount.targetDir)
-  if (!isAbsolute(targetDir) || targetDir === sep) {
-    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
-  }
   const privateBinds = [
     '--dir',
     targetDir,

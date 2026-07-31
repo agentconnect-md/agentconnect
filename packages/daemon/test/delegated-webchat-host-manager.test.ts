@@ -9,6 +9,7 @@ import {
   type DelegatedWebchatHostFactoryInput
 } from '../src/acp/delegated-webchat-host-manager.js'
 import type { AcpHost } from '../src/acp/acp-host.js'
+import { delegatedMcpInCellSocketDirectory } from '../src/acp/sandbox.js'
 import type {
   RegisterSessionMcpCell,
   ReleaseSessionMcpCell,
@@ -58,7 +59,7 @@ class FakeBroker {
     const mount = {
       sourceDirectory: join('/trusted/broker', input.isolationCellId),
       sourceSocketPath: join('/trusted/broker', input.isolationCellId, 'mcp.sock'),
-      targetDirectory: '/run/agentconnect-admin'
+      targetDirectory: delegatedMcpInCellSocketDirectory()
     }
     this.mounts.set(input.isolationCellId, mount)
     return {
@@ -66,7 +67,7 @@ class FakeBroker {
       command: 'agentconnect',
       args: ['mcp-bridge', '--lazy-tools'],
       env: [
-        { name: 'AC_MCP_ENDPOINT', value: '/run/agentconnect-admin/mcp.sock' },
+        { name: 'AC_MCP_ENDPOINT', value: join(delegatedMcpInCellSocketDirectory(), 'mcp.sock') },
         { name: 'AC_MCP_TOKEN', value: `token-${input.isolationCellId}` }
       ]
     }
@@ -458,7 +459,7 @@ describe('DelegatedWebchatHostManager', () => {
     })
     const broker = new SessionMcpBroker({
       socketRoot: brokerSourceRoot,
-      inCellSocketDirectory: '/run/agentconnect-admin',
+      inCellSocketDirectory: delegatedMcpInCellSocketDirectory(),
       cliEntry: '/opt/agentconnect/current/index.js',
       mcpEndpoint: 'https://cp.invalid/api/v1/mcp',
       cpClient: {
@@ -523,7 +524,7 @@ describe('DelegatedWebchatHostManager', () => {
     })
     const broker = new SessionMcpBroker({
       socketRoot: brokerSourceRoot,
-      inCellSocketDirectory: '/run/agentconnect-admin',
+      inCellSocketDirectory: delegatedMcpInCellSocketDirectory(),
       cliEntry: '/opt/agentconnect/current/index.js',
       mcpEndpoint: 'https://cp.invalid/api/v1/mcp',
       cpClient: { mintMcpInvocation, revokeWebchatMcpDelegation: vi.fn() },

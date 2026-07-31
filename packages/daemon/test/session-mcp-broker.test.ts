@@ -13,6 +13,7 @@ import type {
   WebchatMcpDelegationRevoked
 } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
+import { delegatedMcpInCellSocketDirectory } from '../src/acp/sandbox.js'
 import {
   MAX_CONVERSATION_FENCES,
   MAX_SEEN_CELL_IDS,
@@ -112,7 +113,7 @@ async function harness(over: Partial<SessionMcpBrokerDeps> = {}) {
   })
   const deps: SessionMcpBrokerDeps = {
     socketRoot: root,
-    inCellSocketDirectory: '/run/agentconnect-admin',
+    inCellSocketDirectory: delegatedMcpInCellSocketDirectory(),
     cliEntry: '/opt/agentconnect/current/index.js',
     mcpEndpoint: 'https://cp.example/api/v1/mcp',
     cpClient: { mintMcpInvocation, revokeWebchatMcpDelegation },
@@ -199,7 +200,7 @@ describe('SessionMcpBroker immutable registration', () => {
     expect(server?.name).toBe('agentconnect-admin')
     const env = descriptorEnv(server!)
     expect(env).toEqual({
-      AC_MCP_ENDPOINT: '/run/agentconnect-admin/mcp.sock',
+      AC_MCP_ENDPOINT: join(delegatedMcpInCellSocketDirectory(), 'mcp.sock'),
       AC_MCP_TOKEN: 'private-local-token'
     })
     expect(server!.args).toContain('--lazy-tools')
@@ -212,7 +213,7 @@ describe('SessionMcpBroker immutable registration', () => {
     const h = await harness()
     await h.broker.registerCell(binding())
     const mount = h.broker.getCellMount(CELL_ID)!
-    expect(mount.targetDirectory).toBe('/run/agentconnect-admin')
+    expect(mount.targetDirectory).toBe(delegatedMcpInCellSocketDirectory())
     expect((await stat(mount.sourceDirectory)).mode & 0o777).toBe(0o700)
     expect((await stat(mount.sourceSocketPath)).mode & 0o777).toBe(0o600)
     expect((await lstat(mount.sourceDirectory)).isSymbolicLink()).toBe(false)

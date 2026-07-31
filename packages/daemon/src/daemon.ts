@@ -30,7 +30,13 @@ import {
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
-import { detectSandbox, SandboxError, supportsDelegatedMcpIsolation, type SandboxMechanism } from './acp/sandbox.js'
+import {
+  delegatedMcpInCellSocketDirectory,
+  detectSandbox,
+  SandboxError,
+  supportsDelegatedMcpIsolation,
+  type SandboxMechanism
+} from './acp/sandbox.js'
 import {
   DelegatedWebchatHostManager,
   type DelegatedWebchatHost,
@@ -3659,7 +3665,7 @@ export class Daemon {
     if (endpoint.protocol === 'wss:') endpoint.protocol = 'https:'
     const broker = new SessionMcpBroker({
       socketRoot: delegatedMcpBrokerRoot(root),
-      inCellSocketDirectory: '/run/agentconnect-admin',
+      inCellSocketDirectory: delegatedMcpInCellSocketDirectory(),
       cliEntry: daemonEntryForShims(root),
       mcpEndpoint: endpoint.toString(),
       cpClient

@@ -3,8 +3,9 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  delegatedMcpInCellSocketDirectory,
   delegatedCellSandboxWrap,
   detectSandbox,
   sandboxWrap,
@@ -14,6 +15,8 @@ import {
 
 const privateHomeRoots: string[] = []
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
+const PRIVATE_TARGET_DIRECTORY = delegatedMcpInCellSocketDirectory()
+const CANONICAL_PRIVATE_TARGET_DIRECTORY = join(realpathSync(tmpdir()), 'agentconnect-admin')
 afterEach(() => {
   for (const root of privateHomeRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -99,12 +102,12 @@ describe('delegated bwrap mount isolation', () => {
   it('binds back exactly the entitled broker cell and runtime HOME after masking both private roots', () => {
     const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
     const sourceDir = join(maskedRoot, 'cell-a')
-    const targetDir = join(maskedRoot, 'private')
+    const targetDir = PRIVATE_TARGET_DIRECTORY
     const baseWritable = mkdtempSync(join(tmpdir(), 'ac-agent-workspace-'))
     mkdirSync(sourceDir)
     const canonicalMaskedRoot = realpathSync(maskedRoot)
     const canonicalSourceDir = realpathSync(sourceDir)
-    const canonicalTargetDir = join(canonicalMaskedRoot, 'private')
+    const canonicalTargetDir = CANONICAL_PRIVATE_TARGET_DIRECTORY
     const canonicalBaseWritable = realpathSync(baseWritable)
 
     const homeMount = privateHomeMount()
@@ -148,6 +151,102 @@ describe('delegated bwrap mount isolation', () => {
     expect(bindIndexes.at(-1)).toBeGreaterThan(homeMaskIndex)
   })
 
+  it('creates the designated endpoint inside bwrap private tmp without overlaying a broad host directory', () => {
+    const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
+    const sourceDir = join(maskedRoot, 'cell-a')
+    mkdirSync(sourceDir)
+    const homeMount = privateHomeMount()
+
+    const { args } = delegatedCellSandboxWrap(
+      'codex',
+      ['--acp'],
+      [],
+      {
+        maskedRoot,
+        sourceDir,
+        targetDir: PRIVATE_TARGET_DIRECTORY
+      },
+      homeMount
+    )
+
+    const targetCreation = args.findIndex(
+      (arg, index) => arg === CANONICAL_PRIVATE_TARGET_DIRECTORY && args[index - 1] === '--dir'
+    )
+    const entitledBind = args.findIndex(
+      (arg, index) =>
+        arg === realpathSync(sourceDir) &&
+        args[index - 1] === '--bind' &&
+        args[index + 1] === CANONICAL_PRIVATE_TARGET_DIRECTORY
+    )
+    expect(args.filter((arg, index) => arg === tmpdir() && args[index - 1] === '--tmpfs')).toHaveLength(1)
+    expect(args).not.toContain('/run/agentconnect-admin')
+    expect(targetCreation).toBeGreaterThan(args.indexOf(realpathSync(maskedRoot)))
+    expect(entitledBind).toBeGreaterThan(targetCreation)
+    expect(
+      args.filter((arg, index) => arg === CANONICAL_PRIVATE_TARGET_DIRECTORY && args[index - 2] === '--bind')
+    ).toHaveLength(1)
+  })
+
+  it.each(['/run/agentconnect-admin', join(tmpdir(), 'nested', 'agentconnect-admin'), tmpdir()])(
+    'rejects non-designated delegated target %s',
+    (targetDir) => {
+      const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
+      const sourceDir = join(maskedRoot, 'cell-a')
+      mkdirSync(sourceDir)
+
+      expect(() =>
+        delegatedCellSandboxWrap('codex', ['--acp'], [], { maskedRoot, sourceDir, targetDir }, privateHomeMount())
+      ).toThrow(new SandboxError('invalid delegated cell mount'))
+    }
+  )
+
+  it('imports and builds a general sandbox but fails delegated launch closed for a missing temp root', async () => {
+    const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
+    const sourceDir = join(maskedRoot, 'cell-a')
+    mkdirSync(sourceDir)
+    const homeMount = privateHomeMount()
+    const missingTmp = join(maskedRoot, 'missing-tmp')
+    const previous = {
+      TMPDIR: process.env.TMPDIR,
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP
+    }
+
+    try {
+      process.env.TMPDIR = missingTmp
+      process.env.TMP = missingTmp
+      process.env.TEMP = missingTmp
+
+      vi.resetModules()
+      const sandbox = await import('../src/acp/sandbox.js')
+      expect(() =>
+        sandbox.sandboxWrap('codex', ['--acp'], {
+          mechanism: 'bwrap',
+          writable: [],
+          maskedReadRoots: []
+        })
+      ).not.toThrow()
+      expect(() =>
+        sandbox.delegatedCellSandboxWrap(
+          'codex',
+          ['--acp'],
+          [],
+          {
+            maskedRoot,
+            sourceDir,
+            targetDir: sandbox.delegatedMcpInCellSocketDirectory()
+          },
+          homeMount
+        )
+      ).toThrow(new SandboxError('invalid delegated cell mount'))
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
+
   it('rejects a mount source outside the masked root', () => {
     const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
     const sourceDir = mkdtempSync(join(tmpdir(), 'ac-outside-cell-'))
@@ -160,7 +259,7 @@ describe('delegated bwrap mount isolation', () => {
         {
           maskedRoot,
           sourceDir,
-          targetDir: join(maskedRoot, 'private')
+          targetDir: PRIVATE_TARGET_DIRECTORY
         },
         privateHomeMount()
       )
@@ -183,7 +282,7 @@ describe('delegated bwrap mount isolation', () => {
         {
           maskedRoot,
           sourceDir: join(maskedRoot, 'cell-a'),
-          targetDir: join(maskedRoot, 'private')
+          targetDir: PRIVATE_TARGET_DIRECTORY
         },
         privateHomeMount()
       )
@@ -206,7 +305,7 @@ describe('delegated bwrap mount isolation', () => {
           {
             maskedRoot: missing === 'masked root' ? missingPath : maskedRoot,
             sourceDir: missing === 'source directory' ? missingPath : sourceDir,
-            targetDir: join(maskedRoot, 'private')
+            targetDir: PRIVATE_TARGET_DIRECTORY
           },
           privateHomeMount()
         )
@@ -231,7 +330,7 @@ describe('delegated bwrap mount isolation', () => {
           {
             maskedRoot: nonDirectory === 'masked root' ? filePath : maskedRoot,
             sourceDir: nonDirectory === 'source directory' ? filePath : sourceDir,
-            targetDir: join(maskedRoot, 'private')
+            targetDir: PRIVATE_TARGET_DIRECTORY
           },
           privateHomeMount()
         )
@@ -252,7 +351,7 @@ describe('delegated bwrap mount isolation', () => {
         {
           maskedRoot,
           sourceDir: loopPath,
-          targetDir: join(maskedRoot, 'private')
+          targetDir: PRIVATE_TARGET_DIRECTORY
         },
         privateHomeMount()
       )
@@ -274,7 +373,7 @@ describe('delegated bwrap mount isolation', () => {
           {
             maskedRoot,
             sourceDir,
-            targetDir: join(maskedRoot, 'private')
+            targetDir: PRIVATE_TARGET_DIRECTORY
           },
           privateHomeMount()
         )
@@ -294,13 +393,13 @@ describe('bwrap delegated mount behavior', () => {
       const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
       const sourceA = join(maskedRoot, 'cell-a')
       const sourceB = join(maskedRoot, 'cell-b')
-      const targetA = join(maskedRoot, 'private')
+      const targetA = PRIVATE_TARGET_DIRECTORY
       mkdirSync(sourceA)
       mkdirSync(sourceB)
       writeFileSync(join(sourceA, 'marker'), 'alpha')
       writeFileSync(join(sourceB, 'marker'), 'bravo')
       const canonicalMaskedRoot = realpathSync(maskedRoot)
-      const canonicalTargetA = join(canonicalMaskedRoot, 'private')
+      const canonicalTargetA = CANONICAL_PRIVATE_TARGET_DIRECTORY
 
       const ordinary = sandboxWrap(
         'sh',
