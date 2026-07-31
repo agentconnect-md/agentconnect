@@ -910,7 +910,12 @@ export class SessionManager {
         }
         const quotedBlock = this.quotedSourceBlock(msg, { replayed: context })
         if (quotedBlock) blocks.push({ type: 'text', text: quotedBlock })
-        blocks.push({ type: 'text', text: msg.text })
+        // session-concept §2.1: inbound human input carries its sender (`from`), so deliver the
+        // trigger in the same `[sender] text` shape as thread context — otherwise the agent has
+        // no idea WHO is speaking and must guess from ambient account context. Synthetic
+        // (cron/hook) triggers stay bare, and an agent delivery already names its caller in the
+        // forwarded text (`@caller: …` from prepareAgentDelivery).
+        blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${msg.text}` : msg.text })
       }
       rec.lastDeliveredTs = deliveredThrough ?? ts
     }

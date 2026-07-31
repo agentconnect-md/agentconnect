@@ -124,7 +124,7 @@ describe('Daemon evaluation surface', () => {
       agentId: AGENT_ID,
       sessionId: 'eval-session-1',
       turnId: `${AGENT_ID}:turn-1`,
-      data: { input: 'Inspect the fixture', model: 'test-model' }
+      data: { input: '[evaluation-user] Inspect the fixture', model: 'test-model' }
     })
     expect(events.find((event) => event.type === 'turn.completed')).toMatchObject({
       data: { output: 'evaluation answer', usage: { totalTokens: 12 } }

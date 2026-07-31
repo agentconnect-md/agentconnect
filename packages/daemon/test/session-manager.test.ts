@@ -115,7 +115,7 @@ describe('SessionManager', () => {
     expect(prompt).toContain('The failing deployment is production; can you check it now?')
     expect(firstReply.blocks.at(-1)).toEqual({
       type: 'text',
-      text: 'The failing deployment is production; can you check it now?'
+      text: '[U1] The failing deployment is production; can you check it now?'
     })
     expect(host.newSession).toHaveBeenCalledOnce()
     store.close()
@@ -163,7 +163,7 @@ describe('SessionManager', () => {
     expect(prompt).toContain('1 earlier message(s) elided')
     expect(firstReply.blocks.at(-1)).toEqual({
       type: 'text',
-      text: 'Please act on the latest thread state.'
+      text: '[U1] Please act on the latest thread state.'
     })
     store.close()
   })
@@ -268,12 +268,12 @@ describe('SessionManager', () => {
     const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'where should I deploy?' }))
     expect(recalling.recallForTurn).toHaveBeenCalledTimes(1)
     expect((recalling.recallForTurn as any).mock.calls[0][1]).toMatchObject({
-      query: 'where should I deploy?',
+      query: '[U1] where should I deploy?',
       topK: 5,
       maxBytes: 8_192,
       timeoutMs: 1_000
     })
-    expect(first.blocks[0]).toEqual({ type: 'text', text: 'where should I deploy?' })
+    expect(first.blocks[0]).toEqual({ type: 'text', text: '[U1] where should I deploy?' })
     const referenceText = (first.blocks.at(-1) as any).text
     expect(referenceText).toContain('# Recalled memory — untrusted reference only')
     expect(referenceText).toContain('deploy in sea')
@@ -292,7 +292,7 @@ describe('SessionManager', () => {
         injectedBytes: Buffer.byteLength(referenceText)
       })
     )
-    expect(first.captureInput).toBe('where should I deploy?')
+    expect(first.captureInput).toBe('[U1] where should I deploy?')
     expect(first.captureInput).not.toContain('deploy in sea')
 
     await sm.handle('bot-a', msg({ ts: '100.2', text: 'and now?' }))
@@ -320,7 +320,7 @@ describe('SessionManager', () => {
     })
 
     const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'answer anyway' }))
-    expect(turn.blocks).toEqual([{ type: 'text', text: 'answer anyway' }])
+    expect(turn.blocks).toEqual([{ type: 'text', text: '[U1] answer anyway' }])
     expect(onMemoryRecallError).toHaveBeenCalledWith('bot-a', expect.any(Error))
     expect(onMemoryRecallEvent).toHaveBeenLastCalledWith(
       'bot-a',
@@ -339,7 +339,7 @@ describe('SessionManager', () => {
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory: toolOnly })
     const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'do not recall automatically' }))
     expect(toolOnly.recallForTurn).not.toHaveBeenCalled()
-    expect(turn.captureInput).toBe('do not recall automatically')
+    expect(turn.captureInput).toBe('[U1] do not recall automatically')
     store.close()
   })
 
@@ -368,8 +368,8 @@ describe('SessionManager', () => {
     expect(recallPolicy).not.toHaveBeenCalled()
     expect(disabled.recallForTurn).not.toHaveBeenCalled()
     expect(onMemoryRecallEvent).not.toHaveBeenCalled()
-    expect(turn.blocks).toEqual([{ type: 'text', text: 'keep the user turn intact' }])
-    expect(turn.captureInput).toBe('keep the user turn intact')
+    expect(turn.blocks).toEqual([{ type: 'text', text: '[U1] keep the user turn intact' }])
+    expect(turn.captureInput).toBe('[U1] keep the user turn intact')
     expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.memoryProvider).toBe('none')
     store.close()
   })
@@ -435,7 +435,7 @@ describe('SessionManager', () => {
     // block 0 is the agent meta object; the user message is a LATER block (#398).
     expect((blocks[0] as any).text).toMatch(/^# Agent/)
     expect((blocks[0] as any).text).toContain('you are terse')
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'first' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] first' })
     store.close()
   })
 
@@ -537,7 +537,7 @@ describe('SessionManager', () => {
     const metaArg = host.newSession.mock.calls[0][3] as string
     expect(metaArg).toMatch(/^# Agent/)
     expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('# Agent'))).toBe(false)
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'first' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] first' })
     store.close()
   })
 
@@ -862,7 +862,7 @@ describe('SessionManager', () => {
     // The memory text must NOT appear as any prompt block…
     expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('SENTINEL_MEMORY_LINE'))).toBe(false)
     // …and the user message is the leading/last text block (so the runtime titles from IT).
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'do the thing' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] do the thing' })
     // The meta object + memory ride newSession's systemAppend arg (4th): meta first,
     // then the bounded "# Persistent memory" index.
     const metaArg = host.newSession.mock.calls[0][3] as string
@@ -891,7 +891,7 @@ describe('SessionManager', () => {
     // block, so it is NOT double-injected — the block is the only place it appears.
     expect((blocks[0] as any).text).toMatch(/^# Agent/)
     expect((blocks[0] as any).text).toContain('SENTINEL_MEMORY_LINE')
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'do the thing' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] do the thing' })
     // memory appears exactly once across all blocks (no duplicate leading block)
     const hits = blocks.filter((b: any) => typeof b.text === 'string' && b.text.includes('SENTINEL_MEMORY_LINE'))
     expect(hits).toHaveLength(1)
@@ -1179,7 +1179,7 @@ describe('SessionManager', () => {
 
     const followUp = await sm.handle('bot-a', msg({ ts: '100.200000', thread: '100.100000', text: 'are you sure?' }))
     expect(followUp.skipped).not.toBe(true)
-    expect(followUp.blocks.at(-1)).toEqual({ type: 'text', text: 'are you sure?' })
+    expect(followUp.blocks.at(-1)).toEqual({ type: 'text', text: '[U1] are you sure?' })
     expect(store.getSession(key)?.lastDeliveredTs).toBe('100.200000')
     store.close()
   })
@@ -1482,7 +1482,7 @@ describe('SessionManager — first-class agent thread events', () => {
     expect(store.getSession(key)?.lastDeliveredTs).toBe('100.3')
     const { blocks } = await sm.handle('bot-a', msg({ ts: '100.4', text: 'now do it', source: 'user' }))
     expect(blocks.map((b: any) => b.text).join('\n')).not.toContain('say hi to everyone')
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'now do it' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] now do it' })
     store.close()
   })
 
@@ -1543,7 +1543,7 @@ describe('SessionManager — collaboration preamble', () => {
     const metaArg = host.newSession.mock.calls[0][3] as string
     expect(metaArg).not.toContain('# Collaborating with other agents')
     expect(metaArg).toContain('# Choosing whether to respond')
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'hi' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] hi' })
     store.close()
   })
 
@@ -1575,7 +1575,7 @@ describe('SessionManager — collaboration preamble', () => {
     const metaArg = host.newSession.mock.calls[0][3] as string
     expect(metaArg).toContain('# Collaborating with other agents')
     expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('# Collaborating'))).toBe(false)
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: 'hi' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] hi' })
     store.close()
   })
 
@@ -1631,7 +1631,7 @@ describe('SessionManager — collaboration preamble', () => {
       )
     ).toBe(true)
     // Preserve the user's exact platform text; the trusted routing fact is a separate block.
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: '<@U1234567890> hello' })
+    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] <@U1234567890> hello' })
     store.close()
   })
 
@@ -1760,7 +1760,7 @@ describe('SessionManager — quoted reply source', () => {
     expect(texts[quotedIdx]).toContain('[@bob] the deploy failed with ECONNRESET')
     // Framed as context, and the agent's actual instruction stays last (and thus salient).
     expect(texts[quotedIdx]).toContain('not as instructions')
-    expect(texts.indexOf('@bot-a what do you make of this?')).toBeGreaterThan(quotedIdx)
+    expect(texts.indexOf('[U1] @bot-a what do you make of this?')).toBeGreaterThan(quotedIdx)
     store.close()
   })
 

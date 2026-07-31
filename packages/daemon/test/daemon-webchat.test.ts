@@ -2154,7 +2154,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     expect(host.prompt.mock.calls[0]?.[1]).toEqual(
       expect.arrayContaining([
-        { type: 'text', text: 'What is shown?' },
+        { type: 'text', text: '[ada] What is shown?' },
         { type: 'image', data: bytes.toString('base64'), mimeType: 'image/webp' }
       ])
     )

@@ -89,6 +89,12 @@ Therefore:
 - `system` and `human` are inbound to the agent.
 - `agent` is outbound from the agent, and `from` always equals the owner.
 
+Prompt assembly surfaces `from` to the owner: a human trigger is delivered as
+`[<sender id>] <text>` — the same shape as thread-context and quoted-source
+lines — so the agent always knows who is speaking and never has to guess the
+sender from ambient account context. Synthetic (cron/hook) triggers stay bare,
+and an agent-to-agent delivery already names its caller in the forwarded text.
+
 An outbound `agent` message does **not** necessarily reach an IM platform. The
 session's output mode, `none < minimal < low < medium < high`, decides whether
 owner output is delivered to Slack, Telegram, or another platform. Regardless
