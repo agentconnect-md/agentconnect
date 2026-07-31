@@ -21,7 +21,7 @@ import {
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
   PgWebchatMcpAccessGrantRepo,
-  PgMcpInvocationRepo,
+  PgWebchatMcpOperationRepo,
   PgDaemonRepo,
   PgDaemonLifecycleOpRepo,
   PgApiKeyRepo,
@@ -160,7 +160,7 @@ export function buildHttpApp(
   const webchatConversationRepo = new PgWebchatConversationRepo(prisma)
   const webchatMcpDelegationRepo = new PgWebchatMcpDelegationRepo(prisma)
   const webchatMcpAccessGrantRepo = new PgWebchatMcpAccessGrantRepo(prisma)
-  const mcpInvocationRepo = new PgMcpInvocationRepo(prisma, clock)
+  const webchatMcpOperationRepo = new PgWebchatMcpOperationRepo(prisma)
   const sessionRepo = new PgSessionRepo(prisma)
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
@@ -183,12 +183,8 @@ export function buildHttpApp(
       daemons: liveness,
       grants: webchatMcpAccessGrantRepo,
       authorities: webchatMcpDelegationRepo,
-      invocations: mcpInvocationRepo,
       sessions: sessionRepo,
-      isCuratedTool: (toolName) => {
-        const tool = findTool(toolName)
-        return tool !== undefined && tool.destructive !== true
-      }
+      isCuratedTool: (toolName) => findTool(toolName) !== undefined
     })
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
 
@@ -231,7 +227,7 @@ export function buildHttpApp(
       presetAgent: presetAgentRepo,
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
-      mcpInvocation: mcpInvocationRepo,
+      webchatMcpOperation: webchatMcpOperationRepo,
       oauth: oauthRepo
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),

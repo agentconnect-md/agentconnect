@@ -144,13 +144,6 @@ export interface ProbeOptions {
   isolateAccountApps?: boolean
   /** Seam for tests — construct a host for a runtime. Defaults to a real AcpHost. */
   hostFactory?: (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpHost
-  /**
-   * Daemon-owned behavioral proof for the two security properties required by
-   * remote administration. An ACP initialize capability bit is deliberately
-   * insufficient: the verifier must observe session-private header handling and
-   * one stable invocation id across retry and descriptor renewal.
-   */
-  verifyRemoteMcp?: (host: AcpHost, sessionId: string) => Promise<boolean>
   /** Curated candidates require a disposable final managed launch plan. */
   curated?: boolean
   /** Full host environment used for allowlisted credential seeding and redaction. */
@@ -524,18 +517,7 @@ export async function probeRuntime(
     const models = opt?.models ?? []
     const acpProtocolVersion = activeHost.acpProtocolVersion()
     // Optional calls: fake hosts in older tests may not implement the accessors.
-    const advertisedMcpCapabilities = activeHost.mcpCapabilities?.() ?? undefined
-    const remoteMcpVerified =
-      probeSessionId !== undefined &&
-      advertisedMcpCapabilities?.http === true &&
-      opts.verifyRemoteMcp !== undefined &&
-      (await opts.verifyRemoteMcp(activeHost, probeSessionId))
-    const mcpCapabilities = advertisedMcpCapabilities
-      ? {
-          ...advertisedMcpCapabilities,
-          ...(remoteMcpVerified ? { privateSessionHeaders: true, stableInvocationId: true } : {})
-        }
-      : undefined
+    const mcpCapabilities = activeHost.mcpCapabilities?.() ?? undefined
     const info = activeHost.acpAgentInfo?.()
     const probedVersion = info?.version
     const configOptions =

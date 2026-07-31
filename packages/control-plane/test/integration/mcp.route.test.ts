@@ -14,14 +14,16 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedAgent } from '../fixtures/seed.js'
-import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-http.js'
 import { MCP_TOOLS } from '../../src/http/mcp/tools.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
+import { WebchatMcpGrantTokenCodec } from '../../src/registry/webchatMcpGrantToken.js'
+import { WEBCHAT_REMOTE_MCP_FEATURE } from '@agentconnect.md/protocol'
 
 const MCP_URL = '/api/v1/mcp'
 
@@ -163,6 +165,117 @@ describe('POST /api/v1/mcp — auth', () => {
     })
     expect(res.statusCode).toBe(400)
     expect((res.json() as JsonRpcResponse).error?.code).toBe(-32600)
+  })
+})
+
+describe('delegated webchat MCP operations', () => {
+  it('executes reads directly but holds writes until the conversation owner approves', async () => {
+    const daemonId = randomUUID()
+    const hostAgentId = randomUUID()
+    const conversationId = randomUUID()
+    await seedDaemon(prisma, daemonId)
+    await seedAgent(prisma, hostAgentId, { daemonId })
+    await prisma.webchatConversation.create({
+      data: {
+        id: conversationId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: hostAgentId,
+        userId: DEFAULT_OWNER_ID,
+        delegationGeneration: 1
+      }
+    })
+    const authority = await prisma.webchatMcpDelegation.create({
+      data: {
+        conversationId,
+        generation: 1,
+        userId: DEFAULT_OWNER_ID,
+        orgId: DEFAULT_ORG_ID,
+        agentId: hostAgentId,
+        daemonId,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    })
+    const credential = new WebchatMcpGrantTokenCodec(TEST_API_KEY_PEPPER).mint()
+    await prisma.webchatMcpAccessGrant.create({
+      data: {
+        authorityId: authority.id,
+        descriptorInstanceId: randomUUID(),
+        grantRevision: 1,
+        tokenHash: credential.tokenHash,
+        status: 'active',
+        pendingExpiresAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date(Date.now() + 60_000),
+        activatedAt: new Date()
+      }
+    })
+    await prisma.presetAgent.create({
+      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: hostAgentId, status: 'created' }
+    })
+    await prisma.sessionMeta.create({
+      data: {
+        id: `webchat-${conversationId}`,
+        agentId: hostAgentId,
+        platform: 'webchat',
+        channel: conversationId,
+        phase: 'start',
+        orgId: DEFAULT_ORG_ID,
+        ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
+        visibility: 'private',
+        visibilitySource: 'default',
+        lastActivityAt: new Date(),
+        startedAt: new Date()
+      }
+    })
+
+    const app = buildHttpApp(prisma, undefined, {
+      get: (id) =>
+        id === daemonId
+          ? {
+              reachable: true,
+              state: 'READY',
+              sessionEpoch: 1,
+              capabilities: { features: [WEBCHAT_REMOTE_MCP_FEATURE] }
+            }
+          : undefined
+    })
+    opened.push(app)
+    const remoteRpc = (id: number, name: string, args: Record<string, unknown>) =>
+      app.app.inject({
+        method: 'POST',
+        url: MCP_URL,
+        headers: {
+          authorization: `Bearer ${credential.plaintext}`,
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json'
+        },
+        payload: { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }
+      })
+
+    const read = await remoteRpc(1, 'listAgents', {})
+    expect(read.statusCode).toBe(200)
+    expect(toolText(mcpMessage(read).result as unknown as ToolCallResult)).toContain(hostAgentId)
+
+    const write = await remoteRpc(2, 'createAgent', { name: 'approved-agent', runtime: 'codex' })
+    expect(write.statusCode).toBe(200)
+    const pending = JSON.parse(toolText(mcpMessage(write).result as unknown as ToolCallResult)) as {
+      status: string
+      operationId: string
+    }
+    expect(pending.status).toBe('awaiting_confirmation')
+    expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })).toBeNull()
+
+    const path = `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${hostAgentId}/webchat/${conversationId}/mcp-operations`
+    const listed = await app.app.inject({ method: 'GET', url: path })
+    expect(listed.statusCode).toBe(200)
+    expect(listed.json()).toMatchObject([{ operationId: pending.operationId, toolName: 'createAgent' }])
+    const approved = await app.app.inject({
+      method: 'POST',
+      url: `${path}/${pending.operationId}/decision`,
+      payload: { decision: 'approve' }
+    })
+    expect(approved.statusCode).toBe(200)
+    expect(approved.json()).toMatchObject({ operationId: pending.operationId, status: 'completed' })
+    expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })).not.toBeNull()
   })
 })
 

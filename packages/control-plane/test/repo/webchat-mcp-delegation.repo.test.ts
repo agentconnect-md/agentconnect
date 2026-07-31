@@ -3,9 +3,9 @@ import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgWebchatMcpDelegationRepo } from '../../src/persistence/repositories/webchat-mcp-delegation.repo.js'
-import { PgMcpInvocationRepo } from '../../src/persistence/repositories/mcp-invocation.repo.js'
+import { PgWebchatMcpOperationRepo } from '../../src/persistence/repositories/webchat-mcp-operation.repo.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
-import { McpInvocationReaper } from '../../src/orchestrator/mcpInvocationReaper.js'
+import { WebchatMcpOperationReaper } from '../../src/orchestrator/webchatMcpOperationReaper.js'
 import { FakeClock } from '../fakes/fake-clock.js'
 
 const CONVERSATION = 'c1111111-1111-4111-8111-111111111111'
@@ -364,8 +364,8 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       revokedReason: 'expired'
     })
 
-    const reaper = new McpInvocationReaper(
-      { reap: async () => ({ markedAmbiguous: 0, deleted: 0, expiredAssertions: 0 }) },
+    const reaper = new WebchatMcpOperationReaper(
+      { reap: async () => ({ markedAmbiguous: 0, markedStale: 0, evictedResponses: 0 }) },
       repo,
       new FakeClock(at(1_000).getTime()),
       undefined,
@@ -462,13 +462,17 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
         expiresAt: at(2_000)
       }
     })
-    await prisma.mcpInvocation.create({
+    await prisma.webchatMcpOperation.create({
       data: {
         id: '99999999-9999-4999-8999-999999999999',
         conversationId: CONVERSATION,
-        grantId: retainedGrant.id,
-        requestHash: 'retained-request',
-        method: 'tools/call'
+        sourceGrantId: retainedGrant.id,
+        createdAuthorityGeneration: 502,
+        userId: DEFAULT_OWNER_ID,
+        toolName: 'updateAgent',
+        canonicalArguments: {},
+        intentHash: 'retained-request',
+        confirmationExpiresAt: at(2_000)
       }
     })
 
@@ -538,8 +542,8 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
   })
 })
 
-describe('PgMcpInvocationRepo live authorization fence (real Postgres)', () => {
-  it('elects only against the newest exact webchat session visibility', async () => {
+describe('PgWebchatMcpOperationRepo (real Postgres)', () => {
+  async function operationFixture() {
     await fixtures()
     await prisma.presetAgent.create({
       data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
@@ -550,47 +554,120 @@ describe('PgMcpInvocationRepo live authorization fence (real Postgres)', () => {
         authorityId: authority.id,
         descriptorInstanceId: '88888888-8888-4888-8888-888888888888',
         grantRevision: 1,
-        tokenHash: 'peppered:claim',
+        tokenHash: 'peppered:operation',
         status: 'active',
         pendingExpiresAt: at(60_000),
         expiresAt: at(60_000),
         activatedAt: NOW
       }
     })
-    const base = {
-      agentId: AGENT,
-      platform: 'webchat',
-      channel: CONVERSATION,
-      phase: 'start' as const,
-      orgId: DEFAULT_ORG_ID,
-      ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
-      visibilitySource: 'default' as const,
-      lastActivityAt: NOW,
-      startedAt: NOW
-    }
-    await prisma.sessionMeta.create({
-      data: { ...base, id: 'historical-private', visibility: 'private' }
-    })
     await prisma.sessionMeta.create({
       data: {
-        ...base,
-        id: 'current-org',
-        visibility: 'org',
-        lastActivityAt: at(1_000),
-        startedAt: at(1_000)
+        id: 'private-webchat-operation',
+        agentId: AGENT,
+        platform: 'webchat',
+        channel: CONVERSATION,
+        phase: 'start',
+        orgId: DEFAULT_ORG_ID,
+        ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
+        visibility: 'private',
+        visibilitySource: 'default',
+        lastActivityAt: NOW,
+        startedAt: NOW
       }
     })
+    return { authority, grant }
+  }
 
-    const claim = await new PgMcpInvocationRepo(prisma).claim({
-      invocationId: '99999999-9999-4999-8999-999999999999',
+  it('replays one grant-scoped receipt and coalesces a fresh request with the same open intent', async () => {
+    const { authority, grant } = await operationFixture()
+    const repo = new PgWebchatMcpOperationRepo(prisma)
+    const base = {
       conversationId: CONVERSATION,
       grantId: grant.id,
-      requestHash: 'request',
-      method: 'tools/list',
-      now: at(2_000)
-    })
+      authorityGeneration: authority.generation,
+      userId: DEFAULT_OWNER_ID,
+      requestHash: 'exact-request',
+      toolName: 'updateAgent',
+      canonicalArguments: { id: AGENT, displayName: 'New name' },
+      intentHash: 'same-intent',
+      confirmationExpiresAt: at(30_000),
+      now: NOW
+    }
+    const created = await repo.createOrReplay({ ...base, jsonRpcRequestId: 'n:1' })
+    const replayed = await repo.createOrReplay({ ...base, jsonRpcRequestId: 'n:1' })
+    const coalesced = await repo.createOrReplay({ ...base, jsonRpcRequestId: 'n:2', requestHash: 'another-request' })
 
-    expect(claim).toEqual({ kind: 'denied' })
-    expect(await prisma.mcpInvocation.count()).toBe(0)
+    expect(created.kind).toBe('created')
+    if (created.kind !== 'created') throw new Error('expected a created operation')
+    expect(replayed).toMatchObject({ kind: 'replayed', operation: { id: created.operation.id } })
+    expect(coalesced).toMatchObject({ kind: 'coalesced', operation: { id: created.operation.id } })
+    expect(await prisma.webchatMcpOperation.count()).toBe(1)
+    expect(await prisma.webchatMcpTransportReceipt.count()).toBe(2)
+  })
+
+  it('fails closed on a mutated nonterminal receipt and fences completion to the elected attempt', async () => {
+    const { authority, grant } = await operationFixture()
+    const repo = new PgWebchatMcpOperationRepo(prisma)
+    const created = await repo.createOrReplay({
+      conversationId: CONVERSATION,
+      grantId: grant.id,
+      authorityGeneration: authority.generation,
+      userId: DEFAULT_OWNER_ID,
+      jsonRpcRequestId: 's:write-1',
+      requestHash: 'request-a',
+      toolName: 'updateAgent',
+      canonicalArguments: { id: AGENT, displayName: 'New name' },
+      intentHash: 'intent-a',
+      confirmationExpiresAt: at(30_000),
+      now: NOW
+    })
+    expect(
+      await repo.createOrReplay({
+        conversationId: CONVERSATION,
+        grantId: grant.id,
+        authorityGeneration: authority.generation,
+        userId: DEFAULT_OWNER_ID,
+        jsonRpcRequestId: 's:write-1',
+        requestHash: 'request-b',
+        toolName: 'updateAgent',
+        canonicalArguments: { id: AGENT, displayName: 'Other' },
+        intentHash: 'intent-b',
+        confirmationExpiresAt: at(30_000),
+        now: NOW
+      })
+    ).toEqual({ kind: 'conflict' })
+
+    if (created.kind !== 'created') throw new Error('expected a created operation')
+    const operationId = created.operation.id
+    expect(
+      await repo.claimForApproval({
+        operationId,
+        conversationId: CONVERSATION,
+        userId: DEFAULT_OWNER_ID,
+        executionAttemptId: '77777777-7777-4777-8777-777777777777',
+        claimedAt: at(1_000),
+        recoveryDeadline: at(5_000)
+      })
+    ).toMatchObject({ status: 'executing' })
+    expect(
+      await repo.complete({
+        operationId,
+        executionAttemptId: '66666666-6666-4666-8666-666666666666',
+        status: 'completed',
+        boundedResponse: Buffer.from('{}'),
+        completedAt: at(2_000)
+      })
+    ).toBe(false)
+    expect(await repo.markAmbiguous(operationId, '77777777-7777-4777-8777-777777777777', at(6_000))).toBe(true)
+    expect(
+      await repo.complete({
+        operationId,
+        executionAttemptId: '77777777-7777-4777-8777-777777777777',
+        status: 'completed',
+        boundedResponse: Buffer.from('{}'),
+        completedAt: at(7_000)
+      })
+    ).toBe(false)
   })
 })

@@ -33,9 +33,7 @@ const agentCapabilities = () => ({
     ? {
         mcpCapabilities: {
           http: mcpCaps.includes('http'),
-          sse: mcpCaps.includes('sse'),
-          privateSessionHeaders: mcpCaps.includes('privateSessionHeaders'),
-          stableInvocationId: mcpCaps.includes('stableInvocationId')
+          sse: mcpCaps.includes('sse')
         }
       }
     : {}),

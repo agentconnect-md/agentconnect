@@ -54,21 +54,6 @@ describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {
     expect(host.mcpCapabilities()).toEqual({ http: true, sse: false })
     await host.stop()
   }, 15_000)
-
-  it('preserves explicit remote-MCP privacy and idempotency attestations', async () => {
-    const host = new AcpHost(
-      { command: process.execPath, args: [fakeAgent], env: [] },
-      {
-        onUpdate: () => {},
-        env: { AC_MCP_CAPS: 'http,privateSessionHeaders,stableInvocationId' }
-      }
-    )
-    await host.start()
-    // Security-sensitive remote-MCP properties are never trusted from the ACP
-    // initialize response; only the daemon-owned behavioral probe may add them.
-    expect(host.mcpCapabilities()).toEqual({ http: true, sse: false })
-    await host.stop()
-  }, 15_000)
 })
 
 describe('AcpHost session/load update filtering', () => {

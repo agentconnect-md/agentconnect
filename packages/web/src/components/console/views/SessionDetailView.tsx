@@ -61,6 +61,7 @@ import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { WORK_LANES, workCounts, workSummary } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
+import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import {
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
@@ -1668,6 +1669,9 @@ export default function SessionDetailView() {
         {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
         {isLive && (
           <>
+            {activeOrg && session.agentId && /^[0-9a-f-]{36}$/i.test(session.channel) && (
+              <WebchatMcpApprovalCard orgId={activeOrg.id} agentId={session.agentId} conversationId={session.channel} />
+            )}
             {pgBusy && (
               <div className="flex items-center gap-[10px] desktop:mt-[14px] desktop:gap-[11px]">
                 <span className="av h-[30px] w-[30px] flex-none rounded-md">

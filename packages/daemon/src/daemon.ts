@@ -3572,9 +3572,7 @@ export class Daemon {
   }
 
   private registrationFeatures(): string[] {
-    const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.values()].some(
-      (caps) => caps.http && caps.privateSessionHeaders && caps.stableInvocationId
-    )
+    const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.values()].some((caps) => caps.http)
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
@@ -8967,16 +8965,10 @@ export class Daemon {
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
-      // Attach only when the runtime explicitly proves all three properties:
-      // HTTP transport, private session-scoped headers, and stable invocation ids.
+      // Remote administration uses only the standard ACP HTTPS MCP descriptor.
+      // Authorization and write-operation idempotency are both CP-owned.
       const remoteCaps = this.runtimeMcpCaps.get(agent.runtime)
-      if (
-        webchat?.remoteMcp &&
-        this.remoteWebchatGrants &&
-        remoteCaps?.http &&
-        remoteCaps.privateSessionHeaders &&
-        remoteCaps.stableInvocationId
-      ) {
+      if (webchat?.remoteMcp && this.remoteWebchatGrants && remoteCaps?.http) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
             webchat.conversationId,

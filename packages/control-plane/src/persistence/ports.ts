@@ -1163,72 +1163,80 @@ export interface WebchatMcpAccessGrantRepo {
   getByTokenHash(tokenHash: string): Promise<WebchatMcpAccessGrantRecord | null>
 }
 
-export type McpInvocationStatus = 'awaiting_confirmation' | 'issued' | 'running' | 'succeeded' | 'failed' | 'ambiguous'
+export type WebchatMcpOperationStatus =
+  'awaiting_confirmation' | 'executing' | 'completed' | 'failed' | 'ambiguous' | 'stale'
 
-export interface McpInvocationRecord {
+export interface WebchatMcpOperationRecord {
   id: string
   conversationId: string
-  grantId: string
-  requestHash: string
-  method: string
-  toolName: string | null
-  status: McpInvocationStatus
-  startedAt: Date | null
-  completedAt: Date | null
-  responseStatus: number | null
-  responseBytes: Uint8Array | null
+  createdAuthorityGeneration: number
+  sourceGrantId: string
+  userId: string
+  toolName: string
+  canonicalArguments: unknown
+  intentHash: string
+  status: WebchatMcpOperationStatus
+  executionAttemptId: string | null
+  claimedAt: Date | null
+  recoveryDeadline: Date | null
+  boundedResponse: Uint8Array | null
   createdAt: Date
+  confirmationExpiresAt: Date
+  completedAt: Date | null
 }
 
-export interface ClaimMcpInvocationInput {
-  invocationId: string
+export interface CreateWebchatMcpOperationInput {
   conversationId: string
   grantId: string
+  authorityGeneration: number
+  userId: string
+  jsonRpcRequestId: string
   requestHash: string
-  method: string
-  toolName?: string | null
+  toolName: string
+  canonicalArguments: unknown
+  intentHash: string
+  confirmationExpiresAt: Date
   now: Date
 }
 
-export type ClaimMcpInvocationResult =
-  | { kind: 'claimed'; invocation: McpInvocationRecord }
-  | { kind: 'existing'; invocation: McpInvocationRecord }
+export type CreateWebchatMcpOperationResult =
+  | { kind: 'created' | 'replayed' | 'coalesced'; operation: WebchatMcpOperationRecord }
   | { kind: 'denied' }
   | { kind: 'conflict' }
 
-export const MCP_INVOCATION_MAX_RESPONSE_BYTES = 256 * 1024
-// A terminal row is an execution tombstone, not merely a response cache. Keep it
-// beyond every 30-minute grant and normal authority lifetime so credential renewal
-// cannot make the same logical invocation executable again.
-export const MCP_INVOCATION_RESPONSE_CACHE_TTL_MS = 24 * 60 * 60_000
+export const WEBCHAT_MCP_OPERATION_MAX_PAYLOAD_BYTES = 64 * 1024
+export const WEBCHAT_MCP_OPERATION_MAX_RESPONSE_BYTES = 256 * 1024
 
-export interface CompleteMcpInvocationInput {
-  invocationId: string
-  status: 'succeeded' | 'failed'
-  responseStatus: number
-  responseBytes: Uint8Array
+export interface CompleteWebchatMcpOperationInput {
+  operationId: string
+  executionAttemptId: string
+  status: 'completed' | 'failed'
+  boundedResponse: Uint8Array
   completedAt: Date
 }
 
-export interface ReapMcpInvocationsResult {
+export interface ReapWebchatMcpOperationsResult {
   markedAmbiguous: number
-  deleted: number
-  /** Issued, never-claimed assertions deleted after their one-time authority expired. */
-  expiredAssertions: number
+  markedStale: number
+  evictedResponses: number
 }
 
-export interface McpInvocationRepo {
-  /** Atomically create+claim or classify a conversation-level idempotent retry. */
-  claim(input: ClaimMcpInvocationInput): Promise<ClaimMcpInvocationResult>
-  /** running → succeeded/failed; false means a terminal/ambiguous state won first. */
-  complete(input: CompleteMcpInvocationInput): Promise<boolean>
-  /** Mark exactly one running invocation ambiguous; false means another terminal state won. */
-  markAmbiguous(invocationId: string, completedAt: Date): Promise<boolean>
-  /** Recover executions at or before the deadline as conservatively ambiguous. */
-  markAmbiguousBefore(executionDeadline: Date, completedAt: Date): Promise<number>
-  get(invocationId: string): Promise<McpInvocationRecord | null>
-  /** Apply the fixed execution and response-cache retention windows at `now`. */
-  reap(now: Date): Promise<ReapMcpInvocationsResult>
+export interface WebchatMcpOperationRepo {
+  createOrReplay(input: CreateWebchatMcpOperationInput): Promise<CreateWebchatMcpOperationResult>
+  get(operationId: string): Promise<WebchatMcpOperationRecord | null>
+  listPending(conversationId: string, userId: string, now: Date): Promise<WebchatMcpOperationRecord[]>
+  claimForApproval(input: {
+    operationId: string
+    conversationId: string
+    userId: string
+    executionAttemptId: string
+    claimedAt: Date
+    recoveryDeadline: Date
+  }): Promise<WebchatMcpOperationRecord | null>
+  complete(input: CompleteWebchatMcpOperationInput): Promise<boolean>
+  markAmbiguous(operationId: string, executionAttemptId: string, completedAt: Date): Promise<boolean>
+  deny(operationId: string, conversationId: string, userId: string, completedAt: Date): Promise<boolean>
+  reap(now: Date): Promise<ReapWebchatMcpOperationsResult>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

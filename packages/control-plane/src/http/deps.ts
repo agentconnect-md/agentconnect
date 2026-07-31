@@ -42,7 +42,7 @@ import type {
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
-  McpInvocationRepo
+  WebchatMcpOperationRepo
 } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
@@ -201,8 +201,8 @@ export interface HttpDeps {
     agentRepoAuth: AgentRepoAuthorizationRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
-    /** Durable one-time delegated MCP execution ledger. */
-    mcpInvocation: McpInvocationRepo
+    /** Durable browser-confirmed delegated MCP operation ledger. */
+    webchatMcpOperation: WebchatMcpOperationRepo
     /** Embedded OAuth AS protocol state (agent-assistant.md §7): clients, codes, grants. */
     oauth: OAuthRepo
   }

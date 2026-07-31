@@ -166,10 +166,10 @@ enum AgentCallPolicy {
 }
 
 model Membership {
-  id     String  @id @default(cuid())
-  orgId  String
-  userId String
-  role   OrgRole @default(collaborator)
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String
+  role      OrgRole  @default(collaborator)
   // When this user joined THIS org — not their account signup. The console's
   // "joined" column reads it, and removal picks the ownership-transfer
   // recipient by it (resource-visibility.md §8.2). Pre-existing rows were
@@ -904,10 +904,11 @@ model WebchatConversation {
   delegationGeneration Int      @default(0)
   createdAt            DateTime @default(now()) @db.Timestamptz(6)
 
-  org         Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  agent       Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user        User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  delegations WebchatMcpDelegation[]
+  org           Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent         Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  delegations   WebchatMcpDelegation[]
+  mcpOperations WebchatMcpOperation[]
 
   @@index([orgId])
   @@index([agentId])
@@ -930,11 +931,11 @@ model WebchatMcpDelegation {
   revokedAt      DateTime? @db.Timestamptz(6)
   revokedReason  String?
 
-  conversation WebchatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  org          Org                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  agent        Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  daemon       Daemon              @relation(fields: [daemonId], references: [id], onDelete: Cascade)
+  conversation WebchatConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org          Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent        Agent                   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  daemon       Daemon                  @relation(fields: [daemonId], references: [id], onDelete: Cascade)
   grants       WebchatMcpAccessGrant[]
 
   @@unique([conversationId, generation])
@@ -944,13 +945,13 @@ model WebchatMcpDelegation {
   @@map("webchat_mcp_delegation")
 }
 
-enum McpInvocationStatus {
+enum WebchatMcpOperationStatus {
   awaiting_confirmation
-  issued
-  running
-  succeeded
+  executing
+  completed
   failed
   ambiguous
+  stale
 }
 
 enum WebchatMcpGrantStatus {
@@ -976,8 +977,9 @@ model WebchatMcpAccessGrant {
   revokedReason        String?
   createdAt            DateTime              @default(now()) @db.Timestamptz(6)
 
-  authority   WebchatMcpDelegation @relation(fields: [authorityId], references: [id], onDelete: Cascade)
-  invocations McpInvocation[]
+  authority  WebchatMcpDelegation         @relation(fields: [authorityId], references: [id], onDelete: Cascade)
+  operations WebchatMcpOperation[]
+  receipts   WebchatMcpTransportReceipt[]
 
   @@unique([descriptorInstanceId, grantRevision])
   @@index([authorityId, status])
@@ -987,29 +989,52 @@ model WebchatMcpAccessGrant {
   @@map("webchat_mcp_access_grant")
 }
 
-// Conversation-level idempotency ledger. The invocation id comes from the
-// runtime's Idempotency-Key transport header, never from model input.
-model McpInvocation {
-  id               String              @id @db.Uuid
-  conversationId   String              @db.Uuid
-  grantId          String              @db.Uuid
+// Browser-confirmed logical write. Identity and terminal status live for the
+// conversation lifetime; the bounded response may be evicted independently.
+model WebchatMcpOperation {
+  id                         String                    @id @default(uuid()) @db.Uuid
+  conversationId             String                    @db.Uuid
+  createdAuthorityGeneration Int
+  sourceGrantId              String                    @db.Uuid
+  userId                     String
+  toolName                   String
+  canonicalArguments         Json                      @db.JsonB
+  intentHash                 String
+  status                     WebchatMcpOperationStatus @default(awaiting_confirmation)
+  executionAttemptId         String?                   @db.Uuid
+  claimedAt                  DateTime?                 @db.Timestamptz(6)
+  recoveryDeadline           DateTime?                 @db.Timestamptz(6)
+  boundedResponse            Bytes?
+  createdAt                  DateTime                  @default(now()) @db.Timestamptz(6)
+  confirmationExpiresAt      DateTime                  @db.Timestamptz(6)
+  completedAt                DateTime?                 @db.Timestamptz(6)
+
+  conversation WebchatConversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceGrant  WebchatMcpAccessGrant        @relation(fields: [sourceGrantId], references: [id], onDelete: Restrict)
+  receipts     WebchatMcpTransportReceipt[]
+
+  @@index([conversationId, status, createdAt])
+  @@index([status, recoveryDeadline, id])
+  @@map("webchat_mcp_operation")
+}
+
+// Standard JSON-RPC retry coordinate. It never authorizes or claims execution.
+model WebchatMcpTransportReceipt {
+  grantId          String    @db.Uuid
+  jsonRpcRequestId String
+  conversationId   String    @db.Uuid
   requestHash      String
-  method           String
-  toolName         String?
-  status           McpInvocationStatus @default(issued)
-  startedAt        DateTime?           @db.Timestamptz(6)
-  completedAt      DateTime?           @db.Timestamptz(6)
-  responseStatus   Int?
-  responseBytes    Bytes?
-  createdAt        DateTime            @default(now()) @db.Timestamptz(6)
+  operationId      String    @db.Uuid
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  supersededAt     DateTime? @db.Timestamptz(6)
 
-  grant WebchatMcpAccessGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
+  grant     WebchatMcpAccessGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  operation WebchatMcpOperation   @relation(fields: [operationId], references: [id], onDelete: Restrict)
 
-  @@unique([conversationId, id])
+  @@id([grantId, jsonRpcRequestId])
+  @@index([operationId])
   @@index([grantId, createdAt])
-  @@index([status, startedAt, id])
-  @@index([status, completedAt, id])
-  @@map("mcp_invocation")
+  @@map("webchat_mcp_transport_receipt")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

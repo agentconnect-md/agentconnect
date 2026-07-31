@@ -48,7 +48,7 @@ import {
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
   PgWebchatMcpAccessGrantRepo,
-  PgMcpInvocationRepo,
+  PgWebchatMcpOperationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
   PgIntegrationRepo,
@@ -96,7 +96,7 @@ import { CronRunReaper } from './orchestrator/cronRunReaper.js'
 import { SlackInstallReaper } from './orchestrator/slackInstallReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
-import { McpInvocationReaper } from './orchestrator/mcpInvocationReaper.js'
+import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
@@ -235,7 +235,7 @@ export function buildContainer(
     webchatConversation: new PgWebchatConversationRepo(prisma),
     webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
     webchatMcpAccessGrant: new PgWebchatMcpAccessGrantRepo(prisma),
-    mcpInvocation: new PgMcpInvocationRepo(prisma, clock),
+    webchatMcpOperation: new PgWebchatMcpOperationRepo(prisma),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
@@ -418,14 +418,8 @@ export function buildContainer(
     daemons: connReg,
     grants: repos.webchatMcpAccessGrant,
     authorities: repos.webchatMcpDelegation,
-    invocations: repos.mcpInvocation,
     sessions: repos.session,
-    // Until browser-bound confirmation is implemented, keep the existing
-    // catalog's stricter exclusion: destructive tools are not remotely exposed.
-    isCuratedTool: (toolName) => {
-      const tool = findTool(toolName)
-      return tool !== undefined && tool.destructive !== true
-    }
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined
   })
   const internalInvocationAuth = new InternalInvocationAuth()
 
@@ -721,7 +715,7 @@ export function buildContainer(
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
       audit: repos.audit,
-      mcpInvocation: repos.mcpInvocation,
+      webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
     },
     registry,
@@ -802,8 +796,8 @@ export function buildContainer(
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
   // invocation state still depends on it.
-  const mcpInvocationReaper = new McpInvocationReaper(
-    repos.mcpInvocation,
+  const webchatMcpOperationReaper = new WebchatMcpOperationReaper(
+    repos.webchatMcpOperation,
     repos.webchatMcpDelegation,
     clock,
     http.log,
@@ -1228,7 +1222,7 @@ export function buildContainer(
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
-      mcpInvocationReaper.start()
+      webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       slackInstallReaper.start()
@@ -1243,7 +1237,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
-      const mcpInvocationSettled = mcpInvocationReaper.stopAndSettle()
+      const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
@@ -1254,7 +1248,7 @@ export function buildContainer(
       slackBotIdentityReconciler.stop()
       visibilityPush.stop()
       await Promise.allSettled([
-        mcpInvocationSettled,
+        webchatMcpOperationSettled,
         ...relayRegistrationTasks,
         visibilityPush.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
