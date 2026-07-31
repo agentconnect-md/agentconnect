@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
@@ -96,7 +96,8 @@ function revokeInput(delegation: { id: string; generation: number }) {
 describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
   it('serializes concurrent establishment so reconnects reuse one generation', async () => {
     await fixtures()
-    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const delegationMetric = vi.fn()
+    const repo = new PgWebchatMcpDelegationRepo(prisma, { delegation: delegationMetric })
 
     const [left, right] = await Promise.all([repo.establish(establishInput()), repo.establish(establishInput())])
 
@@ -111,6 +112,7 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
         select: { delegationGeneration: true }
       })
     ).toEqual({ delegationGeneration: 1 })
+    expect(delegationMetric.mock.calls.map(([event]) => event).sort()).toEqual(['established', 'reused'])
   })
 
   it('atomically shortens a reusable delegation and never extends it again', async () => {
@@ -345,7 +347,8 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
 
   it('rotates an expired active row even when placement is unchanged', async () => {
     await fixtures()
-    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const delegationMetric = vi.fn()
+    const repo = new PgWebchatMcpDelegationRepo(prisma, { delegation: delegationMetric })
     const first = await repo.establish(establishInput(DAEMON, at(1_000)))
 
     const rotated = await repo.establish({ ...establishInput(DAEMON, at(120_000)), now: at(1_000) })
@@ -355,6 +358,7 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       revokedAt: at(1_000),
       revokedReason: 'expired'
     })
+    expect(delegationMetric.mock.calls.map(([event]) => event)).toEqual(['established', 'expired', 'rotated'])
   })
 
   it('rejects a foreign owner binding instead of minting authority', async () => {

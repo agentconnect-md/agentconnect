@@ -80,6 +80,7 @@ import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
 import type { InvocationAssertionAuthenticator } from './mcp/invocation-authenticator.js'
 import type { InternalInvocationAuth } from './mcp/internal-invocation-auth.js'
+import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
@@ -261,6 +262,8 @@ export interface HttpDeps {
   invocationAssertions: InvocationAssertionAuthenticator
   /** In-process principal propagation for MCP's nested REST injections. */
   internalInvocationAuth: InternalInvocationAuth
+  /** Low-cardinality delegated MCP observations. Optional for focused route tests. */
+  webchatMcpMetrics?: Pick<WebchatMcpMetrics, 'invocation' | 'requestDuration'>
   /** Process readiness gate for `/readyz` (rolling-update drain, issue #240). */
   readiness: Readiness
   /** Validates a pasted Slack bot token against `auth.test` (and derives the bot name

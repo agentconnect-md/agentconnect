@@ -38,8 +38,13 @@ function setup() {
       return 3
     })
   }
-  const reaper = new McpInvocationReaper(invocations, delegations, clock)
-  return { calls, clock, invocations, delegations, reaper }
+  const delegationMetric = vi.fn()
+  const invocationMetric = vi.fn()
+  const reaper = new McpInvocationReaper(invocations, delegations, clock, undefined, {
+    delegation: delegationMetric,
+    invocation: invocationMetric
+  })
+  return { calls, clock, invocations, delegations, reaper, delegationMetric, invocationMetric }
 }
 
 describe('McpInvocationReaper', () => {
@@ -50,13 +55,15 @@ describe('McpInvocationReaper', () => {
   })
 
   it('reaps issued/running/terminal invocation state before deleting expired delegations', async () => {
-    const { calls, invocations, delegations, reaper } = setup()
+    const { calls, invocations, delegations, reaper, delegationMetric, invocationMetric } = setup()
 
     await reaper.tick()
 
     expect(invocations.reap).toHaveBeenCalledWith(new Date(NOW))
     expect(delegations.reapExpired).toHaveBeenCalledWith(new Date(NOW))
     expect(calls).toEqual(['invocations:2026-07-30T00:00:00.000Z', 'delegations:2026-07-30T00:00:00.000Z'])
+    expect(invocationMetric).toHaveBeenCalledWith('ambiguous', 1)
+    expect(delegationMetric).toHaveBeenCalledWith('expired', undefined, 3)
   })
 
   it('applies issued, exact-running, terminal-cache, and dependent-delegation boundaries from a fake clock', async () => {

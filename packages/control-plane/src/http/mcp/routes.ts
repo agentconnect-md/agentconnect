@@ -38,6 +38,7 @@ import type { InvocationContext, ParsedInvocationMetadata } from './invocation-a
 import { MCP_INVOCATION_MAX_RESPONSE_BYTES } from '../../persistence/repositories/mcp-invocation.repo.js'
 import { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
 import { INVOCATION_ASSERTION_PREFIX } from '../../registry/invocationAssertion.js'
+import { defaultWebchatMcpMetrics, type WebchatMcpMetrics } from '../../observability/webchat-mcp.js'
 
 export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
 
@@ -109,6 +110,14 @@ function sendAmbiguous(reply: FastifyReply) {
     .send(AMBIGUOUS_BODY)
 }
 
+function observeMetric(observe: () => void): void {
+  try {
+    observe()
+  } catch {
+    // Custom metric observers never participate in MCP execution.
+  }
+}
+
 function invocationMetadata(bytes: Uint8Array): ParsedInvocationMetadata {
   const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as {
     method?: unknown
@@ -174,6 +183,8 @@ function restErrorMessage(body: string): string {
 
 export function mcpRoutes(deps: HttpDeps) {
   return async function mcpRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const webchatMetrics: Pick<WebchatMcpMetrics, 'invocation' | 'requestDuration'> =
+      deps.webchatMcpMetrics ?? defaultWebchatMcpMetrics
     // The v2 handler reads the raw request body itself — pass the stream through
     // unparsed rather than letting Fastify's JSON parser consume it. Encapsulated to
     // this plugin (only the /mcp routes); the inject'd tool GETs hit other routes and
@@ -279,6 +290,10 @@ export function mcpRoutes(deps: HttpDeps) {
       // the refusal friendly and prunes write tools from `tools/list`.
       const scopes = invocationContext ? ['mcp:read', 'mcp:write'] : req.apiKeyScopes
       const scopeCanWrite = !scopes || scopes.length === 0 || scopes.includes('mcp:write')
+      const recordNestedDuration = (startedAt: number, outcome: 'succeeded' | 'failed') => {
+        if (!invocationContext) return
+        observeMetric(() => webchatMetrics.requestDuration('nested_rest', performance.now() - startedAt, outcome))
+      }
 
       // Credentialed requests against this same Fastify instance — the full pipeline
       // (org-scope guard, visibility predicates, RBAC, zod (de)serialization) runs as
@@ -296,25 +311,39 @@ export function mcpRoutes(deps: HttpDeps) {
           const headers = invocationContext
             ? { [INTERNAL_INVOCATION_AUTH_HEADER]: deps.internalInvocationAuth.issue('GET', url)! }
             : { authorization: authorization! }
-          const res = await app.inject({
-            method: 'GET',
-            url,
-            headers
-          })
-          return { statusCode: res.statusCode, body: res.body }
+          const startedAt = performance.now()
+          try {
+            const res = await app.inject({
+              method: 'GET',
+              url,
+              headers
+            })
+            recordNestedDuration(startedAt, res.statusCode >= 200 && res.statusCode < 400 ? 'succeeded' : 'failed')
+            return { statusCode: res.statusCode, body: res.body }
+          } catch (error) {
+            recordNestedDuration(startedAt, 'failed')
+            throw error
+          }
         },
         send: async (method, path, body) => {
           const url = `${API_V1_PREFIX}${path}`
           const headers = invocationContext
             ? { [INTERNAL_INVOCATION_AUTH_HEADER]: deps.internalInvocationAuth.issue(method, url)! }
             : { authorization: authorization! }
-          const res = await app.inject({
-            method,
-            url,
-            headers,
-            ...(body !== undefined ? { payload: body } : {})
-          })
-          return { statusCode: res.statusCode, body: res.body }
+          const startedAt = performance.now()
+          try {
+            const res = await app.inject({
+              method,
+              url,
+              headers,
+              ...(body !== undefined ? { payload: body } : {})
+            })
+            recordNestedDuration(startedAt, res.statusCode >= 200 && res.statusCode < 400 ? 'succeeded' : 'failed')
+            return { statusCode: res.statusCode, body: res.body }
+          } catch (error) {
+            recordNestedDuration(startedAt, 'failed')
+            throw error
+          }
         }
       }
 
@@ -484,7 +513,8 @@ export function mcpRoutes(deps: HttpDeps) {
       const entryNowMs = deps.clock.now()
       if (!Number.isFinite(entryNowMs) || !Number.isFinite(deadlineMs) || entryNowMs >= deadlineMs) {
         try {
-          await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, new Date(entryNowMs))
+          const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, new Date(entryNowMs))
+          if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
         } catch (err) {
           req.log.error({ err, invocationId: context.invocationId }, 'mcp: expired invocation mark failed')
         }
@@ -502,12 +532,14 @@ export function mcpRoutes(deps: HttpDeps) {
             if (!Number.isFinite(completedAtMs) || completedAtMs >= deadlineMs) {
               invocationExecution.revoke()
               if (!deadlineTriggered) {
-                await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+                const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+                if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
               }
               return { kind: 'ambiguous' as const }
             }
             if (wire.bytes.byteLength > MCP_INVOCATION_MAX_RESPONSE_BYTES) {
-              await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+              const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+              if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
               return { kind: 'ambiguous' as const }
             }
             const completed = await deps.repos.mcpInvocation.complete({
@@ -517,13 +549,22 @@ export function mcpRoutes(deps: HttpDeps) {
               responseBytes: wire.bytes,
               completedAt
             })
-            if (completed) return { kind: 'response' as const, wire }
-            await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+            if (completed) {
+              observeMetric(() =>
+                webchatMetrics.invocation(
+                  wire.statusCode >= 200 && wire.statusCode < 400 && !definiteFailure ? 'succeeded' : 'failed'
+                )
+              )
+              return { kind: 'response' as const, wire }
+            }
+            const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+            if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
             return { kind: 'ambiguous' as const }
           } catch (err) {
             req.log.error({ err, invocationId: context.invocationId }, 'mcp: invocation completion failed')
             try {
-              await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+              const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
+              if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
             } catch (markErr) {
               req.log.error(
                 { err: markErr, invocationId: context.invocationId },
@@ -547,7 +588,11 @@ export function mcpRoutes(deps: HttpDeps) {
             invocationExecution.revoke()
             void (async () => {
               try {
-                await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, new Date(deps.clock.now()))
+                const marked = await deps.repos.mcpInvocation.markAmbiguous(
+                  context.invocationId,
+                  new Date(deps.clock.now())
+                )
+                if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
                 // The reaper or a concurrent completion may have won the terminal CAS.
                 // At this request's durable deadline the conservative wire answer is
                 // still ambiguous; never await a potentially hung execution here.

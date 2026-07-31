@@ -52,6 +52,7 @@ import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-r
 import { attachmentMention } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { SessionMcpBroker } from './mcp/session-mcp-broker.js'
+import { defaultDelegatedMcpMetrics } from './mcp/delegated-metrics.js'
 import type {
   MessageAgentReq,
   MessageAgentResult,
@@ -3714,7 +3715,10 @@ export class Daemon {
   }
 
   private initializeDelegatedMcp(root: string, cpUrl: string, cpClient: CpClient): void {
-    if (!this.delegatedMcpIsolationHealthy()) return
+    if (!this.delegatedMcpIsolationHealthy()) {
+      defaultDelegatedMcpMetrics.denied('capability_probe_failed')
+      return
+    }
     const endpoint = new URL('/api/v1/mcp', cpUrl)
     if (endpoint.protocol === 'ws:') endpoint.protocol = 'http:'
     if (endpoint.protocol === 'wss:') endpoint.protocol = 'https:'
@@ -3723,7 +3727,8 @@ export class Daemon {
       inCellSocketDirectory: delegatedMcpInCellSocketDirectory(),
       cliEntry: daemonEntryForShims(root),
       mcpEndpoint: endpoint.toString(),
-      cpClient
+      cpClient,
+      metrics: defaultDelegatedMcpMetrics
     })
     const manager = new DelegatedWebchatHostManager({
       broker,
@@ -3731,6 +3736,7 @@ export class Daemon {
       runtimeHomeRoot: delegatedMcpRuntimeHomeRoot(root),
       isolationHealthy: () => this.delegatedMcpIsolationHealthy(),
       hostFactory: (input) => this.createDelegatedWebchatHost(input),
+      metrics: defaultDelegatedMcpMetrics,
       log: { warn: (message) => this.log.warn(message) }
     })
     this.delegatedMcpBroker = broker

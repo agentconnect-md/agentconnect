@@ -1,5 +1,6 @@
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { McpInvocationRepo, WebchatMcpDelegationRepo } from '../persistence/ports.js'
+import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 
 export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../domain/mcp-invocation.js'
 
@@ -25,7 +26,8 @@ export class McpInvocationReaper {
     private readonly invocations: Pick<McpInvocationRepo, 'reap'>,
     private readonly delegations: Pick<WebchatMcpDelegationRepo, 'reapExpired'>,
     private readonly clock: Clock,
-    private readonly log?: ReaperLog
+    private readonly log?: ReaperLog,
+    private readonly metrics?: Pick<WebchatMcpMetrics, 'delegation' | 'invocation'>
   ) {}
 
   start(): void {
@@ -74,8 +76,10 @@ export class McpInvocationReaper {
     try {
       const now = new Date(this.clock.now())
       const invocationResult = await this.invocations.reap(now)
+      this.observe(() => this.metrics?.invocation('ambiguous', invocationResult.markedAmbiguous))
       if (this.shutdownRequested) return
       const deletedDelegations = await this.delegations.reapExpired(now)
+      this.observe(() => this.metrics?.delegation('expired', undefined, deletedDelegations))
       if (invocationResult.markedAmbiguous > 0 || invocationResult.deleted > 0 || deletedDelegations > 0) {
         this.log?.info(
           { ...invocationResult, deletedDelegations, at: now.toISOString() },
@@ -86,6 +90,14 @@ export class McpInvocationReaper {
       this.log?.error({ err }, 'delegated MCP invocation reaper failed')
     } finally {
       this.arm()
+    }
+  }
+
+  private observe(fn: () => void): void {
+    try {
+      fn()
+    } catch {
+      // Reaping and scheduling never depend on metrics.
     }
   }
 }

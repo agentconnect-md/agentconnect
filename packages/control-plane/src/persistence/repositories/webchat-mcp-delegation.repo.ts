@@ -10,12 +10,16 @@ import type {
   WebchatMcpDelegationRecord,
   WebchatMcpDelegationRepo
 } from '../ports.js'
+import type { WebchatMcpMetrics } from '../../observability/webchat-mcp.js'
 
 const toRecord = (row: WebchatMcpDelegation): WebchatMcpDelegationRecord => ({ ...row })
 const WEBCHAT_MCP_DELEGATION_REAP_BATCH_SIZE = 500
 
 export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
-  constructor(private readonly db: PrismaLike) {}
+  constructor(
+    private readonly db: PrismaLike,
+    private readonly metrics?: Pick<WebchatMcpMetrics, 'delegation'>
+  ) {}
 
   private inTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     if ('$transaction' in this.db) return this.db.$transaction(fn)
@@ -23,7 +27,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
   }
 
   async establish(input: EstablishWebchatMcpDelegationInput): Promise<WebchatMcpDelegationRecord | null> {
-    return this.inTransaction(async (tx) => {
+    const outcome = await this.inTransaction(async (tx) => {
       // Global lock order is Agent → Conversation → Delegation. FOR SHARE
       // conflicts with placement UPDATE and agent DELETE while allowing two
       // independent conversations on this agent to establish concurrently.
@@ -46,7 +50,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         conversation.agentId !== input.agentId ||
         agent.daemonId !== input.daemonId
       ) {
-        return null
+        return { record: null, events: [] as const }
       }
 
       // Preserve the global Agent → Conversation → Delegation lock order. The
@@ -76,16 +80,16 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
             },
             data: { expiresAt: input.expiresAt }
           })
-          if (shortened.count !== 1) return null
+          if (shortened.count !== 1) return { record: null, events: [] as const }
           const current = await tx.webchatMcpDelegation.findUniqueOrThrow({ where: { id: latest.id } })
-          if (current.revokedAt !== null) return null
-          return toRecord(current)
+          if (current.revokedAt !== null) return { record: null, events: [] as const }
+          return { record: toRecord(current), events: ['reused'] as const }
         }
-        return toRecord(latest)
+        return { record: toRecord(latest), events: ['reused'] as const }
       }
 
+      const expired = latest !== undefined && !latest.revokedAt && latest.expiresAt.getTime() <= input.now.getTime()
       if (latest && !latest.revokedAt) {
-        const expired = latest.expiresAt.getTime() <= input.now.getTime()
         await tx.webchatMcpDelegation.updateMany({
           where: { id: latest.id, generation: latest.generation, revokedAt: null },
           data: {
@@ -112,8 +116,21 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
           expiresAt: input.expiresAt
         }
       })
-      return toRecord(created)
+      return {
+        record: toRecord(created),
+        events: [...(expired ? (['expired'] as const) : []), latest ? ('rotated' as const) : ('established' as const)]
+      }
     })
+    for (const event of outcome.events) this.observeDelegation(event)
+    return outcome.record
+  }
+
+  private observeDelegation(event: 'established' | 'reused' | 'rotated' | 'expired'): void {
+    try {
+      this.metrics?.delegation(event)
+    } catch {
+      // Persistence success and transaction commit never depend on metrics.
+    }
   }
 
   async revoke(input: RevokeWebchatMcpDelegationInput): Promise<boolean> {

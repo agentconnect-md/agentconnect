@@ -1686,3 +1686,43 @@ describe('SessionMcpBroker strict MCP response parsing', () => {
     ).resolves.toEqual({ id: 22, ok: true, result: { tools: [] } })
   })
 })
+
+describe('SessionMcpBroker delegated metrics', () => {
+  it('records lifecycle, denial, mint, and HTTP observations without identifiers', async () => {
+    const isolation = vi.fn()
+    const denied = vi.fn()
+    const requestDuration = vi.fn()
+    const h = await harness({ metrics: { isolation, denied, requestDuration } })
+
+    const descriptor = await h.broker.registerCell(binding())
+    await expect(h.broker.registerCell(binding())).resolves.toEqual(descriptor)
+    expect(isolation).toHaveBeenCalledWith('created')
+    expect(isolation).toHaveBeenCalledWith('resumed')
+
+    const endpoint = h.broker.getCellMount(CELL_ID)!.sourceSocketPath
+    await expect(ipc(endpoint, { id: 1, token: 'wrong-token', op: 'listTools' })).resolves.toMatchObject({
+      ok: false
+    })
+    expect(denied).toHaveBeenCalledWith('token_mismatch')
+
+    const token = descriptorEnv(descriptor!).AC_MCP_TOKEN!
+    await expect(ipc(endpoint, { id: 2, token, op: 'listTools' })).resolves.toMatchObject({ ok: true })
+    expect(requestDuration).toHaveBeenCalledWith('mint_ws', expect.any(Number), 'succeeded')
+    expect(requestDuration).toHaveBeenCalledWith('mcp_http', expect.any(Number), 'succeeded')
+
+    await expect(h.broker.releaseCell(binding())).resolves.toBe(true)
+    expect(isolation).toHaveBeenCalledWith('destroyed')
+  })
+
+  it('contains throwing metric observers without changing broker decisions', async () => {
+    const fail = () => {
+      throw new Error('metrics failed')
+    }
+    const h = await harness({
+      metrics: { isolation: fail, denied: fail, requestDuration: fail }
+    })
+
+    await expect(h.broker.registerCell(binding())).resolves.not.toBeNull()
+    await expect(h.broker.releaseCell(binding())).resolves.toBe(true)
+  })
+})

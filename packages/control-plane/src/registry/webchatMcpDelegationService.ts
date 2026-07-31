@@ -15,6 +15,7 @@ import type {
   WebchatMcpDelegationRepo
 } from '../persistence/ports.js'
 import type { InvocationAssertionCodec } from './invocationAssertion.js'
+import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 import {
   resolveLiveWebchatMcpAuthority,
   type LiveWebchatMcpAuthorityDeps,
@@ -79,6 +80,7 @@ export interface WebchatMcpDelegationServiceDeps extends LiveWebchatMcpAuthority
   isCuratedTool(toolName: string): boolean
   /** Internal metric seam. Values are a closed, non-secret enum only. */
   onDenied?: (reason: DelegationDenialReason) => void
+  metrics?: Pick<WebchatMcpMetrics, 'delegation' | 'assertion'>
 }
 
 export class WebchatMcpDelegationService {
@@ -212,6 +214,7 @@ export class WebchatMcpDelegationService {
         ) {
           return this.deny('invocation_parent_missing')
         }
+        this.reportAssertion('minted')
         return {
           kind: 'minted',
           invocationId: input.invocationId,
@@ -225,7 +228,7 @@ export class WebchatMcpDelegationService {
       case 'conflict': {
         const winner = await this.deps.invocations.get(input.invocationId)
         if (!winner) return this.deny('invocation_parent_missing')
-        return this.classifyExisting(winner, input, normalizedToolName) ?? INVOCATION_CONFLICT
+        return this.classifyExisting(winner, input, normalizedToolName) ?? this.conflict()
       }
       case 'denied':
         return this.deny('invocation_parent_missing')
@@ -267,7 +270,7 @@ export class WebchatMcpDelegationService {
     toolName: string | null
   ): MintInvocationResult | null {
     if (current.delegationId !== input.delegationId) return this.deny('delegation_binding')
-    if (!sameInvocationBinding(current, input, toolName)) return INVOCATION_CONFLICT
+    if (!sameInvocationBinding(current, input, toolName)) return this.conflict()
     if (current.status === 'issued') return null
     return { kind: 'existing', invocationId: current.id, status: current.status }
   }
@@ -277,6 +280,34 @@ export class WebchatMcpDelegationService {
       this.deps.onDenied?.(reason)
     } catch {
       // Observability must never change the public authorization result.
+    }
+    this.reportDelegation('denied', reason)
+  }
+
+  private conflict(): typeof INVOCATION_CONFLICT {
+    this.reportAssertion('conflicted')
+    return INVOCATION_CONFLICT
+  }
+
+  private reportDelegation(
+    event: Parameters<NonNullable<WebchatMcpDelegationServiceDeps['metrics']>['delegation']>[0],
+    reason?: DelegationDenialReason
+  ): void {
+    try {
+      if (reason === undefined) this.deps.metrics?.delegation(event)
+      else this.deps.metrics?.delegation(event, reason)
+    } catch {
+      // Custom observers are never part of authority decisions.
+    }
+  }
+
+  private reportAssertion(
+    event: Parameters<NonNullable<WebchatMcpDelegationServiceDeps['metrics']>['assertion']>[0]
+  ): void {
+    try {
+      this.deps.metrics?.assertion(event)
+    } catch {
+      // Custom observers are never part of assertion minting.
     }
   }
 }

@@ -13,6 +13,7 @@ import type {
 import { InvocationAssertionCodec } from './invocationAssertion.js'
 import {
   DELEGATION_DENIED,
+  INVOCATION_CONFLICT,
   MCP_INVOCATION_ASSERTION_TTL_MS,
   WEBCHAT_MCP_DELEGATION_DEFAULT_TTL_MS,
   WebchatMcpDelegationService,
@@ -130,6 +131,8 @@ function harness() {
     existingInvocation: null as McpInvocationRecord | null
   }
   const reasons: DelegationDenialReason[] = []
+  const metricDelegation = vi.fn()
+  const metricAssertion = vi.fn()
   const established: EstablishWebchatMcpDelegationInput[] = []
   const minted: MintMcpInvocationInput[] = []
   const codec = new InvocationAssertionCodec('test-pepper-that-is-at-least-thirty-two-characters')
@@ -196,7 +199,8 @@ function harness() {
         return { kind: 'issued' as const, invocation: invocationFromMint(input) }
       })
     },
-    onDenied: (reason: DelegationDenialReason) => reasons.push(reason)
+    onDenied: (reason: DelegationDenialReason) => reasons.push(reason),
+    metrics: { delegation: metricDelegation, assertion: metricAssertion }
   } satisfies WebchatMcpDelegationServiceDeps
   return {
     state,
@@ -205,6 +209,8 @@ function harness() {
     minted,
     codec,
     codecMint,
+    metricDelegation,
+    metricAssertion,
     deps,
     service: new WebchatMcpDelegationService(deps)
   }
@@ -233,6 +239,17 @@ expectTypeOf<DelegationReference>().toEqualTypeOf<WebchatMcpDelegationReference>
 expectTypeOf<Omit<MintInvocationInput, 'authenticatedDaemonId'>>().toEqualTypeOf<McpInvocationMint>()
 
 describe('WebchatMcpDelegationService.establish', () => {
+  it('records reused delegation and denial transitions without identifiers', async () => {
+    const h = harness()
+
+    await expect(h.service.establish(establishInput())).resolves.toMatchObject({ id: DELEGATION_ID })
+    expect(h.metricDelegation).not.toHaveBeenCalled()
+
+    h.state.conversation = null
+    await expect(h.service.establish(establishInput())).resolves.toBeNull()
+    expect(h.metricDelegation).toHaveBeenLastCalledWith('denied', 'conversation_binding')
+  })
+
   it('derives the actor from the durable conversation and caps the default delegation at twelve hours', async () => {
     const h = harness()
 
@@ -407,6 +424,16 @@ describe('WebchatMcpDelegationService.establish', () => {
 })
 
 describe('WebchatMcpDelegationService.mintInvocation', () => {
+  it('records minted and conflicting assertion transitions exactly once', async () => {
+    const h = harness()
+    await expect(h.service.mintInvocation(mintInput())).resolves.toMatchObject({ kind: 'minted' })
+    expect(h.metricAssertion).toHaveBeenCalledWith('minted')
+
+    h.state.existingInvocation = invocation({ status: 'issued', requestHash: 'b'.repeat(64) })
+    await expect(h.service.mintInvocation(mintInput())).resolves.toEqual(INVOCATION_CONFLICT)
+    expect(h.metricAssertion).toHaveBeenLastCalledWith('conflicted')
+  })
+
   it('returns exactly the same public denial for missing, removed, and hidden authority', async () => {
     const cases = [
       (h: ReturnType<typeof harness>) => {

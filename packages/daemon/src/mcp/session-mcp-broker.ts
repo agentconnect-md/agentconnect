@@ -11,6 +11,11 @@ import type {
 import { WireError } from '@agentconnect.md/connection'
 import { buildMcpServers, type McpStdioServer } from './inject.js'
 import { decodeFrames, encodeFrame, type IpcAttachReq, type IpcRequest, type IpcResponse } from './ipc.js'
+import type {
+  DelegatedIsolationDenialReason,
+  DelegatedMcpMetrics,
+  DelegatedMcpRequestStage
+} from './delegated-metrics.js'
 
 const PRIVATE_SOCKET_NAME = 'mcp.sock'
 const ADMIN_SERVER_NAME = 'agentconnect-admin'
@@ -83,6 +88,7 @@ export interface SessionMcpBrokerDeps {
   recoveryPollMs?: number
   setTimeout?: typeof globalThis.setTimeout
   clearTimeout?: typeof globalThis.clearTimeout
+  metrics?: DelegatedMcpMetrics
   /**
    * Test-only capacity reduction. Values are always clamped to the immutable
    * production hard caps, so ordinary construction cannot raise them.
@@ -361,14 +367,23 @@ export class SessionMcpBroker {
 
   async registerCell(input: RegisterSessionMcpCell): Promise<McpStdioServer | null> {
     return this.serialized(async () => {
-      if (this.stopped) throw new Error('private MCP broker is stopped')
+      if (this.stopped) {
+        this.reportDenied('broker_validation')
+        throw new Error('private MCP broker is stopped')
+      }
       if (input.platform !== 'webchat') return null
-      validateIdentifier('isolation cell', input.isolationCellId)
-      validateIdentifier('agent', input.agentId)
-      validateIdentifier('conversation', input.conversationId)
-      validateIdentifier('delegation', input.delegationId)
+      try {
+        validateIdentifier('isolation cell', input.isolationCellId)
+        validateIdentifier('agent', input.agentId)
+        validateIdentifier('conversation', input.conversationId)
+        validateIdentifier('delegation', input.delegationId)
+      } catch (error) {
+        this.reportDenied('broker_validation')
+        throw error
+      }
       const now = this.now()
       if (!Number.isSafeInteger(input.generation) || input.generation <= 0) {
+        this.reportDenied('broker_validation')
         throw new Error('delegation generation must be a positive safe integer')
       }
       if (
@@ -376,35 +391,51 @@ export class SessionMcpBroker {
         input.expiresAt.length === 0 ||
         Buffer.byteLength(input.expiresAt, 'utf8') > MAX_EXPIRY_BYTES
       ) {
+        this.reportDenied('broker_validation')
         throw new Error('delegation expiry must be a bounded timestamp')
       }
       const expiresAtMs = Date.parse(input.expiresAt)
-      if (!Number.isFinite(expiresAtMs)) throw new Error('delegation expiry must be a valid timestamp')
-      if (expiresAtMs <= now) return null
+      if (!Number.isFinite(expiresAtMs)) {
+        this.reportDenied('broker_validation')
+        throw new Error('delegation expiry must be a valid timestamp')
+      }
+      if (expiresAtMs <= now) {
+        this.reportDenied('fence')
+        return null
+      }
 
       const currentCell = this.cells.get(input.isolationCellId)
       if (currentCell) {
-        if (sameRegistration(currentCell, input)) return currentCell.descriptor
+        if (sameRegistration(currentCell, input)) {
+          this.reportIsolation('resumed')
+          return currentCell.descriptor
+        }
+        this.reportDenied('fence')
         throw new Error(`isolation cell ${input.isolationCellId} is already bound`)
       }
       if (this.seenCellIds.has(input.isolationCellId)) {
+        this.reportDenied('fence')
         throw new Error(`isolation cell ${input.isolationCellId} cannot be reused`)
       }
 
       const key = logicalKey(input)
       const currentConversation = this.conversations.get(key)
       if (currentConversation) {
+        this.reportDenied('fence')
         throw new Error(`conversation ${input.conversationId} is already bound to another isolation cell`)
       }
       const prior = this.history.get(key)
       if (prior) {
         if (input.generation < prior.generation) {
+          this.reportDenied('fence')
           throw new Error(`stale generation ${input.generation}; current generation is ${prior.generation}`)
         }
         if (input.generation === prior.generation && input.delegationId !== prior.delegationId) {
+          this.reportDenied('fence')
           throw new Error('same generation cannot use a different delegation')
         }
         if (input.generation === prior.generation && input.expiresAt !== prior.expiresAt) {
+          this.reportDenied('fence')
           throw new Error('same generation cannot use a different expiry')
         }
       }
@@ -414,6 +445,7 @@ export class SessionMcpBroker {
         (needsConversationFence && this.history.size >= this.maxConversationFences) ||
         this.seenCellIds.size >= this.maxSeenCellIds
       ) {
+        this.reportDenied('capacity')
         throw new Error('isolated-host capacity error: permanent authority fence capacity exhausted')
       }
 
@@ -426,11 +458,17 @@ export class SessionMcpBroker {
         expiresAt: input.expiresAt
       })
 
-      const binding = await this.createBinding(input, expiresAtMs)
-      // Publish the live binding only after every private resource is ready.
-      this.cells.set(input.isolationCellId, binding)
-      this.conversations.set(key, binding)
-      return binding.descriptor
+      try {
+        const binding = await this.createBinding(input, expiresAtMs)
+        // Publish the live binding only after every private resource is ready.
+        this.cells.set(input.isolationCellId, binding)
+        this.conversations.set(key, binding)
+        this.reportIsolation('created')
+        return binding.descriptor
+      } catch (error) {
+        this.reportIsolation('failed', 'cell_creation')
+        throw error
+      }
     })
   }
 
@@ -490,7 +528,10 @@ export class SessionMcpBroker {
   async releaseCell(input: ReleaseSessionMcpCell): Promise<boolean> {
     return this.serialized(async () => {
       const binding = this.cells.get(input.isolationCellId)
-      if (!binding || !sameRelease(binding, input)) return false
+      if (!binding || !sameRelease(binding, input)) {
+        this.reportDenied('fence')
+        return false
+      }
       this.beginDrainBinding(binding)
       await this.destroyBinding(binding)
       this.detachBinding(binding)
@@ -503,7 +544,10 @@ export class SessionMcpBroker {
   async beginDrainCell(input: ReleaseSessionMcpCell): Promise<boolean> {
     return this.serialized(async () => {
       const binding = this.cells.get(input.isolationCellId)
-      if (!binding || !sameRelease(binding, input)) return false
+      if (!binding || !sameRelease(binding, input)) {
+        this.reportDenied('fence')
+        return false
+      }
       this.beginDrainBinding(binding)
       return true
     })
@@ -594,6 +638,7 @@ export class SessionMcpBroker {
 
   private onConnection(binding: CellBinding, socket: net.Socket): void {
     if (!binding.accepting || binding.connections.size >= this.maxConnectionsPerBinding) {
+      this.reportDenied('capacity')
       socket.destroy()
       return
     }
@@ -620,6 +665,7 @@ export class SessionMcpBroker {
         pending + workRequests > PRIVATE_MCP_MAX_PENDING_REQUESTS ||
         binding.pendingRequests + workRequests > this.maxPendingRequestsPerBinding
       ) {
+        this.reportDenied('capacity')
         socket.destroy()
         return
       }
@@ -629,6 +675,7 @@ export class SessionMcpBroker {
             if (!socket.destroyed) socket.write(encodeFrame(response))
           }
           if (!binding.accepting || !tokenMatches(binding.token, request.token)) {
+            this.reportDenied('token_mismatch')
             reply({ id: request.id, ok: false, error: UNKNOWN_TOKEN_ERROR })
           } else if (this.now() >= binding.expiresAtMs) {
             reply({ id: request.id, ok: false, error: WEBCHAT_MCP_RECONNECT_ERROR })
@@ -683,15 +730,18 @@ export class SessionMcpBroker {
       if (!socket.destroyed) socket.write(encodeFrame(response))
     }
     if (!isNarrowIpcRequest(request)) {
+      this.reportDenied('broker_validation')
       const id = isPlainRecord(request) && Number.isSafeInteger(request.id) ? (request.id as number) : 0
       reply({ id, ok: false, error: 'invalid private MCP request' })
       return
     }
     if (!authenticated) {
+      this.reportDenied('broker_validation')
       reply({ id: request.id, ok: false, error: 'private MCP bridge is not attached' })
       return
     }
     if (!binding.accepting || !tokenMatches(binding.token, request.token)) {
+      this.reportDenied('token_mismatch')
       reply({ id: request.id, ok: false, error: UNKNOWN_TOKEN_ERROR })
       return
     }
@@ -755,7 +805,7 @@ export class SessionMcpBroker {
     // Normally one pass. A fake/near-dead assertion can be rotated once before
     // any HTTP claim, preserving the invocation id and exact request hash.
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const minted = await this.deps.cpClient.mintMcpInvocation(input)
+      const minted = await this.timed('mint_ws', () => this.deps.cpClient.mintMcpInvocation(input))
       if (Date.parse(minted.expiresAt) > this.now()) return minted
     }
     throw new Error('invocation assertion expired before use')
@@ -815,6 +865,23 @@ export class SessionMcpBroker {
   }
 
   private async postAttempt(
+    body: Buffer,
+    invocationId: string,
+    assertion: string,
+    signal: AbortSignal
+  ): Promise<PostOutcome> {
+    const startedAt = performance.now()
+    try {
+      const outcome = await this.postAttemptUnmeasured(body, invocationId, assertion, signal)
+      this.reportDuration('mcp_http', performance.now() - startedAt, outcome.kind === 'rpc' ? 'succeeded' : 'failed')
+      return outcome
+    } catch (error) {
+      this.reportDuration('mcp_http', performance.now() - startedAt, 'failed')
+      throw error
+    }
+  }
+
+  private async postAttemptUnmeasured(
     body: Buffer,
     invocationId: string,
     assertion: string,
@@ -955,6 +1022,7 @@ export class SessionMcpBroker {
       this.conversations.delete(logicalKey(binding))
     }
     this.activeTokens.delete(binding.token)
+    this.reportIsolation('destroyed')
   }
 
   private beginDrainBinding(binding: CellBinding): void {
@@ -1001,6 +1069,50 @@ export class SessionMcpBroker {
       return await fn()
     } finally {
       release()
+    }
+  }
+
+  private async timed<T>(stage: DelegatedMcpRequestStage, operation: () => Promise<T>): Promise<T> {
+    const startedAt = performance.now()
+    try {
+      const value = await operation()
+      this.reportDuration(stage, performance.now() - startedAt, 'succeeded')
+      return value
+    } catch (error) {
+      this.reportDuration(stage, performance.now() - startedAt, 'failed')
+      throw error
+    }
+  }
+
+  private reportIsolation(
+    event: Parameters<DelegatedMcpMetrics['isolation']>[0],
+    reason?: Parameters<DelegatedMcpMetrics['isolation']>[1]
+  ): void {
+    try {
+      if (reason === undefined) this.deps.metrics?.isolation(event)
+      else this.deps.metrics?.isolation(event, reason)
+    } catch {
+      // Custom observers never participate in broker state.
+    }
+  }
+
+  private reportDenied(reason: DelegatedIsolationDenialReason): void {
+    try {
+      this.deps.metrics?.denied(reason)
+    } catch {
+      // Custom observers never participate in broker authorization.
+    }
+  }
+
+  private reportDuration(
+    stage: DelegatedMcpRequestStage,
+    durationMs: number,
+    outcome: Parameters<DelegatedMcpMetrics['requestDuration']>[2]
+  ): void {
+    try {
+      this.deps.metrics?.requestDuration(stage, Math.max(0, durationMs), outcome)
+    } catch {
+      // Custom observers never participate in broker requests.
     }
   }
 }

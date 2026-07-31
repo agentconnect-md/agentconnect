@@ -148,6 +148,7 @@ import { createReadiness, type Readiness } from './http/readiness.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
 import { InvocationAssertionAuthenticator } from './http/mcp/invocation-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
+import { defaultWebchatMcpMetrics } from './observability/webchat-mcp.js'
 import { pingDb } from './persistence/prisma.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
@@ -231,7 +232,7 @@ export function buildContainer(
     session: new PgSessionRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
-    webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma),
+    webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
     mcpInvocation: new PgMcpInvocationRepo(prisma, clock),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
@@ -402,7 +403,8 @@ export function buildContainer(
     daemons: connReg,
     delegations: repos.webchatMcpDelegation,
     invocations: repos.mcpInvocation,
-    isCuratedTool: (toolName) => findTool(toolName) !== undefined
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
+    metrics: defaultWebchatMcpMetrics
   })
   const invocationAssertions = new InvocationAssertionAuthenticator({
     clock,
@@ -410,7 +412,8 @@ export function buildContainer(
     daemons: connReg,
     delegations: repos.webchatMcpDelegation,
     invocations: repos.mcpInvocation,
-    isCuratedTool: (toolName) => findTool(toolName) !== undefined
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
+    metrics: defaultWebchatMcpMetrics
   })
   const internalInvocationAuth = new InternalInvocationAuth()
 
@@ -735,6 +738,7 @@ export function buildContainer(
     mcpRateLimit: new McpRateLimiter(clock),
     invocationAssertions,
     internalInvocationAuth,
+    webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
     verifySlackBot,
     verifySlackAppToken,
@@ -786,7 +790,13 @@ export function buildContainer(
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
   // invocation state still depends on it.
-  const mcpInvocationReaper = new McpInvocationReaper(repos.mcpInvocation, repos.webchatMcpDelegation, clock, http.log)
+  const mcpInvocationReaper = new McpInvocationReaper(
+    repos.mcpInvocation,
+    repos.webchatMcpDelegation,
+    clock,
+    http.log,
+    defaultWebchatMcpMetrics
+  )
 
   // Redelivery reconciliation (webhook-triggers P2.5): recovers github events
   // lost to a relay-pool outage by asking GitHub to redeliver GUIDs that never

@@ -11,6 +11,7 @@ import {
 } from '../../persistence/ports.js'
 import type { InvocationAssertionCodec } from '../../registry/invocationAssertion.js'
 import type { LiveWebchatMcpAuthorityDeps } from '../../registry/webchatMcpAuthority.js'
+import type { WebchatMcpMetrics } from '../../observability/webchat-mcp.js'
 
 export interface InvocationContext {
   invocationId: string
@@ -70,6 +71,7 @@ export interface InvocationAssertionAuthenticatorDeps extends Pick<LiveWebchatMc
   invocations: Pick<McpInvocationRepo, 'getByAssertionHash' | 'claim'>
   isCuratedTool(toolName: string): boolean
   onDenied?: (reason: InvocationAssertionDenialReason) => void
+  metrics?: Pick<WebchatMcpMetrics, 'assertion' | 'invocation'>
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -138,6 +140,7 @@ export class InvocationAssertionAuthenticator {
       ) {
         return this.deny('claim_state_invalid')
       }
+      this.reportAssertion('claimed')
       return {
         kind: 'execute',
         context: {
@@ -155,11 +158,15 @@ export class InvocationAssertionAuthenticator {
     if (claimed.kind === 'existing') {
       if (!sameInvocation(claimed.invocation, invocation)) return this.deny('claim_state_invalid')
       const observedAt = this.deps.clock.now()
+      this.reportAssertion('replayed')
       return Number.isFinite(observedAt)
         ? this.classifyReplay(claimed.invocation, observedAt)
         : this.deny('cached_response_invalid')
     }
-    if (claimed.kind === 'expired') return this.deny('assertion_expired')
+    if (claimed.kind === 'expired') {
+      this.reportAssertion('expired')
+      return this.deny('assertion_expired')
+    }
     return this.deny('claim_denied')
   }
 
@@ -181,9 +188,11 @@ export class InvocationAssertionAuthenticator {
 
   private classifyReplay(invocation: McpInvocationRecord, observedAt: number): InvocationAssertionClaimResult {
     if (invocation.status === 'running') {
+      this.reportInvocation('in_progress_retry')
       return { kind: 'in_progress', retryAfterMs: IN_PROGRESS_RETRY_AFTER_MS }
     }
     if (invocation.status === 'ambiguous') {
+      this.reportInvocation('ambiguous')
       return hasFreshCompletion(invocation.completedAt, observedAt)
         ? { kind: 'ambiguous' }
         : this.deny('cached_response_invalid')
@@ -216,7 +225,30 @@ export class InvocationAssertionAuthenticator {
     } catch {
       // Authorization results do not depend on observability.
     }
+    this.reportAssertion('denied', reason)
     return { kind: 'denied', reason }
+  }
+
+  private reportAssertion(
+    event: Parameters<NonNullable<InvocationAssertionAuthenticatorDeps['metrics']>['assertion']>[0],
+    reason?: InvocationAssertionDenialReason
+  ): void {
+    try {
+      if (reason === undefined) this.deps.metrics?.assertion(event)
+      else this.deps.metrics?.assertion(event, reason)
+    } catch {
+      // Custom observers are never part of assertion authorization.
+    }
+  }
+
+  private reportInvocation(
+    outcome: Parameters<NonNullable<InvocationAssertionAuthenticatorDeps['metrics']>['invocation']>[0]
+  ): void {
+    try {
+      this.deps.metrics?.invocation(outcome)
+    } catch {
+      // Custom observers are never part of replay classification.
+    }
   }
 }
 

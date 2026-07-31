@@ -10,6 +10,7 @@ import type {
   SessionMcpCellMount
 } from '../mcp/session-mcp-broker.js'
 import type { AcpHost, AcpSandboxLaunch } from './acp-host.js'
+import type { DelegatedMcpMetrics } from '../mcp/delegated-metrics.js'
 
 type BrokerPort = Pick<
   SessionMcpBroker,
@@ -86,6 +87,7 @@ export interface DelegatedWebchatHostManagerDeps {
   randomCellId?: () => string
   removeRuntimeHome?: (path: string) => Promise<void>
   onCleanupError?: (event: DelegatedHostCleanupError) => void
+  metrics?: Pick<DelegatedMcpMetrics, 'isolation'>
   log?: { warn(message: string): void }
 }
 
@@ -170,6 +172,7 @@ export class DelegatedWebchatHostManager {
         await this.teardown(active, 'explicit_stop')
         return this.startHost(input)
       }
+      this.reportIsolation('resumed')
       return this.publicHost(active)
     }
     if (this.draining.has(key)) {
@@ -413,6 +416,7 @@ export class DelegatedWebchatHostManager {
       return this.publicHost(record)
     } catch (error) {
       record.hostCreationSettled = true
+      this.reportIsolation('failed', record.registered ? 'host_start' : 'broker_registration')
       await this.teardown(record, 'startup').catch(() => undefined)
       throw error
     } finally {
@@ -633,6 +637,19 @@ export class DelegatedWebchatHostManager {
       this.deps.onCleanupError?.({ ...event })
     } catch {
       // Observability callbacks are containment boundaries.
+    }
+    this.reportIsolation('failed', 'cleanup')
+  }
+
+  private reportIsolation(
+    event: Parameters<DelegatedMcpMetrics['isolation']>[0],
+    reason?: Parameters<DelegatedMcpMetrics['isolation']>[1]
+  ): void {
+    try {
+      if (reason === undefined) this.deps.metrics?.isolation(event)
+      else this.deps.metrics?.isolation(event, reason)
+    } catch {
+      // Metrics are never part of host lifecycle correctness.
     }
   }
 

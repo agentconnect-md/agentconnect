@@ -103,6 +103,8 @@ function harness() {
     } as { reachable: boolean; state: string; capabilities?: { features?: string[] } } | undefined
   }
   const reasons: InvocationAssertionDenialReason[] = []
+  const metricAssertion = vi.fn()
+  const metricInvocation = vi.fn()
   const claimInputs: ClaimMcpInvocationInput[] = []
   const deps = {
     clock: { now: () => state.now },
@@ -153,7 +155,8 @@ function harness() {
       })
     },
     isCuratedTool: (name: string) => name === 'listAgents',
-    onDenied: (reason: InvocationAssertionDenialReason) => reasons.push(reason)
+    onDenied: (reason: InvocationAssertionDenialReason) => reasons.push(reason),
+    metrics: { assertion: metricAssertion, invocation: metricInvocation }
   } satisfies InvocationAssertionAuthenticatorDeps
   const authenticator = new InvocationAssertionAuthenticator(deps)
   const input = (
@@ -168,6 +171,8 @@ function harness() {
   return {
     state,
     reasons,
+    metricAssertion,
+    metricInvocation,
     claimInputs,
     codec,
     minted,
@@ -178,6 +183,32 @@ function harness() {
 }
 
 describe('InvocationAssertionAuthenticator', () => {
+  it('records claimed, replay, retry, ambiguous, expiry, and denial transitions', async () => {
+    const claimed = harness()
+    await claimed.authenticator.claim(claimed.input())
+    expect(claimed.metricAssertion).toHaveBeenCalledWith('claimed')
+
+    const replay = harness()
+    replay.state.invocation = invocation(replay.minted.persistence.assertionHash, { status: 'running' })
+    await replay.authenticator.claim(replay.input())
+    expect(replay.metricAssertion).toHaveBeenCalledWith('replayed')
+    expect(replay.metricInvocation).toHaveBeenCalledWith('in_progress_retry')
+
+    const ambiguous = harness()
+    ambiguous.state.invocation = invocation(ambiguous.minted.persistence.assertionHash, {
+      status: 'ambiguous',
+      completedAt: new Date(NOW)
+    })
+    await ambiguous.authenticator.claim(ambiguous.input())
+    expect(ambiguous.metricInvocation).toHaveBeenCalledWith('ambiguous')
+
+    const expired = harness()
+    expired.state.now = NOW + 30_000
+    await expired.authenticator.claim(expired.input())
+    expect(expired.metricAssertion).toHaveBeenCalledWith('expired')
+    expect(expired.metricAssertion).toHaveBeenCalledWith('denied', 'assertion_expired')
+  })
+
   it('recognizes only the delegated assertion prefix and looks up the exact domain-separated peppered hash', async () => {
     const h = harness()
     const expected = createHmac('sha256', PEPPER)

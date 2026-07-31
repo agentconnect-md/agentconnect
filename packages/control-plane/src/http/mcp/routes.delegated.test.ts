@@ -39,6 +39,8 @@ interface Harness {
   nested: ReturnType<typeof vi.fn>
   internalInvocationAuth: InternalInvocationAuth
   issue: ReturnType<typeof vi.spyOn>
+  metricInvocation: ReturnType<typeof vi.fn>
+  metricDuration: ReturnType<typeof vi.fn>
 }
 
 const opened: FastifyInstance[] = []
@@ -89,6 +91,8 @@ function harness(
   const rateCheck = vi.fn(() => null)
   const audits: Array<Record<string, unknown>> = []
   const nested = vi.fn(async () => [{ id: 'visible-agent' }])
+  const metricInvocation = vi.fn()
+  const metricDuration = vi.fn()
 
   app.decorate('humanAuth', async (req, reply) => {
     if (internalInvocationAuth.authorizeInjectedRequest(req)) return
@@ -115,10 +119,24 @@ function harness(
     invocationAssertions: { claim },
     internalInvocationAuth,
     mcpRateLimit: { check: rateCheck },
+    webchatMcpMetrics: { invocation: metricInvocation, requestDuration: metricDuration },
     config: {}
   } as unknown as HttpDeps
   void app.register(mcpRoutes(deps), { prefix: '/api/v1' })
-  return { app, clock, claim, complete, markAmbiguous, rateCheck, audits, nested, internalInvocationAuth, issue }
+  return {
+    app,
+    clock,
+    claim,
+    complete,
+    markAmbiguous,
+    rateCheck,
+    audits,
+    nested,
+    internalInvocationAuth,
+    issue,
+    metricInvocation,
+    metricDuration
+  }
 }
 
 const rawRequest = (id = 1): Buffer =>
@@ -209,6 +227,21 @@ describe('delegated POST /api/v1/mcp', () => {
     const completion = h.complete.mock.calls[0]![0] as { responseBytes: Uint8Array; status: string }
     expect(completion.status).toBe('succeeded')
     expect(Buffer.from(completion.responseBytes)).toEqual(res.rawPayload)
+    expect(h.metricInvocation).toHaveBeenCalledWith('succeeded')
+    expect(h.metricDuration).toHaveBeenCalledWith('nested_rest', expect.any(Number), 'succeeded')
+  })
+
+  it('contains throwing metrics without changing delegated execution', async () => {
+    const h = harness()
+    h.metricInvocation.mockImplementation(() => {
+      throw new Error('metrics failed')
+    })
+    h.metricDuration.mockImplementation(() => {
+      throw new Error('metrics failed')
+    })
+
+    await expect(post(h)).resolves.toMatchObject({ statusCode: 200 })
+    expect(h.complete).toHaveBeenCalledWith(expect.objectContaining({ status: 'succeeded' }))
   })
 
   it('renders every assertion denial identically without parsing or touching dispatch, audit, or rate limit', async () => {
