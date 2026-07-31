@@ -2403,7 +2403,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
-      await this.remoteWebchatGrants?.revokeAll('agent_detached')
+      await this.revokeAllRemoteWebchatGrants('agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
       // removal needs no permanent gate once the host is proven stopped (the agent is
       // absent); a later toStart can then serve it normally. Safety-drain state is NOT
@@ -2475,7 +2475,7 @@ export class Daemon {
               `reconcile: host teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
             )
           }
-          await this.remoteWebchatGrants?.revokeAll('agent_detached')
+          await this.revokeAllRemoteWebchatGrants('agent_detached')
         } finally {
           if (!wasDraining) this.drainingAgents.delete(a.id)
         }
@@ -13416,13 +13416,13 @@ export class Daemon {
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
       for (const id of [...this.hosts.keys()]) await this.stopHost(id)
-      await this.remoteWebchatGrants?.revokeAll('agent_detached')
+      await this.revokeAllRemoteWebchatGrants('agent_detached')
       this.draining = false
       released = matched
     } else if (drain.scope.kind === 'agent') {
       await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
-      await this.remoteWebchatGrants?.revokeAll('agent_detached')
+      await this.revokeAllRemoteWebchatGrants('agent_detached')
       this.drainingAgents.delete(drain.scope.agentId)
       released = matched
     } else {
@@ -13442,7 +13442,7 @@ export class Daemon {
     this.interruptAgentTurns(agentId, 'stop')
     await this.stopSelectedTurnHosts(targets)
     await this.stopHost(agentId)
-    await this.remoteWebchatGrants?.revokeAll('agent_detached')
+    await this.revokeAllRemoteWebchatGrants('agent_detached')
     // A dispatch can have passed the gate and captured its reply connection while
     // still inside sessions.handle(), before it appears in `pending`. Wait that
     // whole turn, then stop once more in case it constructed a host after the
@@ -13451,9 +13451,21 @@ export class Daemon {
       await Promise.all([...this.activeDispatchesByAgent.get(agentId)!])
     }
     await this.stopHost(agentId)
-    await this.remoteWebchatGrants?.revokeAll('agent_detached')
+    await this.revokeAllRemoteWebchatGrants('agent_detached')
     // gate intentionally left set (drainScope added it): a stopped agent must not
     // auto-respawn on the next message — agent/launch clears the gate.
+  }
+
+  private async revokeAllRemoteWebchatGrants(
+    reason: Parameters<RemoteWebchatGrantManager['revokeAll']>[0]
+  ): Promise<void> {
+    try {
+      await this.remoteWebchatGrants?.revokeAll(reason)
+    } catch (error) {
+      // Invocation claim still re-checks live CP authority. A transient cleanup
+      // failure must not strand stop, drain, move, or roster convergence.
+      this.log.warn(`remote MCP cleanup revoke failed (${formatErr(error)})`)
+    }
   }
 
   /** Await the single-flight reconcile and any coalesced trailing pass. Registry
@@ -14008,7 +14020,7 @@ export class Daemon {
           // Placement is revalidated by the CP for every remote-MCP request.
           // Clearing the memory-only descriptors prevents local reuse while the
           // durable revocation sweep converges.
-          await this.remoteWebchatGrants?.revokeAll('agent_detached')
+          await this.revokeAllRemoteWebchatGrants('agent_detached')
           await this.stopAgent(agentId)
           const fence = this.moveStageMetadata.get(agentId)
           if (fence?.moveId !== moveId || fence.state !== 'staging') {
