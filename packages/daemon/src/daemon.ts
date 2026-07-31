@@ -2100,6 +2100,7 @@ export class Daemon {
       preflightWake: (req) => this.wakeRejectionReason(req),
       replyToSession: (req) => this.replyToSession(req),
       viewSessionStatus: (req) => Promise.resolve(this.viewSessionStatus(req)),
+      rootPostRelation: (req) => this.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.spawnChannelRootSession(req),
       startOrchestration: (req) => this.startOrchestration(req),
       getOrchestration: (req) => Promise.resolve(this.getOrchestrationForOwner(req)),
@@ -6155,6 +6156,72 @@ export class Daemon {
   }
 
   /**
+   * Whether a channel-ROOT post just made by `caller` landed on a conversation that session is
+   * ALREADY part of — its parent's, its own, or neither. Backs `sendMessage`'s root-post notice.
+   *
+   * Conversation identity is the daemon's to decide, which is why this lives here and not in ops:
+   * a channel id is only unique within one physical bot, so two integrations can name the same id
+   * and mean different conversations. The comparison therefore includes the transport scope on
+   * both sides, and the caller's session key uses its platform string verbatim.
+   *
+   * The parent link is read from the CURRENT turn's trusted call metadata when present, else from
+   * the DURABLE origin on the session row (§5.3) — the load-bearing half, since relaying an answer
+   * happens on a later human-triggered turn with no metadata. Coords come from the parent's own
+   * row wherever one exists, because only a row records a transport scope; the cross-daemon case
+   * and its deliberate imprecision are spelled out at the branch below. This widens nothing — it
+   * answers about coordinates the caller itself just named.
+   */
+  private rootPostRelation(req: {
+    callerAgentId: string
+    platform: string
+    callerTransportScope?: string
+    callerChannel: string
+    callerThread: string
+    targetPlatform: string
+    targetChannel: string
+    targetIntegrationId?: string
+  }): { kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined {
+    const targetScope = this.transportScopeForIntegrationIds(
+      req.targetIntegrationId !== undefined ? [req.targetIntegrationId] : undefined
+    )
+    const isTarget = (platform: string, channel: string, scope?: string | null): boolean =>
+      platform === req.targetPlatform &&
+      channel === req.targetChannel &&
+      (scope ?? undefined) === (targetScope ?? undefined)
+
+    const key = sessionKey(
+      req.platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
+    const inbound = this.activeTurnCallMeta.get(key)
+    const parentSessionId = inbound?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
+    const parent = parentSessionId ? this.store.getSessionByAcpId(parentSessionId) : undefined
+    // A LOCAL parent's row records its transport scope, so its identity is exact.
+    if (parentSessionId && parent && isTarget(parent.platform, parent.channel, parent.transportScope)) {
+      return { kind: 'parent', sessionId: parentSessionId }
+    }
+    // A CROSS-DAEMON parent has no row here, and its scope cannot be obtained: the value is
+    // derived from the owning daemon's live credential and deliberately never crosses the wire
+    // (see the note on the durable scope in protocol telemetry) — it would also rotate with that
+    // daemon's tokens, so a forwarded copy could not be compared reliably anyway. Identity here is
+    // therefore COORDINATES ONLY, which can over-match where one channel id is reachable through
+    // two bots. That trade is deliberate: the cost of over-matching is a hint naming the caller's
+    // real parent — where a relayed answer belongs regardless — while staying silent would drop
+    // the hint for precisely the escalation shape the relay exists to serve.
+    if (parentSessionId && !parent && inbound?.originCoords) {
+      const { platform, channel } = inbound.originCoords
+      if (platform === req.targetPlatform && channel === req.targetChannel) {
+        return { kind: 'parent', sessionId: parentSessionId }
+      }
+    }
+    if (isTarget(req.platform, req.callerChannel, req.callerTransportScope)) return { kind: 'self' }
+    return undefined
+  }
+
+  /**
    * session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
    * agent. The post already happened (ops.ts); here the daemon initializes the new-thread session
    * (keyed by the post's ts) so the top-level message starts its own context,
@@ -6173,7 +6240,7 @@ export class Daemon {
     originTransportScope?: string
     originChannel: string
     originThread: string
-  }): void {
+  }): boolean {
     const platform = this.narrowPlatform(req.platform)
     // The post's raw ts is the new thread's root. On Telegram that ts is a bare numeric
     // message id, but inbound reply-based sessions key `tg:<root>` (see
@@ -6197,7 +6264,7 @@ export class Daemon {
     const hopCount = inbound ? inbound.hopCount + 1 : 1
     if (hopCount > MAX_AGENT_CALL_HOPS) {
       this.log.info(`channel-root session: hop limit reached for agent "${req.agentId}" — not spawning`)
-      return
+      return false
     }
     const originSessionId = this.store.getSession(originKey)?.acpSessionId ?? undefined
     const originCoordPlatform = originPlatform === 'hook' ? 'slack' : originPlatform
@@ -6246,6 +6313,7 @@ export class Daemon {
     this.log.info(
       `channel-root session: "${req.agentId}" initialized new session ${targetSession} (origin ${originSessionId ?? 'none'}, hop ${hopCount})`
     )
+    return true
   }
 
   /**
@@ -6318,7 +6386,11 @@ export class Daemon {
    *  falls back to 'slack' for an unrecognized value (coords still resolve — the union is
    *  a routing/key detail, not the trust basis). */
   private narrowPlatform(p: string): NormalizedMessage['platform'] {
-    return p === 'telegram' || p === 'webchat' || p === 'discord' || p === 'hook' ? p : 'slack'
+    // Every caller turns a platform string off a session/orchestration row back into the union, to
+    // key a session or synthesize a message. `feishu` was missing from the list long after the
+    // platform shipped, so all of them silently produced a `slack:` key for a session ingress
+    // records under `feishu:` — a session nothing could then continue.
+    return p === 'telegram' || p === 'webchat' || p === 'discord' || p === 'feishu' || p === 'hook' ? p : 'slack'
   }
 
   // ══════════════════════════ §3.4/§6.8 main-agent orchestration ══════════════════════════
