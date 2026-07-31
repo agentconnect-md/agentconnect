@@ -132,6 +132,34 @@ describe('slack http ingress', () => {
     expect(h.events).toHaveLength(1)
   })
 
+  it('does not dedup the same event_id across separately mentioned Slack apps', async () => {
+    const event = { type: 'message', channel: 'C1', ts: '1.1', user: 'U1', text: 'hi both apps' }
+    expect(
+      (
+        await postEvent({
+          type: 'event_callback',
+          api_app_id: 'A1',
+          team_id: 'T9',
+          event_id: 'Ev-shared',
+          event
+        })
+      ).statusCode
+    ).toBe(200)
+    expect(
+      (
+        await postEvent({
+          type: 'event_callback',
+          api_app_id: 'A2',
+          team_id: 'T9',
+          event_id: 'Ev-shared',
+          event
+        })
+      ).statusCode
+    ).toBe(200)
+    await flush()
+    expect(h.events).toHaveLength(2)
+  })
+
   it('extracts the urlencoded payload= and returns the block_suggestion options on the 200 body', async () => {
     const res = await postInteraction({
       type: 'block_suggestion',
