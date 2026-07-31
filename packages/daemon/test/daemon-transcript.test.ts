@@ -111,8 +111,7 @@ const dm = (ts: string, text: string) => ({
  * external Slack audience and therefore isolated from shared agent memory. */
 const channelMsg = (ts: string, text: string) => ({ ...dm(ts, text), isDm: false, trigger: 'mention' as const })
 
-/** A daemon-originated shared turn is not external input and remains eligible
- * for ordinary provider-neutral post-turn capture. */
+/** A daemon-originated Slack turn used by trusted A2A inheritance tests. */
 const agentMsg = (ts: string, text: string) => ({ ...channelMsg(ts, text), source: 'agent' as const })
 
 function transcript(daemon: Daemon): TranscriptEntry[] {
@@ -156,13 +155,17 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('records provider-neutral post-turn memory only after the user-visible reply is delivered', async () => {
+  it('records post-turn memory for a CP-published session only after the reply is delivered', async () => {
     const { factory } = replyingHost('here is my answer')
     const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
     await daemon.start()
     const conn = makeRoutable(daemon)
+    await (daemon as any).dispatch('bot-a', dm('100', 'private question'), 'int-a')
+    expect((daemon as any).store.applyCpCaptureGate('acp-1', false, 1)).toBe('applied')
+
     let releaseDelivery!: () => void
     const deliveryBlocked = new Promise<void>((resolve) => (releaseDelivery = resolve))
+    conn.postMessage.mockClear()
     conn.postMessage.mockImplementation(async () => {
       await deliveryBlocked
       return 'reply-1'
@@ -171,7 +174,7 @@ describe('Daemon transcript records the agent reply', () => {
     ;(daemon as any).memory.recordTurnForBinding = recordTurn
     const capturedBinding = (daemon as any).agents.get('bot-a').memory
 
-    const turn = (daemon as any).dispatch('bot-a', agentMsg('100', 'question?'), 'int-a')
+    const turn = (daemon as any).dispatch('bot-a', dm('200', 'shared follow-up'), 'int-a')
     await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalled())
     expect(recordTurn).not.toHaveBeenCalled()
 
@@ -181,9 +184,9 @@ describe('Daemon transcript records the agent reply', () => {
     expect(recordTurn).toHaveBeenCalledWith(
       { agentId: 'bot-a', sessionId: 'acp-1' },
       {
-        turnId: stableTurnId('bot-a', agentMsg('100', 'question?')),
+        turnId: stableTurnId('bot-a', dm('200', 'shared follow-up')),
         sessionId: 'acp-1',
-        input: 'question?',
+        input: expect.stringContaining('shared follow-up'),
         output: 'here is my answer'
       },
       capturedBinding,
@@ -211,9 +214,11 @@ describe('Daemon transcript records the agent reply', () => {
     const { factory, host } = replyingHost('here is my answer')
     const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
     await daemon.start()
-    const conn = makeRoutable(daemon)
 
-    await (daemon as any).dispatch('bot-a', agentMsg('100', 'scheduled context'), 'int-a')
+    // A headless Slack-shaped automation has no trusted external destination,
+    // so this legacy-compatible first turn binds the session as local.
+    await (daemon as any).dispatch('bot-a', agentMsg('100', 'scheduled context'))
+    const conn = makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', channelMsg('200', 'human reply'), 'int-a')
 
     expect(host.prompt).toHaveBeenCalledOnce()

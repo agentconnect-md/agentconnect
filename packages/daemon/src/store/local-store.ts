@@ -87,6 +87,7 @@ export interface SessionRecord {
   // so later turns edit the same status line instead of posting duplicates.
   statusBarTs?: string | null
   memoryProvider?: 'none' | 'native' | 'managed' | 'external' | null
+  conversationKind?: 'dm' | 'group_dm' | 'channel' | null
   // Immutable trusted source binding for supported shared input. These fields
   // are metadata only and are echoed on every event/session milestone.
   externalProvider?: string | null

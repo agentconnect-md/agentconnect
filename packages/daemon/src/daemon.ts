@@ -9553,7 +9553,7 @@ export class Daemon {
                 msg.isDm ||
                 msg.platform === 'webchat' ||
                 this.pendingLaunchCorrelation.has(agentId) ||
-                (msg.platform === 'slack' && !msg.isDm && msg.source === 'user')),
+                this.slackExternalSource(agentId, msg, callMeta !== undefined) !== undefined),
           ...(delegatedHost
             ? {
                 host: delegatedHost.host,
@@ -13080,9 +13080,15 @@ export class Daemon {
         externalIntegrationId?: string
       }
     | undefined {
-    if (msg.platform !== 'slack' || msg.isDm || isA2aChild || msg.source !== 'user') return undefined
+    if (msg.platform !== 'slack' || msg.isDm || isA2aChild) return undefined
     const integrationId = this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
     const realmKey = integrationId ? this.connByIntegration.get(integrationId)?.workspaceId?.() : undefined
+    // Cron and daemon-owned continuation turns can create or resume a real Slack
+    // thread, but synthetic/headless callers may use Slack-shaped coordinates with
+    // no connection. Bind those trusted system turns only when the destination is
+    // attributable. Human ingress must keep the incomplete tuple so the caller
+    // below fails closed instead of silently treating an unverified Slack turn as local.
+    if (msg.source !== 'user' && (!integrationId || !realmKey)) return undefined
     return {
       externalProvider: 'slack',
       ...(realmKey ? { externalRealmKey: realmKey } : {}),
@@ -13868,7 +13874,8 @@ export class Daemon {
         `you already sent it after the task finished; do not report the same result twice. If the result ` +
         `needs no action at all, stay silent.`,
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
-      isDm: false
+      isDm: rec.conversationKind === 'dm',
+      ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
     }
     lease.bgWakes += 1
     this.log.info(`bg-task wake: "${what}" → agent "${agentId}" session ${acpSessionId} (${rec.key})`)

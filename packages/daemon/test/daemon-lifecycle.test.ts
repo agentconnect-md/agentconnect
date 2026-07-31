@@ -118,6 +118,7 @@ function makeRoutable(daemon: Daemon) {
     }
   ]
   const conn = {
+    workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
     setTitle: vi.fn(async () => {}),
     postMessage: vi.fn(async () => {})

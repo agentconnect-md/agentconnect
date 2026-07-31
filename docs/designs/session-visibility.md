@@ -215,7 +215,7 @@ the other origin scalars:
 | Slack group DM / channel with trusted `externalOrigin` | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
 | Other IM group DM / channel (or absent kind)           | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
 | Agent-to-agent child (`triggeredBy` is an agent UUID)  | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
-| Automation: cron / hook / dream                        | `org`               | `null`                                                                                                                                |
+| Automation without a trusted external destination      | `org`               | `null`                                                                                                                                |
 
 Notes:
 
@@ -239,6 +239,9 @@ Notes:
 - A provider-bound group DM or channel never uses one initiator as its access
   owner. With Slack sync enabled, its current conversation membership is the
   audience; with sync disabled, new shared Slack sessions remain `org`.
+- A cron or daemon-owned continuation delivered into an attributable Slack
+  conversation is provider-bound at creation just like a human-started thread.
+  Automation without a trusted external destination remains `org` with no owner.
 - **Agent-to-agent children inherit.** A delegation from a private DM or
   Playground session copies the delegated prompt into the child transcript;
   classifying children `org` would expose that to every viewer of the target
