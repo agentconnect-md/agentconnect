@@ -84,6 +84,7 @@ function button(label: string): HTMLButtonElement | undefined {
 }
 
 beforeEach(() => {
+  sessionStorage.clear()
   vi.mocked(fetchMySocialAccount).mockReset()
   mocks.requestEmailVerification.mockReset()
   vi.mocked(resolveMySocialConnectorId).mockReset()
@@ -163,6 +164,27 @@ describe('SocialSignInCard account state', () => {
 
   it('goes straight to the provider when the account has nothing to re-prove', async () => {
     vi.mocked(fetchMySocialAccount).mockResolvedValue({ identities: [], hasSecurityVerificationMethod: false })
+
+    await renderCard()
+    await waitUntil(() => container?.textContent?.includes('Not linked') === true)
+
+    await act(async () => button('Link')?.click())
+
+    expect(container?.querySelector('[role="dialog"]')).toBeNull()
+    expect(resolveMySocialConnectorId).toHaveBeenCalled()
+  })
+
+  it('skips the code dialog for a second link while the ownership proof is fresh', async () => {
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [],
+      hasSecurityVerificationMethod: true,
+      primaryEmail: 'phil@example.test'
+    })
+    // Standing in for a code entered moments ago on the first link.
+    sessionStorage.setItem(
+      'ac.social-link.proof',
+      JSON.stringify({ recordId: 'proof-1', expiresAt: new Date(Date.now() + 9 * 60_000).toISOString() })
+    )
 
     await renderCard()
     await waitUntil(() => container?.textContent?.includes('Not linked') === true)

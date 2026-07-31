@@ -22,6 +22,7 @@ import {
   writeSocialLinkFlow,
   type AccountNotice
 } from '@/lib/logto-account'
+import { rememberOwnershipProof, reusableOwnershipProof } from '@/lib/ownership-proof'
 import { socialLoginProviders, type SocialLoginProvider } from '@/lib/social-login-providers'
 
 const byTarget = (account: MySocialAccountDto, target: string): MySocialIdentityDto | undefined =>
@@ -136,11 +137,13 @@ function VerifyAccountDialog({
 }: {
   provider: SocialLoginProvider
   email?: string
-  onVerified: (currentVerificationRecordId: string) => Promise<void>
+  onVerified: (currentVerificationRecordId: string, expiresAt: string) => Promise<void>
   onClose: () => void
 }) {
   const titleId = useId()
-  const [verificationId, setVerificationId] = useState<string>()
+  // Held together: the record is only reusable against the expiry Logto issued
+  // with it, and that clock started when the code was sent.
+  const [pending, setPending] = useState<{ verificationId: string; expiresAt: string }>()
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -160,15 +163,15 @@ function VerifyAccountDialog({
       if (!email) {
         throw new LogtoAccountError('This account needs a verified email before sign-in methods can change.', 0)
       }
-      if (!verificationId) {
-        setVerificationId(await requestEmailVerification(email))
+      if (!pending) {
+        setPending(await requestEmailVerification(email))
         return
       }
       if (!code.trim()) {
         setError('Enter the verification code from your email.')
         return
       }
-      await onVerified(await verifyEmailCode(email, verificationId, code.trim()))
+      await onVerified(await verifyEmailCode(email, pending.verificationId, code.trim()), pending.expiresAt)
     } catch (caught) {
       setError(accountErrorMessage(caught, { providerName: provider.name, linking: true }))
     } finally {
@@ -192,11 +195,11 @@ function VerifyAccountDialog({
         </div>
         <div className="modalbody">
           <p className="font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-            {verificationId
+            {pending
               ? `Enter the code sent to ${email ?? 'your email'}, then continue to ${provider.name}.`
               : `To protect your account, verify it's you with a code sent to ${email ?? 'your email'}.`}
           </p>
-          {verificationId ? (
+          {pending ? (
             // A short code, not prose: centred, spaced and monospaced so the
             // digits read as a group. `.inp` is the wrong shape here — it spans
             // the dialog for a handful of characters, and it defines no focus
@@ -228,7 +231,7 @@ function VerifyAccountDialog({
             Cancel
           </Button>
           <Button variant="primary" disabled={busy} onClick={() => void submit()}>
-            {busy ? 'Working…' : verificationId ? `Continue to ${provider.name}` : 'Send code'}
+            {busy ? 'Working…' : pending ? `Continue to ${provider.name}` : 'Send code'}
           </Button>
         </div>
       </div>
@@ -302,6 +305,13 @@ export default function SocialSignInCard({
   // with a security verification method take the code detour first.
   const beginLink = (provider: SocialLoginProvider) => {
     if (currentAccount?.hasSecurityVerificationMethod) {
+      // One code covers every link in its window, so a second provider in the
+      // same sitting reuses the proof instead of asking again.
+      const proof = reusableOwnershipProof()
+      if (proof) {
+        void startLink(provider, proof)
+        return
+      }
       setPendingVerify(provider)
       return
     }
@@ -486,8 +496,9 @@ export default function SocialSignInCard({
           key={pendingVerify.target}
           provider={pendingVerify}
           email={currentAccount?.primaryEmail}
-          onVerified={async (currentVerificationRecordId) => {
+          onVerified={async (currentVerificationRecordId, expiresAt) => {
             setPendingVerify(undefined)
+            rememberOwnershipProof(currentVerificationRecordId, expiresAt)
             await startLink(pendingVerify, currentVerificationRecordId)
           }}
           onClose={() => setPendingVerify(undefined)}

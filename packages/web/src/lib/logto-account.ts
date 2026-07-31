@@ -79,16 +79,20 @@ async function accountRequest<T>(path: string, init: RequestInit = {}): Promise<
   return (await response.json()) as T
 }
 
-/** Send an ownership-proof code to the account's own email. */
-export async function requestEmailVerification(email: string): Promise<string> {
-  const result = await accountRequest<{ verificationRecordId: string }>('/api/verifications/verification-code', {
-    method: 'POST',
-    body: JSON.stringify({
-      identifier: { type: 'email', value: email },
-      templateType: 'UserPermissionValidation'
-    })
-  })
-  return result.verificationRecordId
+/** Send an ownership-proof code to the account's own email. `expiresAt` is when
+ *  the record dies — the clock is already running when this returns. */
+export async function requestEmailVerification(email: string): Promise<{ verificationId: string; expiresAt: string }> {
+  const result = await accountRequest<{ verificationRecordId: string; expiresAt: string }>(
+    '/api/verifications/verification-code',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        identifier: { type: 'email', value: email },
+        templateType: 'UserPermissionValidation'
+      })
+    }
+  )
+  return { verificationId: result.verificationRecordId, expiresAt: result.expiresAt }
 }
 
 /** Redeem that code; the returned record is what `logto-verification-id` names. */
