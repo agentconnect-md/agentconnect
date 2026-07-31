@@ -173,6 +173,13 @@ export class LogtoIdentityService {
   // must not be able to shift what that gate sees (or when it re-asks).
   private readonly users = new Map<string, CachedUser>()
   private readonly userInFlight = new Map<string, Promise<LogtoUser | null>>()
+  // Invalidation fence. `slackIdentityFor` feeds an authorization decision
+  // (the session-visibility identity set), so an invalidation must be FINAL:
+  // deleting the settled entries alone leaves a race where a read that BEGAN
+  // before an unlink settles after it and writes the removed identity back for
+  // its full TTL. Every invalidation bumps the subject's epoch; a lookup only
+  // caches its result if the epoch it started under is still current.
+  private readonly cacheEpochs = new Map<string, number>()
 
   constructor(
     private readonly cfg: LogtoMgmtConfig,
@@ -191,7 +198,12 @@ export class LogtoIdentityService {
     if (cached && cached.expiresAt > this.clock.now()) return cached.login
     let pending = this.loginInFlight.get(sub)
     if (!pending) {
-      pending = this.lookupLogin(sub).finally(() => this.loginInFlight.delete(sub))
+      const tracked: Promise<string | null> = this.lookupLogin(sub).finally(() => {
+        // Only clear our own registration — an invalidation may have replaced it
+        // with a fresh in-flight read that must keep de-duplicating.
+        if (this.loginInFlight.get(sub) === tracked) this.loginInFlight.delete(sub)
+      })
+      pending = tracked
       this.loginInFlight.set(sub, pending)
     }
     return pending
@@ -240,9 +252,13 @@ export class LogtoIdentityService {
    * see. Linking runs browser→Logto — the Account API is the only side with a
    * connector session — so the write never passes through here, and without
    * this the positive cache would hide a just-linked identity for its full TTL.
+   * Fenced like {@link invalidate}: an in-flight read from before the change
+   * may finish after it and must not write the pre-change user back.
    */
   forgetUser(sub: string): void {
+    this.bumpEpoch(sub)
     this.users.delete(sub)
+    this.userInFlight.delete(sub)
   }
 
   /** The cached upstream user every display read projects from. */
@@ -251,7 +267,12 @@ export class LogtoIdentityService {
     if (cached && cached.expiresAt > this.clock.now()) return cached.user
     let pending = this.userInFlight.get(sub)
     if (!pending) {
-      pending = this.lookupUser(sub).finally(() => this.userInFlight.delete(sub))
+      const tracked: Promise<LogtoUser | null> = this.lookupUser(sub).finally(() => {
+        // Only clear our own registration — an invalidation may have replaced it
+        // with a fresh in-flight read that must keep de-duplicating.
+        if (this.userInFlight.get(sub) === tracked) this.userInFlight.delete(sub)
+      })
+      pending = tracked
       this.userInFlight.set(sub, pending)
     }
     return pending
@@ -311,32 +332,50 @@ export class LogtoIdentityService {
   }
 
   /** Drop every cached identity for one user. Called after a link/unlink, so the
-   *  Profile does not keep showing a method the user just changed. */
+   *  Profile does not keep showing a method the user just changed — and, fenced,
+   *  so an unlinked identity cannot survive as an authorization grant. */
   private invalidate(sub: string): void {
+    this.bumpEpoch(sub)
     this.logins.delete(sub)
+    this.loginInFlight.delete(sub)
     this.users.delete(sub)
+    this.userInFlight.delete(sub)
+  }
+
+  private epochOf(sub: string): number {
+    return this.cacheEpochs.get(sub) ?? 0
+  }
+
+  private bumpEpoch(sub: string): void {
+    this.cacheEpochs.set(sub, this.epochOf(sub) + 1)
   }
 
   private async lookupUser(sub: string): Promise<LogtoUser | null> {
+    const epoch = this.epochOf(sub)
     const res = await this.request(`/api/users/${encodeURIComponent(sub)}`)
+    // A result older than the last invalidation is returned to ITS caller (that
+    // read began before the change) but never cached — the fence.
+    const current = () => this.epochOf(sub) === epoch
     if (res.status === 404) {
       // Deleted at the provider — cache the miss briefly.
-      this.users.set(sub, { user: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
+      if (current()) this.users.set(sub, { user: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
       return null
     }
     if (!res.ok) {
       throw new LogtoApiError(`logto user lookup failed: ${res.status}`, res.status, res.status >= 500)
     }
     const user = (await res.json()) as LogtoUser
-    this.users.set(sub, { user, expiresAt: this.clock.now() + LOGIN_TTL_MS })
+    if (current()) this.users.set(sub, { user, expiresAt: this.clock.now() + LOGIN_TTL_MS })
     return user
   }
 
   private async lookupLogin(sub: string): Promise<string | null> {
+    const epoch = this.epochOf(sub)
     const res = await this.request(`/api/users/${encodeURIComponent(sub)}`)
+    const current = () => this.epochOf(sub) === epoch
     if (res.status === 404) {
       // Deleted at the provider — no identity, cache the miss briefly.
-      this.logins.set(sub, { login: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
+      if (current()) this.logins.set(sub, { login: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
       return null
     }
     if (!res.ok) {
@@ -345,10 +384,12 @@ export class LogtoIdentityService {
     const user = (await res.json()) as LogtoUser
     const raw = user.identities?.github?.details?.rawData
     const login = firstString(raw?.userInfo?.login, raw?.login)
-    this.logins.set(sub, {
-      login,
-      expiresAt: this.clock.now() + (login ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
-    })
+    if (current()) {
+      this.logins.set(sub, {
+        login,
+        expiresAt: this.clock.now() + (login ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
+      })
+    }
     return login
   }
 

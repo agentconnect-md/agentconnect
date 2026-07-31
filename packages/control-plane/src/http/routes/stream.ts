@@ -116,12 +116,17 @@ export function streamRoutes(deps: HttpDeps) {
         // hide the session from a live subscriber at commit, and a long-lived SSE
         // connection holding a cached verdict would keep leaking it. Sessions are
         // per-event unique anyway, so a cache would rarely hit. The identity set
-        // IS fixed per connection: it can only grow (linking), and an unlink
-        // takes effect on the next connection — that is a lost read grant, not a
-        // leak, so it does not need the per-event treatment.
-        const identitySet = await identitySetFor(req)
+        // gets the SAME treatment: unlinking Slack shrinks an authorization set,
+        // and a connection-fixed copy would keep serving the unlinked identity's
+        // private DMs for the socket's lifetime. Re-resolving here is a memory
+        // read in the common case (LogtoIdentityService caches per subject,
+        // single-flight) and the unlink path invalidates that cache, so the
+        // revocation lands on the next event, not the next connection.
         const canSeeSession = async (sessionId: string): Promise<boolean> => {
-          const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
+          const [session, identitySet] = await Promise.all([
+            deps.repos.session.get(SessionId(sessionId)).catch(() => null),
+            identitySetFor(req)
+          ])
           return canStreamSession(session, ctx, identitySet)
         }
 
