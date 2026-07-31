@@ -72,6 +72,24 @@ async function waitFor(check: () => boolean, label: string, timeoutMs = 20_000):
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+export function daemonControlPlaneReady(daemon: unknown): boolean {
+  if (!isRecord(daemon) || !isRecord(daemon.cpClient)) return false
+  return daemon.cpClient.state === 'READY'
+}
+
+export function daemonDelegatedMcpReady(daemon: unknown): boolean {
+  return (
+    daemonControlPlaneReady(daemon) &&
+    isRecord(daemon) &&
+    daemon.delegatedMcpBroker !== undefined &&
+    daemon.delegatedMcpBroker !== null
+  )
+}
+
 function socketClosedWithin(socket: WebSocket, timeoutMs: number): Promise<boolean> {
   if (socket.readyState === WebSocket.CLOSED) return Promise.resolve(true)
   return new Promise((resolveClosed) => {
@@ -504,12 +522,7 @@ export async function startWebchatPresetMcpStack(prisma: PrismaClient): Promise<
     })
     await daemon.start()
     await waitFor(() => rdServer?.size() === 1, 'daemon relay registration')
-    await waitFor(
-      () =>
-        ((daemon as unknown as { cpClient?: { isReady(): boolean } }).cpClient?.isReady() ?? false) &&
-        ((daemon as unknown as { delegatedMcpBroker?: unknown }).delegatedMcpBroker ?? null) !== null,
-      'daemon delegated MCP readiness'
-    )
+    await waitFor(() => daemonDelegatedMcpReady(daemon), 'daemon delegated MCP readiness')
 
     const minted = await cp.http.inject({
       method: 'POST',
@@ -552,10 +565,7 @@ export async function startWebchatPresetMcpStack(prisma: PrismaClient): Promise<
         await stopCp()
         if (cp?.http.server.listening) throw new Error('control-plane HTTP listener survived shutdown')
         await waitFor(() => !liveRelayClient.isReady(), 'relay control outage')
-        await waitFor(
-          () => !((liveDaemon as unknown as { cpClient?: { isReady(): boolean } }).cpClient?.isReady() ?? false),
-          'daemon control outage'
-        )
+        await waitFor(() => !daemonControlPlaneReady(liveDaemon), 'daemon control outage')
       },
       close: dispose
     }
