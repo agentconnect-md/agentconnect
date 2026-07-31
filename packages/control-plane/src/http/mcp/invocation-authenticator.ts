@@ -191,7 +191,6 @@ export class InvocationAssertionAuthenticator {
       return { kind: 'in_progress', retryAfterMs: IN_PROGRESS_RETRY_AFTER_MS }
     }
     if (invocation.status === 'ambiguous') {
-      this.reportInvocation('ambiguous')
       return hasFreshCompletion(invocation.completedAt, observedAt)
         ? { kind: 'ambiguous' }
         : this.deny('cached_response_invalid')

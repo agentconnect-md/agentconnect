@@ -183,7 +183,7 @@ function harness() {
 }
 
 describe('InvocationAssertionAuthenticator', () => {
-  it('records claimed, replay, retry, ambiguous, expiry, and denial transitions', async () => {
+  it('records claimed, replay, retry, expiry, and denial transitions without recounting ambiguous replay', async () => {
     const claimed = harness()
     await claimed.authenticator.claim(claimed.input())
     expect(claimed.metricAssertion).toHaveBeenCalledWith('claimed')
@@ -199,8 +199,9 @@ describe('InvocationAssertionAuthenticator', () => {
       status: 'ambiguous',
       completedAt: new Date(NOW)
     })
-    await ambiguous.authenticator.claim(ambiguous.input())
-    expect(ambiguous.metricInvocation).toHaveBeenCalledWith('ambiguous')
+    expect(await ambiguous.authenticator.claim(ambiguous.input())).toEqual({ kind: 'ambiguous' })
+    expect(ambiguous.metricAssertion).toHaveBeenCalledWith('replayed')
+    expect(ambiguous.metricInvocation).not.toHaveBeenCalled()
 
     const expired = harness()
     expired.state.now = NOW + 30_000
