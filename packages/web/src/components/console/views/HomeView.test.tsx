@@ -258,4 +258,36 @@ describe('HomeView readiness gate', () => {
     await render()
     expect(host.textContent).toContain('No AI runtime is signed in')
   })
+
+  it('shows no banner when the selected agent’s daemon is healthy but ANOTHER daemon is not', async () => {
+    mocks.agents = [agent()]
+    mocks.daemons = [
+      daemon(),
+      daemon({
+        daemonId: 'd2',
+        status: 'offline',
+        runtimeModels: [
+          { runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired: true }
+        ]
+      })
+    ]
+    await render()
+    expect(host.textContent).not.toContain('is offline')
+    expect(host.textContent).not.toContain('No AI runtime is signed in')
+  })
+
+  it('defaults past a NOT-ready agentconnect preset to a ready agent (no banner for an unused daemon)', async () => {
+    mocks.agents = [agent({ id: 'a-pre', name: 'agentconnect', daemon: 'd2' }), agent({ id: 'a1', name: 'bot' })]
+    mocks.daemons = [daemon(), daemon({ daemonId: 'd2', status: 'offline' })]
+    await render()
+    expect(mocks.menus.find((m) => m.title === 'Agent')?.value).toBe('a1')
+    expect(host.textContent).not.toContain('is offline')
+  })
+
+  it('still prefers the agentconnect preset when it is ready', async () => {
+    mocks.agents = [agent({ id: 'a1', name: 'bot' }), agent({ id: 'a-pre', name: 'agentconnect' })]
+    mocks.daemons = [daemon()]
+    await render()
+    expect(mocks.menus.find((m) => m.title === 'Agent')?.value).toBe('a-pre')
+  })
 })
