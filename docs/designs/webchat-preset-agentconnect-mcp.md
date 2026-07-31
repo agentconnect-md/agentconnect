@@ -201,10 +201,17 @@ Whenever a daemon restart, ACP session rebuild, or scheduled credential renewal
 requires raw material, the daemon requests a fresh access grant under the current
 logical authority generation. Access-grant renewal does not rotate that generation.
 
-Each ACP session descriptor has a daemon-generated, stable
-`descriptorInstanceId`, persisted as non-secret session metadata so it survives a
-daemon restart. The CP allocates a strictly increasing `grantRevision` within the
-authority generation. Delivery uses a two-phase protocol:
+Each durable webchat `conversationId` maps to one ACP session and therefore exactly
+one `agentconnect-admin` descriptor. That descriptor has one daemon-generated,
+stable `descriptorInstanceId`, persisted as non-secret session metadata so it
+survives a daemon restart. Concurrent browser tabs resume the same conversation,
+ACP session, descriptor instance, and active grant; they do not create competing
+runtime descriptors.
+
+The CP allocates a strictly increasing `grantRevision` for that descriptor within
+the authority generation. The daemon's CAS fence is global to the one runtime
+session target, so every delivery that could mutate its descriptor is totally
+ordered. Delivery uses a two-phase protocol:
 
 1. The daemon sends `webchat/mcp-grant/issue` with the conversation and descriptor
    instance. CP authenticates the daemon from the WebSocket, verifies current
@@ -224,15 +231,14 @@ grantRevision, token, expiresAt }`. Creating a newer pending revision atomically
    that reply permits the daemon to CAS-install the descriptor into the runtime. A
    retry of any frame is idempotent; a mismatched or superseded tuple fails closed.
 
-`pending` credentials are rejected by the MCP endpoint. One authority generation
-admits at most four descriptor instances, supporting bounded concurrent tabs, and
-each instance has at most one active and one pending grant. Thus at most four usable
-grants coexist. A fifth instance is denied until an expired or explicitly closed
-instance is reclaimed. Lost delivery leaves an unusable pending row that expires
-after two minutes and leaves the prior active grant unchanged. Logical conversation
-close, ownership change, incompatible placement change, or security revocation
-increments the authority generation and atomically revokes all access grants from
-the previous generation.
+`pending` credentials are rejected by the MCP endpoint. The sole descriptor instance
+has at most one active and one pending grant, so only one usable grant exists for the
+conversation. Creating a newer pending revision revokes the older pending row;
+activating it revokes the prior active row. Lost delivery leaves an unusable pending
+row that expires after two minutes and leaves the prior active grant unchanged.
+Logical conversation close, ownership change, incompatible placement change, or
+security revocation increments the authority generation and atomically revokes all
+access grants from the previous generation.
 
 ### 5.3 Lifetime
 
@@ -444,9 +450,11 @@ tools are unavailable.
 Resume succeeds only for the same authenticated owner, organization, agent, and
 conversation. The CP keeps the current logical authority generation, while the
 daemon completes a fresh revision-fenced grant activation because stored hashes
-cannot be re-delivered. Concurrent tabs use distinct bounded descriptor instances.
-The daemon must activate and attach the new descriptor before `session/load` or the
-next prompt.
+cannot be re-delivered when the daemon no longer retains the active credential.
+An ordinary browser reconnect does not itself rotate the credential: all tabs share
+the conversation's one ACP session and descriptor. The daemon must activate and
+attach a fresh descriptor before `session/load` or the next prompt only after
+restart, descriptor loss, or scheduled renewal requires new raw material.
 
 ### 10.3 Close and revoke
 
