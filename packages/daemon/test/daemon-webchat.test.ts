@@ -1258,6 +1258,14 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const promptGate = new Promise<never>((_resolve, reject) => {
       rejectPrompt = reject
     })
+    let cleanupEntered!: () => void
+    const cleanupStarted = new Promise<void>((resolve) => {
+      cleanupEntered = resolve
+    })
+    let releaseCleanup!: () => void
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve
+    })
     const dedicatedHost = {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => 'acp-delegated-hung'),
@@ -1287,6 +1295,8 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       })),
       stopHost: vi.fn(async () => {
         await dedicatedHost.stop()
+        cleanupEntered()
+        await cleanupGate
         return true
       }),
       stop: vi.fn(async () => {})
@@ -1329,7 +1339,17 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
         }),
       WAIT
     )
+    await cleanupStarted
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const pendingBeforeCleanup = (daemon as any).pending.size
+    const stateBeforeCleanup = (daemon as any).store.getSession(
+      (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    )?.state
+    releaseCleanup()
+    expect(pendingBeforeCleanup).toBe(1)
+    expect(stateBeforeCleanup).toBe('cancelling')
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(0), WAIT)
+    expect((daemon as any).store.getSession((daemon as any).webchatSessionKey(CONV, AGENT_ID))?.state).toBe('idle')
     expect(events.filter((event) => event.kind === 'done')).toEqual([
       expect.objectContaining({
         kind: 'done',
@@ -1399,7 +1419,9 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await vi.waitFor(() => expect(manager.stopHost).toHaveBeenCalledOnce(), WAIT)
 
     releasePrompt()
-    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(0), WAIT)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect((daemon as any).pending.size).toBe(1)
+    expect((daemon as any).store.getSession((daemon as any).webchatSessionKey(CONV, AGENT_ID))?.state).not.toBe('idle')
     expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
     expect(
       (daemon as any).dispatchWebchatTurn(
@@ -1424,6 +1446,14 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     let rejectSession!: (error: Error) => void
     const sessionGate = new Promise<never>((_resolve, reject) => {
       rejectSession = reject
+    })
+    let cleanupEntered!: () => void
+    const cleanupStarted = new Promise<void>((resolve) => {
+      cleanupEntered = resolve
+    })
+    let releaseCleanup!: () => void
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve
     })
     const dedicatedHost = {
       start: vi.fn(async () => {}),
@@ -1454,6 +1484,8 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       })),
       stopHost: vi.fn(async () => {
         await dedicatedHost.stop()
+        cleanupEntered()
+        await cleanupGate
         return true
       }),
       stop: vi.fn(async () => {})
@@ -1489,6 +1521,15 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
         }),
       WAIT
     )
+    await cleanupStarted
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const inflightBeforeCleanup = (daemon as any).inflight.size
+    const stateBeforeCleanup = (daemon as any).store.getSession(
+      (daemon as any).webchatSessionKey(CONV, AGENT_ID)
+    )?.state
+    releaseCleanup()
+    expect(inflightBeforeCleanup).toBe(1)
+    expect(stateBeforeCleanup).not.toBe('idle')
     await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(dedicatedHost.cancel).not.toHaveBeenCalled()
     expect(events.filter((event) => event.kind === 'done')).toEqual([

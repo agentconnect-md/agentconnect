@@ -876,6 +876,9 @@ interface SelectedTurnHost {
    * through their manager so broker drain/release and private-HOME removal remain
    * generation-fenced and teardown-singleflight. */
   stop: (deadlineMs?: number) => Promise<void>
+  /** The exact stop operation once lifecycle cleanup has begun, or an already
+   * settled promise while the selected process has not been asked to stop. */
+  waitForCleanup: () => Promise<void>
 }
 
 interface QueueEntry {
@@ -910,6 +913,10 @@ interface QueueEntry {
   /** Selected before session/new|load. Retained across the cold pre-Pending gap
    * so cancellation never has to rediscover a private host through this.hosts. */
   selectedHost?: SelectedTurnHost
+  /** Cold cleanup can begin before a selected host exists (for example while the
+   * broker registration is pending). Session initialization must await this gate
+   * before releasing ownership or writing idle. */
+  lifecycleCleanup?: Promise<void>
   /** Latched cancellation for an already-admitted head. Unlike reading the current
    *  pause/loop state, this survives a quick pause→unpause or trip→!resume race while
    *  a cold sessions.handle() call is still initializing. */
@@ -3738,26 +3745,36 @@ export class Daemon {
     delegatedHost: DelegatedWebchatHost
   ): SelectedTurnHost {
     const manager = this.delegatedWebchatHosts
+    let cleanup: Promise<void> | undefined
     return {
       host: delegatedHost.host,
-      stop: async () => {
-        if (!manager) {
-          throw new Error('delegated webchat host manager is unavailable during turn cleanup')
-        }
-        await manager.stopHost({
-          agentId,
-          conversationId,
-          isolationCellId: delegatedHost.isolationCellId
-        })
-      }
+      stop: () =>
+        (cleanup ??= (async () => {
+          if (!manager) {
+            throw new Error('delegated webchat host manager is unavailable during turn cleanup')
+          }
+          await manager.stopHost({
+            agentId,
+            conversationId,
+            isolationCellId: delegatedHost.isolationCellId
+          })
+        })()),
+      waitForCleanup: () => cleanup ?? Promise.resolve()
     }
   }
 
   private selectedOrdinaryTurnHost(agentId: string, host: AcpHost): SelectedTurnHost {
+    let cleanup: Promise<void> | undefined
     return {
       host,
-      stop: (deadlineMs) => this.stopHost(agentId, deadlineMs)
+      stop: (deadlineMs) => (cleanup ??= this.stopHost(agentId, deadlineMs)),
+      waitForCleanup: () => cleanup ?? Promise.resolve()
     }
+  }
+
+  private async waitForTurnLifecycleCleanup(entry: QueueEntry, selectedHost?: SelectedTurnHost): Promise<void> {
+    await entry.lifecycleCleanup
+    await selectedHost?.waitForCleanup()
   }
 
   private async stopSelectedTurnHosts(turns: Iterable<Pick<Pending, 'selectedHost'>>): Promise<void> {
@@ -9021,6 +9038,10 @@ export class Daemon {
       // failed agent start / ACP handshake surfaces HERE, before the prompt below.
       const interrupted = this.dispatchGateReason(entry)
       try {
+        // A force-stop may make session/new|load reject before the delegated
+        // manager has released its broker cell and private HOME. Keep this cold
+        // dispatch owned and non-idle until that exact cleanup operation settles.
+        await this.waitForTurnLifecycleCleanup(entry, entry.selectedHost)
         this.store.setSessionState(key, 'idle', this.clock.now())
         // The turn died during initialization (agent spawn / ACP handshake), so it never reaches
         // the main finally that records an outcome. A parent polling this child must see `failed`,
@@ -9081,6 +9102,9 @@ export class Daemon {
       finishEvaluation('turn.cancelled', { reason: initializedGate })
       this.finishSessionInitialization(agentId)
       restoreDeliveryBinding()
+      // session/new|load can return after host termination while manager cleanup
+      // is still draining the private broker cell. Do not publish idle early.
+      await this.waitForTurnLifecycleCleanup(entry, entry.selectedHost)
       const interruptedSession = this.store.getSession(key)
       if (created && interruptedSession?.acpSessionId === sessionId) {
         // The runtime created this ACP session after the turn was already terminal.
@@ -9661,6 +9685,10 @@ export class Daemon {
           this.persistHookState(entry, 'settled')
         }
       }
+      // A delegated force-stop can unwind prompt before broker release and HOME
+      // removal complete. Pending ownership and the non-idle session state are the
+      // final safety fence, so release them only after the exact selected cleanup.
+      await this.waitForTurnLifecycleCleanup(entry, p.selectedHost)
       this.pending.delete(pendingTurnKey(agentId, sessionId))
       // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
       // cancelled), so the session is idle again. Without this the row stayed
@@ -9841,7 +9869,8 @@ export class Daemon {
         // Force-stop reaps the exact selected process. A delegated turn must cross
         // the manager boundary so broker drain/release and private-HOME cleanup
         // finish before dispatch can mark the session idle.
-        const stopped = (turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)).catch((err) => {
+        const cleanup = turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
+        const stopped = cleanup.catch((err) => {
           this.log.error(`${reason}: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
           // The selected child may still be alive. Keep admission fail-closed even
           // if its prompt callback happens to settle after this failed teardown.
@@ -9849,6 +9878,10 @@ export class Daemon {
         })
         this.addSafetyDrainWait(agentId, stopped)
         void stopped.then(() => {
+          // The process boundary is now fully gone. This preserves the ordinary
+          // host backstop's terminal state even when a test/runtime prompt promise
+          // never observes process death; delegated cleanup reaches this point only
+          // after broker release and private-HOME removal.
           this.store.setSessionState(key, 'idle', this.clock.now())
         })
       }, ms)
@@ -9882,17 +9915,17 @@ export class Daemon {
       this.log.warn(
         `${reason}: agent "${agentId}" did not finish cold initialization within ${ms}ms — force-stopping host (${key})`
       )
-      const stop =
+      const cleanup =
+        entry.lifecycleCleanup ??
         entry.selectedHost?.stop(0) ??
         (entry.webchat?.delegation && this.delegatedWebchatHosts
-          ? this.delegatedWebchatHosts
-              .closeConversation({
-                agentId,
-                conversationId: entry.webchat.conversationId
-              })
-              .then(() => undefined)
+          ? this.delegatedWebchatHosts.stopConversationHosts({
+              agentId,
+              conversationId: entry.webchat.conversationId
+            })
           : this.stopHost(agentId, 0))
-      const stopped = stop.catch((err) => {
+      entry.lifecycleCleanup ??= cleanup
+      const stopped = cleanup.catch((err) => {
         this.log.error(`${reason}: cold force-stop failed for agent "${agentId}": ${formatErr(err)}`)
         // The old child may still be alive after a failed stop. Keep the safety
         // drain permanently unsettled (until this daemon process is restarted),
@@ -9902,7 +9935,9 @@ export class Daemon {
       // Abort every SessionManager cold await now; keep NEW admission gated until
       // the host-wide stop itself settles, so the old teardown cannot kill fresh work.
       this.addSafetyDrainWait(agentId, stopped)
-      entry.initAbort.abort(new Error(reason))
+      void stopped.then(() => {
+        entry.initAbort.abort(new Error(reason))
+      })
     }, ms)
     this.coldCancelTimers.set(key, { timer, active })
   }

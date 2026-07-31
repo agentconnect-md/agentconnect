@@ -365,7 +365,7 @@ describe('Daemon interrupt safety gates', () => {
       ;(daemon as any).handleWebchatCancel(CONV_1)
       clock.advance(30_000)
       await vi.waitFor(() => expect(host.stop).toHaveBeenCalledTimes(1))
-      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
+      expect((daemon as any).inflight.size).toBe(1)
 
       expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
       const retry = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_2, 'must stay blocked', 'alice', stream.sink)
@@ -373,6 +373,7 @@ describe('Daemon interrupt safety gates', () => {
       expect(host.newSession).toHaveBeenCalledTimes(1)
     } finally {
       releaseSession()
+      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0)).catch(() => {})
       await daemon.stop()
     }
   }, 15_000)

@@ -53,6 +53,9 @@ interface CellRecord extends ReleaseSessionMcpCell {
   mount?: SessionMcpCellMount
   registered: boolean
   registrationSettled: boolean
+  /** The raw broker registration, not the cancellation race exposed to startHost.
+   * Teardown must await this exact operation before deciding whether a cell exists. */
+  registration?: ReturnType<BrokerPort['registerCell']>
   hostCreationSettled: boolean
   allocationSettled: boolean
   drained: boolean
@@ -207,6 +210,16 @@ export class DelegatedWebchatHostManager {
     return true
   }
 
+  /** Local lifecycle cleanup for one conversation. Unlike closeConversation this
+   * deliberately retains the immutable authority for later TTL/detach revocation. */
+  async stopConversationHosts(input: { agentId: string; conversationId: string }): Promise<void> {
+    const stopped = await this.stopMatching(
+      (record) => record.agentId === input.agentId && record.conversationId === input.conversationId,
+      'explicit_stop'
+    )
+    this.retainInactiveAuthorities(stopped)
+  }
+
   /** Tear down one logical conversation and return the immutable authority that
    * the daemon may revoke at the CP. Browser transport close never calls this. */
   async closeConversation(input: {
@@ -346,6 +359,7 @@ export class DelegatedWebchatHostManager {
           throw error
         }
       )
+      record.registration = registrationTask
       const adminMcpServer = await this.raceCancellation(registrationTask, pending)
       if (!adminMcpServer) throw new Error('delegated webchat broker refused the isolation cell')
       this.assertPendingCanStart(pending)
@@ -519,6 +533,11 @@ export class DelegatedWebchatHostManager {
   }
 
   private async runTeardown(record: CellRecord, source: CleanupSource): Promise<void> {
+    // Cancellation races only the caller-visible startup. A broker registration is
+    // an authority-bearing raw operation and may still succeed afterward; cleanup
+    // cannot report completion until that result is known and any late cell is
+    // drained/released below.
+    await record.registration?.catch(() => undefined)
     const failures: Error[] = []
     const step = async (name: CleanupStep, done: () => boolean, run: () => Promise<void>) => {
       if (done()) return

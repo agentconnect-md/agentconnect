@@ -482,6 +482,84 @@ describe('DelegatedWebchatHostManager', () => {
     expect(h.manager.debugStats().inactiveAuthorities).toBe(0)
   })
 
+  it('waits for a delayed raw registration before local drain reports cleanup complete', async () => {
+    const broker = new FakeBroker()
+    const register = broker.registerCell.bind(broker)
+    let registrationEntered!: () => void
+    const entered = new Promise<void>((resolve) => {
+      registrationEntered = resolve
+    })
+    let releaseRegistration!: () => void
+    const registrationGate = new Promise<void>((resolve) => {
+      releaseRegistration = resolve
+    })
+    broker.registerCell = async (input) => {
+      registrationEntered()
+      await registrationGate
+      return register(input)
+    }
+    const h = harness({ broker, randomCellId: () => 'late-registration-cell' })
+
+    const starting = h.manager.startHost(cellInput('late-registration'))
+    await entered
+    let cleanupSettled = false
+    const cleanup = h.manager.stopAgentHosts('agent-1').then(() => {
+      cleanupSettled = true
+    })
+    await new Promise<void>((resolve) => setTimeout(resolve, 50))
+
+    expect(cleanupSettled).toBe(false)
+    expect(broker.drains).toEqual([])
+    expect(broker.releases).toEqual([])
+
+    releaseRegistration()
+    await expect(starting).rejects.toThrow(/cancel/i)
+    await cleanup
+    expect(broker.drains).toEqual([
+      expect.objectContaining({
+        isolationCellId: 'late-registration-cell',
+        conversationId: 'late-registration',
+        delegationId: 'delegation-late-registration',
+        generation: 1
+      })
+    ])
+    expect(broker.releases).toEqual(broker.drains)
+    expect(h.manager.debugStats()).toMatchObject({
+      activeHosts: 0,
+      pendingStarts: 0,
+      drainingHosts: 0,
+      inactiveAuthorities: 1
+    })
+  })
+
+  it('locally stops one conversation without consuming its later revocation fence', async () => {
+    const h = harness({ randomCellId: () => 'local-conversation-cell' })
+    const live = await h.manager.startHost(
+      cellInput('local-conversation', {
+        delegationId: 'delegation-local-conversation',
+        generation: 9
+      })
+    )
+
+    await h.manager.stopConversationHosts({
+      agentId: 'agent-1',
+      conversationId: 'local-conversation'
+    })
+    expect(existsSync(live.runtimeHome)).toBe(false)
+    await expect(
+      h.manager.closeConversation({
+        agentId: 'agent-1',
+        conversationId: 'local-conversation'
+      })
+    ).resolves.toEqual({
+      agentId: 'agent-1',
+      conversationId: 'local-conversation',
+      delegationId: 'delegation-local-conversation',
+      generation: 9,
+      expiresAt
+    })
+  })
+
   it('stops agent-scoped or daemon-scoped cells locally while keeping the manager reusable', async () => {
     let cell = 0
     const h = harness({ randomCellId: () => `scoped-cell-${++cell}` })
