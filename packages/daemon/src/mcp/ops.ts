@@ -1,5 +1,6 @@
 import type { ToolDescriptor } from './tools.js'
 import type { MemoryProvider } from '../agents/memory-provider.js'
+import { threadKeyForPost } from '../messages/normalized.js'
 import type { ChannelAgentsReq, ChannelAgentsOk, Platform } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
@@ -333,6 +334,11 @@ export interface OpsDeps {
     callerThread: string
     targetPlatform: string
     targetChannel: string
+    /** The post's own session-thread key ({@link threadKeyForPost}). A conversation is only
+     *  FORKED when this differs from the thread that conversation lives on — on Discord and in
+     *  Telegram / Feishu DMs a root post maps back onto the continuous conversation, so it forks
+     *  nothing and the reader did receive it. */
+    targetThread: string
     targetIntegrationId?: string
   }) => { kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined
   /** Read the progress of a session the caller started (backs `viewSessionStatus`). The daemon
@@ -356,8 +362,13 @@ export interface OpsDeps {
     platform: string
     integrationId?: string
     channel: string
-    /** The posted message's ts — becomes the new session's thread segment. */
+    /** The post's session-thread key ({@link threadKeyForPost}) — the new session's thread
+     *  segment, and the same key an inbound reply to this post canonicalizes to. */
     thread: string
+    /** The post's RAW platform ts. The seed's transcript row must carry a real, comparable
+     *  platform ts (see the dedup note in `spawnChannelRootSession`), which on Telegram is
+     *  NOT the same string as `thread`. */
+    postTs: string
     text: string
     /** Current (origin) session coords, for the new session's origin lineage. The origin
      *  may be on a DIFFERENT platform than the post (e.g. a Telegram turn posting to Slack),
@@ -760,20 +771,35 @@ export async function executeTool(
         (Object.keys(identity).length > 0
           ? await gw.postMessage(channel, body, thread, identity)
           : await gw.postMessage(channel, body, thread)) ?? `local-${deps.now()}`
-      deps.recordOutbound(ctx, channel, thread, body, ts, targetId)
+      // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
+      // continuous conversation, and no id carries that — ask the platform, once, and only where
+      // the answer can change the key. A failed lookup falls back to the non-DM conversation
+      // rather than failing the send that already happened.
+      const isDmTarget =
+        thread === undefined && (wantPlatform === 'telegram' || wantPlatform === 'feishu')
+          ? ((await gw.getChannelInfo(channel).catch(() => undefined))?.isIm ?? false)
+          : false
+      postedThread =
+        thread ?? (ts.startsWith('local-') ? undefined : threadKeyForPost(wantPlatform, channel, ts, isDmTarget))
+      // Record the post in the thread it BELONGS to — the one it just created for a root post,
+      // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
+      // row to coords that match no session at all). It is also what resolves a later reply to
+      // this post back onto this thread, so it must be the same canonical key the session uses.
+      deps.recordOutbound(ctx, channel, postedThread, body, ts, targetId)
       post = { platform: wantPlatform, integrationId: targetId, channel, thread: thread ?? null, ts }
-      postedThread = thread ?? (ts.startsWith('local-') ? undefined : ts)
       // session-concept case 2a: a ROOT post (no thread) with NO peer wake seeds a NEW session
-      // owned by this agent, keyed by the post's ts, origin = the current session. When there IS
-      // a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the caller-owned
-      // spawn. Also skip when the platform returned no real ts (synthesized `local-*`).
-      if (toAgent === undefined && thread === undefined && !ts.startsWith('local-') && deps.spawnChannelRootSession) {
+      // owned by this agent, keyed by the post's own thread, origin = the current session. When
+      // there IS a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the
+      // caller-owned spawn. Also skip when the platform returned no real ts (synthesized
+      // `local-*`), which leaves `postedThread` undefined and nothing to key a session on.
+      if (toAgent === undefined && thread === undefined && postedThread !== undefined && deps.spawnChannelRootSession) {
         const seeded = deps.spawnChannelRootSession({
           agentId: ctx.agentId,
           platform: wantPlatform,
           ...(targetId ? { integrationId: targetId } : {}),
           channel,
-          thread: ts,
+          thread: postedThread,
+          postTs: ts,
           text: body,
           originPlatform: ctx.platform,
           ...(ctx.transportScope !== undefined ? { originTransportScope: ctx.transportScope } : {}),
@@ -781,25 +807,32 @@ export async function executeTool(
           originThread: ctx.thread
         })
         // A root post is a legitimate way to open a new topic, so this is never blocked — but
-        // when it lands on a conversation the agent is ALREADY part of, the intent was almost
+        // when it FORKS a conversation the agent is ALREADY part of, the intent was almost
         // certainly to answer, not to fork. Two cases, both observed on relay-the-answer-back
-        // agents: posting into the conversation of the parent session that is waiting for the
-        // answer, and posting into the current session's own conversation, whose ordinary turn
-        // reply already goes there. Say which one happened and name the address that would have
-        // replied — but only when a session really was seeded (`seeded`), since the notice's
-        // whole claim is that one opened.
-        const relation = seeded
-          ? deps.rootPostRelation?.({
-              callerAgentId: ctx.agentId,
-              platform: ctx.platform,
-              ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
-              callerChannel: ctx.channel,
-              callerThread: ctx.thread,
-              targetPlatform: wantPlatform,
-              targetChannel: channel,
-              ...(targetId ? { targetIntegrationId: targetId } : {})
-            })
-          : undefined
+        // agents: forking the conversation of the parent session that is waiting for the answer,
+        // and forking the current session's own, whose ordinary turn reply already goes there.
+        // Say which one happened and name the address that would have replied.
+        //
+        // Gated twice, because both claims can be false. `seeded` — the daemon declines outright
+        // at the hop limit, and nothing may then say a context opened. And `targetThread`, which
+        // the daemon compares against the conversation's own thread: on Discord and in Telegram /
+        // Feishu DMs a "root" post has no separate thread to land in ({@link threadKeyForPost}
+        // maps it back onto the continuous conversation), so it forks nothing and the message DID
+        // reach the reader — saying otherwise would talk an agent into sending twice.
+        const relation =
+          seeded && postedThread !== undefined
+            ? deps.rootPostRelation?.({
+                callerAgentId: ctx.agentId,
+                platform: ctx.platform,
+                ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
+                callerChannel: ctx.channel,
+                callerThread: ctx.thread,
+                targetPlatform: wantPlatform,
+                targetChannel: channel,
+                targetThread: postedThread,
+                ...(targetId ? { targetIntegrationId: targetId } : {})
+              })
+            : undefined
         if (relation?.kind === 'parent') {
           notice =
             `This posted at the ROOT of the conversation your parent session occupies, so it starts a separate ` +

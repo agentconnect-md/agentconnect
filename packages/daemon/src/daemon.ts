@@ -6169,8 +6169,13 @@ export class Daemon {
   }
 
   /**
-   * Whether a channel-ROOT post just made by `caller` landed on a conversation that session is
+   * Whether a channel-ROOT post just made by `caller` FORKED a conversation that session is
    * ALREADY part of — its parent's, its own, or neither. Backs `sendMessage`'s root-post notice.
+   *
+   * Forking, not merely landing on: a post whose thread key IS the conversation's own thread
+   * joined it, which is what a root post does on Discord and in Telegram / Feishu DMs (see
+   * {@link threadKeyForPost}). Warning there would tell an agent its message went nowhere when
+   * the reader has it, and talk it into sending a second copy.
    *
    * Conversation identity is the daemon's to decide, which is why this lives here and not in ops:
    * a channel id is only unique within one physical bot, so two integrations can name the same id
@@ -6192,14 +6197,20 @@ export class Daemon {
     callerThread: string
     targetPlatform: string
     targetChannel: string
+    targetThread: string
     targetIntegrationId?: string
   }): { kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined {
     const targetScope = this.transportScopeForIntegrationIds(
       req.targetIntegrationId !== undefined ? [req.targetIntegrationId] : undefined
     )
-    const isTarget = (platform: string, channel: string, scope?: string | null): boolean =>
+    // Same conversation AND a different thread: only then did the post FORK it. Where a platform
+    // has no separate thread to open — Discord, and Telegram / Feishu DMs, whose post key IS the
+    // conversation ({@link threadKeyForPost}) — the message simply landed in it, and there is
+    // nothing to warn about.
+    const isForkOf = (platform: string, channel: string, thread: string, scope?: string | null): boolean =>
       platform === req.targetPlatform &&
       channel === req.targetChannel &&
+      thread !== req.targetThread &&
       (scope ?? undefined) === (targetScope ?? undefined)
 
     const key = sessionKey(
@@ -6213,7 +6224,7 @@ export class Daemon {
     const parentSessionId = inbound?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
     const parent = parentSessionId ? this.store.getSessionByAcpId(parentSessionId) : undefined
     // A LOCAL parent's row records its transport scope, so its identity is exact.
-    if (parentSessionId && parent && isTarget(parent.platform, parent.channel, parent.transportScope)) {
+    if (parentSessionId && parent && isForkOf(parent.platform, parent.channel, parent.thread, parent.transportScope)) {
       return { kind: 'parent', sessionId: parentSessionId }
     }
     // A CROSS-DAEMON parent has no row here, and its scope cannot be obtained: the value is
@@ -6225,12 +6236,17 @@ export class Daemon {
     // real parent — where a relayed answer belongs regardless — while staying silent would drop
     // the hint for precisely the escalation shape the relay exists to serve.
     if (parentSessionId && !parent && inbound?.originCoords) {
-      const { platform, channel } = inbound.originCoords
-      if (platform === req.targetPlatform && channel === req.targetChannel) {
-        return { kind: 'parent', sessionId: parentSessionId }
+      const { platform, channel, thread } = inbound.originCoords
+      // An origin without a thread (a legacy peer omits it) cannot be shown to have been forked,
+      // and the notice's whole claim is that it was — stay silent rather than guess.
+      if (thread !== undefined && platform === req.targetPlatform && channel === req.targetChannel) {
+        if (thread !== req.targetThread) return { kind: 'parent', sessionId: parentSessionId }
+        return undefined
       }
     }
-    if (isTarget(req.platform, req.callerChannel, req.callerTransportScope)) return { kind: 'self' }
+    if (isForkOf(req.platform, req.callerChannel, req.callerThread, req.callerTransportScope)) {
+      return { kind: 'self' }
+    }
     return undefined
   }
 
@@ -6247,7 +6263,13 @@ export class Daemon {
     platform: string
     integrationId?: string
     channel: string
+    /** The post's session-thread key, already canonicalized by {@link threadKeyForPost} at the
+     *  one seam that converts a platform ts into a thread segment — the same key an inbound
+     *  reply to this post resolves to, so the reply meets this session instead of opening a
+     *  second one. */
     thread: string
+    /** The post's RAW platform ts, which on Telegram differs from `thread`. */
+    postTs: string
     text: string
     originPlatform?: string
     originTransportScope?: string
@@ -6255,12 +6277,6 @@ export class Daemon {
     originThread: string
   }): boolean {
     const platform = this.narrowPlatform(req.platform)
-    // The post's raw ts is the new thread's root. On Telegram that ts is a bare numeric
-    // message id, but inbound reply-based sessions key `tg:<root>` (see
-    // canonicalizeTelegramThread) — key the spawned session the same way, or a customer
-    // reply to the post can never land in it and opens yet another session. The transcript
-    // seed below still carries the RAW ts (it must stay a real, comparable platform ts).
-    const thread = platform === 'telegram' && /^\d+$/.test(req.thread) ? `tg:${req.thread}` : req.thread
     // The origin session may live on a DIFFERENT platform than this post (e.g. a Telegram
     // turn posting to Slack). Key the origin lookup by the ORIGIN's platform, not the target's,
     // or the caller session is never found and the new session loses its parent lineage.
@@ -6306,12 +6322,13 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: req.channel,
-      thread,
+      thread: req.thread,
       ...(transportScope !== undefined ? { transportScope } : {}),
       // The seed's transcript ts MUST be the post's real ts (the new thread's root), not the
       // random deliveryId — otherwise the session's lastDeliveredTs becomes a non-ts string and
       // a later real reply in this thread is mis-compared and wrongly skipped as already-delivered.
-      transcriptTs: req.thread,
+      // On Telegram that raw ts is NOT the thread key, hence the separate field.
+      transcriptTs: req.postTs,
       sender: { id: req.agentId, isBot: true },
       text: req.text,
       mentionedBots: [],
@@ -6319,7 +6336,7 @@ export class Daemon {
       // No model turn runs for this seed; headless is retained as a transport backstop.
       headless: true
     }
-    const targetSession = sessionKey(platform, req.channel, thread, req.agentId, transportScope)
+    const targetSession = sessionKey(platform, req.channel, req.thread, req.agentId, transportScope)
     void this.dispatch(req.agentId, normalized, req.integrationId, undefined, callMeta).catch((err) =>
       this.log.error(`channel-root session spawn failed for agent "${req.agentId}": ${formatErr(err)}`)
     )
