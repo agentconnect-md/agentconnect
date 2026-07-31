@@ -487,6 +487,11 @@ const MAX_QUEUED_PER_SESSION = 10
  *  window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
 const DREAM_CANCEL_FORCE_MS = 15_000
 
+/** How often the idle sweep also reclaims abandoned probe temp roots. Much slower than
+ *  the idle cadence: the scan reads the whole OS temp dir, and a leaked root only costs
+ *  disk, so a lazy reclaim is enough. */
+const PROBE_ROOT_SWEEP_INTERVAL_MS = 15 * 60_000
+
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
 // platform bug that accidentally labels its own events as ordinary human messages.
@@ -1594,6 +1599,9 @@ export class Daemon {
   private hostStopping = new Map<string, Promise<void>>()
   // Recurring idle sweep (reap idle hosts + TTL-close idle sessions).
   private idleSweepTimer?: TimerHandle
+  // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
+  // cadence — the OS temp dir can hold thousands of entries to scan.
+  private lastProbeRootSweepAt = 0
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
   private cancelTimers = new Map<string, TimerHandle>()
   // Backstop for an interrupt that lands before a Pending/ACP session id exists
@@ -13411,6 +13419,13 @@ export class Daemon {
 
   private sweepIdle(): void {
     const now = this.clock.now()
+    // Probe temp roots re-created by a runtime that outlived its adapter (see
+    // sweepStaleProbeRoots) must be reclaimed inside THIS process's lifetime — the
+    // startup pass alone would let a long-lived daemon accumulate them indefinitely.
+    if (now - this.lastProbeRootSweepAt >= PROBE_ROOT_SWEEP_INTERVAL_MS) {
+      this.lastProbeRootSweepAt = now
+      sweepStaleProbeRoots({ log: this.log })
+    }
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it

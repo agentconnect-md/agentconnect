@@ -364,34 +364,47 @@ describe('probeAllRuntimes', () => {
     expect(await probeAllRuntimes({})).toEqual([])
   })
 
-  it('removes its temp root even when a runtime re-creates it after teardown', async () => {
-    // Models the real leak: omp's own daemon escapes the adapter's process group, so
-    // it is still writing when stop() resolves and its next write restores the tree
-    // rmSync just deleted. A one-shot cleanup loses that race.
-    let probeRoot = ''
-    const results = await probeAllRuntimes(
-      { a: rt },
-      {
-        hostFactory: (_runtime, _id, cwd) => {
-          probeRoot = dirname(dirname(cwd))
-          return fakeHost({
-            onStop: () => {
-              // Land the write AFTER the first rmSync (cleanup runs as soon as stop()
-              // resolves), so only the retry can reclaim it. 50ms sits inside the first
-              // 250ms backoff step.
-              setTimeout(() => mkdirSync(join(cwd, 'late-write'), { recursive: true }), 50).unref()
-            }
-          })
+  // Models the real leak: omp's own daemon escapes the adapter's process group, so it
+  // is still writing when stop() resolves and its next write restores the tree rmSync
+  // just deleted. Both delays matter: 50ms lands before the first observation point
+  // (250ms), 500ms lands AFTER it — the case an early return on a momentarily-clean
+  // stat would leak, since cleanup would already have declared success.
+  it.each([50, 500])(
+    'removes its temp root when a runtime re-creates it %dms after teardown',
+    async (delayMs) => {
+      let probeRoot = ''
+      const results = await probeAllRuntimes(
+        { a: rt },
+        {
+          hostFactory: (_runtime, _id, cwd) => {
+            probeRoot = dirname(dirname(cwd))
+            return fakeHost({
+              onStop: () => {
+                setTimeout(() => mkdirSync(join(cwd, 'late-write'), { recursive: true }), delayMs).unref()
+              }
+            })
+          }
         }
+      )
+      expect(results.map((r) => r.ok)).toEqual([true])
+      expect(probeRoot).not.toBe('')
+
+      // Wait for the re-creation to actually land first — asserting before it does would
+      // pass against any implementation, including one that never looks again.
+      await new Promise((resolve) => setTimeout(resolve, delayMs + 150))
+      expect(existsSync(probeRoot)).toBe(true)
+
+      // Then let the background watch reclaim it. Polling rather than hardcoding which
+      // observation point catches this delay; a cleanup that stopped early never removes
+      // the root again, so it is still there when the deadline expires.
+      const deadline = Date.now() + 8_000
+      while (existsSync(probeRoot) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
       }
-    )
-    expect(results.map((r) => r.ok)).toEqual([true])
-    expect(probeRoot).not.toBe('')
-    // Well past the 50ms re-create and the first retry step, so a root that only a
-    // one-shot rmSync touched is still observable here.
-    await new Promise((resolve) => setTimeout(resolve, 400))
-    expect(existsSync(probeRoot)).toBe(false)
-  })
+      expect(existsSync(probeRoot)).toBe(false)
+    },
+    15_000
+  )
 
   it('uses a disposable protected curated launch and leaves host state unchanged', async () => {
     const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-host-'))
