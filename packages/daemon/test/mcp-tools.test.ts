@@ -132,15 +132,24 @@ describe('toolsForIntegrations', () => {
     // instead of a reply in the conversation that asked. The consequence has to be ON the
     // branch that carries it, and the tool has to say the turn's own reply already lands here.
     const description = sendTool([slackInt])!.description
-    expect(description).toContain('use this tool only to reach a DIFFERENT channel, session, or agent')
+    expect(description).toContain('use this tool to reach a DIFFERENT conversation')
     expect(description).toContain('opens a NEW session')
-    expect(description).toContain('never by posting it to their channel')
+    expect(description).toContain('never by posting it at their channel root')
 
     expect(sendTargetBranch([slackInt], 'channel').description).toContain(
-      'does not continue the conversation you are in'
+      'only an explicit `thread` continues an existing conversation'
     )
     expect(sendTargetBranch([slackInt], 'channel').properties.thread!.description).toContain('opens a new session')
-    expect(sendTargetBranch([slackInt], 'sessionId').description).toContain('would start a new one')
+    expect(sendTargetBranch([slackInt], 'sessionId').description).toContain(
+      'channel ROOT instead would start a new one'
+    )
+
+    // The cost is ROOT-only: an explicit thread joins a conversation, and same-channel sends
+    // (another thread, or `toUser` addressing a human) stay legitimate — so the guidance says
+    // "a different conversation", never "a different channel".
+    expect(description).not.toContain('DIFFERENT channel,')
+    for (const text of [description, sendTargetBranch([slackInt], 'channel').description!])
+      expect(text).toMatch(/(at )?channel root/i)
 
     // Collaboration off ⇒ only the channel branch exists, and it is then the ONLY way to send —
     // so the root-post cost must be stated there too (spawnChannelRootSession runs either way).
@@ -148,7 +157,7 @@ describe('toolsForIntegrations', () => {
       (t) => t.name === 'sendMessage'
     )!.description
     expect(soloDescription).toContain('opens a NEW session')
-    expect(soloDescription).toContain('use this tool only to reach a DIFFERENT channel')
+    expect(soloDescription).toContain('use this tool to reach a DIFFERENT conversation')
   })
 
   it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {

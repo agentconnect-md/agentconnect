@@ -145,7 +145,7 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     title: 'Channel target',
     description:
       'Post one visible message to a platform channel, optionally addressing one human. A post at channel root ' +
-      'opens a NEW session of your own on that post; it does not continue the conversation you are in.',
+      'opens a NEW session of your own on that post; only an explicit `thread` continues an existing conversation.',
     ...obj(
       {
         channel: {
@@ -178,7 +178,7 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     title: 'Parent session target',
     description:
       'Reply directly into the parent/origin session that woke this session. This is how an answer reaches the ' +
-      'conversation that asked for it — posting it to that conversation’s channel instead would start a new one.',
+      'conversation that asked for it — posting it at that conversation’s channel ROOT instead would start a new one.',
     ...obj(
       {
         sessionId: {
@@ -201,7 +201,8 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     name: 'sendMessage',
     description: collaboration
       ? 'Send one message to exactly one target. Your own turn reply already reaches the conversation you are in, ' +
-        'so use this tool only to reach a DIFFERENT channel, session, or agent. Choose one form:\n' +
+        'so use this tool to reach a DIFFERENT conversation — another channel or thread, a session, or a peer ' +
+        'agent. Choose one form:\n' +
         '- Peer agent (direct wake): `{"to":{"toAgent":"<agent id>"},"message":"..."}` is a postless wake. Add a ' +
         '`channel` (and optional `thread`) to also post a visible message and thread the peer’s reply there. Get the ' +
         'id from listChannelAgents and send one call per peer; never substitute a platform member id. When the wake ' +
@@ -214,11 +215,12 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'at channel root, which opens a NEW session of your own on that post — it never continues an existing ' +
         'conversation.\n' +
         '- Parent session (direct reply): `{"to":{"sessionId":"<Parent session>"},"message":"..."}`. Use the id ' +
-        'from your `# Agent` block. Relay an answer back to whoever asked this way — never by posting it to their ' +
-        'channel.\n' +
+        'from your `# Agent` block. Relay an answer back to whoever asked this way — never by posting it at their ' +
+        'channel root.\n' +
         'Write `message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone or wake yourself.'
       : 'Post one visible message to exactly one platform channel or human. Your own turn reply already reaches the ' +
-        'conversation you are in, so use this tool only to reach a DIFFERENT channel. Use ' +
+        'conversation you are in, so use this tool to reach a DIFFERENT conversation — another channel, or another ' +
+        'thread in this one. Use ' +
         '`{"to":{"channel":"<channel id>"},"message":"..."}` and add `toUser`, `platform`, `thread`, or ' +
         '`integrationId` only when needed. Without a `thread` this posts at channel root, which opens a NEW session ' +
         'of your own on that post. Peer-agent and parent-session delivery are disabled for this run. Write ' +
