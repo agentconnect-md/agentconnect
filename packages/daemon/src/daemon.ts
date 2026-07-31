@@ -2008,6 +2008,7 @@ export class Daemon {
       preflightWake: (req) => this.wakeRejectionReason(req),
       replyToSession: (req) => this.replyToSession(req),
       viewSessionStatus: (req) => Promise.resolve(this.viewSessionStatus(req)),
+      parentSession: (req) => this.parentSessionCoords(req),
       spawnChannelRootSession: (req) => this.spawnChannelRootSession(req),
       startOrchestration: (req) => this.startOrchestration(req),
       getOrchestration: (req) => Promise.resolve(this.getOrchestrationForOwner(req)),
@@ -5791,6 +5792,42 @@ export class Daemon {
   private isAuthorizedChildParent(child: SessionRecord, parentSessionId: string): boolean {
     if (child.originSessionId === parentSessionId) return true
     return this.childSessionLinks.get(child.key)?.parentSessionId === parentSessionId
+  }
+
+  /**
+   * The caller session's parent (origin): its stable id plus the coords it occupies, or undefined
+   * when the session has no parent. Precedence mirrors {@link replyToSession}'s authorizer — the
+   * CURRENT turn's trusted call metadata first, then the DURABLE link persisted on the session row,
+   * which is all a later human-triggered turn has (§5.3). That later turn is exactly when an agent
+   * relays an answer back, so the persisted fallback is the load-bearing one here.
+   *
+   * Backs `sendMessage`'s root-post notice only. It widens nothing: the notice fires solely when
+   * these coords MATCH a channel the caller already named in its own call, so it can never disclose
+   * a parent the caller could not already see.
+   */
+  private parentSessionCoords(req: {
+    callerAgentId: string
+    platform: string
+    callerTransportScope?: string
+    callerChannel: string
+    callerThread: string
+  }): { sessionId: string; platform: string; channel: string } | undefined {
+    const key = sessionKey(
+      this.narrowPlatform(req.platform),
+      req.callerChannel,
+      req.callerThread,
+      req.callerAgentId,
+      req.callerTransportScope
+    )
+    const inbound = this.activeTurnCallMeta.get(key)
+    const sessionId = inbound?.originSessionId ?? this.store.getSession(key)?.originSessionId ?? undefined
+    if (!sessionId) return undefined
+    // A live wake carries the origin's coords; a durable link has to read the parent's own row —
+    // which may belong to ANOTHER agent, since a peer's wake is a valid parent.
+    const coords = inbound?.originCoords
+    if (coords) return { sessionId, platform: coords.platform, channel: coords.channel }
+    const rec = this.store.getSessionByAcpId(sessionId)
+    return rec ? { sessionId, platform: rec.platform, channel: rec.channel } : undefined
   }
 
   /**

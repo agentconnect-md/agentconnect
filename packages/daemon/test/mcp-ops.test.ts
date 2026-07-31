@@ -169,6 +169,60 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined)
   })
 
+  describe('root-post notice: the post forked a conversation this agent is already in', () => {
+    // The spawn is what the notice describes, so it only speaks where a daemon actually seeds
+    // the session (the chat CLI passes no spawn callback and gets no notice).
+    const rootPostDeps = (over: Partial<OpsDeps> = {}) =>
+      makeDeps({ gatewayFor: () => fakeGateway(), spawnChannelRootSession: () => {}, now: () => 1000, ...over })
+    const send = (d: OpsDeps, to: Record<string, unknown>, from: SessionContext = ctx) =>
+      executeTool(from, 'sendMessage', { to, message: 'the answer' }, d) as Promise<{ notice?: string }>
+
+    // A Slack session whose parent is the Telegram conversation that asked — relaying the answer
+    // to that Telegram CHANNEL posts a top-level message and forks; the asker never sees it.
+    const telegramParent = { sessionId: 'sess-parent', platform: 'telegram', channel: '-100123' }
+    const dualCtx: SessionContext = {
+      ...ctx,
+      integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }]
+    }
+
+    it('names the parent session to reply into when the post lands on the parent’s channel', async () => {
+      const d = rootPostDeps({ parentSession: () => telegramParent })
+      const res = await send(d, { platform: 'telegram', channel: '-100123' }, dualCtx)
+      expect(res.notice).toContain('opened a NEW session')
+      expect(res.notice).toContain('{"to":{"sessionId":"sess-parent"}}')
+    })
+
+    it('points a post into its own channel back at the turn’s ordinary reply', async () => {
+      const d = rootPostDeps({ parentSession: () => undefined })
+      const res = await send(d, { channel: 'C_CURRENT' })
+      expect(res.notice).toContain('Your ordinary reply for this turn already reaches this conversation')
+    })
+
+    it('stays quiet for a genuine new topic elsewhere, and for a threaded post', async () => {
+      const d = rootPostDeps({ parentSession: () => telegramParent })
+      // A different channel than either the session's or its parent's: an ordinary top-level post.
+      expect((await send(d, { channel: 'C_OTHER' })).notice).toBeUndefined()
+      // Same channel as the parent, but threaded — it joins a conversation instead of forking,
+      // and no session is spawned at all.
+      expect((await send(d, { platform: 'telegram', channel: '-100123', thread: '9' }, dualCtx)).notice).toBeUndefined()
+    })
+
+    it('says nothing where no session is spawned (no daemon, or a synthesized ts)', async () => {
+      const noSpawn = makeDeps({
+        gatewayFor: () => fakeGateway(),
+        parentSession: () => telegramParent,
+        now: () => 1000
+      })
+      expect((await send(noSpawn, { platform: 'telegram', channel: '-100123' }, dualCtx)).notice).toBeUndefined()
+      // A platform that returned no ts leaves nothing to key a session on, so nothing forked.
+      const noTs = rootPostDeps({
+        gatewayFor: () => fakeGateway({ postMessage: vi.fn(async () => undefined) }),
+        parentSession: () => telegramParent
+      })
+      expect((await send(noTs, { platform: 'telegram', channel: '-100123' }, dualCtx)).notice).toBeUndefined()
+    })
+  })
+
   it('synthesizes a ts when the platform returns none', async () => {
     const gw = fakeGateway({ postMessage: vi.fn(async () => undefined) })
     const { deps: d } = deps(gw)

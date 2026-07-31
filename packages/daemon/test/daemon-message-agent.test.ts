@@ -1106,6 +1106,86 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
 })
 
 /**
+ * `parentSessionCoords` — where the parent conversation actually LIVES, which is what lets
+ * `sendMessage` notice that a channel-root post just forked it instead of answering it. The
+ * durable fallback is the load-bearing half: an agent relays an answer on a human-triggered turn,
+ * which carries no CallMeta at all.
+ */
+describe('parentSessionCoords: the coords a relayed answer should have gone to', () => {
+  const ask = (daemon: any, over: Record<string, unknown> = {}) =>
+    daemon.parentSessionCoords({
+      callerAgentId: 'bot-b',
+      platform: 'slack',
+      callerChannel: 'C2',
+      callerThread: '200.1',
+      ...over
+    })
+
+  it('reads the parent’s channel off the persisted link when the turn has no CallMeta', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    // The parent conversation — a Telegram customer chat owned by ANOTHER agent, which is the
+    // ordinary escalation shape: whoever asked is not whoever answers.
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'telegram',
+      channel: '-100123',
+      thread: 'tg:170',
+      acpSessionId: 'acp-parent-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C2', '200.1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      originSessionId: 'acp-parent-1'
+    })
+
+    expect(ask(daemon)).toEqual({ sessionId: 'acp-parent-1', platform: 'telegram', channel: '-100123' })
+    await daemon.stop()
+  })
+
+  it('prefers the live turn’s origin, and reports nothing for a session with no parent', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    // No parent link anywhere ⇒ nothing to compare a post against.
+    expect(ask(daemon)).toBeUndefined()
+
+    // A live wake names its own origin, matching the precedence replyToSession authorizes on.
+    ;(daemon as any).activeTurnCallMeta.set(callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-2',
+      originCoords: { platform: 'telegram', channel: '-100999', thread: 'tg:9' }
+    })
+    expect(ask(daemon)).toEqual({ sessionId: 'acp-parent-2', platform: 'telegram', channel: '-100999' })
+    await daemon.stop()
+  })
+})
+
+/**
  * `viewSessionStatus` (the read counterpart of a SessionTarget reply): a parent may read DOWN its
  * own lineage, a child may reply UP it, and neither can reach sideways. Authorization comes from
  * the child's durable `originSessionId`, with an in-memory link covering the window before the

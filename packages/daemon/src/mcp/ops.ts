@@ -315,6 +315,19 @@ export interface OpsDeps {
    *  origin turn's correlationId, and inserts a {type:system, from:<caller>} message —
    *  routing local or cross-daemon. Backs `sendMessage`'s SessionTarget. */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
+  /** The caller session's parent (origin), when it has one: its stable id plus the coords it
+   *  occupies. Resolved from the CURRENT turn's trusted call metadata when present, else from the
+   *  durable origin link persisted on the caller's session — so it is still answerable on a later
+   *  human-triggered turn, which is exactly when an agent relays an answer back. `sendMessage`
+   *  uses it only to compare against coords the caller itself named, never to disclose anything.
+   *  Absent in the chat CLI / tests with no daemon ⇒ no root-post notice. */
+  parentSession?: (req: {
+    callerAgentId: string
+    platform: string
+    callerTransportScope?: string
+    callerChannel: string
+    callerThread: string
+  }) => { sessionId: string; platform: string; channel: string } | undefined
   /** Read the progress of a session the caller started (backs `viewSessionStatus`). The daemon
    *  fills the trusted caller identity from the session context and authorizes `sessionId`
    *  against the caller's own children, fail-closed. Returns null when the id is unknown or is
@@ -708,6 +721,10 @@ export async function executeTool(
     // after the send.
     let post:
       { platform: string; integrationId: string; channel: string; thread: string | null; ts: string } | undefined
+    // Set when the root post just forked a conversation this agent is already part of — see the
+    // notice built below. Surfaced in the tool RESULT, where the agent reads it inside the same
+    // turn it made the call, and can still answer the right way.
+    let notice: string | undefined
     // The thread the peer wake / new session should anchor to when we posted: an explicit
     // `thread` reuses it; a root post anchors to the post's `ts` (undefined if no real ts came
     // back — the peer then falls back to messageAgent's default thread).
@@ -740,8 +757,8 @@ export async function executeTool(
       // owned by this agent, keyed by the post's ts, origin = the current session. When there IS
       // a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the caller-owned
       // spawn. Also skip when the platform returned no real ts (synthesized `local-*`).
-      if (toAgent === undefined && thread === undefined && !ts.startsWith('local-')) {
-        deps.spawnChannelRootSession?.({
+      if (toAgent === undefined && thread === undefined && !ts.startsWith('local-') && deps.spawnChannelRootSession) {
+        deps.spawnChannelRootSession({
           agentId: ctx.agentId,
           platform: wantPlatform,
           ...(targetId ? { integrationId: targetId } : {}),
@@ -753,6 +770,29 @@ export async function executeTool(
           originChannel: ctx.channel,
           originThread: ctx.thread
         })
+        // A root post is a legitimate way to open a new topic, so this is never blocked — but
+        // when it lands on a conversation the agent is ALREADY part of, the intent was almost
+        // certainly to answer, not to fork. Two cases, both observed on relay-the-answer-back
+        // agents: posting into the channel of the parent session that is waiting for the answer,
+        // and posting into the channel of the current session, whose ordinary turn reply already
+        // goes there. Say which one happened and name the address that would have replied.
+        const parent = deps.parentSession?.({
+          callerAgentId: ctx.agentId,
+          platform: ctx.platform,
+          ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
+          callerChannel: ctx.channel,
+          callerThread: ctx.thread
+        })
+        if (parent !== undefined && parent.platform === wantPlatform && parent.channel === channel) {
+          notice =
+            `This posted at the root of the channel your parent session occupies, which opened a NEW session ` +
+            `on the post — the conversation waiting on you did not receive it. To answer it, call sendMessage ` +
+            `with {"to":{"sessionId":"${parent.sessionId}"}}.`
+        } else if (wantPlatform === ctx.platform && channel === ctx.channel) {
+          notice =
+            `This posted at the root of the channel this session is already in, which opened a NEW session on ` +
+            `the post. Your ordinary reply for this turn already reaches this conversation — no sendMessage needed.`
+        }
       }
     }
 
@@ -788,7 +828,8 @@ export async function executeTool(
       ok: true,
       ...(wake !== undefined ? { wake } : {}),
       ...(post !== undefined ? { post } : {}),
-      ...(childSessionId !== undefined ? { childSessionId } : {})
+      ...(childSessionId !== undefined ? { childSessionId } : {}),
+      ...(notice !== undefined ? { notice } : {})
     }
   }
 
