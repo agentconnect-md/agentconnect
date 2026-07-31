@@ -116,8 +116,10 @@ declare module 'fastify' {
   interface FastifyRequest {
     principal?: HumanPrincipal
     /** The verified OIDC `sub` behind this request. Set only on the real-OIDC path
-     *  (never devAuth or an API key). Identity confirmation only — routes use it to
-     *  check the caller is who the client thought it was, never as a lookup key. */
+     *  (never devAuth or an API key). Routes use it to confirm the caller is who
+     *  the client thought it was, or to address the CALLER'S OWN provider record
+     *  (Logto reads: profile identities, the viewer identity set) — never to look
+     *  up anyone else. */
     oidcSubject?: string
     /** Set only when the caller authenticated with a personal API key (not OIDC/dev):
      *  the key's row id (audit / self-mint guard) and the org it is bound to. The

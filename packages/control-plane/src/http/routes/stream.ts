@@ -16,11 +16,11 @@ import { ctxOf } from '../rbac.js'
 import {
   canView,
   canViewSession,
-  identitySetOf,
   type SessionViewable,
   type Shareable,
   type ViewCtx
 } from '../../authorization/policy.js'
+import { makeViewerIdentitySet } from '../viewer-identity.js'
 import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 
 const KEEPALIVE_MS = 25_000
@@ -59,6 +59,7 @@ function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
 
 export function streamRoutes(deps: HttpDeps) {
   return async function streamRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity)
     app.get(
       '/stream',
       {
@@ -114,10 +115,18 @@ export function streamRoutes(deps: HttpDeps) {
         // Session visibility is deliberately NOT memoized: a §4.3 tightening must
         // hide the session from a live subscriber at commit, and a long-lived SSE
         // connection holding a cached verdict would keep leaking it. Sessions are
-        // per-event unique anyway, so a cache would rarely hit.
-        const identitySet = identitySetOf(ctx)
+        // per-event unique anyway, so a cache would rarely hit. The identity set
+        // gets the SAME treatment: unlinking Slack shrinks an authorization set,
+        // and a connection-fixed copy would keep serving the unlinked identity's
+        // private DMs for the socket's lifetime. Re-resolving here is a memory
+        // read in the common case (LogtoIdentityService caches per subject,
+        // single-flight) and the unlink path invalidates that cache, so the
+        // revocation lands on the next event, not the next connection.
         const canSeeSession = async (sessionId: string): Promise<boolean> => {
-          const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
+          const [session, identitySet] = await Promise.all([
+            deps.repos.session.get(SessionId(sessionId)).catch(() => null),
+            identitySetFor(req)
+          ])
           return canStreamSession(session, ctx, identitySet)
         }
 

@@ -66,7 +66,11 @@ hygiene we control, not as a defect claim about the provider.
 - **`ownerIdentity`** (`session_meta`) is `${platform}:${transportScope}:${triggeredBy}`
   — for Slack that is `slack:T…:U…`. This is the pair, persisted, and the
   precedent worth copying: it is unambiguous without any assumption about `U…`
-  on its own.
+  on its own. It is also where the rule is now load-bearing: session
+  visibility matches it against the viewer's identity set
+  (`control-plane/src/http/viewer-identity.ts`), which builds its Slack entry
+  from the same pair — both sides keyed alike, so neither can match on a bare
+  `U…`.
 - **`allowedUserIds`** (daemon routing) compares a bare sender id:
   `allowedUserIds.includes(msg.sender.id)` in `router/routing-table.ts`, against
   a sender built as `message.user ?? message.bot_id` in
@@ -92,9 +96,15 @@ hygiene we control, not as a defect claim about the provider.
   **console** user, not a Slack one. It stores that person's Slack App
   Configuration token; no Slack id is involved.
 
-Nothing maps a Slack sender back to a console user. That was a deliberate
-non-goal when the server-side read was added: it is a read-through, not an index,
-and a reverse lookup would need persistence.
+There is still no **reverse** map from a Slack sender to a console user — that
+would need persistence (a `UserIdentity` table,
+[session-visibility.md §7](session-visibility.md)). What exists is the
+**forward** read: an authenticated console user's own Slack identity, resolved
+per request through `slackIdentityFor` and matched against `ownerIdentity` by
+the session-visibility identity set. It stays a read-through, not an index —
+Logto remains the only store — and it is an identity assertion precisely
+because the identity got into Logto through a Slack OIDC sign-in or an
+Account API link under the user's own session.
 
 ## Linking and unlinking run over different Logto surfaces
 

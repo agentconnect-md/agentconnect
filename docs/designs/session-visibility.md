@@ -76,18 +76,20 @@ closed per §4.2) rather than a guessed one. Identity linking (§7) stores and
 matches the same three-part tuple.
 
 Matching is set membership: at request time the BFF computes the viewer's
-**identity set** — today just `{ user:<userId> }`, later expanded with the
-user's linked platform identities — and a `private` session is visible when
-`ownerIdentity ∈ identitySet`.
+**identity set** — `{ user:<userId> }` for every caller, plus the caller's
+verified Slack identity (`slack:<teamId>:<userId>`) when they signed in with
+or linked Slack (§7, `http/viewer-identity.ts`) — and a `private` session is
+visible when `ownerIdentity ∈ identitySet`.
 
 Consequences:
 
-- Before the identity mapping exists, a `private` IM DM session is an
-  **owner-orphan**: no console user matches `slack:U…`, so no one sees it.
-  This is accepted — it errs toward hiding a DM rather than exposing it.
-- When identity linking ships, those sessions become visible to the mapped
-  user **automatically**, with no backfill: the stored `ownerIdentity` is
-  already correct; only the viewer's identity set grows.
+- Before the identity mapping exists for a platform (today: everything except
+  Slack), a `private` IM DM session is an **owner-orphan**: no console user
+  matches the stored tuple, so no one sees it. This is accepted — it errs
+  toward hiding a DM rather than exposing it.
+- When identity linking ships for a platform, those sessions become visible
+  to the mapped user **automatically**, with no backfill: the stored
+  `ownerIdentity` is already correct; only the viewer's identity set grows.
 - The predicate is always additionally scoped by `orgId` and by agent
   visibility, so an identity match can never reach across orgs; the workspace
   segment above closes the remaining same-org, cross-tenant collision.
@@ -438,15 +440,26 @@ learned from it"); silence is not an option.
   (`packages/web/src/lib/session-trigger.ts` email/userId matching) stays as a
   display concern (the "you" label) but is no longer doing authorization work.
 
-## 7. Identity linking (future, separate design)
+## 7. Identity linking
 
-A `UserIdentity` table (`userId`, `platform`, `workspace`, `platformUserId`,
-verified-at, unique on the `(platform, workspace, platformUserId)` tuple —
-matching the three-part identity format of §2) populated by an
-explicit link flow (e.g. the bot DMs a code, the user pastes it in the
-console). Once it exists, the BFF's identity-set computation reads it and
-owner-orphan DM sessions light up for their owners retroactively — no session
-backfill, per §2.
+**Slack (shipped).** The BFF expands the identity set without a table of its
+own: the sign-in provider already holds a verified Slack identity — it exists
+in Logto only after a Slack OIDC sign-in or an Account API link driven by the
+user's own session — so `http/viewer-identity.ts` reads it per request
+(`LogtoIdentityService.slackIdentityFor`, cached per subject) and adds
+`slack:<teamId>:<userId>`, keyed on the pair per
+[slack-identity.md](slack-identity.md). Owner-orphan Slack DM sessions light
+up for their owners retroactively — no session backfill, per §2. Only a real
+OIDC session qualifies (devAuth and API-key callers have no verified subject),
+and a provider miss or error fails closed to the console identity.
+
+**Other platforms (future, separate design).** Telegram/Discord/Feishu have no
+OIDC sign-in to piggyback on, so they need a `UserIdentity` table (`userId`,
+`platform`, `workspace`, `platformUserId`, verified-at, unique on the
+`(platform, workspace, platformUserId)` tuple — matching the three-part
+identity format of §2) populated by an explicit link flow (e.g. the bot DMs a
+code, the user pastes it in the console). Once it exists, the same identity-set
+computation reads it; the Slack read-through can fold into that table then.
 
 ## 8. Share-by-link (future, separate design)
 

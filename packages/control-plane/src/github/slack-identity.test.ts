@@ -182,6 +182,81 @@ describe('LogtoIdentityService.slackIdentityFor', () => {
   })
 })
 
+/**
+ * The invalidation fence. `slackIdentityFor` feeds the session-visibility
+ * identity set, so invalidation must be final: a lookup that BEGAN before an
+ * unlink/refresh may settle after it, and deleting only the settled cache
+ * entry would let that older read write the pre-change identity back for its
+ * full TTL. These fakes serve the user snapshot taken when the request
+ * ARRIVED (what a slow provider response carries), parked until released.
+ */
+describe('LogtoIdentityService cache invalidation fence', () => {
+  function gatedLogto(users: Record<string, unknown>, onDelete: () => void) {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let arrived!: () => void
+    const firstReadArrived = new Promise<void>((resolve) => (arrived = resolve))
+    const calls = { user: 0 }
+    const fetchImpl: FetchImpl = async (url, init) => {
+      if (url.endsWith('/oidc/token')) return Response.json({ access_token: 'tok', expires_in: 3600 })
+      if (init?.method === 'DELETE') {
+        onDelete()
+        return new Response(null, { status: 204 })
+      }
+      calls.user++
+      // What Logto read when the request arrived — delivery may lag the change.
+      const snapshot = users[decodeURIComponent(url.split('/').pop()!)]
+      if (calls.user === 1) {
+        arrived()
+        await gate
+      }
+      return snapshot ? Response.json(snapshot) : new Response('{}', { status: 404 })
+    }
+    return { fetchImpl, calls, release: () => release(), firstReadArrived }
+  }
+
+  it('a read begun before unlink cannot write the removed identity back', async () => {
+    const users: Record<string, unknown> = {
+      'sub-1': { identities: { slack: slackUser(SLACK_RAW).identities.slack, github: { userId: 'g' } } }
+    }
+    const { fetchImpl, calls, release, firstReadArrived } = gatedLogto(users, () => {
+      users['sub-1'] = { identities: { github: { userId: 'g' } } }
+    })
+    const svc = svcOf(fetchImpl)
+
+    const staleRead = svc.slackIdentityFor('sub-1') // begins before the unlink…
+    await firstReadArrived
+    await svc.unlinkSocialIdentity('sub-1', 'slack') // …which lands while it is parked
+    release()
+    // Its own caller sees the pre-unlink world — that read really did begin
+    // before the change. What it must NOT do is survive as cache:
+    expect(await staleRead).toMatchObject({ teamId: 'T0EXAMPLE1' })
+    expect(await svc.slackIdentityFor('sub-1')).toBeNull()
+    // The parked pre-unlink read, the unlink's own read/check (cache-bypassing),
+    // and a genuine post-unlink re-read — the last one is the fence working.
+    expect(calls.user).toBe(3)
+  })
+
+  it('a read begun before a link-refresh cannot write the pre-link user back', async () => {
+    // The mirror image, on the forgetUser path (console announcing a link that
+    // landed browser→Logto): the parked read carries NO slack identity, and
+    // caching it would hide the just-linked workspace for the negative TTL.
+    const users: Record<string, unknown> = {}
+    const { fetchImpl, calls, release, firstReadArrived } = gatedLogto(users, () => {})
+    const svc = svcOf(fetchImpl)
+
+    const preLink = svc.slackIdentityFor('sub-1') // parked; snapshot has no slack
+    await firstReadArrived
+    users['sub-1'] = slackUser(SLACK_RAW) // the link lands at the provider
+    svc.forgetUser('sub-1') // the console's refresh call
+    release()
+
+    expect(await preLink).toBeNull()
+    expect(await svc.slackIdentityFor('sub-1')).toMatchObject({ teamId: 'T0EXAMPLE1' })
+    expect(calls.user).toBe(2)
+  })
+})
+
 describe('LogtoIdentityService.socialAccountFor', () => {
   const account = (extra: Record<string, unknown> = {}) => ({
     primaryEmail: 'dev@example.test',

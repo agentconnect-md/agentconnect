@@ -17,7 +17,8 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf } from '../rbac.js'
-import { canChangeSessionVisibility, canView, canViewSession, identitySetOf } from '../../authorization/policy.js'
+import { canChangeSessionVisibility, canView, canViewSession } from '../../authorization/policy.js'
+import { makeViewerIdentitySet } from '../viewer-identity.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
@@ -291,17 +292,17 @@ export function sessionRoutes(deps: HttpDeps) {
     // Session visibility (session-visibility.md §5) COMPOSES with the agent gate
     // above: a session is visible iff its agent is visible AND the caller passes
     // the session predicate. The repo arm and this in-app check must stay two
-    // spellings of one rule — both come from `canViewSession`.
-    const viewerOf = (req: FastifyRequest) => {
-      const ctx = ctxOf(req)
-      return { role: ctx.role, identitySet: [...identitySetOf(ctx)] }
+    // spellings of one rule — both come from `canViewSession`, fed the SAME
+    // identity set: console identity plus the caller's linked Slack identity.
+    const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity)
+    const viewerOf = async (req: FastifyRequest) => {
+      return { role: ctxOf(req).role, identitySet: [...(await identitySetFor(req))] }
     }
 
     const getOrgViewableSession = async (req: FastifyRequest, sessionId: string) => {
       const session = await deps.repos.session.get(SessionId(sessionId))
       if (!session) return null
-      const ctx = ctxOf(req)
-      if (!canViewSession(session, ctx, identitySetOf(ctx))) return null
+      if (!canViewSession(session, ctxOf(req), await identitySetFor(req))) return null
       const agent = await getOrgViewableAgent(req, session.agentId)
       return agent ? { session, agent } : null
     }
@@ -327,7 +328,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
         const index = await deps.repos.session.listFacets({
           agentIds: visibleAgentIds,
-          viewer: viewerOf(req),
+          viewer: await viewerOf(req),
           ...(req.query.agentId ? { agentId: AgentId(req.query.agentId) } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
@@ -390,7 +391,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, false)
         const page = await deps.repos.session.listPage({
           agentIds: selectedAgentIds,
-          viewer: viewerOf(req),
+          viewer: await viewerOf(req),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
@@ -442,10 +443,13 @@ export function sessionRoutes(deps: HttpDeps) {
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const ctx = ctxOf(req)
-        const identitySet = identitySetOf(ctx)
+        const identitySet = await identitySetFor(req)
         const [parent, children, usage] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
-          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds, viewerOf(req)),
+          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds, {
+            role: ctx.role,
+            identitySet: [...identitySet]
+          }),
           deps.repos.sessionUsage.get(s.agentId, s.id)
         ])
         const parentVisible =
@@ -624,7 +628,8 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const ctx = ctxOf(req)
-        if (!canChangeSessionVisibility(owned.session, ctx, identitySetOf(ctx))) {
+        const identitySet = await identitySetFor(req)
+        if (!canChangeSessionVisibility(owned.session, ctx, identitySet)) {
           return reply
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not allowed to change this session visibility' })
@@ -636,7 +641,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const { affected, forbidden } = await deps.repos.session.setVisibility(
           SessionId(req.params.id),
           req.body.visibility,
-          (row) => canChangeSessionVisibility(row, ctx, identitySetOf(ctx))
+          (row) => canChangeSessionVisibility(row, ctx, identitySet)
         )
         if (forbidden) {
           return reply

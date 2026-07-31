@@ -122,7 +122,10 @@ export function canManageSharing(resource: Shareable, principal: ViewCtx): boole
   return can(principal, { action: AuthorizationAction.ResourceManageSharing, resource })
 }
 
-/** The viewer's verified identity set; social identity linking may grow it. */
+/** The BASE identity set — the console identity every caller carries. The BFF
+ *  grows it with the caller's verified platform identities before matching
+ *  (`http/viewer-identity.ts`); that expansion needs I/O, so it stays out of
+ *  this pure policy module. */
 export function identitySetOf(principal: ViewCtx): Set<string> {
   return new Set([`user:${principal.userId}`])
 }
