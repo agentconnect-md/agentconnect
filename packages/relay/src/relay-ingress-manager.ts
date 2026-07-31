@@ -643,7 +643,16 @@ export class RelayIngressManager {
       // that backs ≥1 gated agent, must not look silently dead — answer once per
       // conversation (the DM row itself was already reported above, un-gated on
       // the routing outcome).
-      if (!msg.sender.isBot && hasGatedMembers) {
+      //
+      // A MUTED channel is the one unroutable case that must stay silent: the notice
+      // exists to tell someone a conversation was never enabled, and an operator who
+      // set this channel to Off already decided. Posting "ask an admin to enable it"
+      // there would both break the Off invariant and give misleading advice. Only
+      // reachable on a mixed-visibility bot, where a gated member makes every
+      // unrouted mention a notice candidate regardless of which agent owns the
+      // channel. The CP never mutes a gated owner's Off channel, so this cannot
+      // swallow a genuine §14.3 notice.
+      if (!msg.sender.isBot && hasGatedMembers && !this.router.channelMuted(botId, msg.channel)) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
           // Feishu callback credentials are receive-only. For its currently

@@ -328,6 +328,14 @@ export class BotArbitrationRouter {
     return candidate
   }
 
+  /** True iff the operator switched `channelId` Off. `arbitrate()` already refuses it,
+   *  but the caller has to tell a mute apart from the other reasons arbitration returns
+   *  null: an unroutable conversation on a gated bot earns a one-time notice, while a
+   *  muted channel is silent by the operator's own decision (§14.3 vs the Off trigger). */
+  channelMuted(botId: string, channelId: string): boolean {
+    return this.bots.get(botId)?.mutedChannels?.includes(channelId) ?? false
+  }
+
   /** True iff `channelId` has a channel-scoped `auto` owner — a rule that fires on
    *  EVERY message. Such a channel needs no durable thread binding: any pod re-resolves
    *  every message (incl. un-mentioned follow-ups) via the channel-ownership rung

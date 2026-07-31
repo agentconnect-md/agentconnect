@@ -122,6 +122,13 @@ A restricted agent expresses the same choice through its conversation gate, whic
 independently fail-closed: a conversation it has never been enabled in stays unroutable
 whether or not anyone set it to Off.
 
+Those two states read alike on the row and mean different things, so they answer an
+@-mention differently. A conversation a restricted agent was never enabled in replies
+once, telling the person to ask an admin — the bot must not look broken to someone who
+had no way to know it was private. A channel switched Off says nothing at all: an
+operator already decided, and pointing the room at an admin would be both wrong and
+noise. Off is silence; the gate is a closed door with a sign on it.
+
 ## Shared-bot channel ownership
 
 Every active channel served by a shared bot has exactly one default agent. A newly

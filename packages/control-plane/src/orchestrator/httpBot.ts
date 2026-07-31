@@ -681,12 +681,32 @@ export class HttpBotOrchestrator {
     //    routes to that agent, respecting the channel's trigger (any → auto rule,
     //    mention → mention rule). Emitted FIRST so a scoped rule wins arbitration.
     const chans = await this.channels.listForBot(bot.id)
+    // The channel's owning agent — the one row of the fan-out that carries it (§10.1).
+    const channelOwner = new Map<string, string>()
+    for (const c of chans) if (c.agentId && !channelOwner.has(c.channelId)) channelOwner.set(c.channelId, c.agentId)
     // Channels the operator switched Off. Bot-scoped like ownership itself: the trigger
     // is replicated across every membership row of the channel, so any row states it —
     // including one whose owner is not currently placed, where the operator's Off must
     // still hold. Direct rows never mute (a DM is not a place with an owner to switch off).
+    //
+    // A channel owned by a GATED agent is NOT a mute, even though its trigger reads the
+    // same. There, Off is §14's fail-closed default for a conversation nobody has enabled
+    // yet, and that state owns the one-time "ask an admin to enable it" notice. Muting it
+    // would swallow that notice and leave the bot looking dead to the person who asked —
+    // the opposite of what the gate promises. Off as an OPERATOR's choice is what mutes,
+    // and only an ungated owner can express it (`mutedChannelIds` draws the same line
+    // per-integration in placement.ts).
     const mutedChannels = [
-      ...new Set(chans.filter((c) => c.trigger === 'off' && c.kind === 'channel').map((c) => c.channelId))
+      ...new Set(
+        chans
+          .filter((c) => c.trigger === 'off' && !isDirectConversationKind(c.kind))
+          .filter((c) => {
+            const owner = channelOwner.get(c.channelId)
+            const agent = owner ? agentById.get(owner) : undefined
+            return !agent || !isGatedAgent(agent)
+          })
+          .map((c) => c.channelId)
+      )
     ]
     // A group DM has no owner picker — it is not a place the bot was invited to, so the
     // observation fan-out gives every gated install its own row. Two agents enabling the

@@ -1088,6 +1088,28 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
+  // A mixed-visibility bot makes EVERY unrouted mention a notice candidate, whichever
+  // agent owns the channel. An operator who set an org-visible agent's channel to Off
+  // has already decided; "ask an admin to enable it" would be both a broken Off and
+  // misleading advice. The CP never mutes a gated owner's Off channel, so the §14.3
+  // notice above is untouched.
+  it('a MUTED channel stays silent on a mixed bot, even for an explicit @bot', async () => {
+    const auth = pod(true)
+    const a = auth.internals.router.get(BOT_ID)!
+    a.mutedChannels = ['C9'] // ungated member's channel, switched Off in the console
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(auth.ingest.postText).not.toHaveBeenCalled()
+  })
+
+  it('mutes only the named channel — another gated conversation still gets its notice', async () => {
+    const auth = pod(true)
+    auth.internals.router.get(BOT_ID)!.mutedChannels = ['C7']
+    await auth.internals.forward(BOT_ID, mention(M1, '1.1')) // C9, not muted
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(auth.ingest.postText.mock.calls[0]![0]).toBe('C9')
+  })
+
   it('no authority stamped (old CP / empty roster): no pod posts; DM discovery still reports', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation, selfRelayId: () => SELF_RELAY }))
