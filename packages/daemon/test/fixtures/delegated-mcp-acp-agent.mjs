@@ -16,7 +16,10 @@ function textFromPrompt(prompt) {
   const textBlocks = (prompt ?? [])
     .filter((block) => block?.type === 'text' && typeof block.text === 'string')
     .map((block) => block.text)
-  return textBlocks.at(-1) ?? ''
+  const text = textBlocks.at(-1) ?? ''
+  // A human trigger arrives as `[<sender id>] <text>` (session-concept §2.1);
+  // unwrap the sender envelope so command parsing sees the bare text.
+  return text.replace(/^\[[^\]]+\] /, '')
 }
 
 function descriptorFor(params) {
