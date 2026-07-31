@@ -178,7 +178,7 @@ describe('Daemon transcript records the agent reply', () => {
       {
         turnId: stableTurnId('bot-a', channelMsg('100', 'question?')),
         sessionId: 'acp-1',
-        input: 'question?',
+        input: '[U1] question?',
         output: 'here is my answer'
       },
       capturedBinding,
