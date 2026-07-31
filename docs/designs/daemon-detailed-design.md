@@ -1045,11 +1045,12 @@ with a canary and observe:
 
 - `agentconnect.delegated_mcp.isolation.transitions` and
   `agentconnect.delegated_mcp.isolation.denials`;
-- `agentconnect.delegated_mcp.request.duration`;
+- `agentconnect.delegated_mcp.request.duration`
+  (`stage=mint_ws|mcp_http`);
 - `agentconnect.webchat_mcp.delegation.transitions`,
   `agentconnect.webchat_mcp.assertion.transitions`, and
   `agentconnect.webchat_mcp.invocation.transitions`; and
-- `agentconnect.webchat_mcp.request.duration`.
+- `agentconnect.webchat_mcp.request.duration` (`stage=nested_rest`).
 
 The metric labels are closed outcomes/reasons only; they exclude user,
 organization, agent, conversation, delegation, invocation, token, assertion,
@@ -1058,13 +1059,21 @@ cell-local tokens, private socket paths, credentials, MCP bodies/tool arguments,
 and transcript content.
 
 Rollback starts by setting `WEBCHAT_PRESET_MCP_ENABLED=false` and restarting the
-CP. That stops new/renewed delegation issuance while preserving ordinary webchat.
-Allow active authorities to close, revoke, or reach their 12-hour ceiling before
-rolling back relay or daemon support; the establishment gate does not revoke an
-already issued generation. Urgent containment uses the normal session close/drain
-path so the exact generation is revoked and its cell destroyed. Never substitute
-a shared endpoint or broader credential. The complete staged procedure and stable
-metric outcome/reason values are in
+CP. That stops new delegation issuance while preserving ordinary webchat, but it
+does not revoke an already issued generation. Existing authority is revoked only
+when its logical session closes or expires, or when its agent detaches/moves.
+Browser socket close is a no-op, and ordinary daemon/agent drain, stop, restart, or
+upgrade performs local host/broker cleanup while retaining authority for a possible
+resume.
+
+No fleet-wide bulk revoke API exists. For urgent containment, detach the affected
+agent/placement, or isolate the daemon / make it omit
+`delegated_mcp_assertion_v1` so new mint and claim attempts fail. Either emergency
+choice can interrupt ordinary webchat or agent availability on that placement.
+Keep it isolated until exact generation-fenced revocation, logical-session expiry,
+or the maximum 12-hour ceiling is confirmed; only then roll back relay or daemon
+protocol support. Never substitute a shared endpoint or broader credential. The
+complete staged procedure and stable metric outcome/reason values are in
 [`webchat-preset-agentconnect-mcp.md` §13](webchat-preset-agentconnect-mcp.md#13-compatibility-and-operator-rollout)
 and
 [`§15`](webchat-preset-agentconnect-mcp.md#15-observability).

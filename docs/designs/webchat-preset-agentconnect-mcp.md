@@ -992,22 +992,30 @@ placement, and current user authorization.
 
 Rollback begins at the authority source:
 
-1. Set `WEBCHAT_PRESET_MCP_ENABLED=false` and restart the CP first. This stops
-   establishing or refreshing delegated authority while leaving token verification,
-   relay delivery, ordinary webchat, and daemon-local tools unchanged.
-2. Let active logical sessions close or reach the 12-hour delegation ceiling, or
-   use their normal generation-fenced close/expiry revocation. Turning off the
-   establishment gate does not retroactively invalidate an already established
-   delegation, so do not remove compatible protocol handling while one remains
-   active.
-3. Confirm delegation expiry/revocation and isolation destruction have converged,
-   then roll back relay and daemon binaries if required. Keep ordinary webchat
-   routing in place throughout.
+1. Set `WEBCHAT_PRESET_MCP_ENABLED=false` and restart the CP first. This stops new
+   delegation issuance while leaving token verification, relay delivery, ordinary
+   webchat, and daemon-local tools unchanged. It does not revoke an authority that
+   was already issued.
+2. Revoke existing authorities through a lifecycle that actually closes the
+   authority boundary: logical-session close, session TTL expiry, or agent
+   detach/move. Those paths send or transactionally apply the exact
+   generation-fenced revoke. Browser socket close is intentionally a transport-only
+   no-op.
+3. Do not treat an ordinary daemon/agent drain, stop, restart, or upgrade as
+   revocation. Those operations destroy local hosts and broker bindings while
+   retaining inactive authority so a still-open logical session can resume. Wait
+   for explicit close/detach revocation or the maximum 12-hour delegation ceiling.
+4. Confirm delegation revocation/expiry and isolation destruction have converged,
+   then roll back relay and daemon protocol support if required. Keep ordinary
+   webchat routing in place throughout.
 
-For an urgent containment event, take the affected delegated session out of service
-through its normal close/drain path so the daemon revokes and destroys the exact
-generation. Do not introduce a shared MCP endpoint or broader credential as a
-temporary fallback.
+There is no fleet-wide bulk delegation-revoke API. For urgent containment, detach
+the affected agent/placement so its exact generations are revoked, or isolate the
+affected daemon / make it stop advertising `delegated_mcp_assertion_v1` so mint and
+claim fail closed. Those emergency actions can interrupt ordinary webchat or agent
+availability on that placement; state that tradeoff explicitly and keep the daemon
+isolated until revocation or the 12-hour ceiling is confirmed. Do not introduce a
+shared MCP endpoint or broader credential as a temporary fallback.
 
 ## 14. Testing
 
@@ -1130,7 +1138,7 @@ reasons:
 | `agentconnect.webchat_mcp.delegation.transitions`  | `event`: `established`, `reused`, `rotated`, `expired`, `denied`; denied events may carry `reason`: `conversation_binding`, `membership_missing`, `agent_not_visible`, `preset_mismatch`, `placement_mismatch`, `daemon_unavailable`, `daemon_feature_missing`, `session_expired`, `delegation_expiry`, `delegation_inactive`, `delegation_generation`, `delegation_binding`, `method_not_allowed`, `tool_not_allowed`, or `invocation_parent_missing`              |
 | `agentconnect.webchat_mcp.assertion.transitions`   | `event`: `minted`, `claimed`, `expired`, `replayed`, `conflicted`, `denied`; denied events may carry `reason`: `assertion_format`, `assertion_unknown`, `invocation_id_invalid`, `invocation_id_mismatch`, `request_hash_mismatch`, `request_metadata_invalid`, `method_mismatch`, `tool_mismatch`, `delegation_inactive`, `daemon_unavailable`, `daemon_feature_missing`, `assertion_expired`, `claim_denied`, `claim_state_invalid`, or `cached_response_invalid` |
 | `agentconnect.webchat_mcp.invocation.transitions`  | `outcome`: `succeeded`, `failed`, `in_progress_retry`, `ambiguous`                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `agentconnect.webchat_mcp.request.duration`        | `stage`: `nested_rest`, `mcp_http`; `outcome`: `succeeded`, `failed`                                                                                                                                                                                                                                                                                                                                                                                                |
+| `agentconnect.webchat_mcp.request.duration`        | `stage`: `nested_rest`; `outcome`: `succeeded`, `failed`                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `agentconnect.delegated_mcp.isolation.transitions` | `event`: `created`, `resumed`, `destroyed`, `failed`; failed events may carry `reason`: `cell_creation`, `host_start`, `cleanup`                                                                                                                                                                                                                                                                                                                                    |
 | `agentconnect.delegated_mcp.isolation.denials`     | `reason`: `broker_validation`, `fence`, `capacity`, `token_mismatch`, `capability_probe_failed`                                                                                                                                                                                                                                                                                                                                                                     |
 | `agentconnect.delegated_mcp.request.duration`      | `stage`: `mint_ws`, `mcp_http`; `outcome`: `succeeded`, `failed`                                                                                                                                                                                                                                                                                                                                                                                                    |
