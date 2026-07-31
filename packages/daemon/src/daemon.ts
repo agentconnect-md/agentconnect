@@ -7368,7 +7368,7 @@ export class Daemon {
     threadTs: string,
     cutoffTs?: string,
     afterTs?: string | null
-  ): Promise<{ sender: string; ts: string; text: string }[]> {
+  ): Promise<{ sender: string; ts: string; text: string; trustedAgentBot?: boolean }[]> {
     const conn = this.replyConnFor(agentId) as Partial<SlackConnection> | undefined
     // Only Slack can pull thread history (conversations.replies). Telegram long-poll
     // has no arbitrary-history API, so a cold mid-thread mention just starts fresh.
@@ -7405,7 +7405,8 @@ export class Daemon {
             sender:
               (trustedAgentBot ? r.agentAuthorId : undefined) ?? (r.isBot && ours.has(r.sender) ? agentId : r.sender),
             ts: r.ts,
-            text: mention ? `${r.text}\n${mention}`.trim() : r.text
+            text: mention ? `${r.text}\n${mention}`.trim() : r.text,
+            ...(trustedAgentBot ? { trustedAgentBot: true } : {})
           }
         })
     )

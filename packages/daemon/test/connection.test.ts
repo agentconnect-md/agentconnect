@@ -262,6 +262,7 @@ describe('SlackConnection.getThreadReplies', () => {
       messages: [
         {
           ts: '100.3',
+          user: 'USHARED',
           bot_id: 'BSHARED',
           app_id: 'AAGENTCONNECT',
           text: '@agent-a → @agent-b: review this',

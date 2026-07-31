@@ -6,18 +6,17 @@ type IdLookup = { has(id: string): boolean }
 const GITHUB_REPO_TRIGGER_PREFIX = 'github-repo:'
 
 /** Recover the stable author from a pre-metadata Slack bot attribution footer. The
- *  sender is daemon-recorded provider identity: Slack reserves B-prefixed ids for bots,
- *  so human U/W senders and every non-Slack transport are rejected before inspecting
- *  user-controlled text. Only ids visible in the current Agent directory are accepted. */
+ *  daemon sets `trustedAgentBot` only after matching a local bot identity or a
+ *  CP-advertised AgentConnect app id; absent provenance fails closed. Only ids visible
+ *  in the current Agent directory are accepted. */
 export function sessionAttributionAgentId(
   platform: string,
-  sender: string,
-  text: string,
+  message: { text: string; trustedAgentBot?: boolean },
   agentIds: IdLookup
 ): string | undefined {
-  if (platform !== 'slack' || !/^B[A-Z0-9]+$/.test(sender)) return undefined
+  if (platform !== 'slack' || message.trustedAgentBot !== true) return undefined
   const ids = new Set<string>()
-  for (const match of text.matchAll(/(?:^|\n)sent by <https?:\/\/[^<>\s|]+\/agents\/([^/?#|>]+)\|[^>\n]+>/g)) {
+  for (const match of message.text.matchAll(/(?:^|\n)sent by <https?:\/\/[^<>\s|]+\/agents\/([^/?#|>]+)\|[^>\n]+>/g)) {
     try {
       const id = decodeURIComponent(match[1]!)
       if (agentIds.has(id)) ids.add(id)
@@ -33,12 +32,12 @@ export function sessionAttributionAgentId(
  *  deliberately remain unresolved. */
 export function sessionAttributionAgentAuthors(
   platform: string,
-  messages: readonly { sender: string; text: string }[],
+  messages: readonly { sender: string; text: string; trustedAgentBot?: boolean }[],
   agentIds: IdLookup
 ): ReadonlyMap<string, string> {
   const candidates = new Map<string, Set<string>>()
   for (const message of messages) {
-    const id = sessionAttributionAgentId(platform, message.sender, message.text, agentIds)
+    const id = sessionAttributionAgentId(platform, message, agentIds)
     if (!id) continue
     const ids = candidates.get(message.sender) ?? new Set<string>()
     ids.add(id)

@@ -1027,7 +1027,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     const out = await (daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')
     expect(out).toEqual([
       { sender: 'U2', ts: '100.1', text: 'human asks' },
-      { sender: 'bot-a', ts: '100.2', text: 'bot replied' }, // own bot frame → agentId
+      { sender: 'bot-a', ts: '100.2', text: 'bot replied', trustedAgentBot: true }, // own bot frame → agentId
       { sender: 'U2', ts: '100.3', text: '[attached: shot.png (image/png)]' } // mention synthesized
     ])
 
@@ -1055,7 +1055,8 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       {
         sender: 'remote-agent-a',
         ts: '100.2',
-        text: '@remote-agent-a → @bot-a: review this'
+        text: '@remote-agent-a → @bot-a: review this',
+        trustedAgentBot: true
       }
     ])
 

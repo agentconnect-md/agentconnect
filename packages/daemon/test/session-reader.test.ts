@@ -318,6 +318,26 @@ describe('SessionReader', () => {
     s.close()
   })
 
+  it('carries daemon-verified Slack bot provenance to the session DTO', () => {
+    const s = store()
+    seedHistorySession(s)
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'UAPPBOT',
+      trustedAgentBot: true,
+      recipient: AGENT,
+      kind: 'text',
+      text: 'legacy agent reply'
+    })
+
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+      expect.objectContaining({ sender: 'UAPPBOT', trustedAgentBot: true })
+    ])
+    s.close()
+  })
+
   it('binds session and tool-body reads to the authorized agent in a shared thread', () => {
     const s = store()
     seedHistorySession(s)

@@ -276,6 +276,7 @@ export function createSessionReader(
           seq: r.seq,
           sender: r.sender,
           ...(senderName ? { senderName } : {}),
+          ...(r.trustedAgentBot ? { trustedAgentBot: true } : {}),
           ts: r.ts,
           kind: r.kind,
           text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),

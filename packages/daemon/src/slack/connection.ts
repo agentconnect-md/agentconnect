@@ -998,7 +998,9 @@ export class SlackConnection {
               ? m.metadata.event_payload.author_agent_id.trim()
               : ''
           out.push({
-            sender: m.user ?? m.bot_id ?? 'unknown',
+            // Some Slack bot rows expose both `user` and `bot_id`. Keep the stable bot
+            // identity as sender so legacy rows from the same app reconcile consistently.
+            sender: m.bot_id ?? m.user ?? 'unknown',
             ...(metadataAuthor ? { agentAuthorId: metadataAuthor } : {}),
             ...(appId ? { appId } : {}),
             ts: m.ts,

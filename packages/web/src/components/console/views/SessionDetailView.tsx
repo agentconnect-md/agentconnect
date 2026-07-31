@@ -778,10 +778,10 @@ export default function SessionDetailView() {
     () => sessionAttributionAgentAuthors(session?.platform ?? '', msgs ?? [], agentById),
     [session?.platform, msgs, agentById]
   )
-  const participantAgent = (sender: string, text: string): Agent | undefined => {
+  const participantAgent = (sender: string, text: string, trustedAgentBot?: boolean): Agent | undefined => {
     const id = agentById.has(sender)
       ? sender
-      : (sessionAttributionAgentId(session?.platform ?? '', sender, text, agentById) ??
+      : (sessionAttributionAgentId(session?.platform ?? '', { text, trustedAgentBot }, agentById) ??
         attributedAgentIdBySender.get(sender))
     return id ? agentById.get(id) : undefined
   }
@@ -1041,7 +1041,7 @@ export default function SessionDetailView() {
       } else {
         // Count participants by stable sender id — two people can share a display name.
         const cron = asCron(m.sender)
-        const senderAgent = participantAgent(m.sender, m.text)
+        const senderAgent = participantAgent(m.sender, m.text, m.trustedAgentBot)
         speakers.add(senderAgent?.id ?? m.sender)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
