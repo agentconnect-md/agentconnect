@@ -111,11 +111,10 @@ export const RcVerifyResult = z.object({
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>
 
-// R→C REQ → rc/github-comment-authz/ok. A GitHub comment or PR webhook may
-// carry a stale `author_association`, so the relay asks the CP (which owns the
-// App installation) for a current repository-permission verdict. This frame
-// is deliberately metadata-only: authored content must never cross the
-// relay↔CP control plane.
+// R→C REQ → rc/github-comment-authz/ok. The relay asks the CP (which owns the
+// App installation) for a current repository-permission verdict instead of
+// treating webhook `author_association` as authority. This frame is deliberately
+// metadata-only: authored content must never cross the relay↔CP control plane.
 export const RcGithubHookFence = z
   .object({
     hookId: z.string().uuid(),
@@ -131,12 +130,18 @@ export const RcGithubCommentAuthz = z
     installationId: z.string().regex(/^[1-9]\d*$/),
     repoId: z.string().regex(/^[1-9]\d*$/),
     repoFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+    // Legacy field name: comment deliveries carry `comment.user.login`, not
+    // the top-level webhook action sender. Maintainer controls carry the actor.
     senderLogin: z.string().min(1),
-    // Fence the fallback to the exact compiled rule that accepted the
+    // An unmentioned thread comment may continue automatically only when both
+    // its commenter and the issue/PR author still have write authority. An
+    // explicit maintainer summon omits this second actor.
+    subjectAuthorLogin: z.string().min(1).optional(),
+    // Fence authorization to the exact compiled rule that accepted the
     // delivery. A stale relay copy cannot authorize after retarget/reassign.
     configRevision: HookBigIntString,
     dispatchRevision: HookBigIntString,
-    // PR-author authorization is repository-wide, but every matching sibling
+    // Thread-actor authorization is repository-wide, but every matching sibling
     // must still be fenced against current CP state before one allow verdict
     // can authorize the complete fan-out.
     siblingFences: z.array(RcGithubHookFence).min(1).optional()
@@ -256,8 +261,8 @@ export const RcHookAssign = z
         // the console-selected thread families so the relay can isolate replies.
         commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
         // P3 summon mode: every event's authored text must @-mention either
-        // this agent or the App. Comments ALWAYS pass the collaborator gate in
-        // addition to this flag.
+        // this agent or the App. Thread events always pass the live maintainer
+        // gate in addition to this flag.
         mentionOnly: z.boolean(),
         // The App slug is the broadcast handle: `@<appSlug>` keeps every
         // matching rule in the repo fan-out. Compiled from the CP's
@@ -570,6 +575,20 @@ export const RcBotAssign = z.object({
   // only while that agent still has a channel-scoped route in the conversation —
   // otherwise a thread bound before the gate was applied would keep routing forever.
   gatedAgentIds: z.array(z.string().uuid()).default([]),
+  // Channels switched OFF for this bot. The relay's ladder has rungs no
+  // channel-scoped route can suppress — unscoped keyword, the group's
+  // `defaultAgentId`, thread continuity — so an Off channel needs a subtractive
+  // fence rather than the mere absence of a route. A muted channel resolves to no
+  // target at all. Bot-scoped, matching how an HTTP bot's channels converge on one
+  // owner, and how the trigger is replicated across its membership rows. Defaults empty.
+  mutedChannels: z.array(z.string()).default([]),
+  // The muted channels whose owner is a GATED agent. Their Off is §14's fail-closed
+  // default for a conversation nobody has enabled yet, so they keep the one-time
+  // notice; a channel an OPERATOR switched off is silent instead. The two share a
+  // trigger value and are indistinguishable at the relay without this — hence a
+  // second list rather than a flag the relay could derive. Subset of
+  // `mutedChannels`. Defaults empty.
+  gatedOffChannels: z.array(z.string()).default([]),
   // §14.3 one-time gating notice, CHANNEL conversations: the relayId
   // DETERMINISTICALLY responsible for posting it for this bot. A channel mention
   // arrives as two event copies that may land on different pods — only the
@@ -614,6 +633,8 @@ export const RcRoutes = z.object({
   defaultAgentId: z.string().uuid().optional(),
   defaultDaemonId: z.string().uuid().optional(),
   gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
+  mutedChannels: z.array(z.string()).default([]), // Off channels — see RcBotAssign.mutedChannels
+  gatedOffChannels: z.array(z.string()).default([]), // notice-keeping subset — see RcBotAssign.gatedOffChannels
   noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
   noticedDmConversations: z.array(z.string()).default([]) // §14.3 — see RcBotAssign.noticedDmConversations
 })

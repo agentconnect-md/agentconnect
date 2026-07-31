@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { buildCollabSnapshot } from './collabSnapshot.js'
-import type { ChannelPlacementRecord } from '../persistence/ports.js'
+import type { ChannelPlacementRecord, OrgAgentRecord } from '../persistence/ports.js'
 import { AgentId, IntegrationId } from '../domain/ids.js'
 import { DEFAULT_ORG_ID } from '../config/defaults.js'
 
@@ -9,7 +9,24 @@ const DAEMON_1 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const DAEMON_2 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 const AGENT_1 = AgentId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
 const AGENT_2 = AgentId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+const AGENT_3 = AgentId('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
 const INTEGRATION = IntegrationId('ffffffff-ffff-4fff-8fff-ffffffffffff')
+
+function orgAgent(over: Partial<OrgAgentRecord>): OrgAgentRecord {
+  return {
+    agentId: AGENT_1,
+    name: 'agent-one',
+    displayName: null,
+    description: null,
+    status: 'active',
+    daemonId: DAEMON_1,
+    callPolicy: 'all',
+    allowedCallerAgentIds: [],
+    outboundPolicy: 'all',
+    allowedTargetAgentIds: [],
+    ...over
+  }
+}
 
 function rec(over: Partial<ChannelPlacementRecord>): ChannelPlacementRecord {
   return {
@@ -35,7 +52,8 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
         rec({ agentId: AGENT_1, daemonId: DAEMON_1, botAppId: 'A111' }),
         rec({ agentId: AGENT_2, daemonId: DAEMON_2, botAppId: 'A222' })
       ],
-      7
+      7,
+      []
     )
     // Regression: register/ok must remain wire-valid for the real opaque org-id
     // domain; UUID-only fixtures previously hid this production failure.
@@ -48,7 +66,7 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
   })
 
   it('drops unplaced agents (daemonId null) — they are not routable', () => {
-    const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [rec({ daemonId: null })], 1)
+    const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [rec({ daemonId: null })], 1, [])
     expect(snap.channels).toHaveLength(0)
   })
 
@@ -56,7 +74,8 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     const snap = buildCollabSnapshot(
       DEFAULT_ORG_ID,
       [rec({ channelId: 'C1' }), rec({ channelId: 'C2', agentId: AGENT_2 })],
-      1
+      1,
+      []
     )
     expect(snap.channels.map((c) => c.channelId).sort()).toEqual(['C1', 'C2'])
   })
@@ -65,9 +84,45 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     const snap = buildCollabSnapshot(
       DEFAULT_ORG_ID,
       [rec({ agentId: AGENT_1, name: 'deploy-bot', displayName: 'Deploy Bot' })],
-      1
+      1,
+      []
     )
     expect(CollabRoutesSnapshot.parse(snap)).toEqual(snap)
     expect(snap.channels[0].agents[0]).toMatchObject({ name: 'deploy-bot', displayName: 'Deploy Bot' })
+  })
+
+  it('carries an integration-less agent in the flat org directory (the whole point of agents[])', () => {
+    // AGENT_1 reaches a channel; AGENT_3 has NO integration at all, so it appears in
+    // zero channels[] entries — the flat list is its only carrier.
+    const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [rec({ agentId: AGENT_1 })], 3, [
+      orgAgent({ agentId: AGENT_1, name: 'deploy-bot', displayName: 'Deploy Bot' }),
+      orgAgent({
+        agentId: AGENT_3,
+        name: 'webchat-only',
+        daemonId: DAEMON_2,
+        callPolicy: 'selected',
+        allowedCallerAgentIds: [AGENT_1]
+      })
+    ])
+    expect(CollabRoutesSnapshot.parse(snap)).toEqual(snap)
+    expect(snap.channels.flatMap((c) => c.agents).map((a) => a.agentId)).toEqual([AGENT_1])
+    expect(snap.agents.map((a) => a.agentId).sort()).toEqual([AGENT_1, AGENT_3].sort())
+    expect(snap.agents.find((a) => a.agentId === AGENT_3)).toEqual({
+      orgId: DEFAULT_ORG_ID,
+      agentId: AGENT_3,
+      daemonId: DAEMON_2,
+      name: 'webchat-only',
+      callPolicy: 'selected',
+      allowedCallerAgentIds: [AGENT_1],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: []
+    })
+    // displayName is omitted (not null) when unset, and set when present.
+    expect(snap.agents.find((a) => a.agentId === AGENT_1)?.displayName).toBe('Deploy Bot')
+  })
+
+  it('drops an unplaced agent from the flat directory — nothing to route a wake to', () => {
+    const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [], 1, [orgAgent({ agentId: AGENT_3, daemonId: null })])
+    expect(snap.agents).toEqual([])
   })
 })

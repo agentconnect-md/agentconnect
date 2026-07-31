@@ -84,6 +84,7 @@ function make(
     hook?: HookRecord
     hooks?: HookRecord[]
     permission?: Permission
+    permissions?: Partial<Record<string, Permission>>
     timeoutMs?: number
   } = {}
 ) {
@@ -94,7 +95,10 @@ function make(
     fullName: request.repoFullName,
     private: true
   }))
-  const userRepoPermissionForCommentAuthz = vi.fn(async () => opts.permission ?? 'write')
+  const userRepoPermissionForCommentAuthz = vi.fn(
+    async (_installation: GithubInstallationRecord, _owner: string, _repo: string, username: string) =>
+      opts.permissions?.[username] ?? opts.permission ?? 'write'
+  )
   const service = new GithubCommentAuthzService({
     hooks: { getMany } as unknown as Pick<HookRepo, 'getMany'>,
     installations: { getByInstallationId } as unknown as Pick<GithubInstallationRepo, 'getByInstallationId'>,
@@ -122,6 +126,13 @@ describe('GithubCommentAuthzService', () => {
 
   it('denies read-only repository permission', async () => {
     await expect(make({ permission: 'read' }).service.allowed(request)).resolves.toBe(false)
+  })
+
+  it('requires write permission from both an unmentioned commenter and the thread author', async () => {
+    const h = make({ permissions: { octocat: 'write', 'issue-author': 'read' } })
+
+    await expect(h.service.allowed({ ...request, subjectAuthorLogin: 'issue-author' })).resolves.toBe(false)
+    expect(h.userRepoPermissionForCommentAuthz).toHaveBeenCalledTimes(2)
   })
 
   it('denies a stale config revision before consulting GitHub', async () => {

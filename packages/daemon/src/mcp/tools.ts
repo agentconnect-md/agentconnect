@@ -97,7 +97,7 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
               minLength: 1,
               title: 'Agent id',
               description:
-                'AgentConnect agent id from listChannelAgents or the [agent-id] sender envelope. Never a platform ' +
+                'AgentConnect agent id from listAgents or the [agent-id] sender envelope. Never a platform ' +
                 'member id such as Slack `U…`.'
             },
             {
@@ -108,7 +108,7 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
                     type: 'string',
                     minLength: 1,
                     description:
-                      'AgentConnect agent id from listChannelAgents or the [agent-id] sender envelope. Never a ' +
+                      'AgentConnect agent id from listAgents or the [agent-id] sender envelope. Never a ' +
                       'platform member id such as Slack `U…`.'
                   },
                   needsReply: {
@@ -206,7 +206,7 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'form:\n' +
         '- Peer agent (direct wake): `{"to":{"toAgent":"<agent id>"},"message":"..."}` is a postless wake. Add a ' +
         '`channel` (and optional `thread`) to also post a visible message and thread the peer’s reply there. Get the ' +
-        'id from listChannelAgents and send one call per peer; never substitute a platform member id. When the wake ' +
+        'id from listAgents and send one call per peer; never substitute a platform member id. When the wake ' +
         'opens a session for the peer, the result carries its `childSessionId` — pass that to `viewSessionStatus` to ' +
         'check whether the peer is still working. Use ' +
         '`{"to":{"toAgent":{"agentId":"<agent id>","needsReply":true}},"message":"..."}` to also instruct that ' +
@@ -302,7 +302,7 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
       description:
         'List the platform users and bot accounts in a channel/chat (id, name, is_bot) — the way to discover a HUMAN ' +
         'user id to @mention or DM. This is NOT how you find peer AI agents to collaborate with: it returns raw ' +
-        'platform member accounts (including unrelated bots), not AgentConnect agents — use `listChannelAgents` for ' +
+        'platform member accounts (including unrelated bots), not AgentConnect agents — use `listAgents` for ' +
         '"the agents in this channel". Pass `platform` to target another connected platform and `integrationId` to ' +
         'choose a specific bot; omit `channel` to use the current conversation (same platform only). Note: Telegram ' +
         'only exposes administrators for large groups.',
@@ -537,30 +537,45 @@ export const EXTERNAL_MEMORY_TOOL_NAMES = new Set(
 
 /**
  * Agent-collaboration tools — available to EVERY agent regardless of platform
- * (discovery is org/coords-level, not platform-gated). `listChannelAgents` asks
- * the CP who else is in the current channel so an agent can find peers to work
- * with. Waking a peer is no longer a separate tool: it is `sendMessage` with
- * `to.toAgent` (session-concept §4). The requesting agent's identity is injected
- * by the daemon from the session context — it is NOT a tool input.
+ * (discovery is org-level, not platform- or channel-gated). `listAgents` asks the CP
+ * which peers this agent may reach in its organization so it can find someone to work
+ * with; channel membership is only an optional filter on that answer. Waking a peer is
+ * no longer a separate tool: it is `sendMessage` with `to.toAgent` (session-concept §4).
+ * The requesting agent's identity is injected by the daemon from the session context —
+ * it is NOT a tool input.
  */
+const LIST_AGENTS_INPUT_SCHEMA = () =>
+  obj({
+    channel: {
+      type: 'string',
+      description:
+        'OPTIONAL filter: only list agents present in this channel/chat. Omit to list every agent you can reach.'
+    }
+  })
+
+const LIST_AGENTS_DESCRIPTION =
+  'List the other AI agents you can work with — their id, name, displayName, description, and status — so you ' +
+  'can discover peers to collaborate with. By DEFAULT this lists every agent in your organization that you are ' +
+  'allowed to reach, whether or not it shares a channel with you. This is the canonical meaning of "the agents ' +
+  'here": whenever you are asked to greet, message, collaborate with, or delegate to the agents/peers around you, ' +
+  'discover them with THIS tool — NOT `listChannelMembers` (which lists platform user/bot accounts, not ' +
+  'AgentConnect agents). Then reach each one with `sendMessage` using ' +
+  '`{"to":{"toAgent":"<agent id>"},"message":"..."}` (a direct, postless wake), rather than @mentioning member ids ' +
+  'in a channel post. Pass `channel` only as a FILTER, to narrow the list to the agents present in that channel. ' +
+  'Only agents you are allowed to reach are returned.'
+
 export const COLLABORATION_TOOLS: ToolDescriptor[] = [
   {
+    name: 'listAgents',
+    description: LIST_AGENTS_DESCRIPTION,
+    inputSchema: LIST_AGENTS_INPUT_SCHEMA()
+  },
+  {
+    // Kept so a session already warm with the old tool set (and prompts/skills that
+    // learned the old name) keeps working; the daemon routes both names to one handler.
     name: 'listChannelAgents',
-    description:
-      'List the other AI agents present in a channel — their id, name, displayName, description, and status — so you ' +
-      'can discover peers to collaborate with. This is the canonical meaning of "the agents in this channel": whenever ' +
-      'you are asked to greet, message, collaborate with, or delegate to the agents/peers here, discover them with THIS ' +
-      'tool — NOT `listChannelMembers` (which lists platform user/bot accounts, not AgentConnect agents). Then reach ' +
-      'each one with `sendMessage` using `{"to":{"toAgent":"<agent id>"},"message":"..."}` (a direct, postless ' +
-      'wake), rather than @mentioning member ids in a channel post. Omit `channel` to list agents in the channel this ' +
-      'conversation is happening in. Only channels you are a member of can be listed, and only agents you are allowed ' +
-      'to reach are returned.',
-    inputSchema: obj({
-      channel: {
-        type: 'string',
-        description: 'Channel/chat id to list agents for. Defaults to the current channel.'
-      }
-    })
+    description: `Deprecated alias of \`listAgents\` — prefer that name. ${LIST_AGENTS_DESCRIPTION}`,
+    inputSchema: LIST_AGENTS_INPUT_SCHEMA()
   },
   {
     name: 'viewSessionStatus',

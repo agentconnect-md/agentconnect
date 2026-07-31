@@ -168,6 +168,53 @@ describe('HTTP-bot arbitration (§10)', () => {
       expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
     })
   })
+
+  describe('muted channels (per-channel Off)', () => {
+    it('resolves nothing in a muted channel, even for an explicit @bot', () => {
+      const a = { ...assignment(), mutedChannels: ['C1'] }
+      const t = arbitrate(a, msg({ channel: 'C1', text: '<@UBOT> deploy', mentionedBots: [BOTUSER] }), empty())
+      expect(t).toBeNull()
+    })
+
+    it('shuts off the rungs a missing route cannot: keyword slug and the group default', () => {
+      const a = { ...assignment(), mutedChannels: ['CX'] }
+      // CX has no scoped route at all, so both of these route today.
+      expect(arbitrate(a, msg({ channel: 'CX', text: 'bob ship it', mentionedBots: [BOTUSER] }), empty())).toBeNull()
+      expect(arbitrate(a, msg({ channel: 'CX', text: '<@UBOT> hi', mentionedBots: [BOTUSER] }), empty())).toBeNull()
+    })
+
+    it('drops thread continuity into a muted channel', () => {
+      const a = { ...assignment(), mutedChannels: ['C2'] }
+      const aff = new Map<string, RouteTarget>([['C2/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
+      expect(arbitrate(a, msg({ channel: 'C2', thread: 'ts1', text: 'and then?' }), aff)).toBeNull()
+    })
+
+    it('leaves the bot answering everywhere else', () => {
+      const a = { ...assignment(), mutedChannels: ['C1'] }
+      expect(arbitrate(a, msg({ channel: 'C2', text: 'anything' }), empty())).toEqual({
+        agentId: BOB,
+        daemonId: D2,
+        integrationId: 'iB'
+      })
+    })
+
+    // The mixed-bot case the fence exists for: ALICE is gated and owns CX with the
+    // channel Off, so it compiles no scoped route — but BOB's unscoped keyword and the
+    // group's defaultAgentId are still in the table. Without the mute a bare @bot would
+    // quietly activate the PUBLIC agent in a channel the console shows as Off.
+    it('a gated owner Off channel does not fall through to the public default', () => {
+      const a = { ...assignment(), gatedAgentIds: [ALICE], mutedChannels: ['CX'], gatedOffChannels: ['CX'] }
+      expect(arbitrate(a, msg({ channel: 'CX', text: '<@UBOT> hi', mentionedBots: [BOTUSER] }), empty())).toBeNull()
+      // …and the slug rung is closed too, so naming the public agent cannot reopen it.
+      expect(arbitrate(a, msg({ channel: 'CX', text: 'bob ship it', mentionedBots: [BOTUSER] }), empty())).toBeNull()
+    })
+
+    it('the notice-keeping subset does not make a channel routable', () => {
+      // gatedOffChannels only steers the notice; arbitration must still refuse.
+      const a = { ...assignment(), mutedChannels: ['C2'], gatedOffChannels: ['C2'] }
+      expect(arbitrate(a, msg({ channel: 'C2', text: 'anything' }), empty())).toBeNull()
+    })
+  })
 })
 
 describe('BotArbitrationRouter — table + live affinity', () => {

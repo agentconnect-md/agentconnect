@@ -19,6 +19,11 @@ export interface RoutingRule {
   scope: { channel?: string; thread?: string }
   match: RoutingMatch
   allowedUserIds?: string[]
+  // Channels its integration is switched OFF in — the subtractive fence a purely
+  // additive rule set cannot express. Carried per rule (rather than consulted
+  // separately) so `routeRules` stays pure and every rung — mention, thread
+  // continuity, CP override, keyword, auto — is fenced by the one scope filter.
+  mutedChannels?: string[]
   source: 'config' | 'cp'
   epoch?: number // cp layer only
   // Platform this rule belongs to ('slack' | 'telegram'). Undefined = matches any
@@ -33,13 +38,19 @@ export function integrationRouting(int: Integration): {
   staticBotUserId?: string
   bindRules: BindRuleConfig[]
   allowedUserIds: string[]
+  mutedChannels: string[]
   gated: boolean
 } {
+  // `mutedChannels` post-dates the schema, so an integration assembled by hand rather
+  // than parsed (a fixture, a caller mapping a partial spec) can reach here without it.
+  // Absent means "nothing muted" — the behaviour before the field existed — and
+  // normalizing once here keeps every reader free of the same defaulting.
   if (int.platform === 'slack')
     return {
       staticBotUserId: int.slack.botUserId,
       bindRules: int.slack.bindRules,
       allowedUserIds: int.slack.allowedUserIds,
+      mutedChannels: int.slack.mutedChannels ?? [],
       gated: int.slack.gated
     }
   if (int.platform === 'discord')
@@ -47,6 +58,7 @@ export function integrationRouting(int: Integration): {
       staticBotUserId: int.discord.botUserId,
       bindRules: int.discord.bindRules,
       allowedUserIds: int.discord.allowedUserIds,
+      mutedChannels: int.discord.mutedChannels ?? [],
       gated: int.discord.gated
     }
   if (int.platform === 'feishu')
@@ -54,14 +66,39 @@ export function integrationRouting(int: Integration): {
       staticBotUserId: int.feishu.botOpenId,
       bindRules: int.feishu.bindRules,
       allowedUserIds: int.feishu.allowedUserIds,
+      mutedChannels: int.feishu.mutedChannels ?? [],
       gated: int.feishu.gated
     }
   return {
     staticBotUserId: int.telegram.botUserId,
     bindRules: int.telegram.bindRules,
     allowedUserIds: int.telegram.allowedUserIds,
+    mutedChannels: int.telegram.mutedChannels ?? [],
     gated: int.telegram.gated
   }
+}
+
+/**
+ * Is this conversation open to `int` at all? Two independent fences, both applying
+ * to the enclosing channel of a thread (which is the row an operator configures):
+ *
+ *  - Off — the operator muted this channel. Applies to every integration.
+ *  - Gating (resource-visibility.md §14) — a restricted agent's integration admits
+ *    ONLY conversations that carry a scoped rule, so an unknown one is refused too.
+ *
+ * The routing ladder enforces both through the rule set itself; this is for the
+ * paths that resolve a target OUTSIDE it (control commands, message shortcuts, the
+ * relay's pre-addressed hand-off), which would otherwise reach a silenced channel.
+ */
+export function conversationAdmitted(
+  routing: Pick<ReturnType<typeof integrationRouting>, 'bindRules' | 'mutedChannels' | 'gated'>,
+  channel: string,
+  parentChannel?: string
+): boolean {
+  const covers = (candidate: string | undefined): boolean =>
+    candidate !== undefined && (candidate === channel || candidate === parentChannel)
+  if (routing.mutedChannels.some((muted) => covers(muted))) return false
+  return !routing.gated || routing.bindRules.some((rule) => covers(rule.channel))
 }
 
 /** Stored CP-layer rule — integration resolved lazily at merge time. */
@@ -83,7 +120,7 @@ export function resolveAgentIntegration(
   agent: Agent | undefined,
   botUserIds: Record<string, string>,
   platform?: string
-): { integrationId: string; botUserId: string; platform: string } | null {
+): { integrationId: string; botUserId: string; platform: string; mutedChannels: string[] } | null {
   // Prefer an integration on the requested platform — an agent may bridge several (e.g.
   // Slack + Telegram). Delivering a reply/wake into a session on platform X must use X's
   // integration; otherwise the turn's output posts through the wrong platform's client
@@ -92,8 +129,13 @@ export function resolveAgentIntegration(
   const int =
     (platform ? agent?.integrations.find((i) => i.platform === platform) : undefined) ?? agent?.integrations[0]
   if (!int) return null
-  const { staticBotUserId } = integrationRouting(int)
-  return { integrationId: int.id, botUserId: botUserIds[int.id] ?? staticBotUserId ?? '', platform: int.platform }
+  const { staticBotUserId, mutedChannels } = integrationRouting(int)
+  return {
+    integrationId: int.id,
+    botUserId: botUserIds[int.id] ?? staticBotUserId ?? '',
+    platform: int.platform,
+    mutedChannels
+  }
 }
 
 /** Local layer: one resolved RoutingRule per bindRule of EACH integration (any
@@ -101,7 +143,7 @@ export function resolveAgentIntegration(
 export function rulesFromAgent(agent: Agent, botUserIds: Record<string, string>): RoutingRule[] {
   const out: RoutingRule[] = []
   for (const int of agent.integrations) {
-    const { staticBotUserId, bindRules, allowedUserIds } = integrationRouting(int)
+    const { staticBotUserId, bindRules, allowedUserIds, mutedChannels } = integrationRouting(int)
     const botUserId = botUserIds[int.id] ?? staticBotUserId ?? ''
     for (const br of bindRules) {
       out.push({
@@ -111,6 +153,7 @@ export function rulesFromAgent(agent: Agent, botUserIds: Record<string, string>)
         scope: { ...(br.channel ? { channel: br.channel } : {}), ...(br.thread ? { thread: br.thread } : {}) },
         match: br.match,
         allowedUserIds,
+        mutedChannels,
         source: 'config',
         platform: int.platform
       })
@@ -122,7 +165,9 @@ export function rulesFromAgent(agent: Agent, botUserIds: Record<string, string>)
 /** Resolve a stored CP rule to a RoutingRule; null if the agent is unservable. */
 export function resolveCpRule(
   cp: CpRule,
-  resolve: (agentId: string) => { integrationId: string; botUserId: string; platform: string } | null
+  resolve: (
+    agentId: string
+  ) => { integrationId: string; botUserId: string; platform: string; mutedChannels?: string[] } | null
 ): RoutingRule | null {
   const r = resolve(cp.agentId)
   if (!r) return null
@@ -132,6 +177,9 @@ export function resolveCpRule(
     botUserId: r.botUserId,
     scope: cp.scope,
     match: cp.match,
+    // A CP session placement is scoped to a conversation the operator may since have
+    // switched off; it carries its integration's fence for the same reason a local rule does.
+    ...(r.mutedChannels ? { mutedChannels: r.mutedChannels } : {}),
     source: 'cp',
     platform: r.platform,
     ...(cp.epoch !== undefined ? { epoch: cp.epoch } : {})

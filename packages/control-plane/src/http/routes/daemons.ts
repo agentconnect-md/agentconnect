@@ -320,6 +320,22 @@ export function daemonRoutes(deps: HttpDeps) {
         await deps.registry.remove(DaemonId(req.params.id))
         // The daemon (and its FK-cascaded keys) is gone — tell relays to drop it (§9).
         deps.relayControl.daemonRevoke(req.params.id)
+        // Its agents just became UNPLACED (Agent.daemonId is SetNull), so they leave the
+        // collaboration snapshot — but only if we push one. Every other holder of the
+        // snapshot (relay + the remaining daemons) otherwise keeps flat `agents[]` entries
+        // naming this dead daemonId, and `admits()` keeps admitting wakes the relay can only
+        // answer 'offline' to. Best-effort, after the row is already gone; `register/ok`
+        // carries the corrected directory as the reconnect backstop.
+        if (placedAgents.length > 0) {
+          try {
+            await deps.collabRoutes.broadcast(existing.orgId)
+          } catch (err) {
+            req.log.warn(
+              { err, daemonId: req.params.id, orgId: existing.orgId },
+              'collaboration routes push failed after daemon delete (backstop: reconnect snapshot)'
+            )
+          }
+        }
         // Re-converge the unplaced agents' hook rules NOW: their compiled rules
         // still name the dead daemonId in every relay's table and would fail
         // each delivery with daemon_offline until a relay re-register replay.

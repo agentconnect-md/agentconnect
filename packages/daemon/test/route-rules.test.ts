@@ -120,6 +120,50 @@ describe('routeRules ladder', () => {
     expect(routeRules(msg(), rules, noOwner)).toBeNull()
   })
 
+  describe('muted channels (per-channel Off)', () => {
+    it('silences the unscoped mention default in the muted channel only', () => {
+      const rules = [rule({ botUserId: 'B9', match: { kind: 'mention' }, mutedChannels: ['C1'] })]
+      expect(routeRules(msg({ channel: 'C1', mentionedBots: ['B9'] }), rules, noOwner)).toBeNull()
+      expect(routeRules(msg({ channel: 'C2', mentionedBots: ['B9'] }), rules, noOwner)?.agentId).toBe('a')
+    })
+
+    it('silences a thread inside the muted channel, and thread continuity with it', () => {
+      const rules = [rule({ agentId: 'A', scope: { channel: 'C1' }, match: { kind: 'auto' }, mutedChannels: ['C1'] })]
+      const owner = (c: string, t: string) => (c === 'C1' && t === 'T1' ? 'A' : null)
+      expect(routeRules(msg({ channel: 'C1', thread: 'T1' }), rules, owner)).toBeNull()
+      // Discord keys a thread on its own channel id; the enclosing channel's Off still applies.
+      expect(routeRules(msg({ channel: 'THREAD', parentChannel: 'C1' }), rules, noOwner)).toBeNull()
+    })
+
+    it('silences a CP session placement in the muted channel', () => {
+      const rules = [
+        rule({
+          agentId: 'cpAgent',
+          source: 'cp',
+          scope: { channel: 'C1' },
+          match: { kind: 'auto' },
+          mutedChannels: ['C1']
+        })
+      ]
+      expect(routeRules(msg({ channel: 'C1' }), rules, noOwner)).toBeNull()
+    })
+
+    it('mutes only its OWN integration — a second bot in the channel keeps answering', () => {
+      const rules = [
+        rule({
+          agentId: 'muted',
+          integrationId: 'i1',
+          botUserId: 'B1',
+          match: { kind: 'mention' },
+          mutedChannels: ['C1']
+        }),
+        rule({ agentId: 'live', integrationId: 'i2', botUserId: 'B2', match: { kind: 'mention' } })
+      ]
+      expect(routeRules(msg({ channel: 'C1', mentionedBots: ['B1'] }), rules, noOwner)).toBeNull()
+      expect(routeRules(msg({ channel: 'C1', mentionedBots: ['B2'] }), rules, noOwner)?.agentId).toBe('live')
+    })
+  })
+
   it('explicit agentId (webchat) routes directly, bypassing arbitration', () => {
     // No rules match this webchat message, yet an explicit agentId short-circuits the
     // whole ladder — webchat names its target agent, so there is nothing to arbitrate.
@@ -277,7 +321,8 @@ describe('rulesFromAgent / resolveAgentIntegration (Telegram)', () => {
     expect(resolveAgentIntegration(tgAgent(), { 'i-tg': 'mybot' })).toEqual({
       integrationId: 'i-tg',
       botUserId: 'mybot',
-      platform: 'telegram'
+      platform: 'telegram',
+      mutedChannels: []
     })
     expect(resolveAgentIntegration(undefined, {})).toBeNull()
   })

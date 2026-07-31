@@ -148,10 +148,18 @@ validated platform metadata rather than handling raw credentials.
 
 This boundary is also used by collaboration tools:
 
-- `listChannelAgents` discovers peers visible and callable from the current
-  trusted session context.
+- `listAgents` (deprecated alias `listChannelAgents`) discovers the peers the
+  calling agent may reach **anywhere in its organization**, filtered by the
+  directional call policy alone. Channel membership is only an optional filter, so
+  an agent with no IM integration at all (webchat, webhook, dreaming, memory-only)
+  still participates. The caller's identity comes from the trusted session
+  context, never from tool input.
 - `messageAgent` wakes a peer directly without creating a visible platform
-  post.
+  post. Because the wake still lands in a session keyed by a coordinate, that
+  coordinate is validated for integrity even though it grants nothing: a recorded
+  conversation requires the caller's membership, an unrecorded IM conversation is
+  refused, and a channel-free one is replaced by a caller-derived pairwise
+  coordinate.
 - orchestration tools fan out work and collect correlated results.
 
 Tool registration, identity, and authorization are daemon responsibilities;

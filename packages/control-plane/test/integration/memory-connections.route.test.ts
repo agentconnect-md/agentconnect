@@ -56,6 +56,12 @@ class SpyControl {
   async agentRemove(daemonId: string, agentId: string): Promise<void> {
     this.events.push({ kind: 'agent-remove', daemonId, agentId })
   }
+
+  // Creating a PLACED agent also publishes the collaboration snapshot (the flat peer
+  // directory). Deliberately NOT recorded in `events`: this suite asserts the exact
+  // memory/AgentSpec push ORDER, and the real ControlSender must simply not be missing
+  // a method here — an absent one would surface as a swallowed TypeError, not a failure.
+  async collaborationRoutes(): Promise<void> {}
 }
 
 class SpyRelayControl {

@@ -386,10 +386,40 @@ export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 /**
  * R→D REQ → `rd/agentmsg/ack`. The relay forwards the validated call to the TARGET's
  * owning daemon, replacing the untrusted `claimedFromAgentId` with a TRUSTED caller
- * claim the relay minted after snapshot validation: `trustedFromAgentId` + the
- * asserted `orgId`/`platform`/`channel` the caller was verified in. The target daemon
- * TERMINAL-verifies this claim + both directional policies against its LOCAL
- * snapshot (defense in depth, §2.5 #4) before dispatching `source:'agent'`.
+ * claim the relay minted after snapshot validation: `trustedFromAgentId` + the `orgId`
+ * the caller's own directory entry places it in (never an org the frame asserted). The
+ * target daemon TERMINAL-verifies this claim + both directional policies against its
+ * LOCAL snapshot (defense in depth, §2.5 #4) before dispatching `source:'agent'`.
+ *
+ * What `coords` is and is NOT: it is the ASSERTED delivery coordinate, not evidence of a
+ * shared channel — A2A authorization is channel-free (postless delivery, #854), so caller and
+ * target need share no channel and the target may have no IM integration at all. It is
+ * integrity-checked on BOTH sides by one identical rule (`coordsDecision`), which has three
+ * outcomes rather than two:
+ *   (1) the snapshot holds a non-empty placement at `(orgId, channel)` ⇒ the caller must
+ *       resolve in it, else the wake is refused `not_allowed`. A direct conversation counts
+ *       wherever its row exists — placements are selected with no `kind` filter, so an
+ *       `im`/`mpim` row is an ordinary placement. Admitted, and the woken session keys off
+ *       `coords` as sent, which is how a wake deliberately lands in the same thread a human sees;
+ *   (2) no such placement and `coords.platform` is a PERSISTED IM platform (slack / telegram /
+ *       discord / feishu) ⇒ refused, FAIL CLOSED. An unrecorded IM coordinate is a channel the
+ *       caller cannot reach, a departed row, or a guess, and admitting it is what would let a
+ *       caller alias an existing platform session (and with `needsReply`, read it back). Note
+ *       an `im`/`mpim` row is only WRITTEN for a GATED integration's not-yet-enabled
+ *       conversations, so an ordinary integration's DM lands here — deliberate, and the same
+ *       answer the channel-membership check this replaced gave;
+ *   (3) no such placement and the platform is channel-free (`webchat`, and anything else) ⇒
+ *       admitted, but the asserted channel NEVER becomes the session coordinate: the TARGET
+ *       daemon keys the woken session off `a2a:<trustedFromAgentId>` instead, which cannot
+ *       collide with any real conversation id. The relay forwards `coords` verbatim; only the
+ *       daemon that mints the key substitutes, so the two can never disagree about it.
+ * The row LOOKUP keys on the CHANNEL ID alone, deliberately NOT on `coords.platform`: the
+ * woken session's key is computed from a NARROWED platform (the daemon folds `feishu` and
+ * anything it does not recognise into `'slack'`) while snapshot rows are keyed by the
+ * integration platform, so a platform-keyed lookup would search a different key space than
+ * the key it protects. The platform only picks between (2) and (3), for a coordinate (1)
+ * already found nothing for. Read `coords` as "the caller may assert this", never as
+ * "verified member of" — and never assume the woken session key echoes it (case 3).
  */
 export const RdAgentMsgFwd = z.object({
   trustedFromAgentId: z.string().uuid(), // minted by the relay — the target may trust this

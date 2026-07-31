@@ -101,6 +101,34 @@ transcript display. The first real reply in that thread receives the root as pre
 context before the new message. Session initialization itself produces no agent output,
 tool calls, memory recall or capture, turn evaluation, or token usage.
 
+## Per-channel trigger
+
+Every channel a bot is in carries a trigger, and every agent gets all three settings —
+Off, every message, or @-mention (the default). Off is not a gating feature: an
+org-visible agent is entitled to the same control as a restricted one.
+
+Off means the agent does not respond in that channel at all. Not to an @-mention, not to
+a follow-up in a thread it had already joined, not to a control command, and not through
+a shared bot's slug or default-dispatch fallback. It leaves everything else intact: the
+bot stays in the channel, the channel keeps its row and its owner, past sessions keep
+their transcripts, and an agent may still post there when something else — a scheduled
+task, another agent's hand-off — directs it to.
+
+Off is therefore the Console's answer to "stop responding here", and the only one it
+has. Removing the bot from a channel or group is a platform action, done in Slack,
+Telegram, Discord, or Lark; the Console reflects that membership but never changes it.
+
+A restricted agent expresses the same choice through its conversation gate, which is
+independently fail-closed: a conversation it has never been enabled in stays unroutable
+whether or not anyone set it to Off.
+
+Those two states read alike on the row and mean different things, so they answer an
+@-mention differently. A conversation a restricted agent was never enabled in replies
+once, telling the person to ask an admin — the bot must not look broken to someone who
+had no way to know it was private. A channel switched Off says nothing at all: an
+operator already decided, and pointing the room at an admin would be both wrong and
+noise. Off is silence; the gate is a closed door with a sign on it.
+
 ## Shared-bot channel ownership
 
 Every active channel served by a shared bot has exactly one default agent. A newly
@@ -184,14 +212,64 @@ assertion, and the original user text is not rewritten.
 
 Agent-to-agent visibility is the intersection of two independently configured directions.
 The source agent decides which peer agents it may discover and message; the target agent
-decides which peer agents may call it. An A → B edge exists only when both policies allow
-it and both agents are otherwise eligible in the same organization and channel.
+decides which peer agents may call it. An A → B edge exists exactly when all four of these
+hold, and nothing else is consulted:
 
-The agent-directory tool must hide peers that fail either side of this check. Message
+1. A and B are both **known in the org-scoped peer directory**. An agent the directory has
+   never seen — or that a missing or stale snapshot cannot prove — fails **closed**.
+2. A and B are in the **same organization**.
+3. A's outbound policy is `all`, or its allowed-target list contains B.
+4. B's inbound call policy is `all`, or its allowed-caller list contains A.
+
+**A shared channel is not part of that predicate — in either direction.** An agent-to-agent
+wake is postless: nothing is left in any channel, so a shared channel is not evidence of
+anything and must not act as an authorization key. It is also not expressible for the
+populations that legitimately need to collaborate — peers that share no channel, and agents
+with no IM integration at all (webchat, webhook, dreaming, memory-only). A channel may only
+**narrow** a directory listing as an optional filter; it can never widen one. A caller
+always sees **itself** in a listing, even under a `selected` outbound policy that does not
+name it (a self-_wake_ is still refused separately).
+
+The agent-directory tool must hide peers that fail any part of this check. Message
 delivery must repeat the same authorization instead of trusting discovery: a remembered,
 guessed, or stale agent id must not bypass either policy. Rejection does not wake the
 target and uses the same `not_allowed` result as an inbound-policy denial. Both directions
 default to all peers so existing agents retain their current collaboration behavior.
+
+**Two unrelated settings are both called "visibility".** The `callPolicy` /
+`outboundPolicy` pair above is what the console labels "Agent visibility", and it is the
+whole agent-to-agent gate. `Agent.visibility` / `sharedWith` governs **human** console
+access to an agent and is **never** consulted for peer discovery or wakes: a `restricted`
+agent is still a discoverable, callable peer.
+
+### Channel's remaining role: coordinate integrity
+
+Channel checks did not disappear; they moved from authorization to the integrity of the
+**coordinate a wake lands on**. The woken peer's session is keyed by its coordinate, so an
+asserted channel a caller cannot reach would otherwise let that caller resume a
+conversation it has no access to and read it back. Three cases, applied identically on
+every wake path:
+
+- **A coordinate the platform records, with known members** — the caller must be one of
+  them, otherwise the wake is refused with `not_allowed`. When it is, the peer is woken in
+  exactly that conversation, so a wake naming a channel a human is already looking at still
+  lands in the same place it always did. Recorded conversations include direct and group
+  conversations, which the product records separately from a bot's channel membership — a
+  wake originating from one keeps working wherever such a row exists.
+- **An unrecorded coordinate on a persisted IM platform** (Slack, Telegram, Discord,
+  Feishu) — refused with `not_allowed`. Such a coordinate is either a conversation the
+  caller cannot reach or a stale one whose record has gone, and admitting it is what would
+  allow aliasing an existing session. This fails closed on purpose: a brief lag in the
+  routing snapshot can transiently refuse a genuine wake, and the caller retries. A direct
+  conversation that was never recorded — because nothing in the product had reason to
+  observe it — falls here too, which is the same outcome it had before channel membership
+  stopped being the authorization key.
+- **A genuinely channel-free coordinate** (webchat, dreaming) — never refused, because this
+  is the collaboration case the org-scoped directory exists to serve. Instead the asserted
+  coordinate is not used at all: the peer is woken in a session derived from the calling
+  agent's own identity, which cannot collide with any platform conversation. Two different
+  asserted coordinates from the same caller therefore collapse into one pairwise
+  conversation, which is the right shape for a postless agent-to-agent exchange.
 
 An agent replying to the exact session that invoked it is a return path, not a new peer
 selection. That reply remains governed by the existing origin-only session capability, so
@@ -358,6 +436,27 @@ AgentConnect informational review Check in that App suite, with the same live ma
 authorization and revision fences as a single-Check rerun. It does not depend on the
 integration's ordinary event cadence.
 
+## GitHub maintainer trigger authorization
+
+GitHub Issue and pull-request integrations treat current repository permission—not the
+webhook's `author_association` label—as trigger authority. An Issue or pull request whose
+author lacks current `write` or `admin` permission does not start an Agent automatically,
+even when its body mentions the Agent or App. A current `write`/`admin` maintainer can
+explicitly `@` the Agent or App in a comment to request the first turn on that external
+thread; the same mention from a read-only user does nothing.
+
+Every comment author is checked live from the comment object; for edit/delete actions,
+the top-level webhook sender is not treated as the content author. An unmentioned
+comment follows the configured cadence only when both the commenter and the Issue/PR
+author still have `write` or `admin` permission. This keeps automatic follow-ups on
+maintainer-owned threads while requiring an explicit maintainer summon for externally
+authored threads. Native review requests and Check reruns use the same
+current-maintainer boundary.
+
+Trigger authorization is separate from effect authorization. A formal PR review still
+requires the active HookRun, review policy, Agent repository grant, and GitHub App
+permission checks at the moment the review is submitted.
+
 ## GitHub review mention routing
 
 An explicit `@<agent-name>` in GitHub targets only that AgentConnect agent's
@@ -367,7 +466,7 @@ are present, broadcast wins; mentioning an unrelated GitHub user does not change
 the configured review cadence.
 
 Mention routing does not bypass the integration's event family, label filter,
-installation attribution, collaborator authorization, or bot-sender veto. A
+installation attribution, live maintainer authorization, or bot-sender veto. A
 targeted agent mention narrows an otherwise broader `updated` fan-out, while an
 event with no AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention

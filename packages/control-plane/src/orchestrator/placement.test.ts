@@ -112,12 +112,63 @@ describe('integrationToSpec conversation gating (§14)', () => {
     expect(spec.slack.gated).toBe(true)
   })
 
-  it("non-gated: 'off' rows stay inert (defaults unchanged) and gated is false", () => {
+  it("non-gated: an 'off' channel keeps the defaults but is muted; gated is false", () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'any', 'im')])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(spec.slack.gated).toBe(false)
-    // The im row adds no auto rule either — DMs are covered by the unscoped dm default.
+    // The defaults are unscoped, so Off cannot be expressed by withholding a rule —
+    // the fence is what silences C1. The im row adds no auto rule either; DMs are
+    // covered by the unscoped dm default.
     expect(spec.slack.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(spec.slack.mutedChannels).toEqual(['C1'])
+  })
+})
+
+describe('integrationToSpec mutedChannels', () => {
+  it('mutes every Off channel and nothing else', () => {
+    const spec = integrationToSpec(INTEGRATION, SECRET, [
+      channel('C1', 'off'),
+      channel('C2', 'mention'),
+      channel('C3', 'any'),
+      channel('C4', 'off')
+    ])
+    if (spec.platform !== 'slack') throw new Error('expected slack spec')
+    expect(spec.slack.mutedChannels).toEqual(['C1', 'C4'])
+  })
+
+  // §14.4: the console hides a preserved direct row once its owner is org-visible, so
+  // honouring its Off would silence DMs through a control nobody can see.
+  it('never mutes a direct row on a non-gated integration', () => {
+    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('D1', 'off', 'im'), channel('G1', 'off', 'mpim')])
+    if (spec.platform !== 'slack') throw new Error('expected slack spec')
+    expect(spec.slack.mutedChannels).toEqual([])
+  })
+
+  // A gated integration says Off by having no rule for the conversation; stating it
+  // twice would let the two representations drift apart.
+  it('stays empty for a gated integration, whose Off is the missing rule', () => {
+    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('C2', 'mention')], true)
+    if (spec.platform !== 'slack') throw new Error('expected slack spec')
+    expect(spec.slack.mutedChannels).toEqual([])
+    expect(spec.slack.bindRules).toEqual([{ channel: 'C2', match: { kind: 'mention' } }])
+  })
+
+  it('rides every platform variant', () => {
+    const tg = integrationToSpec({ ...INTEGRATION, platform: 'telegram' }, { botToken: '1:a', appToken: null }, [
+      channel('-100', 'off')
+    ])
+    if (tg.platform !== 'telegram') throw new Error('expected telegram spec')
+    expect(tg.telegram.mutedChannels).toEqual(['-100'])
+    const dc = integrationToSpec({ ...INTEGRATION, platform: 'discord' }, { botToken: 'bot', appToken: null }, [
+      channel('999', 'off')
+    ])
+    if (dc.platform !== 'discord') throw new Error('expected discord spec')
+    expect(dc.discord.mutedChannels).toEqual(['999'])
+    const fs = integrationToSpec({ ...INTEGRATION, platform: 'feishu' }, { botToken: 'sec', appToken: 'cli_x' }, [
+      channel('oc_1', 'off')
+    ])
+    if (fs.platform !== 'feishu') throw new Error('expected feishu spec')
+    expect(fs.feishu.mutedChannels).toEqual(['oc_1'])
   })
 })
 

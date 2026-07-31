@@ -1872,7 +1872,7 @@ export const CreateGithubHookBody = HookBodyBase.extend({
   commentFamilies: GithubCommentFamilies.default([]),
   labelFilter: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
   // P3 summon mode: every event's authored text must @-mention the assigned
-  // agent or the App (comments also pass the relay's collaborator gate).
+  // agent or the App (thread actors also pass the relay's live maintainer gate).
   mentionOnly: z.boolean().default(false),
   reviewPolicy: HookReviewPolicyEnum.default('off'),
   reportingMode: HookReportingModeEnum.default('off'),

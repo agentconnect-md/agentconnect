@@ -163,6 +163,7 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       repoId: '67890',
       repoFullName: 'acme/infra',
       senderLogin: 'octocat',
+      subjectAuthorLogin: 'issue-author',
       configRevision: '7',
       dispatchRevision: '9',
       siblingFences: [

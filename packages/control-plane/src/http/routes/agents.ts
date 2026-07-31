@@ -1058,6 +1058,30 @@ export function agentRoutes(deps: HttpDeps) {
           // closed until the registry validates it.
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent) // no-op until placed; reconcile carries it otherwise
+          // A create that arrives already PLACED (`daemonId` in the body) must also enter
+          // the peer directory now. `replicateUpsert` only ships the AgentSpec (same-daemon
+          // authorization); a peer WAKE is authorized against the collaboration snapshot,
+          // whose flat `agents[]` is the only structure an agent with no IM integration can
+          // appear in — and channel membership no longer gates the directory, so there is no
+          // later `integration/channels` push to rely on. Without this the agent would be
+          // DISCOVERABLE (channel/agents reads the DB live) yet un-wakeable until an
+          // unrelated change bumped the snapshot: the listed-but-uncallable state that
+          // discovery-as-authorization forbids. Gated on placement for the same reason
+          // `replicateUpsert` is — `buildCollabSnapshot` drops daemonId-less rows, so an
+          // unplaced create has nothing to publish and must not churn every routingEpoch.
+          // Best-effort for the same reason as `replicateUpsert` above: the agent row is
+          // ALREADY committed, so a snapshot-push hiccup must not turn a successful create
+          // into a 500. `register/ok` carries the same directory as the reconnect backstop.
+          if (agent.daemonId) {
+            try {
+              await deps.collabRoutes.broadcast(agent.orgId)
+            } catch (err) {
+              app.log.warn(
+                { err, agentId: agent.id, orgId: agent.orgId },
+                'collaboration routes push failed after agent create (backstop: reconnect snapshot)'
+              )
+            }
+          }
           if (agent.daemonId) await syncMcpDefsForAgent(orgOf(req), agent.daemonId, [], agent.mcpServers)
           return reply.code(201).send({
             ...toDto(
@@ -1872,6 +1896,24 @@ export function agentRoutes(deps: HttpDeps) {
           // every HookDef, tombstones their durable review projections, and
           // cascades the Agent/HookDef rows in one transaction.
           const removedHooks = await deps.repos.agent.delete(AgentId(req.params.id))
+          // WITHDRAW it from the peer directory now, the mirror of the create path above.
+          // Discovery (`channel/agents`) reads the DB live while a peer WAKE is authorized
+          // against the pushed snapshot, so without this every daemon in the org keeps a flat
+          // `agents[]` entry whose `admits()` still says yes — a wake routed at a row that no
+          // longer exists. Gated on placement for the same reason as the create: an unplaced
+          // agent was never in a snapshot, so there is nothing to withdraw and no reason to
+          // churn every routingEpoch. Best-effort — the row is already gone, and `register/ok`
+          // carries the corrected directory as the reconnect backstop.
+          if (current.daemonId) {
+            try {
+              await deps.collabRoutes.broadcast(current.orgId)
+            } catch (err) {
+              app.log.warn(
+                { err, agentId: current.id, orgId: current.orgId },
+                'collaboration routes push failed after agent delete (backstop: reconnect snapshot)'
+              )
+            }
+          }
           await replicateRemove(current.id, current.daemonId)
           if (current.daemonId && current.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)

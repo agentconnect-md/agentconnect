@@ -29,8 +29,10 @@ cannot reveal restricted agents or hidden allow-list entries.
 
 The graph is a **configured control-plane projection**. An arrow means the
 directional policies permit a direct call. Successful delivery can still depend
-on runtime conditions such as placement, daemon/relay availability, shared
-channel membership, and hop limits.
+on runtime conditions such as placement, daemon/relay availability, snapshot
+freshness, and hop limits. It does **not** depend on a shared channel: agent-to-agent
+authorization is org-scoped and channel-free (see
+[directional-agent-visibility.md](directional-agent-visibility.md)).
 
 The overview is therefore explanatory UI, not an authorization oracle and not
 a data-plane dependency. The daemon and relay continue to enforce every call.

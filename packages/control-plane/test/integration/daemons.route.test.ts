@@ -477,6 +477,30 @@ describe('DELETE /daemons/:id — remove from fleet', () => {
     expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).daemonId).toBeNull()
   })
 
+  it('re-broadcasts the collaboration snapshot (its agents just left the peer directory)', async () => {
+    // `Agent.daemonId` is SetNull, so the daemon's agents become UNPLACED and
+    // `buildCollabSnapshot` drops them — but only for holders that receive a new snapshot.
+    // Without this push every relay + remaining daemon keeps flat `agents[]` entries naming
+    // the dead daemonId, and `admits()` keeps admitting wakes nothing can deliver.
+    await seedDaemon()
+    await seedAgent(prisma, randomUUID(), { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+    const collabSpy = vi.spyOn(running.deps.collabRoutes, 'broadcast')
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/daemons/${DAEMON}` })
+    expect(res.statusCode).toBe(204)
+    expect(collabSpy).toHaveBeenCalledWith(DEFAULT_ORG_ID)
+  })
+
+  it('pushes NO collaboration snapshot when the daemon hosted no agents', async () => {
+    await seedDaemon()
+    running = buildHttpApp(prisma)
+    const collabSpy = vi.spyOn(running.deps.collabRoutes, 'broadcast')
+
+    expect((await running.app.inject({ method: 'DELETE', url: `${ORG}/daemons/${DAEMON}` })).statusCode).toBe(204)
+    expect(collabSpy).not.toHaveBeenCalled() // nothing left the directory ⇒ no routingEpoch churn
+  })
+
   it('refuses (409) while the daemon is live + reachable', async () => {
     await seedDaemon()
     running = buildHttpApp(prisma, undefined, liveness({ [DAEMON]: { state: 'READY', reachable: true } }))

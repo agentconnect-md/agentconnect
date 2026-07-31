@@ -54,6 +54,26 @@ export const CollabAgentPlacement = z.object({
 })
 export type CollabAgentPlacement = z.infer<typeof CollabAgentPlacement>
 
+/**
+ * One agent's placement + call policy carried OUTSIDE any channel — the org-scoped
+ * peer directory entry.
+ *
+ * Every structure on the CP→daemon and CP→relay wires is channel-keyed, so an agent
+ * with NO IM integration (webchat, hook, dream, memory-only) never appears in any
+ * `channels[]` entry at all. The channel-keyed snapshot structurally cannot express
+ * "which agents exist in this org", which is precisely the input channel-free
+ * authorization needs: discovery and A2A authorization depend only on the directional
+ * call policy (`outboundPolicy`/`allowedTargetAgentIds` on the caller,
+ * `callPolicy`/`allowedCallerAgentIds` on the target), org-scoped, with channel
+ * demoted to an optional filter. Hence the flat list below.
+ */
+export const CollabOrgAgent = CollabAgentPlacement.extend({
+  // Org ids are opaque strings (see CollabChannelRoute) — carried per entry because
+  // the flat list is not nested under an org-keyed parent. Cross-org pairs never resolve.
+  orgId: z.string().min(1)
+})
+export type CollabOrgAgent = z.infer<typeof CollabOrgAgent>
+
 /** All agents present in one channel, across daemons. `orgId` scopes routing +
  *  authorization: a cross-org caller/target pair never resolves (§2.5 — cross-org
  *  rejected). */
@@ -75,6 +95,13 @@ export type CollabChannelRoute = z.infer<typeof CollabChannelRoute>
  */
 export const CollabRoutesSnapshot = z.object({
   generation: z.number().int().nonnegative().default(0),
-  channels: z.array(CollabChannelRoute).default([])
+  channels: z.array(CollabChannelRoute).default([]),
+  /**
+   * FLAT org-scoped directory, alongside (not instead of) `channels`. It is the only
+   * place an integration-less agent can appear — see `CollabOrgAgent` — and therefore
+   * the authorization input for channel-free A2A. `default([])` keeps a snapshot from
+   * an older CP (which advertises no `agent-directory-org-scope-v1`) decodable.
+   */
+  agents: z.array(CollabOrgAgent).default([])
 })
 export type CollabRoutesSnapshot = z.infer<typeof CollabRoutesSnapshot>

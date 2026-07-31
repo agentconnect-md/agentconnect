@@ -13,6 +13,7 @@ import type {
   AgentWorkspace,
   CreateAgentInput,
   HookRecord,
+  OrgAgentRecord,
   UpdateAgentInput,
   ViewCtx
 } from '../ports.js'
@@ -710,5 +711,51 @@ export class PgAgentRepo implements AgentRepo {
       include: withUsers
     })
     return rows.map(toRecord)
+  }
+
+  // The org PEER directory (agent-collaboration §2.5/§6.1). A narrow `select` on the
+  // agent table alone — no `withUsers` join (audit identities are console-only) and
+  // deliberately NO `visibilityWhere`: ResourceVisibility gates human console access,
+  // while peer discovery is gated ONLY by the directional call policy the caller
+  // applies over these rows. Unlike `IntegrationRepo.agentsInChannel` there is no
+  // integration join, so an agent with no IM integration is included — that is the
+  // whole point of the flat directory.
+  //
+  // `daemonId: { not: null }` is NOT an optimization: this one query feeds BOTH the
+  // `channel/agents` roster a model discovers peers from AND the flat
+  // `CollabRoutesSnapshot.agents[]` wakes are authorized against, and
+  // `buildCollabSnapshot` drops daemonId-less rows there (no owning daemon ⇒ nothing to
+  // route a wake to). Listing an unplaced agent would therefore advertise a peer that is
+  // discoverable but not callable — the model gets a bare 'not_allowed' and retries — so
+  // the exclusion belongs in the shared read, where the two surfaces cannot disagree.
+  async orgDirectory(orgId: OrgId): Promise<OrgAgentRecord[]> {
+    const rows = await this.db.agent.findMany({
+      where: { orgId, daemonId: { not: null } },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        displayName: true,
+        description: true,
+        status: true,
+        daemonId: true,
+        callPolicy: true,
+        allowedCallerAgentIds: true,
+        outboundPolicy: true,
+        allowedTargetAgentIds: true
+      }
+    })
+    return rows.map((row) => ({
+      agentId: AgentId(row.id),
+      name: row.name,
+      displayName: row.displayName,
+      description: row.description,
+      status: row.status as OrgAgentRecord['status'],
+      daemonId: row.daemonId,
+      callPolicy: row.callPolicy as AgentCallPolicy,
+      allowedCallerAgentIds: row.allowedCallerAgentIds,
+      outboundPolicy: row.outboundPolicy as AgentCallPolicy,
+      allowedTargetAgentIds: row.allowedTargetAgentIds
+    }))
   }
 }

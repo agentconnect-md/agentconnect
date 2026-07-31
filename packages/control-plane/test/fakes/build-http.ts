@@ -254,7 +254,7 @@ export function buildHttpApp(
       new PgSessionRepo(prisma),
       { info() {}, warn() {}, debug() {} }
     ),
-    collabRoutes: new CollabRoutesService(daemonRepo, integrationRepo, relayControl, sender),
+    collabRoutes: new CollabRoutesService(daemonRepo, integrationRepo, agentRepo, relayControl, sender),
     agentMutations: new AgentMutationGate(),
     memoryConnectionMutations: new ExclusiveMutationGate(),
     sessionOwners: connReg,
