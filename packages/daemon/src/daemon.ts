@@ -9547,12 +9547,13 @@ export class Daemon {
           initializeOnly,
           sharedMemoryExcluded:
             webchat?.evaluation !== true &&
-            ((persistedSessionId != null && this.store.isCaptureExcluded(persistedSessionId)) ||
-              callMeta !== undefined ||
-              msg.isDm ||
-              msg.platform === 'webchat' ||
-              this.pendingLaunchCorrelation.has(agentId) ||
-              (msg.platform === 'slack' && !msg.isDm && msg.source === 'user')),
+            (persistedSessionId != null
+              ? this.store.isCaptureExcluded(persistedSessionId)
+              : callMeta !== undefined ||
+                msg.isDm ||
+                msg.platform === 'webchat' ||
+                this.pendingLaunchCorrelation.has(agentId) ||
+                (msg.platform === 'slack' && !msg.isDm && msg.source === 'user')),
           ...(delegatedHost
             ? {
                 host: delegatedHost.host,

@@ -273,6 +273,41 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('resumes automatic recall after the CP publishes a private DM to the org', async () => {
+    const { factory } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+    const recallForTurn = vi.spyOn((daemon as any).memory, 'recallForTurn').mockResolvedValue([])
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'private question'), 'int-a')
+    expect(recallForTurn).not.toHaveBeenCalled()
+    expect((daemon as any).store.applyCpCaptureGate('acp-1', false, 1)).toBe('applied')
+
+    await (daemon as any).dispatch('bot-a', dm('200', 'shared follow-up'), 'int-a')
+
+    expect(recallForTurn).toHaveBeenCalledOnce()
+    await daemon.stop()
+  }, 15_000)
+
+  it('resumes automatic recall after the CP confirms an A2A child is org-visible', async () => {
+    const { factory } = replyingHost('here is my answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    makeRoutable(daemon)
+    const recallForTurn = vi.spyOn((daemon as any).memory, 'recallForTurn').mockResolvedValue([])
+    const callMeta = (deliveryId: string) => ({ callFrom: 'caller-agent', hopCount: 1, deliveryId })
+
+    await (daemon as any).dispatch('bot-a', agentMsg('100', 'delegated task'), 'int-a', undefined, callMeta('d1'))
+    expect(recallForTurn).not.toHaveBeenCalled()
+    expect((daemon as any).store.applyCpCaptureGate('acp-1', false, 1)).toBe('applied')
+
+    await (daemon as any).dispatch('bot-a', agentMsg('200', 'delegated follow-up'), 'int-a', undefined, callMeta('d2'))
+
+    expect(recallForTurn).toHaveBeenCalledOnce()
+    await daemon.stop()
+  }, 15_000)
+
   it('uses the stable bot name in linked attribution instead of the display name', async () => {
     const { factory, host } = replyingHost('the answer')
     ;(host as any).modelOptions = vi.fn(() => ({ current: 'claude-sonnet-4-5' }))
