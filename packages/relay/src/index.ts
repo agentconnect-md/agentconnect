@@ -226,9 +226,9 @@ async function main(): Promise<void> {
   // webhook secret is configured; unset ⇒ the whole endpoint answers 404
   // (webhook-triggers doc, decision 13).
   if (config.GITHUB_APP_WEBHOOK_SECRET) {
-    // Live comment permission fallbacks cost two GitHub calls. Keep their
+    // Live Issue/PR actor checks cost at least two GitHub calls. Keep their
     // repository-wide upstream budget separate from per-hook run capacity.
-    const githubAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 5, refillPerSec: 0.1 })
+    const githubAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
     registerGithubIngress(server, {
       table: hookTable,
       daemons: () => held.rdServer,

@@ -209,7 +209,7 @@ start turns. A diff-line review comment may match a shared
 `issue_comment` subscription or an explicit
 `pull_request_review_comment` subscription.
 
-### Summon and Collaborator Gates
+### Summon and Maintainer Gates
 
 With `mentionOnly` enabled, authored event text must contain either:
 
@@ -219,32 +219,38 @@ With `mentionOnly` enabled, authored event text must contain either:
 The App handle wins when both forms are present. Unrelated mentions do not
 change the candidate set.
 
-Every comment also passes the collaborator gate. Trusted payload associations
-are `OWNER`, `MEMBER`, and `COLLABORATOR`. When the payload does not provide a
-trusted association, the relay asks the CP for a live, body-free permission
-decision. A comment does not reach the daemon unless the author has current
-write-level authority.
+Every numbered-thread event passes a live, body-free permission decision owned
+by the CP. Webhook `author_association` values are descriptive only: `MEMBER`
+and `COLLABORATOR` can still represent read or triage access and never bypass
+the current repository-permission lookup.
+
+Issue and pull-request lifecycle events require current write/admin authority
+from the subject author. Every comment requires it from the commenter. An
+unmentioned comment also requires current write/admin authority from the
+Issue/PR author; an explicit mention by an authorized maintainer omits that
+second requirement and can summon the Agent onto an externally authored
+thread. Missing identity metadata, denial, timeout, or an unavailable lookup
+fails closed.
 
 A native `pull_request:review_requested` event can explicitly request the App
 bot as reviewer. It bypasses cadence, labels, and mention filters only after a
 live maintainer authorization.
 
-### External Pull Requests
+### External Issues and Pull Requests
 
-Pull-request bodies and diffs are attacker-controlled input. A lifecycle event
-from an author outside the repository write boundary does not run an agent
-automatically.
+Issue/PR bodies and pull-request diffs are attacker-controlled input. A
+lifecycle event from an author outside the repository write boundary does not
+run an agent automatically, even when the body mentions the Agent or App. One
+live decision and a batch of durable hook fences authorize the complete
+repository fan-out before any agent dispatch.
 
-`OWNER`, `MEMBER`, and `COLLABORATOR` payload associations are the local fast
-path. For any other or missing association, the relay asks the CP for the PR
-author's current repository permission using the existing metadata-only GitHub
-App authorization path. Current write/admin permission recovers a stale webhook
-association; denial or an unavailable lookup fails closed. One lookup and a
-batch of durable hook fences decide the complete repository fan-out before any
-agent dispatch.
+An authorized maintainer can request execution on an external thread by
+explicitly mentioning the Agent or App in a comment. An ordinary unmentioned
+comment cannot silently activate an external thread; both its commenter and
+the original subject author must pass the same live write/admin check.
 
-For revision-bearing events such as open, synchronize, ready-for-review, and
-draft conversion, the system records a body-free
+For external PR revision-bearing events such as open, synchronize,
+ready-for-review, and draft conversion, the system records a body-free
 `review_request_required` outcome and may project an informational Check with a
 maintainer action. A maintainer can then request execution through:
 
@@ -467,8 +473,8 @@ without the relay, while a webhook always requires a public ingress process.
 - Repository matching uses numeric IDs.
 - Installation membership comes from CP-owned records.
 - Bot senders never trigger GitHub hooks.
-- Comment authors pass collaborator or live-permission checks.
-- External pull requests require a maintainer request.
+- Issue/PR actors pass live write/admin checks; payload associations never authorize.
+- External Issues and pull requests require an explicit maintainer request.
 - Event bodies remain relay-to-daemon only.
 - Logs contain identifiers and outcomes, never payload text or secrets.
 - `HookSecret` is absent from normal hook queries and DTOs.

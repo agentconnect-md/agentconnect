@@ -358,6 +358,25 @@ AgentConnect informational review Check in that App suite, with the same live ma
 authorization and revision fences as a single-Check rerun. It does not depend on the
 integration's ordinary event cadence.
 
+## GitHub maintainer trigger authorization
+
+GitHub Issue and pull-request integrations treat current repository permission—not the
+webhook's `author_association` label—as trigger authority. An Issue or pull request whose
+author lacks current `write` or `admin` permission does not start an Agent automatically,
+even when its body mentions the Agent or App. A current `write`/`admin` maintainer can
+explicitly `@` the Agent or App in a comment to request the first turn on that external
+thread; the same mention from a read-only user does nothing.
+
+Every comment sender is checked live. An unmentioned comment follows the configured
+cadence only when both the commenter and the Issue/PR author still have `write` or
+`admin` permission. This keeps automatic follow-ups on maintainer-owned threads while
+requiring an explicit maintainer summon for externally authored threads. Native review
+requests and Check reruns use the same current-maintainer boundary.
+
+Trigger authorization is separate from effect authorization. A formal PR review still
+requires the active HookRun, review policy, Agent repository grant, and GitHub App
+permission checks at the moment the review is submitted.
+
 ## GitHub review mention routing
 
 An explicit `@<agent-name>` in GitHub targets only that AgentConnect agent's
@@ -367,7 +386,7 @@ are present, broadcast wins; mentioning an unrelated GitHub user does not change
 the configured review cadence.
 
 Mention routing does not bypass the integration's event family, label filter,
-installation attribution, collaborator authorization, or bot-sender veto. A
+installation attribution, live maintainer authorization, or bot-sender veto. A
 targeted agent mention narrows an otherwise broader `updated` fan-out, while an
 event with no AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention

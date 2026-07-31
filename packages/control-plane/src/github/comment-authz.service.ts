@@ -14,7 +14,7 @@ export interface GithubCommentAuthzDeps {
 const DEFAULT_TIMEOUT_MS = 4_000
 
 /**
- * Resolve a GitHub actor's current repository permission without trusting
+ * Resolve every relevant GitHub actor's current repository permission without trusting
  * webhook `author_association`. Every local metadata mismatch denies before a
  * GitHub request. Operational failures and the bounded overall timeout
  * propagate so the wire handler can distinguish them from a definitive denial.
@@ -82,13 +82,11 @@ export class GithubCommentAuthzService {
     const resolved = await this.deps.github.repoRefForCommentAuthz(installation, owner, repo)
     if (!resolved || resolved.repoId !== hook.repoId) return false
 
-    const permission = await this.deps.github.userRepoPermissionForCommentAuthz(
-      installation,
-      owner,
-      repo,
-      req.senderLogin
+    const actorLogins = [...new Set([req.senderLogin, req.subjectAuthorLogin].filter((login) => login !== undefined))]
+    const permissions = await Promise.all(
+      actorLogins.map((login) => this.deps.github.userRepoPermissionForCommentAuthz(installation, owner, repo, login))
     )
-    if (permission !== 'admin' && permission !== 'write') return false
+    if (permissions.some((permission) => permission !== 'admin' && permission !== 'write')) return false
 
     // The GitHub calls above can take seconds. Re-read immediately before the
     // allow verdict so a concurrent disable, retarget, or reassignment cannot
