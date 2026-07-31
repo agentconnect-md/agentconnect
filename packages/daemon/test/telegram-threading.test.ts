@@ -409,6 +409,37 @@ describe('reply targeting', () => {
       replyTo: 900
     })
   })
+
+  it('an agent-call turn falls back to the session thread root as its reply anchor', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const replyTarget = (m: NormalizedMessage) => (daemon as any).telegramReplyTarget(m)
+    // A synthesized agent-call delivery (replyToSession / peer wake) — its msgId carries
+    // no platform message id, so pre-fix the turn's answer posted to the chat root,
+    // visually outside the reply chain the session lives in.
+    const agentCall = (thread?: string): NormalizedMessage => ({
+      msgId: 'agentcall:-100:2f1b2c1e-aaaa-bbbb-cccc-121212121212',
+      traceId: 'd1',
+      source: 'agent',
+      platform: 'telegram',
+      channel: '-100',
+      ...(thread !== undefined ? { thread } : {}),
+      sender: { id: 'bot-b', isBot: true },
+      text: 'answer',
+      mentionedBots: [],
+      isDm: false
+    })
+    // Reply-based session → anchor to the thread root (the customer's message).
+    expect(replyTarget(agentCall('tg:170'))).toBe(170)
+    // DM sessions are a single stream — no anchor, plain post as before.
+    expect(replyTarget(agentCall('dm'))).toBeUndefined()
+    // A numeric thread is a forum topic id (drives message_thread_id at post time),
+    // never a reply anchor.
+    expect(replyTarget(agentCall('172'))).toBeUndefined()
+    // A real platform message still replies to ITSELF, not the thread root.
+    expect(replyTarget(tg(456, { thread: 'tg:100' }))).toBe(456)
+    await daemon.stop()
+  })
 })
 
 /** Seed an addressable session in one physical Telegram bot scope. */

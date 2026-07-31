@@ -4044,12 +4044,20 @@ export class Daemon {
 
   /** Telegram reply target for a turn/command triggered by `msg`: the triggering
    *  message's own id, so the bot's posts reply to it (req: reply to the last message
-   *  in the session, and keep the reply chain resolvable). Undefined off Telegram or
-   *  when the id can't be recovered as a positive integer. */
+   *  in the session, and keep the reply chain resolvable). An agent-call turn
+   *  (`replyToSession` / a peer wake) synthesizes its msgId (`agentcall:<channel>:<uuid>`)
+   *  so no platform id can be recovered — without a fallback its answer posts to the
+   *  chat root, visually outside the reply chain the session lives in. Those turns
+   *  anchor to the session's thread root instead (`tg:<root>`, see
+   *  {@link canonicalizeTelegramThread}); `dm` and numeric forum-topic threads carry no
+   *  reply anchor. Undefined off Telegram or when neither id resolves. */
   private telegramReplyTarget(msg: NormalizedMessage): number | undefined {
     if (msg.platform !== 'telegram') return undefined
     const n = Number(this.telegramMessageId(msg))
-    return Number.isInteger(n) && n > 0 ? n : undefined
+    if (Number.isInteger(n) && n > 0) return n
+    const root = msg.thread !== undefined ? /^tg:(\d+)$/.exec(msg.thread) : null
+    const r = root ? Number(root[1]) : NaN
+    return Number.isInteger(r) && r > 0 ? r : undefined
   }
 
   // route an inbound Slack message
@@ -5806,6 +5814,12 @@ export class Daemon {
     originThread: string
   }): void {
     const platform = this.narrowPlatform(req.platform)
+    // The post's raw ts is the new thread's root. On Telegram that ts is a bare numeric
+    // message id, but inbound reply-based sessions key `tg:<root>` (see
+    // canonicalizeTelegramThread) — key the spawned session the same way, or a customer
+    // reply to the post can never land in it and opens yet another session. The transcript
+    // seed below still carries the RAW ts (it must stay a real, comparable platform ts).
+    const thread = platform === 'telegram' && /^\d+$/.test(req.thread) ? `tg:${req.thread}` : req.thread
     // The origin session may live on a DIFFERENT platform than this post (e.g. a Telegram
     // turn posting to Slack). Key the origin lookup by the ORIGIN's platform, not the target's,
     // or the caller session is never found and the new session loses its parent lineage.
@@ -5851,7 +5865,7 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: req.channel,
-      thread: req.thread,
+      thread,
       ...(transportScope !== undefined ? { transportScope } : {}),
       // The seed's transcript ts MUST be the post's real ts (the new thread's root), not the
       // random deliveryId — otherwise the session's lastDeliveredTs becomes a non-ts string and
@@ -5864,7 +5878,7 @@ export class Daemon {
       // No model turn runs for this seed; headless is retained as a transport backstop.
       headless: true
     }
-    const targetSession = sessionKey(platform, req.channel, req.thread, req.agentId, transportScope)
+    const targetSession = sessionKey(platform, req.channel, thread, req.agentId, transportScope)
     void this.dispatch(req.agentId, normalized, req.integrationId, undefined, callMeta).catch((err) =>
       this.log.error(`channel-root session spawn failed for agent "${req.agentId}": ${formatErr(err)}`)
     )
