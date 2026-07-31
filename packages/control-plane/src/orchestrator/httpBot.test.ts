@@ -117,6 +117,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let threadOwnerLookup: { botId: BotId; channel: string; thread: string } | null
   // §14: agents whose AgentRepo.get returns visibility 'restricted' (⇒ gated).
   let gatedAgents: Set<string>
+  // Agents reported with no daemonId — not placed, so they compile no routes.
+  let unplacedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
   let threadBinding: { agentId: AgentId; daemonId: string } | null
   // revokeBot recordings: the Bot revocation stamp + integration/remove pushes.
@@ -130,8 +132,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
   function makeOrch(): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
-      [ALICE]: agent(ALICE, 'alice', D1),
-      [BOB]: agent(BOB, 'bob', D2)
+      [ALICE]: agent(ALICE, 'alice', unplacedAgents.has(ALICE) ? null : D1),
+      [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
     }
     let getCalls = 0
     const bots: Pick<BotRepo, 'get' | 'listHttpActive' | 'revokeIfCurrent'> = {
@@ -294,6 +296,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     threadOwner = null
     threadOwnerLookup = null
     gatedAgents = new Set()
+    unplacedAgents = new Set()
     threadBinding = null
     blockNextChannelList = null
     bumpRevisionAfterFirstGet = false
@@ -445,12 +448,56 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([])
     })
 
-    it("a NON-gated owner's preserved 'off' row is inert: ownership stays as a mention route (§14.4)", async () => {
+    it("a NON-gated owner's 'off' channel compiles no route and is muted for the whole bot", async () => {
       channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' })]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([])
+      // Dropping the route is not enough on an ungated bot: the keyword slug and
+      // `defaultAgentId` rungs are unscoped, so Off must also be stated as a fence.
+      expect(assign.mutedChannels).toEqual(['C9'])
+    })
+
+    it("mutes an Off channel whose owner isn't placed — the operator's choice outlives the placement", async () => {
+      channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' })]
+      unplacedAgents = new Set([ALICE])
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.mutedChannels).toEqual(['C9'])
+    })
+
+    // The fence covers every Off channel: dropping the route is not enough, because
+    // the keyword and defaultAgentId rungs are unscoped and would hand a bare @bot to
+    // a mixed bot's public default in a channel the console shows as Off.
+    it("mutes a GATED owner's Off channel too, and marks it as still owing a notice", async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([])
+      expect(assign.mutedChannels).toEqual(['C9'])
+      expect(assign.gatedOffChannels).toEqual(['C9'])
+    })
+
+    it('separates the two kinds of Off on one mixed bot: both muted, only the gated one speaks', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' }), // gate
+        channel({ integrationId: INT_B, channelId: 'C8', agentId: BOB, trigger: 'off' }) // operator mute
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect([...assign.mutedChannels].sort()).toEqual(['C8', 'C9'])
+      expect(assign.gatedOffChannels).toEqual(['C9'])
+    })
+
+    it('leaves an active channel unmuted', async () => {
+      channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'any' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.mutedChannels).toEqual([])
       expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([
-        expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
       ])
     })
 

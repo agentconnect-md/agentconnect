@@ -45,6 +45,14 @@ export interface BotAssignment {
    *  in the conversation — a binding made before the gate was applied must not keep
    *  routing a private agent in a now-Off conversation. */
   gatedAgentIds?: string[]
+  /** Channels switched OFF. The ladder below has rungs no missing route can suppress
+   *  — thread continuity, the unscoped keyword slug, `defaultAgentId` — so Off is a
+   *  fence rather than an omission: a muted channel resolves to nothing. */
+  mutedChannels?: string[]
+  /** The muted channels whose owner is GATED (§14 never enabled them). They resolve to
+   *  nothing like any mute, but unlike an operator's mute they keep the one-time notice:
+   *  someone who could not know the agent is private must not meet a dead bot. */
+  gatedOffChannels?: string[]
   /** §14.3: the relayId deterministically responsible for this bot's one-time
    *  CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
@@ -116,6 +124,9 @@ export function arbitrate(
   if (a.botUserId !== undefined && msg.sender.id === a.botUserId) return null
   const explicitlyMentioned = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
   if (msg.sender.isBot && (msg.platform !== 'slack' || !explicitlyMentioned)) return null
+  // A channel switched Off resolves to no target at all — ahead of every rung, so
+  // neither an @-mention nor an existing thread binding can reach into it.
+  if (a.mutedChannels?.includes(msg.channel)) return null
 
   const scoped = a.routes.filter((r) => r.scope?.channel !== undefined && scopeMatches(r, msg))
 
@@ -195,6 +206,8 @@ export class BotArbitrationRouter {
       | 'defaultAgentId'
       | 'defaultDaemonId'
       | 'gatedAgentIds'
+      | 'mutedChannels'
+      | 'gatedOffChannels'
       | 'noticeAuthority'
       | 'noticedDmConversations'
     >
@@ -207,6 +220,8 @@ export class BotArbitrationRouter {
     a.defaultAgentId = patch.defaultAgentId
     a.defaultDaemonId = patch.defaultDaemonId
     a.gatedAgentIds = patch.gatedAgentIds
+    a.mutedChannels = patch.mutedChannels
+    a.gatedOffChannels = patch.gatedOffChannels
     a.noticeAuthority = patch.noticeAuthority
     a.noticedDmConversations = patch.noticedDmConversations
   }
@@ -317,6 +332,18 @@ export class BotArbitrationRouter {
       return undefined
     }
     return candidate
+  }
+
+  /** True iff `channelId` is Off. `arbitrate()` already refuses it; the caller needs
+   *  this to tell a mute apart from the other reasons arbitration returns null. */
+  channelMuted(botId: string, channelId: string): boolean {
+    return this.bots.get(botId)?.mutedChannels?.includes(channelId) ?? false
+  }
+
+  /** True iff `channelId` is Off because §14 never enabled its gated owner — the one
+   *  muted case that still speaks, once, to say the agent is private. */
+  channelGatedOff(botId: string, channelId: string): boolean {
+    return this.bots.get(botId)?.gatedOffChannels?.includes(channelId) ?? false
   }
 
   /** True iff `channelId` has a channel-scoped `auto` owner — a rule that fires on

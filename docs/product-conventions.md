@@ -101,6 +101,34 @@ transcript display. The first real reply in that thread receives the root as pre
 context before the new message. Session initialization itself produces no agent output,
 tool calls, memory recall or capture, turn evaluation, or token usage.
 
+## Per-channel trigger
+
+Every channel a bot is in carries a trigger, and every agent gets all three settings —
+Off, every message, or @-mention (the default). Off is not a gating feature: an
+org-visible agent is entitled to the same control as a restricted one.
+
+Off means the agent does not respond in that channel at all. Not to an @-mention, not to
+a follow-up in a thread it had already joined, not to a control command, and not through
+a shared bot's slug or default-dispatch fallback. It leaves everything else intact: the
+bot stays in the channel, the channel keeps its row and its owner, past sessions keep
+their transcripts, and an agent may still post there when something else — a scheduled
+task, another agent's hand-off — directs it to.
+
+Off is therefore the Console's answer to "stop responding here", and the only one it
+has. Removing the bot from a channel or group is a platform action, done in Slack,
+Telegram, Discord, or Lark; the Console reflects that membership but never changes it.
+
+A restricted agent expresses the same choice through its conversation gate, which is
+independently fail-closed: a conversation it has never been enabled in stays unroutable
+whether or not anyone set it to Off.
+
+Those two states read alike on the row and mean different things, so they answer an
+@-mention differently. A conversation a restricted agent was never enabled in replies
+once, telling the person to ask an admin — the bot must not look broken to someone who
+had no way to know it was private. A channel switched Off says nothing at all: an
+operator already decided, and pointing the room at an admin would be both wrong and
+noise. Off is silence; the gate is a closed door with a sign on it.
+
 ## Shared-bot channel ownership
 
 Every active channel served by a shared bot has exactly one default agent. A newly

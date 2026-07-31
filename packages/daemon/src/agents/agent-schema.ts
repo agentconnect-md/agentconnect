@@ -33,6 +33,12 @@ export const SlackConfigSchema = z.object({
   botUserId: z.string().optional(), // filled at connect via auth.test if absent; provided by CP for shared
   allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
+  // Channels the operator switched OFF. bindRules only ADD reach, so an ungated
+  // integration — which reaches every conversation through unscoped defaults — needs
+  // this subtractive fence to say "not here". A muted channel matches no rule of this
+  // integration: no mention, no thread continuity, no control command. A gated
+  // integration leaves it empty; its Off is the ABSENCE of a conversation-scoped rule.
+  mutedChannels: z.array(z.string()).default([]),
   // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
   // ships only conversation-scoped bindRules; explicitly-addressed unrouted
   // messages get a one-time notice and DM conversations are reported to the CP.
@@ -46,6 +52,7 @@ export const TelegramConfigSchema = z.object({
   botUsername: z.string().optional(), // @username without the '@', for mention detection; filled via getMe
   allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
+  mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
   // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
   // ships only conversation-scoped bindRules; explicitly-addressed unrouted
   // messages get a one-time notice and DM conversations are reported to the CP.
@@ -59,6 +66,7 @@ export const DiscordConfigSchema = z.object({
   botUserId: z.string().optional(), // numeric bot user id, filled at connect via the ready event if absent
   allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
+  mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
   // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
   // ships only conversation-scoped bindRules; explicitly-addressed unrouted
   // messages get a one-time notice and DM conversations are reported to the CP.
@@ -76,6 +84,7 @@ export const FeishuConfigSchema = z.object({
   region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn (default) vs larksuite.com
   allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
+  mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
   // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
   // ships only conversation-scoped bindRules; explicitly-addressed unrouted
   // messages get a one-time notice and DM conversations are reported to the CP.

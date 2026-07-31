@@ -941,9 +941,32 @@ agents.
 - `gated` is **derived** from `agent.visibility === 'restricted'` at spec
   assembly; there is no separate stored toggle (see §14.7).
 - Web `IntegrationChannelList`: tri-state segmented control per channel row
-  (Off / Mention / All messages), a Direct-messages section with binary rows,
-  pending badges, and a banner on restricted agents' integration cards
-  explaining the gate.
+  (Off / Mention / All messages) — offered for every agent, not only a gated
+  one — a Direct-messages section with binary rows, pending badges, and a
+  banner on restricted agents' integration cards explaining the gate.
+- Off cannot always be expressed by withholding a rule, because some rungs are
+  unscoped and additive — `@-mention` anywhere and DMs on a daemon-arbitrated
+  integration; the agent-slug keyword and the group's `defaultAgentId` on a
+  relay-arbitrated bot. The CP therefore ships an explicit `mutedChannels` fence,
+  applied ahead of every rung, which the two arbiters populate differently
+  because their unscoped rungs differ:
+  - **Daemon** (`IntegrationSpec.mutedChannels`, per integration): the Off
+    channels of an UNGATED integration. A gated one leaves it empty — it ships
+    no unscoped defaults at all, so its Off already is the absence of a scoped
+    rule, and stating the same fact twice would let the two drift apart.
+  - **Relay** (`rc/bot-assign` / `rc/routes`, per bot): EVERY Off channel,
+    gated owner or not. A gated owner's missing route is not enough here: an
+    ungated sibling's unscoped rungs are still in the same table, so on a
+    mixed-visibility bot a bare `@bot` would otherwise reach the public default
+    in a channel the console shows as Off.
+- Because the relay fence covers both, it also has to say which Off channels
+  still deserve the §14.3 notice. `gatedOffChannels` carries that subset — the
+  muted channels whose owner is gated, i.e. Off because nobody has enabled them
+  rather than because an operator silenced them. The relay posts the notice only
+  for those; an operator's Off is silent (see "Per-channel trigger" in
+  product-conventions.md). The two states share a trigger value and the relay
+  cannot infer channel ownership from a table that holds no route for them, so
+  this is explicit wire state rather than something derived.
 
 ### 14.4 Visibility transitions
 
@@ -953,9 +976,13 @@ agents.
   conversations start Off — rows appear as counterparts next write, each
   receiving the one-time notice.
 - **restricted → org:** gating turns off; unscoped defaults return. Rows and
-  their trigger values persist inert (an `off` row on a non-gated integration
-  is ignored) so flipping back restores the previous decisions — the same
-  preservation principle as Decision 4.
+  their trigger values persist so flipping back restores the previous
+  decisions — the same preservation principle as Decision 4. Only the DIRECT
+  rows go inert, because the Console hides them for an org-visible agent and
+  honouring one would be behaviour with no visible control. A CHANNEL row keeps
+  its trigger, Off included: Off is a control every agent has (see
+  "Per-channel trigger" in product-conventions.md), and the row stays on screen
+  for an editor to change.
 
 ### 14.5 Rollout / migration
 

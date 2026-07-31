@@ -197,6 +197,25 @@ function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRu
 }
 
 /**
+ * The Off channels of an UNGATED integration — its `mutedChannels` fence.
+ *
+ * An ungated integration reaches every conversation through unscoped defaults
+ * (@-mention anywhere + DMs), which no channel-scoped rule can subtract from, so Off
+ * has to be stated rather than merely omitted. A GATED integration needs none of
+ * this: its rules are conversation-scoped already, so Off IS the missing rule, and
+ * naming the channel here would only give the same fact two representations that can
+ * disagree — hence the empty list.
+ *
+ * DIRECT rows never mute. A preserved one is inert on an ungated integration (§14.4 —
+ * the console hides it), and a gated integration expresses its Off DMs the same way it
+ * expresses every other Off conversation.
+ */
+function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): string[] {
+  if (gated) return []
+  return channels.filter((c) => c.trigger === 'off' && !isDirectConversationKind(c.kind)).map((c) => c.channelId)
+}
+
+/**
  * Assemble the wire {@link IntegrationSpec} the daemon opens its socket from —
  * metadata from the `integration` row + tokens from the {@link BotSecretStore}
  * (keyed by the integration's bot) + the per-channel trigger config folded into
@@ -224,12 +243,13 @@ export function integrationToSpec(
     .filter((c) => c.trigger === 'any' && !isDirectConversationKind(c.kind))
     .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
   const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
+  const mutedChannels = mutedChannelIds(channels, gated)
   if (i.platform === 'telegram') {
     return {
       integrationId: i.id,
       agentId: i.agentId,
       platform: 'telegram',
-      telegram: { botToken: secret.botToken, allowedUserIds: [], bindRules, gated }
+      telegram: { botToken: secret.botToken, allowedUserIds: [], bindRules, mutedChannels, gated }
     }
   }
   if (i.platform === 'discord') {
@@ -238,7 +258,7 @@ export function integrationToSpec(
       agentId: i.agentId,
       platform: 'discord',
       // Discord authenticates the Gateway with the single bot token (no appToken).
-      discord: { botToken: secret.botToken, allowedUserIds: [], bindRules, gated }
+      discord: { botToken: secret.botToken, allowedUserIds: [], bindRules, mutedChannels, gated }
     }
   }
   if (i.platform === 'feishu') {
@@ -256,6 +276,7 @@ export function integrationToSpec(
         region: i.feishuRegion ?? 'feishu',
         allowedUserIds: [],
         bindRules,
+        mutedChannels,
         gated
       }
     }
@@ -276,6 +297,7 @@ export function integrationToSpec(
       appToken: secret.appToken ?? '',
       allowedUserIds: [],
       bindRules,
+      mutedChannels,
       gated
     }
   }
@@ -292,7 +314,9 @@ export function integrationToSpec(
  * ships its conversation-scoped rules + `gated: true` even in relay-managed mode — the
  * relay is still the arbiter, but the daemon uses these for its last-hop
  * admission backstop in `handleRelayIm` (it must not trust a stale relay route
- * snapshot to keep a private agent fail-closed).
+ * snapshot to keep a private agent fail-closed). `mutedChannels` rides along for the
+ * same reason and for every install, gated or not: an Off channel must survive a
+ * relay snapshot that has not caught up yet.
  */
 export function httpIntegrationToSpec(
   i: IntegrationRecord,
@@ -316,6 +340,7 @@ export function httpIntegrationToSpec(
         region: i.feishuRegion ?? 'feishu',
         allowedUserIds: [],
         bindRules: gated ? gatedBindRules(channels) : [],
+        mutedChannels: mutedChannelIds(channels, gated),
         gated
       }
     }
@@ -334,6 +359,7 @@ export function httpIntegrationToSpec(
       ...(providerAppId ? { appId: providerAppId } : {}),
       allowedUserIds: [],
       bindRules: gated ? gatedBindRules(channels) : [],
+      mutedChannels: mutedChannelIds(channels, gated),
       gated
     }
   }

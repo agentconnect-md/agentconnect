@@ -426,6 +426,8 @@ export class RelayIngressManager {
       | 'defaultAgentId'
       | 'defaultDaemonId'
       | 'gatedAgentIds'
+      | 'mutedChannels'
+      | 'gatedOffChannels'
       | 'noticeAuthority'
       | 'noticedDmConversations'
     >
@@ -642,7 +644,17 @@ export class RelayIngressManager {
       // that backs ≥1 gated agent, must not look silently dead — answer once per
       // conversation (the DM row itself was already reported above, un-gated on
       // the routing outcome).
-      if (!msg.sender.isBot && hasGatedMembers) {
+      //
+      // Every Off channel arrives here unroutable, and the two kinds answer
+      // differently. A channel an OPERATOR silenced says nothing: they already
+      // decided, and "ask an admin to enable it" would be the opposite of what
+      // happened. A channel that is Off because §14 never enabled its gated owner
+      // still speaks once — the person asking had no way to know the agent is
+      // private. Only ownership separates them (they share a trigger value), so the
+      // CP marks the gated ones and the fence and the notice stay independent.
+      const muted = this.router.channelMuted(botId, msg.channel)
+      const speaks = !muted || this.router.channelGatedOff(botId, msg.channel)
+      if (!msg.sender.isBot && hasGatedMembers && speaks) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
           // Feishu callback credentials are receive-only. For its currently
@@ -863,6 +875,9 @@ export class RelayIngressManager {
     const sessionKey = sessionKeyOf({ channel: shortcut.channelId, thread: shortcut.threadTs })
     const assignment = this.router.get(botId)
     if (!assignment) return false
+    // A channel switched Off takes no shortcut either — the modal it opens acts on a
+    // session in a conversation the operator has silenced.
+    if (assignment.mutedChannels?.includes(shortcut.channelId)) return false
     const allowedInChannel = (agentId: string): boolean =>
       !assignment.gatedAgentIds?.includes(agentId) ||
       assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === shortcut.channelId)
