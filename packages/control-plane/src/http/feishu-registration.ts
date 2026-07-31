@@ -43,7 +43,6 @@ export interface StartFeishuRegistration {
   transport: SlackTransport
   appName: string
   avatarUrl?: string
-  description?: string | null
   requestedName?: string
   createdByUserId: string
 }
@@ -114,8 +113,7 @@ export class FeishuAppRegistrationService {
     if (existing) return this.reuseOrConflict(existing, input.createdByUserId)
 
     const begun = await this.provider.begin(input.appName, input.fallbackRegion, {
-      ...(input.avatarUrl ? { avatarUrl: input.avatarUrl } : {}),
-      ...(input.description !== undefined ? { description: input.description } : {})
+      ...(input.avatarUrl ? { avatarUrl: input.avatarUrl } : {})
     })
     try {
       const row = await this.store.create({

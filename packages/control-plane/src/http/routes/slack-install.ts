@@ -167,8 +167,7 @@ export function slackInstallRoutes(deps: HttpDeps) {
         const bgColor = agentIconBackgroundColor(agent.icon)
         const manifest = buildInstallManifest(name, redirectUri, {
           ...(httpBase ? { httpRelayBase: httpBase } : {}),
-          ...(bgColor ? { backgroundColor: bgColor } : {}),
-          description: agent.description
+          ...(bgColor ? { backgroundColor: bgColor } : {})
         })
         let created = await api.createApp(config.accessToken, manifest)
 

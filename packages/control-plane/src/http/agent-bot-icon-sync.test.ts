@@ -19,6 +19,7 @@ function agentRecord(icon: AgentRecord['icon'], lastModifiedAt = new Date(1)): A
     ...agent,
     orgId: ORG_ID,
     lastModifiedAt,
+    description: 'Private operating instructions',
     icon
   } as AgentRecord
 }
@@ -147,6 +148,9 @@ describe('syncAgentBotIcons', () => {
       'lark',
       expect.objectContaining(agent)
     )
+    expect(telegramSync.mock.calls[0]![1]).not.toHaveProperty('description')
+    expect(discordSync.mock.calls[0]![1]).not.toHaveProperty('description')
+    expect(feishuSync.mock.calls[0]![3]).not.toHaveProperty('description')
     expect(secretGets.sort()).toEqual([telegramId, discordId, feishuId].sort())
     expect(warn).toHaveBeenCalledOnce()
   })

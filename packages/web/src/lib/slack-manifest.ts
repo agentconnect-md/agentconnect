@@ -72,20 +72,7 @@ export const SLACK_BOT_EVENTS = [
 
 /** Fallback name so the manifest / deep link are always valid before the user types one. */
 export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
-export const DEFAULT_SLACK_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
-export const SLACK_APP_DESCRIPTION_MAX_CHARACTERS = 100
-export const SLACK_APP_DESCRIPTION_MAX_BYTES = 300
-
-const ELLIPSIS = '…'
-const UTF8_ENCODER = new TextEncoder()
-
-function utf8ByteLength(value: string): number {
-  return UTF8_ENCODER.encode(value).byteLength
-}
-
-function codePointLength(value: string): number {
-  return [...value].length
-}
+export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
 
 export interface SlackAppManifest {
   display_information: { name: string; background_color?: string }
@@ -116,37 +103,10 @@ export interface SlackAppManifest {
 export interface SlackManifestOpts {
   mode?: 'socket' | 'http'
   relayUrl?: string
-  description?: string | null
   /** `#rrggbb` from the owning agent's icon → `display_information.background_color`,
    *  branding the created app with the agent's avatar color (Slack has no API to set
    *  the app image itself). Mirrors the CP auto-install funnel. */
   backgroundColor?: string
-}
-
-function slackAppDescription(description: string | null | undefined): string {
-  const value = description?.trim() || DEFAULT_SLACK_APP_DESCRIPTION
-  if (
-    codePointLength(value) <= SLACK_APP_DESCRIPTION_MAX_CHARACTERS &&
-    utf8ByteLength(value) <= SLACK_APP_DESCRIPTION_MAX_BYTES
-  ) {
-    return value
-  }
-
-  let head = ''
-  let bytes = utf8ByteLength(ELLIPSIS)
-  let characters = 1
-  for (const character of value) {
-    const characterBytes = utf8ByteLength(character)
-    if (
-      characters + 1 > SLACK_APP_DESCRIPTION_MAX_CHARACTERS ||
-      bytes + characterBytes > SLACK_APP_DESCRIPTION_MAX_BYTES
-    )
-      break
-    head += character
-    bytes += characterBytes
-    characters += 1
-  }
-  return `${head.trimEnd()}${ELLIPSIS}`
 }
 
 /** The two names the manifest carries — mirrors the agent's naming model:
@@ -175,7 +135,7 @@ export function buildSlackManifest(names: SlackAppNames, opts?: SlackManifestOpt
       bot_user: { display_name: displayName, always_online: true },
       app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
       agent_view: {
-        agent_description: slackAppDescription(opts?.description),
+        agent_description: PLATFORM_APP_DESCRIPTION,
         suggested_prompts: []
       },
       shortcuts: [

@@ -5,9 +5,7 @@ import {
   SLACK_BOT_SCOPES,
   SLACK_BOT_EVENTS,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
-  DEFAULT_SLACK_APP_DESCRIPTION,
-  SLACK_APP_DESCRIPTION_MAX_CHARACTERS,
-  SLACK_APP_DESCRIPTION_MAX_BYTES
+  PLATFORM_APP_DESCRIPTION
 } from './slack-manifest'
 
 // The manual manifest must request exactly what the CP's auto-install manifest does, or
@@ -64,24 +62,10 @@ describe('buildSlackManifest', () => {
     expect(branded.display_information.background_color).toBe('#c62a78')
   })
 
-  it('uses the agent description with a fallback and a Unicode-safe platform limit', () => {
-    const utf8 = new TextEncoder()
-    const longDescription = 'a'.repeat(SLACK_APP_DESCRIPTION_MAX_CHARACTERS + 1)
-    const wideDescription = `${'😀'.repeat(75)}a`
-    expect([...wideDescription]).toHaveLength(76)
-    expect(utf8.encode(wideDescription).byteLength).toBeGreaterThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
+  it('uses the generic public app description', () => {
+    const manifest = buildSlackManifest({ name: 'acme' })
 
-    const long = buildSlackManifest({ name: 'acme' }, { description: longDescription })
-    const wide = buildSlackManifest({ name: 'acme' }, { description: wideDescription })
-    const fallback = buildSlackManifest({ name: 'acme' }, { description: '   ' })
-
-    expect(long.features.agent_view.agent_description).toBe(`${'a'.repeat(99)}…`)
-    expect([...long.features.agent_view.agent_description]).toHaveLength(SLACK_APP_DESCRIPTION_MAX_CHARACTERS)
-    expect(wide.features.agent_view.agent_description).toBe(`${'😀'.repeat(74)}…`)
-    expect(utf8.encode(wide.features.agent_view.agent_description).byteLength).toBeLessThanOrEqual(
-      SLACK_APP_DESCRIPTION_MAX_BYTES
-    )
-    expect(fallback.features.agent_view.agent_description).toBe(DEFAULT_SLACK_APP_DESCRIPTION)
+    expect(manifest.features.agent_view.agent_description).toBe(PLATFORM_APP_DESCRIPTION)
   })
 
   it('prefills the Slack create-app link with the manifest', () => {

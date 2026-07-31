@@ -17,6 +17,13 @@ Visibility controls use audience language: show **Everyone** for the internal `o
 value, never **Org** or "org-visible". Keep **Organization** only when the copy is
 actually about organization management, membership, or ownership.
 
+## Public platform app descriptions
+
+Slack, Feishu/Lark, and Discord app or bot profiles use the fixed public description
+`AI agent powered by AgentConnect.` They must never derive public profile copy from an
+Agent description because that field is model context and may contain private operating
+instructions.
+
 ## Planned daemon lifecycle status
 
 A pending daemon upgrade or restart is a planned transition, not an unexpected outage.

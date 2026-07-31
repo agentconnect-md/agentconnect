@@ -263,6 +263,7 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'agent is no longer placed; refresh and retry the integration change'
             })
           }
+          const profileAgent = { id: current.id, icon: current.icon, runtime: current.runtime }
 
           // Reuse an existing bot: mint an integration for it. A SHAREABLE bot may
           // already serve other agents (this adds one more); a CLASSIC bot must be free.
@@ -449,7 +450,7 @@ export function integrationRoutes(deps: HttpDeps) {
             await replicateUpsert(integration, daemonId)
             if (deps.syncTelegramBotIcon) {
               try {
-                await deps.syncTelegramBotIcon(tg.botToken, agent)
+                await deps.syncTelegramBotIcon(tg.botToken, profileAgent)
               } catch (err) {
                 app.log.warn({ err, agentId: agent.id, botId }, 'telegram icon sync failed; integration remains active')
               }
@@ -521,7 +522,7 @@ export function integrationRoutes(deps: HttpDeps) {
             await replicateUpsert(integration, daemonId)
             if (deps.syncDiscordBotProfile && check?.status !== 'unreachable') {
               try {
-                await deps.syncDiscordBotProfile(discord.botToken, agent)
+                await deps.syncDiscordBotProfile(discord.botToken, profileAgent)
               } catch (err) {
                 app.log.warn(
                   { err, agentId: agent.id, botId },

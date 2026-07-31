@@ -1427,7 +1427,6 @@ export function agentFromDto(d: AgentDto): Agent {
     // daemon '—' coalesce below; display sites render '—' for an empty runtime.
     runtime: d.runtime ?? '',
     desc: d.description ?? PLACEHOLDER,
-    ...(d.description !== null ? { description: d.description } : {}),
     // '—' when the CP has no explicit value: the daemon then falls back to the
     // local agent.json (default 'low'). Session count is derived in the view from
     // the fetched `/sessions` list, so it's not a field here.
