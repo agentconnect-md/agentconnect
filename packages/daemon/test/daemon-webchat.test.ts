@@ -1467,6 +1467,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     })
     await daemon.start()
     ;(daemon as any).cpClient = fakeCpClient()
+    const errorLog = vi.spyOn((daemon as any).log, 'error')
 
     let releasePrompt!: () => void
     const promptGate = new Promise<void>((resolve) => {
@@ -1522,6 +1523,11 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect((daemon as any).pending.size).toBe(1)
     expect((daemon as any).store.getSession((daemon as any).webchatSessionKey(CONV, AGENT_ID))?.state).not.toBe('idle')
     expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
+    const lifecycleFailures = errorLog.mock.calls
+      .flat()
+      .filter((message: string) => message.includes('delegated lifecycle cleanup blocked'))
+    expect(lifecycleFailures).toEqual([expect.stringContaining('private cleanup failed')])
+    expect(errorLog.mock.calls.flat().join('\n')).not.toContain('webchat dispatch failed')
     expect(
       (daemon as any).dispatchWebchatTurn(
         AGENT_ID,

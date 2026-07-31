@@ -520,6 +520,18 @@ export class FailStopError extends Error {
   }
 }
 
+/** Internal fail-closed outcome for a turn whose process cleanup rejected. The raw
+ * cleanup rejection is logged once at the lifecycle boundary; this stable sentinel
+ * lets the serial gate fail-stop and release its dispatch lease without reporting the
+ * same rejection again through transport fire-and-forget handlers. */
+class LifecycleCleanupBlockedError extends Error {
+  readonly reason = 'lifecycle_cleanup_blocked' as const
+  constructor(sessionKey: string, cause: unknown) {
+    super(`lifecycle cleanup blocked for session ${sessionKey}`, { cause })
+    this.name = 'LifecycleCleanupBlockedError'
+  }
+}
+
 /** The session-control selectors driven by `/models` `/effort` `/permission` + their
  *  tappable cards. Single-char codes keep the inline-button `callback_data` (≤64 bytes)
  *  compact — `<code>:<optionIndex>`. */
@@ -920,6 +932,12 @@ interface QueueEntry {
    * broker registration is pending). Session initialization must await this gate
    * before releasing ownership or writing idle. */
   lifecycleCleanup?: Promise<void>
+  /** Permanent fail-closed latch after lifecycle cleanup rejects. The serial
+   * dispatch lease may terminate, but admission must remain fenced until restart. */
+  lifecycleCleanupBlocked?: Promise<never>
+  /** Deduplicates cleanup-failure observability across error, backstop, and final
+   * cleanup observers of the same admitted turn. */
+  lifecycleCleanupFailureLogged?: boolean
   /** Latched cancellation for an already-admitted head. Unlike reading the current
    *  pause/loop state, this survives a quick pause→unpause or trip→!resume race while
    *  a cold sessions.handle() call is still initializing. */
@@ -953,6 +971,9 @@ function isSlackStatusBarText(text: string): boolean {
 
 /** Per-in-flight-turn rendering state, keyed by ACP sessionId in `this.pending`. */
 interface Pending {
+  /** Admitted-turn lifecycle owner. Backstops and finalization share its cleanup
+   * failure latch so one rejected stop cannot be logged or fenced twice. */
+  entry: QueueEntry
   // Platform-tagged converger: OutputConverger emits SlackAction[] (slack/webchat),
   // TelegramConverger emits TelegramAction[]. enqueueApply routes by `platform`.
   conv: OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger
@@ -3777,22 +3798,54 @@ export class Daemon {
     }
   }
 
-  private async waitForTurnLifecycleCleanup(entry: QueueEntry, selectedHost?: SelectedTurnHost): Promise<void> {
-    await entry.lifecycleCleanup
-    await selectedHost?.waitForCleanup()
+  private fenceLifecycleCleanupFailure(
+    agentId: string,
+    key: string,
+    entry: QueueEntry,
+    error: unknown
+  ): Promise<never> {
+    if (!entry.lifecycleCleanupFailureLogged) {
+      entry.lifecycleCleanupFailureLogged = true
+      const scope = entry.selectedHost?.stopOnError ? 'delegated ' : ''
+      this.log.error(
+        `${scope}lifecycle cleanup blocked for agent "${agentId}" (session ${key}); ownership and admission remain fenced: ${formatErr(error)}`
+      )
+    }
+    if (!entry.lifecycleCleanupBlocked) {
+      this.beginSafetyDrain(agentId, 'stop', [key])
+      entry.lifecycleCleanupBlocked = new Promise<never>(() => {})
+      this.addSafetyDrainWait(agentId, entry.lifecycleCleanupBlocked)
+    }
+    return entry.lifecycleCleanupBlocked
   }
 
-  private beginFailedTurnCleanup(agentId: string, key: string, selectedHost?: SelectedTurnHost): void {
+  private async waitForTurnLifecycleCleanup(
+    entry: QueueEntry,
+    key: string,
+    selectedHost?: SelectedTurnHost
+  ): Promise<void> {
+    try {
+      await entry.lifecycleCleanup
+      await selectedHost?.waitForCleanup()
+    } catch (error) {
+      this.fenceLifecycleCleanupFailure(entry.agentId, key, entry, error)
+      throw new LifecycleCleanupBlockedError(key, error)
+    }
+  }
+
+  private beginFailedTurnCleanup(
+    agentId: string,
+    key: string,
+    entry: QueueEntry,
+    selectedHost?: SelectedTurnHost
+  ): void {
     if (!selectedHost?.stopOnError) return
     // The error itself is the atomic lifecycle boundary. Do not wait for a child
     // exit or bridge callback: synchronously enter the manager's exact-cell,
     // teardown-singleflight stop path before any dispatch state can be released.
     this.beginSafetyDrain(agentId, 'stop', [key])
     const cleanup = selectedHost.stop(0)
-    const failClosed = cleanup.catch((error) => {
-      this.log.error(`delegated turn cleanup failed for agent "${agentId}": ${formatErr(error)}`)
-      return new Promise<void>(() => {})
-    })
+    const failClosed = cleanup.catch((error) => this.fenceLifecycleCleanupFailure(agentId, key, entry, error))
     this.addSafetyDrainWait(agentId, failClosed)
   }
 
@@ -4615,9 +4668,10 @@ export class Daemon {
     const initialRuntime =
       this.agents.get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
     const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime, delegation)
-    void this.dispatch(result.agentId, msg, undefined, stream).catch((err) =>
-      this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
-    )
+    void this.dispatch(result.agentId, msg, undefined, stream).catch((err) => {
+      if (!(err instanceof LifecycleCleanupBlockedError))
+        this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
+    })
     return { accepted: true, turnId }
   }
 
@@ -9051,7 +9105,7 @@ export class Daemon {
         }
       )
     } catch (err) {
-      this.beginFailedTurnCleanup(agentId, key, entry.selectedHost)
+      this.beginFailedTurnCleanup(agentId, key, entry, entry.selectedHost)
       this.finishSessionInitialization(agentId)
       restoreDeliveryBinding()
       // handle() boots the host (hostFor → ensureHostAsync → host.start()), so a
@@ -9061,7 +9115,7 @@ export class Daemon {
         // A force-stop may make session/new|load reject before the delegated
         // manager has released its broker cell and private HOME. Keep this cold
         // dispatch owned and non-idle until that exact cleanup operation settles.
-        await this.waitForTurnLifecycleCleanup(entry, entry.selectedHost)
+        await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
         this.store.setSessionState(key, 'idle', this.clock.now())
         // The turn died during initialization (agent spawn / ACP handshake), so it never reaches
         // the main finally that records an outcome. A parent polling this child must see `failed`,
@@ -9124,7 +9178,7 @@ export class Daemon {
       restoreDeliveryBinding()
       // session/new|load can return after host termination while manager cleanup
       // is still draining the private broker cell. Do not publish idle early.
-      await this.waitForTurnLifecycleCleanup(entry, entry.selectedHost)
+      await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
       const interruptedSession = this.store.getSession(key)
       if (created && interruptedSession?.acpSessionId === sessionId) {
         // The runtime created this ACP session after the turn was already terminal.
@@ -9217,6 +9271,7 @@ export class Daemon {
       if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
     }
     const p: Pending = {
+      entry,
       conv,
       rec,
       replyText: '',
@@ -9543,7 +9598,7 @@ export class Daemon {
           : {})
       })
     } catch (err) {
-      this.beginFailedTurnCleanup(agentId, key, p.selectedHost)
+      this.beginFailedTurnCleanup(agentId, key, entry, p.selectedHost)
       // The turn failed before yielding a clean stop — the agent couldn't start (spawn
       // failure / ACP handshake), or the prompt itself rejected. Without surfacing
       // it here the failure is invisible: Slack keeps its "is thinking…" status with
@@ -9709,7 +9764,7 @@ export class Daemon {
       // A delegated force-stop can unwind prompt before broker release and HOME
       // removal complete. Pending ownership and the non-idle session state are the
       // final safety fence, so release them only after the exact selected cleanup.
-      await this.waitForTurnLifecycleCleanup(entry, p.selectedHost)
+      await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
       this.pending.delete(pendingTurnKey(agentId, sessionId))
       // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
       // cancelled), so the session is idle again. Without this the row stayed
@@ -9892,10 +9947,7 @@ export class Daemon {
         // finish before dispatch can mark the session idle.
         const cleanup = turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
         const stopped = cleanup.catch((err) => {
-          this.log.error(`${reason}: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
-          // The selected child may still be alive. Keep admission fail-closed even
-          // if its prompt callback happens to settle after this failed teardown.
-          return new Promise<void>(() => {})
+          return this.fenceLifecycleCleanupFailure(agentId, key, turn.entry, err)
         })
         this.addSafetyDrainWait(agentId, stopped)
         void stopped.then(() => {
@@ -9947,11 +9999,7 @@ export class Daemon {
           : this.stopHost(agentId, 0))
       entry.lifecycleCleanup ??= cleanup
       const stopped = cleanup.catch((err) => {
-        this.log.error(`${reason}: cold force-stop failed for agent "${agentId}": ${formatErr(err)}`)
-        // The old child may still be alive after a failed stop. Keep the safety
-        // drain permanently unsettled (until this daemon process is restarted),
-        // rather than reopening admission and letting fresh work overlap it.
-        return new Promise<void>(() => {})
+        return this.fenceLifecycleCleanupFailure(agentId, key, entry, err)
       })
       // Abort every SessionManager cold await now; keep NEW admission gated until
       // the host-wide stop itself settles, so the old teardown cannot kill fresh work.
