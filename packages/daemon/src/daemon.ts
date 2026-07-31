@@ -3640,11 +3640,11 @@ export class Daemon {
   }
 
   private registrationFeatures(): string[] {
-    // Remote-MCP eligibility is (validated adapter) AND (probed HTTP transport):
-    // the capability bit alone proves descriptor transport, not that the runtime
-    // keeps the Authorization bearer out of model-visible context (§13).
+    // Remote-MCP eligibility is (validated adapter provenance) AND (probed HTTP
+    // transport): the capability bit alone proves descriptor transport, not that
+    // the runtime keeps the Authorization bearer out of model-visible context (§13).
     const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.entries()].some(
-      ([runtimeId, caps]) => caps.http && isValidatedRemoteMcpRuntime(runtimeId, this.runtimes[runtimeId])
+      ([runtimeId, caps]) => caps.http && isValidatedRemoteMcpRuntime(runtimeId, this.runtimeCatalog.entries[runtimeId])
     )
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -9125,14 +9125,16 @@ export class Daemon {
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
       // Remote administration uses only the standard ACP HTTPS MCP descriptor.
       // Authorization and write-operation idempotency are both CP-owned. The
-      // credential is installed only into runtimes on the validated allowlist —
-      // generic HTTP MCP capability proves transport, not header privacy (§13).
+      // credential is installed only into validated adapters resolved from the
+      // daemon-owned catalog (curated/registry provenance) — generic HTTP MCP
+      // capability or a claude/codex-looking user launch line proves neither
+      // header privacy nor session scoping (§13).
       const remoteCaps = this.runtimeMcpCaps.get(agent.runtime)
       if (
         webchat?.remoteMcp &&
         this.remoteWebchatGrants &&
         remoteCaps?.http &&
-        isValidatedRemoteMcpRuntime(agent.runtime, this.runtimes[agent.runtime])
+        isValidatedRemoteMcpRuntime(agent.runtime, this.runtimeCatalog.entries[agent.runtime])
       ) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
