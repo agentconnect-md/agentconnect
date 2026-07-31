@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -26,9 +26,40 @@ import { resolveCommandPath } from '../runtimes/probe.js'
  */
 export type SandboxMechanism = 'bwrap' | 'sandbox-exec'
 
+export interface DelegatedCellMount {
+  maskedRoot: string
+  sourceDir: string
+  targetDir: string
+}
+
+export type DelegatedRuntimeHomeMount = DelegatedCellMount
+
 /** Raised when a requested sandbox cannot be established safely (e.g. the cwd escapes
  *  the trusted agent dir). Distinct from the "no mechanism" fail-open path. */
 export class SandboxError extends Error {}
+
+const INVALID_DELEGATED_CELL_MOUNT = 'invalid delegated cell mount'
+
+/** The path injected into delegated bridge descriptors. Filesystem validation is
+ * intentionally deferred until delegated launch so a bad TMPDIR cannot crash an
+ * otherwise unrelated daemon startup. */
+export function delegatedMcpInCellSocketDirectory(): string {
+  return join(tmpdir(), 'agentconnect-admin')
+}
+
+/**
+ * Delegated MCP requires enforced Linux mount/PID isolation. A present but optional
+ * sandbox is insufficient because any unconfined ACP host could read another cell's
+ * broker socket source.
+ */
+export function supportsDelegatedMcpIsolation(input: {
+  platform: NodeJS.Platform
+  mechanism?: SandboxMechanism
+  requireSandbox: boolean
+  bwrapProbePassed: boolean
+}): boolean {
+  return input.platform === 'linux' && input.mechanism === 'bwrap' && input.requireSandbox && input.bwrapProbePassed
+}
 
 /** The sandbox launcher available on this host, or undefined (⇒ fail-open). */
 export function detectSandbox(env: NodeJS.ProcessEnv = process.env): SandboxMechanism | undefined {
@@ -70,6 +101,10 @@ function strictlyInside(root: string, p: string): boolean {
   return abs.startsWith(root + sep)
 }
 
+function overlaps(a: string, b: string): boolean {
+  return a === b || strictlyInside(a, b) || strictlyInside(b, a)
+}
+
 /** Canonicalize the existing prefix too, so a missing leaf below a symlink cannot
  * pass a lexical containment check and later bind a path outside the trusted root. */
 function canonicalTarget(path: string): string {
@@ -84,6 +119,21 @@ function canonicalTarget(path: string): string {
       missing.push(basename(current))
       current = parent
     }
+  }
+}
+
+/** Delegated mount inputs must already exist and be stable directories. Unlike the
+ * general sandbox boundary, missing leaves are not useful here and must fail closed. */
+function existingDelegatedMountDirectory(path: string): string {
+  try {
+    const real = realpathSync(path)
+    const info = statSync(real)
+    if (!info.isDirectory()) throw new Error('not a directory')
+    const uid = process.getuid?.()
+    if (uid !== undefined && info.uid !== uid) throw new Error('not owned by daemon uid')
+    return real
+  } catch {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
   }
 }
 
@@ -141,10 +191,14 @@ function canonical(paths: string[]): string[] {
 export function sandboxWrap(
   cmd: string,
   args: string[],
-  opts: { mechanism: SandboxMechanism; writable: string[] }
+  opts: { mechanism: SandboxMechanism; writable: string[]; maskedReadRoots?: string[] }
 ): { cmd: string; args: string[] } {
+  if (opts.mechanism !== 'bwrap' && (opts.maskedReadRoots?.length ?? 0) > 0) {
+    throw new SandboxError('sandbox mechanism cannot mask read roots')
+  }
   const writable = canonical(opts.writable)
   if (opts.mechanism === 'bwrap') {
+    const maskedReadRoots = canonical(opts.maskedReadRoots ?? [])
     const bwrap: string[] = [
       // A PID namespace is REQUIRED for the read-only root to hold: without it the
       // fresh /proc still lists the daemon (same UID), and a confined agent could
@@ -163,6 +217,7 @@ export function sandboxWrap(
       '--tmpfs',
       tmpdir(), // ...fresh writable tmp...
       ...writable.flatMap((w) => ['--bind', w, w]), // ...and these dirs writable (later binds win)
+      ...maskedReadRoots.flatMap((root) => ['--tmpfs', root]), // mask daemon-owned private socket sources
       '--'
     ]
     return { cmd: 'bwrap', args: [...bwrap, cmd, ...args] }
@@ -174,4 +229,87 @@ export function sandboxWrap(
     '(version 1)(allow default)(deny file-write*)' +
     seatbeltWritable.map((w) => `(allow file-write* (subpath "${w}"))`).join('')
   return { cmd: 'sandbox-exec', args: ['-p', profile, cmd, ...args] }
+}
+
+/**
+ * Wrap one entitled ACP host in bwrap, revealing exactly one cell-private source
+ * after the common broker source root has been hidden by a tmpfs mount.
+ */
+export function delegatedCellSandboxWrap(
+  cmd: string,
+  args: string[],
+  baseWritable: string[],
+  mount: DelegatedCellMount,
+  runtimeHomeMount: DelegatedRuntimeHomeMount,
+  maskedReadRoots: string[] = [mount.maskedRoot, runtimeHomeMount.maskedRoot]
+): { cmd: string; args: string[] } {
+  const maskedRoot = existingDelegatedMountDirectory(mount.maskedRoot)
+  const sourceDir = existingDelegatedMountDirectory(mount.sourceDir)
+  if (!strictlyInside(maskedRoot, sourceDir)) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  const validatedMaskedRoots = maskedReadRoots.map(existingDelegatedMountDirectory)
+  if (!validatedMaskedRoots.includes(maskedRoot)) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  const runtimeHomeRoot = existingDelegatedMountDirectory(runtimeHomeMount.maskedRoot)
+  const runtimeHomeSource = existingDelegatedMountDirectory(runtimeHomeMount.sourceDir)
+  const runtimeHomeTarget = existingDelegatedMountDirectory(runtimeHomeMount.targetDir)
+  if (
+    !validatedMaskedRoots.includes(runtimeHomeRoot) ||
+    !strictlyInside(runtimeHomeRoot, runtimeHomeSource) ||
+    !strictlyInside(runtimeHomeRoot, runtimeHomeTarget) ||
+    runtimeHomeSource !== runtimeHomeTarget
+  ) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  let privateTmpRoot: string
+  try {
+    privateTmpRoot = realpathSync(tmpdir())
+    if (!statSync(privateTmpRoot).isDirectory()) throw new Error('not a directory')
+  } catch {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  const targetDir = canonicalTarget(mount.targetDir)
+  const designatedTarget = join(privateTmpRoot, 'agentconnect-admin')
+  if (
+    targetDir !== designatedTarget ||
+    dirname(targetDir) !== privateTmpRoot ||
+    [maskedRoot, sourceDir, runtimeHomeRoot, runtimeHomeSource, runtimeHomeTarget].some((path) =>
+      overlaps(path, targetDir)
+    )
+  ) {
+    throw new SandboxError(INVALID_DELEGATED_CELL_MOUNT)
+  }
+  const privateRoots = new Set([maskedRoot, runtimeHomeRoot])
+  const safeBaseWritable = baseWritable.filter((path) => {
+    const canonicalPath = canonicalTarget(path)
+    return (
+      !overlaps(canonicalPath, targetDir) &&
+      ![...privateRoots].some((root) => canonicalPath === root || strictlyInside(root, canonicalPath))
+    )
+  })
+
+  const wrapped = sandboxWrap(cmd, args, {
+    mechanism: 'bwrap',
+    writable: safeBaseWritable,
+    maskedReadRoots: validatedMaskedRoots
+  })
+  const separator = wrapped.args.indexOf('--')
+  const privateBinds = [
+    '--dir',
+    targetDir,
+    '--bind',
+    sourceDir,
+    targetDir,
+    '--dir',
+    runtimeHomeTarget,
+    '--bind',
+    runtimeHomeSource,
+    runtimeHomeTarget
+  ]
+  return {
+    cmd: wrapped.cmd,
+    args: [...wrapped.args.slice(0, separator), ...privateBinds, ...wrapped.args.slice(separator)]
+  }
 }

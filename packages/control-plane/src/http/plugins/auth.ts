@@ -17,6 +17,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply, preHandlerHookHandler } from 'fastify'
 import fp from 'fastify-plugin'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
+import type { InternalInvocationAuth } from '../mcp/internal-invocation-auth.js'
 
 /** The authenticated WebUI user attached to a request (`req.principal`).
  *  Identity ONLY — the org a request acts on lives in the URL
@@ -104,6 +105,8 @@ export type HumanAuthOptions = HumanAuthConfig & {
   verifyApiKey?: VerifyApiKey
   principalExists?: PrincipalExists
   deletedIdentities?: DeletedIdentityStore
+  /** In-process one-time nonce verifier for nested delegated MCP REST calls. */
+  internalInvocationAuth?: Pick<InternalInvocationAuth, 'authorizeInjectedRequest'>
 }
 
 declare module 'fastify' {
@@ -439,6 +442,17 @@ function withApiKeyAuth(verify: VerifyApiKey, base: preHandlerHookHandler): preH
   }
 }
 
+function withInternalInvocationAuth(
+  internal: Pick<InternalInvocationAuth, 'authorizeInjectedRequest'>,
+  base: preHandlerHookHandler
+): preHandlerHookHandler {
+  const delegate = base as (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    if (internal.authorizeInjectedRequest(req)) return
+    return delegate(req, reply)
+  }
+}
+
 /**
  * Decorate the instance with `humanAuth`. Registered once on the root server via
  * `fastify-plugin` so the decorator is visible to every route plugin. When a
@@ -449,7 +463,10 @@ export const humanAuthPlugin = fp(
   function humanAuthPlugin(app: FastifyInstance, cfg: HumanAuthOptions, done: (err?: Error) => void) {
     const realOidc = cfg.OIDC_ISSUER ? oidcAuth({ ...cfg, OIDC_ISSUER: cfg.OIDC_ISSUER }) : undefined
     const base = realOidc ?? devAuth(cfg, app.log)
-    const handler = cfg.verifyApiKey ? withApiKeyAuth(cfg.verifyApiKey, base) : base
+    const externalHandler = cfg.verifyApiKey ? withApiKeyAuth(cfg.verifyApiKey, base) : base
+    const handler = cfg.internalInvocationAuth
+      ? withInternalInvocationAuth(cfg.internalInvocationAuth, externalHandler)
+      : externalHandler
     app.decorate('humanAuth', handler)
     // Invite redemption and any future account-distinct flow use this hook so
     // an OSS devAuth principal or personal API key can never impersonate a user.
@@ -458,6 +475,7 @@ export const humanAuthPlugin = fp(
     app.decorateRequest('apiKeyId', undefined)
     app.decorateRequest('apiKeyOrgId', undefined)
     app.decorateRequest('apiKeyScopes', undefined)
+    app.decorateRequest('delegatedInvocation', undefined)
     done()
   },
   { name: 'human-auth', fastify: '5.x' }

@@ -5,7 +5,7 @@ import { decodeFrames, encodeFrame, type IpcListToolsResult, type IpcResponse } 
 import type { McpContentResult } from './ops.js'
 import { DAEMON_VERSION } from '../version.js'
 
-type IpcCall = { op: 'listTools' } | { op: 'callTool'; name: string; args: Record<string, unknown> }
+type IpcCall = { op: 'attach' } | { op: 'listTools' } | { op: 'callTool'; name: string; args: Record<string, unknown> }
 
 /**
  * IPC client half of the bridge: a persistent UDS connection to the daemon's
@@ -55,6 +55,10 @@ class IpcClient {
       this.socket.write(encodeFrame({ id, token: this.token, ...call }))
     })
   }
+
+  async attach(): Promise<void> {
+    await this.request({ op: 'attach' })
+  }
 }
 
 /**
@@ -62,7 +66,7 @@ class IpcClient {
  * `tools/list` and `tools/call` to the running daemon over its control socket.
  * The agent harness spawns this per session; the daemon does the real work.
  */
-export async function runBridge(): Promise<void> {
+export async function runBridge(opts: { lazyTools?: boolean } = {}): Promise<void> {
   const endpoint = process.env.AC_MCP_ENDPOINT
   const token = process.env.AC_MCP_TOKEN
   if (!endpoint || !token) {
@@ -71,17 +75,33 @@ export async function runBridge(): Promise<void> {
   }
 
   const ipc = new IpcClient(endpoint, token)
-  let tools: IpcListToolsResult['tools']
-  try {
-    const res = (await ipc.request({ op: 'listTools' })) as IpcListToolsResult
-    tools = res.tools
-  } catch (err) {
-    process.stderr.write(`mcp-bridge: could not reach daemon: ${(err as Error).message}\n`)
-    process.exit(1)
+  let tools: IpcListToolsResult['tools'] | undefined
+  if (opts.lazyTools) {
+    try {
+      // A private bridge is not an MCP server until this exact persistent UDS
+      // connection is bound to its active cell. The attach operation performs
+      // no CP request and does not discover tools.
+      await ipc.attach()
+    } catch (err) {
+      process.stderr.write(`mcp-bridge: private attach failed: ${(err as Error).message}\n`)
+      process.exit(1)
+    }
+  } else {
+    try {
+      const res = (await ipc.request({ op: 'listTools' })) as IpcListToolsResult
+      tools = res.tools
+    } catch (err) {
+      process.stderr.write(`mcp-bridge: could not reach daemon: ${(err as Error).message}\n`)
+      process.exit(1)
+    }
   }
 
   const server = new Server({ name: 'agentconnect', version: DAEMON_VERSION }, { capabilities: { tools: {} } })
-  server.setRequestHandler('tools/list', async () => ({ tools }))
+  server.setRequestHandler('tools/list', async () => {
+    if (tools) return { tools }
+    const res = (await ipc.request({ op: 'listTools' })) as IpcListToolsResult
+    return { tools: res.tools }
+  })
   server.setRequestHandler('tools/call', async (req) => {
     try {
       const result = await ipc.request({
@@ -92,7 +112,8 @@ export async function runBridge(): Promise<void> {
       // A tool may return native MCP content (e.g. a viewable image from
       // readSlackFile) via the `mcpContent` marker — pass it through verbatim.
       if (result && typeof result === 'object' && Array.isArray((result as { mcpContent?: unknown }).mcpContent)) {
-        return { content: (result as McpContentResult).mcpContent }
+        const native = result as McpContentResult
+        return { content: native.mcpContent, ...(native.mcpIsError === true ? { isError: true } : {}) }
       }
       const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
       return { content: [{ type: 'text', text }] }

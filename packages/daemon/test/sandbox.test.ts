@@ -26,7 +26,11 @@ describe('sandboxWrap', () => {
   })
 
   it('sandbox-exec: denies writes then re-allows the writable subpath, runs cmd last', () => {
-    const { cmd, args } = sandboxWrap('codex', ['--acp'], { mechanism: 'sandbox-exec', writable: [agentDir] })
+    const { cmd, args } = sandboxWrap('codex', ['--acp'], {
+      mechanism: 'sandbox-exec',
+      writable: [agentDir],
+      maskedReadRoots: []
+    })
     expect(cmd).toBe('sandbox-exec')
     expect(args[0]).toBe('-p')
     const profile = args[1]!
@@ -36,10 +40,39 @@ describe('sandboxWrap', () => {
     expect(args.slice(-2)).toEqual(['codex', '--acp'])
   })
 
+  it('sandbox-exec: rejects non-empty masked roots instead of silently ignoring them', () => {
+    expect(() =>
+      sandboxWrap('codex', ['--acp'], {
+        mechanism: 'sandbox-exec',
+        writable: [agentDir],
+        maskedReadRoots: [agentDir]
+      })
+    ).toThrow(SandboxError)
+  })
+
   it('always makes tmp writable even when the caller omits it', () => {
     const { args } = sandboxWrap('x', [], { mechanism: 'bwrap', writable: [] })
     // --tmpfs entry present for the tmp dir
     expect(args).toContain('--tmpfs')
+    expect(args).not.toContain('--bind')
+  })
+
+  it('bwrap: masks trusted read roots without binding their host contents back', () => {
+    const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
+    const canonicalMaskedRoot = realpathSync(maskedRoot)
+    const { args } = sandboxWrap('x', [], {
+      mechanism: 'bwrap',
+      writable: [],
+      maskedReadRoots: [maskedRoot]
+    })
+
+    const proc = args.indexOf('--proc')
+    expect(args[proc + 1]).toBe('/proc')
+    expect(args).toContain('--unshare-pid')
+
+    const maskedRootIndex = args.indexOf(canonicalMaskedRoot)
+    expect(maskedRootIndex).toBeGreaterThan(0)
+    expect(args[maskedRootIndex - 1]).toBe('--tmpfs')
     expect(args).not.toContain('--bind')
   })
 })

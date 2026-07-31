@@ -96,6 +96,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     ...deps.config,
     resolveUser: (input) => deps.repos.user.provisionOidcUser(input),
     verifyApiKey: (token) => deps.apiKeys.authenticateUser(token),
+    internalInvocationAuth: deps.internalInvocationAuth,
     // Lets the plane notice an account deleted underneath a live session (→ 401
     // ACCOUNT_GONE, which drives the console to sign out) instead of serving
     // requests for an identity that is no longer there.

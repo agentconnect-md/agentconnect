@@ -17,12 +17,19 @@ export interface McpStdioServer {
  * token travel via env — they reach only the harness-spawned subprocess, never
  * the model.
  */
-export function buildMcpServers(opts: { socketPath: string; token: string; cliEntry: string }): McpStdioServer[] {
+export function buildMcpServers(opts: {
+  socketPath: string
+  token: string
+  cliEntry: string
+  name?: string
+  /** Private delegated brokers fetch tools dynamically so a CP outage does not kill the bridge. */
+  lazyTools?: boolean
+}): McpStdioServer[] {
   return [
     {
-      name: RESERVED_MCP_SERVER_NAME,
+      name: opts.name ?? RESERVED_MCP_SERVER_NAME,
       command: process.execPath,
-      args: [...process.execArgv, opts.cliEntry, 'mcp-bridge'],
+      args: [...process.execArgv, opts.cliEntry, 'mcp-bridge', ...(opts.lazyTools ? ['--lazy-tools'] : [])],
       env: [
         { name: 'AC_MCP_ENDPOINT', value: opts.socketPath },
         { name: 'AC_MCP_TOKEN', value: opts.token }

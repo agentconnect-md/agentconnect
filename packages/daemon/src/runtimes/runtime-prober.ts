@@ -150,6 +150,7 @@ export interface ProbeOptions {
   runInSandbox?: boolean
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
+  maskedReadRoots?: string[]
   /** Prepare the same sandbox/private-HOME or inherited-host launch used by a real agent. */
   launchFor?: (
     id: string,
@@ -337,6 +338,7 @@ export function preparedProbeLaunch(
     runInSandbox: opts.runInSandbox ?? false,
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
+    maskedReadRoots: opts.maskedReadRoots,
     stateSourceEnv: sourceEnv,
     hostEnv: probeEnv
   })

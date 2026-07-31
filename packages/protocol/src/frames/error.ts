@@ -22,6 +22,9 @@ export const ErrorCode = z.enum([
   // delivery
   'NO_SESSION',
   'SCOPE_DENIED',
+  // delegated MCP authority / invocation binding
+  'DELEGATION_DENIED',
+  'INVOCATION_CONFLICT',
   // secrets
   'LEASE_EXPIRED',
   'LEASE_DENIED',

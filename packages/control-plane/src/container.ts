@@ -46,6 +46,8 @@ import {
   PgSessionRepo,
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
+  PgWebchatMcpDelegationRepo,
+  PgMcpInvocationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
   PgIntegrationRepo,
@@ -93,15 +95,20 @@ import { CronRunReaper } from './orchestrator/cronRunReaper.js'
 import { SlackInstallReaper } from './orchestrator/slackInstallReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
+import { McpInvocationReaper } from './orchestrator/mcpInvocationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
+import { findTool } from './http/mcp/tools.js'
 
 import { ApiKeyCodec } from './registry/apiKey.js'
 import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
+import { createWebchatTokenVerifier } from './registry/webchatVerification.js'
+import { InvocationAssertionCodec } from './registry/invocationAssertion.js'
+import { WebchatMcpDelegationService } from './registry/webchatMcpDelegationService.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { WaitlistService } from './registry/waitlistService.js'
@@ -139,6 +146,9 @@ import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
+import { InvocationAssertionAuthenticator } from './http/mcp/invocation-authenticator.js'
+import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
+import { defaultWebchatMcpMetrics } from './observability/webchat-mcp.js'
 import { pingDb } from './persistence/prisma.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
@@ -164,6 +174,13 @@ export interface Container {
   readonly defaults: { orgId: string; ownerId: string }
   /** The process readiness gate — the bootstrap flips it at SIGTERM (`/readyz`). */
   readonly readiness: Readiness
+  /** Live webchat preset entitlement + one-time assertion minting. Transport
+   *  handlers consume this seam without reconstructing authority checks. */
+  readonly webchatMcpDelegation: WebchatMcpDelegationService
+  /** Route-only assertion claim seam for the standard MCP route. */
+  readonly invocationAssertions: InvocationAssertionAuthenticator
+  /** One-time async-local nonce seam for nested MCP REST requests. */
+  readonly internalInvocationAuth: InternalInvocationAuth
   /** Arm the Clock-driven background loops (the cron-run reaper). Prod calls this
    *  after `listen`; tests never do, so no live timer arms under a `FakeClock`. */
   startBackground(): void
@@ -215,6 +232,8 @@ export function buildContainer(
     session: new PgSessionRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
+    webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
+    mcpInvocation: new PgMcpInvocationRepo(prisma, clock),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
@@ -370,6 +389,33 @@ export function buildContainer(
 
   // The derived in-memory connection index every hot lookup hits.
   const connReg = new ConnectionRegistry()
+
+  // Built-in general-preset webchat entitlement. Assertions use a dedicated
+  // prefix and hash domain even though the deployment pepper is shared.
+  const invocationAssertionCodec = new InvocationAssertionCodec(config.API_KEY_PEPPER)
+  const webchatMcpDelegation = new WebchatMcpDelegationService({
+    clock,
+    assertionCodec: invocationAssertionCodec,
+    conversations: repos.webchatConversation,
+    orgs: repos.org,
+    agents: repos.agent,
+    presets: repos.presetAgent,
+    daemons: connReg,
+    delegations: repos.webchatMcpDelegation,
+    invocations: repos.mcpInvocation,
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
+    metrics: defaultWebchatMcpMetrics
+  })
+  const invocationAssertions = new InvocationAssertionAuthenticator({
+    clock,
+    assertionCodec: invocationAssertionCodec,
+    daemons: connReg,
+    delegations: repos.webchatMcpDelegation,
+    invocations: repos.mcpInvocation,
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
+    metrics: defaultWebchatMcpMetrics
+  })
+  const internalInvocationAuth = new InternalInvocationAuth()
 
   // The relay analogue — relayId → live relay socket, so the CP can push
   // rc/daemon-revoke to connected relays (§9). Roster still comes from the DB.
@@ -625,6 +671,7 @@ export function buildContainer(
       : undefined
 
   const httpDeps: HttpDeps = {
+    clock,
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
@@ -662,6 +709,7 @@ export function buildContainer(
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
       audit: repos.audit,
+      mcpInvocation: repos.mcpInvocation,
       oauth: repos.oauth
     },
     registry,
@@ -688,6 +736,9 @@ export function buildContainer(
     waitlist,
     events,
     mcpRateLimit: new McpRateLimiter(clock),
+    invocationAssertions,
+    internalInvocationAuth,
+    webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
     verifySlackBot,
     verifySlackAppToken,
@@ -734,6 +785,17 @@ export function buildContainer(
       label: 'hook-run-reaper'
     },
     http.log
+  )
+
+  // Durable one-time assertion recovery. Invocation rows are reaped before
+  // expired delegations so a parent is never removed while cached/recoverable
+  // invocation state still depends on it.
+  const mcpInvocationReaper = new McpInvocationReaper(
+    repos.mcpInvocation,
+    repos.webchatMcpDelegation,
+    clock,
+    http.log,
+    defaultWebchatMcpMetrics
   )
 
   // Redelivery reconciliation (webhook-triggers P2.5): recovers github events
@@ -845,6 +907,8 @@ export function buildContainer(
     connReg,
     session: repos.session,
     webchatConversation: repos.webchatConversation,
+    webchatMcpDelegation,
+    webchatMcpDelegations: repos.webchatMcpDelegation,
     launch: repos.launch,
     visibilityPush,
     events,
@@ -892,23 +956,13 @@ export function buildContainer(
     clock,
     // rc/verify(webchat-token): validate the token, then re-resolve the agent's CURRENT
     // placement (agent.daemonId + connReg READY) — placement can move between mint + dial.
-    verifyWebchatToken: async (token) => {
-      const claims = await webchatTokens.verify(token)
-      if (!claims) return { ok: false, reason: 'invalid token' }
-      const agent = await repos.agent.get(AgentId(claims.agentId))
-      if (!agent || agent.orgId !== claims.orgId) return { ok: false, reason: 'invalid token' }
-      if (!agent.daemonId) return { ok: false, reason: 'agent unplaced' }
-      if (connReg.get(agent.daemonId)?.state !== 'READY') return { ok: false, reason: 'daemon offline' }
-      return {
-        ok: true,
-        userId: claims.userId,
-        user: claims.user,
-        agentId: claims.agentId,
-        daemonId: agent.daemonId,
-        orgId: claims.orgId,
-        conversationId: claims.conversationId
-      }
-    },
+    verifyWebchatToken: createWebchatTokenVerifier({
+      enabled: config.WEBCHAT_PRESET_MCP_ENABLED,
+      tokens: webchatTokens,
+      agents: repos.agent,
+      daemons: connReg,
+      delegations: webchatMcpDelegation
+    }),
     // Current-permission fallback for GitHub comment webhooks whose
     // author_association snapshot is stale or inconsistent across event types.
     // Missing GitHub configuration fails closed.
@@ -1157,9 +1211,13 @@ export function buildContainer(
     relayGateway: (app: FastifyInstance) => createRelayWsServer(app, relayWsDeps),
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
     readiness,
+    webchatMcpDelegation,
+    invocationAssertions,
+    internalInvocationAuth,
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
+      mcpInvocationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       slackInstallReaper.start()
@@ -1174,6 +1232,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
+      const mcpInvocationSettled = mcpInvocationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
@@ -1184,6 +1243,7 @@ export function buildContainer(
       slackBotIdentityReconciler.stop()
       visibilityPush.stop()
       await Promise.allSettled([
+        mcpInvocationSettled,
         ...relayRegistrationTasks,
         visibilityPush.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])

@@ -54,8 +54,8 @@ const ARGS: Record<string, Record<string, unknown>> = {
   listAgentHooks: { agentId: 'agent-1' },
   listHookRuns: { hookId: 'hook-1' },
   createAgent: { name: 'my-agent', runtime: 'claude' },
-  updateAgent: { agentId: 'agent-1', model: 'opus' },
-  deleteAgent: { agentId: 'agent-1', confirm: 'my-agent' },
+  updateAgent: { agentId: AGENT_UUID, model: 'opus' },
+  deleteAgent: { agentId: AGENT_UUID, confirm: 'my-agent' },
   renameDaemon: { daemonId: 'daemon-1', name: 'edge-1' },
   upsertCron: { agentId: AGENT_UUID, schedule: '0 9 * * *', trigger: 'do the thing' },
   runCron: { cronId: 'cron-1' },
@@ -140,6 +140,27 @@ describe('MCP tool registry — §6.2 invariants', () => {
     expect(findTool('updateAgent')!.schema.safeParse({ agentId: 'a', visibility: 'org' }).success).toBe(false)
   })
 
+  it.each([
+    ['updateAgent', { agentId: AGENT_UUID.replaceAll('-', ''), model: 'bypass' }],
+    ['updateAgent', { agentId: `{${AGENT_UUID}}`, model: 'bypass' }],
+    ['deleteAgent', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent' }],
+    ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }]
+  ] as const)('%s rejects PostgreSQL-compatible noncanonical UUID text before dispatch', (toolName, args) => {
+    expect(findTool(toolName)!.schema.safeParse(args).success).toBe(false)
+  })
+
+  it.each([
+    ['updateAgent', { agentId: AGENT_UUID.replaceAll('-', ''), model: 'bypass' }],
+    ['updateAgent', { agentId: `{${AGENT_UUID}}`, model: 'bypass' }],
+    ['deleteAgent', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent' }],
+    ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }]
+  ] as const)('%s refuses a direct noncanonical UUID call without issuing REST requests', async (toolName, args) => {
+    const { ctx, calls } = recordingCtx()
+    const result = await findTool(toolName)!.call(ctx, args)
+    expect(result.statusCode).toBe(400)
+    expect(calls).toEqual([])
+  })
+
   it('tool names are unique and descriptors publish well-formed JSON Schema + annotations', () => {
     const names = MCP_TOOLS.map((t) => t.name)
     expect(new Set(names).size).toBe(names.length)
@@ -198,8 +219,10 @@ describe('MCP tool registry — §6.2 invariants', () => {
 
 describe('MCP write tools — bodies and upsert semantics', () => {
   it('updateAgent sends ONLY the provided fields (PATCH absent-vs-present)', async () => {
-    const { calls } = await run('updateAgent', { agentId: 'a1', model: null, pause: true })
-    expect(calls).toEqual([{ method: 'PATCH', path: `/orgs/${ORG_ID}/agents/a1`, body: { model: null, pause: true } }])
+    const { calls } = await run('updateAgent', { agentId: AGENT_UUID, model: null, pause: true })
+    expect(calls).toEqual([
+      { method: 'PATCH', path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}`, body: { model: null, pause: true } }
+    ])
   })
 
   it('createAgent posts the curated body to the org agents collection', async () => {
@@ -224,7 +247,7 @@ describe('MCP write tools — bodies and upsert semantics', () => {
 describe('MCP destructive tools — the §6.4 confirm gate', () => {
   it('a confirm mismatch blocks the mutation (412, nothing sent)', async () => {
     for (const [tool, args] of [
-      ['deleteAgent', { agentId: 'a1', confirm: 'wrong' }],
+      ['deleteAgent', { agentId: AGENT_UUID, confirm: 'wrong' }],
       ['deleteCron', { cronId: 'c1', confirm: 'wrong' }],
       ['removeIntegration', { integrationId: 'integ-1', confirm: 'wrong' }]
     ] as const) {
@@ -276,7 +299,7 @@ describe('MCP destructive tools — the §6.4 confirm gate', () => {
         throw new Error('must not be called')
       }
     }
-    const out = await findTool('deleteAgent')!.call(ctx, { agentId: 'nope', confirm: 'x' })
+    const out = await findTool('deleteAgent')!.call(ctx, { agentId: AGENT_UUID, confirm: 'x' })
     expect(out.statusCode).toBe(404)
   })
 

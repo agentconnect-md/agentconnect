@@ -25,6 +25,8 @@ const RETRYABLE_DEFAULT: Record<ErrorCodeValue, boolean> = {
   STALE_LAUNCH: true,
   NO_SESSION: false,
   SCOPE_DENIED: false,
+  DELEGATION_DENIED: false,
+  INVOCATION_CONFLICT: false,
   LEASE_EXPIRED: true,
   LEASE_DENIED: false,
   RATE_LIMITED: true,

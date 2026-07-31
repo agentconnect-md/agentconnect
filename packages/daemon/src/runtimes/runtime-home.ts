@@ -125,21 +125,24 @@ function seedLocation(home: string, source: string, destination: string, seedFil
 export function prepareRuntimeHome(
   runtimeId: string,
   scopeDir: string,
-  hostEnv: NodeJS.ProcessEnv = process.env
+  hostEnv: NodeJS.ProcessEnv = process.env,
+  targetHome?: string
 ): string {
-  const home = runtimeHomePath(scopeDir)
+  const home = targetHome ? resolve(targetHome) : runtimeHomePath(scopeDir)
   ensurePrivateDir(home)
   const locations = runtimeStateLocations(runtimeId, hostEnv)
   // rc.6-era native memory supported Claude and Codex and lived directly under
   // the agent root. Move only those historical paths before host seeding.
-  for (const entry of LEGACY_RUNTIME_STATE[runtimeId] ?? []) {
-    const legacy = join(resolve(scopeDir), entry)
-    const destination = join(home, entry)
-    if (!existsSync(legacy) || existsSync(destination)) continue
-    if (lstatSync(legacy).isSymbolicLink()) {
-      throw new Error(`legacy runtime state is a symlink: ${legacy}`)
+  if (!targetHome) {
+    for (const entry of LEGACY_RUNTIME_STATE[runtimeId] ?? []) {
+      const legacy = join(resolve(scopeDir), entry)
+      const destination = join(home, entry)
+      if (!existsSync(legacy) || existsSync(destination)) continue
+      if (lstatSync(legacy).isSymbolicLink()) {
+        throw new Error(`legacy runtime state is a symlink: ${legacy}`)
+      }
+      renameSync(legacy, destination)
     }
-    renameSync(legacy, destination)
   }
   for (const location of locations) {
     const destination = containedDestination(home, location.destination)

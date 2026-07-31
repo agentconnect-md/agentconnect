@@ -325,7 +325,15 @@ export class SessionManager {
     needsParentReply?: boolean,
     /** A self-authored channel-root post only establishes the new logical/runtime session.
      *  It is already recorded in the transcript and must not become a model activation. */
-    options: { initializeOnly?: boolean } = {}
+    options: {
+      initializeOnly?: boolean
+      /** Trusted daemon-owned host override for a conversation-isolated webchat
+       * cell. Never derived from model/session input. */
+      host?: AcpHost
+      /** Extra descriptors bound to the exact overridden host (for example the
+       * cell-private AgentConnect admin MCP bridge). */
+      additionalMcpServers?: McpServer[]
+    } = {}
   ): Promise<{
     sessionId: string
     blocks: ContentBlock[]
@@ -445,9 +453,9 @@ export class SessionManager {
     // warm turn on a live host must NOT re-run prepareWorkspace: pulling/reconciling
     // would mutate a checkout the running ACP process is using — the per-branch
     // prepareWorkspace below handles the warm-host new-session/resume cases instead.
-    const hostCold = !(this.deps.isHostRunning?.(agentId) ?? false)
+    const hostCold = options.host ? false : !(this.deps.isHostRunning?.(agentId) ?? false)
     const preparedCwd = hostCold ? await abortable(() => prepareWorkspace(agent), signal) : undefined
-    const host = await abortable(() => this.deps.hostFor(agentId), signal)
+    const host = options.host ?? (await abortable(() => this.deps.hostFor(agentId), signal))
     // The sticky per-session effort override rides session `_meta` on new/load so the
     // `ultracode` sentinel (rejected by the `thought_level` select) takes effect.
     // Resolve chat authority immediately before each request, then fence the await:
@@ -658,8 +666,8 @@ export class SessionManager {
       // brand-new session; use the pre-host preparation when the host was cold, else
       // prepare now (warm host — ordering vs spawn is moot).
       const cwd = preparedCwd ?? (await abortable(() => prepareWorkspace(agent), signal))
-      const mcpServers =
-        this.deps.mcpServersFor?.({
+      const mcpServers = [
+        ...(this.deps.mcpServersFor?.({
           agent,
           platform: msg.platform,
           channel: msg.channel,
@@ -667,7 +675,9 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
-        }) ?? []
+        }) ?? []),
+        ...(options.additionalMcpServers ?? [])
+      ]
       const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
       created = true
       rec = {
@@ -707,8 +717,8 @@ export class SessionManager {
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.
-      const mcpServers =
-        this.deps.mcpServersFor?.({
+      const mcpServers = [
+        ...(this.deps.mcpServersFor?.({
           agent,
           platform: msg.platform,
           channel: msg.channel,
@@ -716,7 +726,9 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
-        }) ?? []
+        }) ?? []),
+        ...(options.additionalMcpServers ?? [])
+      ]
       let resumed = false
       if (host.loadSupported?.()) {
         // §7.3 closed/evicted → resuming: mark the re-attach so a TTL-closed session

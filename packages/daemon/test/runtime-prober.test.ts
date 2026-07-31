@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   curatedProbeEnvironment,
   probeRuntime,
@@ -204,6 +205,35 @@ describe('probeRuntime', () => {
     expect(policy!.suppressChildStderr).toBe(true)
     expect(start).toHaveBeenCalledOnce()
     expect(newSession).toHaveBeenCalledWith('/tmp/probe/workspace', [])
+  })
+
+  it('passes the daemon broker mask into a curated bwrap probe host', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-probe-mask-'))
+    const cwd = join(root, 'workspace')
+    const maskedRoots = [join(root, 'broker'), join(root, 'webchat-hosts')]
+    mkdirSync(cwd)
+    for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
+    try {
+      let policy: ProbeHostPolicy | undefined
+      const result = await probeRuntime('safe', rt, cwd, {
+        curated: true,
+        hostEnv: { PATH: '/usr/bin' },
+        runInSandbox: true,
+        sandboxMechanism: 'bwrap',
+        maskedReadRoots: maskedRoots,
+        hostFactory: (_runtime, _id, _cwd, supplied) => {
+          policy = supplied
+          return successfulHost()
+        }
+      })
+      expect(result.ok).toBe(true)
+      expect(policy?.sandbox?.maskedReadRoots).toEqual(maskedRoots)
+    } finally {
+      const resolvedRoot = realpathSync(root)
+      const repoRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '../../..'))
+      expect(resolvedRoot.startsWith(repoRoot + sep)).toBe(false)
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('sanitizes credential values and filesystem paths from failures and logs', async () => {

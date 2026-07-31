@@ -301,7 +301,7 @@ describe('Daemon session lifecycle (#118)', () => {
     clock.advance(30_000)
     await vi.waitFor(() => expect(blocked.host.stop).toHaveBeenCalled())
     expect((daemon as any).hosts.has('bot-a')).toBe(false)
-    expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
+    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'))
 
     blocked.release()
     await turn.catch(() => {})

@@ -117,9 +117,16 @@ import {
   Ack
 } from './frames/telemetry.js'
 import { ErrorFrame } from './frames/error.js'
+import {
+  McpInvocationMint,
+  McpInvocationMinted,
+  WebchatMcpDelegationRevoke,
+  WebchatMcpDelegationRevoked
+} from './frames/delegated-mcp.js'
 // webchat CONTENT frames were retired in milestone A4 — content rides the relay's rd/*
 // wire now, not the daemon↔CP control WS. The reply-payload schemas live on in
-// frames/webchat.ts (reused by rd/chat), but none are registered as control-WS frames.
+// frames/webchat.ts (reused by rd/chat); metadata-only delegation lifecycle frames
+// remain valid on the control WebSocket.
 
 /**
  * The single source of truth for the wire: `type` string → payload zod schema.
@@ -197,6 +204,11 @@ export const FRAME_SCHEMAS = {
   'secrets/renew': SecretsRenew,
   'secrets/revoke': SecretsRevoke,
   'scope-attestation': ScopeAttestation,
+  // ── webchat-scoped AgentConnect MCP assertions ──
+  'mcp/invocation/mint': McpInvocationMint,
+  'mcp/invocation/minted': McpInvocationMinted,
+  'webchat/mcp-delegation/revoke': WebchatMcpDelegationRevoke,
+  'webchat/mcp-delegation/revoked': WebchatMcpDelegationRevoked,
   // ── dashboard / facts ──
   'event/session': EventSession,
   'event/session-activity': SessionActivity,
@@ -386,6 +398,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('secrets/renew', FRAME_SCHEMAS['secrets/renew']),
   frame('secrets/revoke', FRAME_SCHEMAS['secrets/revoke']),
   frame('scope-attestation', FRAME_SCHEMAS['scope-attestation']),
+  frame('mcp/invocation/mint', FRAME_SCHEMAS['mcp/invocation/mint']),
+  frame('mcp/invocation/minted', FRAME_SCHEMAS['mcp/invocation/minted']),
+  frame('webchat/mcp-delegation/revoke', FRAME_SCHEMAS['webchat/mcp-delegation/revoke']),
+  frame('webchat/mcp-delegation/revoked', FRAME_SCHEMAS['webchat/mcp-delegation/revoked']),
   frame('event/session', FRAME_SCHEMAS['event/session']),
   frame('event/session-activity', FRAME_SCHEMAS['event/session-activity']),
   frame('usage/report', FRAME_SCHEMAS['usage/report']),

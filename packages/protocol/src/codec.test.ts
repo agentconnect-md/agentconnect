@@ -877,11 +877,18 @@ describe('session read-back frames (console history pull)', () => {
 
 describe('milestone A4 gate — the CP is off the webchat hot path', () => {
   it('the daemon↔CP frame registry carries NO webchat content frame type', () => {
-    // The retire is complete iff no `webchat/*` frame can even be encoded onto the
-    // daemon↔CP control WS — webchat content rides the relay `rd/*` wire now. This is
-    // the structural form of the design's e2e gate (no webchat frame on daemon↔CP).
-    expect(FRAME_TYPES.filter((t) => t.startsWith('webchat/'))).toEqual([])
-    expect(Object.keys(FRAME_SCHEMAS).filter((t) => t.startsWith('webchat/'))).toEqual([])
+    // Webchat content rides the relay `rd/*` wire. Metadata-only delegation lifecycle
+    // frames are the only allowlisted webchat namespace on the control WebSocket.
+    const allowedWebchatControlTypes = ['webchat/mcp-delegation/revoke', 'webchat/mcp-delegation/revoked'] as const
+    const unexpectedWebchatTypes = (types: readonly string[]) =>
+      types.filter(
+        (type) => type.startsWith('webchat/') && !allowedWebchatControlTypes.some((allowed) => type === allowed)
+      )
+
+    expect(FRAME_TYPES.filter((type) => type.startsWith('webchat/'))).toEqual(allowedWebchatControlTypes)
+    expect(Object.keys(FRAME_SCHEMAS).filter((type) => type.startsWith('webchat/'))).toEqual(allowedWebchatControlTypes)
+    expect(unexpectedWebchatTypes(FRAME_TYPES)).toEqual([])
+    expect(unexpectedWebchatTypes([...FRAME_TYPES, 'webchat/stream'])).toEqual(['webchat/stream'])
   })
 })
 

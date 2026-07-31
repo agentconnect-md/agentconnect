@@ -13,11 +13,49 @@
  * daemon has no live rd/* socket on THIS relay the op fails with an error frame.
  */
 import { randomUUID } from 'node:crypto'
-import { RelayWebchatOp, type RdChat, type RdMsgWebchat } from '@agentconnect.md/protocol'
-import type { ServerTransport } from '@agentconnect.md/connection'
+import {
+  ErrorCode,
+  RelayWebchatOp,
+  type RdChat,
+  type RdMsgWebchat,
+  type WebchatMcpDelegationReference
+} from '@agentconnect.md/protocol'
+import { WireError, type ServerTransport } from '@agentconnect.md/connection'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { ChatSink } from './webchat-router.js'
 import type { Logger } from './log.js'
+
+const ACK_TIMEOUT_MESSAGE =
+  /^no ack after [1-9]\d* tries for [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const REMOTE_PROTOCOL_CODES: ReadonlySet<string> = new Set([
+  'UNKNOWN_FRAME',
+  'FRAME_TOO_LARGE',
+  'PROTOCOL_STATE',
+  'BAD_PAYLOAD'
+])
+
+/**
+ * Preserve actionable delivery telemetry without ever copying error messages or
+ * details: both may contain the exact rd/msg, including browser content and the
+ * opaque delegation reference.
+ */
+function deliveryFailureDiagnostic(error: unknown): string {
+  if (!(error instanceof WireError)) return 'kind=unknown_error'
+
+  const parsedCode = ErrorCode.safeParse(error.code)
+  if (!parsedCode.success) return 'kind=unknown_wire_error'
+
+  const code = parsedCode.data
+  let kind = 'wire_error'
+  if (code === 'INTERNAL' && error.retryable && ACK_TIMEOUT_MESSAGE.test(error.message)) {
+    kind = 'ack_timeout'
+  } else if (code === 'INTERNAL' && error.retryable && error.message === 'connection closed') {
+    kind = 'connection_closed'
+  } else if (REMOTE_PROTOCOL_CODES.has(code)) {
+    kind = 'remote_protocol'
+  }
+  return `kind=${kind} code=${code} retryable=${error.retryable}`
+}
 
 export interface RelayBrowserConnDeps {
   /** The conversation id (== chatId == sessionKey); fresh or resumed. */
@@ -25,6 +63,8 @@ export interface RelayBrowserConnDeps {
   agentId: string
   /** Display handle for the transcript author line (from the verified token). */
   user: string
+  /** Opaque MCP authority reference from the verified CP result, never browser input. */
+  delegation?: WebchatMcpDelegationReference
   /** Resolve a live rd/* connection to the target daemon (may be absent if it dropped). */
   daemonConn: () => RelayDaemonConnection | undefined
   register: (chatId: string, sink: ChatSink) => void
@@ -81,11 +121,22 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
 
 export class RelayBrowserConnection implements ChatSink {
   private closed = false
+  private readonly delegation?: Readonly<WebchatMcpDelegationReference>
 
   constructor(
     private readonly transport: ServerTransport,
     private readonly deps: RelayBrowserConnDeps
-  ) {}
+  ) {
+    // Snapshot the verified server-side verdict once. Its fields are primitives, so a
+    // frozen shallow copy is a complete immutable binding for this browser transport.
+    this.delegation = deps.delegation
+      ? Object.freeze({
+          id: deps.delegation.id,
+          generation: deps.delegation.generation,
+          expiresAt: deps.delegation.expiresAt
+        })
+      : undefined
+  }
 
   start(): void {
     this.deps.register(this.deps.chatId, this)
@@ -129,6 +180,7 @@ export class RelayBrowserConnection implements ChatSink {
       sessionKey: this.deps.chatId,
       msgId: randomUUID(),
       chatId: this.deps.chatId,
+      ...(this.delegation ? { delegation: this.delegation } : {}),
       payload: op
     }
     try {
@@ -143,8 +195,10 @@ export class RelayBrowserConnection implements ChatSink {
       } else if (op.op === 'resume') {
         this.send({ type: 'resumed', ack: browserAck })
       }
-    } catch (err) {
-      this.deps.log.warn(`relay: webchat op delivery failed: ${(err as Error).message}`)
+    } catch (error) {
+      // Lower layers may include the outbound frame in an error. Do not let the opaque
+      // delegation reference become log content.
+      this.deps.log.warn(`relay: webchat op delivery failed ${deliveryFailureDiagnostic(error)}`)
       this.send({ type: 'error', message: 'delivery failed' })
     }
   }
@@ -170,6 +224,7 @@ export class RelayBrowserConnection implements ChatSink {
         sessionKey: this.deps.chatId,
         msgId: randomUUID(),
         chatId: this.deps.chatId,
+        ...(this.delegation ? { delegation: this.delegation } : {}),
         payload: { op: 'close' }
       })
     } catch {

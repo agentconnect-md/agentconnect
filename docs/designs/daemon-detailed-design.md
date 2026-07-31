@@ -584,6 +584,13 @@ agentconnect daemon (Node, one process)
 
 One ACP adapter child can host multiple sessions through its internal `sessions` map. Each session starts one long-lived Query child reused across prompts; it is not one process per message.
 
+The built-in preset's entitled webchat sessions are the deliberate exception.
+Each such conversation uses a separate ACP adapter host inside its own Linux
+`bwrap` PID/mount cell, with a conversation-private runtime home and admin MCP
+socket. Ordinary agents and ineligible sessions continue using the agent-scoped
+host described above. See section 7.6 and
+[`webchat-preset-agentconnect-mcp.md`](webchat-preset-agentconnect-mcp.md).
+
 ### 7.2 Agent (ACP Adapter) State Machine
 
 ```
@@ -647,6 +654,45 @@ For cron, Scheduler constructs a `source:"cron"` synthetic `NormalizedMessage` a
 | agent -> client | `fs/read_text_file`, `fs/write_text_file` | Workspace files with Workspace Manager `PathGuard`.                                                                                                 |
 
 Names and shapes follow ACP and `@agentclientprotocol/claude-agent-acp`. Internally, the adapter implements the wire methods `session/new`, `session/prompt`, and `session/update` as `newSession`, `prompt`, and `sessionUpdate`. Declaring `mcpServers` in `session/new` is the tool-injection point.
+
+### 7.6 Built-in Preset Webchat Admin MCP
+
+The built-in `agentconnect` preset may attach the CP-hosted administrative MCP
+catalog only to a private, user-owned webchat session. It never attaches this
+catalog to an arbitrary agent, an IM session, automation, or an agent-to-agent
+session.
+
+The daemon admits that descriptor only when its live capability probe proves all
+of the following:
+
+- the host OS is Linux and the active sandbox mechanism is `bwrap`;
+- `security.requireSandbox=true`, making confinement mandatory for every
+  untrusted ACP host on the daemon;
+- the startup probe can create the PID/mount namespace needed to hide peer
+  processes and private socket-source roots; and
+- the private `SessionMcpBroker` and `DelegatedWebchatHostManager` initialized.
+
+On success, daemon registration advertises `delegated_mcp_assertion_v1`. One
+entitled `(agentId, conversationId)` gets one dedicated ACP host, immutable
+isolation-cell binding, private runtime home, and private Unix-socket listener.
+The common broker and runtime-home source roots are hidden in every sandbox; only
+that cell's source directories are bind-mounted back at their fixed in-cell
+locations. The cell receives a local socket descriptor and defense-in-depth local
+token, never a reusable user credential or CP assertion.
+
+For each MCP request, the broker creates an invocation id, hashes the exact bytes
+it will send, obtains a 30-second single-use assertion through the authenticated
+daemon↔CP WebSocket, and sends those unchanged bytes to the standard CP
+`POST /api/v1/mcp` endpoint. The CP derives the actor from the durable webchat
+owner and re-runs authorization. Tool catalog execution is therefore a control
+operation; browser messages and ACP `session/update` streams remain on the
+relay↔daemon/daemon-local data path and never cross the CP.
+
+Admission fails closed. A failed probe, macOS `sandbox-exec`, optional sandbox
+policy, stale generation, unavailable CP, or invalid broker binding produces no
+`agentconnect-admin` descriptor or a bounded tool error. Ordinary webchat and
+daemon-local MCP tools continue; the daemon never falls back to its shared MCP
+socket, daemon API key, organization principal, or reusable user credential.
 
 ---
 
@@ -918,15 +964,17 @@ Envelope:
 
 **Upstream, daemon -> CP**
 
-| Type                                  | Payload highlights                                                                                                                   | Semantics                                          |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
-| `auth`                                | `{ apiKey, daemonId? }`                                                                                                              | First-frame opaque-token auth.                     |
-| `register`                            | `{ host, capabilities:{platforms,runtimes,acp,features}, maxAgents, localState:{assignments,crons,leases,agents[],integrations[]} }` | Register/capabilities/local state for reconcile.   |
-| `heartbeat`                           | `{ load:{cpu,mem,agents}, health:"ok\|degraded", activeSessions, degradedScopes[] }`                                                 | Heartbeat/load/degraded scopes.                    |
-| `ack`                                 | `{ refId, ok, error? }`                                                                                                              | Persistence/convergence result for downstream REQ. |
-| `event/session`                       | `{ sessionId, agentId, phase:"start\|plan\|problem\|end", link, summary }`                                                           | Converged UI event, not body.                      |
-| `usage/report`                        | `{ sessionId, agentId, platform?, channel?, lastActivityAt, usage }`                                                                 | Latest-wins session token/cost.                    |
-| `facts/daemon-runtimes` and `facts/*` | Runtime/MCP/memory probe snapshots                                                                                                   | Observed facts with REPLACE semantics.             |
+| Type                                  | Payload highlights                                                                                                                   | Semantics                                                                    |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `auth`                                | `{ apiKey, daemonId? }`                                                                                                              | First-frame opaque-token auth.                                               |
+| `register`                            | `{ host, capabilities:{platforms,runtimes,acp,features}, maxAgents, localState:{assignments,crons,leases,agents[],integrations[]} }` | Register/capabilities/local state for reconcile.                             |
+| `heartbeat`                           | `{ load:{cpu,mem,agents}, health:"ok\|degraded", activeSessions, degradedScopes[] }`                                                 | Heartbeat/load/degraded scopes.                                              |
+| `ack`                                 | `{ refId, ok, error? }`                                                                                                              | Persistence/convergence result for downstream REQ.                           |
+| `event/session`                       | `{ sessionId, agentId, phase:"start\|plan\|problem\|end", link, summary }`                                                           | Converged UI event, not body.                                                |
+| `usage/report`                        | `{ sessionId, agentId, platform?, channel?, lastActivityAt, usage }`                                                                 | Latest-wins session token/cost.                                              |
+| `facts/daemon-runtimes` and `facts/*` | Runtime/MCP/memory probe snapshots                                                                                                   | Observed facts with REPLACE semantics.                                       |
+| `mcp/invocation/mint`                 | Delegation generation, immutable agent/conversation binding, invocation id, exact request hash, method, and optional tool name       | Request one short-lived assertion for the exact delegated admin-MCP request. |
+| `webchat/mcp-delegation/revoke`       | Delegation id, generation, and closed/expired/detached reason                                                                        | Revoke one exact logical-session authority generation.                       |
 
 Metrics and traces use the direct **OTLP side path** bootstrapped by `OTEL_*`,
 not the Control Plane WebSocket. Only `usage/report` and `facts/*` use the
@@ -958,7 +1006,7 @@ control channel.
     "platforms": ["slack", "telegram", "discord", "feishu"], // Implemented platform drivers
     "runtimes": ["claude", "codex"], // Object.keys(resolveRuntimes); validate executables at startup
     "acp": true,
-    "features": [] // Capability flags
+    "features": ["session-visibility-v1", "delegated_mcp_assertion_v1"] // The delegated flag appears only after the mandatory Linux bwrap live probe.
   },
   "maxAgents": 32,
   "localState": {
@@ -981,6 +1029,54 @@ Control Plane-owned replicas on reconnect. See section 3.3 of
 ### 10.4 Degradation and Reconnect
 
 WebSocket drop -> CP-Client enters DEGRADED and reconnects with backoff. Daemon remains autonomous: platform connections, active/resumed sessions, crons, and local + persisted CP routing continue. New CP orchestration pauses. Reconnect `register` with resume, then converge `register/ok`.
+
+### 10.5 Delegated Admin-MCP Operations
+
+This feature is operator opt-in and the CP gate defaults off. Before setting
+`WEBCHAT_PRESET_MCP_ENABLED=true`, deploy compatible CP, relay, and daemon builds;
+verify private webchat session enforcement; install `bwrap`; set
+`security.requireSandbox=true`; restart the Linux daemon; and confirm live
+registration advertises both `session-visibility-v1` and
+`delegated_mcp_assertion_v1`. A binary present on disk without a successful live
+probe is not sufficient.
+
+Enable the CP gate only after the daemon isolation capability is healthy. Start
+with a canary and observe:
+
+- `agentconnect.delegated_mcp.isolation.transitions` and
+  `agentconnect.delegated_mcp.isolation.denials`;
+- `agentconnect.delegated_mcp.request.duration`
+  (`stage=mint_ws|mcp_http`);
+- `agentconnect.webchat_mcp.delegation.transitions`,
+  `agentconnect.webchat_mcp.assertion.transitions`, and
+  `agentconnect.webchat_mcp.invocation.transitions`; and
+- `agentconnect.webchat_mcp.request.duration` (`stage=nested_rest`).
+
+The metric labels are closed outcomes/reasons only; they exclude user,
+organization, agent, conversation, delegation, invocation, token, assertion,
+socket-path, request-body, and credential values. Logs likewise exclude assertions,
+cell-local tokens, private socket paths, credentials, MCP bodies/tool arguments,
+and transcript content.
+
+Rollback starts by setting `WEBCHAT_PRESET_MCP_ENABLED=false` and restarting the
+CP. That stops new delegation issuance while preserving ordinary webchat, but it
+does not revoke an already issued generation. Existing authority is revoked only
+when its session reaches TTL expiry or when its agent detaches/moves. No production
+logical-session-close path emits a revoke today. Browser socket close is a no-op,
+and ordinary daemon/agent drain, stop, restart, or upgrade performs local
+host/broker cleanup while retaining authority for a possible resume.
+
+No fleet-wide bulk revoke API exists. For urgent containment, detach the affected
+agent/placement, or isolate the daemon / make it omit
+`delegated_mcp_assertion_v1` so new mint and claim attempts fail. Either emergency
+choice can interrupt ordinary webchat or agent availability on that placement.
+Keep it isolated until exact generation-fenced revocation, logical-session expiry,
+or the maximum 12-hour ceiling is confirmed; only then roll back relay or daemon
+protocol support. Never substitute a shared endpoint or broader credential. The
+complete staged procedure and stable metric outcome/reason values are in
+[`webchat-preset-agentconnect-mcp.md` §13](webchat-preset-agentconnect-mcp.md#13-compatibility-and-operator-rollout)
+and
+[`§15`](webchat-preset-agentconnect-mcp.md#15-observability).
 
 ---
 

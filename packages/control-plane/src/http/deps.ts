@@ -41,8 +41,10 @@ import type {
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
-  OAuthRepo
+  OAuthRepo,
+  McpInvocationRepo
 } from '../persistence/ports.js'
+import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -76,6 +78,9 @@ import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
+import type { InvocationAssertionAuthenticator } from './mcp/invocation-authenticator.js'
+import type { InternalInvocationAuth } from './mcp/internal-invocation-auth.js'
+import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
@@ -121,6 +126,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
 }
 
 export interface HttpDeps {
+  /** Shared process clock: delegated MCP execution uses the same timer seam as its reaper. */
+  clock: Clock
   repos: {
     agent: AgentRepo
     assignment: AssignmentRepo
@@ -194,6 +201,8 @@ export interface HttpDeps {
     agentRepoAuth: AgentRepoAuthorizationRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
+    /** Durable one-time delegated MCP execution ledger. */
+    mcpInvocation: McpInvocationRepo
     /** Embedded OAuth AS protocol state (agent-assistant.md §7): clients, codes, grants. */
     oauth: OAuthRepo
   }
@@ -249,6 +258,12 @@ export interface HttpDeps {
    *  §6.5). ONE instance per composition root — the MCP plugin is mounted twice
    *  (`/api/v1/mcp` + `/v1` alias) and both mounts must share a budget. */
   mcpRateLimit: McpRateLimiter
+  /** Route-only one-time assertion verifier; mounted by the MCP route in Task 6. */
+  invocationAssertions: InvocationAssertionAuthenticator
+  /** In-process principal propagation for MCP's nested REST injections. */
+  internalInvocationAuth: InternalInvocationAuth
+  /** Low-cardinality delegated MCP observations. Optional for focused route tests. */
+  webchatMcpMetrics?: Pick<WebchatMcpMetrics, 'invocation' | 'requestDuration'>
   /** Process readiness gate for `/readyz` (rolling-update drain, issue #240). */
   readiness: Readiness
   /** Validates a pasted Slack bot token against `auth.test` (and derives the bot name

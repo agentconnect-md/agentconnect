@@ -1,6 +1,6 @@
 # Webchat-Scoped AgentConnect MCP for the Preset Agent
 
-**Status:** Proposed
+**Status:** Implemented behind an operator rollout gate; disabled by default
 
 **Scope:** protocol + control-plane + relay + daemon
 
@@ -99,12 +99,14 @@ This design deliberately separates:
 
 ### 2.3 External prerequisites
 
-[`session-visibility.md`](session-visibility.md) is a separate,
-currently unimplemented design and a hard launch prerequisite. This feature does not
-absorb that design's protocol, persistence, authorization, memory-gating, or web
-work. Delegated MCP emission remains disabled until new webchat sessions are
-persisted as `private` with `ownerIdentity = user:<WebchatConversation.userId>` and
-all session list/detail/message/tool-body reads enforce that visibility.
+[`session-visibility.md`](session-visibility.md) remains a separate hard launch
+prerequisite. This feature does not absorb that design's protocol, persistence,
+authorization, memory-gating, or web work. An operator must not enable delegated
+MCP emission until new webchat sessions are persisted as `private` with
+`ownerIdentity = user:<WebchatConversation.userId>` and all session
+list/detail/message/tool-body reads enforce that visibility. Compatible deployments
+advertise `session-visibility-v1` from the daemon and enforce the corresponding
+Control Plane read predicates.
 
 The durable `WebchatConversation` owner binding already exists and remains the
 authorization source for this design. Session visibility prevents transcript
@@ -126,9 +128,9 @@ namespaces and requires daemon-wide sandbox enforcement. The current macOS
 not meet the read/process/socket isolation contract, so those daemons do not
 advertise this feature. Ordinary webchat continues without `agentconnect-admin`.
 
-## 3. Current state and gaps
+## 3. Implemented composition
 
-The existing webchat path already establishes most of the owner binding:
+The webchat path establishes the owner binding:
 
 1. `POST /orgs/:orgId/agents/:agentId/webchat/token` runs under human auth and
    verifies that the user may view the agent.
@@ -141,12 +143,12 @@ The existing webchat path already establishes most of the owner binding:
 5. The relay forwards webchat content directly to the daemon over `rd/*`; message
    content never crosses the CP.
 
-The existing AgentConnect MCP is also already CP-hosted and exposes the curated
-catalog through `POST /api/v1/mcp`. It authenticates personal API keys and OAuth
-tokens, then calls the existing REST surface with the same credential through
-`app.inject()`.
+The AgentConnect MCP remains CP-hosted and exposes the curated catalog through
+`POST /api/v1/mcp`. Its ordinary external flow authenticates personal API keys and
+OAuth tokens, then calls the existing REST surface with the same credential
+through `app.inject()`.
 
-The missing pieces are:
+Delegated preset webchat composes those paths with:
 
 - a session-scoped, non-credential delegation handle;
 - propagation of that handle from webchat verification to the daemon;
@@ -490,15 +492,16 @@ invalidating each other. The plaintext webchat token and assertions are never
 stored.
 
 The default delegation lifetime is 12 hours, capped by any earlier logical-session
-expiry. Session close/expiry sends the conditional revocation frame in §8.5. Agent
-move/detach is CP-observable and revokes the delegation directly. Deletion of the
-owner membership blocks mint immediately through its live membership check even if
-a best-effort lifecycle signal is delayed.
+expiry. Session TTL expiry sends the conditional revocation frame in §8.5. Agent
+move/detach is CP-observable and revokes the delegation directly. The current
+production daemon has no explicit logical-session-close revocation path. Deletion
+of the owner membership blocks mint immediately through its live membership check
+even if a best-effort lifecycle signal is delayed.
 
-A compromised daemon can suppress its session-close revocation frame. The hard
+A compromised daemon can suppress its TTL-expiry revocation frame. The hard
 security bound in that threat case is therefore the 12-hour delegation expiry plus
 the live membership, role, agent-visibility, preset-entitlement, and placement
-checks—not immediate close detection. This is an explicit residual trust in a daemon
+checks—not immediate TTL detection. This is an explicit residual trust in a daemon
 that already owns the agent process and session content.
 
 ### 7.2 Invocation ledger
@@ -595,6 +598,16 @@ reference. The CP compares all of those fields at assertion mint, so moving a va
 reference from one same-daemon conversation to another can at most make the
 descriptor appear; it cannot authorize a tool call.
 
+This counter is intentionally delegation-scoped rather than reusing
+`sessionEpoch`/`seq`/`launchId`. Those standard fences order daemon placement and
+control-stream ownership, while a delegation may survive a browser reconnect, relay
+redelivery, daemon process restart, and unchanged placement. The CP transactionally
+increments `generation` whenever that logical conversation's user authority rotates;
+the daemon binds it together with the delegation id, agent id, and conversation id,
+and every mint and claim rechecks the same tuple. A higher generation therefore
+invalidates all older authority without coupling its lifetime to an ACP process or
+control-connection launch.
+
 The relay remains trusted for webchat content delivery: a fully compromised relay
 can inject or suppress content in a conversation it routes, as it can without this
 feature. That residual ingress risk does not let a leaked delegation reference call
@@ -603,7 +616,7 @@ delegated principal into another conversation's cell.
 
 ### 8.3 Daemon↔CP assertion mint
 
-Add a daemon-originated request/reply pair on the existing authenticated control
+The daemon uses a request/reply pair on the existing authenticated control
 WebSocket:
 
 ```ts
@@ -677,13 +690,14 @@ type WebchatMcpDelegationRevoked = {
 ```
 
 The CP applies the revocation only when the authenticated daemon, delegation id, and
-generation all match. A stale close from an older generation cannot revoke the
-current one. Normal logical-session close and TTL expiry send this frame. Agent
+generation all match. A stale signal from an older generation cannot revoke the
+current one. The current daemon sends this frame on session TTL expiry. Agent
 move/detach is additionally revoked from the CP's own placement transaction and
-does not rely on daemon cooperation. A daemon shutdown clears only the daemon's
-in-memory binding; it does not close the logical session or revoke the CP delegation,
-so an ordinary restart can restore the same reference from the next trusted
-`rd/msg`.
+does not rely on daemon cooperation. The protocol reserves `session_closed`, but no
+production logical-session-close path emits it today. Browser close is a
+transport-only no-op. A daemon shutdown clears only the daemon's in-memory binding;
+it does not revoke the CP delegation, so an ordinary restart can restore the same
+reference from the next trusted `rd/msg`.
 
 ## 9. Invocation state machine
 
@@ -896,53 +910,114 @@ It never falls back to another user, a daemon key, or an organization-wide key.
 
 ## 12. Failure behavior
 
-| Failure                                   | Behavior                                                                                                                                                                                                                                                                                                                               |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Non-preset or non-webchat session         | No `agentconnect-admin` descriptor.                                                                                                                                                                                                                                                                                                    |
-| Isolation unavailable or unhealthy        | Daemon omits the delegated-MCP capability and CP returns no delegation; ordinary webchat continues. A daemon never falls back to a shared or token-only delegated socket.                                                                                                                                                              |
-| Missing/forged delegation reference       | Descriptor absent or tool mint denied; ordinary chat continues.                                                                                                                                                                                                                                                                        |
-| Token/path copied across cells            | The attacking cell cannot resolve or connect to the victim's private socket mount. Presenting the token on its own or the shared socket returns unknown/expired; no assertion mint occurs.                                                                                                                                             |
-| Dedicated ACP host or bridge exits        | Daemon destroys that cell and private listener. Resume creates a fresh cell/token and reuses only a still-valid logical delegation.                                                                                                                                                                                                    |
-| CP unavailable during mint or `/mcp`      | AgentConnect admin tool returns a retryable error; ordinary chat/local tools continue.                                                                                                                                                                                                                                                 |
-| User removed or role/visibility changed   | Next mint/claim fails with no existence oracle for hidden resources.                                                                                                                                                                                                                                                                   |
-| Agent moved after delegation              | Mint fails; reconnect resolves current placement and rotates delegation.                                                                                                                                                                                                                                                               |
-| Assertion expired before use              | Broker remints the same unstarted invocation.                                                                                                                                                                                                                                                                                          |
-| Assertion replay                          | Cached result, `in_progress`, or `ambiguous`; never a second execution.                                                                                                                                                                                                                                                                |
-| Request bytes differ from authorized hash | Reject before MCP parsing or audit of tool arguments.                                                                                                                                                                                                                                                                                  |
-| Execution exceeds two minutes             | Invocation compare-and-sets to `ambiguous`; late completion cannot make it retryable or overwrite that state.                                                                                                                                                                                                                          |
-| CP crash during execution                 | Old `running` invocation becomes `ambiguous`; no automatic write replay.                                                                                                                                                                                                                                                               |
-| Daemon restart                            | Delegation reference is restored from the next trusted `rd/msg`; real assertions were never persisted.                                                                                                                                                                                                                                 |
-| Normal logical-session close/expiry       | Daemon sends the generation-fenced §8.5 revocation frame and clears its local binding.                                                                                                                                                                                                                                                 |
-| Relay compromise                          | A leaked or cross-conversation delegation reference alone cannot mint: CP additionally requires the placed daemon's authenticated WS and an agent/conversation binding equal to the durable delegation. The relay remains trusted for the content it delivers into an otherwise valid conversation.                                    |
-| Daemon compromise                         | Until the 12-hour delegation ceiling, a compromised daemon may suppress close notification and request assertions only for delegations previously established by real preset-webchat users. Current user membership/RBAC/visibility, host-agent denial, curated catalog, exact-request assertions, rate limits, and audit still apply. |
+| Failure                                   | Behavior                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Non-preset or non-webchat session         | No `agentconnect-admin` descriptor.                                                                                                                                                                                                                                                                                                         |
+| Isolation unavailable or unhealthy        | Daemon omits the delegated-MCP capability and CP returns no delegation; ordinary webchat continues. A daemon never falls back to a shared or token-only delegated socket.                                                                                                                                                                   |
+| Missing/forged delegation reference       | Descriptor absent or tool mint denied; ordinary chat continues.                                                                                                                                                                                                                                                                             |
+| Token/path copied across cells            | The attacking cell cannot resolve or connect to the victim's private socket mount. Presenting the token on its own or the shared socket returns unknown/expired; no assertion mint occurs.                                                                                                                                                  |
+| Dedicated ACP host or bridge exits        | Daemon destroys that cell and private listener. Resume creates a fresh cell/token and reuses only a still-valid logical delegation.                                                                                                                                                                                                         |
+| CP unavailable during mint or `/mcp`      | AgentConnect admin tool returns a retryable error; ordinary chat/local tools continue.                                                                                                                                                                                                                                                      |
+| User removed or role/visibility changed   | Next mint/claim fails with no existence oracle for hidden resources.                                                                                                                                                                                                                                                                        |
+| Agent moved after delegation              | Mint fails; reconnect resolves current placement and rotates delegation.                                                                                                                                                                                                                                                                    |
+| Assertion expired before use              | Broker remints the same unstarted invocation.                                                                                                                                                                                                                                                                                               |
+| Assertion replay                          | Cached result, `in_progress`, or `ambiguous`; never a second execution.                                                                                                                                                                                                                                                                     |
+| Request bytes differ from authorized hash | Reject before MCP parsing or audit of tool arguments.                                                                                                                                                                                                                                                                                       |
+| Execution exceeds two minutes             | Invocation compare-and-sets to `ambiguous`; late completion cannot make it retryable or overwrite that state.                                                                                                                                                                                                                               |
+| CP crash during execution                 | Old `running` invocation becomes `ambiguous`; no automatic write replay.                                                                                                                                                                                                                                                                    |
+| Daemon restart                            | Delegation reference is restored from the next trusted `rd/msg`; real assertions were never persisted.                                                                                                                                                                                                                                      |
+| Session TTL expiry                        | Daemon sends the generation-fenced §8.5 revocation frame and clears its local binding. Browser close and ordinary lifecycle drain/stop/restart do not revoke.                                                                                                                                                                               |
+| Relay compromise                          | A leaked or cross-conversation delegation reference alone cannot mint: CP additionally requires the placed daemon's authenticated WS and an agent/conversation binding equal to the durable delegation. The relay remains trusted for the content it delivers into an otherwise valid conversation.                                         |
+| Daemon compromise                         | Until the 12-hour delegation ceiling, a compromised daemon may suppress TTL-expiry notification and request assertions only for delegations previously established by real preset-webchat users. Current user membership/RBAC/visibility, host-agent denial, curated catalog, exact-request assertions, rate limits, and audit still apply. |
 
-## 13. Compatibility and rollout
+## 13. Compatibility and operator rollout
 
-Add a daemon capability such as `delegated_mcp_assertion_v1`. Advertising it asserts
-both protocol support and the §2.3 isolation contract: daemon-wide confinement is
-enforced, dedicated conversation ACP hosts are supported, and the active mechanism
-hides both peer processes and private socket mounts. The CP returns a delegation
-reference only when the target daemon advertises it. New relay and daemon fields are
-optional, so older or non-isolating peers continue ordinary webchat without the
-admin MCP.
+`delegated_mcp_assertion_v1` is both a wire capability and an isolation
+attestation. A daemon advertises it only when all of the following are true:
 
-Recommended rollout order:
+- it is running on Linux with `bwrap` installed;
+- the daemon startup probe successfully creates the required PID and mount
+  namespaces (having a `bwrap` executable on `PATH` is not enough);
+- `security.requireSandbox=true`, so every untrusted ACP host on that daemon is
+  confined rather than only delegated hosts;
+- the private broker and dedicated webchat-host manager initialized; and
+- it can create one private process/mount cell and runtime home per entitled
+  conversation.
 
-1. Add the dedicated-host isolation cell, private broker endpoint, and capability
-   probe, with capability emission disabled.
-2. Add persistence, the delegation/assertion modules, route-specific `mcpAuth`, and
-   `InternalInvocationAuth`, with feature emission disabled.
-3. Add optional protocol fields and daemon↔CP mint frames.
-4. Add relay propagation and daemon `SessionMcpBroker`.
-5. Enable delegation establishment only for the built-in preset after
-   `session-visibility.md` is implemented and webchat sessions are private by
-   default.
-6. Enable the feature for compatible daemons, monitor isolation, denial, and
-   ambiguous rates, then
-   remove the rollout flag.
+macOS `sandbox-exec`, optional sandbox policy, a failed live probe, or incomplete
+broker initialization omits the capability. The CP additionally defaults
+`WEBCHAT_PRESET_MCP_ENABLED` to `false` and accepts only the literal values `true`
+and `false`. It returns a delegation only when that operator gate is true, the
+target is the built-in `agentconnect` preset, the durable conversation is
+user-owned, private-session enforcement is deployed, and the placed daemon
+currently advertises the capability.
 
-No user-facing setting is introduced. Entitlement is derived from session origin and
-the built-in preset relation.
+The CP, relay, and daemon must be upgraded as one compatible protocol cohort before
+the gate is enabled. The relay must preserve the optional CP-verified delegation
+reference on every webchat operation; it never accepts one from browser input. The
+daemon must understand the delegated mint/revoke frames and attach the private
+`agentconnect-admin` descriptor. The CP must support delegation persistence,
+one-time assertion mint/claim, and nested REST identity propagation. Optional wire
+fields keep mixed or older peers safe: they continue ordinary webchat without
+`agentconnect-admin`; there is no shared-socket, daemon-key, organization-principal,
+or reusable-user-credential fallback.
+
+### 13.1 Staged enablement
+
+1. Deploy compatible CP, relay, and daemon builds with
+   `WEBCHAT_PRESET_MCP_ENABLED=false`.
+2. Confirm private webchat session enforcement: new sessions have
+   `visibility=private`, their owner identity is derived from the durable
+   `WebchatConversation.userId`, and another member, including an organization
+   owner, cannot read or resume them.
+3. On a canary Linux daemon, install `bwrap`, set
+   `security.requireSandbox=true`, restart the daemon, and confirm its live
+   registration includes both `session-visibility-v1` and
+   `delegated_mcp_assertion_v1`. Absence of the latter is a failed prerequisite,
+   not a reason to force the flag.
+4. Exercise ordinary webchat and daemon-local MCP tools while the CP gate remains
+   off. There must be no delegated authority row or `agentconnect-admin`
+   descriptor.
+5. Set `WEBCHAT_PRESET_MCP_ENABLED=true` on the CP and restart it for the canary
+   cohort. Verify a new or re-verified built-in-preset webchat receives the admin
+   MCP, while non-preset webchat and every IM, hook, cron, dream, and
+   agent-to-agent session remain ineligible.
+6. Expand only after the §15 metrics show successful cell creation, assertion
+   claim, and invocation completion without unexplained denial, cleanup failure,
+   or ambiguous-write growth.
+
+The feature has no user-facing setting. Entitlement is derived from trusted session
+origin, durable conversation ownership, the built-in preset relation, current
+placement, and current user authorization.
+
+### 13.2 Rollback
+
+Rollback begins at the authority source:
+
+1. Set `WEBCHAT_PRESET_MCP_ENABLED=false` and restart the CP first. This stops new
+   delegation issuance while leaving token verification, relay delivery, ordinary
+   webchat, and daemon-local tools unchanged. It does not revoke an authority that
+   was already issued.
+2. Revoke existing authorities through a production lifecycle that actually closes
+   the authority boundary: session TTL expiry or agent detach/move. Those paths
+   send or transactionally apply the exact generation-fenced revoke. No production
+   logical-session-close path emits a revoke today, and browser socket close is
+   intentionally a transport-only no-op.
+3. Do not treat an ordinary daemon/agent drain, stop, restart, or upgrade as
+   revocation. Those operations destroy local hosts and broker bindings while
+   retaining inactive authority so a still-open logical session can resume. Wait
+   for TTL/detach revocation or the maximum 12-hour delegation ceiling.
+4. Confirm delegation revocation/expiry and isolation destruction have converged,
+   then roll back relay and daemon protocol support if required. Keep ordinary
+   webchat routing in place throughout.
+
+There is no fleet-wide bulk delegation-revoke API. For urgent containment, detach
+the affected agent/placement so its exact generations are revoked, or isolate the
+affected daemon / make it stop advertising `delegated_mcp_assertion_v1` so mint and
+claim fail closed. Those emergency actions can interrupt ordinary webchat or agent
+availability on that placement; state that tradeoff explicitly and keep the daemon
+isolated until revocation or the 12-hour ceiling is confirmed. Do not introduce a
+shared MCP endpoint or broader credential as a temporary fallback.
 
 ## 14. Testing
 
@@ -1027,8 +1102,9 @@ the built-in preset relation.
 - `session/load` after daemon restart reattaches the descriptor.
 - Host/bridge failure removes the private listener and token; resume creates new
   local material without rotating a still-valid CP delegation.
-- Logical-session close/expiry emits the generation-fenced revocation frame and
-  tears down the private broker binding and dedicated host.
+- Session TTL expiry and agent detach/move emit or transactionally apply the
+  generation-fenced revocation and tear down the private broker binding and
+  dedicated host. Browser close and ordinary drain/stop/restart do not revoke.
 - Expired assertion remint and expired-delegation reconnect errors are distinct.
 - CP failure affects only the remote admin MCP.
 - Neither assertion nor user credential appears in ACP server configuration,
@@ -1056,18 +1132,32 @@ With two members using the same preset agent:
 
 ## 15. Observability
 
-Add counters and latency histograms for:
+The implementation exports the following OpenTelemetry instruments. Attribute
+values are closed enums so dashboards and alerts can use stable outcomes and
+reasons:
 
-- delegation established, rotated, expired, and denied by reason;
-- assertion minted, claimed, expired, replayed, conflicted, and denied by reason;
-- invocation succeeded, failed, in-progress retry, and ambiguous;
-- isolation cell created, resumed, destroyed, denied, and failed by reason;
-- cross-cell socket/token denial and capability-probe failure;
-- mint WS latency, MCP HTTP latency, and nested REST latency.
+| Instrument                                         | Attributes                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agentconnect.webchat_mcp.delegation.transitions`  | `event`: `established`, `reused`, `rotated`, `expired`, `denied`; denied events may carry `reason`: `conversation_binding`, `membership_missing`, `agent_not_visible`, `preset_mismatch`, `placement_mismatch`, `daemon_unavailable`, `daemon_feature_missing`, `session_expired`, `delegation_expiry`, `delegation_inactive`, `delegation_generation`, `delegation_binding`, `method_not_allowed`, `tool_not_allowed`, or `invocation_parent_missing`              |
+| `agentconnect.webchat_mcp.assertion.transitions`   | `event`: `minted`, `claimed`, `expired`, `replayed`, `conflicted`, `denied`; denied events may carry `reason`: `assertion_format`, `assertion_unknown`, `invocation_id_invalid`, `invocation_id_mismatch`, `request_hash_mismatch`, `request_metadata_invalid`, `method_mismatch`, `tool_mismatch`, `delegation_inactive`, `daemon_unavailable`, `daemon_feature_missing`, `assertion_expired`, `claim_denied`, `claim_state_invalid`, or `cached_response_invalid` |
+| `agentconnect.webchat_mcp.invocation.transitions`  | `outcome`: `succeeded`, `failed`, `in_progress_retry`, `ambiguous`                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `agentconnect.webchat_mcp.request.duration`        | `stage`: `nested_rest`; `outcome`: `succeeded`, `failed`                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `agentconnect.delegated_mcp.isolation.transitions` | `event`: `created`, `resumed`, `destroyed`, `failed`; failed events may carry `reason`: `cell_creation`, `host_start`, `cleanup`                                                                                                                                                                                                                                                                                                                                    |
+| `agentconnect.delegated_mcp.isolation.denials`     | `reason`: `broker_validation`, `fence`, `capacity`, `token_mismatch`, `capability_probe_failed`                                                                                                                                                                                                                                                                                                                                                                     |
+| `agentconnect.delegated_mcp.request.duration`      | `stage`: `mint_ws`, `mcp_http`; `outcome`: `succeeded`, `failed`                                                                                                                                                                                                                                                                                                                                                                                                    |
 
-Logs include only invocation id, delegation id, agent id, conversation id, and
-machine-stable reason codes. They never include assertion material, request bodies,
-response bodies, transcript content, or credential-bearing headers.
+Initial alerts should cover any `capability_probe_failed` or `cleanup` failure, a
+sustained rise in denial reasons after enablement, and any non-zero or growing
+`ambiguous` invocation count. `in_progress_retry` is an idempotent observation, not
+a second execution.
+
+Metrics are body-free and identifier-free: no user, organization, agent,
+conversation, delegation, invocation, token, assertion, socket path, tool argument,
+or credential value is used as a metric attribute. Logs may use a public
+correlation identifier and a machine-stable reason code, but never include the
+one-time assertion, cell-local token, private socket path, reusable user credential,
+credential-bearing header, MCP request/response body, tool arguments, or transcript
+content.
 
 ## 16. Non-goals
 

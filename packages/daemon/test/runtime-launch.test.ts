@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
 import { composeRuntimeLaunch } from '../src/runtimes/launch-policy.js'
@@ -20,6 +30,42 @@ function fixture(): { scopeDir: string; cwd: string; hostHome: string } {
 }
 
 describe('prepareRuntimeLaunch', () => {
+  it('carries the daemon broker mask only on an enforced bwrap launch', () => {
+    const testRoot = mkdtempSync(join(tmpdir(), 'ac-runtime-mask-'))
+    const resolvedRoot = realpathSync(testRoot)
+    const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
+    expect(resolvedRoot.startsWith(repoRoot + sep)).toBe(false)
+    const scopeDir = join(testRoot, 'agent')
+    const cwd = join(scopeDir, 'workspace')
+    const maskedRoots = [join(testRoot, 'broker'), join(testRoot, 'webchat-hosts')]
+    mkdirSync(cwd, { recursive: true })
+    for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
+    try {
+      const launch = prepareRuntimeLaunch({
+        runtimeId: 'claude-acp',
+        scopeDir,
+        cwd,
+        runInSandbox: true,
+        sandboxMechanism: 'bwrap',
+        maskedReadRoots: maskedRoots
+      })
+      expect(launch.sandbox?.maskedReadRoots).toEqual(maskedRoots)
+
+      expect(() =>
+        prepareRuntimeLaunch({
+          runtimeId: 'claude-acp',
+          scopeDir,
+          cwd,
+          runInSandbox: true,
+          sandboxMechanism: 'sandbox-exec',
+          maskedReadRoots: maskedRoots
+        })
+      ).toThrow(/mask.*bwrap/i)
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it('inherits the daemon environment and creates no private HOME when the effective sandbox is off', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const launch = prepareRuntimeLaunch({
