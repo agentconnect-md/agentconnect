@@ -17,6 +17,7 @@ const privateHomeRoots: string[] = []
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
 const PRIVATE_TARGET_DIRECTORY = delegatedMcpInCellSocketDirectory()
 const CANONICAL_PRIVATE_TARGET_DIRECTORY = join(realpathSync(tmpdir()), 'agentconnect-admin')
+const runBwrapE2e = process.platform === 'linux' && process.env.AGENTCONNECT_RUN_BWRAP_E2E === '1'
 afterEach(() => {
   for (const root of privateHomeRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -385,10 +386,10 @@ describe('delegated bwrap mount isolation', () => {
 })
 
 describe('bwrap delegated mount behavior', () => {
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!runBwrapE2e)(
     'masks every source from ordinary hosts and reveals only the entitled cell at its target',
     () => {
-      expect(detectSandbox(), 'Linux unit CI must provide a working bwrap').toBe('bwrap')
+      expect(detectSandbox(), 'dedicated Linux isolation CI must provide a working bwrap').toBe('bwrap')
 
       const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
       const sourceA = join(maskedRoot, 'cell-a')

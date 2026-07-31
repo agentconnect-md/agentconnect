@@ -18,6 +18,7 @@ import { SessionMcpBroker } from '../src/mcp/session-mcp-broker.js'
 const run = promisify(execFile)
 const repoRoot = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
 const roots: string[] = []
+const runBwrapE2e = process.platform === 'linux' && process.env.AGENTCONNECT_RUN_BWRAP_E2E === '1'
 const brokers: SessionMcpBroker[] = []
 const controlServers: McpControlServer[] = []
 
@@ -129,10 +130,10 @@ async function executeProbe(
 }
 
 describe('delegated MCP copied socket/token isolation', () => {
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!runBwrapE2e)(
     'denies entitled and ordinary sibling attacks before and after victim activation',
     async () => {
-      expect(detectSandbox(), 'Linux acceptance CI must provide a working bwrap').toBe('bwrap')
+      expect(detectSandbox(), 'dedicated Linux isolation CI must provide a working bwrap').toBe('bwrap')
 
       const daemonRoot = await privateRoot('.ac-cross-cell-state-')
       const brokerRoot = join(daemonRoot, 'admin-mcp-broker')
