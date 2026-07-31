@@ -451,14 +451,23 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       expiresAt: at(1_000)
     }))
     await prisma.webchatMcpDelegation.createMany({ data: rows })
+    const retainedGrant = await prisma.webchatMcpAccessGrant.create({
+      data: {
+        authorityId: rows[501]!.id,
+        descriptorInstanceId: '88888888-8888-4888-8888-888888888888',
+        grantRevision: 1,
+        tokenHash: 'peppered:retained',
+        pendingExpiresAt: at(2_000),
+        expiresAt: at(2_000)
+      }
+    })
     await prisma.mcpInvocation.create({
       data: {
         id: '99999999-9999-4999-8999-999999999999',
-        delegationId: rows[501]!.id,
-        assertionHash: 'peppered:retained',
+        conversationId: CONVERSATION,
+        grantId: retainedGrant.id,
         requestHash: 'retained-request',
-        method: 'tools/call',
-        assertionExpires: at(2_000)
+        method: 'tools/call'
       }
     })
 

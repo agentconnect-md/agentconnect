@@ -69,10 +69,12 @@ import type {
   DreamSkillReviewReq,
   DreamSkillReadReq,
   SessionVisibilityPush,
-  McpInvocationMint,
-  McpInvocationMinted,
-  WebchatMcpDelegationRevoke,
-  WebchatMcpDelegationRevoked
+  WebchatMcpGrantIssue,
+  WebchatMcpGrantIssued,
+  WebchatMcpGrantAccept,
+  WebchatMcpGrantActivate,
+  WebchatMcpGrantRevoke,
+  WebchatMcpGrantRevoked
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -488,36 +490,31 @@ export class CpClient {
     return rep.payload as GithubReviewResultOk
   }
 
-  /**
-   * Mint a short-lived assertion for one exact delegated MCP request. The
-   * caller supplies only daemon-owned immutable binding fields; correlation
-   * remains on the authenticated control connection.
-   */
-  async mintMcpInvocation(payload: McpInvocationMint): Promise<McpInvocationMinted> {
-    this.requireReady('mcp/invocation/mint')
-    const rep = await this.request('mcp/invocation/mint', payload)
-    if (rep.type !== 'mcp/invocation/minted') {
-      throw new WireError('INTERNAL', `expected mcp/invocation/minted, got ${rep.type}`, false)
+  async issueWebchatMcpGrant(payload: WebchatMcpGrantIssue): Promise<WebchatMcpGrantIssued> {
+    this.requireReady('webchat/mcp-grant/issue')
+    const rep = await this.request('webchat/mcp-grant/issue', payload)
+    if (rep.type !== 'webchat/mcp-grant/issued') {
+      throw new WireError('INTERNAL', `expected webchat/mcp-grant/issued, got ${rep.type}`, false)
     }
-    const minted = rep.payload as McpInvocationMinted
-    if (minted.invocationId !== payload.invocationId) {
-      throw new WireError('INTERNAL', 'mcp/invocation/minted invocation id mismatch', false)
-    }
-    return minted
+    return rep.payload as WebchatMcpGrantIssued
   }
 
-  /** Best-effort, generation-fenced logical-session delegation revocation. */
-  async revokeWebchatMcpDelegation(payload: WebchatMcpDelegationRevoke): Promise<WebchatMcpDelegationRevoked> {
-    this.requireReady('webchat/mcp-delegation/revoke')
-    const rep = await this.request('webchat/mcp-delegation/revoke', payload)
-    if (rep.type !== 'webchat/mcp-delegation/revoked') {
-      throw new WireError('INTERNAL', `expected webchat/mcp-delegation/revoked, got ${rep.type}`, false)
+  async acceptWebchatMcpGrant(payload: WebchatMcpGrantAccept): Promise<WebchatMcpGrantActivate> {
+    this.requireReady('webchat/mcp-grant/accept')
+    const rep = await this.request('webchat/mcp-grant/accept', payload)
+    if (rep.type !== 'webchat/mcp-grant/activate') {
+      throw new WireError('INTERNAL', `expected webchat/mcp-grant/activate, got ${rep.type}`, false)
     }
-    const revoked = rep.payload as WebchatMcpDelegationRevoked
-    if (revoked.delegationId !== payload.delegationId || revoked.generation !== payload.generation) {
-      throw new WireError('INTERNAL', 'webchat/mcp-delegation/revoked binding mismatch', false)
+    return rep.payload as WebchatMcpGrantActivate
+  }
+
+  async revokeWebchatMcpGrant(payload: WebchatMcpGrantRevoke): Promise<WebchatMcpGrantRevoked> {
+    this.requireReady('webchat/mcp-grant/revoke')
+    const rep = await this.request('webchat/mcp-grant/revoke', payload)
+    if (rep.type !== 'webchat/mcp-grant/revoked') {
+      throw new WireError('INTERNAL', `expected webchat/mcp-grant/revoked, got ${rep.type}`, false)
     }
-    return revoked
+    return rep.payload as WebchatMcpGrantRevoked
   }
 
   private requireReady(op: string): void {

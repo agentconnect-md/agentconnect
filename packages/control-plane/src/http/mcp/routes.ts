@@ -16,8 +16,8 @@
  * re-implemented here (§6.2).
  *
  * Auth: a personal API key or OAuth access token resolves through `humanAuth`. This
- * route alone also recognizes one-time webchat invocation assertions; after a durable
- * claim, nested REST requests receive fresh method/path-bound in-process nonces. Any
+ * route also recognizes short-lived webchat grants; after an idempotent durable claim,
+ * nested REST requests receive fresh method/path-bound in-process nonces. Any
  * other caller gets a 401 whose `WWW-Authenticate` points at Protected Resource
  * Metadata — the OAuth browser-login discovery entrance (§7).
  *
@@ -34,10 +34,10 @@ import { OrgId } from '../../domain/ids.js'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
 import { publicBaseUrl, mcpAuthenticateChallenge } from '../oauth/base.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from './internal-invocation-auth.js'
-import type { InvocationContext, ParsedInvocationMetadata } from './invocation-authenticator.js'
+import type { InvocationContext, ParsedInvocationMetadata } from './remote-grant-authenticator.js'
 import { MCP_INVOCATION_MAX_RESPONSE_BYTES } from '../../persistence/repositories/mcp-invocation.repo.js'
 import { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
-import { INVOCATION_ASSERTION_PREFIX } from '../../registry/invocationAssertion.js'
+import { WEBCHAT_MCP_GRANT_PREFIX } from '../../registry/webchatMcpGrantToken.js'
 import { defaultWebchatMcpMetrics, type WebchatMcpMetrics } from '../../observability/webchat-mcp.js'
 
 export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
@@ -45,10 +45,10 @@ export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation
 export const MCP_PATH = '/mcp'
 
 const SERVER_INFO = { name: 'agentconnect', version: '1.0.0' }
-const INVOCATION_ID_HEADER = 'x-agentconnect-invocation-id'
+const INVOCATION_ID_HEADER = 'idempotency-key'
 
-const ASSERTION_DENIED_BODY = Buffer.from(
-  JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'invocation assertion denied' })
+const REMOTE_GRANT_DENIED_BODY = Buffer.from(
+  JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'remote MCP grant denied' })
 )
 const IN_PROGRESS_BODY = Buffer.from(
   JSON.stringify({ error: 'Conflict', statusCode: 409, message: 'invocation is already in progress' })
@@ -81,16 +81,16 @@ function bearerToken(authorization: string | undefined): string | null {
   return matched?.[1] ?? null
 }
 
-function isInvocationAssertion(authorization: string | undefined): boolean {
-  return bearerToken(authorization)?.startsWith(INVOCATION_ASSERTION_PREFIX) === true
+function isRemoteGrant(authorization: string | undefined): boolean {
+  return bearerToken(authorization)?.startsWith(WEBCHAT_MCP_GRANT_PREFIX) === true
 }
 
-function sendAssertionDenied(reply: FastifyReply) {
+function sendRemoteGrantDenied(reply: FastifyReply) {
   return reply
     .header('cache-control', 'no-store')
     .header('content-type', 'application/json; charset=utf-8')
     .code(401)
-    .send(ASSERTION_DENIED_BODY)
+    .send(REMOTE_GRANT_DENIED_BODY)
 }
 
 function sendInProgress(reply: FastifyReply, retryAfterMs: number) {
@@ -192,12 +192,12 @@ export function mcpRoutes(deps: HttpDeps) {
     app.removeAllContentTypeParsers()
     app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => done(null, body))
 
-    // Human/API-key failures carry the OAuth discovery challenge. Invocation assertions
-    // are a narrow daemon credential, not OAuth, and deliberately get only the generic
-    // denial body so clients cannot confuse an assertion rejection with re-auth.
+    // Human/API-key failures carry the OAuth discovery challenge. Remote grants are
+    // narrow daemon credentials, not OAuth, and deliberately get only the generic
+    // denial body so clients cannot confuse a grant rejection with re-auth.
     app.addHook('onSend', async (req, reply, payload) => {
-      const assertionRequest = isInvocationAssertion(rawHeaderValues(req, 'authorization')[0])
-      if (reply.statusCode === 401 && !assertionRequest && !reply.getHeader('www-authenticate')) {
+      const grantRequest = isRemoteGrant(rawHeaderValues(req, 'authorization')[0])
+      if (reply.statusCode === 401 && !grantRequest && !reply.getHeader('www-authenticate')) {
         void reply.header('www-authenticate', mcpAuthenticateChallenge(publicBaseUrl(req, deps.config), deps.config))
       }
       return payload
@@ -209,15 +209,15 @@ export function mcpRoutes(deps: HttpDeps) {
       const authorizations = rawHeaderValues(req, 'authorization')
       const invocationIds = rawHeaderValues(req, INVOCATION_ID_HEADER)
       if (authorizations.length > 1 || invocationIds.length > 1) {
-        return isInvocationAssertion(authorizations[0])
-          ? sendAssertionDenied(reply)
+        return isRemoteGrant(authorizations[0])
+          ? sendRemoteGrantDenied(reply)
           : reply.code(400).send({
               error: 'Bad Request',
               statusCode: 400,
               message: 'duplicate authentication headers'
             })
       }
-      if (isInvocationAssertion(authorizations[0])) return
+      if (isRemoteGrant(authorizations[0])) return
       const humanAuthenticate = app.humanAuth as unknown as (
         request: FastifyRequest,
         response: FastifyReply
@@ -230,19 +230,19 @@ export function mcpRoutes(deps: HttpDeps) {
       const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
       const authorizationValues = rawHeaderValues(req, 'authorization')
       const authorization = authorizationValues[0]
-      const assertion = isInvocationAssertion(authorization) ? bearerToken(authorization) : null
+      const remoteGrant = isRemoteGrant(authorization) ? bearerToken(authorization) : null
       let invocationContext: InvocationContext | undefined
 
-      if (assertion) {
+      if (remoteGrant) {
         const invocationIds = rawHeaderValues(req, INVOCATION_ID_HEADER)
-        if (invocationIds.length !== 1) return sendAssertionDenied(reply)
-        const claim = await deps.invocationAssertions.claim({
-          bearer: assertion,
+        if (invocationIds.length !== 1) return sendRemoteGrantDenied(reply)
+        const claim = await deps.remoteGrantAuth.claim({
+          bearer: remoteGrant,
           invocationId: invocationIds[0]!,
           requestBytes: rawBody,
           parseMetadata: () => invocationMetadata(rawBody)
         })
-        if (claim.kind === 'denied') return sendAssertionDenied(reply)
+        if (claim.kind === 'denied') return sendRemoteGrantDenied(reply)
         if (claim.kind === 'completed') {
           return reply
             .header('content-type', replayContentType(claim.responseBytes))
@@ -366,7 +366,7 @@ export function mcpRoutes(deps: HttpDeps) {
         // Rate limits (§6.5) run FIRST: a refused call does no downstream work at
         // all — including the audit append, so a hammering client cannot flood the
         // org's audit trail past the admitted budget.
-        const rateKey = invocationContext ? `${userId}:${invocationContext.delegationId}` : (apiKeyId ?? userId)
+        const rateKey = invocationContext ? `${userId}:${invocationContext.grantId}` : (apiKeyId ?? userId)
         const retryAfterSec = deps.mcpRateLimit.check(rateKey, tool.write === true)
         if (retryAfterSec !== null) {
           definiteFailure = true
@@ -415,9 +415,9 @@ export function mcpRoutes(deps: HttpDeps) {
             message: params.name,
             details: invocationContext
               ? {
-                  principalType: 'webchat_assertion',
+                  principalType: 'webchat_remote_grant',
                   invocationId: invocationContext.invocationId,
-                  delegationId: invocationContext.delegationId,
+                  grantId: invocationContext.grantId,
                   agentId: invocationContext.agentId,
                   conversationId: invocationContext.conversationId,
                   tool: params.name,

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
@@ -9,15 +9,7 @@ import { loadAgents, selectAgent, type LoadedAgent } from './agents/load-agents.
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
 import { diffAgents } from './reconciler/reconciler.js'
-import {
-  resolveRoot,
-  statePath,
-  mcpSocketPath,
-  delegatedMcpBrokerRoot,
-  delegatedMcpRuntimeHomeRoot,
-  daemonEntryForShims,
-  cliEntryPointer
-} from './paths.js'
+import { resolveRoot, statePath, mcpSocketPath, daemonEntryForShims, cliEntryPointer } from './paths.js'
 import {
   LocalStore,
   sessionKey,
@@ -30,19 +22,7 @@ import {
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
-import {
-  delegatedMcpInCellSocketDirectory,
-  detectSandbox,
-  SandboxError,
-  supportsDelegatedMcpIsolation,
-  type SandboxMechanism
-} from './acp/sandbox.js'
-import {
-  DelegatedWebchatHostManager,
-  type DelegatedWebchatHost,
-  type DelegatedWebchatHostFactoryInput,
-  type StartDelegatedWebchatHost
-} from './acp/delegated-webchat-host-manager.js'
+import { detectSandbox, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
 import { permissionModeDisplayLabel } from './acp/permission-modes.js'
 import { SessionManager, transcriptCoords, isStandingContextTitleEcho } from './session/session-manager.js'
@@ -51,8 +31,7 @@ import { monotonicTs } from './store/monotonic-ts.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
 import { attachmentMention } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
-import { SessionMcpBroker } from './mcp/session-mcp-broker.js'
-import { defaultDelegatedMcpMetrics } from './mcp/delegated-metrics.js'
+import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type {
   MessageAgentReq,
   MessageAgentResult,
@@ -168,7 +147,7 @@ import { ModelCatalogService, catalogFingerprint } from './runtimes/model-catalo
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './runtimes/config-caps.js'
 import { isClaudeRuntimeDef } from './acp/claude-runtime.js'
-import { prepareRuntimeHome, runtimeHomeEnvironment, runtimeHomePath } from './runtimes/runtime-home.js'
+import { runtimeHomePath } from './runtimes/runtime-home.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { composeRuntimeLaunch } from './runtimes/launch-policy.js'
 import { makeLogger, type Logger } from './log.js'
@@ -178,7 +157,7 @@ import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
   AgentActivate as AgentActivateSchema,
-  DELEGATED_MCP_ASSERTION_FEATURE,
+  WEBCHAT_REMOTE_MCP_FEATURE,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
@@ -293,7 +272,7 @@ import type {
   ChildSessionStatus,
   ChildSessionStatusProbe,
   SessionVisibilityPush,
-  WebchatMcpDelegationReference
+  WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -891,12 +870,7 @@ function authorizedReviewTarget(
  */
 interface SelectedTurnHost {
   host: AcpHost
-  /** A private delegated process cannot be trusted after its session/prompt
-   * transport rejects. Ordinary shared hosts keep their established error policy. */
-  stopOnError: boolean
-  /** Full lifecycle cleanup for the selected process. Delegated turns route this
-   * through their manager so broker drain/release and private-HOME removal remain
-   * generation-fenced and teardown-singleflight. */
+  /** Full lifecycle cleanup for the exact process selected for this turn. */
   stop: (deadlineMs?: number) => Promise<void>
   /** The exact stop operation once lifecycle cleanup has begun, or an already
    * settled promise while the selected process has not been asked to stop. */
@@ -934,12 +908,9 @@ interface QueueEntry {
    * deliveries duplicate this reference in their durable HookDispatchContext so
    * restart replay can recreate the poster behind its publish-state fence. */
   githubReply?: GithubReplyTarget
-  /** Selected before session/new|load. Retained across the cold pre-Pending gap
-   * so cancellation never has to rediscover a private host through this.hosts. */
+  /** Selected before session/new|load so cancellation uses the exact host. */
   selectedHost?: SelectedTurnHost
-  /** Cold cleanup can begin before a selected host exists (for example while the
-   * broker registration is pending). Session initialization must await this gate
-   * before releasing ownership or writing idle. */
+  /** Session initialization must await cleanup before releasing ownership. */
   lifecycleCleanup?: Promise<void>
   /** Permanent fail-closed latch after lifecycle cleanup rejects. The serial
    * dispatch lease may terminate, but admission must remain fenced until restart. */
@@ -1180,7 +1151,7 @@ interface WebchatTurnContext {
   runtime?: WebchatRuntimeConfig
   /** Authority captured only from the relay's validated rd/msg envelope. It is
    * consumed by the daemon host selector and never forwarded to ACP/model input. */
-  delegation?: WebchatMcpDelegationReference
+  remoteMcp?: WebchatRemoteMcpEntitlement
   doneSent?: boolean
   /** This turn is driven by the local evaluation harness, not a browser. Its
    *  webchat shape is synthetic, so the session-visibility capture gate does NOT
@@ -1518,9 +1489,7 @@ export class Daemon {
   private lastProbeAtMs = 0 // when ordinary runtimes were last swept; gates re-probe on reconnect
   private runtimeProbeTimer?: TimerHandle
   private cpClient?: CpClient
-  /** Present only when the complete enforced-bwrap delegated MCP path initialized. */
-  private delegatedMcpBroker?: SessionMcpBroker
-  private delegatedWebchatHosts?: DelegatedWebchatHostManager
+  private remoteWebchatGrants?: RemoteWebchatGrantManager
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
   // Latest channel report per integrationId plus whether it came from a complete
@@ -1653,8 +1622,6 @@ export class Daemon {
       installed?: typeof installedRuntimes
       /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
-      /** Test seam for delegated-isolation capability gating. */
-      platform?: NodeJS.Platform
       /** Test seam for the daemon-private memory-plugin transport. */
       memoryPluginConnect?: MemoryPluginConnector
       /** Optional, observer-only evaluation surface and add-on treatment. */
@@ -1789,16 +1756,6 @@ export class Daemon {
       throw new Error(
         'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
-    }
-    if (this.sandboxMechanism === 'bwrap') {
-      for (const privateRoot of [delegatedMcpBrokerRoot(root), delegatedMcpRuntimeHomeRoot(root)]) {
-        mkdirSync(privateRoot, { recursive: true, mode: 0o700 })
-        const info = lstatSync(privateRoot)
-        if (!info.isDirectory() || info.isSymbolicLink()) {
-          throw new Error('daemon startup refused: delegated private root must be a real directory')
-        }
-        chmodSync(privateRoot, 0o700)
-      }
     }
     // Mint a stable local daemonId only when we are NOT onboarding via a CP
     // token: with a `controlPlane.key` and no explicit id, the CP assigns the
@@ -1968,10 +1925,7 @@ export class Daemon {
         isolateAccountApps: this.cfg.security.isolateAccountApps,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(root),
-        maskedReadRoots:
-          this.sandboxMechanism === 'bwrap'
-            ? [delegatedMcpBrokerRoot(root), delegatedMcpRuntimeHomeRoot(root)]
-            : undefined
+        maskedReadRoots: undefined
       }),
       onUpdated: (runtimeId) => {
         this.rebuildRuntimeCatalog(runtimeId)
@@ -2449,7 +2403,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
-      await this.delegatedWebchatHosts?.stopAgentHosts?.(id)
+      this.remoteWebchatGrants?.clear()
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
       // removal needs no permanent gate once the host is proven stopped (the agent is
       // absent); a later toStart can then serve it normally. Safety-drain state is NOT
@@ -2510,7 +2464,6 @@ export class Daemon {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
         }
-        let delegatedCleanupFailed = false
         try {
           // Ordinary teardown keeps its established degrading behavior: eviction
           // already fenced future starts, so a stop rejection is logged but does
@@ -2522,18 +2475,9 @@ export class Daemon {
               `reconcile: host teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
             )
           }
-          // A failed private-cell teardown is different: the broker authority and
-          // child may still be live, so reopening admission could overlap generations.
-          try {
-            await this.delegatedWebchatHosts?.stopAgentHosts?.(a.id)
-          } catch (err) {
-            delegatedCleanupFailed = true
-            this.log.error(
-              `reconcile: delegated host teardown failed for "${a.id}" — retaining admission gate: ${formatErr(err)}`
-            )
-          }
+          this.remoteWebchatGrants?.clear()
         } finally {
-          if (!wasDraining && !delegatedCleanupFailed) this.drainingAgents.delete(a.id)
+          if (!wasDraining) this.drainingAgents.delete(a.id)
         }
       }
       // workspace change → eagerly (re-)materialize the checkout in the background so
@@ -3586,10 +3530,7 @@ export class Daemon {
           explicitEnv: { ...runtimeEnv, ...env },
           sandboxMechanism: this.sandboxMechanism,
           mcpSocketPath: mcpSocketPath(this.root),
-          maskedReadRoots:
-            runInSandbox && this.sandboxMechanism === 'bwrap'
-              ? [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)]
-              : undefined
+          maskedReadRoots: undefined
         })
         launch = composed.launch
         launchRuntime = composed.runtime
@@ -3630,92 +3571,10 @@ export class Daemon {
     return host
   }
 
-  /** Construct an ACP host whose process is owned by one delegated webchat cell.
-   * Unlike ordinary agent-scoped hosts it is never published in `this.hosts`. */
-  private createDelegatedWebchatHost(input: DelegatedWebchatHostFactoryInput): AcpHost {
-    const agent = this.agents.get(input.agentId)
-    if (!agent) throw new Error(`unknown delegated webchat agent ${input.agentId}`)
-    const runtime = this.runtimes[agent.runtime]
-    if (!runtime) throw new Error(`runtime "${agent.runtime}" is unavailable for delegated webchat`)
-    const runtimeEntry = this.runtimeCatalog.entries[agent.runtime]
-    if (runtimeEntry?.source === 'curated') {
-      this.curatedRuntimeAdmission.assertLaunch(agent.runtime, runtimeEntry.source)
-    }
-
-    const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
-    const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
-    const memoryEnv = memoryProviderFor(
-      agent,
-      runtime,
-      { ...runtimeEnv, ...baseEnv },
-      this.externalMemoryAdmission()
-    ).runtimeEnv()
-    const composed = composeRuntimeLaunch({
-      runtimeId: agent.runtime,
-      runtime,
-      provider: memoryKindOf(agent),
-      scopeDir: agent.dir,
-      cwd: agent.workspace.path,
-      runInSandbox: true,
-      sandboxMechanism: 'bwrap',
-      mcpSocketPath: mcpSocketPath(this.root),
-      maskedReadRoots: [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)],
-      explicitEnv: {
-        ...runtimeEnv,
-        ...baseEnv,
-        ...memoryEnv,
-        ...(agent.workspace.gitCredential === 'github-app' ? sessionGitEnv(agent.id, this.gitCommitIdentity) : {})
-      }
-    })
-    // Seed only bounded auth/config files into this conversation-private HOME.
-    // Custom targets skip legacy-state moves, so one cell can never steal another
-    // host's durable runtime state.
-    prepareRuntimeHome(agent.runtime, agent.dir, process.env, input.runtimeHome)
-    const env = runtimeHomeEnvironment(agent.runtime, input.runtimeHome, composed.launch.env)
-    return new AcpHost(composed.runtime, {
-      onUpdate: (sid, update) => this.onAcpUpdate(input.agentId, sid, update),
-      onPermission: (sid, params) => this.onAcpPermission(input.agentId, sid, params),
-      ...(this.evaluation.enabled
-        ? {
-            onPermissionEvent: (sid, params, event) => this.onAcpPermissionEvent(input.agentId, sid, params, event)
-          }
-        : {}),
-      onElicit: (sid, params) => this.onAcpElicit(input.agentId, sid, params),
-      onSdkLifecycle: (sid, message) => this.onSdkLifecycle(input.agentId, sid, message),
-      env,
-      inheritProcessEnv: false,
-      runtimeId: agent.runtime,
-      isolateAccountApps: this.cfg.security.isolateAccountApps,
-      sandbox: {
-        ...input.sandbox,
-        // Keep the ordinary trusted workspace/memory/shared-MCP writable set,
-        // then add only this cell's private HOME. delegatedCellSandboxWrap
-        // removes anything beneath the masked private roots before binding back
-        // this exact cell.
-        writable: [...(composed.launch.sandbox?.writable ?? []), input.runtimeHome]
-      },
-      onTerminal: input.onTerminal,
-      configPrefs: {
-        model: agent.runtimeOverrides?.model,
-        permissionMode: agent.permissionMode,
-        reasoningEffort: agent.reasoningEffort,
-        fastMode: agent.fastMode
-      },
-      log: this.log
-    })
-  }
-
-  private delegatedMcpIsolationHealthy(): boolean {
-    return supportsDelegatedMcpIsolation({
-      platform: this.opts.platform ?? process.platform,
-      mechanism: this.sandboxMechanism,
-      requireSandbox: this.cfg.security.requireSandbox,
-      // detectSandbox() returns bwrap only after its mount/PID probe succeeds.
-      bwrapProbePassed: this.sandboxMechanism === 'bwrap'
-    })
-  }
-
   private registrationFeatures(): string[] {
+    const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.values()].some(
+      (caps) => caps.http && caps.privateSessionHeaders && caps.stableInvocationId
+    )
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
@@ -3724,99 +3583,14 @@ export class Daemon {
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       SESSION_VISIBILITY_FEATURE,
-      ...(this.delegatedMcpBroker && this.delegatedWebchatHosts && this.delegatedMcpIsolationHealthy()
-        ? [DELEGATED_MCP_ASSERTION_FEATURE]
-        : [])
+      ...(this.remoteWebchatGrants && hasRemoteMcpRuntime ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
     ]
-  }
-
-  private initializeDelegatedMcp(root: string, cpUrl: string, cpClient: CpClient): void {
-    if (!this.delegatedMcpIsolationHealthy()) {
-      defaultDelegatedMcpMetrics.denied('capability_probe_failed')
-      return
-    }
-    const endpoint = new URL('/api/v1/mcp', cpUrl)
-    if (endpoint.protocol === 'ws:') endpoint.protocol = 'http:'
-    if (endpoint.protocol === 'wss:') endpoint.protocol = 'https:'
-    const broker = new SessionMcpBroker({
-      socketRoot: delegatedMcpBrokerRoot(root),
-      inCellSocketDirectory: delegatedMcpInCellSocketDirectory(),
-      cliEntry: daemonEntryForShims(root),
-      mcpEndpoint: endpoint.toString(),
-      cpClient,
-      metrics: defaultDelegatedMcpMetrics
-    })
-    const manager = new DelegatedWebchatHostManager({
-      broker,
-      brokerSourceRoot: delegatedMcpBrokerRoot(root),
-      runtimeHomeRoot: delegatedMcpRuntimeHomeRoot(root),
-      isolationHealthy: () => this.delegatedMcpIsolationHealthy(),
-      hostFactory: (input) => this.createDelegatedWebchatHost(input),
-      metrics: defaultDelegatedMcpMetrics,
-      log: { warn: (message) => this.log.warn(message) }
-    })
-    this.delegatedMcpBroker = broker
-    this.delegatedWebchatHosts = manager
-  }
-
-  private async revokeDelegatedAuthority(
-    authority: Pick<StartDelegatedWebchatHost, 'delegationId' | 'generation'>,
-    reason: 'session_closed' | 'session_expired' | 'agent_detached'
-  ): Promise<void> {
-    const client = this.cpClient
-    if (!client) return
-    await client.revokeWebchatMcpDelegation({
-      delegationId: authority.delegationId,
-      generation: authority.generation,
-      reason
-    })
-  }
-
-  private async closeDelegatedConversation(
-    agentId: string,
-    conversationId: string,
-    reason: 'session_closed' | 'session_expired'
-  ): Promise<void> {
-    const authority = await this.delegatedWebchatHosts?.closeConversation({ agentId, conversationId })
-    if (!authority) return
-    await this.revokeDelegatedAuthority(authority, reason)
-  }
-
-  private async closeDelegatedAgent(agentId: string): Promise<void> {
-    const authorities = (await this.delegatedWebchatHosts?.closeAgent(agentId)) ?? []
-    await Promise.all(authorities.map((authority) => this.revokeDelegatedAuthority(authority, 'agent_detached')))
-  }
-
-  private selectedDelegatedTurnHost(
-    agentId: string,
-    conversationId: string,
-    delegatedHost: DelegatedWebchatHost
-  ): SelectedTurnHost {
-    const manager = this.delegatedWebchatHosts
-    let cleanup: Promise<void> | undefined
-    return {
-      host: delegatedHost.host,
-      stopOnError: true,
-      stop: () =>
-        (cleanup ??= (async () => {
-          if (!manager) {
-            throw new Error('delegated webchat host manager is unavailable during turn cleanup')
-          }
-          await manager.stopHost({
-            agentId,
-            conversationId,
-            isolationCellId: delegatedHost.isolationCellId
-          })
-        })()),
-      waitForCleanup: () => cleanup ?? Promise.resolve()
-    }
   }
 
   private selectedOrdinaryTurnHost(agentId: string, host: AcpHost): SelectedTurnHost {
     let cleanup: Promise<void> | undefined
     return {
       host,
-      stopOnError: false,
       stop: (deadlineMs) => (cleanup ??= this.stopHost(agentId, deadlineMs)),
       waitForCleanup: () => cleanup ?? Promise.resolve()
     }
@@ -3830,9 +3604,8 @@ export class Daemon {
   ): Promise<never> {
     if (!entry.lifecycleCleanupFailureLogged) {
       entry.lifecycleCleanupFailureLogged = true
-      const scope = entry.selectedHost?.stopOnError ? 'delegated ' : ''
       this.log.error(
-        `${scope}lifecycle cleanup blocked for agent "${agentId}" (session ${key}); ownership and admission remain fenced: ${formatErr(error)}`
+        `lifecycle cleanup blocked for agent "${agentId}" (session ${key}); ownership and admission remain fenced: ${formatErr(error)}`
       )
     }
     if (!entry.lifecycleCleanupBlocked) {
@@ -3856,22 +3629,6 @@ export class Daemon {
       this.fenceLifecycleCleanupFailure(entry.agentId, key, entry, error)
       return { blocked: true, error }
     }
-  }
-
-  private beginFailedTurnCleanup(
-    agentId: string,
-    key: string,
-    entry: QueueEntry,
-    selectedHost?: SelectedTurnHost
-  ): void {
-    if (!selectedHost?.stopOnError) return
-    // The error itself is the atomic lifecycle boundary. Do not wait for a child
-    // exit or bridge callback: synchronously enter the manager's exact-cell,
-    // teardown-singleflight stop path before any dispatch state can be released.
-    this.beginSafetyDrain(agentId, 'stop', [key])
-    const cleanup = selectedHost.stop(0)
-    const failClosed = cleanup.catch((error) => this.fenceLifecycleCleanupFailure(agentId, key, entry, error))
-    this.addSafetyDrainWait(agentId, failClosed)
   }
 
   private async stopSelectedTurnHosts(turns: Iterable<Pick<Pending, 'selectedHost'>>): Promise<void> {
@@ -4623,7 +4380,7 @@ export class Daemon {
     requestedTurnId?: string,
     inlineImages?: WebchatImageAttachment[],
     requestedRuntime?: WebchatRuntimeConfig,
-    delegation?: WebchatMcpDelegationReference
+    remoteMcp?: WebchatRemoteMcpEntitlement
   ): WebchatAck {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -4703,7 +4460,7 @@ export class Daemon {
     }
     const initialRuntime =
       this.agents.get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
-    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime, delegation)
+    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime, remoteMcp)
     void this.dispatch(result.agentId, msg, undefined, stream).catch((err) => {
       if (!(err instanceof LifecycleCleanupBlockedError))
         this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
@@ -4733,7 +4490,7 @@ export class Daemon {
     turnId: string,
     transport: WebchatSink,
     runtime?: WebchatRuntimeConfig,
-    delegation?: WebchatMcpDelegationReference
+    remoteMcp?: WebchatRemoteMcpEntitlement
   ): WebchatTurnStream {
     this.pruneWebchatStreams()
     const stream: WebchatTurnStream = {
@@ -4742,7 +4499,7 @@ export class Daemon {
       turnId,
       transport,
       ...(runtime ? { runtime } : {}),
-      ...(delegation ? { delegation } : {}),
+      ...(remoteMcp ? { remoteMcp } : {}),
       resumeGeneration: 0,
       sink: {
         output: (output) => this.publishWebchatStreamEvent(stream, { kind: 'output', output }),
@@ -7223,7 +6980,7 @@ export class Daemon {
           op.turnId,
           op.attachments,
           op.runtime,
-          msg.delegation
+          msg.remoteMcp
         )
         return {
           msgId: msg.msgId,
@@ -9205,23 +8962,30 @@ export class Daemon {
       turnId?: string
       initializedOnly?: boolean
     }
-    let delegatedHost: DelegatedWebchatHost | undefined
+    let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
-      // The delegation is captured only from the validated relay envelope. Bind
-      // the private broker cell and start its dedicated ACP process before the
-      // first session/new|load so the descriptor and host can never diverge.
-      if (webchat?.delegation && this.delegatedWebchatHosts) {
-        delegatedHost = await this.delegatedWebchatHosts.startHost({
-          agentId,
-          conversationId: webchat.conversationId,
-          delegationId: webchat.delegation.id,
-          generation: webchat.delegation.generation,
-          expiresAt: webchat.delegation.expiresAt
-        })
-        entry.selectedHost = this.selectedDelegatedTurnHost(agentId, webchat.conversationId, delegatedHost)
+      // Attach only when the runtime explicitly proves all three properties:
+      // HTTP transport, private session-scoped headers, and stable invocation ids.
+      const remoteCaps = this.runtimeMcpCaps.get(agent.runtime)
+      if (
+        webchat?.remoteMcp &&
+        this.remoteWebchatGrants &&
+        remoteCaps?.http &&
+        remoteCaps.privateSessionHeaders &&
+        remoteCaps.stableInvocationId
+      ) {
+        try {
+          remoteMcpServer = await this.remoteWebchatGrants.descriptor(
+            webchat.conversationId,
+            webchat.remoteMcp,
+            this.clock.now()
+          )
+        } catch (error) {
+          this.log.warn(`remote MCP descriptor attachment failed (${formatErr(error)})`)
+        }
       }
       // §2.3/§5.3: hand the origin session id to prompt assembly so a child woken by another
       // session's `sendMessage` gets its `Parent session` line (the SessionTarget to reply into).
@@ -9237,16 +9001,10 @@ export class Daemon {
         callMeta?.needsReply,
         {
           initializeOnly,
-          ...(delegatedHost
-            ? {
-                host: delegatedHost.host,
-                additionalMcpServers: [delegatedHost.adminMcpServer]
-              }
-            : {})
+          ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {})
         }
       )
     } catch (err) {
-      this.beginFailedTurnCleanup(agentId, key, entry, entry.selectedHost)
       this.finishSessionInitialization(agentId)
       restoreDeliveryBinding()
       // handle() boots the host (hostFor → ensureHostAsync → host.start()), so a
@@ -9254,9 +9012,7 @@ export class Daemon {
       const interrupted = this.dispatchGateReason(entry)
       let cleanupOutcome!: TurnLifecycleCleanupOutcome
       try {
-        // A force-stop may make session/new|load reject before the delegated
-        // manager has released its broker cell and private HOME. Keep this cold
-        // dispatch owned and non-idle until that exact cleanup operation settles.
+        // Keep this cold dispatch owned and non-idle until host cleanup settles.
         cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
         if (!cleanupOutcome.blocked) {
           this.store.setSessionState(key, 'idle', this.clock.now())
@@ -9321,8 +9077,8 @@ export class Daemon {
       finishEvaluation('turn.cancelled', { reason: initializedGate })
       this.finishSessionInitialization(agentId)
       restoreDeliveryBinding()
-      // session/new|load can return after host termination while manager cleanup
-      // is still draining the private broker cell. Do not publish idle early.
+      // session/new|load can return after host termination. Do not publish idle
+      // until cleanup has settled.
       const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
       if (!cleanupOutcome.blocked) {
         const interruptedSession = this.store.getSession(key)
@@ -9747,7 +9503,6 @@ export class Daemon {
           : {})
       })
     } catch (err) {
-      this.beginFailedTurnCleanup(agentId, key, entry, p.selectedHost)
       // The turn failed before yielding a clean stop — the agent couldn't start (spawn
       // failure / ACP handshake), or the prompt itself rejected. Without surfacing
       // it here the failure is invisible: Slack keeps its "is thinking…" status with
@@ -9915,9 +9670,8 @@ export class Daemon {
           this.persistHookState(entry, 'settled')
         }
       }
-      // A delegated force-stop can unwind prompt before broker release and HOME
-      // removal complete. Pending ownership and the non-idle session state are the
-      // final safety fence, so release them only after the exact selected cleanup.
+      // Pending ownership and the non-idle session state are the final safety
+      // fence, so release them only after the exact selected cleanup.
       const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
       if (!cleanupOutcome.blocked) {
         this.pending.delete(pendingTurnKey(agentId, sessionId))
@@ -10103,19 +9857,15 @@ export class Daemon {
         )
         const turn = this.pending.get(pendingKey)
         if (!turn) return
-        // Force-stop reaps the exact selected process. A delegated turn must cross
-        // the manager boundary so broker drain/release and private-HOME cleanup
-        // finish before dispatch can mark the session idle.
+        // Force-stop the exact process selected for this turn.
         const cleanup = turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
         const stopped = cleanup.catch((err) => {
           return this.fenceLifecycleCleanupFailure(agentId, key, turn.entry, err)
         })
         this.addSafetyDrainWait(agentId, stopped)
         void stopped.then(() => {
-          // The process boundary is now fully gone. This preserves the ordinary
-          // host backstop's terminal state even when a test/runtime prompt promise
-          // never observes process death; delegated cleanup reaches this point only
-          // after broker release and private-HOME removal.
+          // Preserve the host backstop's terminal state even when a test/runtime
+          // prompt promise never observes process death.
           this.store.setSessionState(key, 'idle', this.clock.now())
         })
       }, ms)
@@ -10149,15 +9899,7 @@ export class Daemon {
       this.log.warn(
         `${reason}: agent "${agentId}" did not finish cold initialization within ${ms}ms — force-stopping host (${key})`
       )
-      const cleanup =
-        entry.lifecycleCleanup ??
-        entry.selectedHost?.stop(0) ??
-        (entry.webchat?.delegation && this.delegatedWebchatHosts
-          ? this.delegatedWebchatHosts.stopConversationHosts({
-              agentId,
-              conversationId: entry.webchat.conversationId
-            })
-          : this.stopHost(agentId, 0))
+      const cleanup = entry.lifecycleCleanup ?? entry.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
       entry.lifecycleCleanup ??= cleanup
       const stopped = cleanup.catch((err) => {
         return this.fenceLifecycleCleanupFailure(agentId, key, entry, err)
@@ -12683,7 +12425,7 @@ export class Daemon {
    *
    * The gate's first layer is what the daemon can decide alone, with no CP
    * round-trip. It is deliberately conservative: an A2A child ALWAYS starts
-   * excluded regardless of any hint it carried, because a delegated prompt may
+   * excluded regardless of any hint it carried, because a forwarded prompt may
    * be copied from a private parent and only a CP-confirmed `org` state may open
    * capture. Everything else the CP later confirms or overrides.
    */
@@ -13493,11 +13235,6 @@ export class Daemon {
     )
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
     for (const row of closed) {
-      if (row.platform === 'webchat') {
-        void this.closeDelegatedConversation(row.agentId, row.channel, 'session_expired').catch((error) =>
-          this.log.warn(`delegated webchat expiry cleanup failed (${formatErr(error)})`)
-        )
-      }
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(row.agentId, row.acpSessionId)) // the session is gone — drop its lease
       this.emitSessionMetadataSnapshot({
@@ -13662,13 +13399,13 @@ export class Daemon {
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
       for (const id of [...this.hosts.keys()]) await this.stopHost(id)
-      await this.delegatedWebchatHosts?.stopAllHosts?.()
+      this.remoteWebchatGrants?.clear()
       this.draining = false
       released = matched
     } else if (drain.scope.kind === 'agent') {
       await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
-      await this.delegatedWebchatHosts?.stopAgentHosts?.(drain.scope.agentId)
+      this.remoteWebchatGrants?.clear()
       this.drainingAgents.delete(drain.scope.agentId)
       released = matched
     } else {
@@ -13688,7 +13425,7 @@ export class Daemon {
     this.interruptAgentTurns(agentId, 'stop')
     await this.stopSelectedTurnHosts(targets)
     await this.stopHost(agentId)
-    await this.delegatedWebchatHosts?.stopAgentHosts?.(agentId)
+    this.remoteWebchatGrants?.clear()
     // A dispatch can have passed the gate and captured its reply connection while
     // still inside sessions.handle(), before it appears in `pending`. Wait that
     // whole turn, then stop once more in case it constructed a host after the
@@ -13697,7 +13434,7 @@ export class Daemon {
       await Promise.all([...this.activeDispatchesByAgent.get(agentId)!])
     }
     await this.stopHost(agentId)
-    await this.delegatedWebchatHosts?.stopAgentHosts?.(agentId)
+    this.remoteWebchatGrants?.clear()
     // gate intentionally left set (drainScope added it): a stopped agent must not
     // auto-respawn on the next message — agent/launch clears the gate.
   }
@@ -13802,10 +13539,7 @@ export class Daemon {
       coldAgents.add(entry.agentId)
     }
     const stopFailClosed = (agentId: string): Promise<void> =>
-      Promise.all([
-        this.stopHost(agentId, 0),
-        this.delegatedWebchatHosts?.stopAgentHosts?.(agentId) ?? Promise.resolve()
-      ])
+      Promise.all([this.stopHost(agentId, 0)])
         .then(() => undefined)
         .catch((err) => {
           this.log.error(`shutdown: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
@@ -14254,10 +13988,10 @@ export class Daemon {
           })
           this.moveStagedAgents.add(agentId)
           this.drainingAgents.add(agentId)
-          // Detach is the authority boundary. Capture/revoke each immutable
-          // delegation fence while manager records still exist, then stop the
-          // ordinary host and any cold dispatches behind the same agent gate.
-          await this.closeDelegatedAgent(agentId)
+          // Placement is revalidated by the CP for every remote-MCP request.
+          // Clearing the memory-only descriptors prevents local reuse while the
+          // durable revocation sweep converges.
+          this.remoteWebchatGrants?.clear()
           await this.stopAgent(agentId)
           const fence = this.moveStageMetadata.get(agentId)
           if (fence?.moveId !== moveId || fence.state !== 'staging') {
@@ -14957,7 +14691,7 @@ export class Daemon {
       connect: () => ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH }),
       log: this.log
     })
-    this.initializeDelegatedMcp(root, url, this.cpClient)
+    this.remoteWebchatGrants = new RemoteWebchatGrantManager(this.cpClient)
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)
   }
@@ -15170,10 +14904,7 @@ export class Daemon {
                 runInSandbox: this.sandboxMechanism !== undefined,
                 explicitEnv: Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value])),
                 sandboxMechanism: this.sandboxMechanism,
-                maskedReadRoots:
-                  this.sandboxMechanism === 'bwrap'
-                    ? [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)]
-                    : undefined
+                maskedReadRoots: undefined
               })
           })
         )
@@ -15187,10 +14918,7 @@ export class Daemon {
             runInSandbox: this.sandboxMechanism !== undefined,
             sandboxMechanism: this.sandboxMechanism,
             mcpSocketPath: mcpSocketPath(this.root),
-            maskedReadRoots:
-              this.sandboxMechanism === 'bwrap'
-                ? [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)]
-                : undefined,
+            maskedReadRoots: undefined,
             hostEnv: process.env
           })
         )
@@ -15410,11 +15138,7 @@ export class Daemon {
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
     await Promise.allSettled(hostStarts)
-    // Dedicated hosts must leave their private bridges before the broker closes.
-    // Daemon shutdown clears local cells only; SessionMcpBroker.stop deliberately
-    // does not revoke CP delegation so a restart can reattach on the next rd/msg.
-    await Promise.resolve(this.delegatedWebchatHosts?.stop()).catch((e) => errors.push(e))
-    await Promise.resolve(this.delegatedMcpBroker?.stop()).catch((e) => errors.push(e))
+    this.remoteWebchatGrants?.clear()
     // After the hosts (and thus their spawned mcp-bridge subprocesses) are gone,
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))

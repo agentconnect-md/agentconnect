@@ -1,6 +1,5 @@
 import { metrics } from '@opentelemetry/api'
-import type { InvocationAssertionDenialReason } from '../http/mcp/invocation-authenticator.js'
-import type { DelegationDenialReason } from '../registry/webchatMcpDelegationService.js'
+type WebchatMcpDenialReason = string
 
 export type DelegationMetricEvent = 'established' | 'reused' | 'rotated' | 'expired' | 'denied'
 export type AssertionMetricEvent = 'minted' | 'claimed' | 'expired' | 'replayed' | 'conflicted' | 'denied'
@@ -26,8 +25,8 @@ export interface WebchatMcpMetricInstruments {
 
 /** Body-free, low-cardinality metrics for delegated webchat MCP authority. */
 export interface WebchatMcpMetrics {
-  delegation(event: DelegationMetricEvent, reason?: DelegationDenialReason, count?: number): void
-  assertion(event: AssertionMetricEvent, reason?: InvocationAssertionDenialReason, count?: number): void
+  delegation(event: DelegationMetricEvent, reason?: WebchatMcpDenialReason, count?: number): void
+  assertion(event: AssertionMetricEvent, reason?: WebchatMcpDenialReason, count?: number): void
   invocation(outcome: InvocationMetricOutcome, count?: number): void
   requestDuration(stage: ControlPlaneMcpRequestStage, durationMs: number, outcome: ControlPlaneMcpRequestOutcome): void
 }

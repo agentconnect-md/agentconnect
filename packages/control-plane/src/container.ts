@@ -47,6 +47,7 @@ import {
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
+  PgWebchatMcpAccessGrantRepo,
   PgMcpInvocationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
@@ -107,8 +108,8 @@ import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { createWebchatTokenVerifier } from './registry/webchatVerification.js'
-import { InvocationAssertionCodec } from './registry/invocationAssertion.js'
-import { WebchatMcpDelegationService } from './registry/webchatMcpDelegationService.js'
+import { WebchatRemoteMcpService } from './registry/webchatRemoteMcpService.js'
+import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { WaitlistService } from './registry/waitlistService.js'
@@ -146,7 +147,7 @@ import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
-import { InvocationAssertionAuthenticator } from './http/mcp/invocation-authenticator.js'
+import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
 import { defaultWebchatMcpMetrics } from './observability/webchat-mcp.js'
 import { pingDb } from './persistence/prisma.js'
@@ -176,9 +177,9 @@ export interface Container {
   readonly readiness: Readiness
   /** Live webchat preset entitlement + one-time assertion minting. Transport
    *  handlers consume this seam without reconstructing authority checks. */
-  readonly webchatMcpDelegation: WebchatMcpDelegationService
-  /** Route-only assertion claim seam for the standard MCP route. */
-  readonly invocationAssertions: InvocationAssertionAuthenticator
+  readonly webchatRemoteMcp: WebchatRemoteMcpService
+  /** Route-only remote-grant claim seam for the standard MCP route. */
+  readonly remoteGrantAuth: RemoteGrantAuthenticator
   /** One-time async-local nonce seam for nested MCP REST requests. */
   readonly internalInvocationAuth: InternalInvocationAuth
   /** Arm the Clock-driven background loops (the cron-run reaper). Prod calls this
@@ -233,6 +234,7 @@ export function buildContainer(
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
     webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
+    webchatMcpAccessGrant: new PgWebchatMcpAccessGrantRepo(prisma),
     mcpInvocation: new PgMcpInvocationRepo(prisma, clock),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
@@ -390,30 +392,32 @@ export function buildContainer(
   // The derived in-memory connection index every hot lookup hits.
   const connReg = new ConnectionRegistry()
 
-  // Built-in general-preset webchat entitlement. Assertions use a dedicated
-  // prefix and hash domain even though the deployment pepper is shared.
-  const invocationAssertionCodec = new InvocationAssertionCodec(config.API_KEY_PEPPER)
-  const webchatMcpDelegation = new WebchatMcpDelegationService({
+  // Built-in general-preset webchat entitlement and short-lived access grants.
+  const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
+  const webchatRemoteMcp = new WebchatRemoteMcpService({
     clock,
-    assertionCodec: invocationAssertionCodec,
+    tokenCodec: webchatMcpGrantToken,
     conversations: repos.webchatConversation,
     orgs: repos.org,
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
-    delegations: repos.webchatMcpDelegation,
-    invocations: repos.mcpInvocation,
-    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
-    metrics: defaultWebchatMcpMetrics
+    authorities: repos.webchatMcpDelegation,
+    grants: repos.webchatMcpAccessGrant,
+    mcpUrl: new URL('/api/v1/mcp', config.PUBLIC_CP_URL ?? 'http://localhost:8080').toString()
   })
-  const invocationAssertions = new InvocationAssertionAuthenticator({
+  const remoteGrantAuth = new RemoteGrantAuthenticator({
     clock,
-    assertionCodec: invocationAssertionCodec,
+    tokenCodec: webchatMcpGrantToken,
+    conversations: repos.webchatConversation,
+    orgs: repos.org,
+    agents: repos.agent,
+    presets: repos.presetAgent,
     daemons: connReg,
-    delegations: repos.webchatMcpDelegation,
+    grants: repos.webchatMcpAccessGrant,
+    authorities: repos.webchatMcpDelegation,
     invocations: repos.mcpInvocation,
-    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
-    metrics: defaultWebchatMcpMetrics
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined
   })
   const internalInvocationAuth = new InternalInvocationAuth()
 
@@ -736,7 +740,7 @@ export function buildContainer(
     waitlist,
     events,
     mcpRateLimit: new McpRateLimiter(clock),
-    invocationAssertions,
+    remoteGrantAuth,
     internalInvocationAuth,
     webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
@@ -907,8 +911,7 @@ export function buildContainer(
     connReg,
     session: repos.session,
     webchatConversation: repos.webchatConversation,
-    webchatMcpDelegation,
-    webchatMcpDelegations: repos.webchatMcpDelegation,
+    webchatRemoteMcp,
     launch: repos.launch,
     visibilityPush,
     events,
@@ -961,7 +964,7 @@ export function buildContainer(
       tokens: webchatTokens,
       agents: repos.agent,
       daemons: connReg,
-      delegations: webchatMcpDelegation
+      remoteMcp: webchatRemoteMcp
     }),
     // Current-permission fallback for GitHub comment webhooks whose
     // author_association snapshot is stale or inconsistent across event types.
@@ -1211,8 +1214,8 @@ export function buildContainer(
     relayGateway: (app: FastifyInstance) => createRelayWsServer(app, relayWsDeps),
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
     readiness,
-    webchatMcpDelegation,
-    invocationAssertions,
+    webchatRemoteMcp,
+    remoteGrantAuth,
     internalInvocationAuth,
     startBackground() {
       cronRunReaper.start()

@@ -18,7 +18,7 @@ import {
   RelayWebchatOp,
   type RdChat,
   type RdMsgWebchat,
-  type WebchatMcpDelegationReference
+  type WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 import { WireError, type ServerTransport } from '@agentconnect.md/connection'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -37,7 +37,7 @@ const REMOTE_PROTOCOL_CODES: ReadonlySet<string> = new Set([
 /**
  * Preserve actionable delivery telemetry without ever copying error messages or
  * details: both may contain the exact rd/msg, including browser content and the
- * opaque delegation reference.
+ * non-secret remote-MCP entitlement.
  */
 function deliveryFailureDiagnostic(error: unknown): string {
   if (!(error instanceof WireError)) return 'kind=unknown_error'
@@ -63,8 +63,8 @@ export interface RelayBrowserConnDeps {
   agentId: string
   /** Display handle for the transcript author line (from the verified token). */
   user: string
-  /** Opaque MCP authority reference from the verified CP result, never browser input. */
-  delegation?: WebchatMcpDelegationReference
+  /** Non-secret MCP entitlement from the verified CP result, never browser input. */
+  remoteMcp?: WebchatRemoteMcpEntitlement
   /** Resolve a live rd/* connection to the target daemon (may be absent if it dropped). */
   daemonConn: () => RelayDaemonConnection | undefined
   register: (chatId: string, sink: ChatSink) => void
@@ -121,7 +121,7 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
 
 export class RelayBrowserConnection implements ChatSink {
   private closed = false
-  private readonly delegation?: Readonly<WebchatMcpDelegationReference>
+  private readonly remoteMcp?: Readonly<WebchatRemoteMcpEntitlement>
 
   constructor(
     private readonly transport: ServerTransport,
@@ -129,11 +129,11 @@ export class RelayBrowserConnection implements ChatSink {
   ) {
     // Snapshot the verified server-side verdict once. Its fields are primitives, so a
     // frozen shallow copy is a complete immutable binding for this browser transport.
-    this.delegation = deps.delegation
+    this.remoteMcp = deps.remoteMcp
       ? Object.freeze({
-          id: deps.delegation.id,
-          generation: deps.delegation.generation,
-          expiresAt: deps.delegation.expiresAt
+          authorityId: deps.remoteMcp.authorityId,
+          authorityGeneration: deps.remoteMcp.authorityGeneration,
+          expiresAt: deps.remoteMcp.expiresAt
         })
       : undefined
   }
@@ -180,7 +180,7 @@ export class RelayBrowserConnection implements ChatSink {
       sessionKey: this.deps.chatId,
       msgId: randomUUID(),
       chatId: this.deps.chatId,
-      ...(this.delegation ? { delegation: this.delegation } : {}),
+      ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
       payload: op
     }
     try {
@@ -197,7 +197,7 @@ export class RelayBrowserConnection implements ChatSink {
       }
     } catch (error) {
       // Lower layers may include the outbound frame in an error. Do not let the opaque
-      // delegation reference become log content.
+      // remote-MCP entitlement become log content.
       this.deps.log.warn(`relay: webchat op delivery failed ${deliveryFailureDiagnostic(error)}`)
       this.send({ type: 'error', message: 'delivery failed' })
     }
@@ -224,7 +224,7 @@ export class RelayBrowserConnection implements ChatSink {
         sessionKey: this.deps.chatId,
         msgId: randomUUID(),
         chatId: this.deps.chatId,
-        ...(this.delegation ? { delegation: this.delegation } : {}),
+        ...(this.remoteMcp ? { remoteMcp: this.remoteMcp } : {}),
         payload: { op: 'close' }
       })
     } catch {

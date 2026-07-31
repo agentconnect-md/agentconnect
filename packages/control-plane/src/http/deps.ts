@@ -78,7 +78,7 @@ import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
-import type { InvocationAssertionAuthenticator } from './mcp/invocation-authenticator.js'
+import type { RemoteGrantAuthenticator } from './mcp/remote-grant-authenticator.js'
 import type { InternalInvocationAuth } from './mcp/internal-invocation-auth.js'
 import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 import type { SessionKey } from '../domain/sessionKey.js'
@@ -258,8 +258,8 @@ export interface HttpDeps {
    *  §6.5). ONE instance per composition root — the MCP plugin is mounted twice
    *  (`/api/v1/mcp` + `/v1` alias) and both mounts must share a budget. */
   mcpRateLimit: McpRateLimiter
-  /** Route-only one-time assertion verifier; mounted by the MCP route in Task 6. */
-  invocationAssertions: InvocationAssertionAuthenticator
+  /** Route-only remote-grant verifier and idempotency claimant. */
+  remoteGrantAuth: RemoteGrantAuthenticator
   /** In-process principal propagation for MCP's nested REST injections. */
   internalInvocationAuth: InternalInvocationAuth
   /** Low-cardinality delegated MCP observations. Optional for focused route tests. */

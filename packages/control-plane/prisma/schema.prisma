@@ -935,7 +935,7 @@ model WebchatMcpDelegation {
   org          Org                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
   agent        Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
   daemon       Daemon              @relation(fields: [daemonId], references: [id], onDelete: Cascade)
-  invocations  McpInvocation[]
+  grants       WebchatMcpAccessGrant[]
 
   @@unique([conversationId, generation])
   @@index([conversationId, revokedAt])
@@ -945,6 +945,7 @@ model WebchatMcpDelegation {
 }
 
 enum McpInvocationStatus {
+  awaiting_confirmation
   issued
   running
   succeeded
@@ -952,27 +953,60 @@ enum McpInvocationStatus {
   ambiguous
 }
 
-// Idempotency ledger for one-time MCP invocation assertions. assertionHash is
-// peppered by the caller; plaintext assertion material never enters Postgres.
+enum WebchatMcpGrantStatus {
+  pending
+  active
+  revoked
+  expired
+}
+
+// Short-lived bearer credential for one exact runtime descriptor. Only the
+// peppered token hash is durable; plaintext exists only in the issuance reply.
+model WebchatMcpAccessGrant {
+  id                   String                @id @default(uuid()) @db.Uuid
+  authorityId          String                @db.Uuid
+  descriptorInstanceId String                @db.Uuid
+  grantRevision        Int
+  tokenHash            String                @unique
+  status               WebchatMcpGrantStatus @default(pending)
+  pendingExpiresAt     DateTime              @db.Timestamptz(6)
+  expiresAt            DateTime              @db.Timestamptz(6)
+  activatedAt          DateTime?             @db.Timestamptz(6)
+  revokedAt            DateTime?             @db.Timestamptz(6)
+  revokedReason        String?
+  createdAt            DateTime              @default(now()) @db.Timestamptz(6)
+
+  authority   WebchatMcpDelegation @relation(fields: [authorityId], references: [id], onDelete: Cascade)
+  invocations McpInvocation[]
+
+  @@unique([descriptorInstanceId, grantRevision])
+  @@index([authorityId, status])
+  @@index([descriptorInstanceId, status])
+  @@index([status, pendingExpiresAt])
+  @@index([status, expiresAt])
+  @@map("webchat_mcp_access_grant")
+}
+
+// Conversation-level idempotency ledger. The invocation id comes from the
+// runtime's Idempotency-Key transport header, never from model input.
 model McpInvocation {
   id               String              @id @db.Uuid
-  delegationId     String              @db.Uuid
-  assertionHash    String              @unique
+  conversationId   String              @db.Uuid
+  grantId          String              @db.Uuid
   requestHash      String
   method           String
   toolName         String?
   status           McpInvocationStatus @default(issued)
-  assertionExpires DateTime            @db.Timestamptz(6)
   startedAt        DateTime?           @db.Timestamptz(6)
   completedAt      DateTime?           @db.Timestamptz(6)
   responseStatus   Int?
   responseBytes    Bytes?
   createdAt        DateTime            @default(now()) @db.Timestamptz(6)
 
-  delegation WebchatMcpDelegation @relation(fields: [delegationId], references: [id], onDelete: Cascade)
+  grant WebchatMcpAccessGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
 
-  @@index([delegationId, createdAt])
-  @@index([status, assertionExpires, id])
+  @@unique([conversationId, id])
+  @@index([grantId, createdAt])
   @@index([status, startedAt, id])
   @@index([status, completedAt, id])
   @@map("mcp_invocation")

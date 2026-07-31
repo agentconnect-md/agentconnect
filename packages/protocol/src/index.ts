@@ -11,7 +11,7 @@
 export {
   CP_SUBPROTOCOL,
   CP_WS_PATH,
-  DELEGATED_MCP_ASSERTION_FEATURE,
+  WEBCHAT_REMOTE_MCP_FEATURE,
   RESERVED_RESTART_CODE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_VISIBILITY_FEATURE
@@ -43,7 +43,7 @@ export * from './frames/memory.js'
 export * from './frames/telemetry.js'
 export * from './frames/error.js'
 export * from './frames/webchat.js'
-export * from './frames/delegated-mcp.js'
+export * from './frames/remote-mcp.js'
 
 // ── external-memory plugin ABI (daemon-private MCP profile; not a CP wire) ──
 export * from './memory-plugin.js'

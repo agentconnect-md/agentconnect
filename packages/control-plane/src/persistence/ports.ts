@@ -1104,17 +1104,72 @@ export interface WebchatMcpDelegationRepo {
   reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult>
 }
 
-export type McpInvocationStatus = 'issued' | 'running' | 'succeeded' | 'failed' | 'ambiguous'
+export type WebchatMcpGrantStatus = 'pending' | 'active' | 'revoked' | 'expired'
+
+export interface WebchatMcpAccessGrantRecord {
+  id: string
+  authorityId: string
+  descriptorInstanceId: string
+  grantRevision: number
+  tokenHash: string
+  status: WebchatMcpGrantStatus
+  pendingExpiresAt: Date
+  expiresAt: Date
+  activatedAt: Date | null
+  revokedAt: Date | null
+  revokedReason: string | null
+  createdAt: Date
+}
+
+export interface IssueWebchatMcpGrantInput {
+  authorityId: string
+  authorityGeneration: number
+  conversationId: string
+  descriptorInstanceId: string
+  authenticatedDaemonId: string
+  tokenHash: string
+  now: Date
+  pendingExpiresAt: Date
+  expiresAt: Date
+}
+
+export interface AcceptWebchatMcpGrantInput {
+  grantId: string
+  authorityId: string
+  authorityGeneration: number
+  conversationId: string
+  descriptorInstanceId: string
+  grantRevision: number
+  authenticatedDaemonId: string
+  now: Date
+}
+
+export interface RevokeWebchatMcpGrantsInput {
+  authorityId: string
+  authorityGeneration: number
+  conversationId: string
+  authenticatedDaemonId: string
+  now: Date
+  reason: string
+}
+
+export interface WebchatMcpAccessGrantRepo {
+  issue(input: IssueWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
+  accept(input: AcceptWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
+  revokeAuthority(input: RevokeWebchatMcpGrantsInput): Promise<boolean>
+  getByTokenHash(tokenHash: string): Promise<WebchatMcpAccessGrantRecord | null>
+}
+
+export type McpInvocationStatus = 'awaiting_confirmation' | 'issued' | 'running' | 'succeeded' | 'failed' | 'ambiguous'
 
 export interface McpInvocationRecord {
   id: string
-  delegationId: string
-  assertionHash: string
+  conversationId: string
+  grantId: string
   requestHash: string
   method: string
   toolName: string | null
   status: McpInvocationStatus
-  assertionExpires: Date
   startedAt: Date | null
   completedAt: Date | null
   responseStatus: number | null
@@ -1122,44 +1177,21 @@ export interface McpInvocationRecord {
   createdAt: Date
 }
 
-export interface MintMcpInvocationInput {
+export interface ClaimMcpInvocationInput {
   invocationId: string
-  delegationId: string
-  /** A peppered, domain-separated digest. Plaintext assertions are never accepted here. */
-  assertionHash: string
+  conversationId: string
+  grantId: string
   requestHash: string
   method: string
   toolName?: string | null
-  assertionExpires: Date
-  /** Fresh issuance time used for the parent-liveness check and immutable creation timestamp. */
-  mintedAt: Date
-}
-
-export type MintMcpInvocationResult =
-  | { kind: 'issued'; invocation: McpInvocationRecord }
-  | { kind: 'existing'; invocation: McpInvocationRecord }
-  | { kind: 'denied' }
-  | { kind: 'conflict' }
-
-export interface ClaimMcpInvocationInput {
-  invocationId: string
-  assertionHash: string
-  /** Exact live authority binding revalidated under the claim transaction's parent locks. */
-  delegationId: string
-  generation: number
-  conversationId: string
-  userId: string
-  orgId: OrgId
-  agentId: AgentId
-  daemonId: DaemonId
+  now: Date
 }
 
 export type ClaimMcpInvocationResult =
   | { kind: 'claimed'; invocation: McpInvocationRecord }
   | { kind: 'existing'; invocation: McpInvocationRecord }
-  | { kind: 'expired' }
   | { kind: 'denied' }
-  | { kind: 'not_found' }
+  | { kind: 'conflict' }
 
 export const MCP_INVOCATION_MAX_RESPONSE_BYTES = 256 * 1024
 export const MCP_INVOCATION_RESPONSE_CACHE_TTL_MS = 15 * 60_000
@@ -1180,13 +1212,7 @@ export interface ReapMcpInvocationsResult {
 }
 
 export interface McpInvocationRepo {
-  /**
-   * Create or rotate an issued assertion. Only an identical immutable binding
-   * may retry; running/terminal rows are returned without reissuing authority.
-   * `denied` means the parent delegation disappeared before its row lock.
-   */
-  mint(input: MintMcpInvocationInput): Promise<MintMcpInvocationResult>
-  /** Exactly one caller can win the issued → running compare-and-set. */
+  /** Atomically create+claim or classify a conversation-level idempotent retry. */
   claim(input: ClaimMcpInvocationInput): Promise<ClaimMcpInvocationResult>
   /** running → succeeded/failed; false means a terminal/ambiguous state won first. */
   complete(input: CompleteMcpInvocationInput): Promise<boolean>
@@ -1195,8 +1221,7 @@ export interface McpInvocationRepo {
   /** Recover executions at or before the deadline as conservatively ambiguous. */
   markAmbiguousBefore(executionDeadline: Date, completedAt: Date): Promise<number>
   get(invocationId: string): Promise<McpInvocationRecord | null>
-  getByAssertionHash(assertionHash: string): Promise<McpInvocationRecord | null>
-  /** Apply the fixed execution, assertion, and response-cache retention windows at `now`. */
+  /** Apply the fixed execution and response-cache retention windows at `now`. */
   reap(now: Date): Promise<ReapMcpInvocationsResult>
 }
 

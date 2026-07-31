@@ -5,11 +5,11 @@ import {
   InternalInvocationAuth,
   type InvocationContextState
 } from './internal-invocation-auth.js'
-import type { InvocationContext } from './invocation-authenticator.js'
+import type { InvocationContext } from './remote-grant-authenticator.js'
 
 const CONTEXT: InvocationContext = {
   invocationId: '11111111-1111-4111-8111-111111111111',
-  delegationId: '22222222-2222-4222-8222-222222222222',
+  grantId: '22222222-2222-4222-8222-222222222222',
   conversationId: '33333333-3333-4333-8333-333333333333',
   agentId: '44444444-4444-4444-8444-444444444444',
   daemonId: '55555555-5555-4555-8555-555555555555',
@@ -255,7 +255,7 @@ describe('InternalInvocationAuth', () => {
       expect(req.apiKeyScopes).toEqual(['mcp:read', 'mcp:write'])
       expect(req.delegatedInvocation).toEqual({
         invocationId: CONTEXT.invocationId,
-        delegationId: CONTEXT.delegationId,
+        grantId: CONTEXT.grantId,
         agentId: CONTEXT.agentId,
         conversationId: CONTEXT.conversationId
       })

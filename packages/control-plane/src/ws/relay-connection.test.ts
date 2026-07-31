@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
-  DELEGATED_MCP_ASSERTION_FEATURE,
+  WEBCHAT_REMOTE_MCP_FEATURE,
   RELAY_CP_SUBPROTOCOL,
   type RelayCpFrame,
   type RelayCpFrameType,
@@ -167,7 +167,7 @@ function buildWebchatVerifier(
     daemonId?: string | null
     daemonState?: string
     daemonFeatures?: string[]
-    establish?: WebchatVerificationDeps['delegations']['establish']
+    establish?: WebchatVerificationDeps['remoteMcp']['establish']
   } = {}
 ) {
   const verify = vi.fn(async () =>
@@ -191,14 +191,14 @@ function buildWebchatVerifier(
       platforms: [],
       runtimes: [],
       acp: true,
-      features: over.daemonFeatures ?? [DELEGATED_MCP_ASSERTION_FEATURE]
+      features: over.daemonFeatures ?? [WEBCHAT_REMOTE_MCP_FEATURE]
     }
   }))
   const establish =
     over.establish ??
     vi.fn(async () => ({
-      id: WEBCHAT_DELEGATION_ID,
-      generation: 1,
+      authorityId: WEBCHAT_DELEGATION_ID,
+      authorityGeneration: 1,
       expiresAt: '2030-01-01T00:00:00.000Z'
     }))
   return {
@@ -211,13 +211,13 @@ function buildWebchatVerifier(
       tokens: { verify },
       agents: { get: getAgent },
       daemons: { get: getDaemon },
-      delegations: { establish }
+      remoteMcp: { establish }
     })
   }
 }
 
-describe('webchat verification delegation gate', () => {
-  it('adds only the opaque delegation reference after ordinary verification and both rollout gates pass', async () => {
+describe('webchat verification remote-MCP gate', () => {
+  it('adds only the non-secret entitlement after ordinary verification and both rollout gates pass', async () => {
     const h = buildWebchatVerifier()
 
     const result = await h.verifier('browser-credential')
@@ -227,7 +227,7 @@ describe('webchat verification delegation gate', () => {
       agentId: WEBCHAT_AGENT_ID,
       daemonId: WEBCHAT_DAEMON_ID,
       conversationId: WEBCHAT_CONVERSATION_ID,
-      delegation: { id: WEBCHAT_DELEGATION_ID, generation: 1 }
+      remoteMcp: { authorityId: WEBCHAT_DELEGATION_ID, authorityGeneration: 1 }
     })
     expect(h.establish).toHaveBeenCalledWith({
       conversationId: WEBCHAT_CONVERSATION_ID,
@@ -241,7 +241,7 @@ describe('webchat verification delegation gate', () => {
   })
 
   it.each([
-    { enabled: false, features: [DELEGATED_MCP_ASSERTION_FEATURE], label: 'server gate is off' },
+    { enabled: false, features: [WEBCHAT_REMOTE_MCP_FEATURE], label: 'server gate is off' },
     { enabled: true, features: [], label: 'daemon capability is absent' }
   ])('returns ordinary webchat without establishment when $label', async ({ enabled, features }) => {
     const h = buildWebchatVerifier({ enabled, daemonFeatures: features })
@@ -249,17 +249,17 @@ describe('webchat verification delegation gate', () => {
     const result = await h.verifier('browser-credential')
 
     expect(result).toMatchObject({ ok: true, agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID })
-    expect(result.delegation).toBeUndefined()
+    expect(result.remoteMcp).toBeUndefined()
     expect(h.establish).not.toHaveBeenCalled()
   })
 
-  it('preserves ordinary webchat when delegation entitlement is denied', async () => {
+  it('preserves ordinary webchat when remote-MCP entitlement is denied', async () => {
     const h = buildWebchatVerifier({ establish: vi.fn(async () => null) })
 
     const result = await h.verifier('browser-credential')
 
     expect(result).toMatchObject({ ok: true, agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID })
-    expect(result.delegation).toBeUndefined()
+    expect(result.remoteMcp).toBeUndefined()
   })
 
   it('turns an establishment failure into a generic retryable relay error without leaking credentials or details', async () => {

@@ -20,6 +20,7 @@ import {
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
+  PgWebchatMcpAccessGrantRepo,
   PgMcpInvocationRepo,
   PgDaemonRepo,
   PgDaemonLifecycleOpRepo,
@@ -64,7 +65,7 @@ import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { OAuthService } from '../../src/registry/oauthService.js'
 import { WebchatTokenService } from '../../src/registry/webchatToken.js'
-import { InvocationAssertionCodec } from '../../src/registry/invocationAssertion.js'
+import { WebchatMcpGrantTokenCodec } from '../../src/registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from '../../src/registry/orgInviteLink.js'
 import { OrgInviteLinkService } from '../../src/registry/orgInviteLinkService.js'
 import { WaitlistService } from '../../src/registry/waitlistService.js'
@@ -83,7 +84,7 @@ import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { createReadiness } from '../../src/http/readiness.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
-import { InvocationAssertionAuthenticator } from '../../src/http/mcp/invocation-authenticator.js'
+import { RemoteGrantAuthenticator } from '../../src/http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from '../../src/http/mcp/internal-invocation-auth.js'
 import { findTool } from '../../src/http/mcp/tools.js'
 import { pingDb } from '../../src/persistence/prisma.js'
@@ -158,6 +159,7 @@ export function buildHttpApp(
   const orgRepo = new PgOrgRepo(prisma)
   const webchatConversationRepo = new PgWebchatConversationRepo(prisma)
   const webchatMcpDelegationRepo = new PgWebchatMcpDelegationRepo(prisma)
+  const webchatMcpAccessGrantRepo = new PgWebchatMcpAccessGrantRepo(prisma)
   const mcpInvocationRepo = new PgMcpInvocationRepo(prisma, clock)
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
@@ -167,13 +169,18 @@ export function buildHttpApp(
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
   const relayControl = new RelayControlSender(relayReg)
-  const invocationAssertions =
-    depsOverrides?.invocationAssertions ??
-    new InvocationAssertionAuthenticator({
+  const remoteGrantAuth =
+    depsOverrides?.remoteGrantAuth ??
+    new RemoteGrantAuthenticator({
       clock,
-      assertionCodec: new InvocationAssertionCodec(TEST_API_KEY_PEPPER),
+      tokenCodec: new WebchatMcpGrantTokenCodec(TEST_API_KEY_PEPPER),
+      conversations: webchatConversationRepo,
+      orgs: orgRepo,
+      agents: agentRepo,
+      presets: presetAgentRepo,
       daemons: liveness,
-      delegations: webchatMcpDelegationRepo,
+      grants: webchatMcpAccessGrantRepo,
+      authorities: webchatMcpDelegationRepo,
       invocations: mcpInvocationRepo,
       isCuratedTool: (toolName) => findTool(toolName) !== undefined
     })
@@ -267,7 +274,7 @@ export function buildHttpApp(
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     ...depsOverrides,
-    invocationAssertions,
+    remoteGrantAuth,
     internalInvocationAuth
   }
 

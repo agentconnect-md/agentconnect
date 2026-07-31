@@ -10,7 +10,7 @@ import { ErrorFrame } from './error.js'
 import { WebchatDone, WebchatImageAttachment, WebchatOutput } from './webchat.js'
 import { GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
 import { CronTarget } from './cron.js'
-import { WebchatMcpDelegationReference } from './delegated-mcp.js'
+import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
 /**
@@ -120,7 +120,7 @@ export const RdMsgWebchat = z.object({
   sessionKey: z.string().min(1),
   msgId: z.string().min(1), // relay-minted idempotency key (unique per op)
   chatId: z.string().uuid(), // == conversationId (SessionKey.channel for 'webchat')
-  delegation: WebchatMcpDelegationReference.optional(),
+  remoteMcp: WebchatRemoteMcpEntitlement.optional(),
   payload: RelayWebchatOp
 })
 export type RdMsgWebchat = z.infer<typeof RdMsgWebchat>

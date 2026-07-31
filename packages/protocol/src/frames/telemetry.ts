@@ -120,7 +120,11 @@ export type UsageReport = z.infer<typeof UsageReport>
  */
 export const McpTransportCapabilities = z.object({
   http: z.boolean(),
-  sse: z.boolean()
+  sse: z.boolean(),
+  /** Runtime keeps descriptor headers private and scopes them to one ACP session. */
+  privateSessionHeaders: z.boolean().optional(),
+  /** Runtime supplies and preserves Idempotency-Key across automatic retries. */
+  stableInvocationId: z.boolean().optional()
 })
 export type McpTransportCapabilities = z.infer<typeof McpTransportCapabilities>
 
