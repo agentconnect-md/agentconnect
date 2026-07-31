@@ -1163,6 +1163,9 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       callerThread: '200.1',
       targetPlatform: 'telegram',
       targetChannel: '-100123',
+      // The post's own thread key. A root post in a Telegram GROUP opens one of its own, which is
+      // what makes it a fork; the continuous-conversation platforms are covered below.
+      targetThread: 'tg:900',
       ...over
     })
 
@@ -1316,6 +1319,57 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
       kind: 'parent',
       sessionId: 'acp-remote-parent'
     })
+    await daemon.stop()
+  })
+
+  it('says nothing where a root post cannot fork: Discord, and Telegram / Feishu DMs', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    // These platforms have no separate thread for a root post to open: threadKeyForPost maps it
+    // back onto the continuous conversation, so the message LANDS in it. A fork notice there
+    // would tell an agent its answer went nowhere when the reader already has it — and talk it
+    // into sending a second copy.
+    const continuous = [
+      { platform: 'discord', channel: 'D42', thread: 'D42' },
+      { platform: 'telegram', channel: '777', thread: 'dm' },
+      { platform: 'feishu', channel: 'oc_42', thread: 'oc_42' }
+    ]
+
+    for (const [i, conv] of continuous.entries()) {
+      const parentId = `acp-parent-continuous-${i}`
+      seed(daemon, {
+        key: sessionKey(conv.platform, conv.channel, conv.thread, 'bot-a'),
+        agentId: 'bot-a',
+        platform: conv.platform,
+        channel: conv.channel,
+        thread: conv.thread,
+        acpSessionId: parentId
+      })
+      const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+      seed(daemon, {
+        key: callerKey,
+        agentId: 'bot-b',
+        platform: 'slack',
+        channel: 'C2',
+        thread: '200.1',
+        acpSessionId: 'acp-child-1',
+        originSessionId: parentId
+      })
+
+      const target = { targetPlatform: conv.platform, targetChannel: conv.channel, targetThread: conv.thread }
+      // Parent: the answer reached the waiting conversation, so there is nothing to say.
+      expect(ask(daemon, target)).toBeUndefined()
+      // Self: the same, from inside that conversation's own session.
+      expect(
+        ask(daemon, {
+          ...target,
+          callerAgentId: 'bot-a',
+          platform: conv.platform,
+          callerChannel: conv.channel,
+          callerThread: conv.thread
+        })
+      ).toBeUndefined()
+    }
     await daemon.stop()
   })
 

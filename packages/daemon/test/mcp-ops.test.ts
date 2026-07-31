@@ -356,7 +356,8 @@ describe('executeTool: sendMessage (channel post)', () => {
       })
       await send(d, { platform: 'telegram', channel: '-100123' }, dualCtx)
       // Including the integration — the daemon resolves it to a transport scope, without which
-      // two bots' identical channel ids would read as the same conversation.
+      // two bots' identical channel ids would read as the same conversation — and the post's own
+      // thread key, without which it cannot tell a fork from a message that simply landed.
       expect(seen[0]).toMatchObject({
         callerAgentId: 'bot-a',
         platform: 'slack',
@@ -364,6 +365,7 @@ describe('executeTool: sendMessage (channel post)', () => {
         callerThread: '111.1',
         targetPlatform: 'telegram',
         targetChannel: '-100123',
+        targetThread: 'ts-123',
         targetIntegrationId: 'int-tg'
       })
     })
