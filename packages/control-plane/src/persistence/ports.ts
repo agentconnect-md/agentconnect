@@ -1076,6 +1076,11 @@ export interface RevokeWebchatMcpDelegationInput {
   reason: string
 }
 
+export interface ReapWebchatMcpDelegationsResult {
+  deleted: number
+  expired: number
+}
+
 export interface WebchatMcpDelegationRepo {
   /**
    * Serialize on the durable conversation owner. Reconnects reuse matching,
@@ -1091,8 +1096,11 @@ export interface WebchatMcpDelegationRepo {
   get(delegationId: string): Promise<WebchatMcpDelegationRecord | null>
   /** Return only a row whose generation still equals its durable conversation generation. */
   getCurrent(delegationId: string): Promise<WebchatMcpDelegationRecord | null>
-  /** Delete expired delegations only after their invocation ledger is empty. */
-  reapExpired(expiredBefore: Date): Promise<number>
+  /**
+   * Delete expired delegations only after their invocation ledger is empty.
+   * `expired` counts only deleted rows that had not already been revoked.
+   */
+  reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult>
 }
 
 export type McpInvocationStatus = 'issued' | 'running' | 'succeeded' | 'failed' | 'ambiguous'

@@ -35,7 +35,7 @@ function setup() {
   const delegations = {
     reapExpired: vi.fn(async (now: Date) => {
       calls.push(`delegations:${now.toISOString()}`)
-      return 3
+      return { deleted: 3, expired: 1 }
     })
   }
   const delegationMetric = vi.fn()
@@ -46,10 +46,9 @@ function setup() {
     assertion: assertionMetric,
     invocation: invocationMetric
   }
-  const reaper = new McpInvocationReaper(invocations, delegations, clock, undefined, {
-    ...metrics
-  })
-  return { calls, clock, invocations, delegations, reaper, delegationMetric, assertionMetric, invocationMetric }
+  const log = { info: vi.fn(), error: vi.fn() }
+  const reaper = new McpInvocationReaper(invocations, delegations, clock, log, metrics)
+  return { calls, clock, invocations, delegations, reaper, log, delegationMetric, assertionMetric, invocationMetric }
 }
 
 describe('McpInvocationReaper', () => {
@@ -60,7 +59,8 @@ describe('McpInvocationReaper', () => {
   })
 
   it('reaps issued/running/terminal invocation state before deleting expired delegations', async () => {
-    const { calls, invocations, delegations, reaper, delegationMetric, assertionMetric, invocationMetric } = setup()
+    const { calls, invocations, delegations, reaper, log, delegationMetric, assertionMetric, invocationMetric } =
+      setup()
 
     await reaper.tick()
 
@@ -69,7 +69,12 @@ describe('McpInvocationReaper', () => {
     expect(calls).toEqual(['invocations:2026-07-30T00:00:00.000Z', 'delegations:2026-07-30T00:00:00.000Z'])
     expect(invocationMetric).toHaveBeenCalledWith('ambiguous', 1)
     expect(assertionMetric).toHaveBeenCalledWith('expired', undefined, 1)
-    expect(delegationMetric).toHaveBeenCalledWith('expired', undefined, 3)
+    expect(assertionMetric).toHaveBeenCalledTimes(1)
+    expect(delegationMetric).toHaveBeenCalledWith('expired', undefined, 1)
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ deletedDelegations: 3 }),
+      'delegated MCP invocation reaper converged durable authority'
+    )
   })
 
   it('does not report assertion expiry for terminal-cache deletion or an empty issued batch', async () => {
@@ -87,7 +92,7 @@ describe('McpInvocationReaper', () => {
           .mockResolvedValueOnce({ markedAmbiguous: 0, deleted: 4, expiredAssertions: 0 })
           .mockResolvedValueOnce({ markedAmbiguous: 0, deleted: 0, expiredAssertions: 0 })
       },
-      { reapExpired: vi.fn(async () => 0) },
+      { reapExpired: vi.fn(async () => ({ deleted: 0, expired: 0 })) },
       clock,
       undefined,
       metrics
@@ -97,6 +102,7 @@ describe('McpInvocationReaper', () => {
     await reaper.tick()
 
     expect(assertionMetric).not.toHaveBeenCalled()
+    expect(metrics.delegation).not.toHaveBeenCalled()
   })
 
   it('applies issued, exact-running, terminal-cache, and dependent-delegation boundaries from a fake clock', async () => {
@@ -168,9 +174,9 @@ describe('McpInvocationReaper', () => {
       reapExpired: vi.fn(async (now: Date) => {
         if (delegationPresent && now.getTime() >= NOW + 30_000 && rows.length === 0) {
           delegationPresent = false
-          return 1
+          return { deleted: 1, expired: 1 }
         }
-        return 0
+        return { deleted: 0, expired: 0 }
       })
     }
     const reaper = new McpInvocationReaper(invocations, delegations, clock)
@@ -242,7 +248,7 @@ describe('McpInvocationReaper', () => {
     const clock = new FakeClock(NOW)
     const invocationWork = deferred<{ markedAmbiguous: number; deleted: number; expiredAssertions: number }>()
     const invocations = { reap: vi.fn(() => invocationWork.promise) }
-    const delegations = { reapExpired: vi.fn(async () => 0) }
+    const delegations = { reapExpired: vi.fn(async () => ({ deleted: 0, expired: 0 })) }
     const reaper = new McpInvocationReaper(invocations, delegations, clock)
     reaper.start()
 
@@ -275,7 +281,7 @@ describe('McpInvocationReaper', () => {
     const invocationWork = deferred<{ markedAmbiguous: number; deleted: number; expiredAssertions: number }>()
     const reaper = new McpInvocationReaper(
       { reap: () => invocationWork.promise },
-      { reapExpired: vi.fn(async () => 0) },
+      { reapExpired: vi.fn(async () => ({ deleted: 0, expired: 0 })) },
       clock
     )
     const ticking = reaper.tick()

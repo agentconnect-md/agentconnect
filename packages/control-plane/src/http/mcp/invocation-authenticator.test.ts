@@ -205,8 +205,11 @@ describe('InvocationAssertionAuthenticator', () => {
     const expired = harness()
     expired.state.now = NOW + 30_000
     await expired.authenticator.claim(expired.input())
-    expect(expired.metricAssertion).toHaveBeenCalledWith('expired')
-    expect(expired.metricAssertion).toHaveBeenCalledWith('denied', 'assertion_expired')
+    await expired.authenticator.claim(expired.input())
+    expect(expired.metricAssertion).not.toHaveBeenCalledWith('expired')
+    expect(expired.metricAssertion).toHaveBeenCalledTimes(2)
+    expect(expired.metricAssertion).toHaveBeenNthCalledWith(1, 'denied', 'assertion_expired')
+    expect(expired.metricAssertion).toHaveBeenNthCalledWith(2, 'denied', 'assertion_expired')
   })
 
   it('recognizes only the delegated assertion prefix and looks up the exact domain-separated peppered hash', async () => {

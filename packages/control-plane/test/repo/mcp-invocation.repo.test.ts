@@ -761,10 +761,10 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     const delegations = new PgWebchatMcpDelegationRepo(prisma)
 
     await repo.mint(mintInput(delegation.id, { assertionExpires: at(5_000) }))
-    expect(await delegations.reapExpired(at(10_000))).toBe(0)
+    expect(await delegations.reapExpired(at(10_000))).toEqual({ deleted: 0, expired: 0 })
     expect(await repo.reap(at(4_999))).toEqual({ markedAmbiguous: 0, deleted: 0, expiredAssertions: 0 })
     expect(await repo.reap(at(5_000))).toEqual({ markedAmbiguous: 0, deleted: 1, expiredAssertions: 1 })
-    expect(await delegations.reapExpired(at(10_000))).toBe(1)
+    expect(await delegations.reapExpired(at(10_000))).toEqual({ deleted: 1, expired: 1 })
 
     const liveDelegation = await delegations.establish({
       conversationId: CONVERSATION,
@@ -823,7 +823,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     await expectPending(minting)
     releaseReaper.release()
 
-    expect(await reaping).toBe(1)
+    expect(await reaping).toEqual({ deleted: 1, expired: 1 })
     expect(await minting).toEqual({ kind: 'denied' })
     expect(await prisma.mcpInvocation.count()).toBe(0)
   })
@@ -1069,7 +1069,7 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
     releaseMint.release()
 
     expect((await minting).kind).toBe('issued')
-    expect(await reaping).toBe(0)
+    expect(await reaping).toEqual({ deleted: 0, expired: 0 })
     expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).not.toBeNull()
     expect(await prisma.mcpInvocation.findUnique({ where: { id: INVOCATION } })).not.toBeNull()
   })
@@ -1279,11 +1279,11 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
       deleted: MCP_INVOCATION_REAP_BATCH_SIZE,
       expiredAssertions: MCP_INVOCATION_REAP_BATCH_SIZE
     })
-    expect(await delegations.reapExpired(now)).toBe(0)
+    expect(await delegations.reapExpired(now)).toEqual({ deleted: 0, expired: 0 })
     expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).not.toBeNull()
 
     expect(await invocations.reap(now)).toEqual({ markedAmbiguous: 0, deleted: 1, expiredAssertions: 1 })
-    expect(await delegations.reapExpired(now)).toBe(1)
+    expect(await delegations.reapExpired(now)).toEqual({ deleted: 1, expired: 1 })
     expect(await prisma.webchatMcpDelegation.findUnique({ where: { id: delegation.id } })).toBeNull()
   })
 

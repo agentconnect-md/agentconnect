@@ -81,11 +81,13 @@ export class McpInvocationReaper {
         this.observe(() => this.metrics?.assertion('expired', undefined, invocationResult.expiredAssertions))
       }
       if (this.shutdownRequested) return
-      const deletedDelegations = await this.delegations.reapExpired(now)
-      this.observe(() => this.metrics?.delegation('expired', undefined, deletedDelegations))
-      if (invocationResult.markedAmbiguous > 0 || invocationResult.deleted > 0 || deletedDelegations > 0) {
+      const delegationResult = await this.delegations.reapExpired(now)
+      if (delegationResult.expired > 0) {
+        this.observe(() => this.metrics?.delegation('expired', undefined, delegationResult.expired))
+      }
+      if (invocationResult.markedAmbiguous > 0 || invocationResult.deleted > 0 || delegationResult.deleted > 0) {
         this.log?.info(
-          { ...invocationResult, deletedDelegations, at: now.toISOString() },
+          { ...invocationResult, deletedDelegations: delegationResult.deleted, at: now.toISOString() },
           'delegated MCP invocation reaper converged durable authority'
         )
       }

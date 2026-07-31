@@ -164,7 +164,6 @@ export class InvocationAssertionAuthenticator {
         : this.deny('cached_response_invalid')
     }
     if (claimed.kind === 'expired') {
-      this.reportAssertion('expired')
       return this.deny('assertion_expired')
     }
     return this.deny('claim_denied')

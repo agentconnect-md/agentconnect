@@ -6,6 +6,7 @@ import { Prisma, type WebchatMcpDelegation } from '../../generated/prisma/client
 import type { PrismaLike } from '../prisma.js'
 import type {
   EstablishWebchatMcpDelegationInput,
+  ReapWebchatMcpDelegationsResult,
   RevokeWebchatMcpDelegationInput,
   WebchatMcpDelegationRecord,
   WebchatMcpDelegationRepo
@@ -172,7 +173,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
     return row ? toRecord(row) : null
   }
 
-  async reapExpired(expiredBefore: Date): Promise<number> {
+  async reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult> {
     return this.inTransaction(async (tx) => {
       // Delegation → Invocation is the shared mint/reap lock order. Locking
       // candidates first makes the following `none` check a fresh, post-wait
@@ -187,15 +188,22 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         LIMIT ${WEBCHAT_MCP_DELEGATION_REAP_BATCH_SIZE}
         FOR UPDATE
       `)
-      if (candidates.length === 0) return 0
-      const deleted = await tx.webchatMcpDelegation.deleteMany({
-        where: {
-          id: { in: candidates.map(({ id }) => id) },
-          expiresAt: { lte: expiredBefore },
-          invocations: { none: {} }
-        }
-      })
-      return deleted.count
+      if (candidates.length === 0) return { deleted: 0, expired: 0 }
+      const deleted = await tx.$queryRaw<{ revokedAt: Date | null }[]>(Prisma.sql`
+        DELETE FROM "webchat_mcp_delegation" AS delegation
+        WHERE delegation."id" IN (${Prisma.join(candidates.map(({ id }) => id))})
+          AND delegation."expiresAt" <= ${expiredBefore}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "mcp_invocation" AS invocation
+            WHERE invocation."delegationId" = delegation."id"
+          )
+        RETURNING delegation."revokedAt"
+      `)
+      return {
+        deleted: deleted.length,
+        expired: deleted.reduce((count, row) => count + Number(row.revokedAt === null), 0)
+      }
     })
   }
 }

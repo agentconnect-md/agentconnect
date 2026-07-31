@@ -372,7 +372,7 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     )
     await reaper.tick()
 
-    expect(delegationMetric.mock.calls.map(([event]) => event)).toEqual(['established', 'rotated', 'expired'])
+    expect(delegationMetric.mock.calls.map(([event]) => event)).toEqual(['established', 'rotated'])
   })
 
   it('rejects a foreign owner binding instead of minting authority', async () => {
@@ -410,6 +410,15 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
     })
   })
 
+  it('physically deletes an explicitly revoked session without counting another expiry transition', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    const delegation = (await repo.establish(establishInput(DAEMON, at(1_000))))!
+
+    expect(await repo.revoke(revokeInput(delegation))).toBe(true)
+    expect(await repo.reapExpired(at(1_000))).toEqual({ deleted: 1, expired: 0 })
+  })
+
   it('reaps at most 500 deterministic expired candidates and drains the remainder next', async () => {
     await fixtures()
     const repo = new PgWebchatMcpDelegationRepo(prisma)
@@ -436,10 +445,56 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
       }
     })
 
-    expect(await repo.reapExpired(at(1_000))).toBe(500)
-    expect(await repo.reapExpired(at(1_000))).toBe(1)
+    expect(await repo.reapExpired(at(1_000))).toEqual({ deleted: 500, expired: 500 })
+    expect(await repo.reapExpired(at(1_000))).toEqual({ deleted: 1, expired: 1 })
     expect(await prisma.webchatMcpDelegation.findMany({ orderBy: { id: 'asc' }, select: { id: true } })).toEqual([
       { id: rows[501]!.id }
     ])
+  })
+
+  it('counts only unrevoked rows as expiry transitions in a mixed cleanup batch', async () => {
+    await fixtures()
+    const repo = new PgWebchatMcpDelegationRepo(prisma)
+    await prisma.webchatMcpDelegation.createMany({
+      data: [
+        {
+          id: '00000000-0000-4000-8000-000000000001',
+          conversationId: CONVERSATION,
+          generation: 1,
+          userId: DEFAULT_OWNER_ID,
+          orgId: DEFAULT_ORG_ID,
+          agentId: AGENT,
+          daemonId: DAEMON,
+          expiresAt: at(1_000)
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000002',
+          conversationId: CONVERSATION,
+          generation: 2,
+          userId: DEFAULT_OWNER_ID,
+          orgId: DEFAULT_ORG_ID,
+          agentId: AGENT,
+          daemonId: DAEMON,
+          expiresAt: at(1_000),
+          revokedAt: at(500),
+          revokedReason: 'session_closed'
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000003',
+          conversationId: CONVERSATION,
+          generation: 3,
+          userId: DEFAULT_OWNER_ID,
+          orgId: DEFAULT_ORG_ID,
+          agentId: AGENT,
+          daemonId: DAEMON,
+          expiresAt: at(1_000),
+          revokedAt: at(500),
+          revokedReason: 'placement_changed'
+        }
+      ]
+    })
+
+    expect(await repo.reapExpired(at(1_000))).toEqual({ deleted: 3, expired: 1 })
+    expect(await repo.reapExpired(at(1_000))).toEqual({ deleted: 0, expired: 0 })
   })
 })
