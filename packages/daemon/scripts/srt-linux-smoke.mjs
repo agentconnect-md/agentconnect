@@ -76,6 +76,7 @@ try {
   writeFileSync(join(sharedCredentialDir, '.credentials.json'), '{"token":"initial"}\n')
   writeFileSync(join(sharedTmp, 'secret.txt'), 'shared tmp\n')
   writeFileSync(join(sharedVarTmp, 'secret.txt'), 'shared var tmp\n')
+  writeFileSync(outside, 'host-only')
 
   const contains = (rootPath, candidate) => {
     const rel = relative(rootPath, candidate)
@@ -146,7 +147,9 @@ try {
     assert(readFileSync(workspace + '/ok.txt', 'utf8') === 'ok', 'workspace was not writable')
     assert(denied(() => writeFileSync(workspace + '/.git/hooks/post-merge', 'escape')), 'git hooks remained writable')
     assert(denied(() => writeFileSync(workspace + '/.git/config', 'escape')), 'git config remained writable')
-    assert(denied(() => writeFileSync(outside, 'escape')), 'outside path was writable')
+    // A read-denied directory is a private tmpfs inside bwrap, so this write may
+    // succeed there. The host-side assertion below proves it cannot persist.
+    writeFileSync(outside, 'sandbox-only')
 
     const socketPath = home + '/compat.sock'
     const server = createServer()
@@ -213,6 +216,12 @@ try {
     if (result.stdout) process.stderr.write(result.stdout)
     if (result.stderr) process.stderr.write(result.stderr)
     throw new Error(`SRT smoke test failed with status ${result.status ?? 'null'}`)
+  }
+  if (readFileSync(outside, 'utf8') !== 'host-only') {
+    throw new Error('SRT smoke test mutated a host path outside allowWrite')
+  }
+  if (!readFileSync(join(sharedCredentialDir, '.credentials.json'), 'utf8').includes('refreshed')) {
+    throw new Error('SRT smoke test did not persist the shared credential refresh')
   }
 
   const orphanLauncher = `
