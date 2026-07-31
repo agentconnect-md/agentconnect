@@ -69,7 +69,7 @@ import type { SlackConfigApi } from './slack-config-api.js'
 import type { TelegramBotVerifier } from './telegram-identity.js'
 import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
 import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from './discord-identity.js'
-import type { DiscordBotIconSyncer } from './discord-bot-profile.js'
+import type { DiscordBotProfileSyncer } from './discord-bot-profile.js'
 import type { FeishuBotVerifier } from './feishu-identity.js'
 import type { FeishuAppIconSyncer } from './feishu-app-icon.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
@@ -275,9 +275,9 @@ export interface HttpDeps {
   /** Ensures the Discord application has Message Content enabled before credentials
    *  are stored. Test composition injects an offline success stub. */
   ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer
-  /** Applies an Agent icon to a Discord bot-user avatar and application icon.
+  /** Applies an Agent icon and description to the Discord bot/application profile.
    *  Cosmetic and best-effort: install/icon updates survive a sync failure. */
-  syncDiscordBotIcon?: DiscordBotIconSyncer
+  syncDiscordBotProfile?: DiscordBotProfileSyncer
   /** Validates a pasted Feishu appId + appSecret via the tenant-access-token exchange
    *  (and derives the bot name from `bot/v3/info` when the install omits one).
    *  Optional/injectable so tests stay offline (absent ⇒ no validation, route falls

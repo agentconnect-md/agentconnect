@@ -267,15 +267,16 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
 
   it('POST discord registers a bot + secret with a NULL appToken, decodes the app id, pushes a discord-shaped upsert', async () => {
     const agentId = await placedAgent()
+    await prisma.agent.update({ where: { id: agentId }, data: { description: 'Answers support questions.' } })
     const { app, spy } = withSpy()
-    let iconSync: { botToken: string; agentId: string } | undefined
+    let profileSync: { botToken: string; agentId: string; description: string | null } | undefined
     let intentToken: string | undefined
     app.deps.ensureDiscordMessageContentIntent = async (botToken) => {
       intentToken = botToken
       return 'ready'
     }
-    app.deps.syncDiscordBotIcon = async (botToken, agent) => {
-      iconSync = { botToken, agentId: agent.id }
+    app.deps.syncDiscordBotProfile = async (botToken, agent) => {
+      profileSync = { botToken, agentId: agent.id, description: agent.description }
       throw new Error('fixture rate limit')
     }
 
@@ -310,7 +311,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     })
     // Cosmetic profile updates are attempted after the durable install, but a
     // Discord failure never rolls back or blocks the functional integration.
-    expect(iconSync).toEqual({ botToken: DISCORD_TOKEN, agentId })
+    expect(profileSync).toEqual({ botToken: DISCORD_TOKEN, agentId, description: 'Answers support questions.' })
     expect(intentToken).toBe(DISCORD_TOKEN)
   })
 
