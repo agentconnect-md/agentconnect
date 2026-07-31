@@ -53,7 +53,7 @@ import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
-import { sessionSenderLabel } from '@/lib/session-trigger'
+import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
 import { mergeSessionMessages } from '@/lib/session-transcript'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
@@ -496,6 +496,8 @@ type Turn =
   | {
       kind: 'user'
       sp: ReturnType<typeof speaker>
+      agent: Agent | null
+      avatarUrl?: string | null
       sourceLabel: string
       time: string
       text: string
@@ -504,6 +506,40 @@ type Turn =
       cronId: string | null
     }
   | { kind: 'bot'; agentName: string; model: string; time: string; steps: FmtStep[] }
+
+function ParticipantAvatar({
+  agent,
+  avatarUrl,
+  sp,
+  isCron
+}: {
+  agent: Agent | null
+  avatarUrl?: string | null
+  sp: ReturnType<typeof speaker>
+  isCron: boolean
+}) {
+  return (
+    <span
+      className="av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal"
+      title={sp.name}
+    >
+      {agent ? (
+        <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
+      ) : avatarUrl ? (
+        <img src={avatarUrl} alt="" className="object-cover" style={{ width: '100%', height: '100%' }} />
+      ) : isCron ? (
+        <Icon name="calendar-clock" size={14} color="var(--text-secondary)" />
+      ) : (
+        <span
+          className="flex h-full w-full items-center justify-center rounded-[inherit]"
+          style={{ background: sp.avBg, color: sp.avText }}
+        >
+          {sp.initials || '?'}
+        </span>
+      )}
+    </span>
+  )
+}
 
 function SessionRelationLink({
   relation,
@@ -729,6 +765,25 @@ export default function SessionDetailView() {
     }
     return names
   }, [members])
+  const memberPictureByIdentity = useMemo(() => {
+    const pictures = new Map<string, string>()
+    for (const member of members) {
+      if (!member.picture) continue
+      pictures.set(member.userId, member.picture)
+      if (member.email) pictures.set(member.email, member.picture)
+    }
+    return pictures
+  }, [members])
+  const attributedAgentIdBySender = useMemo(
+    () => sessionAttributionAgentAuthors(msgs ?? [], agentById),
+    [msgs, agentById]
+  )
+  const participantAgent = (sender: string, text: string): Agent | undefined => {
+    const id = agentById.has(sender)
+      ? sender
+      : (sessionAttributionAgentId(text, agentById) ?? attributedAgentIdBySender.get(sender))
+    return id ? agentById.get(id) : undefined
+  }
   // The viewer's own webchat messages render as "You" (like the live playground) instead
   // of a raw id — see isSelfSender. Webchat-only: Slack senders never match /me.
   const isSelf = (sender?: string | null): boolean => isSelfSender(sender, me)
@@ -984,9 +1039,10 @@ export default function SessionDetailView() {
         if (!last.time && step.time) last.time = step.time
       } else {
         // Count participants by stable sender id — two people can share a display name.
-        speakers.add(m.sender)
         const cron = asCron(m.sender)
-        const senderAgentName = agentNameById.get(m.sender)
+        const senderAgent = participantAgent(m.sender, m.text)
+        speakers.add(senderAgent?.id ?? m.sender)
+        const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
         turns.push({
           kind: 'user',
@@ -996,6 +1052,8 @@ export default function SessionDetailView() {
                 senderAgentName ?? m.sender,
                 cron?.name ?? (cron ? 'Schedule' : senderLabel(m.sender, m.senderName ?? hookFallback))
               ),
+          agent: senderAgent ?? null,
+          avatarUrl: isSelf(m.sender) ? me?.picture : memberPictureByIdentity.get(m.sender),
           sourceLabel: platName(sessionIntegration),
           time: formatTranscriptTime(m.ts),
           text: m.text,
@@ -1010,12 +1068,15 @@ export default function SessionDetailView() {
     session.steps.forEach((stp) => {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
-        speakers.add(who)
         const cron = asCron(who)
-        const senderAgentName = agentNameById.get(who)
+        const senderAgent = participantAgent(who, stp.text)
+        speakers.add(senderAgent?.id ?? who)
+        const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         turns.push({
           kind: 'user',
           sp: speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName)),
+          agent: senderAgent ?? null,
+          avatarUrl: isSelf(who) ? me?.picture : memberPictureByIdentity.get(who),
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? (firstMsg ? session.time : ''),
           text: stp.text,
@@ -1043,11 +1104,14 @@ export default function SessionDetailView() {
     for (const stp of liveSteps) {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
-        speakers.add(who)
-        const senderAgentName = agentNameById.get(who)
+        const senderAgent = participantAgent(who, stp.text)
+        speakers.add(senderAgent?.id ?? who)
+        const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         turns.push({
           kind: 'user',
           sp: speaker(senderAgentName ?? who, senderAgentName),
+          agent: senderAgent ?? null,
+          avatarUrl: isSelf(who) ? me?.picture : memberPictureByIdentity.get(who),
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? '',
           text: stp.text,
@@ -1462,29 +1526,32 @@ export default function SessionDetailView() {
               turn.kind === 'user' ? (
                 // 2b: user turns are right-aligned brand-soft bubbles. A sender label
                 // sits above the bubble only when it isn't you (platform user / cron).
-                <div key={ti} className="flex flex-col items-end gap-[3px]">
-                  {(turn.isCron || turn.sp.handle !== '@you') && (
-                    <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                      {turn.isCron && turn.cronId ? (
-                        <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                          {turn.sp.name}
-                        </Link>
-                      ) : (
-                        <span>{turn.sp.name}</span>
-                      )}
-                      {turn.time && <span className="mono">{turn.time}</span>}
-                    </span>
-                  )}
-                  <div className="max-w-[86%] rounded-[12px_12px_4px_12px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)">
-                    {turn.image && (
-                      <img
-                        src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                        alt={turn.image.name}
-                        className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                      />
+                <div key={ti} className="flex items-start justify-end gap-[9px]">
+                  <div className="flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                    {(turn.isCron || turn.sp.handle !== '@you') && (
+                      <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                        {turn.isCron && turn.cronId ? (
+                          <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
+                            {turn.sp.name}
+                          </Link>
+                        ) : (
+                          <span>{turn.sp.name}</span>
+                        )}
+                        {turn.time && <span className="mono">{turn.time}</span>}
+                      </span>
                     )}
-                    {turn.text && <MessageText text={turn.text} />}
+                    <div className="max-w-full rounded-[12px_12px_4px_12px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)">
+                      {turn.image && (
+                        <img
+                          src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                          alt={turn.image.name}
+                          className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                        />
+                      )}
+                      {turn.text && <MessageText text={turn.text} />}
+                    </div>
                   </div>
+                  <ParticipantAvatar agent={turn.agent} avatarUrl={turn.avatarUrl} sp={turn.sp} isCron={turn.isCron} />
                 </div>
               ) : (
                 (() => {

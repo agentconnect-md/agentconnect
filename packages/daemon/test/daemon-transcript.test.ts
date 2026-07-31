@@ -218,9 +218,10 @@ describe('Daemon transcript records the agent reply', () => {
 
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
       username: 'Repo Bot',
+      agentAuthorId: 'bot-a',
       trailingBlocks: [classicFooter('bot-a', 'Claude Code', 'claude-sonnet-4-5')]
     })
-    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-1', expect.any(Array))
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
     // Only the reply, never the footer chrome, is in the transcript.
     const botRows = transcript(daemon).filter((r) => r.sender === 'bot-a')
     expect(botRows.map((r) => r.text)).toEqual(['the answer'])
@@ -245,6 +246,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
       username: 'bot-a',
+      agentAuthorId: 'bot-a',
       trailingBlocks: [classicFooter('bot-a', 'claude', 'model-after-prompt')]
     })
     await daemon.stop()
@@ -283,6 +285,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'early answer', 'T1', {
       username: 'bot-a',
+      agentAuthorId: 'bot-a',
       trailingBlocks: [classicFooter('bot-a', 'claude', 'model-before-prompt')]
     })
     const linkedReplyUpdates = conn.updateBlocks.mock.calls.filter(
@@ -303,9 +306,10 @@ describe('Daemon transcript records the agent reply', () => {
     // The live reply is born with the footer instead of flashing body-only until finalization.
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'here is my answer', 'T1', {
       username: 'bot-a',
+      agentAuthorId: 'bot-a',
       trailingBlocks: [classicFooter()]
     })
-    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-1', expect.any(Array))
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
     const separateFooter = conn.postBlocks.mock.calls.find((c) => JSON.stringify(c).includes('open in session'))
     expect(separateFooter).toBeUndefined()
     await daemon.stop()
@@ -327,13 +331,15 @@ describe('Daemon transcript records the agent reply', () => {
     expect(postOptions.every((options) => JSON.stringify(options?.trailingBlocks).includes('open in session'))).toBe(
       true
     )
-    expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: replyPosts[0] }])
-    expect(conn.updateBlocks).not.toHaveBeenCalledWith(
+    expect(conn.updateBlocks).toHaveBeenCalledWith(
       'C1',
-      `reply-${replyPosts.length}`,
-      expect.any(Array),
-      replyPosts.at(-1)
+      'reply-1',
+      [{ type: 'markdown', text: replyPosts[0] }],
+      undefined,
+      false,
+      'bot-a'
     )
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === `reply-${replyPosts.length}`)).toBe(false)
     expect(
       transcript(daemon)
         .filter((row) => row.sender === 'bot-a')
@@ -355,6 +361,7 @@ describe('Daemon transcript records the agent reply', () => {
         await vi.waitFor(() =>
           expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('first part'), 'T1', {
             username: 'bot-a',
+            agentAuthorId: 'bot-a',
             trailingBlocks: [classicFooter()]
           })
         )
@@ -369,6 +376,7 @@ describe('Daemon transcript records the agent reply', () => {
         await vi.waitFor(() =>
           expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('second part'), 'T1', {
             username: 'bot-a',
+            agentAuthorId: 'bot-a',
             trailingBlocks: [classicFooter()]
           })
         )
@@ -394,7 +402,14 @@ describe('Daemon transcript records the agent reply', () => {
     const posts = conn.postMessage.mock.calls.map((c) => String(c[1]))
     expect(posts.some((t) => t.includes('first part'))).toBe(true)
     expect(posts.some((t) => t.includes('second part'))).toBe(true)
-    expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: 'first part' }])
+    expect(conn.updateBlocks).toHaveBeenCalledWith(
+      'C1',
+      'reply-1',
+      [{ type: 'markdown', text: 'first part' }],
+      undefined,
+      false,
+      'bot-a'
+    )
     // reply-1 (above the card) is never edited to show the post-card segment.
     expect((conn as any).updateMessage).not.toHaveBeenCalledWith(
       'C1',
@@ -450,8 +465,15 @@ describe('Daemon transcript records the agent reply', () => {
       [classicFooter()],
       [classicFooter()]
     ])
-    expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: 'first section' }])
-    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-2', expect.any(Array))
+    expect(conn.updateBlocks).toHaveBeenCalledWith(
+      'C1',
+      'reply-1',
+      [{ type: 'markdown', text: 'first section' }],
+      undefined,
+      false,
+      'bot-a'
+    )
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-2')).toBe(false)
     await daemon.stop()
   }, 15_000)
 
@@ -465,8 +487,8 @@ describe('Daemon transcript records the agent reply', () => {
     await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
 
     expect(conn.updateBlocks.mock.calls.filter((call) => call[1] === 'reply-1')).toEqual([
-      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]],
-      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]]
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }], undefined, false, 'bot-a'],
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }], undefined, false, 'bot-a']
     ])
     await daemon.stop()
   }, 15_000)
@@ -481,7 +503,7 @@ describe('Daemon transcript records the agent reply', () => {
     await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
 
     expect(conn.postMessage.mock.calls.map((call) => call[1])).toEqual(['first section', 'last section'])
-    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', 'reply-1', [{ type: 'markdown', text: 'first section' }])
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
     await daemon.stop()
   }, 15_000)
 
@@ -553,8 +575,8 @@ describe('Daemon transcript records the agent reply', () => {
     await expect((daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')).rejects.toThrow('runtime exploded')
 
     expect(conn.updateBlocks.mock.calls.filter((call) => call[1] === 'reply-1')).toEqual([
-      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]],
-      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }]]
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }], undefined, false, 'bot-a'],
+      ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }], undefined, false, 'bot-a']
     ])
     await daemon.stop()
   }, 15_000)

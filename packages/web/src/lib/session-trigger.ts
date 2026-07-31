@@ -5,6 +5,39 @@ export type SessionTriggerKind = 'agent' | 'person' | 'github' | 'webhook' | 'sc
 type IdLookup = { has(id: string): boolean }
 const GITHUB_REPO_TRIGGER_PREFIX = 'github-repo:'
 
+/** Recover the stable author from pre-metadata Slack attribution footers. Only ids
+ *  that are visible in the current Agent directory are accepted. */
+export function sessionAttributionAgentId(text: string, agentIds: IdLookup): string | undefined {
+  const ids = new Set<string>()
+  for (const match of text.matchAll(/(?:^|\n)sent by <https?:\/\/[^<>\s|]+\/agents\/([^/?#|>]+)\|[^>\n]+>/g)) {
+    try {
+      const id = decodeURIComponent(match[1]!)
+      if (agentIds.has(id)) ids.add(id)
+    } catch {
+      // A malformed URL segment is not a trustworthy identity hint.
+    }
+  }
+  return ids.size === 1 ? [...ids][0] : undefined
+}
+
+/** Reconcile older rows without their own footer when the same Slack bot sender has
+ *  exactly one attributed Agent elsewhere in this transcript. Shared/ambiguous bot ids
+ *  deliberately remain unresolved. */
+export function sessionAttributionAgentAuthors(
+  messages: readonly { sender: string; text: string }[],
+  agentIds: IdLookup
+): ReadonlyMap<string, string> {
+  const candidates = new Map<string, Set<string>>()
+  for (const message of messages) {
+    const id = sessionAttributionAgentId(message.text, agentIds)
+    if (!id) continue
+    const ids = candidates.get(message.sender) ?? new Set<string>()
+    ids.add(id)
+    candidates.set(message.sender, ids)
+  }
+  return new Map([...candidates].flatMap(([sender, ids]) => (ids.size === 1 ? [[sender, [...ids][0]!] as const] : [])))
+}
+
 export function sessionTriggerFilterValue(trigger: {
   value: string
   hookKind?: 'webhook' | 'github'

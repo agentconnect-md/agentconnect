@@ -968,6 +968,24 @@ describe('SlackConnection.updateBlocks', () => {
     ])
   })
 
+  it('re-stamps stable agent authorship when an agent reply is edited', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withUpdate(async (payload) => void calls.push(payload)) as any
+    )
+    const blocks = [{ type: 'markdown', text: 'updated answer' }]
+
+    await expect(conn.updateBlocks('C1', '123.45', blocks, 'updated answer', false, 'agent-a')).resolves.toBe(true)
+
+    expect(calls[0]).toMatchObject({
+      metadata: {
+        event_type: 'agentconnect_thread_event',
+        event_payload: { author_agent_id: 'agent-a' }
+      }
+    })
+  })
+
   it('returns false when the best-effort update fails so callers can retry cleanup', async () => {
     const conn = new SlackConnection(
       { ...deps(), sendIntervalMs: 0 } as any,

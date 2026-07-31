@@ -10182,12 +10182,24 @@ export class Daemon {
     return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
   }
 
-  /** Agent-authored messages use the selected agent identity in both channels and DMs.
-   *  DM system chrome continues through {@link slackPostOptions} without overrides so
-   *  status bars, cards, and notices remain visibly owned by the Slack App. */
-  private slackAgentPostOptions(p: Pick<Pending, 'platform' | 'agentName' | 'iconUrl'>): SlackPostOptions | undefined {
+  /** Visual identity for Slack rows owned by the selected agent. Kept separate from
+   *  conversational authorship because status/chrome rows must retain their chrome
+   *  metadata marker instead of masquerading as transcript messages. */
+  private slackAgentIdentityOptions(
+    p: Pick<Pending, 'platform' | 'agentName' | 'iconUrl'>
+  ): SlackPostOptions | undefined {
     if (p.platform !== 'slack') return undefined
     return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
+  }
+
+  /** Agent-authored conversation messages add a stable author id to Slack metadata.
+   *  Peer daemons use it during thread backfill, so shared/custom bot ids never replace
+   *  the Agent's name and icon in the Console transcript. */
+  private slackAgentPostOptions(
+    p: Pick<Pending, 'platform' | 'agentId' | 'agentName' | 'iconUrl'>
+  ): SlackPostOptions | undefined {
+    const identity = this.slackAgentIdentityOptions(p)
+    return identity ? { ...identity, agentAuthorId: p.agentId } : undefined
   }
 
   /** Opaque routing target attached to daemon-rendered interactive Slack blocks when
@@ -10222,7 +10234,14 @@ export class Daemon {
     const failed: { ts: string; text: string }[] = []
     for (const reply of new Map(pending.map((item) => [item.ts, item])).values()) {
       try {
-        const updated = await conn.updateBlocks(p.channel, reply.ts, [{ type: 'markdown', text: reply.text }])
+        const updated = await conn.updateBlocks(
+          p.channel,
+          reply.ts,
+          [{ type: 'markdown', text: reply.text }],
+          undefined,
+          false,
+          p.agentId
+        )
         if (updated === false) failed.push(reply)
       } catch (err) {
         // Real SlackConnection normalizes API/queue failures to false. Keep this guard
@@ -10286,7 +10305,7 @@ export class Daemon {
     if (!p.liveReplyTs) return
     const attribution = p.attribution
     if (!attribution) {
-      await conn.updateMessage(p.channel, p.liveReplyTs, text)
+      await conn.updateMessage(p.channel, p.liveReplyTs, text, false, p.agentId)
       if (p.lastReply?.ts === p.liveReplyTs) {
         p.lastReply.text = text
         delete p.lastReply.footerKey
@@ -10297,7 +10316,9 @@ export class Daemon {
       p.channel,
       p.liveReplyTs,
       [{ type: 'markdown', text }, ...attribution.blocks],
-      text
+      text,
+      false,
+      p.agentId
     )
     if (updated !== false && p.lastReply?.ts === p.liveReplyTs) {
       p.lastReply.text = text
@@ -10330,7 +10351,7 @@ export class Daemon {
       return
     }
     const postOptions = this.slackPostOptions(p)
-    const statusBarPostOptions = this.slackAgentPostOptions(p)
+    const statusBarPostOptions = this.slackAgentIdentityOptions(p)
     // Chrome variant of the post options: marks status/progress/plan/reasoning/notice/card
     // messages so a peer daemon's thread backfill skips them (they are not conversation).
     const chromeOptions: SlackPostOptions = { ...(postOptions ?? {}), chrome: true }
@@ -10386,7 +10407,9 @@ export class Daemon {
               p.channel,
               p.liveReplyTs,
               [{ type: 'markdown', text: p.liveReplyText }, ...action.blocks],
-              p.liveReplyText
+              p.liveReplyText,
+              false,
+              p.agentId
             )
             if (updated !== false) {
               p.lastReply.text = p.liveReplyText
@@ -14547,6 +14570,7 @@ export class Daemon {
             const options = agent
               ? this.slackAgentPostOptions({
                   platform: msg.platform,
+                  agentId,
                   agentName: agent.displayName?.trim() || agent.name,
                   ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
                 })

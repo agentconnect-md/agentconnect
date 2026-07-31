@@ -23,6 +23,7 @@ const ctx: SessionContext = {
   ]),
   integrations: [{ id: 'int-1', platform: 'slack' }]
 }
+const authorIdentity = { agentAuthorId: 'bot-a' }
 
 function fakeGateway(over: Partial<MessageGateway> = {}): MessageGateway {
   return {
@@ -147,7 +148,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       unknown
     >
 
-    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, authorIdentity)
     expect(res).toMatchObject({
       ok: true,
       post: { platform: 'slack', channel: 'C_CURRENT', thread: null, ts: 'ts-123' }
@@ -161,14 +162,14 @@ describe('executeTool: sendMessage (channel post)', () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
     await executeTool(ctx, 'sendMessage', { to: { channel: 'C_CURRENT', thread: '111.1' }, message: 'hi' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', '111.1')
+    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', '111.1', authorIdentity)
   })
 
   it('honors an explicit channel and an empty thread (post to channel root)', async () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
     await executeTool(ctx, 'sendMessage', { to: { channel: 'C_OTHER', thread: '' }, message: 'yo' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined, authorIdentity)
   })
 
   describe('root post: one canonical thread key for every consumer', () => {
@@ -436,7 +437,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       { to: { platform: 'telegram', channel: '-100123' }, message: 'hi' },
       d
     )) as { post: Record<string, unknown> }
-    expect(gw.postMessage).toHaveBeenCalledWith('-100123', 'hi', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('-100123', 'hi', undefined, authorIdentity)
     expect(res.post).toMatchObject({ platform: 'telegram', integrationId: 'int-tg', channel: '-100123' })
     // Pre-fix this row carried the CALLER's Slack thread under a Telegram channel — coords that
     // belong to no session, and a trap for the reply-owner lookup. It now keys the post's own.
@@ -470,7 +471,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     const res = (await executeTool(multi, 'sendMessage', { to: { channel: 'C_CURRENT' }, message: 'hi' }, d)) as {
       post: Record<string, unknown>
     }
-    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, authorIdentity)
     expect(res.post).toMatchObject({ integrationId: 'int-b', channel: 'C_CURRENT' })
   })
 
@@ -481,25 +482,26 @@ describe('executeTool: sendMessage (channel post)', () => {
     await executeTool(withIdentity, 'sendMessage', { to: { channel: 'C_CURRENT' }, message: 'hi' }, d)
     expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, {
       username: 'Bot A',
-      icon_url: 'https://x/y.png'
+      icon_url: 'https://x/y.png',
+      agentAuthorId: 'bot-a'
     })
   })
 
-  it('omits identity (plain 3-arg postMessage) when the session carries none', async () => {
+  it('stamps the stable author id when the session has no visual identity', async () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
     await executeTool(ctx, 'sendMessage', { to: { channel: 'C_CURRENT' }, message: 'hi' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, authorIdentity)
   })
 
   it('toUser @-mentions a human on Slack (prepends <@id>), and rejects toUser off Slack', async () => {
     const gw = fakeGateway()
     const { deps: d, recorded } = deps(gw)
     await executeTool(ctx, 'sendMessage', { to: { channel: 'C_CURRENT', toUser: 'U9' }, message: 'ping' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', '<@U9> ping', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', '<@U9> ping', undefined, authorIdentity)
     // An already-wrapped mention is left as-is.
     await executeTool(ctx, 'sendMessage', { to: { channel: 'C_CURRENT', toUser: '<@U9>' }, message: 'again' }, d)
-    expect(gw.postMessage).toHaveBeenLastCalledWith('C_CURRENT', '<@U9> again', undefined)
+    expect(gw.postMessage).toHaveBeenLastCalledWith('C_CURRENT', '<@U9> again', undefined, authorIdentity)
     expect(recorded).toEqual([
       { channel: 'C_CURRENT', thread: 'ts-123', text: '<@U9> ping', ts: 'ts-123' },
       { channel: 'C_CURRENT', thread: 'ts-123', text: '<@U9> again', ts: 'ts-123' }
@@ -820,8 +822,8 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     }
     expect(res.ok).toBe(true)
     expect(res.wake).toBeDefined()
-    // Visible root post through the gateway (no identity on this ctx → 3-arg call).
-    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'over to you', undefined)
+    // Visible root post through the gateway, stamped with the calling agent's stable id.
+    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'over to you', undefined, authorIdentity)
     expect(res.post).toEqual({ platform: 'slack', integrationId: 'int-1', channel: 'C_X', thread: null, ts: 'ts-123' })
     expect(recorded).toEqual([{ channel: 'C_X', thread: 'ts-123', text: 'over to you', ts: 'ts-123' }])
     // The peer is woken INTO the post's ts, and the post ts is carried through as the wake's
@@ -837,7 +839,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
       { to: { toAgent: 'peer-1', channel: 'C_X', thread: '222.2' }, message: 'ping' },
       d
     )
-    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'ping', '222.2')
+    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'ping', '222.2', authorIdentity)
     // Thread reused; transcriptTs = the post's real ts (dedups against the recorded post row).
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: '222.2', transcriptTs: 'ts-123' })
   })

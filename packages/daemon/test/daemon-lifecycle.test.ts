@@ -222,7 +222,8 @@ describe('Daemon session lifecycle (#118)', () => {
 
     expect(postMessage).toHaveBeenCalledWith('C1', '⏰ scheduled', undefined, {
       username: 'Review Bot',
-      icon_url: 'https://console.example.test/icons/review-bot'
+      icon_url: 'https://console.example.test/icons/review-bot',
+      agentAuthorId: 'bot-a'
     })
     const key = sessionKey('slack', 'C1', '100.100000', 'bot-a', TRANSPORT_SCOPE)
     expect((daemon as any).store.getSession(key)?.lastDeliveredTs).toBe('100.100000')

@@ -9,6 +9,8 @@ import {
 import { platName, sessionPlatform } from './data'
 import {
   githubRepoIdFromSessionTriggerFilter,
+  sessionAttributionAgentAuthors,
+  sessionAttributionAgentId,
   sessionSenderLabel,
   sessionTriggerFilterValue,
   sessionTriggerKind
@@ -209,5 +211,31 @@ describe('sessionSenderLabel', () => {
     expect(sessionSenderLabel('agent-id', 'agent-id', agents, members, me)).toBe('Release agent')
     expect(sessionSenderLabel('member-id', 'member-id', agents, members, me)).toBe('Ada')
     expect(sessionSenderLabel('me', 'me', agents, members, me)).toBe('You')
+  })
+})
+
+describe('legacy Slack Agent attribution', () => {
+  it('recovers only visible, unambiguous Agent authors', () => {
+    const agents = new Set(['review-id', 'test-id'])
+    const reviewFooter =
+      'done\nsent by <https://test.example.test/team/agents/review-id|review-bot> (Codex) · <https://test.example.test/sessions/1|open in session>'
+
+    expect(sessionAttributionAgentId(reviewFooter, agents)).toBe('review-id')
+    expect(sessionAttributionAgentId('sent by <https://other.test/agents/private-id|private>', agents)).toBeUndefined()
+
+    const authors = sessionAttributionAgentAuthors(
+      [
+        { sender: 'B-REVIEW', text: reviewFooter },
+        { sender: 'B-REVIEW', text: 'an older row without a footer' },
+        { sender: 'B-SHARED', text: reviewFooter },
+        {
+          sender: 'B-SHARED',
+          text: 'sent by <https://test.example.test/team/agents/test-id|test> (Claude)'
+        }
+      ],
+      agents
+    )
+    expect(authors.get('B-REVIEW')).toBe('review-id')
+    expect(authors.has('B-SHARED')).toBe(false)
   })
 })

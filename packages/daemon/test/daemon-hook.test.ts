@@ -1174,7 +1174,7 @@ describe('Daemon rd/msg hook fires', () => {
       'C-alerts',
       '🪝 Webhook delivery d-1',
       undefined,
-      { username: AGENT_ID }
+      { username: AGENT_ID, agentAuthorId: AGENT_ID }
     ])
     const replyCall = conn.postMessage.mock.calls[1] as unknown[] | undefined
     expect(replyCall?.[2]).toBe('ts-1') // threaded under the anchor

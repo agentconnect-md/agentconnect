@@ -750,6 +750,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect(answerCall?.[3]).toMatchObject({
         username: 'Release Captain',
         icon_url: 'https://console.example.test/icons/bot-a',
+        agentAuthorId: 'bot-a',
         trailingBlocks: [
           {
             type: 'context',
