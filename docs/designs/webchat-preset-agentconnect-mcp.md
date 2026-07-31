@@ -208,10 +208,13 @@ survives a daemon restart. Concurrent browser tabs resume the same conversation,
 ACP session, descriptor instance, and active grant; they do not create competing
 runtime descriptors.
 
-The CP allocates a strictly increasing `grantRevision` for that descriptor within
-the authority generation. The daemon's CAS fence is global to the one runtime
-session target, so every delivery that could mutate its descriptor is totally
-ordered. Delivery uses a two-phase protocol:
+The CP allocates a strictly increasing `grantRevision` for that descriptor's entire
+lifetime. It never resets when `authorityGeneration` changes. The daemon persists
+the last staged and installed `(authorityGeneration, grantRevision)` fences as
+non-secret session metadata and compares them lexicographically: an older authority
+generation always loses, and revisions order deliveries within the same generation.
+The CAS fence is global to the one runtime session target, so every delivery that
+could mutate its descriptor is totally ordered. Delivery uses a two-phase protocol:
 
 1. The daemon sends `webchat/mcp-grant/issue` with the conversation and descriptor
    instance. CP authenticates the daemon from the WebSocket, verifies current
@@ -220,16 +223,18 @@ ordered. Delivery uses a two-phase protocol:
 grantRevision, token, expiresAt }`. Creating a newer pending revision atomically
    revokes any older pending revision for that descriptor instance.
 2. The daemon retains the raw token only in memory and CAS-stages the reply only
-   when its revision is newer than the instance's staged or installed revision. A
-   delayed lower revision is discarded and NACKed; it can never overwrite the
+   when its full `(authorityGeneration, grantRevision)` fence is newer than both
+   persisted staged and installed fences. A delayed older-generation or
+   lower-revision reply is discarded and NACKed; it can never overwrite the
    descriptor.
 3. The daemon sends `webchat/mcp-grant/accept` carrying the exact grant id,
    authority generation, descriptor instance, and revision. In one transaction,
    the CP verifies that this is still the newest pending revision for that instance,
    marks it `active`, and revokes the instance's prior active grant.
 4. CP replies with `webchat/mcp-grant/activate` carrying the same exact tuple. Only
-   that reply permits the daemon to CAS-install the descriptor into the runtime. A
-   retry of any frame is idempotent; a mismatched or superseded tuple fails closed.
+   that reply permits the daemon to CAS-install the descriptor into the runtime,
+   again against the persisted full fence. A retry of any frame is idempotent; a
+   mismatched, older-generation, or superseded tuple fails closed.
 
 `pending` credentials are rejected by the MCP endpoint. The sole descriptor instance
 has at most one active and one pending grant, so only one usable grant exists for the
