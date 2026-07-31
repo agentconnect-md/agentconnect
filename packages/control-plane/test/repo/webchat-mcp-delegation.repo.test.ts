@@ -567,14 +567,21 @@ describe('PgWebchatMcpOperationRepo (real Postgres)', () => {
         agentId: AGENT,
         platform: 'webchat',
         channel: CONVERSATION,
-        phase: 'start',
+        phase: 'end',
         orgId: DEFAULT_ORG_ID,
         ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
         visibility: 'private',
         visibilitySource: 'default',
         lastActivityAt: NOW,
-        startedAt: NOW
+        startedAt: NOW,
+        // `endedAt` is stamped after every completed turn and must not affect
+        // authorization — only the conversation's current-session pointer does.
+        endedAt: NOW
       }
+    })
+    await prisma.webchatConversation.update({
+      where: { id: CONVERSATION },
+      data: { currentSessionId: 'private-webchat-operation', currentSessionRev: 1 }
     })
     return { authority, grant }
   }

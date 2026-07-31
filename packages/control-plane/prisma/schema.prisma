@@ -879,6 +879,8 @@ model SessionMeta {
   launch AgentLaunch? @relation(fields: [launchId], references: [id], onDelete: SetNull)
   daemon Daemon?      @relation(fields: [daemonId], references: [id], onDelete: SetNull)
 
+  webchatCurrentFor WebchatConversation[] @relation("WebchatCurrentSession")
+
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
   @@index([agentId, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_activity_page_idx")
@@ -902,17 +904,28 @@ model WebchatConversation {
   agentId              String   @db.Uuid
   userId               String
   delegationGeneration Int      @default(0)
+  // The exact ACP session currently installed for this conversation — the
+  // current-session fence for remote MCP authorization. Maintained ONLY by the
+  // session-milestone upsert, transactionally, under a lock on this row, so a
+  // replacement-session insert serializes with every authorization read that
+  // locks the conversation. `endedAt` cannot express this ("end" is stamped
+  // after every turn); identity must be explicit. SetNull fails closed if the
+  // session row disappears.
+  currentSessionId     String?
+  currentSessionRev    Int      @default(0) // bumped in the same tx as any pointer change
   createdAt            DateTime @default(now()) @db.Timestamptz(6)
 
-  org           Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  agent         Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  delegations   WebchatMcpDelegation[]
-  mcpOperations WebchatMcpOperation[]
+  org            Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent          Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currentSession SessionMeta?           @relation("WebchatCurrentSession", fields: [currentSessionId], references: [id], onDelete: SetNull)
+  delegations    WebchatMcpDelegation[]
+  mcpOperations  WebchatMcpOperation[]
 
   @@index([orgId])
   @@index([agentId])
   @@index([userId])
+  @@index([currentSessionId])
   @@map("webchat_conversation")
 }
 

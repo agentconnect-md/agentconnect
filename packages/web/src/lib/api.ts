@@ -99,6 +99,17 @@ export function listWebchatMcpOperations(
   return apiGet<WebchatMcpOperationDto[]>(webchatMcpOperationPath(orgId, agentId, conversationId))
 }
 
+export function getWebchatMcpOperation(
+  orgId: string,
+  agentId: string,
+  conversationId: string,
+  operationId: string
+): Promise<WebchatMcpOperationDto> {
+  return apiGet<WebchatMcpOperationDto>(
+    `${webchatMcpOperationPath(orgId, agentId, conversationId)}/${encodeURIComponent(operationId)}`
+  )
+}
+
 export function decideWebchatMcpOperation(
   orgId: string,
   agentId: string,

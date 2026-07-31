@@ -151,6 +151,7 @@ import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
 import { defaultWebchatMcpMetrics } from './observability/webchat-mcp.js'
 import { pingDb } from './persistence/prisma.js'
+import { runWithSharedTx, withSharedTxRouting } from './persistence/ambient-tx.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
 import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
@@ -220,6 +221,13 @@ export function buildContainer(
   // The ONE cipher every secret store seals/opens through — the SECRET_CIPHER
   // config flips at-rest encryption for all of them together.
   const secretCipher = opts.secretCipher ?? makeSecretCipher(config)
+
+  // Repositories see the shared-transaction router: outside `runWithSharedTx`
+  // it is the root client verbatim; inside it (CP-db-only delegated MCP
+  // operations, §8) every repo call joins one transaction. Transaction OPENING
+  // (and ping/disconnect) stays on the root client.
+  const rootPrisma = prisma
+  prisma = withSharedTxRouting(prisma)
 
   // ── C6 repositories (the ONLY @prisma/client importers) ───────────────────
   const repos = {
@@ -556,7 +564,7 @@ export function buildContainer(
   // ── C2 HTTP edge ──────────────────────────────────────────────────────────
   // Readiness gate: `/readyz` pings the DB and reports 503 once shutdown begins
   // (issue #240). Owned here (has `prisma` for the ping); the bootstrap flips it.
-  const readiness = createReadiness(() => pingDb(prisma))
+  const readiness = createReadiness(() => pingDb(rootPrisma))
   // Best-effort, but never detached: shutdown must not disconnect Prisma while
   // these projection wakeups are still running.
   const wakeGithubReviewProjections = async (installationId: bigint, orgId: OrgId): Promise<void> => {
@@ -744,6 +752,10 @@ export function buildContainer(
     mcpRateLimit: new McpRateLimiter(clock),
     remoteGrantAuth,
     internalInvocationAuth,
+    // §8 CP-db-only operation atomicity: run `fn` with every repository call —
+    // including those made by nested app.inject routes — joined to ONE
+    // transaction (see persistence/ambient-tx.ts). Opened on the root client.
+    sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
     verifySlackBot,
@@ -1253,7 +1265,7 @@ export function buildContainer(
         visibilityPush.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
-      await prisma.$disconnect()
+      await rootPrisma.$disconnect()
     }
   }
 }

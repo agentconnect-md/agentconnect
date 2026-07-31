@@ -169,7 +169,7 @@ describe('POST /api/v1/mcp — auth', () => {
 })
 
 describe('delegated webchat MCP operations', () => {
-  it('executes reads directly but holds writes until the conversation owner approves', async () => {
+  async function delegatedFixture() {
     const daemonId = randomUUID()
     const hostAgentId = randomUUID()
     const conversationId = randomUUID()
@@ -217,14 +217,21 @@ describe('delegated webchat MCP operations', () => {
         agentId: hostAgentId,
         platform: 'webchat',
         channel: conversationId,
-        phase: 'start',
+        phase: 'end',
         orgId: DEFAULT_ORG_ID,
         ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
         visibility: 'private',
         visibilitySource: 'default',
         lastActivityAt: new Date(),
-        startedAt: new Date()
+        startedAt: new Date(),
+        // The daemon stamps `endedAt` after EVERY turn; authorization must key
+        // off the conversation's current-session pointer, not this timestamp.
+        endedAt: new Date()
       }
+    })
+    await prisma.webchatConversation.update({
+      where: { id: conversationId },
+      data: { currentSessionId: `webchat-${conversationId}`, currentSessionRev: 1 }
     })
 
     const app = buildHttpApp(prisma, undefined, {
@@ -250,6 +257,30 @@ describe('delegated webchat MCP operations', () => {
         },
         payload: { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }
       })
+    const decisionPath = `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${hostAgentId}/webchat/${conversationId}/mcp-operations`
+    return { app, daemonId, hostAgentId, conversationId, remoteRpc, decisionPath }
+  }
+
+  /** Submit a delegated write and return its pending operationId. */
+  async function pendingWrite(
+    fixture: Awaited<ReturnType<typeof delegatedFixture>>,
+    id: number,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<string> {
+    const write = await fixture.remoteRpc(id, name, args)
+    expect(write.statusCode).toBe(200)
+    const pending = JSON.parse(toolText(mcpMessage(write).result as unknown as ToolCallResult)) as {
+      status: string
+      operationId: string
+    }
+    expect(pending.status).toBe('awaiting_confirmation')
+    return pending.operationId
+  }
+
+  it('executes reads directly but holds writes until the conversation owner approves', async () => {
+    const fixture = await delegatedFixture()
+    const { app, hostAgentId, remoteRpc, decisionPath: path } = fixture
 
     const read = await remoteRpc(1, 'listAgents', {})
     expect(read.statusCode).toBe(200)
@@ -264,7 +295,6 @@ describe('delegated webchat MCP operations', () => {
     expect(pending.status).toBe('awaiting_confirmation')
     expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })).toBeNull()
 
-    const path = `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${hostAgentId}/webchat/${conversationId}/mcp-operations`
     const listed = await app.app.inject({ method: 'GET', url: path })
     expect(listed.statusCode).toBe(200)
     expect(listed.json()).toMatchObject([{ operationId: pending.operationId, toolName: 'createAgent' }])
@@ -276,6 +306,64 @@ describe('delegated webchat MCP operations', () => {
     expect(approved.statusCode).toBe(200)
     expect(approved.json()).toMatchObject({ operationId: pending.operationId, status: 'completed' })
     expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })).not.toBeNull()
+  })
+
+  it('commits a cp_db tool mutation atomically with its terminal transition', async () => {
+    const fixture = await delegatedFixture()
+    const operationId = await pendingWrite(fixture, 3, 'renameDaemon', {
+      daemonId: fixture.daemonId,
+      name: 'renamed-in-one-tx'
+    })
+
+    const approved = await fixture.app.app.inject({
+      method: 'POST',
+      url: `${fixture.decisionPath}/${operationId}/decision`,
+      payload: { decision: 'approve' }
+    })
+    expect(approved.statusCode).toBe(200)
+    expect(approved.json()).toMatchObject({ operationId, status: 'completed' })
+    expect((await prisma.daemon.findUnique({ where: { id: fixture.daemonId } }))?.name).toBe('renamed-in-one-tx')
+    const row = await prisma.webchatMcpOperation.findUnique({ where: { id: operationId } })
+    expect(row?.status).toBe('completed')
+  })
+
+  it('rolls a cp_db mutation back when the attempt-fenced completion is lost', async () => {
+    const fixture = await delegatedFixture()
+    const before = (await prisma.daemon.findUnique({ where: { id: fixture.daemonId } }))?.name
+    const operationId = await pendingWrite(fixture, 4, 'renameDaemon', {
+      daemonId: fixture.daemonId,
+      name: 'must-not-commit'
+    })
+
+    // Simulate a concurrent terminal transition (e.g. the reaper marking the
+    // claim ambiguous) landing between the claim and the completion: the
+    // attempt-fenced complete() reports a lost fence, and the §8 shared
+    // transaction must roll the already-executed rename back with it.
+    const operations = fixture.app.deps.repos.webchatMcpOperation
+    const realComplete = operations.complete.bind(operations)
+    let intercepted = false
+    operations.complete = async (input) => {
+      if (!intercepted) {
+        intercepted = true
+        return false
+      }
+      return realComplete(input)
+    }
+    try {
+      const approved = await fixture.app.app.inject({
+        method: 'POST',
+        url: `${fixture.decisionPath}/${operationId}/decision`,
+        payload: { decision: 'approve' }
+      })
+      expect(approved.statusCode).toBe(409)
+      expect(approved.json()).toMatchObject({ message: 'operation is no longer executing' })
+    } finally {
+      operations.complete = realComplete
+    }
+    expect(intercepted).toBe(true)
+    // The nested REST mutation ran inside the shared transaction and must have
+    // been rolled back — this is the §8 atomicity guarantee under test.
+    expect((await prisma.daemon.findUnique({ where: { id: fixture.daemonId } }))?.name).toBe(before)
   })
 })
 

@@ -327,6 +327,23 @@ export interface MemoryCaptureOutboxStats {
   oldestActiveAt?: number
 }
 
+/** Durable, non-secret record of a CP remote webchat MCP grant authority held by
+ *  this daemon (no token material). `active` tracks a live descriptor; `revoking`
+ *  rows form a revocation outbox: a `webchat/mcp-grant/revoke` that could not
+ *  reach the CP must survive reconnects and restarts rather than leaving a
+ *  remotely usable credential to age out on its own. */
+export interface WebchatMcpGrantLedgerRow {
+  conversationId: string
+  agentId: string
+  authorityId: string
+  authorityGeneration: number
+  state: 'active' | 'revoking'
+  reason: string | null
+  attempts: number
+  nextAttemptAt: number | null
+  updatedAt: number
+}
+
 /** §3.4/§6.8 main-agent orchestration record (daemon-local). `status` is the
  *  orchestration-level lifecycle; per-subtask status lives on {@link SubtaskRow}. */
 export interface OrchestrationRow {
@@ -590,6 +607,21 @@ export class LocalStore {
         ON memory_capture_outbox (agentId, connectionId, turnId);
       CREATE INDEX IF NOT EXISTS memory_capture_due
         ON memory_capture_outbox (state, nextAttemptAt, createdAt);
+      -- Remote webchat MCP grant authorities held by this daemon (non-secret —
+      -- token plaintext stays in process memory only). See WebchatMcpGrantLedgerRow.
+      CREATE TABLE IF NOT EXISTS webchat_mcp_grant_ledger (
+        conversationId TEXT PRIMARY KEY,
+        agentId TEXT NOT NULL,
+        authorityId TEXT NOT NULL,
+        authorityGeneration INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('active', 'revoking')),
+        reason TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        nextAttemptAt INTEGER,
+        updatedAt INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS webchat_mcp_grant_ledger_due
+        ON webchat_mcp_grant_ledger (state, nextAttemptAt);
       -- Conversation-wide spam/feedback-loop circuit. Unlike the in-memory dedup
       -- caches, this latch survives a daemon restart, so durable inbox replay cannot
       -- re-ignite a conversation that was already stopped by loop protection.
@@ -2924,6 +2956,111 @@ export class LocalStore {
       activeBytes: row.activeBytes,
       ...(row.oldestActiveAt === null ? {} : { oldestActiveAt: row.oldestActiveAt })
     }
+  }
+
+  /** Upsert the durable non-secret record of a provisioned remote MCP grant.
+   *  Overwrites a pending revocation for the conversation: re-provisioning means
+   *  the CP re-validated the authority and the stale queued revoke must not fire
+   *  against the fresh grant. */
+  recordWebchatMcpGrant(input: {
+    conversationId: string
+    agentId: string
+    authorityId: string
+    authorityGeneration: number
+    now: number
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO webchat_mcp_grant_ledger
+           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt, updatedAt)
+         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'active', NULL, 0, NULL, @now)
+         ON CONFLICT (conversationId) DO UPDATE SET
+           agentId = excluded.agentId,
+           authorityId = excluded.authorityId,
+           authorityGeneration = excluded.authorityGeneration,
+           state = 'active', reason = NULL, attempts = 0, nextAttemptAt = NULL,
+           updatedAt = excluded.updatedAt`
+      )
+      .run(input)
+  }
+
+  /** Queue a durable revocation for a grant authority whose remote revoke failed
+   *  (or must outlive this process). Fenced to the exact authority tuple via the
+   *  upsert so a concurrent re-provision (newer tuple) is not downgraded. */
+  markWebchatMcpGrantRevoking(input: {
+    conversationId: string
+    agentId: string
+    authorityId: string
+    authorityGeneration: number
+    reason: string
+    now: number
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO webchat_mcp_grant_ledger
+           (conversationId, agentId, authorityId, authorityGeneration, state, reason, attempts, nextAttemptAt, updatedAt)
+         VALUES (@conversationId, @agentId, @authorityId, @authorityGeneration, 'revoking', @reason, 0, @now, @now)
+         ON CONFLICT (conversationId) DO UPDATE SET
+           state = 'revoking', reason = excluded.reason, nextAttemptAt = excluded.nextAttemptAt,
+           updatedAt = excluded.updatedAt
+         WHERE webchat_mcp_grant_ledger.authorityId = excluded.authorityId
+           AND webchat_mcp_grant_ledger.authorityGeneration <= excluded.authorityGeneration`
+      )
+      .run(input)
+  }
+
+  /** Drop the ledger row after the CP confirmed revocation — only for the exact
+   *  tuple, so a newer re-provisioned authority record survives a late confirm. */
+  clearWebchatMcpGrant(conversationId: string, authorityId: string, authorityGeneration: number): void {
+    this.db
+      .prepare(
+        `DELETE FROM webchat_mcp_grant_ledger
+         WHERE conversationId = ? AND authorityId = ? AND authorityGeneration = ?`
+      )
+      .run(conversationId, authorityId, authorityGeneration)
+  }
+
+  /** Startup orphan sweep: descriptors from a previous process no longer exist,
+   *  so any still-'active' ledger row must be revoked at the CP. */
+  markAllWebchatMcpGrantsRevoking(reason: string, now: number): number {
+    return Number(
+      this.db
+        .prepare(
+          `UPDATE webchat_mcp_grant_ledger
+           SET state = 'revoking', reason = ?, nextAttemptAt = ?, updatedAt = ?
+           WHERE state = 'active'`
+        )
+        .run(reason, now, now).changes
+    )
+  }
+
+  listDueWebchatMcpRevocations(now: number, limit = 50): WebchatMcpGrantLedgerRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM webchat_mcp_grant_ledger
+         WHERE state = 'revoking' AND (nextAttemptAt IS NULL OR nextAttemptAt <= ?)
+         ORDER BY nextAttemptAt ASC, conversationId ASC
+         LIMIT ?`
+      )
+      .all(now, limit) as unknown as WebchatMcpGrantLedgerRow[]
+  }
+
+  /** Reschedule one failed revocation attempt (exact-tuple fenced). */
+  retryWebchatMcpRevocation(
+    conversationId: string,
+    authorityId: string,
+    authorityGeneration: number,
+    nextAttemptAt: number,
+    now: number
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE webchat_mcp_grant_ledger
+         SET attempts = attempts + 1, nextAttemptAt = @nextAttemptAt, updatedAt = @now
+         WHERE conversationId = @conversationId AND authorityId = @authorityId
+           AND authorityGeneration = @authorityGeneration AND state = 'revoking'`
+      )
+      .run({ conversationId, authorityId, authorityGeneration, nextAttemptAt, now })
   }
 
   /** Record one turn admission against a conversation-wide fixed window. A trusted

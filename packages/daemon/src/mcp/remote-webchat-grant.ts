@@ -19,6 +19,28 @@ export interface RemoteWebchatGrantClient {
   revokeWebchatMcpGrant(input: WebchatMcpGrantRevoke): Promise<WebchatMcpGrantRevoked>
 }
 
+/** Durable, non-secret sidecar for grant lifecycle. `recordActive` mirrors a
+ *  provisioned authority tuple; `markRevoking` queues a revocation that MUST
+ *  eventually reach the CP (it is written before a failed revoke surfaces, so
+ *  lifecycle teardown can proceed without losing the obligation); `clear` drops
+ *  the record once the CP confirmed revocation. */
+export interface RemoteWebchatGrantLedger {
+  recordActive(entry: {
+    conversationId: string
+    agentId?: string
+    authorityId: string
+    authorityGeneration: number
+  }): void
+  markRevoking(entry: {
+    conversationId: string
+    agentId?: string
+    authorityId: string
+    authorityGeneration: number
+    reason: WebchatMcpGrantRevoke['reason']
+  }): void
+  clear(entry: { conversationId: string; authorityId: string; authorityGeneration: number }): void
+}
+
 interface ActiveDescriptor {
   agentId?: string
   entitlement: WebchatRemoteMcpEntitlement
@@ -53,7 +75,10 @@ function sameEntitlement(left: WebchatRemoteMcpEntitlement, right: WebchatRemote
 export class RemoteWebchatGrantManager {
   private readonly active = new Map<string, ActiveDescriptor>()
 
-  constructor(private readonly client: RemoteWebchatGrantClient) {}
+  constructor(
+    private readonly client: RemoteWebchatGrantClient,
+    private readonly ledger?: RemoteWebchatGrantLedger
+  ) {}
 
   async descriptor(
     conversationId: string,
@@ -123,6 +148,12 @@ export class RemoteWebchatGrantManager {
       expiresAt,
       server
     })
+    this.ledger?.recordActive({
+      conversationId,
+      ...(agentId ? { agentId } : {}),
+      authorityId: issued.authorityId,
+      authorityGeneration: issued.authorityGeneration
+    })
     return { server, changed: true }
   }
 
@@ -131,11 +162,35 @@ export class RemoteWebchatGrantManager {
     entitlement: WebchatRemoteMcpEntitlement,
     reason: WebchatMcpGrantRevoke['reason']
   ): Promise<void> {
-    await this.client.revokeWebchatMcpGrant({
-      authorityId: entitlement.authorityId,
-      authorityGeneration: entitlement.authorityGeneration,
+    const agentId = this.active.get(conversationId)?.agentId
+    try {
+      await this.client.revokeWebchatMcpGrant({
+        authorityId: entitlement.authorityId,
+        authorityGeneration: entitlement.authorityGeneration,
+        conversationId,
+        reason
+      })
+    } catch (error) {
+      // The obligation outlives this call: queue a durable retry BEFORE the
+      // failure surfaces, so lifecycle teardown may proceed while the CP-side
+      // authority is still guaranteed to be revoked eventually.
+      this.ledger?.markRevoking({
+        conversationId,
+        ...(agentId ? { agentId } : {}),
+        authorityId: entitlement.authorityId,
+        authorityGeneration: entitlement.authorityGeneration,
+        reason
+      })
+      // Also forget the local descriptor: the authority is queued for durable
+      // revocation, so nothing may reuse or renew this conversation's plaintext.
+      const failed = this.active.get(conversationId)
+      if (failed && sameEntitlement(failed.entitlement, entitlement)) this.active.delete(conversationId)
+      throw error
+    }
+    this.ledger?.clear({
       conversationId,
-      reason
+      authorityId: entitlement.authorityId,
+      authorityGeneration: entitlement.authorityGeneration
     })
     const current = this.active.get(conversationId)
     if (current && sameEntitlement(current.entitlement, entitlement)) this.active.delete(conversationId)

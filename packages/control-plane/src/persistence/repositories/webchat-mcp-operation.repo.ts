@@ -52,16 +52,17 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
            AND preset."preset" = 'general'
            AND preset."status" = 'created'
            AND preset."agentId" = authority."agentId"
-          JOIN LATERAL (
-            SELECT candidate.*
-            FROM "session_meta" AS candidate
-            WHERE candidate."agentId" = authority."agentId"
-              AND candidate."platform" = 'webchat'
-              AND candidate."channel" = authority."conversationId"::text
-              AND candidate."endedAt" IS NULL
-            ORDER BY candidate."lastActivityAt" DESC, candidate."startedAt" DESC, candidate."id" DESC
-            LIMIT 1
-          ) AS active_session ON active_session."visibility" = 'private'
+          -- Current-session fence: only the conversation's transactionally
+          -- maintained pointer identifies the installed ACP session ('endedAt'
+          -- is stamped after every turn and cannot mean "replaced"). Locking
+          -- conversation + session serializes with pointer moves and visibility
+          -- changes.
+          JOIN "session_meta" AS active_session
+            ON active_session."id" = conversation."currentSessionId"
+           AND active_session."agentId" = authority."agentId"
+           AND active_session."platform" = 'webchat'
+           AND active_session."channel" = authority."conversationId"::text
+           AND active_session."visibility" = 'private'
           WHERE access_grant."id" = ${input.grantId}
             AND access_grant."status" = 'active'
             AND access_grant."revokedAt" IS NULL
@@ -203,16 +204,15 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
            AND preset."preset" = 'general'
            AND preset."status" = 'created'
            AND preset."agentId" = authority."agentId"
-          JOIN LATERAL (
-            SELECT candidate.*
-            FROM "session_meta" AS candidate
-            WHERE candidate."agentId" = authority."agentId"
-              AND candidate."platform" = 'webchat'
-              AND candidate."channel" = authority."conversationId"::text
-              AND candidate."endedAt" IS NULL
-            ORDER BY candidate."lastActivityAt" DESC, candidate."startedAt" DESC, candidate."id" DESC
-            LIMIT 1
-          ) AS active_session ON active_session."visibility" = 'private'
+          -- Same current-session fence as createOrReplay: the pointer, not
+          -- endedAt ordering, names the installed session; the row locks below
+          -- serialize approval against pointer moves and visibility widening.
+          JOIN "session_meta" AS active_session
+            ON active_session."id" = conversation."currentSessionId"
+           AND active_session."agentId" = authority."agentId"
+           AND active_session."platform" = 'webchat'
+           AND active_session."channel" = authority."conversationId"::text
+           AND active_session."visibility" = 'private'
           WHERE operation."id" = ${input.operationId}::uuid
             AND operation."conversationId" = ${input.conversationId}::uuid
             AND operation."userId" = ${input.userId}

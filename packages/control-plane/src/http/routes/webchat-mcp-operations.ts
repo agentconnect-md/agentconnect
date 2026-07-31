@@ -31,6 +31,14 @@ const OperationDto = z.object({
 })
 const ErrorDto = z.object({ error: z.string(), statusCode: z.number(), message: z.string() })
 
+/** Thrown inside the §8 shared transaction when the attempt-fenced completion
+ *  no longer matches — rolls the business mutation back with it. */
+class CompletionFenceLost extends Error {
+  constructor() {
+    super('webchat MCP operation completion fence lost')
+  }
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
@@ -236,20 +244,53 @@ export function webchatMcpOperationRoutes(deps: HttpDeps) {
 
         let terminal: 'completed' | 'failed' = 'failed'
         let bounded = Buffer.from(JSON.stringify({ message: 'Tool execution failed unexpectedly.' }))
-        try {
-          const result = await deps.internalInvocationAuth.run(context, () => tool.call(toolCtx, parsed.data))
+        let completed = false
+        const execute = () => deps.internalInvocationAuth.run(context, () => tool.call(toolCtx, parsed.data))
+        const record = (result: { statusCode: number; body: string }) => {
           terminal = result.statusCode >= 200 && result.statusCode < 300 ? 'completed' : 'failed'
           bounded = Buffer.from(JSON.stringify({ statusCode: result.statusCode, body: result.body }))
-        } catch (error) {
-          req.log.error({ err: error, operationId: operation.id }, 'webchat MCP operation execution failed')
         }
-        const completed = await deps.repos.webchatMcpOperation.complete({
-          operationId: operation.id,
-          executionAttemptId,
-          status: terminal,
-          boundedResponse: bounded,
-          completedAt: new Date(deps.clock.now())
-        })
+        const completeAttempt = () =>
+          deps.repos.webchatMcpOperation.complete({
+            operationId: operation.id,
+            executionAttemptId,
+            status: terminal,
+            boundedResponse: bounded,
+            completedAt: new Date(deps.clock.now())
+          })
+        if (tool.effect === 'cp_db') {
+          // §8: this tool's ENTIRE side effect is a CP-database mutation, so the
+          // mutation and the operation's terminal transition commit in ONE
+          // shared transaction — no ambiguous window. If the attempt fence was
+          // lost meanwhile (reaper/concurrent transition), the whole unit rolls
+          // back: the business mutation never outlives its execution claim.
+          try {
+            completed = await deps.sharedTx(async () => {
+              record(await execute())
+              if (!(await completeAttempt())) throw new CompletionFenceLost()
+              return true
+            })
+          } catch (error) {
+            if (error instanceof CompletionFenceLost) {
+              return reply
+                .code(409)
+                .send({ error: 'Conflict', statusCode: 409, message: 'operation is no longer executing' })
+            }
+            // The transaction rolled back, so the mutation definitively did NOT
+            // commit — an ordinary failure, never an ambiguous outcome.
+            req.log.error({ err: error, operationId: operation.id }, 'webchat MCP operation execution failed')
+            terminal = 'failed'
+            bounded = Buffer.from(JSON.stringify({ message: 'Tool execution failed unexpectedly.' }))
+            completed = await completeAttempt()
+          }
+        } else {
+          try {
+            record(await execute())
+          } catch (error) {
+            req.log.error({ err: error, operationId: operation.id }, 'webchat MCP operation execution failed')
+          }
+          completed = await completeAttempt()
+        }
         if (!completed) {
           await deps.repos.webchatMcpOperation.markAmbiguous(
             operation.id,

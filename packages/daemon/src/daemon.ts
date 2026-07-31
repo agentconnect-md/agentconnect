@@ -32,6 +32,7 @@ import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-r
 import { attachmentMention } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
+import { isValidatedRemoteMcpRuntime } from './mcp/remote-mcp-runtimes.js'
 import type {
   MessageAgentReq,
   MessageAgentResult,
@@ -158,6 +159,7 @@ import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@age
 import {
   AgentActivate as AgentActivateSchema,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WebchatMcpGrantRevoke,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
@@ -3572,7 +3574,12 @@ export class Daemon {
   }
 
   private registrationFeatures(): string[] {
-    const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.values()].some((caps) => caps.http)
+    // Remote-MCP eligibility is (validated adapter) AND (probed HTTP transport):
+    // the capability bit alone proves descriptor transport, not that the runtime
+    // keeps the Authorization bearer out of model-visible context (§13).
+    const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.entries()].some(
+      ([runtimeId, caps]) => caps.http && isValidatedRemoteMcpRuntime(runtimeId, this.runtimes[runtimeId])
+    )
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
@@ -8966,9 +8973,16 @@ export class Daemon {
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
       // Remote administration uses only the standard ACP HTTPS MCP descriptor.
-      // Authorization and write-operation idempotency are both CP-owned.
+      // Authorization and write-operation idempotency are both CP-owned. The
+      // credential is installed only into runtimes on the validated allowlist —
+      // generic HTTP MCP capability proves transport, not header privacy (§13).
       const remoteCaps = this.runtimeMcpCaps.get(agent.runtime)
-      if (webchat?.remoteMcp && this.remoteWebchatGrants && remoteCaps?.http) {
+      if (
+        webchat?.remoteMcp &&
+        this.remoteWebchatGrants &&
+        remoteCaps?.http &&
+        isValidatedRemoteMcpRuntime(agent.runtime, this.runtimes[agent.runtime])
+      ) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
             webchat.conversationId,
@@ -13236,13 +13250,18 @@ export class Daemon {
       (agentId, acpSessionId) => !this.sessionSdkQuiescent(agentId, acpSessionId)
     )
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
+    // A failed remote revoke is queued durably by the grant ledger; the periodic
+    // drain below (and the CP READY replay) delivers it eventually.
+    void this.drainWebchatMcpRevocations()
     for (const row of closed) {
       if (row.platform === 'webchat' && row.channel) {
         const descriptor = this.remoteWebchatGrants
         if (descriptor) {
           void descriptor
             .revokeConversation(row.channel, 'session_expired')
-            .catch((error) => this.log.warn(`remote MCP session-expiry revoke failed (${formatErr(error)})`))
+            .catch((error) =>
+              this.log.warn(`remote MCP session-expiry revoke deferred to durable retry (${formatErr(error)})`)
+            )
         }
       }
       if (!row.acpSessionId) continue
@@ -13455,9 +13474,11 @@ export class Daemon {
     try {
       await this.remoteWebchatGrants?.revokeAll(reason)
     } catch (error) {
-      // Invocation claim still re-checks live CP authority. A transient cleanup
-      // failure must not strand stop, drain, move, or roster convergence.
-      this.log.warn(`remote MCP cleanup revoke failed (${formatErr(error)})`)
+      // A failed revoke is already queued durably (grant-ledger `revoking` row),
+      // so lifecycle convergence may proceed without losing the CP-side
+      // revocation obligation — the drain loop replays it until it lands.
+      this.log.warn(`remote MCP cleanup revoke deferred to durable retry (${formatErr(error)})`)
+      void this.drainWebchatMcpRevocations()
     }
   }
 
@@ -13468,7 +13489,46 @@ export class Daemon {
     try {
       await this.remoteWebchatGrants?.revokeAgent(agentId, reason)
     } catch (error) {
-      this.log.warn(`remote MCP cleanup revoke failed for agent ${agentId} (${formatErr(error)})`)
+      this.log.warn(`remote MCP cleanup revoke for agent ${agentId} deferred to durable retry (${formatErr(error)})`)
+      void this.drainWebchatMcpRevocations()
+    }
+  }
+
+  /** Deliver queued (`revoking`) grant-ledger rows to the CP. Runs on CP READY,
+   *  after any failed lifecycle revoke, and from the idle sweep, so a revocation
+   *  that missed its moment (disconnect, restart, transient error) still lands.
+   *  Exact-tuple fencing on clear/retry keeps a concurrently re-provisioned
+   *  conversation's fresh `active` row untouched. */
+  private webchatMcpRevokeDraining = false
+  private async drainWebchatMcpRevocations(): Promise<void> {
+    if (this.webchatMcpRevokeDraining || !this.cpClient) return
+    this.webchatMcpRevokeDraining = true
+    try {
+      const due = this.store.listDueWebchatMcpRevocations(this.clock.now())
+      for (const row of due) {
+        const reason = WebchatMcpGrantRevoke.shape.reason.safeParse(row.reason)
+        try {
+          await this.cpClient.revokeWebchatMcpGrant({
+            authorityId: row.authorityId,
+            authorityGeneration: row.authorityGeneration,
+            conversationId: row.conversationId,
+            reason: reason.success ? reason.data : 'session_closed'
+          })
+          this.store.clearWebchatMcpGrant(row.conversationId, row.authorityId, row.authorityGeneration)
+        } catch (error) {
+          const backoff = Math.min(10 * 60_000, 5_000 * 2 ** Math.min(row.attempts, 8))
+          this.store.retryWebchatMcpRevocation(
+            row.conversationId,
+            row.authorityId,
+            row.authorityGeneration,
+            this.clock.now() + backoff,
+            this.clock.now()
+          )
+          this.log.warn(`remote MCP revoke retry deferred for ${row.conversationId} (${formatErr(error)})`)
+        }
+      }
+    } finally {
+      this.webchatMcpRevokeDraining = false
     }
   }
 
@@ -14666,6 +14726,9 @@ export class Daemon {
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
         this.replayChannelSnapshots()
+        // Replay remote MCP revocations that could not reach the CP (revokes
+        // queued while disconnected or left over from a previous process).
+        void this.drainWebchatMcpRevocations()
         // ...and each CP cron's stored last-run stamp — fires while the CP was
         // unreachable would otherwise never land (latest-wins upsert, so
         // re-asserting an already-known stamp is a no-op).
@@ -14724,7 +14787,31 @@ export class Daemon {
       connect: () => ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH }),
       log: this.log
     })
-    this.remoteWebchatGrants = new RemoteWebchatGrantManager(this.cpClient)
+    this.remoteWebchatGrants = new RemoteWebchatGrantManager(this.cpClient, {
+      recordActive: (entry) =>
+        this.store.recordWebchatMcpGrant({
+          conversationId: entry.conversationId,
+          agentId: entry.agentId ?? '',
+          authorityId: entry.authorityId,
+          authorityGeneration: entry.authorityGeneration,
+          now: this.clock.now()
+        }),
+      markRevoking: (entry) =>
+        this.store.markWebchatMcpGrantRevoking({
+          conversationId: entry.conversationId,
+          agentId: entry.agentId ?? '',
+          authorityId: entry.authorityId,
+          authorityGeneration: entry.authorityGeneration,
+          reason: entry.reason,
+          now: this.clock.now()
+        }),
+      clear: (entry) =>
+        this.store.clearWebchatMcpGrant(entry.conversationId, entry.authorityId, entry.authorityGeneration)
+    })
+    // Grants recorded by a previous process have no surviving descriptor or
+    // plaintext — queue them for remote revocation before the first connect.
+    const orphaned = this.store.markAllWebchatMcpGrantsRevoking('session_closed', this.clock.now())
+    if (orphaned) this.log.info(`remote MCP: queued ${orphaned} orphaned grant revocation(s) from previous run`)
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)
   }
@@ -15152,6 +15239,12 @@ export class Daemon {
     const errors: unknown[] = []
     this.scheduler?.stop()
     this.dreamScheduler?.stop()
+    // Revoke live remote MCP grants while the CP transport is still up — after
+    // cpClient.stop() the revoke frames have no transport. A failure here is
+    // already queued durably in the grant ledger (and any rows this pass could
+    // not deliver are replayed by the next boot's orphan sweep), so shutdown
+    // proceeds without losing the revocation obligation.
+    await this.revokeAllRemoteWebchatGrants('session_closed')
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
     // Stop the body-bearing capture pump before closing its verified clients or
     // SQLite store. Unfinished operations remain durable for restart recovery.
@@ -15171,7 +15264,6 @@ export class Daemon {
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
     await Promise.allSettled(hostStarts)
-    await this.remoteWebchatGrants?.revokeAll('session_closed').catch((e) => errors.push(e))
     // After the hosts (and thus their spawned mcp-bridge subprocesses) are gone,
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))

@@ -262,6 +262,11 @@ export interface HttpDeps {
   remoteGrantAuth: RemoteGrantAuthenticator
   /** In-process principal propagation for MCP's nested REST injections. */
   internalInvocationAuth: InternalInvocationAuth
+  /** §8 CP-db-only operation atomicity: run `fn` with every repository call
+   *  (including nested app.inject routes) joined to one shared transaction, so
+   *  a CP-database mutation and its operation's terminal transition commit
+   *  together. A thrown error rolls the whole unit back. */
+  sharedTx<T>(fn: () => Promise<T>): Promise<T>
   /** Low-cardinality delegated MCP observations. Optional for focused route tests. */
   webchatMcpMetrics?: Pick<WebchatMcpMetrics, 'invocation' | 'requestDuration'>
   /** Process readiness gate for `/readyz` (rolling-update drain, issue #240). */

@@ -31,6 +31,10 @@ import type {
 } from '../ports.js'
 import { AgentId, BotId, DaemonId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
 
+/** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
+ *  never name a `webchat_conversation` row, so the fence path skips it. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function toRecord(s: SessionMeta): SessionMetaRecord {
   return {
     id: SessionId(s.id),
@@ -413,6 +417,20 @@ export class PgSessionRepo implements SessionRepo {
     const endedAt = ev.phase === 'end' ? ev.at : undefined
     const lastActivityAt = ev.lastActivityAt ?? ev.at
     const cls = await this.resolveClassification(tx, ev)
+    // Webchat current-session fence: lock the durable conversation row BEFORE
+    // the session upsert. Pointer maintenance (below), authorization reads
+    // (which lock the same conversation row FOR UPDATE), and any concurrent
+    // replacement-session insert all serialize here, in one lock order
+    // (conversation → session_meta).
+    const webchatConversationId =
+      ev.platform === 'webchat' && ev.channel && UUID_RE.test(ev.channel) ? ev.channel : null
+    if (webchatConversationId) {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id" FROM "webchat_conversation"
+        WHERE "id" = ${webchatConversationId}::uuid AND "agentId" = ${ev.agentId}::uuid
+        FOR UPDATE
+      `)
+    }
     const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
       INSERT INTO "session_meta" (
         "id", "parentSessionId", "agentId", "launchId", "platform", "channel",
@@ -487,6 +505,25 @@ export class PgSessionRepo implements SessionRepo {
     `)
     if (rows.length !== 1) return { recorded: false, session: null, settled: [] }
     const session = toRecord(rows[0]!)
+    if (webchatConversationId) {
+      // Advance the conversation's current-session pointer (identity only —
+      // visibility stays live in the authorization predicates). The startedAt
+      // guard keeps a late re-emit from an OLDER session from stealing the
+      // pointer back after a replacement session has been installed; the row
+      // lock above orders genuinely concurrent replacement inserts.
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "webchat_conversation" AS c
+        SET "currentSessionId" = ${session.id},
+            "currentSessionRev" = c."currentSessionRev" + 1
+        WHERE c."id" = ${webchatConversationId}::uuid
+          AND c."agentId" = ${ev.agentId}::uuid
+          AND c."currentSessionId" IS DISTINCT FROM ${session.id}
+          AND NOT EXISTS (
+            SELECT 1 FROM "session_meta" AS cur
+            WHERE cur."id" = c."currentSessionId" AND cur."startedAt" >= ${session.startedAt}
+          )
+      `)
+    }
     // A row that is itself waiting has only placeholder values, so it must not
     // settle anything: stamping a descendant `inherited` from a pending parent
     // would drop it out of the scan when the real ancestor finally lands.
@@ -629,20 +666,23 @@ export class PgSessionRepo implements SessionRepo {
   }
 
   async hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean> {
-    const row = await this.db.sessionMeta.findFirst({
-      where: {
-        agentId,
-        platform: 'webchat',
-        channel: conversationId,
-        // A conversation may retain historical ACP rows after a rebuild. Only
-        // an unended row is authoritative for the currently installed session;
-        // an old private row must not authorize a replacement widened to org.
-        endedAt: null
-      },
-      orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
-      select: { visibility: true }
-    })
-    return row?.visibility === 'private'
+    if (!UUID_RE.test(conversationId)) return false
+    // The conversation's transactionally maintained current-session pointer is
+    // the ONLY session identity this authorization trusts. `endedAt` cannot
+    // express "replaced": the daemon stamps phase 'end' after every turn (see
+    // findThreadOwner), so an idle-between-turns session is still current, and
+    // unordered historical rows must never authorize a widened replacement.
+    const rows = await this.db.$queryRaw<Array<{ visibility: string }>>(Prisma.sql`
+      SELECT s."visibility"
+      FROM "webchat_conversation" AS c
+      JOIN "session_meta" AS s
+        ON s."id" = c."currentSessionId"
+       AND s."agentId" = c."agentId"
+       AND s."platform" = 'webchat'
+       AND s."channel" = c."id"::text
+      WHERE c."id" = ${conversationId}::uuid AND c."agentId" = ${agentId}::uuid
+    `)
+    return rows[0]?.visibility === 'private'
   }
 
   async listChildren(

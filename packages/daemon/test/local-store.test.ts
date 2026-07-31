@@ -1083,3 +1083,56 @@ describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)'
     s.close()
   })
 })
+
+describe('LocalStore webchat MCP grant ledger', () => {
+  const tuple = {
+    conversationId: 'conv-1',
+    agentId: 'agent-1',
+    authorityId: 'auth-1',
+    authorityGeneration: 3
+  }
+
+  it('tracks active grants and queues durable revocations', () => {
+    const s = store()
+    s.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    expect(s.listDueWebchatMcpRevocations(100)).toEqual([])
+
+    s.markWebchatMcpGrantRevoking({ ...tuple, reason: 'agent_detached', now: 20 })
+    const due = s.listDueWebchatMcpRevocations(20)
+    expect(due).toHaveLength(1)
+    expect(due[0]).toMatchObject({ ...tuple, state: 'revoking', reason: 'agent_detached', attempts: 0 })
+
+    s.retryWebchatMcpRevocation('conv-1', 'auth-1', 3, 500, 30)
+    expect(s.listDueWebchatMcpRevocations(100)).toEqual([])
+    expect(s.listDueWebchatMcpRevocations(500)[0]).toMatchObject({ attempts: 1 })
+
+    s.clearWebchatMcpGrant('conv-1', 'auth-1', 3)
+    expect(s.listDueWebchatMcpRevocations(10_000)).toEqual([])
+    s.close()
+  })
+
+  it('re-provisioning cancels a queued revocation, and exact-tuple fences protect newer authorities', () => {
+    const s = store()
+    s.markWebchatMcpGrantRevoking({ ...tuple, reason: 'session_expired', now: 10 })
+    // Conversation resumes: the CP re-validated the authority; the stale revoke must not fire.
+    s.recordWebchatMcpGrant({ ...tuple, authorityGeneration: 4, now: 20 })
+    expect(s.listDueWebchatMcpRevocations(10_000)).toEqual([])
+
+    // A late clear/downgrade for the OLD tuple must not touch the newer active row.
+    s.clearWebchatMcpGrant('conv-1', 'auth-1', 3)
+    s.markWebchatMcpGrantRevoking({ ...tuple, authorityGeneration: 4, reason: 'session_closed', now: 30 })
+    expect(s.listDueWebchatMcpRevocations(30)[0]).toMatchObject({ authorityGeneration: 4 })
+    s.close()
+  })
+
+  it('marks all leftover active grants revoking on the startup orphan sweep', () => {
+    const s = store()
+    s.recordWebchatMcpGrant({ ...tuple, now: 10 })
+    s.recordWebchatMcpGrant({ ...tuple, conversationId: 'conv-2', now: 10 })
+    expect(s.markAllWebchatMcpGrantsRevoking('session_closed', 50)).toBe(2)
+    const due = s.listDueWebchatMcpRevocations(50)
+    expect(due.map((r) => r.conversationId).sort()).toEqual(['conv-1', 'conv-2'])
+    expect(due.every((r) => r.reason === 'session_closed')).toBe(true)
+    s.close()
+  })
+})

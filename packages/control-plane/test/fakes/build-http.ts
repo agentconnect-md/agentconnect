@@ -58,6 +58,7 @@ import {
   PgIntegrationChannelRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
+import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { DaemonRegistryService } from '../../src/registry/registryService.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
@@ -122,6 +123,11 @@ export function buildHttpApp(
   // Mirror the prod graph: WAITLIST_MODE gates JIT personal-org creation and drives
   // the admission checks (waitlist-and-login.md §6/§8). Read from the test's overrides.
   const waitlistMode = configOverrides?.WAITLIST_MODE ?? false
+
+  // Mirror the composition root's shared-transaction seam (§8): repos see the
+  // router; transaction OPENING stays on the root client.
+  const rootPrisma = prisma
+  prisma = withSharedTxRouting(prisma)
 
   const daemonRepo = new PgDaemonRepo(prisma)
   const daemonLifecycleOpRepo = new PgDaemonLifecycleOpRepo(prisma)
@@ -269,6 +275,7 @@ export function buildHttpApp(
     waitlist,
     events,
     mcpRateLimit: new McpRateLimiter(clock),
+    sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     readiness: createReadiness(() => pingDb(prisma)),
     verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
     ensureDiscordMessageContentIntent: async () => 'ready',

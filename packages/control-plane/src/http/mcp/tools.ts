@@ -45,6 +45,14 @@ export interface McpToolDef {
   /** §6.4 🔥 — irreversible: the schema carries a required `confirm` argument,
    *  compared against the live resource name before the call goes out. */
   destructive?: true
+  /** Server-owned effect classification for `write` tools
+   *  (webchat-preset-agentconnect-mcp.md §8): `'cp_db'` — the tool's ENTIRE
+   *  side effect is a mutation inside the CP database, so a delegated approval
+   *  commits it atomically with the operation's terminal transition (no
+   *  ambiguous window). Anything that also pushes to a daemon, requires a live
+   *  WS round-trip, or touches external state MUST stay `'external'` (the
+   *  default) and keep the fail-closed at-most-once/ambiguous contract. */
+  effect?: 'cp_db' | 'external'
   call(ctx: McpToolCtx, args: Record<string, unknown>): Promise<RestResult>
 }
 
@@ -327,6 +335,9 @@ export const MCP_TOOLS: McpToolDef[] = [
     name: 'renameDaemon',
     description: 'Rename a daemon (its console display name — placement and identity are unaffected).',
     write: true,
+    // PATCH /daemons/:id only rewrites the daemon row's display name — no
+    // daemon push, no external state — so it qualifies for §8 atomic commit.
+    effect: 'cp_db',
     schema: z
       .object({
         daemonId: z.string().min(1).describe('The daemon id (from listDaemons)'),
