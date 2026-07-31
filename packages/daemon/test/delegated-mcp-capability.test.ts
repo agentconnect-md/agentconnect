@@ -4,7 +4,7 @@ import { Daemon } from '../src/daemon.js'
 
 function features(input: {
   platform: NodeJS.Platform
-  mechanism: 'bwrap' | 'sandbox-exec' | null
+  mechanism: 'bwrap' | null
   requireSandbox: boolean
   completePath: boolean
 }): string[] {
@@ -35,7 +35,6 @@ describe('delegated MCP daemon capability', () => {
   it.each([
     ['optional sandbox policy', 'linux', 'bwrap', false, true],
     ['non-Linux host', 'darwin', 'bwrap', true, true],
-    ['sandbox-exec host', 'linux', 'sandbox-exec', true, true],
     ['missing bwrap', 'linux', null, true, true],
     ['incomplete broker/host path', 'linux', 'bwrap', true, false]
   ] as const)('omits the capability for %s', (_label, platform, mechanism, requireSandbox, completePath) => {

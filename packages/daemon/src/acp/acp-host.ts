@@ -144,6 +144,11 @@ export interface SessionConfigPrefs {
 export interface AcpSandboxLaunch {
   mechanism: SandboxMechanism
   writable: string[]
+  /** Trusted SRT policy for ordinary ACP hosts. Delegated bwrap cells retain
+   * their existing source-to-target mount launch and do not consume it. */
+  settingsPath?: string
+  /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
+  cwd?: string
   /** Daemon-owned private broker roots hidden from every untrusted bwrap host. */
   maskedReadRoots?: string[]
   /** Present only for an entitled host and already tied to its broker cell. */
@@ -511,10 +516,10 @@ export class AcpHost {
       /** Whether to suppress account-bound cloud apps/connectors at spawn. Defaults
        *  to true; daemon config may explicitly opt out for all runtimes on the host. */
       isolateAccountApps?: boolean
-      /** OS sandbox for the agent process (issue #642). Set by ensureHost when the
+      /** OS sandbox for the agent process (issue #312). Set by ensureHost when the
        *  the agent's effective Run in sandbox policy is on. `writable` is
-       *  the workspace, private runtime HOME, memory, and daemon socket dirs; tmp is
-       *  added by sandboxWrap.
+       *  the workspace, private runtime HOME, and managed memory; SRT supplies
+       *  private temporary storage.
        *  Absent ⇒ run unconfined (fail-open). */
       sandbox?: AcpSandboxLaunch
       /** Called once when the owned adapter process reaches terminal exit. The
@@ -585,9 +590,9 @@ export class AcpHost {
     // appendArgs carries any account-app-isolation flags (e.g. Copilot's
     // --disable-builtin-mcps) that must reach the adapter as CLI args.
     const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]
-    // OS sandbox (issue #642): wrap the launcher so the agent process can only write
-    // inside its agent dir + tmp. Fail-open — ensureHost only sets opts.sandbox when a
-    // mechanism exists, so no mechanism ⇒ this is a no-op and the agent runs unconfined.
+    // Linux SRT sandbox (issue #312). Fail-open — ensureHost only sets
+    // opts.sandbox after a live probe, so no mechanism means the adapter runs
+    // unconfined unless daemon policy required sandboxing and refused startup.
     const delegatedCell = this.opts.sandbox?.delegatedCellMount
     const delegatedHome = this.opts.sandbox?.delegatedRuntimeHomeMount
     if ((delegatedCell && !delegatedHome) || (!delegatedCell && delegatedHome)) {

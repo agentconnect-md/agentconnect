@@ -263,6 +263,9 @@ importers:
       '@agentconnect.md/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@anthropic-ai/sandbox-runtime':
+        specifier: 0.0.67
+        version: 0.0.67
       '@larksuiteoapi/node-sdk':
         specifier: ^1.71.1
         version: 1.71.1
@@ -666,6 +669,11 @@ packages:
       '@anthropic-ai/sdk': '>=0.93.0'
       '@modelcontextprotocol/sdk': ^1.29.0
       zod: ^4.0.0
+
+  '@anthropic-ai/sandbox-runtime@0.0.67':
+    resolution: {integrity: sha512-4doSyr6KNdc/4zARMXYEawhFu3z6bPQjgKRq3lKp6dbgEYVMv39oaLJ28QsDc7TmLvrLqzHW+VzD2LAXxvnw8A==}
+    engines: {node: '>=20.11.0'}
+    hasBin: true
 
   '@anthropic-ai/sdk@0.110.0':
     resolution: {integrity: sha512-hOP4bNYXDFHDxxiEgzlILXrxZIYCDnhe8sry0RDRKD/QnsEpvZcQpablCdm9X/WuD/YgOiSIkkqsL1mLLlTqJw==}
@@ -2423,6 +2431,9 @@ packages:
   '@pnpm/npm-conf@3.0.3':
     resolution: {integrity: sha512-//0sR/cow/s4ICQaYoAobOl4aU8cjU6x/V24V7XkKotb9+O+3zySIYp146vpaobYHnxa4pZX8NkV54Z5AwbDKA==}
     engines: {node: '>=12'}
+
+  '@pondwader/socks5-server@1.0.10':
+    resolution: {integrity: sha512-bQY06wzzR8D2+vVCUoBsr5QS2U6UgPUQRmErNwtsuI6vLcyRKkafjkr3KxbtGFf9aBBIV2mcvlsKD1UYaIV+sg==}
 
   '@posthog/browser-common@0.2.1':
     resolution: {integrity: sha512-FTVPsRw6GBKWvFwN26TNIQNNYPR9FsUj+B+CKhk/ht63IRzn4yYFtFOjcmW+bfXvNHuRADs6APbZ6Haz1kpoAw==}
@@ -4300,6 +4311,10 @@ packages:
 
   comma-separated-tokens@2.0.3:
     resolution: {integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==}
+
+  commander@12.1.0:
+    resolution: {integrity: sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA==}
+    engines: {node: '>=18'}
 
   commander@14.0.3:
     resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
@@ -8495,6 +8510,9 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -8585,6 +8603,13 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.201
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.201
     optional: true
+
+  '@anthropic-ai/sandbox-runtime@0.0.67':
+    dependencies:
+      '@pondwader/socks5-server': 1.0.10
+      commander: 12.1.0
+      node-forge: 1.4.0
+      zod: 3.25.76
 
   '@anthropic-ai/sdk@0.110.0(zod@4.4.3)':
     dependencies:
@@ -9715,6 +9740,8 @@ snapshots:
     optional: true
 
   '@img/sharp-wasm32@0.35.3':
+    dependencies:
+      '@emnapi/runtime': 1.11.2
     optional: true
 
   '@img/sharp-webcontainers-wasm32@0.35.3':
@@ -10685,6 +10712,8 @@ snapshots:
       '@pnpm/config.env-replace': 1.1.0
       '@pnpm/network.ca-file': 1.0.2
       config-chain: 1.1.13
+
+  '@pondwader/socks5-server@1.0.10': {}
 
   '@posthog/browser-common@0.2.1':
     dependencies:
@@ -12546,6 +12575,8 @@ snapshots:
       delayed-stream: 1.0.0
 
   comma-separated-tokens@2.0.3: {}
+
+  commander@12.1.0: {}
 
   commander@14.0.3: {}
 
@@ -15085,8 +15116,7 @@ snapshots:
       fetch-blob: 3.2.0
       formdata-polyfill: 4.0.10
 
-  node-forge@1.4.0:
-    optional: true
+  node-forge@1.4.0: {}
 
   node-int64@0.4.0:
     optional: true
@@ -17355,6 +17385,8 @@ snapshots:
     dependencies:
       zod: 4.4.3
     optional: true
+
+  zod@3.25.76: {}
 
   zod@4.4.3: {}
 

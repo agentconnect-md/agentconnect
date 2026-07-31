@@ -128,8 +128,8 @@ export const ConfigSchema = z.object({
       // to the signed-in cloud account. Explicit local and daemon-injected MCP
       // servers remain available. Set false only to opt this daemon out.
       isolateAccountApps: z.boolean().default(true),
-      // Daemon-wide sandbox policy (issue #642). When true, startup fails unless
-      // bwrap / sandbox-exec is available and every agent runs sandboxed; the
+      // Daemon-wide sandbox policy (issue #312). When true, startup fails unless
+      // Linux SRT/bwrap is available and every agent runs sandboxed; the
       // console locks the per-agent option on. false leaves it agent-selectable.
       requireSandbox: z.boolean().default(false),
       // Operator-owned remote-origin policy for daemon-managed workspace clone/pull.

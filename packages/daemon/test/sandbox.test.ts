@@ -1,79 +1,74 @@
 import { describe, it, expect } from 'vitest'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs'
-import { sandboxWrap, sandboxBoundary, SandboxError, detectSandbox } from '../src/acp/sandbox.js'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync } from 'node:fs'
+import { sandboxWrap, sandboxBoundary, SandboxError, detectSandbox, writeSandboxSettings } from '../src/acp/sandbox.js'
 
-// The security-bearing invariant: whatever the mechanism, the whole fs is readable,
-// writes are confined to the agent dir + tmp, and the real command still runs last.
+// Ordinary ACP hosts launch through one SRT provider process with an immutable,
+// daemon-written policy rather than assembling bwrap arguments themselves.
 describe('sandboxWrap', () => {
-  const agentDir = tmpdir() // an existing dir so canonical() resolves it
-
-  it('bwrap: ro-binds /, tmpfs tmp, binds the writable dir, runs cmd last', () => {
-    const { cmd, args } = sandboxWrap('claude', ['acp'], { mechanism: 'bwrap', writable: [agentDir] })
-    expect(cmd).toBe('bwrap')
-    // PID namespace — without it /proc exposes the daemon and /proc/<pid>/root is an escape.
-    expect(args).toContain('--unshare-pid')
-    // root read-only
-    const ro = args.indexOf('--ro-bind')
-    expect([args[ro + 1], args[ro + 2]]).toEqual(['/', '/'])
-    // agent dir writable via --bind
-    const bind = args.indexOf('--bind')
-    expect(bind).toBeGreaterThan(-1)
-    // separator then the untouched command tail
-    expect(args.slice(-3)).toEqual(['--', 'claude', 'acp'])
+  it.skipIf(process.platform === 'linux')('does not advertise SRT on unsupported hosts', () => {
+    expect(detectSandbox()).toBeUndefined()
   })
 
-  it('sandbox-exec: denies writes then re-allows the writable subpath, runs cmd last', () => {
-    const { cmd, args } = sandboxWrap('codex', ['--acp'], {
-      mechanism: 'sandbox-exec',
-      writable: [agentDir],
-      maskedReadRoots: []
+  it('passes the trusted settings path and untouched command argv to the provider', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-srt-wrap-'))
+    const settingsPath = join(root, 'settings.json')
+    const { cmd, args } = sandboxWrap('claude', ['acp'], {
+      mechanism: 'bwrap',
+      writable: [root],
+      settingsPath,
+      cwd: root
     })
-    expect(cmd).toBe('sandbox-exec')
-    expect(args[0]).toBe('-p')
-    const profile = args[1]!
-    expect(profile).toContain('(allow default)')
-    expect(profile).toContain('(deny file-write*)')
-    expect(profile).toContain('allow file-write* (subpath')
-    expect(args.slice(-2)).toEqual(['codex', '--acp'])
+    expect(cmd).toBe(process.execPath)
+    expect(args.slice(-7)).toEqual([
+      '__sandbox-runtime',
+      settingsPath,
+      String(process.pid),
+      root,
+      '--',
+      'claude',
+      'acp'
+    ])
   })
 
-  it('sandbox-exec: rejects non-empty masked roots instead of silently ignoring them', () => {
+  it('requires an absolute trusted settings path', () => {
+    expect(() => sandboxWrap('x', [], { mechanism: 'bwrap', writable: [] })).toThrow(SandboxError)
+    expect(() => sandboxWrap('x', [], { mechanism: 'bwrap', writable: [], settingsPath: 'settings.json' })).toThrow(
+      SandboxError
+    )
     expect(() =>
-      sandboxWrap('codex', ['--acp'], {
-        mechanism: 'sandbox-exec',
-        writable: [agentDir],
-        maskedReadRoots: [agentDir]
-      })
+      sandboxWrap('x', [], { mechanism: 'bwrap', writable: [], settingsPath: join(tmpdir(), 'settings.json') })
     ).toThrow(SandboxError)
   })
 
-  it('always makes tmp writable even when the caller omits it', () => {
-    const { args } = sandboxWrap('x', [], { mechanism: 'bwrap', writable: [] })
-    // --tmpfs entry present for the tmp dir
-    expect(args).toContain('--tmpfs')
-    expect(args).not.toContain('--bind')
-  })
-
-  it('bwrap: masks trusted read roots without binding their host contents back', () => {
-    const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
-    const canonicalMaskedRoot = realpathSync(maskedRoot)
-    const { args } = sandboxWrap('x', [], {
-      mechanism: 'bwrap',
-      writable: [],
-      maskedReadRoots: [maskedRoot]
+  it('writes the Linux compatibility policy atomically outside writable roots', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-srt-settings-'))
+    const agentDir = join(root, 'agent')
+    const workspace = join(agentDir, 'workspace')
+    const home = join(agentDir, 'home')
+    const memory = join(agentDir, 'memory')
+    mkdirSync(workspace, { recursive: true })
+    mkdirSync(home)
+    mkdirSync(memory)
+    const settingsPath = writeSandboxSettings(agentDir, {
+      writable: [workspace, home, memory],
+      denyRead: [agentDir],
+      allowRead: [workspace, home, memory],
+      gitSafeDirectories: [workspace]
     })
-
-    const proc = args.indexOf('--proc')
-    expect(args[proc + 1]).toBe('/proc')
-    expect(args).toContain('--unshare-pid')
-
-    const maskedRootIndex = args.indexOf(canonicalMaskedRoot)
-    expect(maskedRootIndex).toBeGreaterThan(0)
-    expect(args[maskedRootIndex - 1]).toBe('--tmpfs')
-    expect(args).not.toContain('--bind')
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    expect(settings.network).toEqual({ allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true })
+    expect(settings.filesystem).toMatchObject({
+      denyRead: expect.arrayContaining([realpathSync(agentDir)]),
+      allowWrite: [realpathSync(workspace), realpathSync(home), realpathSync(memory)],
+      allowGitConfig: false
+    })
+    expect(settings.filesystem.denyWrite.some((path: string) => basename(path) === 'claude')).toBe(true)
+    expect(settings.git.safeDirectories).toEqual([realpathSync(workspace)])
+    expect(settingsPath.startsWith(`${workspace}/`)).toBe(false)
+    expect(statSync(settingsPath).mode & 0o777).toBe(0o600)
   })
 })
 
@@ -84,7 +79,7 @@ describe('sandboxBoundary', () => {
   const agentDir = join(tmpdir(), 'ac-agent-x')
   const sock = join(tmpdir(), 'run', 'mcp.sock')
 
-  it('confines writes to the cwd + runtime HOME + memory + socket dir — NOT the agent-dir root', () => {
+  it('confines writes to cwd + runtime HOME + memory, not the agent root or socket dir', () => {
     const canonicalAgentDir = join(realpathSync(tmpdir()), 'ac-agent-x')
     const { writable } = sandboxBoundary({
       agentDir,
@@ -95,7 +90,7 @@ describe('sandboxBoundary', () => {
     expect(writable).toContain(join(canonicalAgentDir, 'workspace'))
     expect(writable).toContain(join(canonicalAgentDir, 'home'))
     expect(writable).toContain(join(canonicalAgentDir, 'memory'))
-    expect(writable).toContain(join(realpathSync(tmpdir()), 'run')) // socket dir (platform-tool bridge)
+    expect(writable).not.toContain(join(realpathSync(tmpdir()), 'run'))
     // The agent-dir root itself is never writable ⇒ agent.json and local state stay read-only.
     expect(writable).not.toContain(canonicalAgentDir)
   })
@@ -168,12 +163,25 @@ describe('bwrap PID isolation', () => {
 
   it.skipIf(!hasBwrap)("the parent daemon's PID is not visible inside the sandbox", () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-sbx-'))
+    const agentDir = join(dir, 'agent')
+    const workspace = join(agentDir, 'workspace')
+    const home = join(agentDir, 'home')
+    mkdirSync(workspace, { recursive: true })
+    mkdirSync(home)
+    const settingsPath = writeSandboxSettings(agentDir, {
+      writable: [workspace, home],
+      denyRead: [],
+      allowRead: [],
+      gitSafeDirectories: [workspace]
+    })
     const outerPid = process.pid // the "daemon" PID; must be invisible in the child's /proc
     const { cmd, args } = sandboxWrap('sh', ['-c', `[ -e /proc/${outerPid} ] && echo LEAK || echo OK`], {
       mechanism: 'bwrap',
-      writable: [dir]
+      writable: [workspace, home],
+      settingsPath,
+      cwd: workspace
     })
-    const out = execFileSync(cmd, args, { encoding: 'utf8' }).trim()
+    const out = execFileSync(cmd, args, { encoding: 'utf8', env: { ...process.env, HOME: home } }).trim()
     expect(out).toBe('OK')
   })
 })

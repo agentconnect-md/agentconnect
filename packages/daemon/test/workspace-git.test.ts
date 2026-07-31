@@ -296,7 +296,7 @@ describe('createWorkspaceGit.pull', () => {
     expect(await git.pull('a')).toMatchObject({
       isRepo: true,
       ok: false,
-      detail: 'workspace Git configuration contains a disallowed network override'
+      detail: 'workspace Git configuration contains a disallowed network override or executable setting'
     })
     expect(pullImpl).not.toHaveBeenCalled()
   })

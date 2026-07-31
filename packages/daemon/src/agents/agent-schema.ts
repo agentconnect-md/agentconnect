@@ -216,7 +216,7 @@ export const AgentSchema = z.object({
   // off — the daemon seeds each integration's channel baseline silently, so only
   // channels joined AFTER the baseline (never a restart/re-list) trigger an intro.
   introduceOnJoin: z.boolean().default(false),
-  // Request an OS sandbox for this agent (issue #642). Daemon policy may force it
+  // Request an OS sandbox for this agent (issue #312). Daemon policy may force it
   // on; an unavailable optional sandbox is ineffective. New agents default off.
   restrictFileAccess: z.boolean().default(false),
   // Which memory backend this agent uses (see agents/memory-provider.ts). Absent ⇒

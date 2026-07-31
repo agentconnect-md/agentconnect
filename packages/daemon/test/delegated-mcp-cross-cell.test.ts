@@ -10,7 +10,8 @@ import {
   delegatedMcpInCellSocketDirectory,
   delegatedCellSandboxWrap,
   detectSandbox,
-  sandboxWrap
+  sandboxWrap,
+  writeSandboxSettings
 } from '../src/acp/sandbox.js'
 import { McpControlServer } from '../src/mcp/control-server.js'
 import { SessionMcpBroker } from '../src/mcp/session-mcp-broker.js'
@@ -114,12 +115,14 @@ function descriptorEnv(descriptor: NonNullable<Awaited<ReturnType<SessionMcpBrok
 async function executeProbe(
   wrapped: { cmd: string; args: string[] },
   token: string,
-  endpoints: Array<{ path: string; attach: boolean }>
+  endpoints: Array<{ path: string; attach: boolean }>,
+  env?: NodeJS.ProcessEnv
 ): Promise<Array<{ pathVisible: boolean; connected: boolean; authorized: boolean; error?: string }>> {
   const { stdout } = await run(wrapped.cmd, [...wrapped.args, token, JSON.stringify(endpoints)], {
     timeout: 10_000,
     killSignal: 'SIGKILL',
-    maxBuffer: 64 * 1024
+    maxBuffer: 64 * 1024,
+    ...(env ? { env } : {})
   })
   return JSON.parse(stdout) as Array<{
     pathVisible: boolean
@@ -223,6 +226,15 @@ describe('delegated MCP copied socket/token isolation', () => {
         { path: inCellSocketPath, attach: true },
         { path: sharedControlPath, attach: false }
       ]
+      const ordinaryAgentDir = await privateRoot('.ac-cross-cell-ordinary-')
+      const ordinaryHome = join(ordinaryAgentDir, 'home')
+      await mkdir(ordinaryHome)
+      const ordinarySettings = writeSandboxSettings(ordinaryAgentDir, {
+        writable: [sharedControlRoot, ordinaryHome],
+        denyRead: [brokerRoot, runtimeHomeRoot],
+        allowRead: [],
+        gitSafeDirectories: [sharedControlRoot]
+      })
 
       const entitledA = delegatedCellSandboxWrap(
         process.execPath,
@@ -241,8 +253,10 @@ describe('delegated MCP copied socket/token isolation', () => {
       )
       const ordinaryC = sandboxWrap(process.execPath, ['-e', PROBE_SCRIPT], {
         mechanism: 'bwrap',
-        writable: [sharedControlRoot],
-        maskedReadRoots: [brokerRoot, runtimeHomeRoot]
+        writable: [sharedControlRoot, ordinaryHome],
+        maskedReadRoots: [brokerRoot, runtimeHomeRoot],
+        settingsPath: ordinarySettings,
+        cwd: sharedControlRoot
       })
       const victimB = delegatedCellSandboxWrap(
         process.execPath,
@@ -261,7 +275,12 @@ describe('delegated MCP copied socket/token isolation', () => {
       )
 
       const assertCopiedTokenDenied = async (attacker: typeof entitledA, entitled: boolean) => {
-        const attempts = await executeProbe(attacker, tokenB, copiedVictimEndpoints)
+        const attempts = await executeProbe(
+          attacker,
+          tokenB,
+          copiedVictimEndpoints,
+          entitled ? undefined : { ...process.env, HOME: ordinaryHome }
+        )
         expect(attempts).toHaveLength(3)
         // The copied host source must disappear. This assertion fails if the common
         // broker root is accidentally shared into any sibling mount namespace.

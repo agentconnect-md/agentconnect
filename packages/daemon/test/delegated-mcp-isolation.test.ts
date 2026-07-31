@@ -1,4 +1,13 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -10,7 +19,8 @@ import {
   detectSandbox,
   sandboxWrap,
   SandboxError,
-  supportsDelegatedMcpIsolation
+  supportsDelegatedMcpIsolation,
+  writeSandboxSettings
 } from '../src/acp/sandbox.js'
 
 const privateHomeRoots: string[] = []
@@ -36,9 +46,9 @@ function privateHomeMount() {
 describe('supportsDelegatedMcpIsolation', () => {
   it.each([
     {
-      name: 'macOS sandbox-exec',
+      name: 'non-Linux host',
       platform: 'darwin' as const,
-      mechanism: 'sandbox-exec' as const,
+      mechanism: 'bwrap' as const,
       requireSandbox: true,
       bwrapProbePassed: true
     },
@@ -80,24 +90,21 @@ describe('supportsDelegatedMcpIsolation', () => {
 })
 
 describe('delegated bwrap mount isolation', () => {
-  it('masks the common source root for an ordinary host without binding anything back', () => {
+  it('denies the common source root in an ordinary host SRT policy', () => {
     const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
     const canonicalMaskedRoot = realpathSync(maskedRoot)
+    const agentDir = mkdtempSync(join(tmpdir(), 'ac-ordinary-agent-'))
 
-    const { cmd, args } = sandboxWrap('codex', ['--acp'], {
-      mechanism: 'bwrap',
+    const settingsPath = writeSandboxSettings(agentDir, {
       writable: [],
-      maskedReadRoots: [maskedRoot]
+      denyRead: [maskedRoot],
+      allowRead: []
     })
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
 
-    expect(cmd).toBe('bwrap')
-    expect(args).toContain('--unshare-pid')
-    expect(args.slice(args.indexOf('--proc'), args.indexOf('--proc') + 2)).toEqual(['--proc', '/proc'])
-    expect(args.slice(args.indexOf(canonicalMaskedRoot) - 1, args.indexOf(canonicalMaskedRoot) + 1)).toEqual([
-      '--tmpfs',
-      canonicalMaskedRoot
-    ])
-    expect(args).not.toContain('--bind')
+    expect(settings.filesystem.denyRead).toContain(canonicalMaskedRoot)
+    expect(settings.filesystem.allowRead).not.toContain(canonicalMaskedRoot)
+    expect(settings.filesystem.allowWrite).not.toContain(canonicalMaskedRoot)
   })
 
   it('binds back exactly the entitled broker cell and runtime HOME after masking both private roots', () => {
@@ -224,7 +231,9 @@ describe('delegated bwrap mount isolation', () => {
         sandbox.sandboxWrap('codex', ['--acp'], {
           mechanism: 'bwrap',
           writable: [],
-          maskedReadRoots: []
+          maskedReadRoots: [],
+          settingsPath: join(maskedRoot, 'settings.json'),
+          cwd: maskedRoot
         })
       ).not.toThrow()
       expect(() =>
@@ -401,17 +410,28 @@ describe('bwrap delegated mount behavior', () => {
       writeFileSync(join(sourceB, 'marker'), 'bravo')
       const canonicalMaskedRoot = realpathSync(maskedRoot)
       const canonicalTargetA = CANONICAL_PRIVATE_TARGET_DIRECTORY
+      const ordinaryAgentDir = mkdtempSync(join(tmpdir(), 'ac-ordinary-agent-'))
+      const ordinaryHome = join(ordinaryAgentDir, 'home')
+      mkdirSync(ordinaryHome)
+      const ordinarySettings = writeSandboxSettings(ordinaryAgentDir, {
+        writable: [ordinaryHome],
+        denyRead: [maskedRoot],
+        allowRead: [],
+        gitSafeDirectories: [ordinaryHome]
+      })
 
       const ordinary = sandboxWrap(
         'sh',
         ['-c', 'test ! -e "$1/cell-a/marker" && test ! -e "$1/cell-b/marker"', 'sh', canonicalMaskedRoot],
         {
           mechanism: 'bwrap',
-          writable: [],
-          maskedReadRoots: [maskedRoot]
+          writable: [ordinaryHome],
+          maskedReadRoots: [maskedRoot],
+          settingsPath: ordinarySettings,
+          cwd: ordinaryHome
         }
       )
-      execFileSync(ordinary.cmd, ordinary.args)
+      execFileSync(ordinary.cmd, ordinary.args, { env: { ...process.env, HOME: ordinaryHome } })
 
       const entitled = delegatedCellSandboxWrap(
         'sh',

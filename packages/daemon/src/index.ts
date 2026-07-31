@@ -2,6 +2,14 @@
 import { startDaemonOpenTelemetry } from './observability.js'
 import { DAEMON_VERSION } from './version.js'
 
+// Internal per-ACP-host SRT provider. Fast-path it before telemetry/Commander:
+// the process is only a stdio-preserving sandbox parent and must not initialize
+// a second daemon's observability or CLI lifecycle.
+if (process.argv[2] === '__sandbox-runtime') {
+  const { runSandboxRuntimeProvider } = await import('./acp/sandbox-runtime-provider.js')
+  process.exit(await runSandboxRuntimeProvider(process.argv.slice(3)))
+}
+
 const telemetry = startDaemonOpenTelemetry({ serviceVersion: DAEMON_VERSION })
 const [{ Command }, { runChat }, { runForeground }, { acquireSingletonLock }, { resolveRoot }] = await Promise.all([
   import('commander'),
@@ -39,7 +47,7 @@ program
   .option('--log-level <level>', 'trace|debug|info|warn|error')
   .option('--agents-dir <dir>', 'override agents directory')
   .option('--max-agents <n>', 'max agents this daemon advertises / enforces')
-  .option('--require-sandbox', 'require an OS sandbox for every agent or refuse daemon startup')
+  .option('--require-sandbox', 'require the Linux SRT sandbox for every agent or refuse daemon startup')
   .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
   .option('--agent <name>', 'select a single agent by id (run/chat)')
 
