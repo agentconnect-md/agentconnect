@@ -50,17 +50,13 @@ describe('prepareRuntimeLaunch', () => {
         maskedReadRoots: maskedRoots
       })
       expect(launch.sandbox?.maskedReadRoots).toEqual(maskedRoots)
-
-      expect(() =>
-        prepareRuntimeLaunch({
-          runtimeId: 'claude-acp',
-          scopeDir,
-          cwd,
-          runInSandbox: true,
-          sandboxMechanism: 'sandbox-exec',
-          maskedReadRoots: maskedRoots
-        })
-      ).toThrow(/mask.*bwrap/i)
+      expect(launch.sandbox?.settingsPath).toBe(
+        join(realpathSync(scopeDir), '.agentconnect', 'sandbox', 'settings.json')
+      )
+      const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+      expect(settings.filesystem.denyRead).toEqual(
+        expect.arrayContaining(maskedRoots.map((path) => realpathSync(path)))
+      )
     } finally {
       rmSync(testRoot, { recursive: true, force: true })
     }
@@ -88,7 +84,7 @@ describe('prepareRuntimeLaunch', () => {
       scopeDir,
       cwd,
       runInSandbox: true,
-      sandboxMechanism: 'sandbox-exec',
+      sandboxMechanism: 'bwrap',
       explicitEnv: { AGENT_VALUE: 'yes' },
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
@@ -97,14 +93,20 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.runtimeHome).toBe(join(scopeDir, 'home'))
     expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
     expect(launch.env.AGENT_VALUE).toBe('yes')
-    expect(launch.sandbox?.mechanism).toBe('sandbox-exec')
+    expect(launch.sandbox?.mechanism).toBe('bwrap')
+    expect(existsSync(launch.sandbox!.settingsPath)).toBe(true)
+    const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    const canonicalHostHome = realpathSync(hostHome)
+    expect(settings.filesystem.denyRead).toEqual(
+      expect.arrayContaining([join(canonicalHostHome, '.claude'), join(canonicalHostHome, '.claude.json')])
+    )
   })
 
   it('fails before creating a private HOME when sandboxing is required but unavailable', () => {
     const { scopeDir, cwd } = fixture()
 
     expect(() => prepareRuntimeLaunch({ runtimeId: 'claude-acp', scopeDir, cwd, runInSandbox: true })).toThrow(
-      /no bwrap\/sandbox-exec/
+      /no supported Linux SRT\/bwrap/
     )
     expect(existsSync(join(scopeDir, 'home'))).toBe(false)
   })

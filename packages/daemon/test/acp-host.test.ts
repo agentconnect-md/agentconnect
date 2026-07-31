@@ -562,39 +562,6 @@ describe('AcpHost delegated sandbox launch', () => {
     return { bin, argsFile, maskedRoot, sourceDir, runtimeHomeRoot, runtimeHome, root }
   }
 
-  it('masks both daemon-private roots for an ordinary untrusted ACP host without binding either back', async () => {
-    const fixture = fakeBwrap()
-    const host = new AcpHost(
-      { command: process.execPath, args: [fakeAgent], env: [] },
-      {
-        onUpdate: () => {},
-        env: { PATH: fixture.bin, AC_BWRAP_ARGS: fixture.argsFile },
-        inheritProcessEnv: false,
-        sandbox: {
-          mechanism: 'bwrap',
-          writable: [fixture.runtimeHome],
-          maskedReadRoots: [fixture.maskedRoot, fixture.runtimeHomeRoot]
-        }
-      }
-    )
-    await host.start()
-    await host.stop()
-    const args = readFileSync(fixture.argsFile, 'utf8').split('\n')
-    expect(args).toContain('--unshare-pid')
-    expect(args).toContain('/proc')
-    const maskedRoot = realpathSync(fixture.maskedRoot)
-    expect(args.findIndex((arg, index) => arg === maskedRoot && args[index - 1] === '--tmpfs')).toBeGreaterThan(0)
-    const runtimeHomeRoot = realpathSync(fixture.runtimeHomeRoot)
-    const runtimeHomeMask = args.findIndex((arg, index) => arg === runtimeHomeRoot && args[index - 1] === '--tmpfs')
-    expect(runtimeHomeMask).toBeGreaterThan(0)
-    expect(args).not.toContain(realpathSync(fixture.sourceDir))
-    const runtimeHomeBind = args.findIndex(
-      (arg, index) => arg === realpathSync(fixture.runtimeHome) && args[index - 1] === '--bind'
-    )
-    expect(runtimeHomeBind).toBeGreaterThan(0)
-    expect(runtimeHomeBind).toBeLessThan(runtimeHomeMask)
-  }, 15_000)
-
   it('reveals exactly its validated private cell bind after masking the common broker root', async () => {
     const fixture = fakeBwrap()
     const targetDir = delegatedMcpInCellSocketDirectory()

@@ -1462,9 +1462,9 @@ export class Daemon {
   /** All installed winners, including curated candidates still awaiting ACP admission. */
   private runtimeCatalog: ResolvedRuntimeCatalog = { entries: {}, runtimes: {} }
   private readonly curatedRuntimeAdmission: CuratedRuntimeAdmission
-  // OS sandbox launcher available on this host (bwrap / sandbox-exec), detected once
-  // at boot. undefined ⇒ optional per-agent requests are ineffective; a daemon with
-  // security.requireSandbox refuses to start.
+  // Live Linux SRT/bwrap support, detected once at boot. undefined means optional
+  // per-agent requests are ineffective; security.requireSandbox refuses startup
+  // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
@@ -1651,7 +1651,7 @@ export class Daemon {
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
       installed?: typeof installedRuntimes
-      /** Test seam: null simulates a host without bwrap/sandbox-exec. */
+      /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
       /** Test seam for delegated-isolation capability gating. */
       platform?: NodeJS.Platform
@@ -1786,7 +1786,9 @@ export class Daemon {
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
-      throw new Error('daemon startup refused: security.requireSandbox is true but this host has no bwrap/sandbox-exec')
+      throw new Error(
+        'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
+      )
     }
     if (this.sandboxMechanism === 'bwrap') {
       for (const privateRoot of [delegatedMcpBrokerRoot(root), delegatedMcpRuntimeHomeRoot(root)]) {
@@ -3518,7 +3520,7 @@ export class Daemon {
       )
       if (agent.restrictFileAccess && !runInSandbox) {
         this.log.warn(
-          `acp: agent "${agentId}" requested Run in sandbox but this host has no sandbox mechanism — running without it (#642)`
+          `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
         )
       }
       const memoryAgent =
@@ -3563,7 +3565,7 @@ export class Daemon {
       if (shimDirs.size > 0) {
         env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
       }
-      // OS sandbox decision (issue #642). security.requireSandbox forces every agent
+      // OS sandbox decision (issue #312). security.requireSandbox forces every agent
       // on; otherwise the per-agent preference is effective only when this host has a
       // mechanism. The writable set is derived from the TRUSTED agent dir
       // (agent.dir — the daemon's filesystem-scan result), NOT from the mutable

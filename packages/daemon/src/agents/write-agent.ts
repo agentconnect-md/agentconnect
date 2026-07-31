@@ -433,7 +433,7 @@ function applySpecFields(
   if (spec.allowedTargetAgentIds !== undefined) raw.allowedTargetAgentIds = spec.allowedTargetAgentIds
   // Self-introduce-on-join (#536): absent ⇒ leave the on-disk value alone (like pause/fastMode).
   if (spec.introduceOnJoin !== undefined) raw.introduceOnJoin = spec.introduceOnJoin
-  // Sandbox toggle (#642): the CP always ships it (definite column); absent ⇒ leave alone.
+  // Sandbox toggle (#312): the CP always ships it (definite column); absent ⇒ leave alone.
   if (spec.restrictFileAccess !== undefined) raw.restrictFileAccess = spec.restrictFileAccess
   if (spec.memory !== undefined) raw.memory = spec.memory
 

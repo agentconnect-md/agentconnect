@@ -37,7 +37,7 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
 }
 
 describe('Daemon (no Slack, injected ACP host)', () => {
-  it('masks the private broker root in normal bwrap ACP host construction', async () => {
+  it('masks the private broker root in normal sandboxed ACP host construction', async () => {
     const root = scaffold()
     const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
     expect(realpathSync(root).startsWith(repoRoot + sep)).toBe(false)
@@ -68,7 +68,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
-  it('keeps an optional unsandboxed host working on bwrap without advertising a mask', async () => {
+  it('keeps an optional unsandboxed host working on a sandbox-capable host without advertising a mask', async () => {
     const root = scaffold()
     const daemon = new Daemon({
       root,
@@ -95,7 +95,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     )
 
     await expect(new Daemon({ root, sandboxMechanism: null }).start()).rejects.toThrow(
-      /daemon startup refused.*requireSandbox.*no bwrap\/sandbox-exec/
+      /daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/
     )
   })
 

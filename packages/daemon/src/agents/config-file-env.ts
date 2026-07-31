@@ -13,11 +13,10 @@
  * ecosystem convention — kubectl, helm, helmfile, client-go/SDK programs the
  * agent writes — not just the binaries we remembered to wrap.
  *
- * Placement: files live under the TRUSTED agent dir, never $TMPDIR. The OS
- * sandbox (acp/sandbox.ts) mounts a fresh tmpfs over tmp (bwrap), so a /tmp
- * file would be invisible to a confined agent; the agent dir is readable under
- * both mechanisms and NOT writable (the writable set is cwd/home/memory only),
- * so a confined runtime cannot tamper with its own materialized config.
+ * Placement: files live under the TRUSTED agent dir, never $TMPDIR. The Linux
+ * SRT policy explicitly re-allows this directory for reads beneath the otherwise
+ * hidden agent root, but never grants writes, so a confined runtime cannot
+ * tamper with its own materialized config.
  *
  * Precedence: an explicitly configured pointer var wins. When the merged env
  * already sets e.g. `KUBECONFIG`, the `KUBECONFIG_DATA` secret is NOT

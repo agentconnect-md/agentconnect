@@ -1,30 +1,53 @@
-import { realpathSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
-import { resolveCommandPath } from '../runtimes/probe.js'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
 
 /**
- * OS-level process sandbox for agent runtimes (issue #642).
+ * OS-level process sandbox for agent runtimes (issue #312).
  *
  * The agent subprocess reads/writes the disk with its OWN tools (ACP fs is not a
  * chokepoint), so the only enforceable boundary is the kernel. We wrap the spawn
- * command in the platform's native sandbox launcher and confine WRITES to a small
- * allow-list. Reads stay open — locking reads breaks interpreters/libs/configs for
- * little threat reduction, and the goal is "the agent can't modify anything outside
- * its workspace", not secrecy.
+ * command through @anthropic-ai/sandbox-runtime (SRT). Each ACP host gets its own
+ * provider process because SRT's manager is process-global, while AgentConnect runs
+ * many differently-scoped agents concurrently.
  *
  * SECURITY — the writable set is derived from the TRUSTED agent directory (the
  * daemon's filesystem-scan result), never from mutable `agent.json` fields. The
- * agent-dir root that holds `agent.json` and agent-local state is intentionally NOT writable (only
- * its subdirs are), so a confined runtime cannot rewrite the very config that decides
- * sandboxing (e.g. point `workspace.path` at `/`) and escape on the next respawn.
+ * agent-dir root that holds `agent.json` and agent-local state is intentionally
+ * hidden; only reviewed subdirectories are re-exposed. A confined runtime cannot
+ * rewrite the config that decides sandboxing (e.g. point `workspace.path` at `/`)
+ * and escape on the next respawn.
  *
- * Fail-open: `detectSandbox()` returns undefined when no mechanism is installed and
- * the caller runs the agent unconfined. `sandboxBoundary()` instead THROWS on an
- * unsafe layout — an un-sandboxable config must not silently run unconfined.
+ * Fail-open: `detectSandbox()` returns undefined when SRT cannot establish a live
+ * Linux sandbox and the caller runs the agent unconfined. `sandboxBoundary()`
+ * instead THROWS on an unsafe layout — an un-sandboxable config must not silently
+ * run unconfined.
  */
-export type SandboxMechanism = 'bwrap' | 'sandbox-exec'
+export type SandboxMechanism = 'bwrap'
+
+export interface SrtSandboxPolicy {
+  writable: string[]
+  denyRead: string[]
+  allowRead: string[]
+  gitSafeDirectories?: string[]
+}
 
 export interface DelegatedCellMount {
   maskedRoot: string
@@ -61,38 +84,61 @@ export function supportsDelegatedMcpIsolation(input: {
   return input.platform === 'linux' && input.mechanism === 'bwrap' && input.requireSandbox && input.bwrapProbePassed
 }
 
-/** The sandbox launcher available on this host, or undefined (⇒ fail-open). */
-export function detectSandbox(env: NodeJS.ProcessEnv = process.env): SandboxMechanism | undefined {
-  if (process.platform === 'linux') {
-    const bwrap = resolveCommandPath('bwrap', env)
-    if (!bwrap) return undefined
-    const probe = spawnSync(
-      bwrap,
-      [
-        '--unshare-pid',
-        '--die-with-parent',
-        '--ro-bind',
-        '/',
-        '/',
-        '--dev',
-        '/dev',
-        '--proc',
-        '/proc',
-        '--tmpfs',
-        tmpdir(),
-        'true'
-      ],
-      {
-        env,
-        stdio: 'ignore',
-        timeout: 2_000,
-        windowsHide: true
-      }
-    )
-    return probe.status === 0 ? 'bwrap' : undefined
+function sandboxProviderLauncher(): { cmd: string; args: string[] } {
+  // Source/dev/tests run through tsx. A published daemon is the bundled
+  // dist/index.js and can execute its hidden provider command directly.
+  const sourceEntry = fileURLToPath(new URL('../index.ts', import.meta.url))
+  if (existsSync(sourceEntry)) {
+    const req = createRequire(import.meta.url)
+    return { cmd: process.execPath, args: [req.resolve('tsx/cli'), sourceEntry] }
   }
-  if (process.platform === 'darwin') return resolveCommandPath('sandbox-exec', env) ? 'sandbox-exec' : undefined
-  return undefined
+  const entry = process.argv[1]
+  if (!entry) throw new SandboxError('cannot locate the AgentConnect sandbox provider entry')
+  return { cmd: process.execPath, args: [entry] }
+}
+
+let cachedHostSandbox: { value: SandboxMechanism | undefined } | undefined
+
+/** Live Linux SRT/bwrap support on this host, or undefined (⇒ fail-open). */
+export function detectSandbox(env: NodeJS.ProcessEnv = process.env): SandboxMechanism | undefined {
+  if (env === process.env && cachedHostSandbox) return cachedHostSandbox.value
+  const value = probeSandbox(env)
+  if (env === process.env) cachedHostSandbox = { value }
+  return value
+}
+
+/** Keep the live SRT launch out of every Daemon constructor after the first one.
+ * Production has one daemon, while a Linux test process may construct hundreds. */
+function probeSandbox(env: NodeJS.ProcessEnv): SandboxMechanism | undefined {
+  // This rollout is intentionally Linux-only. macOS needs a runtime-neutral
+  // credential strategy before private HOME + Seatbelt can be enabled safely.
+  if (process.platform !== 'linux') return undefined
+
+  const root = mkdtempSync(join(tmpdir(), 'agentconnect-srt-probe-'))
+  try {
+    const agentDir = join(root, 'agent')
+    const writable = join(agentDir, 'workspace')
+    const privateHome = join(agentDir, 'home')
+    mkdirSync(writable, { recursive: true })
+    mkdirSync(privateHome)
+    const settingsPath = writeSandboxSettings(agentDir, {
+      writable: [writable, privateHome],
+      denyRead: [],
+      allowRead: []
+    })
+    const launch = sandboxWrap('true', [], { mechanism: 'bwrap', writable: [writable, privateHome], settingsPath })
+    const probe = spawnSync(launch.cmd, launch.args, {
+      env: { ...env, HOME: privateHome },
+      stdio: 'ignore',
+      timeout: 10_000,
+      windowsHide: true
+    })
+    return probe.status === 0 ? 'bwrap' : undefined
+  } catch {
+    return undefined
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 }
 
 /** True when `p` resolves to a strict descendant of `root` (never `root` itself). */
@@ -145,11 +191,16 @@ function existingDelegatedMountDirectory(path: string): string {
  * it — else we throw rather than bind an ancestor (which would expose `agent.json`).
  * The agent-dir root itself is never returned, so config stays read-only.
  *
- * Writable set: the cwd, one private runtime HOME, the managed-memory dir, and the
- * daemon's MCP bridge socket dir (the child connects to it for platform tools).
+ * Writable set: the cwd, one private runtime HOME, and the managed-memory dir.
+ * Unix-socket policy deliberately remains compatibility-open during the SRT
+ * migration; connecting to an existing MCP socket does not make its directory a
+ * writable filesystem surface.
  */
 export function sandboxBoundary(opts: { agentDir: string; cwd: string; runtimeHome: string; mcpSocketPath?: string }): {
   writable: string[]
+  denyRead: string[]
+  allowRead: string[]
+  gitSafeDirectories: string[]
 } {
   const requestedAgentDir = resolve(opts.agentDir)
   if (!isAbsolute(requestedAgentDir) || requestedAgentDir === sep) {
@@ -169,12 +220,22 @@ export function sandboxBoundary(opts: { agentDir: string; cwd: string; runtimeHo
     throw new SandboxError(`managed memory dir is not inside the agent dir "${agentDir}"`)
   }
   const writable = new Set<string>([cwd, runtimeHome, managedMemory])
-  if (opts.mcpSocketPath) writable.add(canonicalTarget(dirname(opts.mcpSocketPath)))
-  return { writable: [...writable] }
+  const allowRead = new Set<string>([
+    ...writable,
+    canonicalTarget(join(agentDir, 'run', 'config-files')),
+    canonicalTarget(join(agentDir, '.agentconnect', 'runtime-policy'))
+  ])
+  return {
+    writable: [...writable],
+    // Hide agent.json (including persisted runtime secrets) and every other
+    // daemon-owned sibling, then carve back only the runtime's data surfaces.
+    denyRead: [agentDir],
+    allowRead: [...allowRead],
+    gitSafeDirectories: [cwd]
+  }
 }
 
-/** Resolve symlinks so subpath rules match the kernel's canonical path (macOS /tmp
- *  → /private/tmp). */
+/** Resolve symlinks so SRT rules match the kernel's canonical path. */
 function canonical(paths: string[]): string[] {
   const out = new Set<string>()
   for (const p of paths) {
@@ -185,50 +246,111 @@ function canonical(paths: string[]): string[] {
 }
 
 /**
- * Wrap `cmd`/`args` so the process runs under `mechanism`, everything readable but
- * writes confined to `writable` (plus tmp, added here so callers can't forget it).
+ * Atomically publish the trusted SRT policy outside every agent-writable path.
  */
+export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy): string {
+  const root = canonicalTarget(agentDir)
+  const settingsDir = join(root, '.agentconnect', 'sandbox')
+  let current = root
+  for (const part of relative(root, settingsDir).split(sep).filter(Boolean)) {
+    current = join(current, part)
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+      throw new SandboxError(`sandbox settings path contains a symlink: ${current}`)
+    }
+  }
+  mkdirSync(settingsDir, { recursive: true, mode: 0o700 })
+  chmodSync(settingsDir, 0o700)
+  if (!strictlyInside(root, realpathSync(settingsDir))) {
+    throw new SandboxError('sandbox settings path escapes the trusted agent dir')
+  }
+
+  const config: SandboxRuntimeConfig = {
+    // Preserve common proxy-aware outbound web access while SRT isolates the
+    // network namespace. The provider approves unmatched domains until a
+    // separate network policy is designed; SRT intentionally rejects a bare
+    // wildcard in allowedDomains. Host-local ports and clients that ignore the
+    // proxy environment remain explicit compatibility gaps in issue #312.
+    network: {
+      allowedDomains: [],
+      deniedDomains: [],
+      // Socket restrictions are a separate policy project. Preserve all current
+      // MCP/git/runtime behavior while replacing only the filesystem wrapper.
+      allowAllUnixSockets: true
+    },
+    filesystem: {
+      // SRT's shared default temp path is not part of AgentConnect's per-agent
+      // storage. The provider redirects TMPDIR into the private HOME; hide the
+      // shared fallback so agents cannot exchange data through it.
+      denyRead: canonical([...policy.denyRead, '/tmp/claude', '/private/tmp/claude']),
+      allowRead: canonical(policy.allowRead),
+      allowWrite: canonical(policy.writable),
+      denyWrite: canonical(['/tmp/claude', '/private/tmp/claude']),
+      // Agents must be able to update repo-local git config; SRT still protects
+      // hooks and the other mandatory code-execution paths.
+      allowGitConfig: true
+    },
+    ...(policy.gitSafeDirectories?.length ? { git: { safeDirectories: canonical(policy.gitSafeDirectories) } } : {})
+  }
+
+  const settingsPath = join(settingsDir, 'settings.json')
+  const temporary = join(settingsDir, `.${randomUUID()}.tmp`)
+  try {
+    writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    chmodSync(temporary, 0o600)
+    renameSync(temporary, settingsPath)
+    chmodSync(settingsPath, 0o600)
+  } catch (error) {
+    try {
+      unlinkSync(temporary)
+    } catch {
+      // The temp may not exist or may already have been renamed.
+    }
+    throw error
+  }
+  return settingsPath
+}
+
+/** Wrap an ordinary ACP command in AgentConnect's per-host SRT provider. */
 export function sandboxWrap(
   cmd: string,
   args: string[],
-  opts: { mechanism: SandboxMechanism; writable: string[]; maskedReadRoots?: string[] }
+  opts: { mechanism: SandboxMechanism; writable: string[]; settingsPath?: string; maskedReadRoots?: string[] }
 ): { cmd: string; args: string[] } {
-  if (opts.mechanism !== 'bwrap' && (opts.maskedReadRoots?.length ?? 0) > 0) {
-    throw new SandboxError('sandbox mechanism cannot mask read roots')
+  if (!opts.settingsPath || !isAbsolute(opts.settingsPath)) {
+    throw new SandboxError('sandbox settings path is required')
   }
-  const writable = canonical(opts.writable)
-  if (opts.mechanism === 'bwrap') {
-    const maskedReadRoots = canonical(opts.maskedReadRoots ?? [])
-    const bwrap: string[] = [
-      // A PID namespace is REQUIRED for the read-only root to hold: without it the
-      // fresh /proc still lists the daemon (same UID), and a confined agent could
-      // follow /proc/<daemon-pid>/root/... into the daemon's original writable mount
-      // namespace and write arbitrary host paths (#642). --unshare-pid hides host
-      // processes; --die-with-parent tears the sandbox down if the daemon dies.
-      '--unshare-pid',
-      '--die-with-parent',
-      '--ro-bind',
-      '/',
-      '/', // whole fs readable...
-      '--dev',
-      '/dev',
-      '--proc',
-      '/proc', // procfs for THIS pid namespace (mounted after --unshare-pid)
-      '--tmpfs',
-      tmpdir(), // ...fresh writable tmp...
-      ...writable.flatMap((w) => ['--bind', w, w]), // ...and these dirs writable (later binds win)
-      ...maskedReadRoots.flatMap((root) => ['--tmpfs', root]), // mask daemon-owned private socket sources
-      '--'
-    ]
-    return { cmd: 'bwrap', args: [...bwrap, cmd, ...args] }
+  const provider = sandboxProviderLauncher()
+  return {
+    cmd: provider.cmd,
+    args: [...provider.args, '__sandbox-runtime', opts.settingsPath, String(process.pid), '--', cmd, ...args]
   }
-  // sandbox-exec (macOS Seatbelt): allow all, deny writes, re-allow the writable set.
-  // Inline profile via -p avoids a temp file. subpath must be a realpath (canonical()).
-  const seatbeltWritable = canonical([...writable, tmpdir()])
-  const profile =
-    '(version 1)(allow default)(deny file-write*)' +
-    seatbeltWritable.map((w) => `(allow file-write* (subpath "${w}"))`).join('')
-  return { cmd: 'sandbox-exec', args: ['-p', profile, cmd, ...args] }
+}
+
+/** Legacy bwrap base retained only for delegated cells that require source→target
+ * bind remapping, which SRT cannot currently express. Ordinary ACP hosts never use it. */
+function delegatedBwrapBaseWrap(
+  cmd: string,
+  args: string[],
+  writable: string[],
+  maskedReadRoots: string[]
+): { cmd: string; args: string[] } {
+  const bwrap: string[] = [
+    '--unshare-pid',
+    '--die-with-parent',
+    '--ro-bind',
+    '/',
+    '/',
+    '--dev',
+    '/dev',
+    '--proc',
+    '/proc',
+    '--tmpfs',
+    tmpdir(),
+    ...canonical(writable).flatMap((path) => ['--bind', path, path]),
+    ...canonical(maskedReadRoots).flatMap((path) => ['--tmpfs', path]),
+    '--'
+  ]
+  return { cmd: 'bwrap', args: [...bwrap, cmd, ...args] }
 }
 
 /**
@@ -290,11 +412,7 @@ export function delegatedCellSandboxWrap(
     )
   })
 
-  const wrapped = sandboxWrap(cmd, args, {
-    mechanism: 'bwrap',
-    writable: safeBaseWritable,
-    maskedReadRoots: validatedMaskedRoots
-  })
+  const wrapped = delegatedBwrapBaseWrap(cmd, args, safeBaseWritable, validatedMaskedRoots)
   const separator = wrapped.args.indexOf('--')
   const privateBinds = [
     '--dir',

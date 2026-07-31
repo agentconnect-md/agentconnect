@@ -134,7 +134,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--agents-dir <dir>`    | `agentsDir`                    | Override agent discovery root. Daemon/`chat` recursively collect `agent.json`, skipping `node_modules`, `.git`, dot directories, depth about four. |
 | `--agent <name>`        | Selector                       | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
 | `--max-agents <n>`      | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
-| `--require-sandbox`     | `security.requireSandbox=true` | Require every agent to run in an OS sandbox; refuse daemon startup if unsupported.                                                                 |
+| `--require-sandbox`     | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
 | `--dry-run`             | n/a                            | Load and validate all configuration and print the reconcile plan without opening connections/processes.                                            |
 
 All environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`, for containers and system services.
@@ -268,8 +268,8 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
     // Set false to permit inheritance; restart daemon, affecting future ACP children only.
     "isolateAccountApps": true,
 
-    // Default false. true / --require-sandbox requires every agent to run in an OS sandbox.
-    // If bwrap (Linux) or sandbox-exec (macOS) is unavailable, daemon refuses to start.
+    // Default false. true / --require-sandbox requires every agent to run in the
+    // Linux SRT/bwrap sandbox. macOS and Windows are not supported in this rollout.
     "requireSandbox": false,
 
     // Exact origins that daemon-managed workspace clone/pull may target.
@@ -301,6 +301,38 @@ On POSIX hosts, AgentConnect removes group/other access from existing
 `config.json` and `agent.json` files; newly created or rewritten files use mode
 `0600`. Agent directories created by the daemon use `0700`; existing custom
 agent directories and higher custom parents are left unchanged.
+
+### Linux ACP runtime sandbox
+
+AgentConnect currently enables runtime sandboxing on Linux only. The daemon uses
+the exact-pinned `@anthropic-ai/sandbox-runtime` package, backed by `bubblewrap`,
+and launches a separate SRT provider process for each ordinary ACP host so policy
+state is never shared between agents. The host must provide working `bwrap`,
+`socat`, and `rg` executables and permit unprivileged user namespaces. Startup
+performs a live probe rather than treating installed binaries as sufficient.
+
+An enabled sandbox gives the runtime a private HOME, hides daemon-owned agent
+metadata and the host source from which that runtime state was seeded, and
+re-allows reads only for the workspace, private HOME, managed memory,
+`run/config-files`, and `.agentconnect/runtime-policy`. Writes are limited to the
+workspace, private HOME, managed memory, and SRT temporary storage. Outbound
+domains are approved by a provider callback and Unix sockets remain
+compatibility-open during this rollout. Proxy-aware HTTP(S) clients retain web
+egress, but SRT's isolated Linux network namespace means host access to an
+agent-started local server and clients that ignore the proxy environment are not
+yet compatibility guarantees; issue #312 tracks those boundaries. SRT's
+temporary directory is redirected below the private HOME and its shared
+`/tmp/claude` fallback is hidden.
+
+Read access outside the explicitly denied agent/runtime-state roots remains
+unchanged in this rollout. This is not yet a whole-host read allowlist: unrelated
+host files and another runtime's credential source require a separate policy.
+
+When sandboxing is only an agent preference and the live probe fails, the daemon
+logs a warning and runs that agent without confinement. With
+`security.requireSandbox=true` or `--require-sandbox`, the same failure refuses
+daemon startup. macOS and Windows always follow this unsupported-host behavior;
+this rollout intentionally adds no runtime-specific Keychain integration.
 
 `security.workspaceGitAllowedOrigins` is a daemon-local remote-origin policy. Tenant
 workspace configuration cannot widen it, and the control plane intentionally
