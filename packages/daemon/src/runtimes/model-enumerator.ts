@@ -25,6 +25,8 @@ export interface ModelEnumeratorDeps {
   log?: Logger
   isolateAccountApps?: boolean
   sandboxMechanism?: SandboxMechanism
+  daemonRoot?: string
+  agentsRoot?: string
   mcpSocketPath?: string
   maskedReadRoots?: string[]
   /** Test seam — mirrors ProbeOptions.hostFactory. */
@@ -56,6 +58,8 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
           log: deps.log,
           hostEnv: process.env,
           runInSandbox: deps.sandboxMechanism !== undefined,
+          daemonRoot: deps.daemonRoot,
+          agentsRoot: deps.agentsRoot,
           sandboxMechanism: deps.sandboxMechanism,
           mcpSocketPath: deps.mcpSocketPath,
           maskedReadRoots: deps.maskedReadRoots

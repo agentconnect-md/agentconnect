@@ -227,10 +227,11 @@ describe('probeRuntime', () => {
     for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
     try {
       let policy: ProbeHostPolicy | undefined
-      const result = await probeRuntime('safe', rt, cwd, {
+      const result = await probeRuntime('safe', { ...rt, command: process.execPath }, cwd, {
         curated: true,
         hostEnv: { PATH: '/usr/bin' },
         runInSandbox: true,
+        daemonRoot: root,
         sandboxMechanism: 'bwrap',
         maskedReadRoots: maskedRoots,
         hostFactory: (_runtime, _id, _cwd, supplied) => {

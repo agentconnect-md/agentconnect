@@ -23,6 +23,8 @@ export function resolveAgentMcpServers(opts: {
   defs: Record<string, McpServerDef>
   /** Probed MCP transport caps of the agent's runtime; undefined ⇒ not probed. */
   caps?: McpTransportCapabilities
+  /** Sandbox launches normalize trusted commands before HOME is hidden. */
+  resolveStdioCommand?: (command: string, env: McpServerDef['env']) => string
   warn?: (msg: string) => void
 }): McpServer[] {
   const out: McpServer[] = []
@@ -38,7 +40,12 @@ export function resolveAgentMcpServers(opts: {
     }
     if (def.transport === 'stdio') {
       // The untagged variant IS the stdio one (ACP McpServer union).
-      out.push({ name, command: def.command!, args: def.args, env: def.env })
+      out.push({
+        name,
+        command: opts.resolveStdioCommand?.(def.command!, def.env) ?? def.command!,
+        args: def.args,
+        env: def.env
+      })
       continue
     }
     if (opts.caps && !opts.caps[def.transport]) {

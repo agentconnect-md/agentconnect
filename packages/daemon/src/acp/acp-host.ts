@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 import {
   client as createClientApp,
@@ -144,6 +145,10 @@ export interface SessionConfigPrefs {
 export interface AcpSandboxLaunch {
   mechanism: SandboxMechanism
   writable: string[]
+  /** Common filesystem policy. Ordinary hosts consume it through SRT settings;
+   * delegated cells apply the same roots around their one remapped mount. */
+  denyReadRoots?: string[]
+  allowReadRoots?: string[]
   /** Trusted SRT policy for ordinary ACP hosts. Delegated bwrap cells retain
    * their existing source-to-target mount launch and do not consume it. */
   settingsPath?: string
@@ -586,7 +591,8 @@ export class AcpHost {
     // that spawn() would otherwise resolve only against CWD and miss the binary on
     // `$PATH`. Falls back to the raw command when resolution fails (spawn's own error
     // surface is clearer than a synthetic ours).
-    const resolved = resolveCommandPath(this.runtime.command, env) ?? this.runtime.command
+    const resolvedCommand = resolveCommandPath(this.runtime.command, env) ?? this.runtime.command
+    const resolved = this.opts.sandbox && existsSync(resolvedCommand) ? realpathSync(resolvedCommand) : resolvedCommand
     // appendArgs carries any account-app-isolation flags (e.g. Copilot's
     // --disable-builtin-mcps) that must reach the adapter as CLI args.
     const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]
@@ -606,7 +612,9 @@ export class AcpHost {
             this.opts.sandbox.writable,
             delegatedCell,
             delegatedHome,
-            this.opts.sandbox.maskedReadRoots
+            this.opts.sandbox.maskedReadRoots,
+            this.opts.sandbox.denyReadRoots,
+            this.opts.sandbox.allowReadRoots
           )
         : sandboxWrap(resolved, spawnArgs, this.opts.sandbox)
       : { cmd: resolved, args: spawnArgs }

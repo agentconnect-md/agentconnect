@@ -5,6 +5,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
+import type { RuntimeDef } from './config/config-schema.js'
 import { loadAgents, selectAgent, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -69,7 +70,7 @@ import type {
 import { GitCredentialCache } from './cp/git-credential.js'
 import { cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
-import { GitCredServer, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
+import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { gitCredentialEnv, initGitInjection, probeGitVersion, sessionGitEnv } from './workspace/git-injection.js'
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
@@ -159,7 +160,7 @@ import {
   type GithubReviewVerdict
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
-import { installedRuntimeCatalog, installedRuntimes } from './runtimes/probe.js'
+import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import {
   probeAllRuntimes,
   isAuthRequiredError,
@@ -172,8 +173,11 @@ import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './runtimes/config-caps.js'
 import { isClaudeRuntimeDef } from './acp/claude-runtime.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment, runtimeHomePath } from './runtimes/runtime-home.js'
+import { prepareSharedRuntimeCredentials } from './runtimes/runtime-credentials.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
-import { composeRuntimeLaunch } from './runtimes/launch-policy.js'
+import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './runtimes/launch-policy.js'
+import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
+import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
@@ -1991,6 +1995,8 @@ export class Daemon {
         log: this.log,
         isolateAccountApps: this.cfg.security.isolateAccountApps,
         sandboxMechanism: this.sandboxMechanism,
+        daemonRoot: root,
+        agentsRoot: this.cfg.agentsDir,
         mcpSocketPath: mcpSocketPath(root),
         maskedReadRoots:
           this.sandboxMechanism === 'bwrap'
@@ -2306,6 +2312,15 @@ export class Daemon {
             enabled: agent.mcpServers,
             defs: this.mcpServerDefs,
             caps: this.runtimeMcpCaps.get(agent.runtime),
+            ...(effectiveRunInSandbox(cfg.security.requireSandbox, agent.restrictFileAccess, this.sandboxMechanism)
+              ? {
+                  resolveStdioCommand: (command: string, entries: { name: string; value: string }[]) =>
+                    resolveTrustedExecutable(command, {
+                      ...process.env,
+                      ...Object.fromEntries(entries.map((entry) => [entry.name, entry.value]))
+                    })
+                }
+              : {}),
             warn: (m) => this.log.warn(m)
           })
         )
@@ -3560,6 +3575,39 @@ export class Daemon {
     }
   }
 
+  /** Code/socket carve-backs below the denied host HOME/daemon root. Every input
+   * is daemon- or registry-owned; agent.json contributes only MCP names, never a
+   * filesystem path. */
+  private sandboxRuntimeReadRoots(
+    agent: LoadedAgent,
+    runtime: RuntimeDef,
+    launchEnv: Record<string, string>,
+    githubAppCredentials: boolean
+  ): string[] {
+    const configuredMcp = agent.mcpServers.flatMap((name) => {
+      const definition = this.mcpServerDefs[name]
+      return definition ? [definition] : []
+    })
+    const cliEntry = daemonEntryForShims(this.root)
+    const paths = [mcpSocketPath(this.root)]
+    const executableCommands = [process.execPath]
+    if (githubAppCredentials) {
+      paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
+      if (this.ghBinDir) paths.push(this.ghBinDir)
+      if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
+      const gh = resolveCommandPath('gh', process.env)
+      if (gh) executableCommands.push(gh)
+    }
+    return trustedRuntimeReadRoots({
+      runtime,
+      hostEnv: process.env,
+      mcpServers: configuredMcp,
+      executableCommands,
+      moduleEntries: [cliEntry, ...nodeExecArgvModuleEntries()],
+      paths
+    })
+  }
+
   private ensureHost(agentId: string, cfg: ReturnType<typeof loadConfig>): AcpHost {
     let host = this.hosts.get(agentId)
     if (host) return host
@@ -3671,6 +3719,11 @@ export class Daemon {
           scopeDir: agent.dir,
           cwd: agent.workspace.path,
           runInSandbox,
+          daemonRoot: this.root,
+          agentsRoot: cfg.agentsDir,
+          runtimeReadRoots: runInSandbox
+            ? this.sandboxRuntimeReadRoots(agent, runtime, { ...runtimeEnv, ...env }, githubAppCredentials)
+            : undefined,
           explicitEnv: { ...runtimeEnv, ...env },
           sandboxMechanism: this.sandboxMechanism,
           mcpSocketPath: mcpSocketPath(this.root),
@@ -3738,6 +3791,13 @@ export class Daemon {
       { ...runtimeEnv, ...baseEnv },
       this.externalMemoryAdmission()
     ).runtimeEnv()
+    const githubAppCredentials = agent.workspace.gitCredential === 'github-app'
+    const launchEnv = {
+      ...runtimeEnv,
+      ...baseEnv,
+      ...memoryEnv,
+      ...(githubAppCredentials ? sessionGitEnv(agent.id, this.gitCommitIdentity) : {})
+    }
     const composed = composeRuntimeLaunch({
       runtimeId: agent.runtime,
       runtime,
@@ -3745,21 +3805,29 @@ export class Daemon {
       scopeDir: agent.dir,
       cwd: agent.workspace.path,
       runInSandbox: true,
+      daemonRoot: this.root,
+      agentsRoot: this.cfg.agentsDir,
+      runtimeReadRoots: this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials),
       sandboxMechanism: 'bwrap',
       mcpSocketPath: mcpSocketPath(this.root),
       maskedReadRoots: [delegatedMcpBrokerRoot(this.root), delegatedMcpRuntimeHomeRoot(this.root)],
-      explicitEnv: {
-        ...runtimeEnv,
-        ...baseEnv,
-        ...memoryEnv,
-        ...(agent.workspace.gitCredential === 'github-app' ? sessionGitEnv(agent.id, this.gitCommitIdentity) : {})
-      }
+      explicitEnv: launchEnv
     })
     // Seed only bounded auth/config files into this conversation-private HOME.
     // Custom targets skip legacy-state moves, so one cell can never steal another
     // host's durable runtime state.
-    prepareRuntimeHome(agent.runtime, agent.dir, process.env, input.runtimeHome)
-    const env = runtimeHomeEnvironment(agent.runtime, input.runtimeHome, composed.launch.env)
+    const credentials = prepareSharedRuntimeCredentials({ runtimeId: agent.runtime, runtime, hostEnv: process.env })
+    prepareRuntimeHome(agent.runtime, agent.dir, process.env, input.runtimeHome, credentials?.seedExclusions)
+    credentials?.preparePrivateHome(input.runtimeHome)
+    const env = {
+      ...runtimeHomeEnvironment(agent.runtime, input.runtimeHome, composed.launch.env),
+      ...credentials?.env
+    }
+    const ordinaryRuntimeHome = composed.launch.runtimeHome
+    const delegatedWritable = (composed.launch.sandbox?.writable ?? []).filter((path) => path !== ordinaryRuntimeHome)
+    const delegatedAllowRead = (composed.launch.sandbox?.allowReadRoots ?? []).filter(
+      (path) => path !== ordinaryRuntimeHome
+    )
     return new AcpHost(composed.runtime, {
       onUpdate: (sid, update) => this.onAcpUpdate(input.agentId, sid, update),
       onPermission: (sid, params) => this.onAcpPermission(input.agentId, sid, params),
@@ -3776,11 +3844,13 @@ export class Daemon {
       isolateAccountApps: this.cfg.security.isolateAccountApps,
       sandbox: {
         ...input.sandbox,
+        denyReadRoots: composed.launch.sandbox?.denyReadRoots,
+        allowReadRoots: delegatedAllowRead,
         // Keep the ordinary trusted workspace/memory/shared-MCP writable set,
         // then add only this cell's private HOME. delegatedCellSandboxWrap
         // removes anything beneath the masked private roots before binding back
         // this exact cell.
-        writable: [...(composed.launch.sandbox?.writable ?? []), input.runtimeHome]
+        writable: [...delegatedWritable, input.runtimeHome]
       },
       onTerminal: input.onTerminal,
       configPrefs: {
@@ -15368,9 +15438,16 @@ export class Daemon {
             launchFor: (id, runtime, scopeDir, cwd) =>
               prepareRuntimeLaunch({
                 runtimeId: id,
+                runtime,
                 scopeDir,
                 cwd,
                 runInSandbox: this.sandboxMechanism !== undefined,
+                daemonRoot: this.root,
+                agentsRoot: this.cfg.agentsDir,
+                trustedRuntimeReadRoots:
+                  this.sandboxMechanism !== undefined
+                    ? runtimeSandboxReadRoots(runtime, process.env).readRoots
+                    : undefined,
                 explicitEnv: Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value])),
                 sandboxMechanism: this.sandboxMechanism,
                 maskedReadRoots:
@@ -15388,6 +15465,8 @@ export class Daemon {
             log: this.log,
             isolateAccountApps: this.cfg.security.isolateAccountApps,
             runInSandbox: this.sandboxMechanism !== undefined,
+            daemonRoot: this.root,
+            agentsRoot: this.cfg.agentsDir,
             sandboxMechanism: this.sandboxMechanism,
             mcpSocketPath: mcpSocketPath(this.root),
             maskedReadRoots:

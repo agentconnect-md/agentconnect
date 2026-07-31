@@ -28,7 +28,7 @@
  * (see workspace/git-injection.ts).
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
@@ -219,15 +219,16 @@ export function writeGitcredShim(root: string, cliEntry: string): string {
   const shim = gitcredShimPath(root)
   mkdirSync(dirname(shim), { recursive: true, mode: 0o700 })
   const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
+  const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
   // Production runs the built dist (a .js entry node executes directly). A dev
   // daemon runs under tsx with a .ts argv[1] — route the shim through the tsx
   // CLI then, or plain `node entry.ts` would die resolving .js-suffixed imports.
-  const argv = [q(process.execPath)]
-  if (cliEntry.endsWith('.ts')) {
+  const argv = [q(realpathSync(process.execPath))]
+  if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
     argv.push(q(req.resolve('tsx/cli')))
   }
-  argv.push(q(cliEntry))
+  argv.push(q(executableEntry))
   const body = [
     '#!/bin/sh',
     '# agentconnect git credential helper shim — regenerated on daemon start; NO secrets.',

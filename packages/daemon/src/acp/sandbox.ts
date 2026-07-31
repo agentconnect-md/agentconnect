@@ -198,11 +198,20 @@ function existingDelegatedMountDirectory(path: string): string {
  * The agent-dir root itself is never returned, so config stays read-only.
  *
  * Writable set: the cwd, one private runtime HOME, and the managed-memory dir.
+ * A runtime credential adapter may add one credential-only host file/directory;
+ * it is a separate trusted write capability, never a general read root.
  * Unix-socket policy deliberately remains compatibility-open during the SRT
- * migration; connecting to an existing MCP socket does not make its directory a
- * writable filesystem surface.
+ * migration. The exact daemon MCP socket is re-exposed read-only when an ancestor
+ * is hidden; this does not make its directory a writable filesystem surface.
  */
-export function sandboxBoundary(opts: { agentDir: string; cwd: string; runtimeHome: string; mcpSocketPath?: string }): {
+export function sandboxBoundary(opts: {
+  agentDir: string
+  cwd: string
+  runtimeHome: string
+  mcpSocketPath?: string
+  trustedReadRoots?: string[]
+  trustedWriteRoots?: string[]
+}): {
   writable: string[]
   denyRead: string[]
   allowRead: string[]
@@ -225,11 +234,18 @@ export function sandboxBoundary(opts: { agentDir: string; cwd: string; runtimeHo
   if (!strictlyInside(agentDir, managedMemory)) {
     throw new SandboxError(`managed memory dir is not inside the agent dir "${agentDir}"`)
   }
-  const writable = new Set<string>([cwd, runtimeHome, managedMemory])
+  const writable = new Set<string>([
+    cwd,
+    runtimeHome,
+    managedMemory,
+    ...(opts.trustedWriteRoots ?? []).map(canonicalTarget)
+  ])
   const allowRead = new Set<string>([
     ...writable,
     canonicalTarget(join(agentDir, 'run', 'config-files')),
-    canonicalTarget(join(agentDir, '.agentconnect', 'runtime-policy'))
+    canonicalTarget(join(agentDir, '.agentconnect', 'runtime-policy')),
+    ...(opts.mcpSocketPath ? [canonicalTarget(opts.mcpSocketPath)] : []),
+    ...(opts.trustedReadRoots ?? []).map(canonicalTarget)
   ])
   return {
     writable: [...writable],
@@ -270,6 +286,18 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
     throw new SandboxError('sandbox settings path escapes the trusted agent dir')
   }
 
+  const denyRead = canonical(policy.denyRead)
+  for (const fallback of canonical(['/tmp/claude', '/private/tmp/claude'])) {
+    const alreadyHidden = denyRead.some((denied) => {
+      try {
+        return statSync(denied).isDirectory() && (fallback === denied || strictlyInside(denied, fallback))
+      } catch {
+        return false
+      }
+    })
+    if (!alreadyHidden) denyRead.push(fallback)
+  }
+
   const config: SandboxRuntimeConfig = {
     // Preserve common proxy-aware outbound web access while SRT isolates the
     // network namespace. The provider approves unmatched domains until a
@@ -287,7 +315,7 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
       // SRT's shared default temp path is not part of AgentConnect's per-agent
       // storage. The provider redirects TMPDIR into the private HOME; hide the
       // shared fallback so agents cannot exchange data through it.
-      denyRead: canonical([...policy.denyRead, '/tmp/claude', '/private/tmp/claude']),
+      denyRead,
       allowRead: canonical(policy.allowRead),
       allowWrite: canonical(policy.writable),
       denyWrite: canonical(['/tmp/claude', '/private/tmp/claude']),
@@ -348,8 +376,32 @@ function delegatedBwrapBaseWrap(
   cmd: string,
   args: string[],
   writable: string[],
-  maskedReadRoots: string[]
+  maskedReadRoots: string[],
+  denyReadRoots: string[] = [],
+  allowReadRoots: string[] = []
 ): { cmd: string; args: string[] } {
+  const writableRoots = canonical(writable)
+  const deniedRoots = canonical(denyReadRoots)
+  const allowedRoots = canonical(allowReadRoots)
+  const privateTmp = canonicalTarget(tmpdir())
+  const coveredBy = (roots: string[], path: string): boolean =>
+    roots.some((root) => path === root || strictlyInside(root, path))
+  const readMasks: string[] = []
+  for (const path of deniedRoots) {
+    if (!existsSync(path) || path === privateTmp) continue
+    if (statSync(path).isDirectory()) readMasks.push('--tmpfs', path)
+    else readMasks.push('--ro-bind', '/dev/null', path)
+  }
+  const readCarveBacks = [
+    ...writableRoots.flatMap((path) => ['--bind', path, path]),
+    ...allowedRoots
+      .filter(
+        (path) =>
+          existsSync(path) && !coveredBy(writableRoots, path) && deniedRoots.some((denied) => coveredBy([denied], path))
+      )
+      .flatMap((path) => ['--ro-bind', path, path])
+  ]
+  const remainingMasks = canonical(maskedReadRoots).filter((path) => !coveredBy(deniedRoots, path))
   const bwrap: string[] = [
     '--unshare-pid',
     '--die-with-parent',
@@ -361,9 +413,10 @@ function delegatedBwrapBaseWrap(
     '--proc',
     '/proc',
     '--tmpfs',
-    tmpdir(),
-    ...canonical(writable).flatMap((path) => ['--bind', path, path]),
-    ...canonical(maskedReadRoots).flatMap((path) => ['--tmpfs', path]),
+    privateTmp,
+    ...readMasks,
+    ...readCarveBacks,
+    ...remainingMasks.flatMap((path) => ['--tmpfs', path]),
     '--'
   ]
   return { cmd: 'bwrap', args: [...bwrap, cmd, ...args] }
@@ -379,7 +432,9 @@ export function delegatedCellSandboxWrap(
   baseWritable: string[],
   mount: DelegatedCellMount,
   runtimeHomeMount: DelegatedRuntimeHomeMount,
-  maskedReadRoots: string[] = [mount.maskedRoot, runtimeHomeMount.maskedRoot]
+  maskedReadRoots: string[] = [mount.maskedRoot, runtimeHomeMount.maskedRoot],
+  denyReadRoots: string[] = [],
+  allowReadRoots: string[] = []
 ): { cmd: string; args: string[] } {
   const maskedRoot = existingDelegatedMountDirectory(mount.maskedRoot)
   const sourceDir = existingDelegatedMountDirectory(mount.sourceDir)
@@ -428,7 +483,14 @@ export function delegatedCellSandboxWrap(
     )
   })
 
-  const wrapped = delegatedBwrapBaseWrap(cmd, args, safeBaseWritable, validatedMaskedRoots)
+  const wrapped = delegatedBwrapBaseWrap(
+    cmd,
+    args,
+    safeBaseWritable,
+    validatedMaskedRoots,
+    denyReadRoots,
+    allowReadRoots
+  )
   const separator = wrapped.args.indexOf('--')
   const privateBinds = [
     '--dir',
