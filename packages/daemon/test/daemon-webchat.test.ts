@@ -1344,6 +1344,189 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   }, 15_000)
 
+  it('surfaces the original cold delegated init error when private cleanup also fails', async () => {
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: streamingHost([]).factory
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+    const errorLog = vi.spyOn((daemon as any).log, 'error')
+
+    const initError = new Error('delegated cold init failed')
+    const dedicatedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => {
+        throw initError
+      }),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const manager = {
+      startHost: vi.fn(async () => ({
+        isolationCellId: 'cell-cold-error',
+        host: dedicatedHost,
+        runtimeHome: '/private/cold-error-home',
+        adminMcpServer: {
+          name: 'agentconnect-admin',
+          command: 'agentconnect',
+          args: ['mcp-bridge'],
+          env: []
+        },
+        mount: {
+          sourceDirectory: '/private/source',
+          sourceSocketPath: '/private/source/mcp.sock',
+          targetDirectory: delegatedMcpInCellSocketDirectory()
+        }
+      })),
+      stopHost: vi.fn(async () => {
+        throw new Error('private cleanup failed after cold init')
+      }),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).delegatedWebchatHosts = manager
+
+    const turnId = '77777777-7777-4777-8777-777777777771'
+    const msg = {
+      msgId: `webchat:${CONV}`,
+      traceId: turnId,
+      source: 'user' as const,
+      platform: 'webchat' as const,
+      channel: CONV,
+      sender: { id: 'ada', isBot: false },
+      text: 'cold failure',
+      mentionedBots: [] as string[],
+      isDm: true,
+      trigger: 'dm' as const
+    }
+    await expect(
+      (daemon as any).dispatch(AGENT_ID, msg, undefined, {
+        conversationId: CONV,
+        turnId,
+        sink: cp.sink,
+        delegation: {
+          id: '99999999-9999-4999-8999-999999999991',
+          generation: 1,
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        }
+      })
+    ).rejects.toBe(initError)
+
+    expect(cp.dones).toEqual([{ conversationId: CONV, turnId, error: 'delegated cold init failed' }])
+    expect((daemon as any).store.getSession((daemon as any).webchatSessionKey(CONV, AGENT_ID))?.state).not.toBe('idle')
+    expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
+    expect(
+      (daemon as any).dispatchWebchatTurn(
+        AGENT_ID,
+        '77777777-7777-4777-8777-777777777772',
+        'must remain blocked',
+        'ada',
+        fakeCpClient().sink
+      )
+    ).toMatchObject({ accepted: false, reason: 'busy' })
+    const lifecycleFailures = errorLog.mock.calls
+      .flat()
+      .filter((message: string) => message.includes('delegated lifecycle cleanup blocked'))
+    expect(lifecycleFailures).toEqual([expect.stringContaining('private cleanup failed after cold init')])
+    expect(errorLog).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+  }, 15_000)
+
+  it('preserves the original delegated prompt error when private cleanup also fails', async () => {
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: streamingHost([]).factory
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+    const errorLog = vi.spyOn((daemon as any).log, 'error')
+
+    const promptError = new Error('delegated prompt failed')
+    const dedicatedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-delegated-prompt-error'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        throw promptError
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const manager = {
+      startHost: vi.fn(async () => ({
+        isolationCellId: 'cell-prompt-error',
+        host: dedicatedHost,
+        runtimeHome: '/private/prompt-error-home',
+        adminMcpServer: {
+          name: 'agentconnect-admin',
+          command: 'agentconnect',
+          args: ['mcp-bridge'],
+          env: []
+        },
+        mount: {
+          sourceDirectory: '/private/source',
+          sourceSocketPath: '/private/source/mcp.sock',
+          targetDirectory: delegatedMcpInCellSocketDirectory()
+        }
+      })),
+      stopHost: vi.fn(async () => {
+        throw new Error('private cleanup failed after prompt')
+      }),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).delegatedWebchatHosts = manager
+
+    const turnId = '77777777-7777-4777-8777-777777777773'
+    const msg = {
+      msgId: `webchat:${CONV}`,
+      traceId: turnId,
+      source: 'user' as const,
+      platform: 'webchat' as const,
+      channel: CONV,
+      sender: { id: 'ada', isBot: false },
+      text: 'prompt failure',
+      mentionedBots: [] as string[],
+      isDm: true,
+      trigger: 'dm' as const
+    }
+    await expect(
+      (daemon as any).dispatch(AGENT_ID, msg, undefined, {
+        conversationId: CONV,
+        turnId,
+        sink: cp.sink,
+        delegation: {
+          id: '99999999-9999-4999-8999-999999999993',
+          generation: 1,
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        }
+      })
+    ).rejects.toBe(promptError)
+
+    expect(cp.dones).toEqual([{ conversationId: CONV, turnId, error: 'delegated prompt failed' }])
+    expect((daemon as any).pending.size).toBe(1)
+    expect((daemon as any).store.getSession((daemon as any).webchatSessionKey(CONV, AGENT_ID))?.state).not.toBe('idle')
+    expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
+    expect(
+      (daemon as any).dispatchWebchatTurn(
+        AGENT_ID,
+        '77777777-7777-4777-8777-777777777774',
+        'must remain blocked',
+        'ada',
+        fakeCpClient().sink
+      )
+    ).toMatchObject({ accepted: false, reason: 'busy' })
+    const lifecycleFailures = errorLog.mock.calls
+      .flat()
+      .filter((message: string) => message.includes('delegated lifecycle cleanup blocked'))
+    expect(lifecycleFailures).toEqual([expect.stringContaining('private cleanup failed after prompt')])
+    expect(errorLog).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+  }, 15_000)
+
   it('cancels and force-stops a hung delegated turn through its private host lifecycle', async () => {
     const ordinary = streamingHost([])
     const daemon = new Daemon({

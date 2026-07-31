@@ -896,6 +896,8 @@ interface SelectedTurnHost {
   waitForCleanup: () => Promise<void>
 }
 
+type TurnLifecycleCleanupOutcome = { blocked: false } | { blocked: true; error: unknown }
+
 interface QueueEntry {
   agentId: string
   msg: NormalizedMessage
@@ -3823,13 +3825,14 @@ export class Daemon {
     entry: QueueEntry,
     key: string,
     selectedHost?: SelectedTurnHost
-  ): Promise<void> {
+  ): Promise<TurnLifecycleCleanupOutcome> {
     try {
       await entry.lifecycleCleanup
       await selectedHost?.waitForCleanup()
+      return { blocked: false }
     } catch (error) {
       this.fenceLifecycleCleanupFailure(entry.agentId, key, entry, error)
-      throw new LifecycleCleanupBlockedError(key, error)
+      return { blocked: true, error }
     }
   }
 
@@ -9111,16 +9114,19 @@ export class Daemon {
       // handle() boots the host (hostFor → ensureHostAsync → host.start()), so a
       // failed agent start / ACP handshake surfaces HERE, before the prompt below.
       const interrupted = this.dispatchGateReason(entry)
+      let cleanupOutcome!: TurnLifecycleCleanupOutcome
       try {
         // A force-stop may make session/new|load reject before the delegated
         // manager has released its broker cell and private HOME. Keep this cold
         // dispatch owned and non-idle until that exact cleanup operation settles.
-        await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
-        this.store.setSessionState(key, 'idle', this.clock.now())
-        // The turn died during initialization (agent spawn / ACP handshake), so it never reaches
-        // the main finally that records an outcome. A parent polling this child must see `failed`,
-        // not a session that looks idle-and-fine. An interrupt is not a failure of the work.
-        if (!interrupted) this.store.setSessionTurnOutcome(key, 'failed', this.clock.now())
+        cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
+        if (!cleanupOutcome.blocked) {
+          this.store.setSessionState(key, 'idle', this.clock.now())
+          // The turn died during initialization (agent spawn / ACP handshake), so it never reaches
+          // the main finally that records an outcome. A parent polling this child must see `failed`,
+          // not a session that looks idle-and-fine. An interrupt is not a failure of the work.
+          if (!interrupted) this.store.setSessionTurnOutcome(key, 'failed', this.clock.now())
+        }
         if (interrupted) {
           this.terminateQueuedSink(entry, interrupted)
           this.showActivity(replyConn, msg.channel, statusThread, '')
@@ -9146,6 +9152,7 @@ export class Daemon {
         if (hookContext && !this.draining) {
           this.emitHookCompletion(hookContext, 'failed', { reason: interrupted }, entry)
         }
+        if (cleanupOutcome.blocked) throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
         return null
       }
       failEvaluation(err)
@@ -9178,21 +9185,23 @@ export class Daemon {
       restoreDeliveryBinding()
       // session/new|load can return after host termination while manager cleanup
       // is still draining the private broker cell. Do not publish idle early.
-      await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
-      const interruptedSession = this.store.getSession(key)
-      if (created && interruptedSession?.acpSessionId === sessionId) {
-        // The runtime created this ACP session after the turn was already terminal.
-        // Do not let a quick pause→unpause (or loop reset) revive that never-prompted
-        // session as if it were valid conversation state.
-        this.store.upsertSession({
-          ...interruptedSession,
-          acpSessionId: null,
-          state: 'idle',
-          lastDeliveredTs: null,
-          updatedAt: this.clock.now()
-        })
-      } else {
-        this.store.setSessionState(key, 'idle', this.clock.now())
+      const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, entry.selectedHost)
+      if (!cleanupOutcome.blocked) {
+        const interruptedSession = this.store.getSession(key)
+        if (created && interruptedSession?.acpSessionId === sessionId) {
+          // The runtime created this ACP session after the turn was already terminal.
+          // Do not let a quick pause→unpause (or loop reset) revive that never-prompted
+          // session as if it were valid conversation state.
+          this.store.upsertSession({
+            ...interruptedSession,
+            acpSessionId: null,
+            state: 'idle',
+            lastDeliveredTs: null,
+            updatedAt: this.clock.now()
+          })
+        } else {
+          this.store.setSessionState(key, 'idle', this.clock.now())
+        }
       }
       this.showActivity(replyConn, msg.channel, statusThread, '')
       this.terminateQueuedSink(entry)
@@ -9201,6 +9210,7 @@ export class Daemon {
         this.emitHookCompletion(hookContext, 'failed', { reason: initializedGate }, entry)
       }
       this.log.info(`dispatch: skipped initialized turn ${msg.msgId} (${initializedGate})`)
+      if (cleanupOutcome.blocked) throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
       return null
     }
     // A cold session can await workspace/host/session initialization while the Agent is
@@ -9327,6 +9337,7 @@ export class Daemon {
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     let finalPhase: EventSession['phase'] = 'end'
     let turnModel: string | undefined
+    let propagatingTurnError = false
     const currentAttributionInfo = (): SlackAttributionInfo => ({
       botName: agent.name,
       botUrl: this.agentLink(agentId),
@@ -9623,6 +9634,11 @@ export class Daemon {
         }
         return null
       }
+      // From here this catch owns a genuine turn failure that must remain the
+      // outward dispatch error even if the selected host's cleanup also fails.
+      // Set this before failure surfacing so finally cannot replace any error
+      // raised while preserving/reporting the original failure.
+      propagatingTurnError = true
       failEvaluation(err)
       finalPhase = 'problem'
       if (p.webchat) {
@@ -9764,25 +9780,32 @@ export class Daemon {
       // A delegated force-stop can unwind prompt before broker release and HOME
       // removal complete. Pending ownership and the non-idle session state are the
       // final safety fence, so release them only after the exact selected cleanup.
-      await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
-      this.pending.delete(pendingTurnKey(agentId, sessionId))
-      // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
-      // cancelled), so the session is idle again. Without this the row stayed
-      // `prompting` forever — the thread never went idle and TTL-close never fired.
-      this.store.setSessionState(key, 'idle', this.clock.now())
-      // Record HOW it ended alongside the state, so a parent polling `viewSessionStatus` can tell
-      // a finished child from a broken one. `problem` is the same phase the CP snapshot below
-      // reports, so the two never disagree.
-      this.store.setSessionTurnOutcome(key, finalPhase === 'problem' ? 'failed' : 'done', this.clock.now())
-      this.emitSessionMetadataSnapshot({
-        sessionId,
-        agentId,
-        phase: finalPhase,
-        platform: msg.platform,
-        channel: msg.channel,
-        thread: statusThread
-      })
-      p.resolveDone()
+      const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
+      if (!cleanupOutcome.blocked) {
+        this.pending.delete(pendingTurnKey(agentId, sessionId))
+        // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
+        // cancelled), so the session is idle again. Without this the row stayed
+        // `prompting` forever — the thread never went idle and TTL-close never fired.
+        this.store.setSessionState(key, 'idle', this.clock.now())
+        // Record HOW it ended alongside the state, so a parent polling `viewSessionStatus` can tell
+        // a finished child from a broken one. `problem` is the same phase the CP snapshot below
+        // reports, so the two never disagree.
+        this.store.setSessionTurnOutcome(key, finalPhase === 'problem' ? 'failed' : 'done', this.clock.now())
+        this.emitSessionMetadataSnapshot({
+          sessionId,
+          agentId,
+          phase: finalPhase,
+          platform: msg.platform,
+          channel: msg.channel,
+          thread: statusThread
+        })
+        p.resolveDone()
+      } else if (!propagatingTurnError) {
+        // Success/cancel has no original error for runLoop to fail-stop on. Use
+        // the internal sentinel only in that case; a real prompt error must leave
+        // this finally unchanged and continue propagating from the catch above.
+        throw new LifecycleCleanupBlockedError(key, cleanupOutcome.error)
+      }
     }
     // Turn finished cleanly. Draining the next queued message for this sessionKey is
     // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
