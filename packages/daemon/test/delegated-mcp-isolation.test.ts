@@ -232,7 +232,8 @@ describe('delegated bwrap mount isolation', () => {
           mechanism: 'bwrap',
           writable: [],
           maskedReadRoots: [],
-          settingsPath: join(maskedRoot, 'settings.json')
+          settingsPath: join(maskedRoot, 'settings.json'),
+          cwd: maskedRoot
         })
       ).not.toThrow()
       expect(() =>
@@ -415,7 +416,8 @@ describe('bwrap delegated mount behavior', () => {
       const ordinarySettings = writeSandboxSettings(ordinaryAgentDir, {
         writable: [ordinaryHome],
         denyRead: [maskedRoot],
-        allowRead: []
+        allowRead: [],
+        gitSafeDirectories: [ordinaryHome]
       })
 
       const ordinary = sandboxWrap(
@@ -425,7 +427,8 @@ describe('bwrap delegated mount behavior', () => {
           mechanism: 'bwrap',
           writable: [ordinaryHome],
           maskedReadRoots: [maskedRoot],
-          settingsPath: ordinarySettings
+          settingsPath: ordinarySettings,
+          cwd: ordinaryHome
         }
       )
       execFileSync(ordinary.cmd, ordinary.args, { env: { ...process.env, HOME: ordinaryHome } })

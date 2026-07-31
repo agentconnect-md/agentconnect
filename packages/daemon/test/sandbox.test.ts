@@ -18,10 +18,19 @@ describe('sandboxWrap', () => {
     const { cmd, args } = sandboxWrap('claude', ['acp'], {
       mechanism: 'bwrap',
       writable: [root],
-      settingsPath
+      settingsPath,
+      cwd: root
     })
     expect(cmd).toBe(process.execPath)
-    expect(args.slice(-6)).toEqual(['__sandbox-runtime', settingsPath, String(process.pid), '--', 'claude', 'acp'])
+    expect(args.slice(-7)).toEqual([
+      '__sandbox-runtime',
+      settingsPath,
+      String(process.pid),
+      root,
+      '--',
+      'claude',
+      'acp'
+    ])
   })
 
   it('requires an absolute trusted settings path', () => {
@@ -29,6 +38,9 @@ describe('sandboxWrap', () => {
     expect(() => sandboxWrap('x', [], { mechanism: 'bwrap', writable: [], settingsPath: 'settings.json' })).toThrow(
       SandboxError
     )
+    expect(() =>
+      sandboxWrap('x', [], { mechanism: 'bwrap', writable: [], settingsPath: join(tmpdir(), 'settings.json') })
+    ).toThrow(SandboxError)
   })
 
   it('writes the Linux compatibility policy atomically outside writable roots', () => {
@@ -51,7 +63,7 @@ describe('sandboxWrap', () => {
     expect(settings.filesystem).toMatchObject({
       denyRead: expect.arrayContaining([realpathSync(agentDir)]),
       allowWrite: [realpathSync(workspace), realpathSync(home), realpathSync(memory)],
-      allowGitConfig: true
+      allowGitConfig: false
     })
     expect(settings.filesystem.denyWrite.some((path: string) => basename(path) === 'claude')).toBe(true)
     expect(settings.git.safeDirectories).toEqual([realpathSync(workspace)])
@@ -159,13 +171,15 @@ describe('bwrap PID isolation', () => {
     const settingsPath = writeSandboxSettings(agentDir, {
       writable: [workspace, home],
       denyRead: [],
-      allowRead: []
+      allowRead: [],
+      gitSafeDirectories: [workspace]
     })
     const outerPid = process.pid // the "daemon" PID; must be invisible in the child's /proc
     const { cmd, args } = sandboxWrap('sh', ['-c', `[ -e /proc/${outerPid} ] && echo LEAK || echo OK`], {
       mechanism: 'bwrap',
       writable: [workspace, home],
-      settingsPath
+      settingsPath,
+      cwd: workspace
     })
     const out = execFileSync(cmd, args, { encoding: 'utf8', env: { ...process.env, HOME: home } }).trim()
     expect(out).toBe('OK')

@@ -87,6 +87,9 @@ export function createWorkspaceGit(
       const root = rootFor(agentId)
       if (!isRepo(root)) return { agentId, isRepo: false, clean: true }
 
+      // Status consults branch/upstream config. Reject executable checkout
+      // settings first; SRT keeps the audited config read-only while confined.
+      await assertSafeWorkspaceGitConfig(root)
       const git = gitFor(root).env(workspaceGitLocalEnv())
       const s = await git.status()
       const files: WorkspaceGitFile[] = s.files

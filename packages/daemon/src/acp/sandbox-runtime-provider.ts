@@ -45,16 +45,36 @@ export async function runSandboxRuntimeProvider(argv: string[]): Promise<number>
   }
   const separator = argv.indexOf('--')
   const ownerPid = Number(argv[1])
-  if (separator !== 2 || argv.length < 4 || !Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
-    console.error('agentconnect sandbox-runtime: expected <settings> <owner-pid> -- <command> [args...]')
+  const requestedCwd = argv[2]
+  if (
+    separator !== 3 ||
+    argv.length < 5 ||
+    !Number.isSafeInteger(ownerPid) ||
+    ownerPid <= 0 ||
+    !requestedCwd ||
+    !isAbsolute(requestedCwd)
+  ) {
+    console.error('agentconnect sandbox-runtime: expected <settings> <owner-pid> <cwd> -- <command> [args...]')
     return 2
   }
 
   try {
     const config = SandboxRuntimeConfigSchema.parse(JSON.parse(readFileSync(argv[0]!, 'utf8')))
+    const sandboxCwd = realpathSync(requestedCwd)
+    const writeRoots = config.filesystem.allowWrite.map((path) => resolve(path))
+    const safeDirectories = config.git?.safeDirectories?.map((path) => resolve(path)) ?? []
+    if (!writeRoots.includes(resolve(sandboxCwd)) || !safeDirectories.includes(resolve(sandboxCwd))) {
+      throw new Error('sandbox cwd must be an explicit SRT write root and Git safe directory')
+    }
+    // SRT discovers mandatory deny paths from its own process.cwd() on Linux;
+    // the cwd argument to wrapWithSandboxArgv is not used for that scan. Anchor
+    // discovery to the trusted workspace before the manager initializes so
+    // .git/hooks, .git/config, and the other mandatory paths are protected in
+    // production as well as in smoke tests.
+    process.chdir(sandboxCwd)
     const requestedHome = process.env.HOME
     const privateHome = requestedHome && isAbsolute(requestedHome) ? realpathSync(requestedHome) : undefined
-    if (!privateHome || !config.filesystem.allowWrite.map((path) => resolve(path)).includes(resolve(privateHome))) {
+    if (!privateHome || !writeRoots.includes(resolve(privateHome))) {
       throw new Error('private HOME must be an explicit SRT write root')
     }
     const privateTmp = join(resolve(privateHome), '.tmp')
@@ -79,7 +99,10 @@ export async function runSandboxRuntimeProvider(argv: string[]): Promise<number>
     // gaps tracked in issue #312.
     await SandboxManager.initialize(config, async () => true)
 
-    const command = argv.slice(3).map(shellQuote).join(' ')
+    const command = argv
+      .slice(separator + 1)
+      .map(shellQuote)
+      .join(' ')
     const wrapped = await SandboxManager.wrapWithSandboxArgv(command, undefined, undefined, undefined, process.cwd())
     const child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
       env: wrapped.env,

@@ -53,6 +53,7 @@ describe('prepareRuntimeLaunch', () => {
       expect(launch.sandbox?.settingsPath).toBe(
         join(realpathSync(scopeDir), '.agentconnect', 'sandbox', 'settings.json')
       )
+      expect(launch.sandbox?.cwd).toBe(realpathSync(cwd))
       const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
       expect(settings.filesystem.denyRead).toEqual(
         expect.arrayContaining(maskedRoots.map((path) => realpathSync(path)))

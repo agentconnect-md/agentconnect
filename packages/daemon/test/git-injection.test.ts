@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -104,6 +104,12 @@ describe('gitEnvBase', () => {
     expect(workspaceGitEnvBase().GIT_CONFIG_GLOBAL).toBe(process.platform === 'win32' ? 'NUL' : '/dev/null')
     expect(Object.keys(workspaceGitEnvBase()).some((key) => /^(?:all|ftp|http|https|no)_proxy$/i.test(key))).toBe(false)
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['http.followRedirects', 'false'])
+    expect(configPairs(workspaceGitEnvBase())).toContainEqual([
+      'core.hooksPath',
+      process.platform === 'win32' ? 'NUL' : '/dev/null'
+    ])
+    expect(configPairs(workspaceGitEnvBase())).toContainEqual(['core.fsmonitor', 'false'])
+    expect(configPairs(workspaceGitEnvBase())).toContainEqual(['credential.helper', ''])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['fetch.bundleURI', ''])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['transfer.bundleURI', 'false'])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['fetch.uriProtocols', ''])
@@ -138,7 +144,7 @@ describe('gitEnvBase', () => {
     const root = mkdtempSync(join(tmpdir(), 'git-context-test-'))
     const workspace = join(root, 'workspace')
     const override = join(root, 'override')
-    const cleanEnv = workspaceGitEnvBase()
+    const cleanEnv = workspaceGitLocalEnv()
     execFileSync('git', ['init', workspace], { env: cleanEnv, stdio: 'ignore' })
     execFileSync('git', ['init', override], { env: cleanEnv, stdio: 'ignore' })
     execFileSync('git', ['-C', workspace, 'remote', 'add', 'origin', 'https://other-host.example/acme/repo'], {
@@ -157,7 +163,7 @@ describe('gitEnvBase', () => {
 
     try {
       await expect(
-        gitFor(workspace).env(workspaceGitEnvBase()).raw(['remote', 'get-url', 'origin'])
+        gitFor(workspace).env(workspaceGitLocalEnv()).raw(['remote', 'get-url', 'origin'])
       ).resolves.toContain('https://other-host.example/acme/repo')
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -168,10 +174,10 @@ describe('gitEnvBase', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'git-redirect-policy-test-'))
     const repository = 'https://github.com/acme/repo.git'
     try {
-      const cleanEnv = workspaceGitEnvBase()
-      execFileSync('git', ['init', workspace], { env: cleanEnv, stdio: 'ignore' })
+      const localEnv = workspaceGitLocalEnv()
+      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
       execFileSync('git', ['-C', workspace, 'config', `http.${repository}.followRedirects`, 'true'], {
-        env: cleanEnv
+        env: localEnv
       })
       expect(
         execFileSync('git', ['-C', workspace, 'config', '--get-urlmatch', 'http.followRedirects', repository], {
@@ -246,12 +252,98 @@ describe('gitEnvBase', () => {
     }
   })
 
+  it('rejects checkout-owned executable Git settings before host-side status or pull', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'git-executable-config-test-'))
+    const localEnv = workspaceGitLocalEnv()
+    try {
+      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
+      execFileSync('git', ['-C', workspace, 'config', 'core.hooksPath', 'custom-hooks'], { env: localEnv })
+      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/executable setting/)
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['default', 'custom'] as const)('does not execute %s post-merge hooks in daemon-owned Git', (mode) => {
+    const root = mkdtempSync(join(tmpdir(), `git-hook-policy-${mode}-`))
+    const workspace = join(root, 'workspace')
+    const marker = join(root, 'executed')
+    const setupEnv = workspaceGitLocalEnv()
+    try {
+      execFileSync('git', ['init', '-b', 'main', workspace], { env: setupEnv, stdio: 'ignore' })
+      execFileSync('git', ['-C', workspace, 'config', 'user.name', 'Test'], { env: setupEnv })
+      execFileSync('git', ['-C', workspace, 'config', 'user.email', 'test@example.invalid'], { env: setupEnv })
+      writeFileSync(join(workspace, 'initial'), 'initial\n')
+      execFileSync('git', ['-C', workspace, 'add', 'initial'], { env: setupEnv })
+      execFileSync('git', ['-C', workspace, 'commit', '-m', 'initial'], { env: setupEnv, stdio: 'ignore' })
+      execFileSync('git', ['-C', workspace, 'checkout', '-b', 'advance'], { env: setupEnv, stdio: 'ignore' })
+      writeFileSync(join(workspace, 'advance'), 'advance\n')
+      execFileSync('git', ['-C', workspace, 'add', 'advance'], { env: setupEnv })
+      execFileSync('git', ['-C', workspace, 'commit', '-m', 'advance'], { env: setupEnv, stdio: 'ignore' })
+      const advance = execFileSync('git', ['-C', workspace, 'rev-parse', 'HEAD'], {
+        env: setupEnv,
+        encoding: 'utf8'
+      }).trim()
+      execFileSync('git', ['-C', workspace, 'checkout', 'main'], { env: setupEnv, stdio: 'ignore' })
+
+      const hookRoot = mode === 'default' ? join(workspace, '.git', 'hooks') : join(workspace, 'custom-hooks')
+      mkdirSync(hookRoot, { recursive: true })
+      if (mode === 'custom') {
+        execFileSync('git', ['-C', workspace, 'config', 'core.hooksPath', hookRoot], { env: setupEnv })
+      }
+      const hook = join(hookRoot, 'post-merge')
+      writeFileSync(hook, `#!/bin/sh\nprintf executed > '${marker}'\n`)
+      chmodSync(hook, 0o755)
+
+      execFileSync('git', ['-C', workspace, 'merge', '--ff-only', advance], {
+        env: workspaceGitEnvBase(),
+        stdio: 'ignore'
+      })
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not execute a checkout-owned credential helper in daemon network Git', () => {
+    const root = mkdtempSync(join(tmpdir(), 'git-credential-policy-'))
+    const workspace = join(root, 'workspace')
+    const marker = join(root, 'executed')
+    const localEnv = workspaceGitLocalEnv()
+    try {
+      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
+      execFileSync(
+        'git',
+        [
+          '-C',
+          workspace,
+          'config',
+          'credential.https://example.invalid.helper',
+          `!printf executed > '${marker}'; exit 1`
+        ],
+        { env: localEnv }
+      )
+      try {
+        execFileSync('git', ['-C', workspace, 'credential', 'fill'], {
+          env: { ...workspaceGitEnvBase('https://example.invalid/acme/repo.git'), GIT_TERMINAL_PROMPT: '0' },
+          input: 'protocol=https\nhost=example.invalid\npath=acme/repo.git\n\n',
+          stdio: ['pipe', 'ignore', 'ignore']
+        })
+      } catch {
+        // No trusted helper was installed in this fixture; failure is expected.
+      }
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('updates the origin tracking ref when an explicit URL pull advances HEAD', async () => {
     const root = mkdtempSync(join(tmpdir(), 'git-pull-refspec-test-'))
     const remote = join(root, 'remote.git')
     const seed = join(root, 'seed')
     const workspace = join(root, 'workspace')
-    const env = { ...workspaceGitEnvBase(), GIT_ALLOW_PROTOCOL: 'file:https:ssh' }
+    const env = { ...workspaceGitLocalEnv(), GIT_ALLOW_PROTOCOL: 'file:https:ssh' }
     const run = (args: string[]) => execFileSync('git', args, { env, stdio: 'ignore' })
 
     try {

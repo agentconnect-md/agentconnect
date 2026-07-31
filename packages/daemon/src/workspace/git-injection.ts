@@ -57,6 +57,8 @@ const UNSAFE_OPTS = {
     allowUnsafeCredentialHelper: true, // the daemon-built credential.https://github.com.helper pairs
     allowUnsafeConfigEnvCount: true, // the daemon-built GIT_CONFIG_COUNT/KEY_n/VALUE_n channel
     allowUnsafeConfigPaths: true, // the daemon-selected empty global/system config view
+    allowUnsafeFsMonitor: true, // the daemon-built false override for checkout fsmonitor commands
+    allowUnsafeHooksPath: true, // the daemon-built /dev/null hooks path for host-side Git
     allowUnsafeSshCommand: true // the daemon-built ssh command that ignores user routing config
   }
 } as const
@@ -140,7 +142,7 @@ const EMPTY_GIT_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null'
 const WORKSPACE_SSH_COMMAND =
   'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
 const UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG =
-  /^(?:url\..*\.insteadof|include(?:if\..*)?\.path|http(?:\..*)?\.(?:proxy|curloptresolve)|remote\..*\.proxy|core\.sshcommand|fetch\.bundleuri)$/i
+  /^(?:url\..*\.insteadof|include(?:if\..*)?\.path|http(?:\..*)?\.(?:proxy|curloptresolve)|remote\..*\.(?:proxy|uploadpack|receivepack|vcs)|core\.(?:sshcommand|hookspath|fsmonitor|worktree|alternaterefscommand|askpass|pager)|pager\..*|filter\..*\.(?:clean|smudge|process)|diff\.(?:external|.*\.(?:command|textconv))|merge\..*\.driver|submodule\..*\.update|fetch\.bundleuri)$/i
 const WORKSPACE_GIT_CONTROLLED_ENV = new Set([
   'GIT_ALLOW_PROTOCOL',
   'GIT_CONFIG_NOSYSTEM',
@@ -167,6 +169,12 @@ function workspaceGitProcessEnv(): Record<string, string> {
 
 function workspaceGitConfigPairs(repository?: string): ReadonlyArray<readonly [string, string]> {
   const pairs: Array<readonly [string, string]> = [
+    // Disable both default/custom hooks and fsmonitor commands for every
+    // daemon-owned operation. Clear checkout-owned credential helpers before
+    // an optional daemon helper is appended below.
+    ['core.hooksPath', EMPTY_GIT_CONFIG],
+    ['core.fsmonitor', 'false'],
+    ['credential.helper', ''],
     ['http.followRedirects', 'false'],
     // Disable checkout- or server-selected secondary download locations.
     ['fetch.bundleURI', ''],
@@ -238,7 +246,11 @@ export function workspaceGitPullTarget(repository: string): {
 
 /** Environment for workspace Git operations that must never contact a remote. */
 export function workspaceGitLocalEnv(): Record<string, string> {
-  return { ...workspaceGitProcessEnv(), GIT_ALLOW_PROTOCOL: '' }
+  return {
+    ...workspaceGitProcessEnv(),
+    GIT_ALLOW_PROTOCOL: '',
+    ...gitConfigEnv(workspaceGitConfigPairs())
+  }
 }
 
 /**
@@ -250,9 +262,9 @@ export function workspaceGitLocalEnv(): Record<string, string> {
 export async function assertSafeWorkspaceGitConfig(cwd: string): Promise<void> {
   const names = await gitFor(cwd)
     .env(workspaceGitLocalEnv())
-    .raw(['config', '--no-includes', '--name-only', '-z', '--list'])
+    .raw(['config', '--local', '--no-includes', '--name-only', '-z', '--list'])
   if (names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))) {
-    throw new Error('workspace Git configuration contains a disallowed network override')
+    throw new Error('workspace Git configuration contains a disallowed network override or executable setting')
   }
 }
 

@@ -147,6 +147,8 @@ export interface AcpSandboxLaunch {
   /** Trusted SRT policy for ordinary ACP hosts. Delegated bwrap cells retain
    * their existing source-to-target mount launch and do not consume it. */
   settingsPath?: string
+  /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
+  cwd?: string
   /** Daemon-owned private broker roots hidden from every untrusted bwrap host. */
   maskedReadRoots?: string[]
   /** Present only for an entitled host and already tied to its broker cell. */

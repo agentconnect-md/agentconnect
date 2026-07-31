@@ -8,7 +8,13 @@ export interface PreparedRuntimeLaunch {
   /** Sandboxed launches carry a sanitized environment; unsandboxed launches inherit the daemon environment. */
   inheritProcessEnv: boolean
   runtimeHome?: string
-  sandbox?: { mechanism: SandboxMechanism; writable: string[]; settingsPath: string; maskedReadRoots?: string[] }
+  sandbox?: {
+    mechanism: SandboxMechanism
+    writable: string[]
+    settingsPath: string
+    cwd: string
+    maskedReadRoots?: string[]
+  }
 }
 
 /** Daemon policy overrides the per-agent preference. Without an available host
@@ -87,6 +93,7 @@ export function prepareRuntimeLaunch(opts: {
       mechanism: opts.sandboxMechanism!,
       writable: boundary.writable,
       settingsPath,
+      cwd: boundary.gitSafeDirectories[0]!,
       ...(opts.maskedReadRoots?.length ? { maskedReadRoots: opts.maskedReadRoots } : {})
     }
   }

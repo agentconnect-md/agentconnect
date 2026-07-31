@@ -25,6 +25,8 @@ try {
   const settingsPath = join(settingsDir, 'settings.json')
 
   for (const path of [workspace, home, memory, hostState, settingsDir]) mkdirSync(path, { recursive: true })
+  mkdirSync(join(workspace, '.git', 'hooks'), { recursive: true })
+  writeFileSync(join(workspace, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
   writeFileSync(join(agentDir, 'agent.json'), '{"secret":"hidden"}\n')
   writeFileSync(join(hostState, '.credentials.json'), '{"secret":"host"}\n')
   writeFileSync(
@@ -37,7 +39,7 @@ try {
           allowRead: [workspace, home, memory],
           allowWrite: [workspace, home, memory],
           denyWrite: ['/tmp/claude', '/private/tmp/claude'],
-          allowGitConfig: true
+          allowGitConfig: false
         },
         git: { safeDirectories: [workspace] }
       },
@@ -63,6 +65,8 @@ try {
     assert(denied(() => readFileSync(hostState + '/.credentials.json')), 'host runtime state remained readable')
     writeFileSync(workspace + '/ok.txt', 'ok')
     assert(readFileSync(workspace + '/ok.txt', 'utf8') === 'ok', 'workspace was not writable')
+    assert(denied(() => writeFileSync(workspace + '/.git/hooks/post-merge', 'escape')), 'git hooks remained writable')
+    assert(denied(() => writeFileSync(workspace + '/.git/config', 'escape')), 'git config remained writable')
     assert(denied(() => writeFileSync(outside, 'escape')), 'outside path was writable')
 
     const socketPath = home + '/compat.sock'
@@ -97,6 +101,7 @@ try {
       '__sandbox-runtime',
       settingsPath,
       String(process.pid),
+      workspace,
       '--',
       process.execPath,
       '--input-type=module',
@@ -109,7 +114,9 @@ try {
       outside
     ],
     {
-      cwd: workspace,
+      // Production providers inherit the daemon's cwd. The explicit trusted
+      // workspace argument must anchor SRT's mandatory-deny discovery itself.
+      cwd: root,
       env: { ...process.env, HOME: home },
       input: 'SRT_STDIN',
       encoding: 'utf8',
@@ -126,8 +133,8 @@ try {
   const orphanLauncher = `
     import { spawn } from 'node:child_process'
     const [entry, settingsPath, cwd] = process.argv.slice(1)
-    const child = spawn(process.execPath, [entry, '__sandbox-runtime', settingsPath, String(process.pid), '--', 'sleep', '30'], {
-      cwd,
+    const child = spawn(process.execPath, [entry, '__sandbox-runtime', settingsPath, String(process.pid), cwd, '--', 'sleep', '30'], {
+      cwd: ${JSON.stringify(root)},
       env: process.env,
       stdio: 'ignore'
     })

@@ -232,7 +232,8 @@ describe('delegated MCP copied socket/token isolation', () => {
       const ordinarySettings = writeSandboxSettings(ordinaryAgentDir, {
         writable: [sharedControlRoot, ordinaryHome],
         denyRead: [brokerRoot, runtimeHomeRoot],
-        allowRead: []
+        allowRead: [],
+        gitSafeDirectories: [sharedControlRoot]
       })
 
       const entitledA = delegatedCellSandboxWrap(
@@ -254,7 +255,8 @@ describe('delegated MCP copied socket/token isolation', () => {
         mechanism: 'bwrap',
         writable: [sharedControlRoot, ordinaryHome],
         maskedReadRoots: [brokerRoot, runtimeHomeRoot],
-        settingsPath: ordinarySettings
+        settingsPath: ordinarySettings,
+        cwd: sharedControlRoot
       })
       const victimB = delegatedCellSandboxWrap(
         process.execPath,

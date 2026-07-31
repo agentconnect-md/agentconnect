@@ -124,9 +124,15 @@ function probeSandbox(env: NodeJS.ProcessEnv): SandboxMechanism | undefined {
     const settingsPath = writeSandboxSettings(agentDir, {
       writable: [writable, privateHome],
       denyRead: [],
-      allowRead: []
+      allowRead: [],
+      gitSafeDirectories: [writable]
     })
-    const launch = sandboxWrap('true', [], { mechanism: 'bwrap', writable: [writable, privateHome], settingsPath })
+    const launch = sandboxWrap('true', [], {
+      mechanism: 'bwrap',
+      writable: [writable, privateHome],
+      settingsPath,
+      cwd: writable
+    })
     const probe = spawnSync(launch.cmd, launch.args, {
       env: { ...env, HOME: privateHome },
       stdio: 'ignore',
@@ -285,9 +291,10 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
       allowRead: canonical(policy.allowRead),
       allowWrite: canonical(policy.writable),
       denyWrite: canonical(['/tmp/claude', '/private/tmp/claude']),
-      // Agents must be able to update repo-local git config; SRT still protects
-      // hooks and the other mandatory code-execution paths.
-      allowGitConfig: true
+      // Daemon-managed Git writes the credential-helper entries outside the
+      // sandbox. A confined runtime must not redirect later host-side Git via
+      // core.hooksPath, core.fsmonitor, filter.*, or similar settings.
+      allowGitConfig: false
     },
     ...(policy.gitSafeDirectories?.length ? { git: { safeDirectories: canonical(policy.gitSafeDirectories) } } : {})
   }
@@ -314,15 +321,24 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
 export function sandboxWrap(
   cmd: string,
   args: string[],
-  opts: { mechanism: SandboxMechanism; writable: string[]; settingsPath?: string; maskedReadRoots?: string[] }
+  opts: {
+    mechanism: SandboxMechanism
+    writable: string[]
+    settingsPath?: string
+    cwd?: string
+    maskedReadRoots?: string[]
+  }
 ): { cmd: string; args: string[] } {
   if (!opts.settingsPath || !isAbsolute(opts.settingsPath)) {
     throw new SandboxError('sandbox settings path is required')
   }
+  if (!opts.cwd || !isAbsolute(opts.cwd)) {
+    throw new SandboxError('sandbox cwd is required')
+  }
   const provider = sandboxProviderLauncher()
   return {
     cmd: provider.cmd,
-    args: [...provider.args, '__sandbox-runtime', opts.settingsPath, String(process.pid), '--', cmd, ...args]
+    args: [...provider.args, '__sandbox-runtime', opts.settingsPath, String(process.pid), opts.cwd, '--', cmd, ...args]
   }
 }
 
