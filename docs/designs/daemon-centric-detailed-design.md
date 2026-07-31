@@ -201,7 +201,12 @@ over stdio; they do not create source-level coupling to TypeScript.
 ### D6. ACP Host (Local ACP Client)
 
 - **Responsibilities**: act as the ACP **client** (the role normally played by an IDE/editor); start the corresponding ACP adapter subprocess locally under the 1 agent : 1 machine rule; manage the ACP session lifecycle (new/prompt/load/cancel); handle reverse agent→client calls (file reads/writes, permission requests, and incremental `session/update` streams); **condense** agent output before returning it to D3, addressing the requirement that a channel show only start/plan/problem/end plus a link.
-- **Delegated preset webchat exception**: an entitled private webchat conversation on the built-in preset uses a dedicated ACP host in a mandatory Linux `bwrap` PID/mount cell, rather than the agent-scoped shared host. This is advertised only through `delegated_mcp_assertion_v1`; see [`webchat-preset-agentconnect-mcp.md`](webchat-preset-agentconnect-mcp.md).
+- **Preset webchat admin MCP**: an entitled private webchat conversation on the
+  built-in preset receives a session-scoped remote HTTPS MCP descriptor. The runtime
+  calls the CP-hosted catalog directly with a short-lived opaque conversation grant;
+  no dedicated ACP host or OS sandbox is required by this feature. Support is
+  advertised through `webchat_remote_mcp_v1`; see
+  [`webchat-preset-agentconnect-mcp.md`](webchat-preset-agentconnect-mcp.md).
 - **Language/dependencies**: TypeScript; **`@agentclientprotocol/sdk`** for ACP; `node:child_process` for subprocesses; `zod`.
 - **Key interfaces**: local ACP JSON-RPC in §6.3; expose the "current session context" to D8 so injected tools carry the channel/thread handle.
 
@@ -218,7 +223,11 @@ over stdio; they do not create source-level coupling to TypeScript.
 ### D8. MCP Tool Server
 
 - **Responsibilities**: provide **agent-to-agent collaboration and proactive messaging** by injecting daemon-owned tools into agents. The adapter retains platform credentials and the agent never sees them.
-- **Private admin MCP**: the built-in preset's entitled webchat cell may also receive `agentconnect-admin` through a conversation-private broker socket. The broker mints one exact-request assertion over the daemon↔CP control WebSocket and calls the standard CP MCP endpoint; it never adds delegated authority to the shared daemon MCP server. CP involvement is limited to management-tool control calls, not browser message bodies or ACP streams.
+- **Remote admin MCP**: the built-in preset's entitled webchat session may also
+  receive `agentconnect-admin` as a private, session-scoped HTTPS MCP descriptor.
+  The runtime calls the CP endpoint directly; the daemon does not proxy the MCP body
+  or hold an administrative broker. CP involvement remains limited to explicit
+  management-tool calls, not browser message bodies or ACP streams.
 - **Implementation path**: run an **MCP server** inside the daemon and configure the ACP adapter to use it. Most harnesses support tool integration through an MCP server. Internally it calls D3's `sendMessage` and D4's agent-discovery table.
 - **Language/dependencies**: TypeScript; **`@modelcontextprotocol/sdk`** (MCP server with stdio transport); `zod` (tool input schema).
 - **Exposed tool families**: unified messaging (`sendMessage`), channel context and discovery, memory, direct agent collaboration, orchestration, file reads, and eligible GitHub review submission. `packages/daemon/src/mcp/tools.ts` is authoritative.

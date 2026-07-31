@@ -1,1192 +1,587 @@
-# Webchat-Scoped AgentConnect MCP for the Preset Agent
+# Preset Webchat AgentConnect MCP
 
-**Status:** Implemented behind an operator rollout gate; disabled by default
-
-**Scope:** protocol + control-plane + relay + daemon
-
-**Related designs:**
-
-- [`preset-agents.md`](preset-agents.md)
-- [`agent-assistant.md`](agent-assistant.md)
-- [`session-visibility.md`](session-visibility.md)
-- [`daemon-centric-architecture.md`](daemon-centric-architecture.md)
+Status: proposed replacement design. This document is authoritative for the next
+implementation of the feature; the existing daemon-local broker implementation is
+superseded and must not be treated as the target architecture.
 
 ## 1. Summary
 
-When an authenticated console user starts or resumes a webchat conversation with
-the built-in `agentconnect` preset agent, AgentConnect temporarily attaches the
-CP-hosted AgentConnect MCP read/write tool catalog to that ACP session.
+An authenticated user chatting with the built-in `agentconnect` preset may use the
+curated AgentConnect administrative MCP catalog from that private webchat
+conversation.
 
-The tools act as the webchat user, not as the agent, daemon, relay, or an
-organization-wide system principal. Every operation reuses the existing MCP
-catalog, REST authorization, resource-visibility predicates, destructive-operation
-confirmation, rate limits, and audit trail.
+The runtime connects directly to the Control Plane's HTTPS MCP endpoint. The Control
+Plane issues a short-lived opaque delegation credential bound to the durable webchat
+conversation and injects it as an MCP transport credential through the daemon. The
+credential is runtime configuration: it is never model context, a tool argument, a
+user API key, or an organization-wide credential.
 
-The daemon never receives a reusable user credential. Its local MCP broker obtains
-a one-time assertion for each MCP request, then calls the standard CP
-`POST /api/v1/mcp` endpoint. The assertion is bound to one delegation, one
-invocation id, and the exact MCP request bytes. The CP consumes it atomically before
-executing the request.
+This design deliberately has no daemon-side administrative MCP broker, private Unix
+socket, dedicated isolation cell, `bwrap`, process-ancestry authentication, or
+Linux-only prerequisite. The daemon and the ACP runtimes it launches are one local
+trust domain for this feature.
 
-An entitled conversation runs in a dedicated ACP host inside a kernel-enforced
-session cell. Its admin MCP bridge uses a private Unix socket mounted only into that
-cell; it never uses the daemon's shared `McpControlServer` socket. Another ACP
-session therefore cannot reach the endpoint even if it learns the victim bridge's
-local token.
+The Control Plane remains off the ordinary message hot path. Browser messages still
+flow relay-to-daemon and agent execution remains daemon-local. Only an explicit
+AgentConnect administrative tool call goes from the runtime to the Control Plane,
+where the administrative APIs and their authorization already live.
 
-This design deliberately separates:
+## 2. Goals and non-goals
 
-- **Session admission:** which authenticated user owns the private webchat
-  conversation.
-- **MCP entitlement:** whether this session is a webchat session on the built-in
-  preset agent.
-- **Invocation authentication:** one short-lived, single-use assertion for one
-  exact MCP request.
-- **Operation authorization:** the initiating user's current membership, role, and
-  resource visibility at execution time.
+### 2.1 Goals
 
-## 2. Requirements and invariants
+- Give only an entitled, private, user-owned webchat conversation on the built-in
+  preset access to `agentconnect-admin`.
+- Derive the acting user from the durable `WebchatConversation` owner binding, never
+  from model-supplied arguments.
+- Re-run membership, RBAC, resource visibility, catalog, and confirmation checks at
+  execution time.
+- Use a short-lived, revocable, least-privilege credential that is useful only at the
+  AgentConnect MCP endpoint.
+- Keep credentials out of model input, tool arguments, transcripts, telemetry, and
+  ordinary logs.
+- Make retries idempotent so an ambiguous write does not execute twice.
+- Work on every platform on which the daemon and selected ACP runtime can configure
+  an HTTPS MCP server with private transport headers.
+- Preserve ordinary webchat and daemon-local tools if the Control Plane or delegated
+  MCP is unavailable.
 
-### 2.1 Product requirements
+### 2.2 Non-goals
 
-1. Starting or resuming webchat with the built-in `agentconnect` preset makes the
-   existing curated AgentConnect MCP read/write catalog available in that session.
-2. The tools execute as the user who owns the webchat conversation.
-3. Other sessions of the same agent do not receive this MCP:
-   - Slack, Discord, Telegram, Feishu, hook, cron, dream, and agent-to-agent
-     sessions are ineligible.
-   - Webchat sessions on non-preset agents are ineligible.
-4. The webchat session is private to its initiating user under
-   `session-visibility.md`. Organization ownership grants no read, join, resume,
-   or send access to another user's conversation.
-5. The enabled catalog is the existing curated read/write catalog. Existing
-   exclusions for credential, membership, organization, access-control, bot, and
-   hook writes remain in force.
+- Isolating mutually hostile processes running as the same OS user.
+- Defending against root, a compromised daemon, a compromised ACP runtime, process
+  memory inspection, or unrestricted same-UID debugging.
+- Treating a system prompt as a credential store.
+- Giving arbitrary agents, IM sessions, automations, hooks, cron sessions, or
+  agent-to-agent sessions access to the administrative catalog.
+- Moving browser message bodies, attachment bytes, or ACP `session/update` streams
+  through the Control Plane.
+- Replacing the existing curated MCP catalog or its REST authorization.
 
-### 2.2 Security invariants
+### 2.3 Local trust boundary
 
-1. The CP derives the acting `userId` from the durable
-   `WebchatConversation` owner binding. The relay and daemon may never nominate an
-   arbitrary user.
-2. `conversationId`, `orgId`, `agentId`, and `userId` are immutable for the life of
-   a webchat conversation. Resume must match all four.
-3. A delegation handle is not a user credential. Possessing it is insufficient to
-   call REST or MCP.
-4. A one-time assertion:
-   - is valid only at the AgentConnect MCP endpoint;
-   - is bound to one invocation id and one exact request hash;
-   - must make its one execution claim within 30 seconds;
-   - is consumed atomically at most once for execution;
-   - after a claim, can only observe that invocation or retrieve its cached result.
-5. Neither a reusable user credential nor a one-time assertion appears in ACP
-   session configuration, child-process environment, model context, transcript,
-   telemetry, audit details, or logs.
-6. Delegated authority never crosses the shared daemon MCP socket. Each entitled
-   conversation runs in a separate kernel isolation cell whose process namespace
-   hides other ACP hosts and whose mount policy exposes only its own private admin
-   MCP socket. Copying another cell's socket path and local token cannot reach or
-   authenticate to that cell.
-7. Membership, role, preset entitlement, agent visibility, placement, and
-   delegation validity are checked again when an assertion is minted. Membership,
-   role, resource visibility, MCP scope, and invocation validity are checked again
-   when the assertion is consumed.
-8. A stale delegation generation cannot displace or use a newer generation.
-9. A delegated invocation may not mutate its own host preset agent. In particular,
-   `updateAgent` and `deleteAgent` fail before REST dispatch when their `agentId`
-   equals the delegation's `agentId`.
-10. Losing the CP disables only the CP-hosted AgentConnect MCP tools. Ordinary
-    conversation delivery and daemon-local tools continue to work.
+Without an OS identity boundary, a native process cannot prove to another native
+process that it belongs to a particular conversation. A secret available to a
+runtime is a bearer credential and may be copied by a sufficiently privileged local
+peer. This design therefore makes the trust boundary explicit:
 
-### 2.3 External prerequisites
+- the daemon, its local state, and the ACP runtimes it launches are trusted together;
+- remote callers and model-produced tool arguments are untrusted;
+- credentials are protected against accidental disclosure and remote theft, not
+  against a hostile same-UID local process; and
+- operators requiring hostile-workload isolation must provide it outside this
+  feature, for example with separate OS users, containers, or VM boundaries.
 
-[`session-visibility.md`](session-visibility.md) remains a separate hard launch
-prerequisite. This feature does not absorb that design's protocol, persistence,
-authorization, memory-gating, or web work. An operator must not enable delegated
-MCP emission until new webchat sessions are persisted as `private` with
-`ownerIdentity = user:<WebchatConversation.userId>` and all session
-list/detail/message/tool-body reads enforce that visibility. Compatible deployments
-advertise `session-visibility-v1` from the daemon and enforce the corresponding
-Control Plane read predicates.
+The product and operational documentation must not describe the delegated MCP
+credential as kernel-bound, non-exportable, or safe against a compromised local
+runtime.
 
-The durable `WebchatConversation` owner binding already exists and remains the
-authorization source for this design. Session visibility prevents transcript
-disclosure; it does not replace the owner binding or grant invocation authority.
+## 3. Security invariants
 
-Kernel-enforced ACP session isolation is a second hard launch prerequisite.
-Delegated MCP emission remains disabled unless the daemon can:
+1. The CP derives `userId`, `orgId`, `agentId`, and `conversationId` from a stored
+   grant and its durable `WebchatConversation`. Values supplied by the daemon,
+   runtime, model, or MCP arguments never select the acting principal.
+2. The grant is accepted only by the AgentConnect MCP endpoint and exposes only the
+   delegated preset catalog. It is not valid for ordinary REST authentication.
+3. Every access grant is bound to one immutable logical-authority tuple:
+   `(conversationId, userId, orgId, agentId, authorityGeneration)`. Multiple
+   short-lived access grants may belong to the same authority generation.
+4. A grant has a short absolute expiry, can be revoked immediately, and is invalid
+   after its logical authority generation changes.
+5. The raw grant credential appears only transiently in the CP issuance reply,
+   daemon memory, and runtime-private MCP transport configuration. It never crosses
+   the relay and never appears in model context, tool schemas or arguments,
+   transcript bodies, audit details, metrics, logs, or durable local state.
+6. Every MCP request re-checks current membership, role, resource visibility, preset
+   entitlement, agent placement where relevant, catalog scope, and confirmation
+   policy.
+7. Delegated calls cannot mutate their own host preset agent. `updateAgent` and
+   `deleteAgent` fail before REST dispatch when their target is the grant's
+   `agentId`.
+8. One `(conversationId, invocationId)` is bound to one canonical request hash for
+   the full conversation lifetime. Credential renewal and authority-generation
+   rotation do not change this key. A transport retry may retrieve the same result
+   but cannot execute different bytes or repeat a completed write.
+9. The feature never falls back to a daemon API key, organization principal, user
+   API key, system-prompt secret, or unscoped MCP credential.
+10. Disabling or failing delegated MCP removes only `agentconnect-admin`; ordinary
+    webchat and daemon-local MCP tools continue.
 
-- run each entitled conversation in a dedicated ACP host rather than the preset
-  agent's shared host;
-- hide other ACP processes and their environments from that host;
-- mount a private admin MCP socket into only that host's filesystem namespace; and
-- enforce the same isolation for every untrusted ACP host on that daemon, so an
-  unsandboxed sibling cannot inspect or connect to an entitled cell.
-
-The initial implementation targets Linux `bwrap` with separate PID and mount
-namespaces and requires daemon-wide sandbox enforcement. The current macOS
-`sandbox-exec` write-confinement profile and hosts without a supported sandbox do
-not meet the read/process/socket isolation contract, so those daemons do not
-advertise this feature. Ordinary webchat continues without `agentconnect-admin`.
-
-## 3. Implemented composition
-
-The webchat path establishes the owner binding:
-
-1. `POST /orgs/:orgId/agents/:agentId/webchat/token` runs under human auth and
-   verifies that the user may view the agent.
-2. A fresh conversation writes
-   `WebchatConversation { id, userId, orgId, agentId }`.
-3. Resume succeeds only when the authenticated user owns the same conversation for
-   the same organization and agent.
-4. The relay asks the CP to verify the short-lived webchat token and receives the
-   user, conversation, target agent, and current daemon placement.
-5. The relay forwards webchat content directly to the daemon over `rd/*`; message
-   content never crosses the CP.
-
-The AgentConnect MCP remains CP-hosted and exposes the curated catalog through
-`POST /api/v1/mcp`. Its ordinary external flow authenticates personal API keys and
-OAuth tokens, then calls the existing REST surface with the same credential
-through `app.inject()`.
-
-Delegated preset webchat composes those paths with:
-
-- a session-scoped, non-credential delegation handle;
-- propagation of that handle from webchat verification to the daemon;
-- a dedicated, kernel-isolated ACP host and private admin MCP endpoint per entitled
-  conversation;
-- ad hoc MCP attachment at ACP `session/new` and `session/load`;
-- per-request assertion minting over the authenticated daemon↔CP WebSocket;
-- assertion authentication on the standard MCP endpoint;
-- safe in-process propagation of the resolved user identity to nested REST
-  requests without replaying the assertion.
-
-## 4. Decisions
-
-| Topic                       | Decision                                                                                                                                                                                                         | Rejected alternatives                                                                                                                                                                                         |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime credential          | The runtime receives only a cell-local Unix-socket path and token. Neither value is CP authority, and the endpoint is unreachable outside that conversation's kernel isolation cell.                             | Passing a delegated Bearer key in HTTP MCP headers or a bridge environment: the preset agent is shell-capable and may inspect sibling process configuration or logs.                                          |
-| ACP host isolation          | An entitled conversation gets a dedicated ACP host in a PID/mount-isolated cell. Every untrusted ACP host on a capable daemon is confined, and unsupported daemons omit the capability.                          | Reusing the preset's agent-wide ACP host leaves different users' bridge processes visible under one process boundary. Token-only authentication on a shared `0600` socket does not isolate same-UID sessions. |
-| MCP transport               | A private per-cell MCP broker exposes `agentconnect-admin` to ACP and calls the standard CP MCP endpoint from the daemon.                                                                                        | Reimplementing AgentConnect administration tools in the daemon duplicates catalog and authorization logic.                                                                                                    |
-| Invocation identity         | Two steps: mint a one-time assertion over daemon↔CP WS, then call standard `/api/v1/mcp`.                                                                                                                        | A reusable delegated API key has a wider theft and replay window. A combined proprietary `delegated-mcp/invoke` frame would not exercise the standard MCP endpoint selected for this design.                  |
-| Invocation identifiers      | A public UUID `invocationId` provides correlation/idempotency; a separate opaque assertion is the secret authenticator.                                                                                          | Treating `invocationId` itself as a Bearer capability risks exposing authority through ordinary correlation logs and audit fields.                                                                            |
-| User source                 | Resolve from `WebchatConversation.userId`.                                                                                                                                                                       | A user id reported by relay, daemon, model, or MCP arguments is forgeable.                                                                                                                                    |
-| Delegation lifetime         | Bound to the logical webchat session, not to one browser WebSocket. Default maximum lifetime is 12 hours; an ordinary reconnect reuses the current generation.                                                   | Revoking immediately on socket close can break a turn still completing after a transient browser disconnect.                                                                                                  |
-| Tool catalog                | Existing curated read/write catalog with live user RBAC and existing confirmation gates.                                                                                                                         | Read-only does not meet the accepted product requirement. Exposing all REST operations defeats catalog curation.                                                                                              |
-| Host-agent writes           | Delegated calls hard-deny `updateAgent` and `deleteAgent` when the target is the delegation's host agent.                                                                                                        | Ordinary user RBAC would let the session pause or reconfigure its own host; the preset's separate non-deletable/name guards do not establish this boundary.                                                   |
-| Nested REST auth            | An in-process `InternalInvocationAuth` seam propagates the already-verified principal to `app.inject()` subrequests.                                                                                             | Reusing the consumed assertion on nested REST calls creates replay races. A trusted header by itself can be forged by an external caller.                                                                     |
-| Idempotency                 | Persist a short-lived invocation ledger and bounded final MCP response.                                                                                                                                          | Blindly minting a new assertion after an ambiguous write can execute the operation twice.                                                                                                                     |
-| Local bridge implementation | Reuse the `mcp-bridge` protocol inside a private per-conversation endpoint. The shared `McpControlServer` continues serving ordinary daemon tools but never carries `agentconnect-admin` or a delegated context. | Reusing the shared socket for delegated contexts lets a same-UID session present another bridge's copied token. A second public/shared socket would reproduce the same flaw.                                  |
-
-## 5. Architecture
+## 4. Architecture
 
 ```mermaid
 sequenceDiagram
     participant Browser
     participant Relay
-    participant CPVerify as CP webchat verifier
+    participant CP as Control Plane
     participant Daemon
-    participant Cell as Isolated conversation ACP host
-    participant Broker as Private cell MCP broker
-    participant CPMCP as CP AgentConnect MCP
-    participant REST as CP REST authorization
+    participant Runtime as ACP runtime
+    participant REST as CP REST services
 
-    Browser->>Relay: Connect with CP-minted webchat token
-    Relay->>CPVerify: rc/verify(webchat-token)
-    CPVerify->>CPVerify: Verify owner binding, membership, agent and placement
-    CPVerify->>CPVerify: Create or rotate WebchatMcpDelegation
-    CPVerify-->>Relay: user + routing + delegation id/generation
-    Relay->>Daemon: rd/msg(webchat) + delegation reference
-    Daemon->>Daemon: Accept monotonic generation and bind to logical session
-    Daemon->>Cell: Start/load dedicated isolated host
-    Cell->>Broker: Attach agentconnect-admin over private mounted socket
-
-    Browser->>Relay: User turn
-    Relay->>Daemon: rd/msg(webchat turn)
-    Cell->>Broker: Model calls a tool
-    Broker->>Broker: Create exact MCP body, invocationId and SHA-256 hash
-    Broker->>CPVerify: mcp/invocation/mint over authenticated daemon WS
-    CPVerify->>CPVerify: Revalidate delegation, user, entitlement and placement
-    CPVerify-->>Broker: One-time opaque assertion
-    Broker->>CPMCP: POST /api/v1/mcp with assertion + invocationId
-    CPMCP->>CPMCP: Verify hash and atomically claim invocation
-    CPMCP->>REST: InternalInvocationAuth acts as the real user
-    REST-->>CPMCP: Authorized result
-    CPMCP->>CPMCP: Persist terminal invocation result and audit
-    CPMCP-->>Broker: Standard MCP response
-    Broker-->>Cell: MCP result
+    Browser->>CP: Create or resume authenticated webchat
+    CP->>CP: Bind conversation to user, org, and preset agent
+    Relay->>CP: Verify webchat token
+    CP-->>Relay: Routing and non-secret MCP entitlement
+    Relay-->>Daemon: Pre-addressed conversation context
+    Daemon->>CP: Request grant for descriptor instance
+    CP-->>Daemon: Pending grant + monotonic revision
+    Daemon->>CP: Accept exact grant revision
+    CP-->>Daemon: Activate exact grant revision
+    Daemon->>Runtime: CAS-install HTTPS MCP descriptor
+    Note over Daemon,Runtime: Authorization header is runtime configuration,<br/>not model context
+    Browser->>Relay: Webchat message
+    Relay->>Daemon: Message
+    Daemon->>Runtime: ACP prompt
+    Runtime->>CP: HTTPS MCP request + Bearer grant + invocation id
+    CP->>CP: Resolve durable owner and re-authorize
+    CP->>REST: In-process call as resolved user
+    REST-->>CP: Result
+    CP-->>Runtime: MCP result
+    Runtime-->>Daemon: ACP response
+    Daemon-->>Relay: Reply
+    Relay-->>Browser: Reply
 ```
 
-The CP remains outside the message hot path. It is contacted only during the
-existing webchat connection verification and during AgentConnect management-tool
-calls, which are control-plane operations by definition.
+The relay carries only a non-secret entitlement reference from webchat verification.
+The raw grant travels over scoped request/reply frames on the authenticated
+daemon↔CP control WebSocket. It is control metadata, not a chat body or ACP stream,
+and the daemon requests it without forwarding browser message content.
 
-## 6. Domain modules and interfaces
+## 5. Delegation grant
 
-### 6.1 `WebchatMcpDelegationService` (control plane)
+### 5.1 Stored record
 
-This module owns the interface between a verified webchat identity and later MCP
-invocations.
+The CP stores only a hash of a 256-bit random opaque credential:
 
 ```ts
-interface WebchatMcpDelegationService {
-  establish(input: {
-    conversationId: string
-    verifiedUserId: string
-    orgId: string
-    agentId: string
-    daemonId: string
-  }): Promise<DelegationReference | null>
-
-  mintInvocation(input: {
-    authenticatedDaemonId: string
-    delegationId: string
-    generation: number
-    agentId: string
-    conversationId: string
-    invocationId: string
-    requestHash: string
-    method: 'tools/list' | 'tools/call'
-    toolName?: string
-  }): Promise<MintedInvocationAssertion>
-}
-```
-
-`establish()` returns `null` for a valid webchat conversation that is not entitled
-to the admin MCP. It returns a reference only when:
-
-- the durable conversation row matches the verified token claims;
-- the current user remains a member of the organization;
-- the user can currently view the agent;
-- the target is the built-in preset, determined by its `preset_agent` relation,
-  never by slug alone;
-- the target's current placement is the daemon returned in the verification result.
-
-`mintInvocation()` obtains the daemon identity from the authenticated WebSocket
-connection. The daemon supplies `agentId` and `conversationId` from its immutable
-cell binding, and the CP compares both with the durable delegation row before any
-assertion is issued. It rechecks all current facts. The interface hides row locking,
-generation rotation, assertion hashing, and invocation-ledger state from its
-callers.
-
-### 6.2 `SessionMcpBroker` (daemon)
-
-The daemon module owns model-facing MCP attachment and remote forwarding.
-
-```ts
-interface SessionMcpBroker {
-  registerCell(input: {
-    isolationCellId: string
-    platform: string
-    agentId: string
-    conversationId: string
-    delegationId: string
-    generation: number
-    expiresAt: string
-  }): McpServer | null
-
-  releaseCell(input: {
-    isolationCellId: string
-    agentId: string
-    conversationId: string
-    delegationId: string
-    generation: number
-  }): void
-}
-```
-
-The module:
-
-- accepts only monotonic generations for an `(agentId, conversationId)` pair;
-- stores delegation references in memory, never in transcript or agent config;
-- atomically registers one immutable
-  `isolationCellId → (platform, agentId, conversationId, delegationId, generation)`
-  binding before the host starts and rejects non-webchat registration or reuse of
-  either the cell id or logical conversation with a different binding;
-- creates a private per-cell socket and local token scoped to that conversation;
-- exposes a model-facing server named `agentconnect-admin`;
-- translates local `tools/list` and `tools/call` requests into standard MCP
-  requests to the CP;
-- creates its own UUID `invocationId` rather than trusting the runtime's JSON-RPC
-  request id;
-- hashes the exact byte buffer it will send to the CP and sends those unchanged
-  bytes after minting;
-- derives every mint's `agentId`, `conversationId`, delegation id, and generation
-  from the registered cell binding, never from an MCP frame; and
-- clears bindings on host teardown, session expiry, agent detach/move, and daemon
-  shutdown.
-
-The broker is an adapter, not a second implementation of the MCP catalog. Tool
-descriptors and results come from the CP AgentConnect MCP.
-
-The existing `mcp-bridge` wire protocol may be reused, but delegated contexts are
-never registered in the shared `McpControlServer` token map. The private broker
-listener is created under a dedicated host temporary root that every ACP cell masks
-with a fresh tmpfs. It is separate from the ordinary shared MCP socket directory.
-Only the entitled cell's source directory is bind-mounted back into that cell at a
-fixed private path. Other cells therefore resolve the same apparent path inside
-their own tmpfs, never the victim's listener. A copied local token presented on the
-attacker's private endpoint or the ordinary shared socket is unknown, and the
-attacker cannot present it to the victim listener.
-
-The local token is defense in depth inside a cell, not the cross-session security
-boundary. The kernel process/mount boundary and the daemon's immutable
-`isolationCellId → (platform, agentId, conversationId, delegationId, generation)`
-binding are the authority boundary.
-
-### 6.3 `DelegatedWebchatHostManager` (daemon)
-
-The existing ACP host is agent-scoped and may serve multiple conversations. It
-cannot host an entitled conversation because all of its `mcp-bridge` children share
-one process and filesystem boundary. `DelegatedWebchatHostManager` instead owns one
-host per entitled `(agentId, conversationId)`:
-
-```ts
-interface DelegatedWebchatHostManager {
-  allocateCell(input: { agentId: string; conversationId: string; delegationId: string; generation: number }): {
-    isolationCellId: string
-  }
-
-  startHost(input: {
-    isolationCellId: string
-    agentId: string
-    conversationId: string
-    adminMcpServer: McpServer
-  }): Promise<AcpHost>
-
-  stopHost(input: { agentId: string; conversationId: string; isolationCellId: string }): Promise<void>
-}
-```
-
-For the initial Linux implementation, the manager:
-
-1. refuses entitlement unless daemon-wide sandbox enforcement is active and the
-   probed `bwrap` supports PID and mount namespaces;
-2. launches a fresh ACP adapter process for the conversation, even when another
-   conversation for the same preset agent is warm;
-3. gives the cell a private PID namespace, fresh temporary filesystem, and
-   conversation-private runtime home;
-4. places admin socket sources under a host temporary root masked in every cell,
-   then bind-mounts only that cell's directory at the private endpoint; it never
-   mounts another cell's directory or registers a delegated context on the shared
-   MCP socket;
-5. allocates the random `isolationCellId`, registers the exact binding with
-   `SessionMcpBroker`, and passes the returned descriptor to `startHost()` before
-   any prompt can run;
-6. records the `isolationCellId` only in daemon memory and passes it directly
-   between trusted daemon modules, never through relay, ACP, or model input; and
-7. if broker registration or host initialization fails, releases every partially
-   created resource before ordinary chat reports the isolated-host failure; and
-8. calls the generation-fenced `releaseCell()` while tearing down the host, private
-   listener, token, and mount source together.
-
-The daemon does not deliver the first prompt until the ACP host has initialized all
-MCP servers inside the cell. A host crash or bridge disconnect destroys the cell;
-resume creates a fresh cell and local token while retaining the still-valid logical
-delegation generation.
-
-Linux host processes outside the daemon's sandbox boundary remain part of the
-trusted daemon/operator threat domain. A compromised host account is a daemon
-compromise, already covered in §12. Same-UID ACP runtimes are untrusted and must all
-be isolated before this capability is advertised.
-
-### 6.4 `InvocationAssertionAuthenticator` (control plane)
-
-This module is mounted only on the MCP route. Normal REST human authentication does
-not recognize invocation assertions.
-
-```ts
-interface InvocationAssertionAuthenticator {
-  claim(input: {
-    bearer: string
-    invocationId: string
-    requestBytes: Uint8Array
-  }): Promise<
-    | { kind: 'execute'; context: InvocationContext }
-    | { kind: 'completed'; responseBytes: Uint8Array }
-    | { kind: 'in_progress'; retryAfterMs: number }
-    | { kind: 'ambiguous' }
-  >
-}
-```
-
-`claim()` hashes the Bearer token and request bytes, then performs the state
-transition and validation described in §9. It never returns the assertion hash or
-raw token.
-
-### 6.5 `InternalInvocationAuth` (control plane)
-
-The existing MCP implementation reuses REST guards through `app.inject()`. An
-invocation assertion must be consumed exactly once at the outer MCP request, so it
-cannot be replayed as authentication on nested REST requests.
-
-`InternalInvocationAuth` provides a narrow in-process seam:
-
-```ts
-interface InternalInvocationAuth {
-  run<T>(context: InvocationContext, fn: () => Promise<T>): Promise<T>
-  authorizeInjectedRequest(req: FastifyRequest): boolean
-}
-```
-
-The implementation uses `AsyncLocalStorage` plus a one-time random subrequest nonce:
-
-1. The outer MCP route calls `run(context, ...)` only after claiming the assertion.
-2. Each MCP `ctx.get()` / `ctx.send()` allocates a nonce and records the expected
-   HTTP method and path in the current async-local context.
-3. The nested `app.inject()` request carries that nonce in an internal header.
-4. A pre-handler atomically consumes a nonce only when the async-local context,
-   method, and path all match, then populates:
-   - `req.principal.userId`;
-   - `req.apiKeyOrgId`;
-   - `req.apiKeyScopes = ['mcp:read', 'mcp:write']`;
-   - `req.delegatedInvocation = { invocationId, delegationId, agentId,
-conversationId }`.
-5. A network request has no async-local context. Copying the header is therefore
-   useless and falls through to normal authentication.
-
-The expected method/path fence prevents unrelated in-process work spawned under the
-same async context from accidentally inheriting authority. Parallel internal reads,
-such as `whoami`, receive independent nonces.
-
-## 7. Persistence
-
-### 7.1 Delegation
-
-Add a monotonically increasing generation to the existing durable owner row and a
-separate delegation record:
-
-```prisma
-model WebchatConversation {
-  id                   String @id @db.Uuid
-  // existing orgId, agentId, userId...
-  delegationGeneration Int    @default(0)
-}
-
-model WebchatMcpDelegation {
-  id             String    @id @default(uuid()) @db.Uuid
-  conversationId String    @db.Uuid
-  generation     Int
-  userId         String
-  orgId          String
-  agentId        String    @db.Uuid
-  daemonId       String    @db.Uuid
-  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
-  expiresAt      DateTime  @db.Timestamptz(6)
-  revokedAt      DateTime? @db.Timestamptz(6)
-  revokedReason  String?
-
-  @@unique([conversationId, generation])
-  @@index([conversationId, revokedAt])
-  @@index([expiresAt])
-  @@map("webchat_mcp_delegation")
-}
-```
-
-Establishment locks the `WebchatConversation` row. If its latest unrevoked delegation
-matches the same immutable owner, organization, agent, and current daemon placement
-and is not expired, establishment returns that existing reference. It creates a
-higher generation and revokes the prior row only when the prior delegation expired,
-was explicitly revoked, or the agent placement changed. Concurrent tabs and
-ordinary reconnects therefore converge on the same active generation instead of
-invalidating each other. The plaintext webchat token and assertions are never
-stored.
-
-The default delegation lifetime is 12 hours, capped by any earlier logical-session
-expiry. Session TTL expiry sends the conditional revocation frame in §8.5. Agent
-move/detach is CP-observable and revokes the delegation directly. The current
-production daemon has no explicit logical-session-close revocation path. Deletion
-of the owner membership blocks mint immediately through its live membership check
-even if a best-effort lifecycle signal is delayed.
-
-A compromised daemon can suppress its TTL-expiry revocation frame. The hard
-security bound in that threat case is therefore the 12-hour delegation expiry plus
-the live membership, role, agent-visibility, preset-entitlement, and placement
-checks—not immediate TTL detection. This is an explicit residual trust in a daemon
-that already owns the agent process and session content.
-
-### 7.2 Invocation ledger
-
-```prisma
-enum McpInvocationStatus {
-  issued
-  running
-  succeeded
-  failed
-  ambiguous
-}
-
-model McpInvocation {
-  id               String              @id @db.Uuid // public invocationId
-  delegationId     String              @db.Uuid
-  assertionHash    String              @unique
-  requestHash      String
-  method           String
-  toolName         String?
-  status           McpInvocationStatus @default(issued)
-  assertionExpires DateTime            @db.Timestamptz(6)
-  startedAt        DateTime?           @db.Timestamptz(6)
-  completedAt      DateTime?           @db.Timestamptz(6)
-  responseStatus   Int?
-  responseBytes    Bytes?
-  createdAt        DateTime            @default(now()) @db.Timestamptz(6)
-
-  @@index([delegationId, createdAt])
-  @@index([status, assertionExpires])
-  @@map("mcp_invocation")
-}
-```
-
-The assertion is an opaque value with at least 192 bits of entropy. Only its peppered
-hash is stored. It uses a distinct token prefix and hash domain from API keys, OAuth
-tokens, and webchat tokens. Its 30-second claim deadline controls whether it can make
-the initial `issued → running` execution claim. After a successful claim, the same
-assertion may only poll `running` or retrieve the cached terminal response for the
-remainder of the 15-minute response-cache window; it can never start another
-execution.
-
-The execution timeout is a separate, explicit two minutes from `startedAt`.
-`MCP_INVOCATION_EXECUTION_TIMEOUT_MS = 120_000` is shared by the outer MCP dispatch
-deadline and recovery reaper. If dispatch reaches that deadline, the CP
-compare-and-sets `running → ambiguous` and returns the ambiguous-operation error.
-A late handler result cannot overwrite `ambiguous`. The timeout is deliberately
-longer than ordinary control-plane request budgets but bounded well inside the
-15-minute result-cache window.
-
-Final MCP responses are cached for 15 minutes and capped at 256 KiB so an identical
-retry can receive the original result without re-executing a write. The current
-curated catalog returns bounded control-plane metadata and does not return
-transcripts, message bodies, attachment bytes, or credentials. A future tool that
-can return those data classes must define a different idempotency policy before
-joining this catalog.
-
-A reaper:
-
-- deletes terminal invocations and their cached responses after 15 minutes;
-- marks `running` rows whose `startedAt + 120 seconds` has elapsed as `ambiguous`;
-- deletes expired, unused `issued` rows;
-- deletes expired delegations only after their invocation rows are reapable.
-
-## 8. Protocol changes
-
-All additions are optional for rolling compatibility.
-
-### 8.1 Relay↔CP verification result
-
-Extend `RcVerifyResult` for an entitled webchat token:
-
-```ts
-delegation?: {
+interface WebchatMcpGrant {
   id: string
-  generation: number
-  expiresAt: string
-}
-```
-
-No assertion or reusable credential crosses the relay.
-
-### 8.2 Relay↔daemon webchat delivery
-
-Extend `RdMsgWebchat` with the same optional `delegation` reference. The relay copies
-only the CP verdict; browser input cannot set or override it. Every webchat operation
-on that browser connection carries the reference so daemon restart and relay
-redelivery do not depend on an earlier setup message.
-
-The daemon accepts the highest generation it has seen for a logical session. A lower
-generation never overwrites a higher one. When creating the isolation cell, it binds
-the envelope's `agentId` and logical `conversationId` together with the delegation
-reference. The CP compares all of those fields at assertion mint, so moving a valid
-reference from one same-daemon conversation to another can at most make the
-descriptor appear; it cannot authorize a tool call.
-
-This counter is intentionally delegation-scoped rather than reusing
-`sessionEpoch`/`seq`/`launchId`. Those standard fences order daemon placement and
-control-stream ownership, while a delegation may survive a browser reconnect, relay
-redelivery, daemon process restart, and unchanged placement. The CP transactionally
-increments `generation` whenever that logical conversation's user authority rotates;
-the daemon binds it together with the delegation id, agent id, and conversation id,
-and every mint and claim rechecks the same tuple. A higher generation therefore
-invalidates all older authority without coupling its lifetime to an ACP process or
-control-connection launch.
-
-The relay remains trusted for webchat content delivery: a fully compromised relay
-can inject or suppress content in a conversation it routes, as it can without this
-feature. That residual ingress risk does not let a leaked delegation reference call
-MCP directly, change the daemon's immutable cell binding, or swap one conversation's
-delegated principal into another conversation's cell.
-
-### 8.3 Daemon↔CP assertion mint
-
-The daemon uses a request/reply pair on the existing authenticated control
-WebSocket:
-
-```ts
-// D -> CP REQ
-type McpInvocationMint = {
-  delegationId: string
-  generation: number
-  agentId: string
+  tokenHash: string
   conversationId: string
-  invocationId: string
-  requestHash: string // lowercase SHA-256 hex of exact subsequent HTTP body bytes
-  method: 'tools/list' | 'tools/call'
-  toolName?: string // required for tools/call; checked again from the HTTP body
-}
-
-// CP -> D REP
-type McpInvocationMinted = {
-  invocationId: string
-  assertion: string
-  expiresAt: string
-}
-```
-
-The CP derives `authenticatedDaemonId` from the WebSocket connection. The frame does
-not carry it as a trusted payload field. It requires `agentId` and `conversationId`
-to equal the durable delegation fields; the daemon broker derives those values from
-the registered isolation-cell binding, not from relay input at invocation time or
-from the model-facing MCP request.
-
-A retry of mint with the same `(invocationId, delegationId, requestHash)` while the
-row is still `issued` rotates the assertion hash and invalidates the prior plaintext
-assertion. A retry with a different binding returns `INVOCATION_CONFLICT`. Once the
-row is `running` or terminal, mint does not issue another assertion.
-
-### 8.4 Standard MCP HTTP call
-
-The daemon broker calls the existing MCP route:
-
-```http
-POST /api/v1/mcp
-Authorization: Bearer <one-time-assertion>
-X-AgentConnect-Invocation-Id: <uuid>
-Content-Type: application/json
-
-<the exact bytes whose SHA-256 hash was authorized>
-```
-
-The public `/v1/mcp` alias may accept the same credential, but a daemon should use
-the CP base URL derived from its connected control-plane URL to avoid an unnecessary
-public edge hop.
-
-### 8.5 Daemon↔CP delegation revocation
-
-Add a best-effort, generation-fenced request/reply on the authenticated control
-WebSocket:
-
-```ts
-// D -> CP REQ
-type WebchatMcpDelegationRevoke = {
-  delegationId: string
-  generation: number
-  reason: 'session_closed' | 'session_expired' | 'agent_detached'
-}
-
-// CP -> D REP
-type WebchatMcpDelegationRevoked = {
-  delegationId: string
-  generation: number
-  revoked: boolean
+  userId: string
+  orgId: string
+  agentId: string
+  authorityGeneration: number
+  descriptorInstanceId: string
+  grantRevision: number
+  state: 'pending' | 'active' | 'revoked' | 'expired'
+  catalog: 'agentconnect-admin'
+  issuedAt: Date
+  expiresAt: Date
+  revokedAt: Date | null
 }
 ```
 
-The CP applies the revocation only when the authenticated daemon, delegation id, and
-generation all match. A stale signal from an older generation cannot revoke the
-current one. The current daemon sends this frame on session TTL expiry. Agent
-move/detach is additionally revoked from the CP's own placement transaction and
-does not rely on daemon cooperation. The protocol reserves `session_closed`, but no
-production logical-session-close path emits it today. Browser close is a
-transport-only no-op. A daemon shutdown clears only the daemon's in-memory binding;
-it does not revoke the CP delegation, so an ordinary restart can restore the same
-reference from the next trusted `rd/msg`.
+The raw value uses a recognizable prefix, for example `acmcp_`, followed by
+cryptographically random material. It contains no embedded identity or authorization
+claims. An opaque record is preferred over a self-contained JWT because authorization
+is online, revocation must be immediate, and no identity data needs to leave the CP.
 
-## 9. Invocation state machine
+Token hashes use the same keyed, constant-time verification discipline as other
+high-entropy API credentials. Database compromise alone must not yield a usable grant.
 
-```mermaid
-stateDiagram-v2
-    [*] --> issued: mint
-    issued --> issued: identical mint retry rotates assertion
-    issued --> running: valid /mcp claim (atomic CAS)
-    issued --> [*]: assertion expires unused
-    running --> succeeded: tool returned success
-    running --> failed: tool returned a definite error
-    running --> ambiguous: execution timeout or CP crash recovery
-    succeeded --> succeeded: retrieve cached response
-    failed --> failed: retrieve cached response
-    succeeded --> [*]: response-cache TTL
-    failed --> [*]: response-cache TTL
-    ambiguous --> [*]: ledger TTL
-```
+### 5.2 Issuance
 
-### 9.1 Claim behavior
+The CP may issue a grant only when all of the following hold:
 
-The MCP route hashes the Bearer token and raw request bytes, then loads the invocation
-by assertion hash. It verifies:
+- `WEBCHAT_PRESET_MCP_ENABLED=true`;
+- the request is for the built-in `agentconnect` preset;
+- the authenticated user owns the durable webchat conversation;
+- the conversation maps immutably to the same user, organization, and agent;
+- the target session is private and reports the required session-visibility
+  capability;
+- the user may currently view and use the agent; and
+- the selected runtime advertises support for private HTTPS MCP transport headers.
 
-- header `invocationId` equals the stored id;
-- delegation is unexpired and unrevoked;
-- request hash, method, and declared tool match;
-- delegation generation is still current;
-- the user remains a member;
-- the user can still view the preset agent;
-- the agent remains the built-in preset and is still placed on the authenticated
-  minting daemon.
+The raw credential is returned exactly once, in the issuance reply that begins its
+delivery to the runtime. Because the CP retains only its hash, it never attempts to
+reconstruct or re-deliver an existing credential.
 
-For an initial `issued → running` claim, the 30-second assertion claim deadline
-must also be unexpired. The transition is a compare-and-set in the same transaction,
-so only the winner executes. Once an invocation is `running` or terminal, presenting
-the same assertion, invocation id, and request hash may only observe status or
-retrieve the cached response; the execution deadline no longer authorizes any new
-work.
+Whenever a daemon restart, ACP session rebuild, or scheduled credential renewal
+requires raw material, the daemon requests a fresh access grant under the current
+logical authority generation. Access-grant renewal does not rotate that generation.
 
-### 9.2 Retries
+Each durable webchat `conversationId` maps to one ACP session and therefore exactly
+one `agentconnect-admin` descriptor. That descriptor has one daemon-generated,
+stable `descriptorInstanceId`, persisted as non-secret session metadata so it
+survives a daemon restart. Concurrent browser tabs resume the same conversation,
+ACP session, descriptor instance, and active grant; they do not create competing
+runtime descriptors.
 
-- `issued`, expired before claim: the broker may repeat mint for the same invocation
-  and hash to rotate the assertion.
-- `running`, with the same assertion and request hash: return
-  `409 invocation_in_progress` with a bounded retry interval; do not execute again.
-- `succeeded` or `failed`, with the same assertion and request hash: return the
-  cached MCP response byte-for-byte until its 15-minute TTL. This is result
-  retrieval, not execution authority.
-- Same invocation id with a different delegation or request hash: return
-  `409 invocation_conflict`.
-- `ambiguous`: return an MCP error stating that the operation may have taken effect.
-  Never execute it automatically.
+The CP allocates a strictly increasing `grantRevision` for that descriptor's entire
+lifetime. It never resets when `authorityGeneration` changes. The daemon persists
+the last staged and installed `(authorityGeneration, grantRevision)` fences as
+non-secret session metadata and compares them lexicographically: an older authority
+generation always loses, and revisions order deliveries within the same generation.
+The CAS fence is global to the one runtime session target, so every delivery that
+could mutate its descriptor is totally ordered. Delivery uses a two-phase protocol:
 
-If the CP crashes after a REST mutation commits but before the terminal invocation
-result commits, recovery marks the old `running` row `ambiguous`. This can produce a
-conservative ambiguous result even when no mutation occurred, but it never silently
-duplicates a write. The user or agent must inspect current state before proposing a
-new invocation; destructive operations require fresh human confirmation.
+1. The daemon sends `webchat/mcp-grant/issue` with the conversation and descriptor
+   instance. CP authenticates the daemon from the WebSocket, verifies current
+   placement and entitlement, creates one `pending` grant, and replies with
+   `webchat/mcp-grant/issued { grantId, authorityGeneration, descriptorInstanceId,
+grantRevision, token, expiresAt }`. Creating a newer pending revision atomically
+   revokes any older pending revision for that descriptor instance.
+2. The daemon retains the raw token only in memory and CAS-stages the reply only
+   when its full `(authorityGeneration, grantRevision)` fence is newer than both
+   persisted staged and installed fences. A delayed older-generation or
+   lower-revision reply is discarded and NACKed; it can never overwrite the
+   descriptor.
+3. The daemon sends `webchat/mcp-grant/accept` carrying the exact grant id,
+   authority generation, descriptor instance, and revision. In one transaction,
+   the CP verifies that this is still the newest pending revision for that instance,
+   marks it `active`, and revokes the instance's prior active grant.
+4. CP replies with `webchat/mcp-grant/activate` carrying the same exact tuple. Only
+   that reply permits the daemon to CAS-install the descriptor into the runtime,
+   again against the persisted full fence. A retry of any frame is idempotent; a
+   mismatched, older-generation, or superseded tuple fails closed.
 
-The same behavior applies when execution exceeds two minutes: the client receives an
-ambiguous result because an in-flight nested REST operation may already have crossed
-its commit point. Timeout never returns the invocation to `issued` and never permits
-automatic replay.
+`pending` credentials are rejected by the MCP endpoint. The sole descriptor instance
+has at most one active and one pending grant, so only one usable grant exists for the
+conversation. Creating a newer pending revision revokes the older pending row;
+activating it revokes the prior active row. Lost delivery leaves an unusable pending
+row that expires after two minutes and leaves the prior active grant unchanged.
+Logical conversation close, ownership change, incompatible placement change, or
+security revocation increments the authority generation and atomically revokes all
+access grants from the previous generation.
 
-## 10. Authorization and tool execution
+### 5.3 Lifetime
 
-### 10.1 Effective authority
+The initial access-grant lifetime is 30 minutes. It has no refresh token. Descriptor
+replacement requests a newly issued access grant while preserving the logical
+authority generation. A runtime that cannot replace a descriptor receives a bounded
+authorization-expired tool error after expiry; reconnecting or rebuilding the ACP
+session obtains a fresh grant.
 
-For every tool call:
+Before implementation ships, runtime probes must establish whether each curated
+runtime can update the descriptor safely. A longer lifetime is not an acceptable
+substitute for a missing rotation mechanism without a separate design review.
 
-```text
-effective authority =
-  active webchat owner binding
-  ∩ active preset-session delegation
-  ∩ current organization membership and role
-  ∩ current agent visibility
-  ∩ curated MCP catalog
-  ∩ existing per-resource visibility
-  ∩ existing confirmation and rate-limit policy
-```
+The grant is revoked on:
 
-The preset agent contributes no authority. A viewer remains unable to perform
-member/editor/owner operations. Demotion or organization removal applies on the next
-mint/claim without waiting for delegation expiry.
+- logical conversation close or expiry;
+- logical authority-generation rotation;
+- user sign-out when the product revokes the conversation;
+- membership removal;
+- agent detach, deletion, or incompatible placement change;
+- operator disablement or explicit administrative revocation; and
+- detection of credential misuse.
 
-### 10.2 MCP authentication
+Live authorization still fails even if a revocation event is delayed.
 
-Create a route-specific `mcpAuth` seam:
+## 6. Runtime delivery
 
-- personal API key and OAuth Bearer credentials retain existing behavior;
-- an invocation assertion is recognized only on the AgentConnect MCP route;
-- REST `humanAuth` does not accept invocation assertions;
-- a claimed assertion produces `InvocationContext`, not a reusable `ApiKey`
-  principal;
-- OAuth discovery challenges remain for ordinary unauthenticated external MCP
-  clients, while broker-specific assertion failures return a narrow non-OAuth error
-  that the local broker maps to an MCP tool error.
-
-### 10.3 Existing safeguards retained
-
-- `tools/list` exposes the same curated read/write descriptors.
-- Tool schemas and zod validation are unchanged.
-- Destructive tools still require exact schema-level confirmation.
-- Before REST dispatch, delegated `updateAgent` and `deleteAgent` calls compare
-  their target `agentId` with `InvocationContext.delegation.agentId` and return 403
-  on equality. This hard check is specific to delegated calls; external
-  personal/OAuth MCP clients retain their existing authority.
-- Existing route RBAC and resource visibility remain authoritative.
-- MCP rate limits key delegated calls by `(userId, delegationId)`.
-- Rejected assertion claims consume no tool-call rate budget and never reach REST.
-- The audit event remains `mcp_tool_call`, with additional non-secret details:
+The daemon adds a remote MCP server only to the entitled ACP session:
 
 ```json
 {
-  "principalType": "webchat_assertion",
-  "invocationId": "...",
-  "delegationId": "...",
-  "agentId": "...",
-  "conversationId": "...",
-  "tool": "updateAgent",
-  "status": 200
+  "name": "agentconnect-admin",
+  "url": "https://control.example.com/api/v1/mcp",
+  "headers": {
+    "Authorization": "Bearer acmcp_REDACTED"
+  }
 }
 ```
 
-`actorUserId` is the durable webchat owner. Delegated calls retain the existing
-bounded `details.args` policy (`auditArgs`, including its 512-character cap); this
-design does not introduce a second redaction policy. Raw assertions, assertion
-hashes, request hashes, full MCP request bodies, and response bodies are not audit
-details.
+Requirements:
 
-## 11. Session lifecycle
+- The descriptor is structured ACP/runtime configuration, not prompt text.
+- The runtime must keep transport headers out of model input and tool arguments.
+- The runtime MCP client must implement the invocation-id contract in section 8.
+- The daemon must redact `headers` from diagnostics, errors, traces, and session
+  dumps.
+- `session/new` and `session/load` attach the descriptor only to the exact eligible
+  webchat session.
+- Agent-scoped shared ACP hosts are permitted only when the runtime guarantees that
+  MCP descriptors and credentials are session-scoped. If it has agent-wide MCP
+  configuration, that runtime is ineligible until it supports session scoping.
+- The daemon must apply the exact revision-fenced activation protocol in section
+  5.2 when an access grant renews or the logical authority generation rotates.
+- The raw token is never persisted in `agent.json`, the transcript store, memory, or
+  workspace files.
 
-### 11.1 New session
+The daemon does not interpret MCP requests, mint per-request assertions, proxy MCP
+bodies, or execute administrative tools.
 
-Before dispatching the first webchat turn, the daemon reads the delegation reference
-from the trusted `rd/msg` envelope. It allocates the conversation's dedicated
-isolation cell, calls `SessionMcpBroker.registerCell()` with the exact envelope and
-delegation binding, and passes the returned private MCP descriptor to
-`DelegatedWebchatHostManager.startHost()`. It does not use the preset agent's
-ordinary shared ACP host. `registerCell()` returns `agentconnect-admin` only when:
+## 7. MCP authentication and authorization
 
-- `platform === 'webchat'`;
-- the agent and conversation match an active broker binding;
-- the binding has not expired;
-- the host's in-memory `isolationCellId` matches the broker binding; and
-- the daemon's isolation capability remains healthy.
+`POST /api/v1/mcp` accepts the delegated Bearer scheme in addition to its ordinary
+external authentication schemes. Authentication order must avoid treating a
+delegated token as a personal API key.
 
-The normal daemon-local AgentConnect bridge and agent-enabled MCP providers remain
-unchanged. `agentconnect-admin` is an additional descriptor, not a replacement for
-ordinary agent capabilities. Its descriptor points at the cell-private endpoint,
-never the shared `McpControlServer` socket.
+After constant-time token verification, the CP:
 
-### 11.2 Resume and daemon restart
+1. loads the grant and durable conversation;
+2. verifies expiry, revocation, authority generation, owner tuple, preset, and
+   feature gate;
+3. resolves the acting principal exclusively from stored records;
+4. validates the MCP tool against the delegated catalog;
+5. applies current membership, RBAC, and resource-visibility rules;
+6. hard-denies host-agent mutation;
+7. looks up or creates the conversation-level idempotency row;
+8. either claims an operation that needs no confirmation or records
+   `awaiting_confirmation`; and
+9. only after the appropriate state transition, calls the existing REST/service
+   surface in process through `InternalInvocationAuth`.
 
-Every `rd/msg` carries the delegation reference. A graceful daemon shutdown does not
-revoke the logical-session delegation. After either a graceful restart or a crash,
-the next webchat operation creates a fresh isolation cell, restores the in-memory
-binding before `session/load`, and reattaches the MCP descriptor as part of the
-normal load path. The old cell's socket path and token are not reused.
+Nested REST calls receive an already resolved internal principal. The raw grant is
+not replayed as REST Bearer authentication and cannot authenticate an external REST
+request.
 
-A production daemon upgrade restarts both shared ACP hosts and dedicated
-conversation hosts, so conversations created before feature rollout receive the
-descriptor on their next isolated load. No attempt is made to mutate the MCP server
-list of an already-running legacy ACP session or move a live shared-host session
-into a cell. Such a session must load under the upgraded daemon or start a new
-conversation before the tools appear.
+Hidden resources preserve the normal no-existence-oracle behavior.
 
-### 11.3 Reconnect and concurrent tabs
+## 8. Invocation idempotency
 
-Ordinary re-verification returns the current active delegation when its owner,
-organization, agent, placement, and expiry still match. Concurrent browser tabs
-belonging to the same immutable conversation owner therefore share one
-logical-session delegation and one conversation isolation cell. They do not
-invalidate each other, create a second user identity, or start parallel ACP hosts
-for the same conversation.
+The runtime MCP client, not the model or daemon, creates a UUIDv4 `invocationId`
+when it begins one logical `tools/call`. It sends that value in the
+`Idempotency-Key` HTTP header. The header is transport metadata and is not exposed
+as a tool argument.
 
-Expiry, explicit revocation, or placement change creates a higher generation and
-revokes the prior generation transactionally. The daemon accepts only the greatest
-generation and the CP refuses mint requests for stale generations.
+The client must retain the invocation id, canonical request bytes, and terminal
+state until it receives a terminal MCP response or the retry window expires.
+Automatic HTTP retries, credential replacement, reconnect, and `session/load` reuse
+the same id and exact request. The MCP JSON-RPC request id is unrelated and must not
+be used as the idempotency key.
 
-The daemon serializes generation replacement on the logical conversation gate and
-never edits a cell binding in place:
+If credential replacement requires a runtime process restart, the runtime adapter
+must persist only the non-secret outstanding invocation records in its session
+state and restore them before retrying. A runtime that cannot satisfy and probe this
+contract is ineligible for `webchat_remote_mcp_v1`. This guarantee covers transport
+retry of an already-created invocation; it cannot deduplicate a model independently
+deciding later to create a new logical tool call.
 
-1. mark the old cell as draining so it accepts no new broker calls;
-2. stop its ACP host and private listener;
-3. call generation-fenced `releaseCell()` with the complete old binding;
-4. allocate a new cell id and call `registerCell()` with the higher generation; and
-5. start/load the fresh host with the new private descriptor.
+The CP canonicalizes the exact tool name and arguments and stores:
 
-An old in-flight invocation may finish under the CP ledger rules, but it cannot mint
-after revocation. Failure to start the replacement does not restore the stale cell or
-fall back to a shared delegated socket; ordinary webchat reports an isolated-host
-failure and may retry the fresh generation.
+```ts
+interface WebchatMcpInvocation {
+  conversationId: string
+  invocationId: string
+  createdAuthorityGeneration: number
+  sourceGrantId: string
+  requestHash: string
+  status: 'claimed' | 'awaiting_confirmation' | 'executing' | 'completed' | 'failed' | 'ambiguous' | 'stale'
+  boundedResponse: Uint8Array | null
+  createdAt: Date
+  expiresAt: Date
+}
+```
 
-### 11.4 Expiry
+The unique key is `(conversationId, invocationId)`, not an access-grant id or
+authority generation:
 
-An assertion's initial execution claim expires after 30 seconds. A claimed
-assertion remains only a read capability for its invocation status/cached result
-until the 15-minute response-cache TTL. A delegation expires after at most 12 hours.
-An assertion that expired before any claim may be reminted for the same unstarted
-invocation; an expired delegation requires the user to reconnect webchat.
+- the first request creates the row; a no-confirmation operation claims execution,
+  while a confirmation-gated operation stops at `awaiting_confirmation`;
+- every request first looks up this key across all authority generations;
+- the same hash observes in-progress state or receives the cached final response;
+- a different hash is rejected;
+- a completed, failed, or ambiguous invocation from an older authority generation
+  returns its recorded outcome and can never dispatch again;
+- a nonterminal invocation from an older authority generation atomically becomes
+  `stale` and can never dispatch, including an old pending confirmation;
+- an ambiguous write is never executed automatically a second time; and
+- records and cached responses have bounded size and are retained through the full
+  conversation retry and confirmation window, plus a 24-hour safety margin.
 
-The broker surfaces a specific MCP error:
+This ledger replaces the former mint/claim assertion exchange. The runtime already
+calls the final authentication and execution endpoint directly, so a second
+per-request credential adds no security boundary.
 
-> Your AgentConnect session authorization expired. Reconnect this conversation and
+## 9. Tool catalog and confirmation
+
+The delegated catalog reuses the existing curated AgentConnect MCP catalog. Existing
+exclusions for credential, membership, organization, access-control, bot, and hook
+writes remain.
+
+Authorization is evaluated per request. A grant never snapshots a role into lasting
+authority.
+
+High-impact writes use one execution path. They require a user confirmation bound
+to:
+
+```text
+conversationId + createdAuthorityGeneration + invocationId + requestHash + userId + sourceGrantId + expiresAt
+```
+
+The initial MCP request performs live authorization, creates the unique invocation
+row as `awaiting_confirmation`, and returns a pending result. It never dispatches
+the operation. MCP retries only observe that row; they cannot approve, claim, or
+execute it.
+
+The model cannot satisfy confirmation by returning `yes`. The authenticated browser
+presents the exact operation to the conversation owner. Approval is the sole
+execution claimant:
+
+1. It locks the invocation row and the conversation authority fence in a serializable
+   transaction.
+2. It verifies the row is still `awaiting_confirmation`, the request hash and bound
+   fields are unchanged, the source grant is active and unexpired, and its authority
+   generation is still current.
+3. It re-runs current owner binding, membership, role, resource visibility, preset
+   entitlement, placement, catalog scope, host-agent denial, and feature-gate checks.
+4. It CAS-transitions the row to `executing`. Revocation and generation rotation
+   serialize on the same authority fence, so only one ordering can win.
+5. The elected approval worker dispatches exactly once. Success or ordinary failure
+   records a terminal response; a crash or uncertain outcome after `executing`
+   becomes `ambiguous`, never retryable execution.
+
+Concurrent approvals and MCP retries only observe `executing` or its terminal
+result. Denial, confirmation expiry, failed live authorization, revoked grant, or
+generation mismatch transitions the row to a terminal non-executing state. Approval
+never revives a stale invocation.
+
+The first implementation may keep the existing catalog's stricter exclusions while
+browser confirmation is completed. It must not silently weaken confirmation to make
+remote MCP easier to ship.
+
+## 10. Session lifecycle
+
+### 10.1 New conversation
+
+1. Browser authenticates and requests a webchat token.
+2. CP creates `WebchatConversation` and its private owner binding.
+3. CP creates authority generation 1 and returns a non-secret entitlement to relay.
+4. Relay forwards routing and entitlement metadata.
+5. Daemon starts or reuses the normal agent ACP host.
+6. Daemon completes the revision-fenced grant activation protocol and creates the
+   ACP session with the session-scoped remote MCP descriptor.
+7. Only then may the first model prompt run.
+
+If descriptor attachment fails, the prompt may continue without
+`agentconnect-admin`, but the user-facing session must surface that administration
+tools are unavailable.
+
+### 10.2 Resume
+
+Resume succeeds only for the same authenticated owner, organization, agent, and
+conversation. The CP keeps the current logical authority generation, while the
+daemon completes a fresh revision-fenced grant activation because stored hashes
+cannot be re-delivered when the daemon no longer retains the active credential.
+An ordinary browser reconnect does not itself rotate the credential: all tabs share
+the conversation's one ACP session and descriptor. The daemon must activate and
+attach a fresh descriptor before `session/load` or the next prompt only after
+restart, descriptor loss, or scheduled renewal requires new raw material.
+
+### 10.3 Close and revoke
+
+Logical close revokes the current grant. Browser socket loss alone is not necessarily
+a logical close because an in-flight turn may survive a transient reconnect.
+
+Operator disablement stops issuance and revokes active grants in a bounded background
+operation. An emergency endpoint must support exact grant, conversation, user, agent,
+organization, and global feature revocation without requiring daemon isolation.
+
+## 11. Failure behavior
+
+| Failure                                                  | Behavior                                                                          |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Non-preset or non-webchat session                        | No `agentconnect-admin` descriptor.                                               |
+| Runtime lacks private, session-scoped remote MCP headers | Runtime is ineligible; ordinary chat continues.                                   |
+| Grant missing, forged, expired, revoked, or stale        | MCP returns authorization expired/invalid; no fallback identity.                  |
+| CP unavailable                                           | Admin tool returns a retryable error; ordinary chat and local tools continue.     |
+| User removed or visibility changed                       | Next request fails under live authorization.                                      |
+| Agent moved or authority generation changed              | Old grants fail; reconnect or session update installs the new descriptor.         |
+| Duplicate invocation                                     | Same request returns status/cached result; different request is rejected.         |
+| Ambiguous write                                          | Report ambiguous; do not retry execution automatically.                           |
+| Feature disabled                                         | Stop issuance, revoke active grants, and omit/remove descriptors.                 |
+| Credential appears in a log or transcript                | Treat as a security incident and revoke the access grant or authority generation. |
+
+Errors shown to the user describe the action needed, for example:
+
+> AgentConnect administration is unavailable for this conversation. Reconnect and
 > retry.
 
-It never falls back to another user, a daemon key, or an organization-wide key.
+They do not mention CP, bearer tokens, ACP, or internal component names.
 
-## 12. Failure behavior
+## 12. Privacy and data handling
 
-| Failure                                   | Behavior                                                                                                                                                                                                                                                                                                                                    |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Non-preset or non-webchat session         | No `agentconnect-admin` descriptor.                                                                                                                                                                                                                                                                                                         |
-| Isolation unavailable or unhealthy        | Daemon omits the delegated-MCP capability and CP returns no delegation; ordinary webchat continues. A daemon never falls back to a shared or token-only delegated socket.                                                                                                                                                                   |
-| Missing/forged delegation reference       | Descriptor absent or tool mint denied; ordinary chat continues.                                                                                                                                                                                                                                                                             |
-| Token/path copied across cells            | The attacking cell cannot resolve or connect to the victim's private socket mount. Presenting the token on its own or the shared socket returns unknown/expired; no assertion mint occurs.                                                                                                                                                  |
-| Dedicated ACP host or bridge exits        | Daemon destroys that cell and private listener. Resume creates a fresh cell/token and reuses only a still-valid logical delegation.                                                                                                                                                                                                         |
-| CP unavailable during mint or `/mcp`      | AgentConnect admin tool returns a retryable error; ordinary chat/local tools continue.                                                                                                                                                                                                                                                      |
-| User removed or role/visibility changed   | Next mint/claim fails with no existence oracle for hidden resources.                                                                                                                                                                                                                                                                        |
-| Agent moved after delegation              | Mint fails; reconnect resolves current placement and rotates delegation.                                                                                                                                                                                                                                                                    |
-| Assertion expired before use              | Broker remints the same unstarted invocation.                                                                                                                                                                                                                                                                                               |
-| Assertion replay                          | Cached result, `in_progress`, or `ambiguous`; never a second execution.                                                                                                                                                                                                                                                                     |
-| Request bytes differ from authorized hash | Reject before MCP parsing or audit of tool arguments.                                                                                                                                                                                                                                                                                       |
-| Execution exceeds two minutes             | Invocation compare-and-sets to `ambiguous`; late completion cannot make it retryable or overwrite that state.                                                                                                                                                                                                                               |
-| CP crash during execution                 | Old `running` invocation becomes `ambiguous`; no automatic write replay.                                                                                                                                                                                                                                                                    |
-| Daemon restart                            | Delegation reference is restored from the next trusted `rd/msg`; real assertions were never persisted.                                                                                                                                                                                                                                      |
-| Session TTL expiry                        | Daemon sends the generation-fenced §8.5 revocation frame and clears its local binding. Browser close and ordinary lifecycle drain/stop/restart do not revoke.                                                                                                                                                                               |
-| Relay compromise                          | A leaked or cross-conversation delegation reference alone cannot mint: CP additionally requires the placed daemon's authenticated WS and an agent/conversation binding equal to the durable delegation. The relay remains trusted for the content it delivers into an otherwise valid conversation.                                         |
-| Daemon compromise                         | Until the 12-hour delegation ceiling, a compromised daemon may suppress TTL-expiry notification and request assertions only for delegations previously established by real preset-webchat users. Current user membership/RBAC/visibility, host-agent denial, curated catalog, exact-request assertions, rate limits, and audit still apply. |
+The CP receives only explicit administrative MCP requests and their bounded results.
+Browser messages, attachment bytes, ordinary model output, and ACP update streams
+remain outside the CP.
 
-## 13. Compatibility and operator rollout
+The raw grant must be redacted at source. Deny-list filtering after logging is
+insufficient. In particular:
 
-`delegated_mcp_assertion_v1` is both a wire capability and an isolation
-attestation. A daemon advertises it only when all of the following are true:
+- reverse proxies and HTTP access logs omit `Authorization`;
+- daemon and runtime diagnostics omit MCP headers;
+- relay logs omit entitlement-bearing verification fields;
+- OpenTelemetry attributes use grant outcome/reason, never raw identifiers or tokens;
+- errors do not serialize request headers or descriptors;
+- database rows contain only token hashes; and
+- model context, tool arguments, transcripts, memory, and audit details never contain
+  the credential.
 
-- it is running on Linux with `bwrap` installed;
-- the daemon startup probe successfully creates the required PID and mount
-  namespaces (having a `bwrap` executable on `PATH` is not enough);
-- `security.requireSandbox=true`, so every untrusted ACP host on that daemon is
-  confined rather than only delegated hosts;
-- the private broker and dedicated webchat-host manager initialized; and
-- it can create one private process/mount cell and runtime home per entitled
-  conversation.
+The remote model provider must receive tool definitions and tool results as required
+for MCP use, but never the MCP transport header.
 
-macOS `sandbox-exec`, optional sandbox policy, a failed live probe, or incomplete
-broker initialization omits the capability. The CP additionally defaults
-`WEBCHAT_PRESET_MCP_ENABLED` to `false` and accepts only the literal values `true`
-and `false`. It returns a delegation only when that operator gate is true, the
-target is the built-in `agentconnect` preset, the durable conversation is
-user-owned, private-session enforcement is deployed, and the placed daemon
-currently advertises the capability.
+## 13. Capability and rollout
 
-The CP, relay, and daemon must be upgraded as one compatible protocol cohort before
-the gate is enabled. The relay must preserve the optional CP-verified delegation
-reference on every webchat operation; it never accepts one from browser input. The
-daemon must understand the delegated mint/revoke frames and attach the private
-`agentconnect-admin` descriptor. The CP must support delegation persistence,
-one-time assertion mint/claim, and nested REST identity propagation. Optional wire
-fields keep mixed or older peers safe: they continue ordinary webchat without
-`agentconnect-admin`; there is no shared-socket, daemon-key, organization-principal,
-or reusable-user-credential fallback.
+Rename the wire capability from the implementation-specific
+`delegated_mcp_assertion_v1` to `webchat_remote_mcp_v1`. The new capability attests
+that the daemon can attach a private, session-scoped HTTPS MCP descriptor to the
+selected runtime. It does not attest to an OS sandbox or hostile-process isolation.
 
-### 13.1 Staged enablement
+The CP feature gate remains default-off. Enablement requires:
 
-1. Deploy compatible CP, relay, and daemon builds with
-   `WEBCHAT_PRESET_MCP_ENABLED=false`.
-2. Confirm private webchat session enforcement: new sessions have
-   `visibility=private`, their owner identity is derived from the durable
-   `WebchatConversation.userId`, and another member, including an organization
-   owner, cannot read or resume them.
-3. On a canary Linux daemon, install `bwrap`, set
-   `security.requireSandbox=true`, restart the daemon, and confirm its live
-   registration includes both `session-visibility-v1` and
-   `delegated_mcp_assertion_v1`. Absence of the latter is a failed prerequisite,
-   not a reason to force the flag.
-4. Exercise ordinary webchat and daemon-local MCP tools while the CP gate remains
-   off. There must be no delegated authority row or `agentconnect-admin`
-   descriptor.
-5. Set `WEBCHAT_PRESET_MCP_ENABLED=true` on the CP and restart it for the canary
-   cohort. Verify a new or re-verified built-in-preset webchat receives the admin
-   MCP, while non-preset webchat and every IM, hook, cron, dream, and
-   agent-to-agent session remain ineligible.
-6. Expand only after the §15 metrics show successful cell creation, assertion
-   claim, and invocation completion without unexplained denial, cleanup failure,
-   or ambiguous-write growth.
+1. deployed CP support for grants, authentication, revocation, idempotency, and
+   redaction;
+2. relay support for non-secret entitlement delivery and protocol support for
+   confidential CP↔daemon grant delivery;
+3. daemon support for exact-session, revision-fenced descriptor activation and
+   removal;
+4. a passing runtime probe proving remote HTTPS MCP headers are session-scoped and
+   absent from model context and diagnostics, and that `Idempotency-Key` is created
+   and preserved across every supported automatic retry and descriptor-renewal
+   path;
+5. private session visibility enforcement; and
+6. a tested revoke path.
 
-The feature has no user-facing setting. Entitlement is derived from trusted session
-origin, durable conversation ownership, the built-in preset relation, current
-placement, and current user authorization.
+Roll out by runtime and daemon canary. Do not infer support merely from operating
+system, executable presence, or generic MCP support.
 
-### 13.2 Rollback
+During migration, CP must not issue both the old broker assertion flow and the new
+remote grant for one conversation. Existing feature code may remain behind its old
+capability while the replacement is implemented, but production enablement selects
+exactly one protocol generation.
 
-Rollback begins at the authority source:
+## 14. Observability
 
-1. Set `WEBCHAT_PRESET_MCP_ENABLED=false` and restart the CP first. This stops new
-   delegation issuance while leaving token verification, relay delivery, ordinary
-   webchat, and daemon-local tools unchanged. It does not revoke an authority that
-   was already issued.
-2. Revoke existing authorities through a production lifecycle that actually closes
-   the authority boundary: session TTL expiry or agent detach/move. Those paths
-   send or transactionally apply the exact generation-fenced revoke. No production
-   logical-session-close path emits a revoke today, and browser socket close is
-   intentionally a transport-only no-op.
-3. Do not treat an ordinary daemon/agent drain, stop, restart, or upgrade as
-   revocation. Those operations destroy local hosts and broker bindings while
-   retaining inactive authority so a still-open logical session can resume. Wait
-   for TTL/detach revocation or the maximum 12-hour delegation ceiling.
-4. Confirm delegation revocation/expiry and isolation destruction have converged,
-   then roll back relay and daemon protocol support if required. Keep ordinary
-   webchat routing in place throughout.
+Use closed, low-cardinality labels:
 
-There is no fleet-wide bulk delegation-revoke API. For urgent containment, detach
-the affected agent/placement so its exact generations are revoked, or isolate the
-affected daemon / make it stop advertising `delegated_mcp_assertion_v1` so mint and
-claim fail closed. Those emergency actions can interrupt ordinary webchat or agent
-availability on that placement; state that tradeoff explicitly and keep the daemon
-isolated until revocation or the 12-hour ceiling is confirmed. Do not introduce a
-shared MCP endpoint or broader credential as a temporary fallback.
+| Metric                                              | Labels              |
+| --------------------------------------------------- | ------------------- |
+| `agentconnect.webchat_mcp.grant.transitions`        | `event=issued       | rotated   | revoked                      | expired                                   | failed`, bounded `reason`    |
+| `agentconnect.webchat_mcp.request.duration`         | `stage=authenticate | authorize | execute`, `outcome=succeeded | failed                                    | ambiguous`                   |
+| `agentconnect.webchat_mcp.invocation.transitions`   | `event=claimed      | replayed  | completed                    | failed                                    | ambiguous`, bounded `reason` |
+| `agentconnect.webchat_mcp.confirmation.transitions` | `event=requested    | approved  | denied                       | expired                                   | failed`                      |
+| `agentconnect.webchat_mcp.descriptor.transitions`   | `event=attached     | rotated   | removed                      | failed`, `runtime` from a bounded catalog |
 
-## 14. Testing
+Metrics and logs exclude user, organization, agent, conversation, grant, invocation,
+token, Authorization header, request body, tool arguments, response body, and
+transcript values unless an existing privacy-reviewed audit record explicitly
+requires a non-secret identifier.
 
-### 14.1 Protocol
+## 15. Implementation consequences
 
-- Old and new `RcVerifyResult` and `RdMsgWebchat` payloads round-trip.
-- Browser input cannot populate delegation fields.
-- Mint request/reply schemas reject missing or malformed delegation, agent,
-  conversation, invocation, hash, method, and tool fields.
-- Delegation-revoke schemas require a generation and accept only the enumerated
-  lifecycle reasons.
-- Daemon identity is envelope/connection-derived, not a payload field.
+The replacement removes:
 
-### 14.2 Control-plane unit tests
+- `SessionMcpBroker` delegated-admin responsibilities;
+- delegated cell socket and local bridge-token protocols;
+- `DelegatedWebchatHostManager` isolation-only host ownership;
+- delegated MCP `bwrap` and peer-auth capability probes;
+- daemon↔CP assertion mint frames and claim authentication;
+- private broker/runtime-home mount roots; and
+- isolation-specific metrics and denial reasons.
 
-- `establish()` truth table for webchat/non-webchat, preset/non-preset,
-  membership, agent visibility, owner mismatch, placement, and expiry.
-- Concurrent establish calls and ordinary reconnects serialize on
-  `WebchatConversation` and reuse one current generation.
-- Mint rejects wrong daemon, mismatched agent or conversation, stale generation,
-  expired/revoked delegation, removed member, hidden agent, reused invocation id
-  with a different hash, and unknown tool.
-- Assertion claim verifies token hash, invocation id, exact request bytes, TTL, and
-  compare-and-set behavior.
-- Identical mint retry rotates only an unclaimed assertion.
-- Recovery converts overdue `running` rows to `ambiguous`.
-- The outer dispatch deadline and reaper use the same 120-second execution timeout;
-  a late result cannot replace `ambiguous`.
-- Reaper removes only rows whose response/idempotency window has elapsed.
+The implementation adds:
 
-### 14.3 Control-plane integration tests
+- opaque grant persistence and revocation;
+- non-secret entitlement delivery in webchat verification/routing;
+- confidential two-phase CP↔daemon grant delivery;
+- exact-session, revision-fenced remote MCP descriptor lifecycle;
+- delegated Bearer authentication at `/api/v1/mcp`;
+- conversation-scoped invocation idempotency across authority generations;
+- runtime capability probes for private headers and session scoping; and
+- credential redaction tests across CP, relay, daemon, and runtime adapters.
 
-- A delegated assertion calls the standard `/api/v1/mcp` endpoint and executes as
-  the conversation owner.
-- Reader/member/editor/owner behavior matches direct console REST behavior.
-- Restricted resources invisible to the user remain 404 through MCP.
-- User demotion, membership removal, agent visibility tightening, agent move, and
-  delegation rotation take effect on the next call.
-- Delegated `updateAgent` and `deleteAgent` calls targeting the host preset fail
-  before REST dispatch, while the same permitted operations against another agent
-  retain ordinary user RBAC.
-- Invocation assertions are rejected on every ordinary REST route.
-- A copied internal subrequest header without matching async-local context is
-  rejected.
-- Parallel nested requests receive independent one-time internal nonces.
-- Destructive confirmation, read/write catalog curation, scopes, rate limits, and
-  the existing bounded `details.args` audit policy remain intact.
-- Duplicate `/mcp` submissions never execute a write twice and return the cached
-  response where terminal.
-- A claimed assertion can retrieve its cached terminal response after the
-  30-second claim deadline but cannot begin new work.
-- A two-minute execution timeout becomes `ambiguous`, never `issued` or
-  automatically retryable.
-- A simulated crash between REST completion and invocation completion yields
-  `ambiguous`, never automatic re-execution.
-
-### 14.4 Daemon tests
-
-- Only preset-agent webchat sessions receive `agentconnect-admin`.
-- Slack, hook, cron, dream, agent-to-agent, and ordinary-agent webchat sessions do
-  not receive it.
-- `registerCell()` rejects every platform other than trusted-envelope `webchat`,
-  even when the caller supplies an otherwise valid delegation reference.
-- Capability admission requires daemon-wide kernel confinement plus process and
-  private-socket isolation; `sandbox-exec`, optional/no sandbox, and a failed
-  isolation probe omit the capability.
-- Two entitled conversations on the same preset use distinct ACP host processes,
-  PID namespaces, isolation cell ids, private socket mounts, and local tokens.
-- Before B's bridge makes its first request, give user A the exact private socket
-  path and local token. A cannot connect to B's endpoint; presenting the token to
-  A's endpoint or the shared `McpControlServer` is denied with no mint frame.
-- Repeat the copied-path/token attempt after B's bridge has connected and completed
-  `tools/list`; A remains denied and no B-bound mint frame is emitted.
-- Broker-generated invocation ids ignore runtime JSON-RPC ids.
-- The exact hashed request buffer is the exact HTTP body sent.
-- Higher delegation generations replace lower ones; lower ones cannot overwrite.
-- Generation rotation drains and stops the old host, generation-fenced releases its
-  immutable cell binding, and registers a fresh cell before load. A failed fresh
-  start never restores the stale cell or mutates its binding in place.
-- Concurrent tabs carrying the same current generation do not invalidate each
-  other.
-- `session/load` after daemon restart reattaches the descriptor.
-- Host/bridge failure removes the private listener and token; resume creates new
-  local material without rotating a still-valid CP delegation.
-- Session TTL expiry and agent detach/move emit or transactionally apply the
-  generation-fenced revocation and tear down the private broker binding and
-  dedicated host. Browser close and ordinary drain/stop/restart do not revoke.
-- Expired assertion remint and expired-delegation reconnect errors are distinct.
-- CP failure affects only the remote admin MCP.
-- Neither assertion nor user credential appears in ACP server configuration,
-  child-process env, transcript, telemetry, or logs.
-
-### 14.5 End-to-end privacy and identity
-
-With two members using the same preset agent:
-
-- each user gets a distinct conversation, logical session, delegation, and
-  invocation actor;
-- each conversation runs in a distinct kernel isolation cell even though both
-  target the same preset agent;
-- after user A learns user B's exact `AC_MCP_TOKEN` equivalent and private socket
-  path both before B's first bridge request and after B completes `tools/list`, A's
-  attempted `tools/list` and `tools/call` are denied before assertion mint; B's
-  authority and audit identity are never observed or used;
-- user A cannot resume user B's conversation or mint against user B's delegation;
-- user A's tool results obey user A's resource visibility even while user B has
-  broader access;
-- a role change between two calls changes the second call's authority;
-- session list/detail/messages obey private-session visibility;
-- an organization owner cannot inspect, join, or act through another user's
-  private session.
-
-## 15. Observability
-
-The implementation exports the following OpenTelemetry instruments. Attribute
-values are closed enums so dashboards and alerts can use stable outcomes and
-reasons:
-
-| Instrument                                         | Attributes                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agentconnect.webchat_mcp.delegation.transitions`  | `event`: `established`, `reused`, `rotated`, `expired`, `denied`; denied events may carry `reason`: `conversation_binding`, `membership_missing`, `agent_not_visible`, `preset_mismatch`, `placement_mismatch`, `daemon_unavailable`, `daemon_feature_missing`, `session_expired`, `delegation_expiry`, `delegation_inactive`, `delegation_generation`, `delegation_binding`, `method_not_allowed`, `tool_not_allowed`, or `invocation_parent_missing`              |
-| `agentconnect.webchat_mcp.assertion.transitions`   | `event`: `minted`, `claimed`, `expired`, `replayed`, `conflicted`, `denied`; denied events may carry `reason`: `assertion_format`, `assertion_unknown`, `invocation_id_invalid`, `invocation_id_mismatch`, `request_hash_mismatch`, `request_metadata_invalid`, `method_mismatch`, `tool_mismatch`, `delegation_inactive`, `daemon_unavailable`, `daemon_feature_missing`, `assertion_expired`, `claim_denied`, `claim_state_invalid`, or `cached_response_invalid` |
-| `agentconnect.webchat_mcp.invocation.transitions`  | `outcome`: `succeeded`, `failed`, `in_progress_retry`, `ambiguous`                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `agentconnect.webchat_mcp.request.duration`        | `stage`: `nested_rest`; `outcome`: `succeeded`, `failed`                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `agentconnect.delegated_mcp.isolation.transitions` | `event`: `created`, `resumed`, `destroyed`, `failed`; failed events may carry `reason`: `cell_creation`, `host_start`, `cleanup`                                                                                                                                                                                                                                                                                                                                    |
-| `agentconnect.delegated_mcp.isolation.denials`     | `reason`: `broker_validation`, `fence`, `capacity`, `token_mismatch`, `capability_probe_failed`                                                                                                                                                                                                                                                                                                                                                                     |
-| `agentconnect.delegated_mcp.request.duration`      | `stage`: `mint_ws`, `mcp_http`; `outcome`: `succeeded`, `failed`                                                                                                                                                                                                                                                                                                                                                                                                    |
-
-Initial alerts should cover any `capability_probe_failed` or `cleanup` failure, a
-sustained rise in denial reasons after enablement, and any non-zero or growing
-`ambiguous` invocation count. `in_progress_retry` is an idempotent observation, not
-a second execution.
-
-Metrics are body-free and identifier-free: no user, organization, agent,
-conversation, delegation, invocation, token, assertion, socket path, tool argument,
-or credential value is used as a metric attribute. Logs may use a public
-correlation identifier and a machine-stable reason code, but never include the
-one-time assertion, cell-local token, private socket path, reusable user credential,
-credential-bearing header, MCP request/response body, tool arguments, or transcript
-content.
-
-## 16. Non-goals
-
-- Injecting AgentConnect MCP into arbitrary agents or non-webchat sessions.
-- IM-to-console identity linking.
-- Replacing the external OAuth/personal-key AgentConnect MCP flow.
-- Generalizing one-time assertions to third-party MCP providers.
-- Giving the preset agent an organization-wide or daemon-wide management identity.
-- Dynamically changing MCP descriptors on an already-running legacy ACP session.
-- Persisting assertions or reusable credentials on the daemon.
-- Changing the curated AgentConnect MCP tool catalog beyond adding any separately
-  approved onboarding-status tool.
-
-## 17. Acceptance criteria
-
-The design is complete when all of the following are demonstrably true:
-
-1. A user opens webchat with the built-in preset and sees the existing curated
-   AgentConnect read/write tools.
-2. The same agent reached through any other origin does not expose those tools.
-3. Every tool audit names the webchat owner, and authorization matches that user's
-   current console authority.
-4. The daemon and runtime never hold a reusable user credential.
-5. Every standard `/mcp` call from the broker uses a 30-second, exact-request,
-   single-use assertion.
-6. Replays and ambiguous writes never execute a mutation twice.
-7. Two users' private sessions, delegations, tool results, and audit identities do
-   not cross, including when one session copies the other's complete local
-   socket/token configuration.
-8. CP outage disables only these management tools, not the conversation or local
-   daemon capabilities.
-9. A delegated session cannot update or delete its own host preset agent.
+Protocol and implementation work must follow this document in separate changes. The
+existing broker code is not silently repurposed as the new design.
