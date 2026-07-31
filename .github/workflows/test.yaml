@@ -257,10 +257,10 @@ jobs:
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
-      - name: Install bubblewrap
+      - name: Install SRT Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes bubblewrap ripgrep socat
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client
@@ -278,6 +278,8 @@ jobs:
         env:
           pnpm_config_enable_pre_post_scripts: false
         run: pnpm --filter @agentconnect.md/daemon build
+      - name: Ordinary ACP SRT smoke
+        run: node packages/daemon/scripts/srt-linux-smoke.mjs packages/daemon/dist/index.js
       - name: Real daemon namespace and fixture tests
         env:
           AGENTCONNECT_RUN_BWRAP_E2E: '1'
