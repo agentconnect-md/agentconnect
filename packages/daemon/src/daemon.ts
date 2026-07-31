@@ -8986,7 +8986,11 @@ export class Daemon {
           remoteMcpServer = provisioned.server
           if (provisioned.changed) {
             const existing = this.store.getSession(key)
-            if (existing?.acpSessionId) entry.selectedHost?.host.forgetSession(existing.acpSessionId)
+            // selectedHost is assigned only after handle() for ordinary warm
+            // turns. Resolve the already-running agent host directly here so the
+            // rotated descriptor forces session/load before this prompt.
+            const warmHost = entry.selectedHost?.host ?? this.hosts.get(agentId)
+            if (existing?.acpSessionId) warmHost?.forgetSession(existing.acpSessionId)
           }
         } catch (error) {
           this.log.warn(`remote MCP descriptor attachment failed (${formatErr(error)})`)

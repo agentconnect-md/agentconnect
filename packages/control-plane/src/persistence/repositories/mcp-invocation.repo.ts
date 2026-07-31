@@ -119,12 +119,19 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
   async reap(now: Date): Promise<ReapMcpInvocationsResult> {
     const ambiguousBefore = new Date(now.getTime() - 5 * 60_000)
     const markedAmbiguous = await this.markAmbiguousBefore(ambiguousBefore, now)
-    const result = await this.db.mcpInvocation.deleteMany({
+    // The row is the conversation-lifetime idempotency tombstone. Never delete
+    // it on a wall-clock TTL: a later grant for the same durable conversation
+    // must still be unable to execute this invocation id again. Only evict the
+    // bounded response payload; status + request hash remain until conversation
+    // lifecycle deletion can cascade the ledger.
+    await this.db.mcpInvocation.updateMany({
       where: {
         status: { in: ['succeeded', 'failed', 'ambiguous'] },
-        completedAt: { lt: new Date(now.getTime() - MCP_INVOCATION_RESPONSE_CACHE_TTL_MS) }
-      }
+        completedAt: { lt: new Date(now.getTime() - MCP_INVOCATION_RESPONSE_CACHE_TTL_MS) },
+        responseBytes: { not: null }
+      },
+      data: { responseBytes: null }
     })
-    return { markedAmbiguous, deleted: result.count, expiredAssertions: 0 }
+    return { markedAmbiguous, deleted: 0, expiredAssertions: 0 }
   }
 }
