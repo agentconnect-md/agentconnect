@@ -1245,6 +1245,433 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   }, 15_000)
 
+  it('cancels and force-stops a hung delegated turn through its private host lifecycle', async () => {
+    const ordinary = streamingHost([])
+    const daemon = new Daemon({
+      root: scaffold({ cancelBackstopMs: 10 }),
+      hostFactory: ordinary.factory
+    })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    let rejectPrompt!: (error: Error) => void
+    const promptGate = new Promise<never>((_resolve, reject) => {
+      rejectPrompt = reject
+    })
+    const dedicatedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-delegated-hung'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(() => promptGate),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {
+        rejectPrompt(new Error('delegated host force-stopped'))
+      })
+    }
+    const manager = {
+      startHost: vi.fn(async () => ({
+        isolationCellId: 'cell-hung',
+        host: dedicatedHost,
+        runtimeHome: '/private/hung-home',
+        adminMcpServer: {
+          name: 'agentconnect-admin',
+          command: 'agentconnect',
+          args: ['mcp-bridge'],
+          env: []
+        },
+        mount: {
+          sourceDirectory: '/private/source',
+          sourceSocketPath: '/private/source/mcp.sock',
+          targetDirectory: delegatedMcpInCellSocketDirectory()
+        }
+      })),
+      stopHost: vi.fn(async () => {
+        await dedicatedHost.stop()
+        return true
+      }),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).delegatedWebchatHosts = manager
+
+    const events: RdChatEvent[] = []
+    const ack = (daemon as any).handleRelayMsg(
+      rd(
+        { op: 'turn', text: 'hang', user: 'ada' },
+        {
+          msgId: 'delegated-hung',
+          delegation: {
+            id: '99999999-9999-4999-8999-999999999999',
+            generation: 4,
+            expiresAt: new Date(Date.now() + 60_000).toISOString()
+          }
+        }
+      ),
+      (event: RdChatEvent) => events.push(event)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(
+      () =>
+        expect(
+          [...(daemon as any).pending.values()].some((pending: any) => pending.acpSessionId === 'acp-delegated-hung')
+        ).toBe(true),
+      WAIT
+    )
+
+    ;(daemon as any).handleWebchatCancel(CONV)
+
+    expect(dedicatedHost.cancel).toHaveBeenCalledWith('acp-delegated-hung')
+    await vi.waitFor(
+      () =>
+        expect(manager.stopHost).toHaveBeenCalledWith({
+          agentId: AGENT_ID,
+          conversationId: CONV,
+          isolationCellId: 'cell-hung'
+        }),
+      WAIT
+    )
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(0), WAIT)
+    expect(events.filter((event) => event.kind === 'done')).toEqual([
+      expect.objectContaining({
+        kind: 'done',
+        done: expect.objectContaining({ conversationId: CONV, turnId: ack.turnId, error: 'cancel' })
+      })
+    ])
+    expect(ordinary.host.cancel).not.toHaveBeenCalled()
+    expect(ordinary.host.stop).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('keeps delegated admission fail-closed when private-cell cleanup fails', async () => {
+    const daemon = new Daemon({
+      root: scaffold({ cancelBackstopMs: 10 }),
+      hostFactory: streamingHost([]).factory
+    })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    let releasePrompt!: () => void
+    const promptGate = new Promise<void>((resolve) => {
+      releasePrompt = resolve
+    })
+    const dedicatedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-delegated-stop-failure'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await promptGate
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const manager = {
+      startHost: vi.fn(async () => ({
+        isolationCellId: 'cell-stop-failure',
+        host: dedicatedHost,
+        runtimeHome: '/private/stop-failure-home',
+        adminMcpServer: {
+          name: 'agentconnect-admin',
+          command: 'agentconnect',
+          args: ['mcp-bridge'],
+          env: []
+        },
+        mount: {
+          sourceDirectory: '/private/source',
+          sourceSocketPath: '/private/source/mcp.sock',
+          targetDirectory: delegatedMcpInCellSocketDirectory()
+        }
+      })),
+      stopHost: vi.fn(async () => {
+        throw new Error('private cleanup failed')
+      }),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).delegatedWebchatHosts = manager
+
+    const sink = fakeCpClient().sink
+    ;(daemon as any).dispatchWebchatTurn(AGENT_ID, CONV, 'hang', 'ada', sink, undefined, undefined, undefined, {
+      id: '99999999-9999-4999-8999-999999999999',
+      generation: 8,
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    })
+    await vi.waitFor(() => expect(dedicatedHost.prompt).toHaveBeenCalledOnce(), WAIT)
+    ;(daemon as any).handleWebchatCancel(CONV)
+    await vi.waitFor(() => expect(manager.stopHost).toHaveBeenCalledOnce(), WAIT)
+
+    releasePrompt()
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(0), WAIT)
+    expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
+    expect(
+      (daemon as any).dispatchWebchatTurn(
+        AGENT_ID,
+        '77777777-7777-4777-8777-777777777777',
+        'must remain blocked',
+        'ada',
+        fakeCpClient().sink
+      )
+    ).toMatchObject({ accepted: false, reason: 'busy' })
+    await daemon.stop()
+  }, 15_000)
+
+  it('force-stops the selected delegated cell when cancellation lands before Pending exists', async () => {
+    const daemon = new Daemon({
+      root: scaffold({ cancelBackstopMs: 10 }),
+      hostFactory: streamingHost([]).factory
+    })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    let rejectSession!: (error: Error) => void
+    const sessionGate = new Promise<never>((_resolve, reject) => {
+      rejectSession = reject
+    })
+    const dedicatedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(() => sessionGate),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {
+        rejectSession(new Error('cold delegated host force-stopped'))
+      })
+    }
+    const manager = {
+      startHost: vi.fn(async () => ({
+        isolationCellId: 'cell-cold',
+        host: dedicatedHost,
+        runtimeHome: '/private/cold-home',
+        adminMcpServer: {
+          name: 'agentconnect-admin',
+          command: 'agentconnect',
+          args: ['mcp-bridge'],
+          env: []
+        },
+        mount: {
+          sourceDirectory: '/private/source',
+          sourceSocketPath: '/private/source/mcp.sock',
+          targetDirectory: delegatedMcpInCellSocketDirectory()
+        }
+      })),
+      stopHost: vi.fn(async () => {
+        await dedicatedHost.stop()
+        return true
+      }),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).delegatedWebchatHosts = manager
+
+    const events: RdChatEvent[] = []
+    ;(daemon as any).handleRelayMsg(
+      rd(
+        { op: 'turn', text: 'hang cold', user: 'ada' },
+        {
+          msgId: 'delegated-cold',
+          delegation: {
+            id: '99999999-9999-4999-8999-999999999999',
+            generation: 7,
+            expiresAt: new Date(Date.now() + 60_000).toISOString()
+          }
+        }
+      ),
+      (event: RdChatEvent) => events.push(event)
+    )
+    await vi.waitFor(() => expect(dedicatedHost.newSession).toHaveBeenCalledOnce(), WAIT)
+    expect((daemon as any).pending.size).toBe(0)
+
+    ;(daemon as any).handleWebchatCancel(CONV)
+
+    await vi.waitFor(
+      () =>
+        expect(manager.stopHost).toHaveBeenCalledWith({
+          agentId: AGENT_ID,
+          conversationId: CONV,
+          isolationCellId: 'cell-cold'
+        }),
+      WAIT
+    )
+    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
+    expect(dedicatedHost.cancel).not.toHaveBeenCalled()
+    expect(events.filter((event) => event.kind === 'done')).toEqual([
+      expect.objectContaining({ done: expect.objectContaining({ error: 'cancel' }) })
+    ])
+    await daemon.stop()
+  }, 15_000)
+
+  it.each(['daemon', 'agent'] as const)(
+    'does not release a delegated %s-drain straggler before private-cell cleanup completes',
+    async (scopeKind) => {
+      const ordinary = streamingHost([])
+      const daemon = new Daemon({ root: scaffold(), hostFactory: ordinary.factory })
+      await daemon.start()
+      ;(daemon as any).cpClient = fakeCpClient()
+
+      let rejectPrompt!: (error: Error) => void
+      const promptGate = new Promise<never>((_resolve, reject) => {
+        rejectPrompt = reject
+      })
+      let releaseCleanup!: () => void
+      const cleanupGate = new Promise<void>((resolve) => {
+        releaseCleanup = resolve
+      })
+      const dedicatedHost = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-delegated-drain'),
+        hasSession: vi.fn(() => true),
+        prompt: vi.fn(() => promptGate),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          rejectPrompt(new Error('delegated host drained'))
+        })
+      }
+      const manager = {
+        startHost: vi.fn(async () => ({
+          isolationCellId: 'cell-drain',
+          host: dedicatedHost,
+          runtimeHome: '/private/drain-home',
+          adminMcpServer: {
+            name: 'agentconnect-admin',
+            command: 'agentconnect',
+            args: ['mcp-bridge'],
+            env: []
+          },
+          mount: {
+            sourceDirectory: '/private/source',
+            sourceSocketPath: '/private/source/mcp.sock',
+            targetDirectory: delegatedMcpInCellSocketDirectory()
+          }
+        })),
+        stopHost: vi.fn(async () => {
+          await cleanupGate
+          await dedicatedHost.stop()
+          return true
+        }),
+        stop: vi.fn(async () => {})
+      }
+      ;(daemon as any).delegatedWebchatHosts = manager
+
+      const events: RdChatEvent[] = []
+      ;(daemon as any).handleRelayMsg(
+        rd(
+          { op: 'turn', text: 'hang', user: 'ada' },
+          {
+            msgId: 'delegated-drain',
+            delegation: {
+              id: '99999999-9999-4999-8999-999999999999',
+              generation: 5,
+              expiresAt: new Date(Date.now() + 60_000).toISOString()
+            }
+          }
+        ),
+        (event: RdChatEvent) => events.push(event)
+      )
+      await vi.waitFor(
+        () =>
+          expect(
+            [...(daemon as any).pending.values()].some((pending: any) => pending.acpSessionId === 'acp-delegated-drain')
+          ).toBe(true),
+        WAIT
+      )
+
+      let drainSettled = false
+      const scope = scopeKind === 'daemon' ? { kind: 'daemon' } : { kind: 'agent', agentId: AGENT_ID }
+      const draining = (daemon as any)
+        .runDrain({ scope, deadline: new Date(0).toISOString() }, () => {})
+        .then((done: unknown) => {
+          drainSettled = true
+          return done
+        })
+      await vi.waitFor(() => expect(dedicatedHost.cancel).toHaveBeenCalledWith('acp-delegated-drain'), WAIT)
+      await vi.waitFor(
+        () =>
+          expect(manager.stopHost).toHaveBeenCalledWith({
+            agentId: AGENT_ID,
+            conversationId: CONV,
+            isolationCellId: 'cell-drain'
+          }),
+        WAIT
+      )
+      expect(drainSettled).toBe(false)
+
+      releaseCleanup()
+      await expect(draining).resolves.toEqual({
+        released: [{ platform: 'webchat', channel: CONV }]
+      })
+      expect((daemon as any).pending.size).toBe(0)
+      expect(ordinary.host.stop).not.toHaveBeenCalled()
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it('keeps browser close as transport observability for a delegated turn', async () => {
+    let releasePrompt!: () => void
+    const promptGate = new Promise<void>((resolve) => {
+      releasePrompt = resolve
+    })
+    const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost([]).factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const dedicatedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-delegated-close'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await promptGate
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const manager = {
+      startHost: vi.fn(async () => ({
+        isolationCellId: 'cell-close',
+        host: dedicatedHost,
+        runtimeHome: '/private/close-home',
+        adminMcpServer: {
+          name: 'agentconnect-admin',
+          command: 'agentconnect',
+          args: ['mcp-bridge'],
+          env: []
+        },
+        mount: {
+          sourceDirectory: '/private/source',
+          sourceSocketPath: '/private/source/mcp.sock',
+          targetDirectory: delegatedMcpInCellSocketDirectory()
+        }
+      })),
+      stopHost: vi.fn(async () => true),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).delegatedWebchatHosts = manager
+
+    const events: RdChatEvent[] = []
+    ;(daemon as any).handleRelayMsg(
+      rd(
+        { op: 'turn', text: 'wait', user: 'ada' },
+        {
+          msgId: 'delegated-close',
+          delegation: {
+            id: '99999999-9999-4999-8999-999999999999',
+            generation: 6,
+            expiresAt: new Date(Date.now() + 60_000).toISOString()
+          }
+        }
+      ),
+      (event: RdChatEvent) => events.push(event)
+    )
+    await vi.waitFor(() => expect(dedicatedHost.prompt).toHaveBeenCalledOnce(), WAIT)
+
+    ;(daemon as any).handleWebchatClose(CONV)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(dedicatedHost.cancel).not.toHaveBeenCalled()
+    expect(manager.stopHost).not.toHaveBeenCalled()
+
+    releasePrompt()
+    await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
+    await daemon.stop()
+  }, 15_000)
+
   it('keeps a newer resume bound when a delayed older generation arrives afterward', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })

@@ -337,6 +337,7 @@ describe('DelegatedWebchatHostManager', () => {
       activeHosts: 0,
       pendingStarts: 0,
       drainingHosts: 0,
+      inactiveAuthorities: 0,
       stopped: true
     })
   })
@@ -371,6 +372,7 @@ describe('DelegatedWebchatHostManager', () => {
       activeHosts: 0,
       pendingStarts: 0,
       drainingHosts: 0,
+      inactiveAuthorities: 0,
       stopped: true
     })
   })
@@ -446,6 +448,123 @@ describe('DelegatedWebchatHostManager', () => {
         generation: 1
       }
     ])
+  })
+
+  it('retains the exact authority fence after a single local host stop', async () => {
+    const h = harness({ randomCellId: () => 'single-stop-cell' })
+    const live = await h.manager.startHost(
+      cellInput('single-stop', {
+        delegationId: 'delegation-single-stop',
+        generation: 7
+      })
+    )
+
+    await expect(
+      h.manager.stopHost({
+        isolationCellId: live.isolationCellId,
+        agentId: 'agent-1',
+        conversationId: 'single-stop'
+      })
+    ).resolves.toBe(true)
+    expect(h.manager.debugStats().inactiveAuthorities).toBe(1)
+    await expect(
+      h.manager.closeConversation({
+        agentId: 'agent-1',
+        conversationId: 'single-stop'
+      })
+    ).resolves.toEqual({
+      agentId: 'agent-1',
+      conversationId: 'single-stop',
+      delegationId: 'delegation-single-stop',
+      generation: 7,
+      expiresAt
+    })
+    expect(h.manager.debugStats().inactiveAuthorities).toBe(0)
+  })
+
+  it('stops agent-scoped or daemon-scoped cells locally while keeping the manager reusable', async () => {
+    let cell = 0
+    const h = harness({ randomCellId: () => `scoped-cell-${++cell}` })
+    const first = await h.manager.startHost(cellInput('first'))
+    const second = await h.manager.startHost(cellInput('second'))
+    const other = await h.manager.startHost(
+      cellInput('other', {
+        agentId: 'agent-2',
+        delegationId: 'delegation-other-agent'
+      })
+    )
+
+    await h.manager.stopAgentHosts('agent-1')
+    expect(h.stops).toEqual(expect.arrayContaining(['first', 'second']))
+    expect(h.stops).not.toContain('other')
+    expect(existsSync(first.runtimeHome)).toBe(false)
+    expect(existsSync(second.runtimeHome)).toBe(false)
+    expect(existsSync(other.runtimeHome)).toBe(true)
+    expect(h.manager.debugStats()).toMatchObject({ activeHosts: 1, inactiveAuthorities: 2, stopped: false })
+    await expect(h.manager.closeAgent('agent-1')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ conversationId: 'first', delegationId: 'delegation-first', generation: 1 }),
+        expect.objectContaining({ conversationId: 'second', delegationId: 'delegation-second', generation: 1 })
+      ])
+    )
+    expect(h.manager.debugStats().inactiveAuthorities).toBe(0)
+
+    const restarted = await h.manager.startHost(cellInput('restarted'))
+    expect(existsSync(restarted.runtimeHome)).toBe(true)
+    await h.manager.stopAllHosts()
+    expect(h.stops).toEqual(expect.arrayContaining(['other', 'restarted']))
+    expect(existsSync(other.runtimeHome)).toBe(false)
+    expect(existsSync(restarted.runtimeHome)).toBe(false)
+    expect(h.manager.debugStats()).toEqual({
+      activeHosts: 0,
+      pendingStarts: 0,
+      drainingHosts: 0,
+      inactiveAuthorities: 2,
+      stopped: false
+    })
+    await h.manager.stop()
+    expect(h.manager.debugStats()).toMatchObject({ inactiveAuthorities: 0, stopped: true })
+  })
+
+  it('deduplicates concurrent local cleanup without losing detach authority fences', async () => {
+    let stopEntered!: () => void
+    const entered = new Promise<void>((resolve) => {
+      stopEntered = resolve
+    })
+    let releaseStop!: () => void
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve
+    })
+    const h = harness({
+      randomCellId: () => 'concurrent-cell',
+      hostFactory: () =>
+        ({
+          start: async () => {},
+          stop: async () => {
+            stopEntered()
+            await stopGate
+          }
+        }) as unknown as AcpHost
+    })
+    const live = await h.manager.startHost(cellInput('concurrent'))
+
+    const localCleanup = h.manager.stopAllHosts()
+    await entered
+    const detachCleanup = h.manager.closeAgent('agent-1')
+    releaseStop()
+
+    await expect(localCleanup).resolves.toBeUndefined()
+    await expect(detachCleanup).resolves.toEqual([
+      {
+        agentId: 'agent-1',
+        conversationId: 'concurrent',
+        delegationId: 'delegation-concurrent',
+        generation: 1,
+        expiresAt
+      }
+    ])
+    expect(h.broker.releases).toHaveLength(1)
+    expect(existsSync(live.runtimeHome)).toBe(false)
   })
 
   it('fully removes the host, home, mount, cell, and token when a real attached bridge disconnects before tools', async () => {

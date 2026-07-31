@@ -123,6 +123,11 @@ export class DelegatedWebchatHostManager {
   private readonly active = new Map<string, CellRecord>()
   private readonly draining = new Map<string, CellRecord>()
   private readonly pending = new Map<string, PendingStart>()
+  /** Authority metadata retained after non-revoking local cleanup so a later
+   * logical TTL close or agent detach can still revoke the exact generation.
+   * Logical-key deduplication, expiry pruning, and the broker's bounded
+   * conversation-fence history keep this metadata-only ledger bounded. */
+  private readonly inactiveAuthorities = new Map<string, StartDelegatedWebchatHost>()
   private readonly unsubscribeBridgeDisconnect: () => void
   private stopped = false
 
@@ -141,6 +146,7 @@ export class DelegatedWebchatHostManager {
 
   async startHost(input: StartDelegatedWebchatHost): Promise<DelegatedWebchatHost> {
     this.assertCanStart()
+    this.pruneInactiveAuthorities()
     const key = logicalKey(input)
     const currentPending = this.pending.get(key)
     if (currentPending) {
@@ -209,36 +215,45 @@ export class DelegatedWebchatHostManager {
   }): Promise<StartDelegatedWebchatHost | null> {
     const key = logicalKey(input)
     const pending = this.pending.get(key)
+    const selected = this.active.get(key) ?? this.draining.get(key) ?? pending?.record
     if (pending) {
       pending.cancel()
       await pending.promise.catch(() => undefined)
     }
-    const record = this.active.get(key) ?? this.draining.get(key) ?? pending?.record
-    if (!record) return null
-    await this.teardown(record, 'explicit_stop')
-    return this.authority(record)
+    const record = selected ?? this.active.get(key) ?? this.draining.get(key) ?? pending?.record
+    const authority = record ? this.authority(record) : (this.inactiveAuthorities.get(key) ?? null)
+    if (record) await this.teardown(record, 'explicit_stop')
+    this.inactiveAuthorities.delete(key)
+    return authority
   }
 
   /** Agent detach is a real authority boundary: remove every private cell and
    * hand their exact generation fences back to the daemon for CP revocation. */
   async closeAgent(agentId: string): Promise<StartDelegatedWebchatHost[]> {
-    const keys = new Set<string>()
-    for (const record of [...this.active.values(), ...this.draining.values()]) {
-      if (record.agentId === agentId) keys.add(record.key)
+    this.pruneInactiveAuthorities()
+    const closed = await this.stopMatching((record) => record.agentId === agentId, 'explicit_stop')
+    const authorities = new Map(closed.map((authority) => [logicalKey(authority), authority]))
+    for (const [key, authority] of this.inactiveAuthorities) {
+      if (authority.agentId !== agentId) continue
+      authorities.set(key, authority)
+      this.inactiveAuthorities.delete(key)
     }
-    for (const pending of this.pending.values()) {
-      if (pending.authority.agentId === agentId) {
-        keys.add(logicalKey(pending.authority))
-      }
-    }
-    const closed = await Promise.all(
-      [...keys].map((key) => {
-        const record = this.active.get(key) ?? this.draining.get(key) ?? this.pending.get(key)?.record
-        if (!record) return Promise.resolve(null)
-        return this.closeConversation(record)
-      })
-    )
-    return closed.filter((authority): authority is StartDelegatedWebchatHost => authority !== null)
+    return [...authorities.values()]
+  }
+
+  /** Stop every private process for one agent without changing the manager's
+   * ability to start a fresh cell later. Lifecycle drains use this local cleanup
+   * boundary without revoking the CP delegation authority. */
+  async stopAgentHosts(agentId: string): Promise<void> {
+    const stopped = await this.stopMatching((record) => record.agentId === agentId, 'explicit_stop')
+    this.retainInactiveAuthorities(stopped)
+  }
+
+  /** Local daemon-drain counterpart of stopAgentHosts. Unlike stop(), this keeps
+   * the manager subscribed and available after a rebalance re-opens admission. */
+  async stopAllHosts(): Promise<void> {
+    const stopped = await this.stopMatching(() => true, 'explicit_stop')
+    this.retainInactiveAuthorities(stopped)
   }
 
   /** Manager shutdown is local cell teardown only. The owning daemon calls
@@ -248,8 +263,10 @@ export class DelegatedWebchatHostManager {
       this.stopped = true
       this.unsubscribeBridgeDisconnect()
     }
+    this.inactiveAuthorities.clear()
     const pending = [...this.pending.values()]
     for (const start of pending) start.cancel()
+    await Promise.all(pending.map((start) => start.promise.catch(() => undefined)))
     const records = new Set<CellRecord>([
       ...this.active.values(),
       ...this.draining.values(),
@@ -257,14 +274,25 @@ export class DelegatedWebchatHostManager {
     ])
     const attempts = await Promise.allSettled([...records].map((record) => this.teardown(record, 'manager_stop')))
     const failures = attempts.flatMap((attempt) => (attempt.status === 'rejected' ? [attempt.reason] : []))
+    // A cancelled pending allocation may finish its startup teardown after the
+    // initial clear above; terminal manager shutdown never retains authority.
+    this.inactiveAuthorities.clear()
     if (failures.length) throw new AggregateError(failures, 'delegated webchat cleanup incomplete')
   }
 
-  debugStats(): { activeHosts: number; pendingStarts: number; drainingHosts: number; stopped: boolean } {
+  debugStats(): {
+    activeHosts: number
+    pendingStarts: number
+    drainingHosts: number
+    inactiveAuthorities: number
+    stopped: boolean
+  } {
+    this.pruneInactiveAuthorities()
     return {
       activeHosts: this.active.size,
       pendingStarts: this.pending.size,
       drainingHosts: this.draining.size,
+      inactiveAuthorities: this.inactiveAuthorities.size,
       stopped: this.stopped
     }
   }
@@ -367,6 +395,7 @@ export class DelegatedWebchatHostManager {
       ) {
         throw new Error('delegated webchat host terminated during startup')
       }
+      this.inactiveAuthorities.delete(key)
       return this.publicHost(record)
     } catch (error) {
       record.hostCreationSettled = true
@@ -429,6 +458,40 @@ export class DelegatedWebchatHostManager {
     }
   }
 
+  private async stopMatching(
+    matches: (record: Pick<CellRecord, 'agentId' | 'conversationId'>) => boolean,
+    source: CleanupSource
+  ): Promise<StartDelegatedWebchatHost[]> {
+    const pending = [...this.pending.values()].filter((start) => matches(start.authority))
+    const records = new Set<CellRecord>([
+      ...[...this.active.values()].filter(matches),
+      ...[...this.draining.values()].filter(matches),
+      ...pending.flatMap((start) => (start.record ? [start.record] : []))
+    ])
+    for (const start of pending) start.cancel()
+    await Promise.all(pending.map((start) => start.promise.catch(() => undefined)))
+
+    for (const record of this.active.values()) if (matches(record)) records.add(record)
+    for (const record of this.draining.values()) if (matches(record)) records.add(record)
+    for (const start of pending) if (start.record) records.add(start.record)
+    await Promise.all([...records].map((record) => this.teardown(record, source)))
+    return [...records].map((record) => this.authority(record))
+  }
+
+  private retainInactiveAuthorities(authorities: StartDelegatedWebchatHost[]): void {
+    this.pruneInactiveAuthorities()
+    for (const authority of authorities) {
+      this.inactiveAuthorities.set(logicalKey(authority), authority)
+    }
+  }
+
+  private pruneInactiveAuthorities(now = Date.now()): void {
+    for (const [key, authority] of this.inactiveAuthorities) {
+      const expiresAt = Date.parse(authority.expiresAt)
+      if (Number.isFinite(expiresAt) && expiresAt <= now) this.inactiveAuthorities.delete(key)
+    }
+  }
+
   private teardown(record: CellRecord, source: CleanupSource): Promise<void> {
     if (record.teardown) return record.teardown
     const active = this.active.get(record.key)
@@ -442,12 +505,16 @@ export class DelegatedWebchatHostManager {
     }
     if (active === record) this.active.delete(record.key)
     this.draining.set(record.key, record)
-    record.teardown = this.runTeardown(record, source).finally(() => {
-      record.teardown = undefined
-      if (this.teardownComplete(record) && this.draining.get(record.key) === record) {
-        this.draining.delete(record.key)
-      }
-    })
+    record.teardown = this.runTeardown(record, source)
+      .then(() => {
+        if (source !== 'manager_stop') this.retainInactiveAuthorities([this.authority(record)])
+      })
+      .finally(() => {
+        record.teardown = undefined
+        if (this.teardownComplete(record) && this.draining.get(record.key) === record) {
+          this.draining.delete(record.key)
+        }
+      })
     return record.teardown
   }
 

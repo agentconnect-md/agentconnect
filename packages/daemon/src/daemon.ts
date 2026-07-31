@@ -870,6 +870,14 @@ function authorizedReviewTarget(
  * is keyed by the LOGICAL sessionKey (platform:channel:thread:agentId[:transportScope]), NOT the ACP
  * sessionId, so a cold session (no ACP id yet) is serialized too.
  */
+interface SelectedTurnHost {
+  host: AcpHost
+  /** Full lifecycle cleanup for the selected process. Delegated turns route this
+   * through their manager so broker drain/release and private-HOME removal remain
+   * generation-fenced and teardown-singleflight. */
+  stop: (deadlineMs?: number) => Promise<void>
+}
+
 interface QueueEntry {
   agentId: string
   msg: NormalizedMessage
@@ -899,6 +907,9 @@ interface QueueEntry {
    * deliveries duplicate this reference in their durable HookDispatchContext so
    * restart replay can recreate the poster behind its publish-state fence. */
   githubReply?: GithubReplyTarget
+  /** Selected before session/new|load. Retained across the cold pre-Pending gap
+   * so cancellation never has to rediscover a private host through this.hosts. */
+  selectedHost?: SelectedTurnHost
   /** Latched cancellation for an already-admitted head. Unlike reading the current
    *  pause/loop state, this survives a quick pause→unpause or trip→!resume race while
    *  a cold sessions.handle() call is still initializing. */
@@ -971,6 +982,8 @@ interface Pending {
   /** The live ACP session id for this turn (part of the `this.pending` map key) — surfaced
    *  in the status bar so the console can deep-link to the session detail page. */
   acpSessionId: string
+  /** The exact host selected for this turn, including its full cleanup boundary. */
+  selectedHost?: SelectedTurnHost
   /** Once an operator pause or loop trip targets this turn, no subsequent ACP update
    *  or queued renderer action may publish output, even if the gate is later reset. */
   outputSuppressed?: TurnInterruptReason
@@ -2386,6 +2399,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
+      await this.delegatedWebchatHosts?.stopAgentHosts?.(id)
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
       // removal needs no permanent gate once the host is proven stopped (the agent is
       // absent); a later toStart can then serve it normally. Safety-drain state is NOT
@@ -2446,22 +2460,30 @@ export class Daemon {
           this.gitCreds.remove(a.id)
           this.gitCredServer?.revoke(a.id)
         }
+        let delegatedCleanupFailed = false
         try {
-          await this.stopHost(a.id)
-        } catch (err) {
-          // stopHost synchronously evicts the host from the cache BEFORE the teardown
-          // await, so the next session always spawns a fresh child regardless of whether
-          // the old teardown rejected. A rejected teardown must therefore NOT leave the
-          // admission gate latched: that dropped every future inbound for this agent with
-          // no recovery — it went silently dark until the next daemon restart (real
-          // incident). Log loudly, then fall through to release the gate we installed.
-          // The try/catch also stops one agent's teardown failure from aborting the rest
-          // of the reconcile batch (remaining agent deltas + platform convergence).
-          this.log.error(
-            `reconcile: host teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
-          )
+          // Ordinary teardown keeps its established degrading behavior: eviction
+          // already fenced future starts, so a stop rejection is logged but does
+          // not permanently darken the agent.
+          try {
+            await this.stopHost(a.id)
+          } catch (err) {
+            this.log.error(
+              `reconcile: host teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
+            )
+          }
+          // A failed private-cell teardown is different: the broker authority and
+          // child may still be live, so reopening admission could overlap generations.
+          try {
+            await this.delegatedWebchatHosts?.stopAgentHosts?.(a.id)
+          } catch (err) {
+            delegatedCleanupFailed = true
+            this.log.error(
+              `reconcile: delegated host teardown failed for "${a.id}" — retaining admission gate: ${formatErr(err)}`
+            )
+          }
         } finally {
-          if (!wasDraining) this.drainingAgents.delete(a.id)
+          if (!wasDraining && !delegatedCleanupFailed) this.drainingAgents.delete(a.id)
         }
       }
       // workspace change → eagerly (re-)materialize the checkout in the background so
@@ -3708,6 +3730,42 @@ export class Daemon {
   private async closeDelegatedAgent(agentId: string): Promise<void> {
     const authorities = (await this.delegatedWebchatHosts?.closeAgent(agentId)) ?? []
     await Promise.all(authorities.map((authority) => this.revokeDelegatedAuthority(authority, 'agent_detached')))
+  }
+
+  private selectedDelegatedTurnHost(
+    agentId: string,
+    conversationId: string,
+    delegatedHost: DelegatedWebchatHost
+  ): SelectedTurnHost {
+    const manager = this.delegatedWebchatHosts
+    return {
+      host: delegatedHost.host,
+      stop: async () => {
+        if (!manager) {
+          throw new Error('delegated webchat host manager is unavailable during turn cleanup')
+        }
+        await manager.stopHost({
+          agentId,
+          conversationId,
+          isolationCellId: delegatedHost.isolationCellId
+        })
+      }
+    }
+  }
+
+  private selectedOrdinaryTurnHost(agentId: string, host: AcpHost): SelectedTurnHost {
+    return {
+      host,
+      stop: (deadlineMs) => this.stopHost(agentId, deadlineMs)
+    }
+  }
+
+  private async stopSelectedTurnHosts(turns: Iterable<Pick<Pending, 'selectedHost'>>): Promise<void> {
+    const selected = new Set<SelectedTurnHost>()
+    for (const turn of turns) {
+      if (turn.selectedHost) selected.add(turn.selectedHost)
+    }
+    await Promise.all([...selected].map((lifecycle) => lifecycle.stop(0)))
   }
 
   private queueMemoryPostTurn(
@@ -8579,6 +8637,12 @@ export class Daemon {
     })()
   }
 
+  private addSafetyDrainWait(agentId: string, wait: Promise<void>): void {
+    const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
+    waits.add(wait)
+    this.safetyDrainWaits.set(agentId, waits)
+  }
+
   private dispatchGateReason(entry: QueueEntry): TurnInterruptReason | undefined {
     if (entry.cancelledReason) return entry.cancelledReason
     if (this.paused(entry.agentId)) return 'pause'
@@ -8926,6 +8990,7 @@ export class Daemon {
           generation: webchat.delegation.generation,
           expiresAt: webchat.delegation.expiresAt
         })
+        entry.selectedHost = this.selectedDelegatedTurnHost(agentId, webchat.conversationId, delegatedHost)
       }
       // §2.3/§5.3: hand the origin session id to prompt assembly so a child woken by another
       // session's `sendMessage` gets its `Parent session` line (the SessionTarget to reply into).
@@ -9103,6 +9168,10 @@ export class Daemon {
     // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
     // signal each copy once.
     const pendingWebchat = webchat ? Object.assign(webchat, { index: 0, replyText: '' }) : undefined
+    if (!entry.selectedHost) {
+      const ordinaryHost = this.hosts.get(agentId)
+      if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
+    }
     const p: Pending = {
       conv,
       rec,
@@ -9119,6 +9188,7 @@ export class Daemon {
       loopGuardScope: loopGuardScope(msg),
       sessionKey: key,
       acpSessionId: sessionId,
+      ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       channel: msg.channel,
       transcriptChannel,
       thread: msg.thread,
@@ -9166,7 +9236,12 @@ export class Daemon {
       sessionUrl: this.sessionLink(sessionId)
     })
     try {
-      const host = delegatedHost?.host ?? (await this.ensureHostAsync(agentId))
+      if (!p.selectedHost) {
+        const ordinaryHost = await this.ensureHostAsync(agentId)
+        p.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
+        entry.selectedHost = p.selectedHost
+      }
+      const host = p.selectedHost.host
       const runtimeAgent = this.agents.get(agentId)
       const allowRuntimeChangesInChat = runtimeAgent?.allowRuntimeChangesInChat === true
       // Re-apply a sticky session model override (set via the console's in-session model
@@ -9709,8 +9784,7 @@ export class Daemon {
     // dispatch finally clears the timer + writes the terminal idle state when the agent
     // yields; if it never does, the backstop force-stops the host.
     this.store.setSessionState(key, 'cancelling', this.clock.now())
-    void this.hosts
-      .get(agentId)
+    void (live.selectedHost?.host ?? this.hosts.get(agentId))
       ?.cancel(liveSessionId)
       .catch((err) => this.log.error(`command ${reason}: cancel failed: ${(err as Error).message}`))
     this.armCancelBackstop(agentId, liveSessionId, key, reason)
@@ -9762,12 +9836,21 @@ export class Daemon {
         this.log.warn(
           `${reason}: agent "${agentId}" ignored session/cancel for ${ms}ms — force-stopping host (session ${acpSessionId})`
         )
-        // Force-stop reaps the hung turn; the host re-spawns on the next message.
-        // dispatch's finally then writes the terminal idle state as the prompt rejects.
-        void this.stopHost(agentId, 0).catch((err) =>
+        const turn = this.pending.get(pendingKey)
+        if (!turn) return
+        // Force-stop reaps the exact selected process. A delegated turn must cross
+        // the manager boundary so broker drain/release and private-HOME cleanup
+        // finish before dispatch can mark the session idle.
+        const stopped = (turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)).catch((err) => {
           this.log.error(`${reason}: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
-        )
-        this.store.setSessionState(key, 'idle', this.clock.now())
+          // The selected child may still be alive. Keep admission fail-closed even
+          // if its prompt callback happens to settle after this failed teardown.
+          return new Promise<void>(() => {})
+        })
+        this.addSafetyDrainWait(agentId, stopped)
+        void stopped.then(() => {
+          this.store.setSessionState(key, 'idle', this.clock.now())
+        })
       }, ms)
     )
   }
@@ -9799,7 +9882,17 @@ export class Daemon {
       this.log.warn(
         `${reason}: agent "${agentId}" did not finish cold initialization within ${ms}ms — force-stopping host (${key})`
       )
-      const stopped = this.stopHost(agentId, 0).catch((err) => {
+      const stop =
+        entry.selectedHost?.stop(0) ??
+        (entry.webchat?.delegation && this.delegatedWebchatHosts
+          ? this.delegatedWebchatHosts
+              .closeConversation({
+                agentId,
+                conversationId: entry.webchat.conversationId
+              })
+              .then(() => undefined)
+          : this.stopHost(agentId, 0))
+      const stopped = stop.catch((err) => {
         this.log.error(`${reason}: cold force-stop failed for agent "${agentId}": ${formatErr(err)}`)
         // The old child may still be alive after a failed stop. Keep the safety
         // drain permanently unsettled (until this daemon process is restarted),
@@ -9808,9 +9901,7 @@ export class Daemon {
       })
       // Abort every SessionManager cold await now; keep NEW admission gated until
       // the host-wide stop itself settles, so the old teardown cannot kill fresh work.
-      const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
-      waits.add(stopped)
-      this.safetyDrainWaits.set(agentId, waits)
+      this.addSafetyDrainWait(agentId, stopped)
       entry.initAbort.abort(new Error(reason))
     }, ms)
     this.coldCancelTimers.set(key, { timer, active })
@@ -13217,7 +13308,7 @@ export class Daemon {
     scope: Drain['scope'],
     deadlineMs: number,
     onProgress?: (p: DrainProgress) => void
-  ): Promise<{ matched: SessionKey[]; drained: SessionKey[] }> {
+  ): Promise<{ matched: SessionKey[]; drained: SessionKey[]; targets: Pending[] }> {
     const match = (p: Pending): boolean => {
       if (scope.kind === 'daemon') return true
       if (scope.kind === 'agent') return p.agentId === scope.agentId
@@ -13256,13 +13347,10 @@ export class Daemon {
       for (const p of this.pending.values()) {
         if (!match(p)) continue
         this.log.warn(`drain[${scope.kind}]: cancelling straggler turn (session ${p.acpSessionId})`)
-        await this.hosts
-          .get(p.agentId)
-          ?.cancel(p.acpSessionId)
-          .catch(() => {})
+        await (p.selectedHost?.host ?? this.hosts.get(p.agentId))?.cancel(p.acpSessionId).catch(() => {})
       }
     }
-    return { matched: [...matched.values()], drained: [...drained.values()] }
+    return { matched: [...matched.values()], drained: [...drained.values()], targets: targets.map(([, p]) => p) }
   }
 
   /** Handle a CP `daemon/drain` (§5.3). A bare drain is a rebalance: after
@@ -13270,18 +13358,22 @@ export class Daemon {
    *  arrives separately via daemon/restart). */
   private async runDrain(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> {
     const deadlineMs = Math.max(0, new Date(drain.deadline).getTime() - this.clock.now())
-    const { matched, drained } = await this.drainScope(drain.scope, deadlineMs, onProgress)
+    const { matched, drained, targets } = await this.drainScope(drain.scope, deadlineMs, onProgress)
     // daemon/agent scope force-stop the host(s), so EVERY matched session is truly
     // no longer served → release all. session scope leaves the shared host running,
     // so only sessions that actually drained are safe to release (a straggler that
     // ignored cancel is still posting; reassigning it would double-serve).
     let released: SessionKey[]
     if (drain.scope.kind === 'daemon') {
+      await this.stopSelectedTurnHosts(targets)
       for (const id of [...this.hosts.keys()]) await this.stopHost(id)
+      await this.delegatedWebchatHosts?.stopAllHosts?.()
       this.draining = false
       released = matched
     } else if (drain.scope.kind === 'agent') {
+      await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
+      await this.delegatedWebchatHosts?.stopAgentHosts?.(drain.scope.agentId)
       this.drainingAgents.delete(drain.scope.agentId)
       released = matched
     } else {
@@ -13294,8 +13386,14 @@ export class Daemon {
   /** `agent/stop` (§8.2): drain the agent's in-flight turns, stop its host, and
    *  leave it gated so it stays down until a matching `agent/launch` revives it. */
   private async stopAgent(agentId: string): Promise<void> {
-    await this.drainScope({ kind: 'agent', agentId }, this.cfg.limits.shutdownDrainMs)
+    const { targets } = await this.drainScope({ kind: 'agent', agentId }, this.cfg.limits.shutdownDrainMs)
+    // Cold heads are not visible to drainScope until session/new|load returns.
+    // Latch/abort them now, then destroy both selected cells and any idle private
+    // cells before waiting on the dispatch leases.
+    this.interruptAgentTurns(agentId, 'stop')
+    await this.stopSelectedTurnHosts(targets)
     await this.stopHost(agentId)
+    await this.delegatedWebchatHosts?.stopAgentHosts?.(agentId)
     // A dispatch can have passed the gate and captured its reply connection while
     // still inside sessions.handle(), before it appears in `pending`. Wait that
     // whole turn, then stop once more in case it constructed a host after the
@@ -13304,6 +13402,7 @@ export class Daemon {
       await Promise.all([...this.activeDispatchesByAgent.get(agentId)!])
     }
     await this.stopHost(agentId)
+    await this.delegatedWebchatHosts?.stopAgentHosts?.(agentId)
     // gate intentionally left set (drainScope added it): a stopped agent must not
     // auto-respawn on the next message — agent/launch clears the gate.
   }
@@ -13408,12 +13507,17 @@ export class Daemon {
       coldAgents.add(entry.agentId)
     }
     const stopFailClosed = (agentId: string): Promise<void> =>
-      this.stopHost(agentId, 0).catch((err) => {
-        this.log.error(`shutdown: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
-        // Never close the store/MCP boundary while a child that failed to stop may
-        // still be executing against it. Process termination is the final backstop.
-        return new Promise<void>(() => {})
-      })
+      Promise.all([
+        this.stopHost(agentId, 0),
+        this.delegatedWebchatHosts?.stopAgentHosts?.(agentId) ?? Promise.resolve()
+      ])
+        .then(() => undefined)
+        .catch((err) => {
+          this.log.error(`shutdown: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
+          // Never close the store/MCP boundary while a child that failed to stop may
+          // still be executing against it. Process termination is the final backstop.
+          return new Promise<void>(() => {})
+        })
     const coldStops = [...coldAgents].map(stopFailClosed)
     const work = Promise.all([...active, ...coldStops])
     if (active.length > 0 || coldStops.length > 0) {
@@ -13440,10 +13544,7 @@ export class Daemon {
           this.releaseElicits(p.agentId, p.acpSessionId)
           this.releaseChatPermissions(p.agentId, p.acpSessionId)
           this.releaseEditorPermissions(p.agentId, p.acpSessionId)
-          void this.hosts
-            .get(p.agentId)
-            ?.cancel(p.acpSessionId)
-            .catch(() => {})
+          void (p.selectedHost?.host ?? this.hosts.get(p.agentId))?.cancel(p.acpSessionId).catch(() => {})
         }
         const forceStops = [...forceAgents].filter((id) => !coldAgents.has(id)).map(stopFailClosed)
         // stopHost is the hard deadline backstop, but closing the store underneath an
@@ -13858,8 +13959,11 @@ export class Daemon {
           })
           this.moveStagedAgents.add(agentId)
           this.drainingAgents.add(agentId)
-          await this.stopAgent(agentId)
+          // Detach is the authority boundary. Capture/revoke each immutable
+          // delegation fence while manager records still exist, then stop the
+          // ordinary host and any cold dispatches behind the same agent gate.
           await this.closeDelegatedAgent(agentId)
+          await this.stopAgent(agentId)
           const fence = this.moveStageMetadata.get(agentId)
           if (fence?.moveId !== moveId || fence.state !== 'staging') {
             return { ok: false, reason: 'agent/detach: move was superseded' }
