@@ -1245,7 +1245,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   }, 15_000)
 
-  it('keeps a terminal delegated turn pending until manager-owned cleanup settles', async () => {
+  it('explicitly stops a failed delegated turn before a later terminal callback', async () => {
     const daemon = new Daemon({
       root: scaffold(),
       hostFactory: streamingHost([]).factory
@@ -1261,7 +1261,10 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve
     })
-    const waitForCleanup = vi.fn(() => cleanupGate)
+    const order: string[] = []
+    const terminalCallback = vi.fn(() => {
+      order.push('terminal-callback')
+    })
     const dedicatedHost = {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => 'acp-delegated-terminal'),
@@ -1285,9 +1288,13 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
           sourceDirectory: '/private/source',
           sourceSocketPath: '/private/source/mcp.sock',
           targetDirectory: delegatedMcpInCellSocketDirectory()
-        },
-        waitForCleanup
+        }
       })),
+      stopHost: vi.fn(async () => {
+        order.push('explicit-stop')
+        await cleanupGate
+        return true
+      }),
       stop: vi.fn(async () => {})
     }
     ;(daemon as any).delegatedWebchatHosts = manager
@@ -1317,14 +1324,19 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     )
 
     rejectPrompt(new Error('delegated host terminated'))
+    await vi.waitFor(() => expect(manager.stopHost).toHaveBeenCalledOnce(), WAIT)
+    // The real child-process terminal observer is deliberately later than the
+    // prior heuristic's event-loop sample. Correctness must come from the daemon's
+    // explicit stop, not from notification ordering.
     await new Promise<void>((resolve) => setImmediate(resolve))
+    terminalCallback()
     const pendingBeforeCleanup = (daemon as any).pending.size
     const stateBeforeCleanup = (daemon as any).store.getSession(
       (daemon as any).webchatSessionKey(CONV, AGENT_ID)
     )?.state
     releaseCleanup()
 
-    expect(waitForCleanup).toHaveBeenCalledOnce()
+    expect(order).toEqual(['explicit-stop', 'terminal-callback'])
     expect(pendingBeforeCleanup).toBe(1)
     expect(stateBeforeCleanup).not.toBe('idle')
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(0), WAIT)

@@ -872,6 +872,9 @@ function authorizedReviewTarget(
  */
 interface SelectedTurnHost {
   host: AcpHost
+  /** A private delegated process cannot be trusted after its session/prompt
+   * transport rejects. Ordinary shared hosts keep their established error policy. */
+  stopOnError: boolean
   /** Full lifecycle cleanup for the selected process. Delegated turns route this
    * through their manager so broker drain/release and private-HOME removal remain
    * generation-fenced and teardown-singleflight. */
@@ -3748,6 +3751,7 @@ export class Daemon {
     let cleanup: Promise<void> | undefined
     return {
       host: delegatedHost.host,
+      stopOnError: true,
       stop: () =>
         (cleanup ??= (async () => {
           if (!manager) {
@@ -3759,12 +3763,7 @@ export class Daemon {
             isolationCellId: delegatedHost.isolationCellId
           })
         })()),
-      waitForCleanup: async () => {
-        await cleanup
-        // Manager-owned terminal and bridge cleanup bypasses stop() above. The
-        // returned delegated handle observes the exact immutable cell record.
-        await delegatedHost.waitForCleanup?.()
-      }
+      waitForCleanup: () => cleanup ?? Promise.resolve()
     }
   }
 
@@ -3772,6 +3771,7 @@ export class Daemon {
     let cleanup: Promise<void> | undefined
     return {
       host,
+      stopOnError: false,
       stop: (deadlineMs) => (cleanup ??= this.stopHost(agentId, deadlineMs)),
       waitForCleanup: () => cleanup ?? Promise.resolve()
     }
@@ -3780,6 +3780,20 @@ export class Daemon {
   private async waitForTurnLifecycleCleanup(entry: QueueEntry, selectedHost?: SelectedTurnHost): Promise<void> {
     await entry.lifecycleCleanup
     await selectedHost?.waitForCleanup()
+  }
+
+  private beginFailedTurnCleanup(agentId: string, key: string, selectedHost?: SelectedTurnHost): void {
+    if (!selectedHost?.stopOnError) return
+    // The error itself is the atomic lifecycle boundary. Do not wait for a child
+    // exit or bridge callback: synchronously enter the manager's exact-cell,
+    // teardown-singleflight stop path before any dispatch state can be released.
+    this.beginSafetyDrain(agentId, 'stop', [key])
+    const cleanup = selectedHost.stop(0)
+    const failClosed = cleanup.catch((error) => {
+      this.log.error(`delegated turn cleanup failed for agent "${agentId}": ${formatErr(error)}`)
+      return new Promise<void>(() => {})
+    })
+    this.addSafetyDrainWait(agentId, failClosed)
   }
 
   private async stopSelectedTurnHosts(turns: Iterable<Pick<Pending, 'selectedHost'>>): Promise<void> {
@@ -9037,6 +9051,7 @@ export class Daemon {
         }
       )
     } catch (err) {
+      this.beginFailedTurnCleanup(agentId, key, entry.selectedHost)
       this.finishSessionInitialization(agentId)
       restoreDeliveryBinding()
       // handle() boots the host (hostFor → ensureHostAsync → host.start()), so a
@@ -9528,6 +9543,7 @@ export class Daemon {
           : {})
       })
     } catch (err) {
+      this.beginFailedTurnCleanup(agentId, key, p.selectedHost)
       // The turn failed before yielding a clean stop — the agent couldn't start (spawn
       // failure / ACP handshake), or the prompt itself rejected. Without surfacing
       // it here the failure is invisible: Slack keeps its "is thinking…" status with
