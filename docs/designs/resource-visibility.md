@@ -941,9 +941,15 @@ agents.
 - `gated` is **derived** from `agent.visibility === 'restricted'` at spec
   assembly; there is no separate stored toggle (see §14.7).
 - Web `IntegrationChannelList`: tri-state segmented control per channel row
-  (Off / Mention / All messages), a Direct-messages section with binary rows,
-  pending badges, and a banner on restricted agents' integration cards
-  explaining the gate.
+  (Off / Mention / All messages) — offered for every agent, not only a gated
+  one — a Direct-messages section with binary rows, pending badges, and a
+  banner on restricted agents' integration cards explaining the gate.
+- On an UNGATED integration, Off cannot be expressed by withholding a rule: its
+  defaults are unscoped (@-mention anywhere + DMs) and additive. The CP
+  therefore ships an explicit `mutedChannels` fence — on the integration spec
+  for a daemon-arbitrated bot, and on `rc/bot-assign` / `rc/routes` for a
+  relay-arbitrated one — which both arbiters apply ahead of every rung. A gated
+  integration leaves it empty; its Off remains the absence of a scoped rule.
 
 ### 14.4 Visibility transitions
 
@@ -953,9 +959,13 @@ agents.
   conversations start Off — rows appear as counterparts next write, each
   receiving the one-time notice.
 - **restricted → org:** gating turns off; unscoped defaults return. Rows and
-  their trigger values persist inert (an `off` row on a non-gated integration
-  is ignored) so flipping back restores the previous decisions — the same
-  preservation principle as Decision 4.
+  their trigger values persist so flipping back restores the previous
+  decisions — the same preservation principle as Decision 4. Only the DIRECT
+  rows go inert, because the Console hides them for an org-visible agent and
+  honouring one would be behaviour with no visible control. A CHANNEL row keeps
+  its trigger, Off included: Off is a control every agent has (see
+  "Per-channel trigger" in product-conventions.md), and the row stays on screen
+  for an editor to change.
 
 ### 14.5 Rollout / migration
 

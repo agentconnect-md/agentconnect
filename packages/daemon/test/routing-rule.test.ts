@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { rulesFromAgent, resolveCpRule, resolveAgentIntegration, type CpRule } from '../src/router/routing-rule.js'
+import {
+  rulesFromAgent,
+  resolveCpRule,
+  resolveAgentIntegration,
+  conversationAdmitted,
+  type CpRule
+} from '../src/router/routing-rule.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
 function agent(over: Partial<Agent> = {}): Agent {
@@ -78,10 +84,16 @@ describe('resolveAgentIntegration', () => {
     expect(resolveAgentIntegration(a, { int1: 'B1' })).toEqual({
       integrationId: 'int1',
       botUserId: 'B1',
-      platform: 'slack'
+      platform: 'slack',
+      mutedChannels: []
     })
     // falls back to the static botUserId when the map has no entry
-    expect(resolveAgentIntegration(a, {})).toEqual({ integrationId: 'int1', botUserId: 'STATIC', platform: 'slack' })
+    expect(resolveAgentIntegration(a, {})).toEqual({
+      integrationId: 'int1',
+      botUserId: 'STATIC',
+      platform: 'slack',
+      mutedChannels: []
+    })
   })
 
   it('prefers the integration matching the requested platform for a multi-platform agent', () => {
@@ -108,5 +120,42 @@ describe('resolveAgentIntegration', () => {
   it('returns null when the agent has no integrations', () => {
     const a = agent({ integrations: [] })
     expect(resolveAgentIntegration(a, {})).toBeNull()
+  })
+})
+
+describe('conversationAdmitted', () => {
+  const routing = (over: Partial<Parameters<typeof conversationAdmitted>[0]> = {}) => ({
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    ...over
+  })
+
+  it('admits any conversation of an ungated integration with nothing muted', () => {
+    expect(conversationAdmitted(routing(), 'C1')).toBe(true)
+  })
+
+  it('refuses a muted channel, and a thread inside it', () => {
+    const r = routing({ mutedChannels: ['C1'] })
+    expect(conversationAdmitted(r, 'C1')).toBe(false)
+    expect(conversationAdmitted(r, 'THREAD', 'C1')).toBe(false)
+    expect(conversationAdmitted(r, 'C2')).toBe(true)
+  })
+
+  // §14: a gated integration is fail-closed — an unknown conversation has no rule.
+  it('admits a gated conversation only when a scoped rule enables it', () => {
+    const r = routing({ gated: true, bindRules: [{ channel: 'C1', match: { kind: 'mention' } }] })
+    expect(conversationAdmitted(r, 'C1')).toBe(true)
+    expect(conversationAdmitted(r, 'THREAD', 'C1')).toBe(true)
+    expect(conversationAdmitted(r, 'C2')).toBe(false)
+  })
+
+  it('lets the mute override an enabling rule — the two fences are independent', () => {
+    const r = routing({
+      gated: true,
+      mutedChannels: ['C1'],
+      bindRules: [{ channel: 'C1', match: { kind: 'mention' } }]
+    })
+    expect(conversationAdmitted(r, 'C1')).toBe(false)
   })
 })

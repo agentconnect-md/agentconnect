@@ -168,6 +168,36 @@ describe('HTTP-bot arbitration (§10)', () => {
       expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
     })
   })
+
+  describe('muted channels (per-channel Off)', () => {
+    it('resolves nothing in a muted channel, even for an explicit @bot', () => {
+      const a = { ...assignment(), mutedChannels: ['C1'] }
+      const t = arbitrate(a, msg({ channel: 'C1', text: '<@UBOT> deploy', mentionedBots: [BOTUSER] }), empty())
+      expect(t).toBeNull()
+    })
+
+    it('shuts off the rungs a missing route cannot: keyword slug and the group default', () => {
+      const a = { ...assignment(), mutedChannels: ['CX'] }
+      // CX has no scoped route at all, so both of these route today.
+      expect(arbitrate(a, msg({ channel: 'CX', text: 'bob ship it', mentionedBots: [BOTUSER] }), empty())).toBeNull()
+      expect(arbitrate(a, msg({ channel: 'CX', text: '<@UBOT> hi', mentionedBots: [BOTUSER] }), empty())).toBeNull()
+    })
+
+    it('drops thread continuity into a muted channel', () => {
+      const a = { ...assignment(), mutedChannels: ['C2'] }
+      const aff = new Map<string, RouteTarget>([['C2/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
+      expect(arbitrate(a, msg({ channel: 'C2', thread: 'ts1', text: 'and then?' }), aff)).toBeNull()
+    })
+
+    it('leaves the bot answering everywhere else', () => {
+      const a = { ...assignment(), mutedChannels: ['C1'] }
+      expect(arbitrate(a, msg({ channel: 'C2', text: 'anything' }), empty())).toEqual({
+        agentId: BOB,
+        daemonId: D2,
+        integrationId: 'iB'
+      })
+    })
+  })
 })
 
 describe('BotArbitrationRouter — table + live affinity', () => {

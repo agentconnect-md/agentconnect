@@ -32,6 +32,7 @@ function toIntegration(spec: IntegrationSpec): Integration {
         botToken: spec.telegram.botToken,
         allowedUserIds: spec.telegram.allowedUserIds,
         bindRules: spec.telegram.bindRules,
+        mutedChannels: spec.telegram.mutedChannels,
         gated: spec.telegram.gated
       }
     }
@@ -46,6 +47,7 @@ function toIntegration(spec: IntegrationSpec): Integration {
         ...(spec.discord.applicationId ? { applicationId: spec.discord.applicationId } : {}),
         allowedUserIds: spec.discord.allowedUserIds,
         bindRules: spec.discord.bindRules,
+        mutedChannels: spec.discord.mutedChannels,
         gated: spec.discord.gated
       }
     }
@@ -63,6 +65,7 @@ function toIntegration(spec: IntegrationSpec): Integration {
         region: spec.feishu.region,
         allowedUserIds: spec.feishu.allowedUserIds,
         bindRules: spec.feishu.bindRules,
+        mutedChannels: spec.feishu.mutedChannels,
         gated: spec.feishu.gated
       }
     }
@@ -83,6 +86,7 @@ function toIntegration(spec: IntegrationSpec): Integration {
       ...(spec.slack.botUserId ? { botUserId: spec.slack.botUserId } : {}),
       allowedUserIds: spec.slack.allowedUserIds,
       bindRules: spec.slack.bindRules,
+      mutedChannels: spec.slack.mutedChannels,
       gated: spec.slack.gated
     }
   }

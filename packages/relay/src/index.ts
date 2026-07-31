@@ -58,6 +58,7 @@ function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): Bo
     ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
     gatedAgentIds: a.gatedAgentIds,
+    mutedChannels: a.mutedChannels,
     noticedDmConversations: a.noticedDmConversations,
     ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})
   }
@@ -161,6 +162,7 @@ async function main(): Promise<void> {
         ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
         ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
         gatedAgentIds: r.gatedAgentIds,
+        mutedChannels: r.mutedChannels,
         noticeAuthority: r.noticeAuthority,
         noticedDmConversations: r.noticedDmConversations
       }),

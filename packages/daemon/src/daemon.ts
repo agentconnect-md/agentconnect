@@ -86,6 +86,7 @@ import {
   resolveCpRule,
   resolveAgentIntegration,
   integrationRouting,
+  conversationAdmitted,
   type RoutingRule
 } from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
@@ -5284,7 +5285,7 @@ export class Daemon {
       const routing = integrationRouting(integration)
       const unauthorized =
         (routing.allowedUserIds.length > 0 && (!msg.userId || !routing.allowedUserIds.includes(msg.userId))) ||
-        (routing.gated && !routing.bindRules.some((rule) => rule.channel === payload.channelId))
+        !conversationAdmitted(routing, payload.channelId)
       const transportScope = this.transportScopeForIntegrationIds([integration.id])
       const rec = unauthorized
         ? undefined
@@ -7551,11 +7552,10 @@ export class Daemon {
       ?.integrations.find((candidate) => candidate.id === integrationId && candidate.platform === msg.platform)
     if (!integration) return false
     const routing = integrationRouting(integration)
-    // Conversation gating (§14): control commands resolve their target OUTSIDE
-    // routeRules' scope filter (latest-session fallbacks), so they must repeat the
-    // admission check — an Off conversation of a gated integration takes no commands.
-    if (routing.gated && !routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel))
-      return false
+    // Control commands resolve their target OUTSIDE routeRules' scope filter (latest-
+    // session fallbacks), so they must repeat the admission check — a channel switched
+    // Off, or an Off conversation of a gated integration, takes no commands either.
+    if (!conversationAdmitted(routing, msg.channel, msg.parentChannel)) return false
     const allowed = routing.allowedUserIds
     return allowed.length === 0 || allowed.includes(msg.sender.id)
   }
@@ -8031,7 +8031,7 @@ export class Daemon {
         )
           continue
         const routing = integrationRouting(integration)
-        if (routing.gated && !routing.bindRules.some((rule) => rule.channel === channel)) continue
+        if (!conversationAdmitted(routing, channel)) continue
         const session = this.store.latestSessionForTransport(agentId, channel, transportScope)
         if (session) candidates.push(session)
       }
@@ -8054,7 +8054,7 @@ export class Daemon {
         if (integration.platform !== 'slack' || !srcIntegrationIds.includes(integration.id)) continue
         const routing = integrationRouting(integration)
         if (routing.allowedUserIds.length > 0 && !routing.allowedUserIds.includes(shortcut.userId)) continue
-        if (routing.gated && !routing.bindRules.some((rule) => rule.channel === shortcut.channel)) continue
+        if (!conversationAdmitted(routing, shortcut.channel)) continue
         const session = this.store.latestSessionForTransport(agentId, shortcut.channel, transportScope, shortcut.thread)
         if (session) candidates.push(session)
       }
@@ -8079,7 +8079,7 @@ export class Daemon {
   private resolveCpAgent(
     agentId: string,
     platform?: string
-  ): { integrationId: string; botUserId: string; platform: string } | null {
+  ): { integrationId: string; botUserId: string; platform: string; mutedChannels: string[] } | null {
     return resolveAgentIntegration(this.agents.get(agentId), this.botUserIds, platform)
   }
 
@@ -12806,13 +12806,14 @@ export class Daemon {
     return this.mergedRules().filter((rule) => this.integrationBelongsToSource(rule.integrationId, srcIntegrationIds))
   }
 
-  /** §14 admission for a pre-addressed (relay) message: a gated integration accepts
-   *  a conversation only when its shipped bindRules carry a rule scoped to it. */
+  /** Last-hop admission for a pre-addressed (relay) message. The relay arbitrated it,
+   *  but its routing snapshot can lag a console edit, so the shipped spec decides
+   *  again: an Off channel and (§14) an unenabled conversation of a gated integration
+   *  are both refused here rather than trusted to the relay. */
   private gatedAdmission(integrationId: string, msg: NormalizedMessage): boolean {
     const int = this.integrationConfigById(integrationId)
     if (!int) return true // unknown here — agent/integration existence is checked separately
-    const routing = integrationRouting(int)
-    return !routing.gated || routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel)
+    return conversationAdmitted(integrationRouting(int), msg.channel, msg.parentChannel)
   }
 
   /**

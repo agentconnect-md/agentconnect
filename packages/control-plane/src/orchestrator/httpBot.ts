@@ -63,6 +63,12 @@ interface Compiled {
   defaultDaemonId?: string
   /** Members whose ingress is conversation-gated (resource-visibility.md §14). */
   gatedAgentIds: string[]
+  /** Channels the operator switched Off — the relay's subtractive fence over the
+   *  rungs no missing route can suppress (keyword, `defaultAgentId`, continuity). */
+  mutedChannels: string[]
+  /** Every membership row of the bot, read once for the compile and reused by the
+   *  spec push (both need the per-install trigger state). */
+  botChannels: IntegrationChannelRecord[]
   /** DM conversation ids whose §14.3 notice was ACTUALLY DELIVERED — the
    *  pool-wide latch for single-copy DM messages (never row-derived: discovery
    *  without delivery must not latch). */
@@ -169,6 +175,7 @@ export class HttpBotOrchestrator {
         ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
         ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
         gatedAgentIds: compiled.gatedAgentIds,
+        mutedChannels: compiled.mutedChannels,
         noticedDmConversations: compiled.noticedDmConversations,
         ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
       })
@@ -674,6 +681,13 @@ export class HttpBotOrchestrator {
     //    routes to that agent, respecting the channel's trigger (any → auto rule,
     //    mention → mention rule). Emitted FIRST so a scoped rule wins arbitration.
     const chans = await this.channels.listForBot(bot.id)
+    // Channels the operator switched Off. Bot-scoped like ownership itself: the trigger
+    // is replicated across every membership row of the channel, so any row states it —
+    // including one whose owner is not currently placed, where the operator's Off must
+    // still hold. Direct rows never mute (a DM is not a place with an owner to switch off).
+    const mutedChannels = [
+      ...new Set(chans.filter((c) => c.trigger === 'off' && c.kind === 'channel').map((c) => c.channelId))
+    ]
     // A group DM has no owner picker — it is not a place the bot was invited to, so the
     // observation fan-out gives every gated install its own row. Two agents enabling the
     // same one would compile two IDENTICAL scoped mention routes and relay order would
@@ -708,7 +722,10 @@ export class HttpBotOrchestrator {
       // route via defaultAgentId as they always did, and a non-gated group DM via
       // the unscoped mention default.
       if (isDirectConversationKind(c.kind) && (!p.gated || c.trigger === 'off')) continue
-      if (c.trigger === 'off' && p.gated) continue
+      // Off compiles no route for ANY owner. A gated one is then unreachable
+      // (fail-closed, no unscoped rungs exist); an ungated one still has the
+      // keyword/default rungs, which `mutedChannels` below shuts off.
+      if (c.trigger === 'off') continue
       if (c.kind === 'mpim' && groupDmOwner.get(c.channelId) !== c.agentId) continue
       // A DM conversation row activates on any message once enabled (no mention
       // inside a DM); channels follow their trigger.
@@ -789,7 +806,9 @@ export class HttpBotOrchestrator {
       routes,
       ...(first ? { defaultAgentId: first.integration.agentId, defaultDaemonId: first.daemonId } : {}),
       gatedAgentIds: placed.filter((p) => p.gated).map((p) => p.integration.agentId),
+      mutedChannels,
       noticedDmConversations,
+      botChannels: chans,
       placed: placed.map((p) => ({ integration: p.integration, daemonId: p.daemonId, gated: p.gated }))
     }
   }
@@ -802,14 +821,12 @@ export class HttpBotOrchestrator {
     bot: Pick<BotRecord, 'shareable' | 'slackAppId' | 'botUserId'>
   ): Promise<void> {
     // A gated install's spec carries its conversation-scoped rules for the daemon's
-    // last-hop admission backstop (§14.3). One listForBot covers every install; rows
-    // are keyed per install, so filter by integrationId.
-    const anyGated = compiled.placed.some((p) => p.gated)
-    const botChannels =
-      anyGated && compiled.placed[0] ? await this.channels.listForBot(BotId(compiled.placed[0].integration.botId)) : []
+    // last-hop admission backstop (§14.3), and EVERY install carries its Off channels
+    // for the same backstop. The compile already read the bot's rows; they are keyed
+    // per install, so filter by integrationId.
     for (const { integration, daemonId, gated } of compiled.placed) {
       try {
-        const channels = gated ? botChannels.filter((c) => c.integrationId === integration.id) : []
+        const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
         await this.control.integrationUpsert(
           daemonId,
           httpIntegrationToSpec(
@@ -864,6 +881,7 @@ export class HttpBotOrchestrator {
       ...(compiled.defaultAgentId ? { defaultAgentId: compiled.defaultAgentId } : {}),
       ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
       gatedAgentIds: compiled.gatedAgentIds,
+      mutedChannels: compiled.mutedChannels,
       noticedDmConversations: compiled.noticedDmConversations,
       ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
     }

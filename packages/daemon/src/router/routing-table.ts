@@ -22,6 +22,12 @@ function scopeMatches(r: RoutingRule, msg: NormalizedMessage): boolean {
   // `dm`/`auto` rule can't route a Telegram message (and vice-versa). Undefined
   // platform (legacy/tests) matches any.
   if (r.platform !== undefined && r.platform !== msg.platform) return false
+  // A channel the operator switched OFF silences its integration outright. Applied
+  // here, in the ONE scope filter, so no rung can slip past it: not an unscoped
+  // mention default, not thread continuity (which reads the same candidate set), not
+  // a CP session placement. Threads inherit the enclosing channel's Off through the
+  // same predicate the positive scope uses.
+  if (r.mutedChannels?.some((muted) => channelInScope(muted, msg))) return false
   if (!channelInScope(r.scope.channel, msg)) return false
   if (r.scope.thread !== undefined && r.scope.thread !== msg.thread) return false
   return true

@@ -9,21 +9,18 @@ import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
 
 /** The per-conversation trigger toggle: a ⚡ marker followed by the segmented
- *  bar. Channels: "any message" vs "@-mention" (default; mention sits last),
- *  plus an "off" segment on a gated (restricted-agent) integration —
- *  resource-visibility.md §14. DM rows are binary off/on. Every segment
- *  carries hover copy. */
+ *  bar. Channels: "off" / "any message" / "@-mention" (the default, so it sits
+ *  last). DM rows are binary off/on, and only a gated (restricted-agent)
+ *  integration has any — resource-visibility.md §14. Every segment carries
+ *  hover copy. */
 function TriggerToggle({
   channel,
   disabled,
-  gated,
   onChange
 }: {
   channel: IntegrationChannelRow
   /** Demo rows (no live integration id) render the control inert. */
   disabled: boolean
-  /** Restricted-agent integration: conversations are gated, "off" is offered. */
-  gated: boolean
   onChange: (trigger: IntegrationChannelRow['trigger']) => void
 }) {
   const [saving, setSaving] = useState(false)
@@ -53,10 +50,10 @@ function TriggerToggle({
     )
   }
   // A DM conversation activates on any message once enabled — binary off/on. A
-  // channel keeps the any/mention choice (mention last); "off" appears when
-  // gated (and, so the state stays visible, on an inert off row of a
-  // no-longer-gated integration). A GROUP DM takes the channel's three-way choice,
-  // not the DM's: several people share it, so "every message" must stay opt-in.
+  // channel takes the full three-way choice for EVERY agent, gated or not: an operator
+  // who wants the bot silent here but still in the channel on the platform has nowhere
+  // else to say so. A GROUP DM takes the channel's choice, not the DM's: several people
+  // share it, so "every message" must stay opt-in.
   const here = channel.kind === 'mpim' ? 'this group DM' : 'this channel'
   const segs: [IntegrationChannelRow['trigger'], string, string][] =
     channel.kind === 'im'
@@ -64,24 +61,15 @@ function TriggerToggle({
           ['off', 'off', "The agent doesn't respond in this conversation."],
           ['any', 'on', 'The agent responds to messages in this conversation.']
         ]
-      : gated || channel.trigger === 'off'
-        ? [
-            ['off', 'off', `The agent doesn't respond in ${here}.`],
-            ['any', 'any message', `The agent responds to every message in ${here}.`],
-            [
-              'mention',
-              '@-mention',
-              "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
-            ]
+      : [
+          ['off', 'off', `The agent doesn't respond in ${here}, even when @-mentioned.`],
+          ['any', 'any message', `The agent responds to every message in ${here}.`],
+          [
+            'mention',
+            '@-mention',
+            "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
           ]
-        : [
-            ['any', 'any message', `The agent responds to every message in ${here}.`],
-            [
-              'mention',
-              '@-mention',
-              "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
-            ]
-          ]
+        ]
   return (
     <span className="inline-flex items-center gap-[7px] max-desktop:w-full">
       <span title="Trigger — when the agent responds here" className="flex-none leading-none">
@@ -464,7 +452,6 @@ export function IntegrationChannelList({
           <TriggerToggle
             channel={c}
             disabled={!integrationId}
-            gated={gated}
             onChange={(trigger) => setChannelTrigger(integrationId!, c.channelId, trigger)}
           />
         </div>
@@ -495,15 +482,21 @@ export function IntegrationChannelList({
       {dmRows.length > 0 && groupHeader('Direct messages', padX)}
       {dmRows.map(row)}
       <div
-        className="flex items-center gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+        className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)"
         style={{ padding: `10px ${padX}px` }}
       >
-        <Icon name="info" size={14} className="flex-none" />
-        {shareable
-          ? 'Channels appear here when the bot is invited to them. Trigger is set per channel; default dispatch is the agent who handles unmatched messages.'
-          : gated
-            ? 'Channels appear here when the bot is invited; direct messages appear when someone writes to the bot.'
-            : 'Channels appear here when the bot is invited to them. Trigger is set per channel.'}
+        <Icon name="info" size={14} className="mt-[3px] flex-none" />
+        <span>
+          {shareable
+            ? 'Channels appear here when the bot is invited to them. Trigger is set per channel; default dispatch is the agent who handles unmatched messages.'
+            : gated
+              ? 'Channels appear here when the bot is invited; direct messages appear when someone writes to the bot.'
+              : 'Channels appear here when the bot is invited to them. Trigger is set per channel.'}{' '}
+          {/* Answers the question the list otherwise raises — there is no "leave" here,
+              because leaving is a platform action. Off is the console's equivalent. */}
+          Set a channel to off to silence the agent there; removing the bot from the channel itself is done on the
+          platform.
+        </span>
       </div>
     </>
   )

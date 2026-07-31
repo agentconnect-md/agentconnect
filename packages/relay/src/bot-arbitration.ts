@@ -45,6 +45,10 @@ export interface BotAssignment {
    *  in the conversation — a binding made before the gate was applied must not keep
    *  routing a private agent in a now-Off conversation. */
   gatedAgentIds?: string[]
+  /** Channels the operator switched OFF. The ladder below has rungs no missing route
+   *  can suppress — thread continuity, the unscoped keyword slug, `defaultAgentId` —
+   *  so Off is a fence rather than an omission: a muted channel resolves to nothing. */
+  mutedChannels?: string[]
   /** §14.3: the relayId deterministically responsible for this bot's one-time
    *  CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
@@ -116,6 +120,9 @@ export function arbitrate(
   if (a.botUserId !== undefined && msg.sender.id === a.botUserId) return null
   const explicitlyMentioned = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
   if (msg.sender.isBot && (msg.platform !== 'slack' || !explicitlyMentioned)) return null
+  // A channel switched Off resolves to no target at all — ahead of every rung, so
+  // neither an @-mention nor an existing thread binding can reach into it.
+  if (a.mutedChannels?.includes(msg.channel)) return null
 
   const scoped = a.routes.filter((r) => r.scope?.channel !== undefined && scopeMatches(r, msg))
 
@@ -195,6 +202,7 @@ export class BotArbitrationRouter {
       | 'defaultAgentId'
       | 'defaultDaemonId'
       | 'gatedAgentIds'
+      | 'mutedChannels'
       | 'noticeAuthority'
       | 'noticedDmConversations'
     >
@@ -207,6 +215,7 @@ export class BotArbitrationRouter {
     a.defaultAgentId = patch.defaultAgentId
     a.defaultDaemonId = patch.defaultDaemonId
     a.gatedAgentIds = patch.gatedAgentIds
+    a.mutedChannels = patch.mutedChannels
     a.noticeAuthority = patch.noticeAuthority
     a.noticedDmConversations = patch.noticedDmConversations
   }

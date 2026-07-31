@@ -426,6 +426,7 @@ export class RelayIngressManager {
       | 'defaultAgentId'
       | 'defaultDaemonId'
       | 'gatedAgentIds'
+      | 'mutedChannels'
       | 'noticeAuthority'
       | 'noticedDmConversations'
     >
@@ -863,6 +864,9 @@ export class RelayIngressManager {
     const sessionKey = sessionKeyOf({ channel: shortcut.channelId, thread: shortcut.threadTs })
     const assignment = this.router.get(botId)
     if (!assignment) return false
+    // A channel switched Off takes no shortcut either — the modal it opens acts on a
+    // session in a conversation the operator has silenced.
+    if (assignment.mutedChannels?.includes(shortcut.channelId)) return false
     const allowedInChannel = (agentId: string): boolean =>
       !assignment.gatedAgentIds?.includes(agentId) ||
       assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === shortcut.channelId)

@@ -570,6 +570,13 @@ export const RcBotAssign = z.object({
   // only while that agent still has a channel-scoped route in the conversation —
   // otherwise a thread bound before the gate was applied would keep routing forever.
   gatedAgentIds: z.array(z.string().uuid()).default([]),
+  // Channels the operator switched OFF for this bot. The relay's ladder has rungs
+  // no channel-scoped route can suppress — unscoped keyword, the group's
+  // `defaultAgentId`, thread continuity — so an Off channel needs a subtractive
+  // fence rather than the mere absence of a route. A muted channel resolves to no
+  // target at all. Bot-scoped, matching how an HTTP bot's channels converge on one
+  // owner. Defaults empty.
+  mutedChannels: z.array(z.string()).default([]),
   // §14.3 one-time gating notice, CHANNEL conversations: the relayId
   // DETERMINISTICALLY responsible for posting it for this bot. A channel mention
   // arrives as two event copies that may land on different pods — only the
@@ -614,6 +621,7 @@ export const RcRoutes = z.object({
   defaultAgentId: z.string().uuid().optional(),
   defaultDaemonId: z.string().uuid().optional(),
   gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
+  mutedChannels: z.array(z.string()).default([]), // Off channels — see RcBotAssign.mutedChannels
   noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
   noticedDmConversations: z.array(z.string()).default([]) // §14.3 — see RcBotAssign.noticedDmConversations
 })
