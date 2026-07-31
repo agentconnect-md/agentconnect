@@ -182,6 +182,7 @@ export interface AgentDto {
   capabilities: string[]
   mcpServers: string[] // daemon-configured MCP server names attached at session/new; empty ⇒ none
   skills: string[] // enabled shared-skills "<source>/<skill>" / "<source>/*"; empty ⇒ none
+  managedSkills?: string[] // enabled centrally accepted immutable skill ids; absent on older CPs
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
@@ -712,6 +713,8 @@ export interface UpdateAgentInput {
   mcpServers?: string[]
   /** Enabled shared-skills; replaced wholesale when provided; [] clears all. */
   skills?: string[]
+  /** Enabled centrally accepted managed skill ids; replaced wholesale. */
+  managedSkills?: string[]
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
 }
@@ -859,6 +862,8 @@ export interface CreateAgentInput {
   mcpServers?: string[]
   /** Enabled shared-skills "<source>/<skill>" / "<source>/*"; absent ⇒ none. */
   skills?: string[]
+  /** Enabled centrally accepted managed skill ids; absent ⇒ none. */
+  managedSkills?: string[]
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** Request an OS sandbox for this agent; absent ⇒ false unless daemon policy requires it. */
@@ -3922,4 +3927,149 @@ export async function fetchCronRuns(id: string, orgId?: string): Promise<CronRun
 // accepted, the outcome lands in the run history asynchronously.
 export async function runCronNow(id: string): Promise<void> {
   await apiPost<null>(`${orgBase()}/crons/${encodeURIComponent(id)}/run`, {})
+}
+
+// ── organization knowledge + managed skills ─────────────────────────────────
+
+export interface OrganizationKnowledgeDto {
+  id: string
+  title: string
+  content: string
+  summary: string | null
+  tags: string[]
+  currentRevision: number
+  digest: string
+  source: 'manual' | 'dream'
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  archivedAt: string | null
+  createdAt: string
+  updatedAt: string
+  revisionCreatedAt: string
+  canManage: boolean
+}
+
+export interface ManagedSkillDto {
+  id: string
+  name: string
+  description: string
+  currentRevision: number
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: {
+    name?: string
+    description?: string
+    files?: Array<{ path: string; bytes: number; digest: string }>
+    [key: string]: unknown
+  }
+  archivedAt: string | null
+  createdAt: string
+  updatedAt: string
+  canManage: boolean
+}
+
+export interface OrganizationSuggestionDto {
+  id: string
+  sourceAgentId: string
+  sourceAgentName: string | null
+  sourceDaemonId: string | null
+  dreamId: string
+  candidateId: string
+  kind: 'knowledge' | 'skill'
+  operation: 'create' | 'update'
+  targetArtifactId: string | null
+  targetRevision: number | null
+  title: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  contentBytes: number
+  sessionIds: string[]
+  state: 'pending' | 'accepted' | 'rejected'
+  contentAvailable: boolean
+  reviewedAt: string | null
+  reviewReason: string | null
+  acceptedArtifactId: string | null
+  acceptedArtifactRevision: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type OrganizationSuggestionContentDto =
+  | { kind: 'knowledge'; digest: string; content: string; summary: string | null; tags: string[] }
+  | {
+      kind: 'skill'
+      digest: string
+      files: Array<{ path: string; encoding: 'utf8' | 'base64'; content: string }>
+    }
+
+export function listOrganizationKnowledge(includeArchived = false): Promise<OrganizationKnowledgeDto[]> {
+  return apiGet<OrganizationKnowledgeDto[]>(
+    `${orgBase()}/knowledge?includeArchived=${includeArchived ? 'true' : 'false'}`
+  )
+}
+
+export function createOrganizationKnowledge(input: {
+  title: string
+  content: string
+  summary?: string
+  tags?: string[]
+}): Promise<OrganizationKnowledgeDto> {
+  return apiPost<OrganizationKnowledgeDto>(`${orgBase()}/knowledge`, input)
+}
+
+export function updateOrganizationKnowledge(
+  id: string,
+  input: { title: string; content: string; summary?: string; tags?: string[]; expectedRevision: number }
+): Promise<OrganizationKnowledgeDto> {
+  return apiPatch<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}`, input)
+}
+
+export function setOrganizationKnowledgeArchived(id: string, archived: boolean): Promise<OrganizationKnowledgeDto> {
+  return apiPost<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/archive`, { archived })
+}
+
+export function listManagedSkills(includeArchived = false): Promise<ManagedSkillDto[]> {
+  return apiGet<ManagedSkillDto[]>(`${orgBase()}/managed-skills?includeArchived=${includeArchived ? 'true' : 'false'}`)
+}
+
+export function setManagedSkillArchived(id: string, archived: boolean): Promise<ManagedSkillDto> {
+  return apiPost<ManagedSkillDto>(`${orgBase()}/managed-skills/${encodeURIComponent(id)}/archive`, { archived })
+}
+
+export function listOrganizationSuggestions(
+  filters: {
+    kind?: 'knowledge' | 'skill'
+    state?: 'pending' | 'accepted' | 'rejected'
+    query?: string
+  } = {}
+): Promise<OrganizationSuggestionDto[]> {
+  const params = new URLSearchParams()
+  if (filters.kind) params.set('kind', filters.kind)
+  if (filters.state) params.set('state', filters.state)
+  if (filters.query?.trim()) params.set('query', filters.query.trim())
+  const query = params.toString()
+  return apiGet<OrganizationSuggestionDto[]>(`${orgBase()}/knowledge-suggestions${query ? `?${query}` : ''}`)
+}
+
+export function fetchOrganizationSuggestionContent(id: string): Promise<OrganizationSuggestionContentDto> {
+  return apiGet<OrganizationSuggestionContentDto>(
+    `${orgBase()}/knowledge-suggestions/${encodeURIComponent(id)}/content`
+  )
+}
+
+export function reviewOrganizationSuggestion(
+  id: string,
+  decision: 'accept' | 'reject',
+  reason?: string
+): Promise<OrganizationSuggestionDto> {
+  return apiPost<OrganizationSuggestionDto>(`${orgBase()}/knowledge-suggestions/${encodeURIComponent(id)}/review`, {
+    decision,
+    ...(reason?.trim() ? { reason: reason.trim() } : {})
+  })
 }

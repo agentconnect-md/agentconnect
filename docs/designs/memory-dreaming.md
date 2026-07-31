@@ -1,12 +1,14 @@
 # Design: Memory Dreaming Mode — Offline Consolidation for Managed Memory
 
 > Status: D-1 shipped (protocol, daemon runner, CP REST, console config); D-2
-> shipped (auto-accept policy, distillation rebase, scheduled dreams). D-3 (skill
-> mining) remains a proposal — see §12.
+> shipped (auto-accept policy, distillation rebase, scheduled dreams); D-3
+> shipped (reviewed skill mining). Organization-wide Dream proposals extend
+> this lifecycle in [organization-knowledge.md](organization-knowledge.md).
 > Prerequisites: [memory-evolution.md](memory-evolution.md),
 > [memory-system-plan.md](memory-system-plan.md),
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
-> [shared-skills.md](shared-skills.md)
+> [shared-skills.md](shared-skills.md),
+> [organization-knowledge.md](organization-knowledge.md)
 > Keywords: dreaming, memory consolidation, distillation, staged output,
 > transcript mining, skill mining, managed provider, harness-agnostic
 
@@ -330,6 +332,12 @@ Skill review states are independent of store adoption: a user can adopt the
 consolidated store while dismissing every skill, or accept a skill from a
 dream whose store proposal was discarded.
 
+Organization-wide knowledge and skill proposals use a second, owner-reviewed
+lifecycle described in `organization-knowledge.md`. Their bounded bodies remain
+daemon-local while pending, are never covered by memory auto-adopt, and become
+central immutable artifacts only after explicit acceptance. Agent-local skill
+acceptance described above remains unchanged.
+
 ## 8. Interaction with auto-distillation
 
 Distillation and dreaming are two layers of one background-memory system —
@@ -462,16 +470,16 @@ metadata, not the Dream session's usage.
   work in memory-evolution.md.
 - **Auto-installing mined skills** — skills are always human-reviewed (§7);
   no unattended path is planned.
-- **Cross-agent skill sharing** — publishing an accepted skill to a shared
-  registry for other agents belongs to the shared-skills source model, not to
-  dreaming; dreaming stops at per-agent acceptance.
+- **Unreviewed cross-agent skill sharing** — Dream cannot publish or enable a
+  shared skill. The reviewed organization proposal path is specified separately
+  in `organization-knowledge.md`.
 
 ## 12. Phasing
 
-| Phase | Scope                                                                                                                                                                                |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard. |
-| D-2a  | `autoAdopt` independent of prompt-channel trust, the distillation rebase rule, backup pruning. **Done.**                                                                             |
-| D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                    |
-| D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow.        |
-| D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                          |
+| Phase | Scope                                                                                                                                                                                   |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard.    |
+| D-2a  | `autoAdopt` independent of prompt-channel trust, the distillation rebase rule, backup pruning. **Done.**                                                                                |
+| D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                       |
+| D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow. **Done.** |
+| D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                             |

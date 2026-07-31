@@ -36,6 +36,11 @@ import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleMcpInvocationMint } from './mcp-invocation-mint.js'
 import { handleWebchatMcpDelegationRevoke } from './webchat-mcp-delegation-revoke.js'
+import {
+  handleKnowledgeSearch,
+  handleManagedSkillRead,
+  handleOrganizationSuggestionsSync
+} from './organization-knowledge.js'
 
 export type Handler = (frame: AnyFrame, conn: DaemonConnection, deps: DaemonWsDeps) => Promise<void>
 
@@ -64,6 +69,9 @@ export class FrameRouter {
       'gitcred/request': handleGitCredRequest,
       'mcp/invocation/mint': handleMcpInvocationMint,
       'webchat/mcp-delegation/revoke': handleWebchatMcpDelegationRevoke,
+      'knowledge/search': handleKnowledgeSearch,
+      'knowledge/suggestions/sync': handleOrganizationSuggestionsSync,
+      'managed-skill/read': handleManagedSkillRead,
       ...overrides
     }
   }
@@ -94,5 +102,8 @@ export {
   handleEventSession,
   handleSessionActivity,
   handleMcpInvocationMint,
-  handleWebchatMcpDelegationRevoke
+  handleWebchatMcpDelegationRevoke,
+  handleKnowledgeSearch,
+  handleOrganizationSuggestionsSync,
+  handleManagedSkillRead
 }

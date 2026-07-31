@@ -39,7 +39,8 @@ function hostSpawnSig(a: Agent): string {
     // Secrets are baked into the child env at spawn (agentChildEnv) and
     // materialized as config files (config-file-env.ts) — a value edit that
     // doesn't evict the host would leave the child running on the stale value.
-    secrets: a.runtimeOverrides?.secrets
+    secrets: a.runtimeOverrides?.secrets,
+    managedSkills: a.managedSkills
   })
 }
 

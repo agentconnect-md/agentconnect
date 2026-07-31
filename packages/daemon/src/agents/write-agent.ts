@@ -423,6 +423,9 @@ function applySpecFields(
   // Skill sources are CP-owned and self-contained (design: shared-skills.md); mirror
   // the mcpServers contract — always shipped, so an emptied list clears on disk.
   if (spec.skills !== undefined) raw.skills = spec.skills
+  // Managed skill metadata is also a complete CP-owned set. The archive bytes
+  // are fetched separately and never enter agent.json.
+  if (spec.managedSkills !== undefined) raw.managedSkills = spec.managedSkills
   // Agent→agent call policy (§2.5). callPolicy absent ⇒ leave alone (like pause);
   // allowedCallerAgentIds always ships from the CP so removing the last caller replicates.
   if (spec.callPolicy !== undefined) raw.callPolicy = spec.callPolicy

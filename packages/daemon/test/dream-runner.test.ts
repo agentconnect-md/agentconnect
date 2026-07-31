@@ -46,6 +46,16 @@ class FakeStore implements DreamStorePort {
   listDreams(agentId: string, limit: number): DreamInfo[] {
     return [...this.dreams.values()].filter((d) => d.agentId === agentId).slice(0, limit)
   }
+  pendingSkillDreams(agentId: string, limit: number): DreamInfo[] {
+    return [...this.dreams.values()]
+      .filter((dream) => dream.agentId === agentId && dream.skills?.some((skill) => skill.state === 'proposed'))
+      .slice(0, limit)
+  }
+  organizationSuggestionDreams(limit: number): DreamInfo[] {
+    return [...this.dreams.values()]
+      .filter((dream) => dream.organizationSuggestions?.some((suggestion) => suggestion.state === 'proposed'))
+      .slice(0, limit)
+  }
   openDreams(): DreamInfo[] {
     return [...this.dreams.values()].filter((d) => d.status === 'pending' || d.status === 'running')
   }
@@ -87,6 +97,8 @@ async function setup(opts: {
   cancelGraceMs?: number
   extractionResult?: DreamExtractionResult
   onEvent?: (event: DreamLifecycleEvent) => void
+  findOrganizationKnowledge?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['findOrganizationKnowledge']>
+  onOrganizationSuggestions?: () => void | Promise<void>
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -104,6 +116,8 @@ async function setup(opts: {
       return { output }
     },
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
+    ...(opts.findOrganizationKnowledge ? { findOrganizationKnowledge: opts.findOrganizationKnowledge } : {}),
+    ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
     log: silent
   })
@@ -848,6 +862,201 @@ describe('DreamRunner store persistence', () => {
     }
     expect(store.getDream('a1', started.dreamId)?.snapshotWrites).toBeDefined()
     store.close()
+  })
+
+  it('does not let newer terminal rows crowd pending organization suggestions out of inventory', () => {
+    const store = new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
+    const candidate = (state: 'proposed' | 'accepted', candidateId: string) => ({
+      candidateId,
+      kind: 'knowledge' as const,
+      operation: 'create' as const,
+      title: `candidate-${candidateId}`,
+      digest: `sha256:${'a'.repeat(64)}`,
+      contentBytes: 1,
+      state,
+      sessionIds: ['s1'],
+      createdAt: '2026-07-24T00:00:00.000Z'
+    })
+    store.insertDream({
+      dreamId: 'older-pending',
+      agentId: 'a1',
+      status: 'completed',
+      trigger: 'manual',
+      sessionIds: ['s1'],
+      snapshotDigest: 'sha256:pending',
+      organizationSuggestions: [candidate('proposed', '11111111-1111-4111-8111-111111111111')],
+      createdAt: '2026-07-24T00:00:00.000Z'
+    })
+    for (let index = 0; index < 4; index += 1) {
+      store.insertDream({
+        dreamId: `newer-terminal-${index}`,
+        agentId: 'a1',
+        status: 'completed',
+        trigger: 'manual',
+        sessionIds: ['s1'],
+        snapshotDigest: `sha256:terminal-${index}`,
+        organizationSuggestions: [candidate('accepted', `22222222-2222-4222-8222-${String(index).padStart(12, '0')}`)],
+        createdAt: `2026-07-24T00:0${index + 1}:00.000Z`
+      })
+    }
+
+    expect(store.organizationSuggestionDreams(1).map((dream) => dream.dreamId)).toEqual(['older-pending'])
+    store.close()
+  })
+})
+
+describe('DreamRunner organization suggestions', () => {
+  const output = JSON.stringify({
+    agentMemory: { index: '# Memory', files: [] },
+    agentSkills: [],
+    organizationKnowledge: [
+      {
+        operation: 'create',
+        title: 'Release policy',
+        summary: 'Promotion requirements',
+        tags: ['release'],
+        content: '# Release\nRequire green checks before promotion.',
+        sessionIds: ['sess-1']
+      }
+    ],
+    organizationSkills: []
+  })
+
+  it('stages, chunks, inventories, and terminally reconciles a daemon-local body', async () => {
+    let convergenceKicks = 0
+    const { runner, store } = await setup({
+      extract: async () => output,
+      onOrganizationSuggestions: () => {
+        convergenceKicks += 1
+      }
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    const completed = await settle(store, started.dreamId)
+    const suggestion = completed.organizationSuggestions?.[0]
+    expect(suggestion).toMatchObject({
+      kind: 'knowledge',
+      operation: 'create',
+      title: 'Release policy',
+      state: 'proposed',
+      sessionIds: ['sess-1']
+    })
+    expect(runner.organizationSuggestionInventory()).toMatchObject([
+      { sourceAgentId: 'a1', dreamId: started.dreamId, candidateId: suggestion!.candidateId }
+    ])
+
+    const pieces: Buffer[] = []
+    let offset = 0
+    let truncated = true
+    while (truncated) {
+      const chunk = await runner.organizationSuggestionRead({
+        sourceAgentId: 'a1',
+        dreamId: started.dreamId,
+        candidateId: suggestion!.candidateId,
+        kind: 'knowledge',
+        offset,
+        limit: 17
+      })
+      expect(chunk.exists).toBe(true)
+      pieces.push(Buffer.from(chunk.data, 'base64'))
+      offset = chunk.nextOffset
+      truncated = chunk.truncated
+    }
+    expect(JSON.parse(Buffer.concat(pieces).toString('utf8'))).toEqual({
+      kind: 'knowledge',
+      content: '# Release\nRequire green checks before promotion.',
+      summary: 'Promotion requirements',
+      tags: ['release']
+    })
+
+    // Discard governs only the memory proposal; the unresolved organization
+    // review remains locally readable and present in reconnect inventory.
+    await runner.discard('a1', started.dreamId)
+    expect(runner.organizationSuggestionInventory()).toHaveLength(1)
+    expect(
+      (
+        await runner.organizationSuggestionRead({
+          sourceAgentId: 'a1',
+          dreamId: started.dreamId,
+          candidateId: suggestion!.candidateId,
+          kind: 'knowledge',
+          offset: 0,
+          limit: 17
+        })
+      ).exists
+    ).toBe(true)
+
+    await expect(
+      runner.organizationSuggestionReview({
+        sourceAgentId: 'a1',
+        dreamId: started.dreamId,
+        candidateId: suggestion!.candidateId,
+        state: 'accepted'
+      })
+    ).resolves.toEqual({ ok: true })
+    expect(store.getDream('a1', started.dreamId)?.organizationSuggestions?.[0]?.state).toBe('accepted')
+    expect(runner.organizationSuggestionInventory()).toEqual([])
+    expect(
+      (
+        await runner.organizationSuggestionRead({
+          sourceAgentId: 'a1',
+          dreamId: started.dreamId,
+          candidateId: suggestion!.candidateId,
+          kind: 'knowledge',
+          offset: 0,
+          limit: 17
+        })
+      ).exists
+    ).toBe(false)
+    expect(convergenceKicks).toBeGreaterThanOrEqual(2)
+  })
+
+  it('uses only CP-returned id/revision pairs as update authority and fails open without CP context', async () => {
+    const targetId = '33333333-3333-4333-8333-333333333333'
+    const updateOutput = JSON.stringify({
+      agentMemory: { index: '# Memory', files: [] },
+      agentSkills: [],
+      organizationKnowledge: [
+        {
+          operation: 'update',
+          targetId,
+          targetRevision: 4,
+          title: 'Release policy',
+          content: '# Release\nRequire two approvals.',
+          sessionIds: ['sess-1']
+        }
+      ],
+      organizationSkills: []
+    })
+    const trusted = await setup({
+      extract: async () => updateOutput,
+      findOrganizationKnowledge: async () => [
+        {
+          id: targetId,
+          title: 'Release policy',
+          summary: null,
+          tags: ['release'],
+          revision: 4,
+          updatedAt: '2026-07-24T00:00:00.000Z',
+          content: '# Release',
+          truncated: false
+        }
+      ]
+    })
+    const trustedStart = await trusted.runner.start('a1', { trigger: 'manual' })
+    expect((await settle(trusted.store, trustedStart.dreamId)).organizationSuggestions?.[0]).toMatchObject({
+      operation: 'update',
+      targetId,
+      targetRevision: 4
+    })
+
+    const offline = await setup({
+      extract: async () => updateOutput,
+      findOrganizationKnowledge: async () => {
+        throw new Error('offline')
+      }
+    })
+    const offlineStart = await offline.runner.start('a1', { trigger: 'manual' })
+    expect((await settle(offline.store, offlineStart.dreamId)).organizationSuggestions).toBeUndefined()
   })
 })
 

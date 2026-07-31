@@ -1,8 +1,25 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { promises as fsp } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { stringify as stringifyYaml } from 'yaml'
-import type { DreamInfo, DreamTrigger, MemoryDreamingPolicy, SessionUsage } from '@agentconnect.md/protocol'
+import type {
+  Ack,
+  DreamInfo,
+  DreamOrganizationSuggestionInfo,
+  DreamTrigger,
+  KnowledgeSearchItem,
+  MemoryDreamingPolicy,
+  OrganizationSuggestionChunk,
+  OrganizationSuggestionContent,
+  OrganizationSuggestionReadReq,
+  OrganizationSuggestionReviewReq,
+  SessionUsage
+} from '@agentconnect.md/protocol'
+import {
+  MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
+  OrganizationSuggestionContentBody,
+  organizationSuggestionCanonical
+} from '@agentconnect.md/protocol'
 import {
   MEMORY_INDEX,
   MEMORY_HISTORY_FILENAME,
@@ -22,6 +39,7 @@ import {
 import {
   buildDreamPrompt,
   dreamSystemPrompt,
+  MAX_SKILL_BODY_BYTES,
   parseDreamProposal,
   storeDigest,
   type DreamProposal,
@@ -72,6 +90,8 @@ export interface DreamStorePort {
   completedDreams(agentId: string): DreamInfo[]
   /** Proposals reconciled as superseded during a store upgrade. */
   supersededDreams(): DreamInfo[]
+  /** Dreams still carrying a proposed organization suggestion, newest first. */
+  organizationSuggestionDreams(limit: number): DreamInfo[]
   /** Newest-first addressable sessions for the agent (transcript sources). */
   dreamSessionSources(
     agentId: string,
@@ -137,6 +157,11 @@ export interface DreamRunnerDeps {
   /** Metadata-only lifecycle tap. Observer failures are contained by the
    *  runner and can never change the job outcome. */
   onEvent?(event: DreamLifecycleEvent): void
+  /** Dream-only, on-demand CP retrieval. Failure is non-fatal and produces an
+   * empty context; ordinary agent turns never call this seam. */
+  findOrganizationKnowledge?(agentId: string, query: string): Promise<KnowledgeSearchItem[]>
+  /** Best-effort inventory convergence after completion/review. */
+  onOrganizationSuggestions?(): void | Promise<void>
   log: { info(msg: string): void; warn(msg: string): void }
   now?(): Date
   /** Grace period after a cancel before the runner ABANDONS the extraction and
@@ -373,10 +398,28 @@ export class DreamRunner {
         await fsp.writeFile(join(base, 'input', file.name), file.content, 'utf8')
       }
 
+      let organizationKnowledge: KnowledgeSearchItem[] = []
+      if (this.deps.findOrganizationKnowledge) {
+        const query = transcripts
+          .flatMap((transcript) => transcript.rows.map((row) => row.text))
+          .join('\n')
+          .slice(-4096)
+          .trim()
+        if (query) {
+          organizationKnowledge = await this.deps.findOrganizationKnowledge(agentId, query).catch((err) => {
+            this.deps.log.warn(
+              `dream ${dreamId}: organization knowledge context unavailable (${err instanceof Error ? err.name : 'unknown'})`
+            )
+            return []
+          })
+        }
+      }
+
       const prompt = buildDreamPrompt({
         files,
         transcripts,
         mineSkills,
+        organizationKnowledge,
         ...(mineSkills ? { dismissedSkills: this.dismissedSkillNames(agentId) } : {}),
         ...(dream.instructions ? { instructions: dream.instructions } : {})
       })
@@ -405,7 +448,11 @@ export class DreamRunner {
       }
       // The mined session ids are what grounds a skill candidate — a citation the
       // model invented can't be used to justify a recommendation (design §7).
-      const proposal = parseDreamProposal(output, mineSkills ? sources.map((s) => s.sessionId) : [])
+      const proposal = parseDreamProposal(
+        output,
+        sources.map((s) => s.sessionId),
+        organizationKnowledge.map(({ id, revision }) => ({ id, revision }))
+      )
       if (!proposal) {
         this.finish(agentId, dreamId, {
           status: 'failed',
@@ -416,7 +463,11 @@ export class DreamRunner {
         return
       }
 
-      await this.stage(base, proposal)
+      if (!mineSkills) {
+        proposal.skills = []
+        proposal.organizationSkills = []
+      }
+      const organizationSuggestions = await this.stage(base, proposal)
       await this.deps.onStaged?.(agentId, dreamId)
 
       // stage() is several awaited writes; a cancel can land while it runs.
@@ -439,7 +490,13 @@ export class DreamRunner {
               }))
             }
           : {}),
+        ...(organizationSuggestions.length ? { organizationSuggestions } : {}),
         usage
+      })
+      await Promise.resolve(this.deps.onOrganizationSuggestions?.()).catch((err) => {
+        this.deps.log.warn(
+          `dream ${dreamId}: suggestion inventory sync deferred (${err instanceof Error ? err.name : 'unknown'})`
+        )
       })
       this.deps.log.info(`dream ${dreamId} completed for agent ${agentId} (${proposal.files.length + 1} staged files)`)
     } catch (err) {
@@ -496,7 +553,7 @@ export class DreamRunner {
     }
   }
 
-  private async stage(base: string, proposal: DreamProposal): Promise<void> {
+  private async stage(base: string, proposal: DreamProposal): Promise<DreamOrganizationSuggestionInfo[]> {
     const out = join(base, 'output')
     await fsp.rm(out, { recursive: true, force: true })
     await fsp.mkdir(out, { recursive: true })
@@ -508,6 +565,63 @@ export class DreamRunner {
       await fsp.writeFile(join(out, file.path), file.content, 'utf8')
     }
     await this.stageSkills(base, proposal)
+    return this.stageOrganizationSuggestions(base, proposal)
+  }
+
+  private async stageOrganizationSuggestions(
+    base: string,
+    proposal: DreamProposal
+  ): Promise<DreamOrganizationSuggestionInfo[]> {
+    const root = join(base, 'organization')
+    await fsp.rm(root, { recursive: true, force: true })
+    const candidates = [
+      ...proposal.organizationKnowledge.map((candidate) => ({ kind: 'knowledge' as const, candidate })),
+      ...proposal.organizationSkills.map((candidate) => ({ kind: 'skill' as const, candidate }))
+    ]
+    if (candidates.length === 0) return []
+    await fsp.mkdir(root, { recursive: true })
+    const createdAt = this.nowIso()
+    const metadata: DreamOrganizationSuggestionInfo[] = []
+    for (const entry of candidates.slice(0, 32)) {
+      const candidateId = randomUUID()
+      const body: NonNullable<OrganizationSuggestionContent['body']> =
+        entry.kind === 'knowledge'
+          ? {
+              kind: 'knowledge',
+              content: entry.candidate.content,
+              ...(entry.candidate.summary !== undefined ? { summary: entry.candidate.summary } : {}),
+              ...(entry.candidate.tags.length ? { tags: entry.candidate.tags } : {})
+            }
+          : { kind: 'skill', files: entry.candidate.files }
+      const canonical = organizationSuggestionCanonical(body)
+      const serialized = JSON.stringify(body)
+      if (
+        Buffer.byteLength(canonical) > MAX_ORGANIZATION_SUGGESTION_BODY_BYTES ||
+        Buffer.byteLength(serialized) > MAX_ORGANIZATION_SUGGESTION_BODY_BYTES
+      ) {
+        this.deps.log.warn(`dream organization suggestion exceeded its staged-body size cap; dropping candidate`)
+        continue
+      }
+      const digest = `sha256:${createHash('sha256').update(canonical).digest('hex')}`
+      await fsp.writeFile(join(root, `${candidateId}.json`), serialized, { encoding: 'utf8', mode: 0o600 })
+      metadata.push({
+        candidateId,
+        kind: entry.kind,
+        operation: entry.candidate.operation,
+        ...(entry.candidate.operation === 'update'
+          ? { targetId: entry.candidate.targetId, targetRevision: entry.candidate.targetRevision }
+          : {}),
+        title: entry.candidate.title,
+        ...(entry.candidate.summary !== undefined ? { summary: entry.candidate.summary } : {}),
+        ...(entry.kind === 'knowledge' && entry.candidate.tags.length ? { tags: entry.candidate.tags } : {}),
+        digest,
+        contentBytes: Buffer.byteLength(canonical),
+        state: 'proposed',
+        sessionIds: entry.candidate.sessionIds,
+        createdAt
+      })
+    }
+    return metadata
   }
 
   /**
@@ -527,6 +641,18 @@ export class DreamRunner {
       if (!SKILL_DIR_RE.test(skill.name)) continue
       const dir = join(root, skill.name)
       await fsp.mkdir(dir, { recursive: true })
+      if (skill.files?.length) {
+        for (const file of skill.files) {
+          const target = join(dir, ...file.path.split('/'))
+          await fsp.mkdir(dirname(target), { recursive: true })
+          await fsp.writeFile(
+            target,
+            file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : file.content,
+            file.encoding === 'base64' ? undefined : 'utf8'
+          )
+        }
+        continue
+      }
       // Frontmatter is generated HERE, not taken from the model: name and
       // description are the fields the skill loader keys on, and they must match
       // the validated values the console shows in the recommendation.
@@ -538,7 +664,12 @@ export class DreamRunner {
       // description can never become two frontmatter lines.
       const description = skill.description.replace(/[\r\n]+/g, ' ').trim()
       const frontmatter = `---\n${stringifyYaml({ name: skill.name, description })}---\n\n`
-      await fsp.writeFile(join(dir, 'SKILL.md'), frontmatter + skill.skill.trimEnd() + '\n', 'utf8')
+      const bodySource = Buffer.from(skill.skill.trimEnd(), 'utf8')
+      const bodyBudget = Math.max(0, MAX_SKILL_BODY_BYTES - Buffer.byteLength(frontmatter) - 1)
+      let bodyEnd = Math.min(bodySource.byteLength, bodyBudget)
+      while (bodyEnd > 0 && (bodySource[bodyEnd]! & 0xc0) === 0x80) bodyEnd -= 1
+      const body = bodySource.subarray(0, bodyEnd).toString('utf8')
+      await fsp.writeFile(join(dir, 'SKILL.md'), frontmatter + body + '\n', 'utf8')
       if (skill.scripts.length === 0) continue
       const scriptsDir = join(dir, 'scripts')
       await fsp.mkdir(scriptsDir, { recursive: true })
@@ -920,7 +1051,9 @@ export class DreamRunner {
    *  proposal must not destroy a candidate the user has not ruled on. */
   private async removeStoreStaging(agentId: string, dream: DreamInfo): Promise<void> {
     const base = this.dreamDir(agentId, dream.dreamId)
-    const pending = (dream.skills ?? []).some((skill) => skill.state === 'proposed')
+    const pending =
+      (dream.skills ?? []).some((skill) => skill.state === 'proposed') ||
+      (dream.organizationSuggestions ?? []).some((suggestion) => suggestion.state === 'proposed')
     if (pending) {
       for (const part of ['input', 'output']) {
         await fsp.rm(join(base, part), { recursive: true, force: true })
@@ -997,11 +1130,13 @@ export class DreamRunner {
     return [...names]
   }
 
-  /** A discarded or superseded dream keeps its `skills/` only while a candidate
-   *  is unreviewed; once the last one is decided there is nothing left to review. */
+  /** A discarded or superseded dream keeps its candidate staging while either
+   *  review lifecycle is pending; once every local and organization candidate
+   *  is terminal there is nothing left to inspect. */
   private async sweepReviewedStaging(agentId: string, dream: DreamInfo): Promise<void> {
     if (dream.status !== 'discarded' && dream.status !== 'superseded') return
     if ((dream.skills ?? []).some((skill) => skill.state === 'proposed')) return
+    if ((dream.organizationSuggestions ?? []).some((suggestion) => suggestion.state === 'proposed')) return
     await fsp.rm(this.dreamDir(agentId, dream.dreamId), { recursive: true, force: true }).catch(() => {})
   }
 
@@ -1031,7 +1166,10 @@ export class DreamRunner {
     agentId: string,
     dreamId: string,
     name: string
-  ): Promise<{ skill: string; scripts: { path: string; content: string }[] } | null> {
+  ): Promise<{
+    skill: string
+    scripts: { path: string; content: string }[]
+  } | null> {
     this.skillCandidate(agentId, dreamId, name)
     const dir = join(this.dreamDir(agentId, dreamId), 'skills', name)
     let skill: string
@@ -1050,7 +1188,96 @@ export class DreamRunner {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
     }
+    scripts.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
     return { skill, scripts }
+  }
+
+  /** Metadata inventory sent on Dream completion and every CP reconnect. */
+  organizationSuggestionInventory(): Array<
+    DreamOrganizationSuggestionInfo & { sourceAgentId: string; dreamId: string }
+  > {
+    return this.deps.store
+      .organizationSuggestionDreams(256)
+      .flatMap((dream) =>
+        (dream.organizationSuggestions ?? [])
+          .filter((suggestion) => suggestion.state === 'proposed')
+          .map((suggestion) => ({
+            ...suggestion,
+            sourceAgentId: dream.agentId,
+            dreamId: dream.dreamId
+          }))
+      )
+      .slice(0, 256)
+  }
+
+  async organizationSuggestionRead(req: OrganizationSuggestionReadReq): Promise<OrganizationSuggestionChunk> {
+    const dream = this.getDream(req.sourceAgentId, req.dreamId)
+    const suggestion = dream.organizationSuggestions?.find((candidate) => candidate.candidateId === req.candidateId)
+    const absent = {
+      sourceAgentId: req.sourceAgentId,
+      dreamId: req.dreamId,
+      candidateId: req.candidateId,
+      digest: suggestion?.digest ?? `sha256:${'0'.repeat(64)}`,
+      exists: false as const,
+      size: 0,
+      offset: 0,
+      nextOffset: 0,
+      data: '',
+      truncated: false
+    }
+    if (!suggestion || suggestion.kind !== req.kind || suggestion.state !== 'proposed') return absent
+    try {
+      const raw = await fsp.readFile(
+        join(this.dreamDir(req.sourceAgentId, req.dreamId), 'organization', `${req.candidateId}.json`)
+      )
+      if (raw.byteLength > MAX_ORGANIZATION_SUGGESTION_BODY_BYTES) return absent
+      const parsed = OrganizationSuggestionContentBody.safeParse(JSON.parse(raw.toString('utf8')))
+      if (!parsed.success || parsed.data.kind !== suggestion.kind) return absent
+      const actualDigest = `sha256:${createHash('sha256').update(organizationSuggestionCanonical(parsed.data)).digest('hex')}`
+      if (actualDigest !== suggestion.digest) return absent
+      if (req.offset > raw.byteLength) throw new DreamViolationError('organization suggestion offset exceeds body size')
+      const end = Math.min(raw.byteLength, req.offset + req.limit)
+      return {
+        ...absent,
+        digest: suggestion.digest,
+        exists: true,
+        size: raw.byteLength,
+        offset: req.offset,
+        nextOffset: end,
+        data: raw.subarray(req.offset, end).toString('base64'),
+        truncated: end < raw.byteLength
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' || err instanceof SyntaxError) return absent
+      throw err
+    }
+  }
+
+  async organizationSuggestionReview(req: OrganizationSuggestionReviewReq): Promise<Ack> {
+    const dream = this.getDream(req.sourceAgentId, req.dreamId)
+    const suggestion = dream.organizationSuggestions?.find((candidate) => candidate.candidateId === req.candidateId)
+    if (!suggestion) throw new DreamViolationError(`unknown organization suggestion ${req.candidateId}`)
+    if (suggestion.state !== 'proposed' && suggestion.state !== req.state) {
+      throw new DreamStateError(`organization suggestion is already ${suggestion.state}`)
+    }
+    let reviewed = dream
+    if (suggestion.state !== req.state) {
+      reviewed = {
+        ...dream,
+        organizationSuggestions: (dream.organizationSuggestions ?? []).map((candidate) =>
+          candidate.candidateId === req.candidateId ? { ...candidate, state: req.state } : candidate
+        )
+      }
+      this.deps.store.updateDream(reviewed)
+    }
+    // Terminal metadata is retained for reconnect/history, but the unapproved
+    // daemon-local body is no longer needed once the central decision commits.
+    await fsp.rm(join(this.dreamDir(req.sourceAgentId, req.dreamId), 'organization', `${req.candidateId}.json`), {
+      force: true
+    })
+    await this.sweepReviewedStaging(req.sourceAgentId, reviewed)
+    await Promise.resolve(this.deps.onOrganizationSuggestions?.()).catch(() => undefined)
+    return { ok: true }
   }
 
   /** Staged output listing for the review screen. Missing staging is DATA. */

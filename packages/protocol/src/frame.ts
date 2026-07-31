@@ -104,6 +104,17 @@ import {
   DreamSkillContent
 } from './frames/memory.js'
 import {
+  KnowledgeSearchReq,
+  KnowledgeSearchOk,
+  OrganizationSuggestionsSyncReq,
+  OrganizationSuggestionsSyncOk,
+  OrganizationSuggestionReadReq,
+  OrganizationSuggestionChunk,
+  OrganizationSuggestionReviewReq,
+  ManagedSkillReadReq,
+  ManagedSkillChunk
+} from './frames/organization-knowledge.js'
+import {
   Heartbeat,
   EventSession,
   SessionActivity,
@@ -300,6 +311,16 @@ export const FRAME_SCHEMAS = {
   'memory/dream/skill/accept/ok': DreamState,
   'memory/dream/skill/dismiss': DreamSkillReviewReq,
   'memory/dream/skill/dismiss/ok': DreamState,
+  // ── organization knowledge + managed skills ──
+  'knowledge/search': KnowledgeSearchReq,
+  'knowledge/search/ok': KnowledgeSearchOk,
+  'knowledge/suggestions/sync': OrganizationSuggestionsSyncReq,
+  'knowledge/suggestions/sync/ok': OrganizationSuggestionsSyncOk,
+  'knowledge/suggestion/read': OrganizationSuggestionReadReq,
+  'knowledge/suggestion/content': OrganizationSuggestionChunk,
+  'knowledge/suggestion/review': OrganizationSuggestionReviewReq,
+  'managed-skill/read': ManagedSkillReadReq,
+  'managed-skill/chunk': ManagedSkillChunk,
   // ── fleet / config ──
   'config/push': ConfigPush,
   'daemon/restart': DaemonRestart,
@@ -481,6 +502,15 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/dream/skill/accept/ok', FRAME_SCHEMAS['memory/dream/skill/accept/ok']),
   frame('memory/dream/skill/dismiss', FRAME_SCHEMAS['memory/dream/skill/dismiss']),
   frame('memory/dream/skill/dismiss/ok', FRAME_SCHEMAS['memory/dream/skill/dismiss/ok']),
+  frame('knowledge/search', FRAME_SCHEMAS['knowledge/search']),
+  frame('knowledge/search/ok', FRAME_SCHEMAS['knowledge/search/ok']),
+  frame('knowledge/suggestions/sync', FRAME_SCHEMAS['knowledge/suggestions/sync']),
+  frame('knowledge/suggestions/sync/ok', FRAME_SCHEMAS['knowledge/suggestions/sync/ok']),
+  frame('knowledge/suggestion/read', FRAME_SCHEMAS['knowledge/suggestion/read']),
+  frame('knowledge/suggestion/content', FRAME_SCHEMAS['knowledge/suggestion/content']),
+  frame('knowledge/suggestion/review', FRAME_SCHEMAS['knowledge/suggestion/review']),
+  frame('managed-skill/read', FRAME_SCHEMAS['managed-skill/read']),
+  frame('managed-skill/chunk', FRAME_SCHEMAS['managed-skill/chunk']),
   frame('config/push', FRAME_SCHEMAS['config/push']),
   frame('daemon/restart', FRAME_SCHEMAS['daemon/restart']),
   frame('daemon/upgrade', FRAME_SCHEMAS['daemon/upgrade']),

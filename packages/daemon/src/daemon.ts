@@ -116,9 +116,11 @@ import {
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   isWorkspaceEmpty,
+  prepareWorkspace,
   prepareWorkspaceForActivation,
   prefetchWorkspace
 } from './workspace/workspace-manager.js'
+import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -186,6 +188,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
+  ORGANIZATION_KNOWLEDGE_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   effectiveMemoryDreamingPolicy,
   gitRepoLabel
@@ -1530,6 +1533,7 @@ export class Daemon {
   private lastProbeAtMs = 0 // when ordinary runtimes were last swept; gates re-probe on reconnect
   private runtimeProbeTimer?: TimerHandle
   private cpClient?: CpClient
+  private managedSkillCache?: ManagedSkillCache
   /** Present only when the complete enforced-bwrap delegated MCP path initialized. */
   private delegatedMcpBroker?: SessionMcpBroker
   private delegatedWebchatHosts?: DelegatedWebchatHostManager
@@ -1829,7 +1833,7 @@ export class Daemon {
         return client.requestGitCred(payload)
       },
       log: { warn: (m: string) => this.log.warn(m) },
-      actionsSupported: () => this.cpClient?.supportsServerFeature('gitcred-actions-v1') ?? false
+      actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false
     })
     this.gitCredServer = new GitCredServer(this.gitCreds, gitcredSocketPath(root), {
       log: {
@@ -1909,6 +1913,14 @@ export class Daemon {
     )
 
     this.root = root
+    this.managedSkillCache = new ManagedSkillCache(join(root, 'managed-skills'), {
+      read: (request) => {
+        const client = this.cpClient
+        if (!client) throw new Error('control plane is not connected')
+        return client.readManagedSkill(request)
+      },
+      warn: (message) => this.log.warn(message)
+    })
     const resolvedCatalog = await (this.opts.resolveCatalog ?? resolveRuntimeCatalog)(cfg, root, {
       neededRuntimes: discoveredAgents.map((a) => a.runtime),
       mode: 'cache-first'
@@ -2165,6 +2177,11 @@ export class Daemon {
         // 'hook', and the roster is the same either way.
         return cacheNames({ ...ok, platform: req.platform })
       },
+      findKnowledge: async (req) => {
+        const client = this.cpClient
+        if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
+        return client.knowledgeSearch(req)
+      },
       // Agent→agent wake (§2.2). Same-daemon delivery only in P1; the daemon owns the
       // trusted caller identity + policy check + dispatch (a target elsewhere gets
       // reason:'not_local' — cross-daemon relay is P2).
@@ -2209,6 +2226,10 @@ export class Daemon {
       // it, so the workspace (and skills) must be prepared first — see SessionManager.
       isHostRunning: (agentId) => this.hosts.has(agentId),
       agentById: (id) => this.agents.get(id),
+      prepareWorkspace: (agent) =>
+        prepareWorkspace(agent, {
+          managedSkills: (value) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([])
+        }),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
         this.log.warn(
@@ -2243,7 +2264,8 @@ export class Daemon {
       mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
-          collaboration: this.evaluationProfile.collaboration === 'configured'
+          collaboration: this.evaluationProfile.collaboration === 'configured',
+          organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
@@ -3789,6 +3811,7 @@ export class Daemon {
       ...(this.sandboxMechanism ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
+      ORGANIZATION_KNOWLEDGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
       ...(this.delegatedMcpBroker && this.delegatedWebchatHosts && this.delegatedMcpIsolationHealthy()
         ? [DELEGATED_MCP_ASSERTION_FEATURE]
@@ -4407,6 +4430,14 @@ export class Daemon {
 
   /** The daemon's single dream-job engine, built on first use (the local store
    *  must exist for the boot-time crash-recovery sweep). */
+  private async syncOrganizationSuggestions(): Promise<void> {
+    const client = this.cpClient
+    const runner = this.dreamRunnerInstance
+    if (!client || !runner || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
+    const reply = await client.syncOrganizationSuggestions({ suggestions: runner.organizationSuggestionInventory() })
+    for (const decision of reply.decisions) await runner.organizationSuggestionReview(decision)
+  }
+
   private dreamRunner(): DreamRunner {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
@@ -4414,6 +4445,21 @@ export class Daemon {
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
+      findOrganizationKnowledge: async (agentId, query) => {
+        const client = this.cpClient
+        if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return []
+        const reply = await client.knowledgeSearch({
+          requesterAgentId: agentId,
+          query,
+          limit: 5,
+          maxBytes: 8192
+        })
+        return reply.items
+      },
+      onOrganizationSuggestions: () =>
+        this.syncOrganizationSuggestions().catch((err) =>
+          this.log.warn(`cp: organization suggestion sync failed (${err instanceof Error ? err.name : 'unknown'})`)
+        ),
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
@@ -15047,6 +15093,9 @@ export class Daemon {
       // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
         void this.probeRuntimesAndEmit()
+        void this.syncOrganizationSuggestions().catch((err) =>
+          this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
+        )
         this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()

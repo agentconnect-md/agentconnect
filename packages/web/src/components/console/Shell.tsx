@@ -41,6 +41,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
   { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
+  { href: '/knowledge', label: 'Knowledge', icon: 'library-big' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
 ]
 
@@ -62,6 +63,7 @@ const MORE_ROWS: NavItem[] = [
   { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
+  { href: '/knowledge', label: 'Knowledge', icon: 'library-big' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 
@@ -91,6 +93,7 @@ const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/crons', label: 'Schedules' },
   { prefix: '/daemons', label: 'Daemons' },
   { prefix: '/tools', label: 'Tools & Skills' },
+  { prefix: '/knowledge', label: 'Knowledge' },
   { prefix: '/usage', label: 'Analytics' },
   { prefix: '/settings', label: 'Settings' },
   { prefix: '/profile', label: 'Profile' }

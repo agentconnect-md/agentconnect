@@ -16,6 +16,12 @@
 >    destination. See section 6.
 > 3. Version management uses refs embedded in source URLs plus
 >    `npx skills update`, with the weak guarantees documented in section 5.
+>
+> **Separate managed-artifact path:**
+> [organization-knowledge.md](organization-knowledge.md) defines centrally
+> accepted, immutable `.skill` bundles mined by Dream. Those bundles use a
+> digest-addressed daemon cache and explicit per-agent enablement; they do not
+> change this document's Git-source registry or `npx skills` flow.
 
 ## 0. Why this design replaces v1
 
@@ -93,8 +99,9 @@ Existing building blocks to reuse:
 - Strong version consistency through byte-for-byte SHA pinning; see section 5.
 - Editing skill content in the Console. Editing means changing the source
   repository through a pull request.
-- A skills marketplace, cross-organization sharing, or automatically deriving
-  a skill from a conversation.
+- A skills marketplace, cross-organization sharing, or automatically installing
+  a skill derived from a conversation. Owner-reviewed Dream candidates are a
+  separate managed-artifact flow.
 
 ## 3. Shape of a skill source
 

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { CanonicalMemoryRecord, MemoryPluginHistoryEvent, MemoryPluginOperation } from '../memory-plugin.js'
 import { SessionUsage } from './session.js'
+import { OrganizationSuggestionInfo } from './organization-knowledge.js'
 
 /**
  * Agent memory directory (C→D REQ → REP) — the console's read/write of an agent's
@@ -324,6 +325,11 @@ export const DreamSkillInfo = z
   .strict()
 export type DreamSkillInfo = z.infer<typeof DreamSkillInfo>
 
+/** Organization candidates have an independent review lifecycle from both the
+ * reconstructed memory store and agent-local skill candidates. */
+export const DreamOrganizationSuggestionInfo = OrganizationSuggestionInfo
+export type DreamOrganizationSuggestionInfo = z.infer<typeof DreamOrganizationSuggestionInfo>
+
 /** Model-run metering for one dream. Byte counts describe the bounded extraction
  *  payload; token/context/cost fields use the same semantics as a normal session. */
 export const DreamUsage = SessionUsage.extend({
@@ -367,6 +373,7 @@ export const DreamInfo = z
       .optional(),
     instructions: z.string().max(4096).optional(),
     skills: z.array(DreamSkillInfo).max(16).optional(),
+    organizationSuggestions: z.array(DreamOrganizationSuggestionInfo).max(32).optional(),
     usage: DreamUsage.optional(),
     error: z
       .object({ type: z.string().min(1).max(128), message: z.string().max(2048) })
@@ -492,6 +499,13 @@ export const DreamSkillReadReq = z
   .strict()
 export type DreamSkillReadReq = z.infer<typeof DreamSkillReadReq>
 
+const DreamSkillReviewText = z
+  .string()
+  .max(16_000)
+  .refine((value) => new TextEncoder().encode(value).byteLength <= 16_000, {
+    message: 'dream skill review text must be at most 16000 UTF-8 bytes'
+  })
+
 export const DreamSkillContent = z
   .object({
     agentId: z.string().min(1),
@@ -499,13 +513,31 @@ export const DreamSkillContent = z
     name: z.string().min(1),
     /** false ⇒ nothing staged under that name (DATA, not an error). */
     exists: z.boolean(),
-    skill: z.string().optional(),
+    skill: DreamSkillReviewText.optional(),
     scripts: z
-      .array(z.object({ path: z.string(), content: z.string() }))
-      .max(8)
+      .array(
+        z
+          .object({
+            path: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,62}$/),
+            content: DreamSkillReviewText
+          })
+          .strict()
+      )
+      .max(4)
       .optional()
   })
   .strict()
+  .superRefine((value, ctx) => {
+    if (value.exists !== (value.skill !== undefined)) {
+      ctx.addIssue({ code: 'custom', message: 'skill must be present exactly when exists is true' })
+    }
+    if (!value.exists && value.scripts !== undefined) {
+      ctx.addIssue({ code: 'custom', message: 'a missing dream skill cannot carry scripts' })
+    }
+    if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 180_000) {
+      ctx.addIssue({ code: 'custom', message: 'dream skill review response exceeds its wire budget' })
+    }
+  })
 export type DreamSkillContent = z.infer<typeof DreamSkillContent>
 
 /** C→D REQ: accept or dismiss one mined skill candidate (design §7). */

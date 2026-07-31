@@ -1,7 +1,7 @@
 import type { ToolDescriptor } from './tools.js'
 import type { MemoryProvider } from '../agents/memory-provider.js'
 import { threadKeyForPost } from '../messages/normalized.js'
-import type { ChannelAgentsReq, ChannelAgentsOk, Platform } from '@agentconnect.md/protocol'
+import type { ChannelAgentsReq, ChannelAgentsOk, KnowledgeSearchOk, Platform } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
 import type {
@@ -320,6 +320,15 @@ export interface OpsDeps {
    *  channel. Rejects (throws) when the control plane isn't connected — discovery
    *  fails closed rather than returning a partial/empty roster. */
   channelAgents: (req: ChannelAgentsRequest) => Promise<ChannelAgentsOk>
+  /** Owner-approved organization knowledge search; requester identity is bound
+   * from the trusted session context. */
+  findKnowledge?: (req: {
+    requesterAgentId: string
+    query: string
+    limit: number
+    maxBytes: number
+    tags?: string[]
+  }) => Promise<KnowledgeSearchOk>
   /** Deliver a message into another agent's session (agent→agent wake). The daemon
    *  fills the trusted caller identity from the session context; this callback owns
    *  the same-daemon delivery (policy check, coord/integration resolution, dispatch)
@@ -695,6 +704,28 @@ export async function executeTool(
       ...(res.channel !== undefined ? { channel: res.channel } : {}),
       agents: res.agents
     }
+  }
+
+  if (name === 'findKnowledge') {
+    if (!deps.findKnowledge) throw new Error('organization knowledge is not available in this session')
+    const query = requireString(args, 'query').trim()
+    if (!query) throw new Error('query must not be blank')
+    const rawLimit = args.limit
+    const limit = rawLimit === undefined ? 5 : Number(rawLimit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10) throw new Error('limit must be an integer from 1 to 10')
+    const rawTags = args.tags
+    if (rawTags !== undefined && (!Array.isArray(rawTags) || rawTags.some((tag) => typeof tag !== 'string'))) {
+      throw new Error('tags must be an array of strings')
+    }
+    const tags = rawTags as string[] | undefined
+    const result = await deps.findKnowledge({
+      requesterAgentId: ctx.agentId,
+      query,
+      limit,
+      maxBytes: 8192,
+      ...(tags?.length ? { tags } : {})
+    })
+    return { items: result.items }
   }
 
   // Unified outbound send (session-concept §3). One tool merges the old `sendPlatformMessage`

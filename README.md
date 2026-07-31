@@ -80,8 +80,9 @@ terminals. AgentConnect brings them into the team's shared workflows:
   Discord, or to repositories and workflows on GitHub.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
-- **Carry context forward.** Give each agent the memory and reusable skills it
-  needs to build on earlier work.
+- **Carry context forward.** Give each agent its own memory and skills, and let
+  the team publish reviewed organization knowledge that every agent can find on
+  demand.
 - **Set clear boundaries.** Decide who can see each agent and session, which
   repositories and tools it may use, and which other agents it may call.
 - **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
@@ -120,32 +121,33 @@ running in your environment.
 
 ## Build your stack
 
-| Layer                    | Options                                                                                                     |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| **Agent runtimes**       | Claude Code, Codex, Gemini CLI, and other ACP-compatible runtimes                                           |
-| **Channels**             | Slack, Telegram, Discord, Lark / Feishu, and webchat                                                        |
-| **Triggers**             | GitHub events, generic webhooks, and schedules                                                              |
-| **Memory**               | AgentConnect-managed memory, supported runtime-native memory, external providers, or Off                    |
-| **Tools and apps**       | Custom MCP providers and OpenConnector-backed services                                                      |
-| **Skills**               | Shared Git-based skill sources with per-agent enablement                                                    |
-| **Team controls**        | Organization roles, resource and session visibility, repository access, and directional agent call policies |
-| **Agent infrastructure** | Independent runtime, model, workspace, credentials, and daemon placement per agent                          |
+| Layer                    | Options                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| **Agent runtimes**       | Claude Code, Codex, Gemini CLI, and other ACP-compatible runtimes                                                |
+| **Channels**             | Slack, Telegram, Discord, Lark / Feishu, and webchat                                                             |
+| **Triggers**             | GitHub events, generic webhooks, and schedules                                                                   |
+| **Memory**               | AgentConnect-managed memory, supported runtime-native memory, external providers, or Off                         |
+| **Tools and apps**       | Custom MCP providers and OpenConnector-backed services                                                           |
+| **Knowledge and skills** | Reviewed organization knowledge, immutable managed skills, and Git-based skill sources with per-agent enablement |
+| **Team controls**        | Organization roles, resource and session visibility, repository access, and directional agent call policies      |
+| **Agent infrastructure** | Independent runtime, model, workspace, credentials, and daemon placement per agent                               |
 
 ## Architecture
 
 ![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-architecture.svg)
 
-| Component                  | Responsibility                                                                                                                                                                         |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon**                 | Runs placed agents over local ACP, owns workspaces and session state, maintains direct platform connections and schedules, and sends model-provider traffic directly                   |
-| **Relay** (optional)       | Accepts callback-based ingress and webchat, proxies centrally managed MCP and OpenConnector access, and forwards message ingress directly to the owning daemon without durable storage |
-| **Control Plane + Web UI** | Manages authentication, configuration, placement, permissions, metadata, and observability; proxies bounded, authorized daemon reads on demand without persisting their content        |
+| Component                  | Responsibility                                                                                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Daemon**                 | Runs placed agents over local ACP, owns workspaces and session state, maintains direct platform connections and schedules, and sends model-provider traffic directly                                               |
+| **Relay** (optional)       | Accepts callback-based ingress and webchat, proxies centrally managed MCP and OpenConnector access, and forwards message ingress directly to the owning daemon without durable storage                             |
+| **Control Plane + Web UI** | Manages authentication, configuration, placement, permissions, metadata, and observability; stores explicitly approved organization knowledge/skill revisions and otherwise proxies bounded daemon reads on demand |
 
 Live platform messages and ACP update streams stay on the daemon/relay data
-plane. The Control Plane stores coordination metadata, not message bodies,
-attachment bytes, or ACP session streams. If it is temporarily unavailable,
-established sessions and daemon-local schedules continue; new assignments and
-configuration changes resume after reconnection.
+plane. Apart from explicitly approved organization knowledge and bounded skill
+bundles, the Control Plane stores coordination metadata—not message bodies,
+attachment bytes, pending Dream proposals, or ACP session streams. If it is
+temporarily unavailable, established sessions and daemon-local schedules
+continue; new assignments and configuration changes resume after reconnection.
 
 See the
 [daemon-centric architecture](docs/designs/daemon-centric-architecture.md) for
