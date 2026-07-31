@@ -584,11 +584,10 @@ agentconnect daemon (Node, one process)
 
 One ACP adapter child can host multiple sessions through its internal `sessions` map. Each session starts one long-lived Query child reused across prompts; it is not one process per message.
 
-The built-in preset's entitled webchat sessions are the deliberate exception.
-Each such conversation uses a separate ACP adapter host inside its own Linux
-`bwrap` PID/mount cell, with a conversation-private runtime home and admin MCP
-socket. Ordinary agents and ineligible sessions continue using the agent-scoped
-host described above. See section 7.6 and
+The built-in preset's entitled webchat session may receive an additional
+session-scoped remote HTTPS MCP descriptor. It uses the normal agent-scoped ACP
+host; this feature does not require a dedicated adapter, private socket, or OS
+sandbox. See section 7.6 and
 [`webchat-preset-agentconnect-mcp.md`](webchat-preset-agentconnect-mcp.md).
 
 ### 7.2 Agent (ACP Adapter) State Machine
@@ -662,37 +661,29 @@ catalog only to a private, user-owned webchat session. It never attaches this
 catalog to an arbitrary agent, an IM session, automation, or an agent-to-agent
 session.
 
-The daemon admits that descriptor only when its live capability probe proves all
-of the following:
+The daemon admits the descriptor only when the selected runtime proves it can keep
+private HTTPS MCP headers scoped to one ACP session and out of model context,
+transcripts, and diagnostics. The host operating system and daemon sandbox policy
+are irrelevant to this feature.
 
-- the host OS is Linux and the active sandbox mechanism is `bwrap`;
-- `security.requireSandbox=true`, making confinement mandatory for every
-  untrusted ACP host on the daemon;
-- the startup probe can create the PID/mount namespace needed to hide peer
-  processes and private socket-source roots; and
-- the private `SessionMcpBroker` and `DelegatedWebchatHostManager` initialized.
+On success, daemon registration advertises `webchat_remote_mcp_v1`. The CP issues a
+short-lived opaque grant bound to the durable private webchat conversation. The
+daemon attaches the CP MCP URL and Bearer grant to `session/new` or `session/load`
+as structured runtime configuration. It does not put the grant in the prompt,
+proxy MCP requests, mint per-request assertions, or run an administrative broker.
 
-On success, daemon registration advertises `delegated_mcp_assertion_v1`. One
-entitled `(agentId, conversationId)` gets one dedicated ACP host, immutable
-isolation-cell binding, private runtime home, and private Unix-socket listener.
-The common broker and runtime-home source roots are hidden in every sandbox; only
-that cell's source directories are bind-mounted back at their fixed in-cell
-locations. The cell receives a local socket descriptor and defense-in-depth local
-token, never a reusable user credential or CP assertion.
+The runtime calls the standard CP `POST /api/v1/mcp` endpoint directly. The CP
+derives the actor from the stored grant and durable webchat owner, re-runs live
+authorization, and provides grant-scoped request idempotency. Tool catalog
+execution is therefore a control operation; browser messages and ACP
+`session/update` streams remain on the relay↔daemon/daemon-local data path and
+never cross the CP.
 
-For each MCP request, the broker creates an invocation id, hashes the exact bytes
-it will send, obtains a 30-second single-use assertion through the authenticated
-daemon↔CP WebSocket, and sends those unchanged bytes to the standard CP
-`POST /api/v1/mcp` endpoint. The CP derives the actor from the durable webchat
-owner and re-runs authorization. Tool catalog execution is therefore a control
-operation; browser messages and ACP `session/update` streams remain on the
-relay↔daemon/daemon-local data path and never cross the CP.
-
-Admission fails closed. A failed probe, macOS `sandbox-exec`, optional sandbox
-policy, stale generation, unavailable CP, or invalid broker binding produces no
-`agentconnect-admin` descriptor or a bounded tool error. Ordinary webchat and
-daemon-local MCP tools continue; the daemon never falls back to its shared MCP
-socket, daemon API key, organization principal, or reusable user credential.
+Admission fails closed. An unsupported runtime, stale or expired generation,
+unavailable CP, or invalid grant produces no `agentconnect-admin` descriptor or a
+bounded tool error. Ordinary webchat and daemon-local MCP tools continue; the
+daemon never falls back to its shared MCP socket, daemon API key, organization
+principal, user API key, or system-prompt secret.
 
 ---
 
@@ -1006,7 +997,7 @@ control channel.
     "platforms": ["slack", "telegram", "discord", "feishu"], // Implemented platform drivers
     "runtimes": ["claude", "codex"], // Object.keys(resolveRuntimes); validate executables at startup
     "acp": true,
-    "features": ["session-visibility-v1", "delegated_mcp_assertion_v1"] // The delegated flag appears only after the mandatory Linux bwrap live probe.
+    "features": ["session-visibility-v1", "webchat_remote_mcp_v1"] // Advertised only when the runtime supports private, session-scoped remote MCP headers.
   },
   "maxAgents": 32,
   "localState": {
@@ -1033,50 +1024,29 @@ WebSocket drop -> CP-Client enters DEGRADED and reconnects with backoff. Daemon 
 ### 10.5 Delegated Admin-MCP Operations
 
 This feature is operator opt-in and the CP gate defaults off. Before setting
-`WEBCHAT_PRESET_MCP_ENABLED=true`, deploy compatible CP, relay, and daemon builds;
-verify private webchat session enforcement; install `bwrap`; set
-`security.requireSandbox=true`; restart the Linux daemon; and confirm live
-registration advertises both `session-visibility-v1` and
-`delegated_mcp_assertion_v1`. A binary present on disk without a successful live
-probe is not sufficient.
+`WEBCHAT_PRESET_MCP_ENABLED=true`, deploy compatible CP, relay, daemon, and runtime
+builds; verify private webchat session enforcement, credential redaction, exact
+grant revocation, and grant-scoped idempotency; then confirm live registration
+advertises both `session-visibility-v1` and `webchat_remote_mcp_v1`.
 
-Enable the CP gate only after the daemon isolation capability is healthy. Start
-with a canary and observe:
+No OS sandbox package or Linux kernel setting is a feature prerequisite. Instead,
+the runtime probe must prove that remote MCP Authorization headers are private,
+session-scoped configuration and never model input or diagnostics.
 
-- `agentconnect.delegated_mcp.isolation.transitions` and
-  `agentconnect.delegated_mcp.isolation.denials`;
-- `agentconnect.delegated_mcp.request.duration`
-  (`stage=mint_ws|mcp_http`);
-- `agentconnect.webchat_mcp.delegation.transitions`,
-  `agentconnect.webchat_mcp.assertion.transitions`, and
-  `agentconnect.webchat_mcp.invocation.transitions`; and
-- `agentconnect.webchat_mcp.request.duration` (`stage=nested_rest`).
+Start with a canary and observe grant, descriptor, request, invocation, and
+confirmation metrics. Labels are closed outcomes/reasons only; they exclude user,
+organization, agent, conversation, grant, invocation, token, Authorization header,
+request body, tool arguments, response body, and transcript values.
 
-The metric labels are closed outcomes/reasons only; they exclude user,
-organization, agent, conversation, delegation, invocation, token, assertion,
-socket-path, request-body, and credential values. Logs likewise exclude assertions,
-cell-local tokens, private socket paths, credentials, MCP bodies/tool arguments,
-and transcript content.
+Rollback sets `WEBCHAT_PRESET_MCP_ENABLED=false`, stops issuance, and invokes the
+bounded active-grant revocation path. Ordinary webchat continues. Emergency
+containment can revoke one grant, conversation, user, agent, organization, or all
+feature grants without isolating a daemon.
 
-Rollback starts by setting `WEBCHAT_PRESET_MCP_ENABLED=false` and restarting the
-CP. That stops new delegation issuance while preserving ordinary webchat, but it
-does not revoke an already issued generation. Existing authority is revoked only
-when its session reaches TTL expiry or when its agent detaches/moves. No production
-logical-session-close path emits a revoke today. Browser socket close is a no-op,
-and ordinary daemon/agent drain, stop, restart, or upgrade performs local
-host/broker cleanup while retaining authority for a possible resume.
-
-No fleet-wide bulk revoke API exists. For urgent containment, detach the affected
-agent/placement, or isolate the daemon / make it omit
-`delegated_mcp_assertion_v1` so new mint and claim attempts fail. Either emergency
-choice can interrupt ordinary webchat or agent availability on that placement.
-Keep it isolated until exact generation-fenced revocation, logical-session expiry,
-or the maximum 12-hour ceiling is confirmed; only then roll back relay or daemon
-protocol support. Never substitute a shared endpoint or broader credential. The
-complete staged procedure and stable metric outcome/reason values are in
-[`webchat-preset-agentconnect-mcp.md` §13](webchat-preset-agentconnect-mcp.md#13-compatibility-and-operator-rollout)
+The complete staged procedure and stable metric labels are in
+[`webchat-preset-agentconnect-mcp.md` §13](webchat-preset-agentconnect-mcp.md#13-capability-and-rollout)
 and
-[`§15`](webchat-preset-agentconnect-mcp.md#15-observability).
+[`§14`](webchat-preset-agentconnect-mcp.md#14-observability).
 
 ---
 
