@@ -244,7 +244,7 @@ export const AgentSpec = z.object({
   outboundPolicy: z.enum(['all', 'selected']).optional(),
   allowedTargetAgentIds: z.array(z.string()).optional(),
   // Self-introduce-on-join (issue #536): when true, on a genuine new channel join the
-  // agent proactively introduces itself to the peers already there (via listChannelAgents
+  // agent proactively introduces itself to the peers already there (via listAgents
   // → messageAgent) so they can record it in memory. Replicated CP→daemon. Optional
   // (absent ⇒ leave the on-disk agent.json value alone — same contract as pause/fastMode).
   introduceOnJoin: z.boolean().optional(),

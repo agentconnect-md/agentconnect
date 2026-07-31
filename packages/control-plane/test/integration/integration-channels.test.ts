@@ -526,6 +526,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const collabRoutes = new CollabRoutesService(
       new PgDaemonRepo(prisma),
       new PgIntegrationRepo(prisma),
+      new PgAgentRepo(prisma),
       { collabRoutes: () => undefined } as unknown as RelayControlSender,
       spy as unknown as ControlSender
     )

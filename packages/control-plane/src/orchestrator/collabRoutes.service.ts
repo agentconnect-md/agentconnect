@@ -13,9 +13,9 @@
 import type { RelayControlSender } from './relayControl.js'
 import { NoConnection, type ControlSender } from './outbound.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
-import type { DaemonRecord, DaemonRepo, IntegrationRepo } from '../persistence/ports.js'
+import type { AgentRepo, DaemonRecord, DaemonRepo, IntegrationRepo, OrgAgentRecord } from '../persistence/ports.js'
 import { buildCollabSnapshot } from './collabSnapshot.js'
-import type { CollabChannelRoute } from '@agentconnect.md/protocol'
+import type { CollabChannelRoute, CollabOrgAgent } from '@agentconnect.md/protocol'
 import type { OrgId } from '../domain/ids.js'
 
 export class CollabRoutesService {
@@ -24,6 +24,7 @@ export class CollabRoutesService {
   constructor(
     private readonly daemons: DaemonRepo,
     private readonly integrations: IntegrationRepo,
+    private readonly agents: AgentRepo,
     private readonly relayControl: RelayControlSender,
     private readonly control?: ControlSender
   ) {}
@@ -37,18 +38,24 @@ export class CollabRoutesService {
     return result
   }
 
-  /** Build the combined snapshot across every org that has a daemon. */
+  /** Build the combined snapshot across every org that has a daemon. Both the
+   *  channel-keyed routes AND the flat per-org peer directory are all-org here, for the
+   *  same reason: the relay table is a FULL replacement, so omitting an org wipes it. */
   private async build(
     daemonRows: DaemonRecord[],
     generation: number
-  ): Promise<{ generation: number; channels: CollabChannelRoute[] }> {
+  ): Promise<{ generation: number; channels: CollabChannelRoute[]; agents: CollabOrgAgent[] }> {
     const orgIds = [...new Set(daemonRows.map((d) => d.orgId))]
     const channels: CollabChannelRoute[] = []
+    const agents: CollabOrgAgent[] = []
     for (const orgId of orgIds) {
       const placements = await this.integrations.channelPlacements(orgId)
-      channels.push(...buildCollabSnapshot(orgId, placements, generation).channels)
+      const orgAgents = await this.agents.orgDirectory(orgId)
+      const snapshot = buildCollabSnapshot(orgId, placements, generation, orgAgents)
+      channels.push(...snapshot.channels)
+      agents.push(...snapshot.agents)
     }
-    return { generation, channels }
+    return { generation, channels, agents }
   }
 
   private durableGeneration(rows: DaemonRecord[]): number {
@@ -100,14 +107,23 @@ export class CollabRoutesService {
     const targetRows = changedOrgId ? daemonRows.filter((d) => d.orgId === changedOrgId) : daemonRows
     const orgIds = [...new Set(targetRows.map((d) => d.orgId))]
     const placementsByOrg = new Map<string, Awaited<ReturnType<IntegrationRepo['channelPlacements']>>>()
+    // Batched per ORG (not per daemon): several daemons share an org, and the peer
+    // directory is org-wide, so one query each keeps this out of an N+1 over agents.
+    const orgAgentsByOrg = new Map<string, OrgAgentRecord[]>()
     for (const orgId of orgIds) {
       placementsByOrg.set(orgId, await this.integrations.channelPlacements(orgId))
+      orgAgentsByOrg.set(orgId, await this.agents.orgDirectory(orgId))
     }
     await Promise.all(
       targetRows.map(async (daemon) => {
         const placements = placementsByOrg.get(daemon.orgId)
         if (!placements) return
-        const snapshot = buildCollabSnapshot(daemon.orgId, placements, Number(daemon.routingEpoch))
+        const snapshot = buildCollabSnapshot(
+          daemon.orgId,
+          placements,
+          Number(daemon.routingEpoch),
+          orgAgentsByOrg.get(daemon.orgId) ?? []
+        )
         try {
           await this.control!.collaborationRoutes(daemon.id, snapshot)
         } catch (err) {

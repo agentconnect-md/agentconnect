@@ -85,6 +85,46 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(spy.collaboration.at(-1)).toMatchObject({ daemonId: DAEMON, snapshot: { channels: [] } })
   })
 
+  it('creating an already-PLACED agent publishes it into the flat peer directory', async () => {
+    // Regression: discovery (`channel/agents`) reads the DB live, but a peer WAKE is
+    // authorized against the pushed collaboration snapshot. If creation did not push one,
+    // a brand-new agent would be listed-but-uncallable — and since the directory is no
+    // longer channel-gated, no `integration/channels` report would ever fix it.
+    await seedDaemon(prisma, DAEMON)
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'placed-at-birth', runtime: 'claude', daemonId: DAEMON, callPolicy: 'all' }
+    })
+    expect(created.statusCode).toBe(201)
+    const { id } = created.json() as { id: string }
+
+    const snapshot = spy.collaboration.at(-1)
+    expect(snapshot?.daemonId).toBe(DAEMON)
+    // Present in the flat org directory despite having NO integration/channel at all.
+    expect(snapshot?.snapshot.channels).toEqual([])
+    expect(snapshot?.snapshot.agents).toEqual([
+      expect.objectContaining({ agentId: id, daemonId: DAEMON, orgId: DEFAULT_ORG_ID, callPolicy: 'all' })
+    ])
+  })
+
+  it('creating an UNPLACED agent pushes no snapshot — nothing routable to publish yet', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const { app, spy } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'unplaced', runtime: 'claude' }
+    })
+    expect(created.statusCode).toBe(201)
+    // `buildCollabSnapshot` drops daemonId-less rows, so a broadcast here would publish
+    // nothing while bumping every daemon's routingEpoch. Reconcile is the backstop.
+    expect(spy.collaboration).toHaveLength(0)
+  })
+
   it('PATCH on a PLACED agent pushes agent/upsert with the edited spec to its daemon', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
@@ -234,6 +274,25 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(spy.removes[0]!).toEqual({ daemonId: DAEMON, r: { agentId } })
   })
 
+  it('DELETE on a PLACED agent also WITHDRAWS it from the flat peer directory', async () => {
+    // The mirror of the create push. `agent/remove` only clears the daemon's local spec
+    // replica (same-daemon authorization); a peer WAKE is authorized against the pushed
+    // collaboration snapshot, so without a broadcast every OTHER daemon in the org keeps a
+    // flat `agents[]` entry whose `admits()` still says yes — a wake routed at a row that
+    // no longer exists.
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const { app, spy } = withSpy()
+
+    const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/agents/${agentId}` })
+    expect(del.statusCode).toBe(204)
+
+    const snapshot = spy.collaboration.at(-1)
+    expect(snapshot?.daemonId).toBe(DAEMON)
+    expect(snapshot?.snapshot.agents.map((a) => a.agentId)).not.toContain(agentId)
+  })
+
   it('an UNPLACED agent (no daemonId) pushes nothing — reconcile is the backstop', async () => {
     const { app, spy } = withSpy()
 
@@ -248,6 +307,9 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
 
     expect(spy.upserts).toHaveLength(0)
     expect(spy.removes).toHaveLength(0)
+    // Nor a collaboration snapshot: an unplaced agent was never in one, so there is nothing
+    // to publish or withdraw and no reason to churn every daemon's routingEpoch.
+    expect(spy.collaboration).toHaveLength(0)
   })
 
   it('a NoConnection from an offline daemon is swallowed — the request still succeeds', async () => {

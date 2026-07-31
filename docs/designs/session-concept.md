@@ -212,8 +212,22 @@ Every field is optional. Two orthogonal decisions use different fields:
   or a `toAgent` to wake. The daemon rejects an empty action.
 - Separate `toUser` and `toAgent` make human delivery and agent wake-up
   explicit in the type system. The daemon no longer guesses whether an ID is a
-  platform user or an AgentConnect agent. `toAgent` comes from
-  `listChannelAgents`; `toUser` is a platform member ID.
+  platform user or an AgentConnect agent. `toAgent` comes from `listAgents`
+  (deprecated alias `listChannelAgents`), which lists every peer in the caller's
+  organization that the directional call policy admits — a peer need not share a
+  channel with the caller, and need not have an IM integration at all. `toUser` is
+  a platform member ID.
+- A `toAgent` wake is authorized by that call policy alone; `channel` is a
+  **delivery coordinate**, not an authorization key. It still decides where the
+  optional visible post lands and, through the session key, which session the peer
+  is woken in — which is why the coordinate itself is validated even though it
+  authorizes nothing. A coordinate the routing snapshot records requires the caller
+  to be one of its members and is then used verbatim; an **unrecorded** coordinate on
+  a persisted IM platform is refused (`not_allowed`) rather than silently becoming a
+  session key it could alias; and an unrecorded coordinate on a channel-free platform
+  (`webchat` / `dream`) is replaced by the caller-derived `a2a:<callerAgentId>`, so
+  every wake from one caller into one peer shares a single pairwise session. See
+  [agent-collaboration-implementation.md](agent-collaboration-implementation.md) §2.5.
 - Omitting `platform` means the current session platform. Cross-platform cases
   3 and 3b specify it. The daemon owns all bot tokens and selects the connection
   by platform and, when necessary, integration. The model sees no token.

@@ -63,16 +63,23 @@ async function boot(root: string) {
     outboundPolicy: agent.outboundPolicy,
     allowedTargetAgentIds: agent.allowedTargetAgentIds
   }))
+  const ORG = '00000000-0000-0000-0000-0000000000a1'
   ;(daemon as any).cpCollab.replace({
     generation: 0,
-    channels: [
-      {
-        orgId: '00000000-0000-0000-0000-0000000000a1',
-        platform: 'slack',
-        channelId: 'C1',
-        agents: localAgents
-      }
-    ]
+    channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: localAgents }],
+    // A2A authorization reads the FLAT org directory, not channel membership, so a worker
+    // that is not on this daemon ('wB' in the not_local case) must still be in the org.
+    agents: [...localAgents, { agentId: 'wB', daemonId: 'other-daemon' }, { agentId: 'wA', daemonId: 'other-daemon' }]
+      .map((a: any) => ({
+        callPolicy: 'all',
+        allowedCallerAgentIds: [],
+        outboundPolicy: 'all',
+        allowedTargetAgentIds: [],
+        ...a,
+        orgId: ORG
+      }))
+      // Local placements come first, so a local agent's real policy wins over the remote stub.
+      .filter((a: any, i: number, all: any[]) => all.findIndex((b) => b.agentId === a.agentId) === i)
   })
   const calls: { agentId: string; msg: any; integrationId?: string; callMeta?: any }[] = []
   ;(daemon as any).dispatch = vi.fn(

@@ -293,7 +293,8 @@ import type {
   ChildSessionStatus,
   ChildSessionStatusProbe,
   SessionVisibilityPush,
-  WebchatMcpDelegationReference
+  WebchatMcpDelegationReference,
+  ChannelAgentsOk
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -661,6 +662,16 @@ interface CallMeta {
    *  with no channel output. Set only by the self-introduce-on-join fan-out; does
    *  NOT cascade (the peer's own callMeta doesn't carry it). */
   deliverHeadless?: boolean
+  /** Daemon-internal (issue #536, never a tool input): the channel this turn exists to
+   *  introduce the agent into. It HARD-BOUNDS peer discovery for the turn — the
+   *  `channelAgents` dep forces this channel as the directory filter even when the model
+   *  omits (or widens, or redirects) the tool's `channel` argument. Without a code-level
+   *  bound the org-wide default would fan one channel join out to every agent in the org;
+   *  `MAX_AGENT_CALL_HOPS` bounds depth and `INTRO_MAX_BURST` bounds channels per snapshot,
+   *  but neither bounds PEERS per intro. The prompt asks for the same filter (belt and
+   *  braces); this is what makes it true regardless of model compliance. Set only by the
+   *  self-introduce-on-join dispatch and, like `deliverHeadless`, does NOT cascade. */
+  introChannel?: string
   /** session-concept §5.3: the waking parent asked this session to report back when it is done
    *  or has failed (`sendMessage`'s `toAgent.needsReply`). Handed to prompt assembly, which turns
    *  it into a standing directive on the child naming `originSessionId` as the reply target.
@@ -1410,7 +1421,7 @@ export class Daemon {
   private feishuConnecting = new Set<string>()
   // Slack id → display-name resolver (created with the store in start()).
   private nameResolver?: SlackNameResolver
-  // agentId → its channel-directory name, learned from `channelAgents` (listChannelAgents)
+  // agentId → its directory name, learned from `channelAgents` (the listAgents tool)
   // responses. REMOTE agents (hosted on another daemon) aren't in `this.agents`, so this is
   // the only local source for their display name when addressing them in a visible agent-call
   // post. Warm whenever a call is legitimately made — the caller must have listed the channel
@@ -2097,16 +2108,61 @@ export class Daemon {
       },
       // Peer discovery goes to the CP (the only authority for the cross-daemon
       // roster). Resolve the client lazily; fail closed when it isn't connected.
-      channelAgents: async (req) => {
+      channelAgents: async ({ currentChannel, currentThread, currentTransportScope, ...req }) => {
         const client = this.cpClient
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
-        const ok = await client.channelAgents(req)
         // Cache each peer's directory name so the caller-framed text delivered to a messaged
         // agent can name a REMOTE caller by directory name instead of its raw agentId
         // (see agentDisplayLabel / prepareAgentDelivery).
-        if (this.channelAgentNames.size >= 5000) this.channelAgentNames.clear()
-        for (const a of ok.agents) this.channelAgentNames.set(a.agentId, { name: a.name, displayName: a.displayName })
-        return ok
+        const cacheNames = (ok: ChannelAgentsOk): ChannelAgentsOk => {
+          if (this.channelAgentNames.size >= 5000) this.channelAgentNames.clear()
+          for (const a of ok.agents) this.channelAgentNames.set(a.agentId, { name: a.name, displayName: a.displayName })
+          return ok
+        }
+        // Rolling-upgrade negotiation: only a CP advertising `agent-directory-org-scope-v1`
+        // accepts a channel-less request (the org-wide directory). An older CP can answer
+        // exactly one question — "who is in this channel" — so a channel-less ask has to be
+        // narrowed to the caller's CURRENT channel for it, which is today's behavior.
+        const orgScope = client.supportsServerFeature('agent-directory-org-scope-v1')
+        // A daemon-initiated channel-intro turn is HARD-BOUND to the channel it joined:
+        // the scope is decided HERE, from the turn's trusted CallMeta, not from the tool
+        // args (see CallMeta.introChannel — an unfiltered listing would fan one join out
+        // to the entire org). It also overrides an explicit arg: an intro turn has exactly
+        // one legitimate scope, so a model asking for another channel gets its own.
+        const introChannel = this.introChannelForTurn(req.requesterAgentId, req.platform, {
+          channel: currentChannel,
+          thread: currentThread,
+          transportScope: currentTransportScope
+        })
+        const channel = introChannel ?? req.channel ?? (orgScope ? undefined : currentChannel)
+        if (channel === undefined) {
+          // Org-wide, and the CP understands it.
+          if (orgScope) return cacheNames(await client.channelAgents(req))
+          // Old CP + nothing to narrow to (a session that does not know its own channel):
+          // a channel-less REQ is a BAD_PAYLOAD there and an invented channel would be
+          // worse, so answer locally. An old CP has nothing to say about a directory scope
+          // it does not implement anyway.
+          this.log.debug('channelAgents: CP predates agent-directory-org-scope-v1 and no channel to narrow to')
+          return { platform: req.platform, agents: [] }
+        }
+        // A channel-scoped question must name a PERSISTED coordinate. A hook turn's session
+        // platform is 'hook' but it LANDS on real Slack coordinates, so its channel filter is
+        // a Slack one (the same mapping the removed local wake check applied) — otherwise the
+        // CP's session-identity short-circuit silently answers `agents: []` and the agent
+        // concludes nobody is there. webchat/dream have no persisted channel at all, so an
+        // empty roster is the honest answer — and it must be computed HERE, because an old CP
+        // would THROW on such a payload (`toDbPlatform`) and `ws/connection.ts` turns that
+        // into close(1011), killing the whole control socket and every in-flight request.
+        // A current CP already short-circuits it to this same empty roster.
+        const coordPlatform = req.platform === 'hook' ? 'slack' : req.platform
+        if (coordPlatform === 'webchat' || coordPlatform === 'dream') {
+          return { platform: req.platform, channel, agents: [] }
+        }
+        const ok = await client.channelAgents({ ...req, platform: coordPlatform, channel })
+        // Echo the SESSION's own platform back to the caller, not the coordinate platform we
+        // may have rewritten above: everything else the agent sees about a hook turn calls it
+        // 'hook', and the roster is the same either way.
+        return cacheNames({ ...ok, platform: req.platform })
       },
       // Agent→agent wake (§2.2). Same-daemon delivery only in P1; the daemon owns the
       // trusted caller identity + policy check + dispatch (a target elsewhere gets
@@ -3372,7 +3428,16 @@ export class Daemon {
       // worker-report side effect (recordWorkerReport only fires on a correlationId).
       // No origin fields (§5.3): a self-introduce is root-like — the woken peer has no parent
       // session to reply into, so it gets no `Parent session` line and no SessionTarget.
-      const callMeta: CallMeta = { callFrom: agent.id, hopCount: 0, deliveryId: traceId, deliverHeadless: true }
+      // `introChannel` is the CODE-level bound on the fan-out: discovery in this turn is
+      // pinned to the joined channel whatever the model passes to `listAgents` (the prompt
+      // asks for the same filter, but a prompt is not a bound — see CallMeta.introChannel).
+      const callMeta: CallMeta = {
+        callFrom: agent.id,
+        hopCount: 0,
+        deliveryId: traceId,
+        deliverHeadless: true,
+        introChannel: ch
+      }
       void this.dispatch(agent.id, msg, integrationId, undefined, callMeta).catch((err) =>
         this.log.warn(`intro: dispatch failed for agent "${agent.id}" in ${ch}: ${formatErr(err)}`)
       )
@@ -5436,27 +5501,44 @@ export class Daemon {
     // don't trust that blindly — this is the placement authority for OUR agents).
     if (!this.agents.get(msg.toAgentId)) return record(nak('not_found'))
 
-    // TERMINAL-VERIFY against the local collaboration snapshot (§2.5 #4). Both the
-    // trusted caller and target must be members of the asserted (org, channel), and
-    // both directional policies must admit caller→target. Missing snapshot ⇒ fail closed.
-    const target = this.cpCollab.resolve(msg.orgId, platform, channel, msg.toAgentId)
-    const caller = this.cpCollab.resolve(msg.orgId, platform, channel, msg.trustedFromAgentId)
-    if (!target || !caller) {
+    // TERMINAL-VERIFY against the local collaboration snapshot (§2.5 #4), now ORG-scoped
+    // rather than (org, channel)-scoped: the relay's asserted org must be the org this
+    // daemon's directory records for the target, and the directional call policy must admit
+    // caller→target. Channel is only the session coordinate here (A2A is postless, #854), so
+    // a caller and target that share no channel — or a target with no IM integration at all —
+    // is legitimate. Missing snapshot / unknown agent ⇒ fail closed, as before.
+    if (this.cpCollab.orgForAgent(msg.toAgentId) !== msg.orgId) {
       this.log.warn(`relay: rd/agentmsg/fwd terminal-verify failed (no placement) for ${msg.toAgentId} — fail closed`)
       return record(nak('not_allowed'))
     }
-    if (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(msg.toAgentId)) {
+    if (!this.cpCollab.admits(msg.trustedFromAgentId, msg.toAgentId)) {
       this.log.info(
-        `relay: rd/agentmsg/fwd not_allowed — ${msg.trustedFromAgentId} outbound policy excludes ${msg.toAgentId}`
+        `relay: rd/agentmsg/fwd not_allowed — call policy excludes ${msg.trustedFromAgentId} → ${msg.toAgentId}`
       )
       return record(nak('not_allowed'))
     }
-    if (target.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(msg.trustedFromAgentId)) {
-      this.log.info(
-        `relay: rd/agentmsg/fwd not_allowed — ${msg.trustedFromAgentId} → ${msg.toAgentId} (target selected)`
+    // COORDINATE INTEGRITY (§2.5 #4), the second half of terminal-verify and the reason
+    // dropping channel from the POLICY predicate is not the same as dropping it entirely:
+    // `coords` is still the woken peer's SESSION key (see sessionChannel below), so a caller
+    // that could assert any channel could compute its way INTO an existing session of the
+    // target in a channel the caller has no access to — resuming that conversation and, with
+    // `needsReply`, reporting its content back. `coordsDecision` is the single mirrored
+    // decision the relay's ingress applies too (see CpCollabRoutes.coordsDecision for the
+    // three branches and why the LOOKUP is platform-free while the branch is not).
+    const coordsVerdict = this.cpCollab.coordsDecision(msg.orgId, platform, channel, msg.trustedFromAgentId)
+    if (coordsVerdict.verdict === 'reject') {
+      this.log.warn(
+        `relay: rd/agentmsg/fwd not_allowed — ${msg.trustedFromAgentId} may not assert coords ${platform}:${channel}`
       )
       return record(nak('not_allowed'))
     }
+    // Branch 3: a channel-free coordinate is admitted but must NOT become the session key —
+    // this is where that key is minted, so it is where the substitution belongs (the relay
+    // forwards `coords` verbatim, so only one side may rewrite them or the two would disagree
+    // about the `childSessionId` this ACK reports). The replacement is derived from the
+    // RELAY-MINTED trusted caller, so it cannot alias any existing platform session, and every
+    // wake from that caller collapses onto the one pairwise session.
+    const sessionChannel = coordsVerdict.verdict === 'synthetic' ? coordsVerdict.channel : channel
 
     // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
     // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
@@ -5489,8 +5571,17 @@ export class Daemon {
     const childTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
     // Mirror `transcriptCoords` exactly: an absent thread resolves to the msgId, NOT ''.
-    const childMsgId = `agentcall:${channel}:${msg.deliveryId}`
-    const childSessionId = sessionKey(narrowed, channel, thread ?? childMsgId, msg.toAgentId, childTransportScope)
+    // `sessionChannel` — not the raw asserted `channel` — is the coordinate from here on, so the
+    // key, the msgId and the dispatched message all agree on one channel (branches 1 and 2 leave
+    // it exactly as asserted; only the channel-free branch 3 substitutes).
+    const childMsgId = `agentcall:${sessionChannel}:${msg.deliveryId}`
+    const childSessionId = sessionKey(
+      narrowed,
+      sessionChannel,
+      thread ?? childMsgId,
+      msg.toAgentId,
+      childTransportScope
+    )
     if (msg.originSessionId !== undefined) {
       if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
       this.childSessionLinks.set(childSessionId, {
@@ -5504,7 +5595,7 @@ export class Daemon {
       traceId: msg.deliveryId,
       source: 'agent',
       platform: narrowed,
-      channel,
+      channel: sessionChannel,
       ...(thread !== undefined ? { thread } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
       // The forwarded text already names the caller (`@caller: …`, built on the caller's
@@ -5535,7 +5626,7 @@ export class Daemon {
    *  a LOCAL agent from `this.agents`; else the collab snapshot the CP pushes to every daemon
    *  (`cpCollab`, authoritative + always present, so it resolves a REMOTE peer even in the
    *  reply direction where this daemon never listed the channel); else the name cached from a
-   *  `channelAgents` (listChannelAgents) response; else the raw agentId (keeps a cold lookup
+   *  `channelAgents` (listAgents) response; else the raw agentId (keeps a cold lookup
    *  from throwing). */
   private agentDisplayLabel(agentId: string): string {
     const local = this.agents.get(agentId)
@@ -5570,41 +5661,89 @@ export class Daemon {
   }
 
   /**
+   * The channel a DAEMON-INITIATED channel-intro turn is bound to (issue #536), resolved
+   * from the turn's trusted `CallMeta` — the same §6.7 active-turn lookup a nested
+   * `messageAgent` uses to inherit hop/origin, keyed by the caller's LOGICAL sessionKey.
+   * Returns undefined for every ordinary turn, which is what keeps `listAgents` org-wide
+   * by default. The coordinates come from the trusted MCP session context, never tool input,
+   * so an agent cannot fabricate (or escape) an intro scope.
+   */
+  private introChannelForTurn(
+    agentId: string,
+    platform: string,
+    coords: { channel?: string; thread?: string; transportScope?: string }
+  ): string | undefined {
+    if (coords.channel === undefined || coords.thread === undefined) return undefined
+    const key = sessionKey(platform, coords.channel, coords.thread, agentId, coords.transportScope)
+    return this.activeTurnCallMeta.get(key)?.introChannel
+  }
+
+  /**
    * Agent→agent attention routing behind the `messageAgent` MCP tool. The message is
    * delivered directly to the target and wakes it — there is no visible thread event.
    * Trusted `CallMeta` is a separate workflow projection for hop limits and
    * orchestration correlation.
    */
   /**
-   * Side-effect-free preflight for a peer wake — returns the typed reason {@link messageAgent}
-   * would reject this wake with for a LOCALLY-decidable cause, else null. `sendMessage` uses it
-   * to avoid leaving a visible channel post for a `toAgent`+`channel` wake that will never be
-   * delivered. MUST stay in sync with the fail-closed guards in {@link messageAgent}: a reason
-   * added there but not here would let a doomed wake still post. A remote target's call-policy
-   * is NOT decidable here (that verdict lives on the owning daemon) — returns null for an
-   * absent local target, matching messageAgent routing it cross-daemon.
+   * Side-effect-free authorization for a peer wake on the SAME-DAEMON path — the typed reason
+   * {@link messageAgent} would reject it with for a LOCALLY-decidable cause, or, when it is
+   * admitted, the CHANNEL the woken session may key off. `sendMessage` uses the rejection half
+   * as a preflight, so it never leaves a visible channel post for a `toAgent`+`channel` wake
+   * that will never be delivered; `messageAgent` uses BOTH halves, which is why they are one
+   * method — a coordinate decided twice could be decided differently. MUST stay in sync with
+   * the fail-closed guards in {@link messageAgent}: a reason added there but not here would let
+   * a doomed wake still post. A remote target's LOCAL agent config is not readable here (that
+   * verdict lives on the owning daemon) — but the org-scoped directory below covers a remote
+   * target too, because the CP snapshot is org-wide rather than per-daemon.
+   *
+   * Two independent checks, in order: the directional call POLICY (`admits`, channel-free)
+   * and the COORDINATE INTEGRITY of `req.channel` (`coordsDecision`). Dropping channel from
+   * the policy predicate did not drop it as a session coordinate, and this is the
+   * same-daemon twin of the relay/terminal-verify gate.
    */
-  private localWakeAuthorizationRejection(req: MessageAgentReq, platform: string): string | null {
+  private localWakeDecision(req: MessageAgentReq): { rejection: string } | { rejection: null; channel: string } {
     const caller = this.agents.get(req.callerAgentId)
     if (!caller || (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(req.toAgentId))) {
-      return 'not_allowed'
+      return { rejection: 'not_allowed' }
     }
+
+    // A local id is not sufficient authority: the org-scoped directional call policy must
+    // admit caller→target (CpCollabRoutes.admits). Channel membership is NOT consulted —
+    // A2A delivery is already postless (#854), so `channel` is only a session coordinate,
+    // and a session with no IM integration must still be able to collaborate. Evaluated
+    // BEFORE the local-target lookup so it also decides a REMOTE target and an id that is
+    // in no directory at all (previously the latter fell through to a misleading
+    // 'offline'). Fails closed on an absent/stale snapshot, as before.
+    if (!this.cpCollab.admits(req.callerAgentId, req.toAgentId)) return { rejection: 'not_allowed' }
+
+    // COORDINATE INTEGRITY — the SAME decision the relay's ingress and this daemon's
+    // `rd/agentmsg` terminal-verify apply, so all three wake paths enforce one rule. Channel
+    // stopped AUTHORIZING the call, but `req.channel` (a model-supplied `to.channel`, or the
+    // turn's own channel) is still the woken peer's session coordinate, so without this a
+    // model could name a channel its agent cannot reach and RESUME a co-located peer's
+    // session there. Org comes from the caller's own directory entry, never from the
+    // request; `admits` above already proved the entry exists, so undefined is unreachable
+    // and fails closed anyway.
+    //
+    // The platform is the RAW trusted session platform, deliberately NOT `narrowPlatform`'s
+    // output: that helper folds `dream` (and any value the NormalizedMessage union does not
+    // carry) into 'slack', which would classify a genuinely channel-free session as a
+    // persisted IM coordinate and fail it closed. Only the branch-2/branch-3 split reads the
+    // platform at all — the row lookup itself stays platform-free — so passing the raw value
+    // cannot re-open the platform-relabelling dodge.
+    const callerOrg = this.cpCollab.orgForAgent(req.callerAgentId)
+    if (callerOrg === undefined) return { rejection: 'not_allowed' }
+    const coords = this.cpCollab.coordsDecision(callerOrg, req.platform, req.channel, req.callerAgentId)
+    if (coords.verdict === 'reject') return { rejection: 'not_allowed' }
 
     const target = this.agents.get(req.toAgentId)
-    if (!target) return null
-    if (target.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(req.callerAgentId)) {
-      return 'not_allowed'
+    if (target?.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(req.callerAgentId)) {
+      return { rejection: 'not_allowed' }
     }
-
-    // A local id is not sufficient authority: both agents must be present in the
-    // same org-scoped collaboration entry for the addressed channel. This mirrors
-    // relay and target-daemon snapshot verification and fails closed when the
-    // snapshot is absent or stale. Hook turns use their Slack landing coordinates.
-    const coordinatePlatform = platform === 'hook' ? 'slack' : platform
-    if (!this.cpCollab.hasMembers(coordinatePlatform, req.channel, [req.callerAgentId, req.toAgentId])) {
-      return 'not_allowed'
-    }
-    return null
+    // Branch 3 substitutes the coordinate rather than refusing the wake; branch 1 hands back
+    // `req.channel` untouched so a wake into a shared channel still lands in the thread a
+    // human sees.
+    return { rejection: null, channel: coords.verdict === 'synthetic' ? coords.channel : req.channel }
   }
 
   private wakeRejectionReason(req: MessageAgentReq): string | null {
@@ -5623,7 +5762,7 @@ export class Daemon {
     )
     const inbound = this.activeTurnCallMeta.get(callerKey)
     if (inbound !== undefined && inbound.hopCount >= MAX_AGENT_CALL_HOPS) return 'hop_limit'
-    return this.localWakeAuthorizationRejection(req, platform)
+    return this.localWakeDecision(req).rejection
   }
 
   private async messageAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
@@ -5669,7 +5808,7 @@ export class Daemon {
         reason: 'capability_disabled'
       })
     }
-    // `toAgentId` is an AgentConnect id from listChannelAgents / the trusted agent-call
+    // `toAgentId` is an AgentConnect id from listAgents / the trusted agent-call
     // envelope, never a platform member id. In particular, accepting Slack's U…/W… ids
     // here produces a visible `@U…` fallback before the relay can reject the unknown
     // target. Fail before publishing so a model that copied the human-facing Slack
@@ -5724,13 +5863,23 @@ export class Daemon {
     const integrationId = resolved?.integrationId
     const targetTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
+    // The same side-effect-free authorization sendMessage's preflight ran (caller existence +
+    // outbound policy, the org-scoped directional call policy, a local target's inbound policy,
+    // and COORDINATE INTEGRITY). It is resolved BEFORE the coordinate is minted because it also
+    // decides WHICH channel may be minted: a channel-free coordinate the snapshot knows nothing
+    // about is admitted but must not become the session key, so `localWakeDecision` hands back a
+    // caller-derived channel (`a2a:<callerAgentId>`) that cannot alias any platform session. The
+    // rejection path keeps reporting the ASSERTED channel — nothing was opened, and the reason,
+    // not the coordinate, is what the caller acts on.
+    const wake = this.localWakeDecision(req)
+    const coordChannel = wake.rejection === null ? wake.channel : req.channel
     // A2A delivery is direct and postless (#854): the woken peer receives a caller-framed
     // message and nothing is left in any channel. session-concept case 2c (pure wake) is thus
     // the default — a `sendMessage` with `toAgent` never posts, regardless of `channel`.
     const event = this.prepareAgentDelivery(req)
     const { deliveryId } = event
-    const msgId = `agentcall:${req.channel}:${deliveryId}`
-    const targetSession = sessionKey(platform, req.channel, event.thread, req.toAgentId, targetTransportScope)
+    const msgId = `agentcall:${coordChannel}:${deliveryId}`
+    const targetSession = sessionKey(platform, coordChannel, event.thread, req.toAgentId, targetTransportScope)
 
     const prior = this.agentCallDeliveries.get(deliveryId)
     if (prior) return observe('collaboration.delivery.deduplicated', prior, deliveryId)
@@ -5744,10 +5893,7 @@ export class Daemon {
       )
     }
 
-    // Repeat the same side-effect-free authorization used by sendMessage's
-    // preflight. This covers caller existence/outbound policy, a local target's
-    // inbound policy, and same-channel membership before any local wake.
-    if (this.localWakeAuthorizationRejection(req, platform) !== null) {
+    if (wake.rejection !== null) {
       this.log.info(`messageAgent: ${req.callerAgentId} not allowed to call ${req.toAgentId} in ${req.channel}`)
       return record({ delivered: false, targetSession, reason: 'not_allowed' })
     }
@@ -5760,6 +5906,9 @@ export class Daemon {
         { ...req, text: event.text, thread: event.thread },
         {
           platform: coordPlatform,
+          // The ASSERTED coordinate, not `coordChannel`: the relay validates what the caller
+          // named, and the OWNING daemon mints the session key (and any channel-free
+          // substitution) — we take that canonical key back off the ACK below.
           channel: req.channel,
           thread: event.thread,
           deliveryId,
@@ -5820,8 +5969,10 @@ export class Daemon {
       msgId,
       traceId: deliveryId,
       source: 'agent',
+      // `coordChannel`, so the dispatched turn lands on exactly the key `targetSession`
+      // reports (identical to `req.channel` outside the channel-free branch).
       platform,
-      channel: req.channel,
+      channel: coordChannel,
       thread: event.thread,
       ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
       sender: { id: req.callerAgentId, isBot: true },
@@ -11847,7 +11998,7 @@ export class Daemon {
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'memory_extraction' })
       return { outcome: { outcome: 'cancelled' } }
     }
-    // Platform system tools (this daemon's OWN MCP tools — sendMessage, listChannelAgents,
+    // Platform system tools (this daemon's OWN MCP tools — sendMessage, listAgents,
     // orchestration, memory, …) are always granted: a human should never
     // have to approve them per call. Auto-allow without rendering a card. Non-system tools
     // (incl. the runtime's dangerous built-ins) fall through to the interactive policy below.

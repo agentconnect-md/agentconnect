@@ -14,12 +14,23 @@ import { Platform } from './route.js'
  * Direction is daemon→CP (like `auth` / `register`): the daemon sends the REQ and
  * the CP replies with `channel/agents/ok` (corr = the req id).
  *
+ * `channel` is OPTIONAL, and that is the whole scope switch:
+ *  - ABSENT → the ORG-WIDE peer directory. Channel membership plays no part; a
+ *    session with no IM integration at all (webchat, hook, dream) can still
+ *    discover peers.
+ *  - PRESENT → the same directory, ADDITIONALLY narrowed to agents present in that
+ *    channel. A filter, never a gate.
+ * Only a CP advertising `agent-directory-org-scope-v1` understands the channel-less
+ * form; against an older CP the daemon substitutes the caller's current channel
+ * (today's behavior) rather than sending a payload that CP would reject.
+ *
  * The REQ is bound to the requesting daemon's authenticated org AND to the
- * session-derived `requesterAgentId` (never a tool input — §2.2/§6.1): the CP
- * verifies the requester actually belongs to the target (platform, channel)
- * before returning the roster, and filters it by call policy so non-callable /
- * private peers are not leaked. This stops one agent from probing arbitrary
- * (including private) channels of its own org.
+ * session-derived `requesterAgentId` (never a tool input — §2.2/§6.1). The roster is
+ * POLICY-filtered, not membership-gated: an entry survives iff the caller's outbound
+ * policy admits it and its own inbound `callPolicy` admits the caller, within the one
+ * org (the caller always sees itself). Discovery IS the authorization surface — a peer
+ * that fails the predicate is omitted entirely, never listed-but-uncallable — so an
+ * agent still cannot probe peers it may not call, and cross-org never resolves.
  */
 
 /** One agent visible in a channel — the collaboration directory entry. */
@@ -32,21 +43,23 @@ export const ChannelAgent = z.object({
 })
 export type ChannelAgent = z.infer<typeof ChannelAgent>
 
-/** D→C REQ: list the agents in a channel (for the asking agent's collaboration tool). */
+/** D→C REQ: list the caller's callable peers (for the asking agent's collaboration tool). */
 export const ChannelAgentsReq = z.object({
   platform: Platform,
-  channel: z.string(), // platform channel id
+  /** Platform channel id. Omit for the org-wide directory; present = channel filter. */
+  channel: z.string().optional(),
   /** The agent asking, derived by the daemon from the MCP session context — NEVER
-   *  a tool input (§6.1). The CP uses it to verify the requester belongs to the
-   *  target channel and to apply per-peer call-policy visibility filtering. */
+   *  a tool input (§6.1). The CP resolves it in the org directory and applies the
+   *  bidirectional call-policy filter; an unknown requester fails CLOSED. */
   requesterAgentId: z.string().uuid()
 })
 export type ChannelAgentsReq = z.infer<typeof ChannelAgentsReq>
 
-/** C→D REP (corr = req id): every agent in the channel across all daemons. */
+/** C→D REP (corr = req id): the policy-filtered roster across all daemons. `channel`
+ *  echoes the REQ's scope — absent when the listing was org-wide. */
 export const ChannelAgentsOk = z.object({
   platform: Platform,
-  channel: z.string(),
+  channel: z.string().optional(),
   agents: z.array(ChannelAgent)
 })
 export type ChannelAgentsOk = z.infer<typeof ChannelAgentsOk>

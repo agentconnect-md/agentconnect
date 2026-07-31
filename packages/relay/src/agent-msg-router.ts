@@ -6,10 +6,20 @@
  * Steps (§2.5 / §6.2):
  *  a) bind the request to the socket's AUTHENTICATED `fromDaemonId` (passed in — never
  *     the frame's `claimedFromAgentId`);
- *  b) validate `claimedFromAgentId` actually belongs to that daemon AND is in the
- *     `(platform, channel)` via the collaboration snapshot (a forged claim → reject);
- *  c) resolve the TARGET `toAgentId` in the SAME org/channel → owning daemonId (the
- *     bot-agnostic fix: target may be on a different bot but same channel);
+ *  b) validate `claimedFromAgentId` actually belongs to that daemon via the org-scoped
+ *     collaboration directory (a forged claim → reject);
+ *  b2) verify the INTEGRITY of the asserted `msg.coords`: if the snapshot knows any
+ *     membership at that (org, channel id) — under ANY platform, since the woken session's
+ *     key is computed from a narrowed platform — the caller must be a member of one of
+ *     them. Membership no longer AUTHORIZES the call, but `coords` is still the woken
+ *     peer's session key, so an unchecked assertion would let a caller resume a session in
+ *     a channel it cannot reach. An UNKNOWN coordinate on a persisted IM platform fails
+ *     CLOSED; an unknown one on a channel-free platform (webchat/dream) is admitted and the
+ *     TARGET daemon keys the woken session off the trusted caller instead;
+ *  c) resolve the TARGET `toAgentId` in the SAME org → owning daemonId. Channel-free:
+ *     A2A delivery is postless, so caller and target need share no channel (and an
+ *     integration-less peer has none). `msg.coords` still rides along as the DELIVERY
+ *     coordinate for the woken session, not as an authorization input;
  *  d) check the caller's outbound policy AND the target's inbound policy
  *     (cross-org / either denial → typed NAK);
  *  e) increment hopCount (inbound+1, cap 8, §2.4);
@@ -25,6 +35,7 @@
  */
 import type { RdAgentMsg, RdAgentMsgAck, RdAgentMsgReason } from '@agentconnect.md/protocol'
 import type { CollaborationRouter } from './collaboration-router.js'
+import { inboundAdmits, outboundAdmits } from './collaboration-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { Logger } from './log.js'
 
@@ -65,33 +76,59 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
 
   async function route(fromDaemonId: string, msg: RdAgentMsg): Promise<RdAgentMsgAck> {
     const { router } = deps
-    const { platform, channel } = msg.coords
-
-    // (b) Validate the UNTRUSTED claimedFromAgentId: it must resolve to a channel member
-    // whose placement is owned by the AUTHENTICATED sending daemon. Bind org from the
-    // caller's own placement (the frame carries no org — cross-org can't share a row).
-    const orgId = router.channelOrgFor(platform, channel, msg.claimedFromAgentId)
-    const caller = orgId ? router.resolve(orgId, platform, channel, msg.claimedFromAgentId) : undefined
-    if (!orgId || !caller || caller.daemonId !== fromDaemonId) {
+    // (b) Validate the UNTRUSTED claimedFromAgentId against the ORG-SCOPED directory: the
+    // claimed id must exist and its placement must be owned by the AUTHENTICATED sending
+    // daemon — that daemon-ownership check, not channel membership, is what makes the claim
+    // unforgeable. Org is bound from the caller's own entry (the frame carries no org).
+    const caller = router.agent(msg.claimedFromAgentId)
+    if (!caller || caller.daemonId !== fromDaemonId) {
       deps.log.warn(
         `relay: rd/agentmsg rejected — forged/unknown caller ${msg.claimedFromAgentId} on daemon ${fromDaemonId}`
       )
       return nak(msg.deliveryId, 'not_allowed')
     }
+    const orgId = caller.orgId
 
-    // (c) Resolve the TARGET in the SAME org/channel (bot-agnostic). Not there ⇒ not_found.
-    const target = router.resolve(orgId, platform, channel, msg.toAgentId)
-    if (!target) return nak(msg.deliveryId, 'not_found')
+    // (b2) COORDINATE INTEGRITY. Channel is no longer an authorization key, but it is still
+    // the DELIVERY coordinate the target daemon derives the woken session's key from — so an
+    // unchecked `coords` lets a caller name a channel it cannot reach and RESUME the target's
+    // existing session there (with `needsReply`, reading that conversation back into its own).
+    // Same threat model as the `caller.daemonId !== fromDaemonId` check above: a compromised or
+    // buggy source daemon asserting something the relay is the only one able to falsify.
+    // ONE decision (see CollaborationRouter.coordsDecision): a KNOWN coordinate demands
+    // membership; an UNKNOWN one on a PERSISTED IM platform fails CLOSED, because an
+    // unrecorded Slack/Telegram/Discord/Feishu conversation — a DM whose row this snapshot
+    // has not caught up with, a channel the bot left, an id the caller simply guessed — is
+    // precisely how a caller aliases an existing platform session; an UNKNOWN one on a
+    // channel-free platform is admitted, and the TARGET DAEMON (not the relay) replaces the
+    // asserted channel with a caller-derived one when it mints the session key. The relay
+    // therefore forwards `coords` verbatim and acts only on `reject`.
+    if (
+      router.coordsDecision(orgId, msg.coords.platform, msg.coords.channel, msg.claimedFromAgentId).verdict === 'reject'
+    ) {
+      deps.log.warn(
+        `relay: rd/agentmsg not_allowed — ${msg.claimedFromAgentId} may not assert coords ${msg.coords.platform}:${msg.coords.channel}`
+      )
+      return nak(msg.deliveryId, 'not_allowed')
+    }
+
+    // (c) Resolve the TARGET in the SAME org, channel-free: A2A delivery is postless, so a
+    // shared channel is neither required nor evidence of anything. Absent/cross-org ⇒ not_found
+    // (cross-org is indistinguishable from nonexistent by design — no cross-org probing).
+    const target = router.agent(msg.toAgentId)
+    if (!target || target.orgId !== orgId) return nak(msg.deliveryId, 'not_found')
 
     // (d) Directional policy: A→B requires caller A to admit B and target B to
     // admit A. A guessed/stale target id therefore cannot bypass the directory.
-    if (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(msg.toAgentId)) {
+    // Kept as two explicit checks rather than router.admits() so each denial keeps its
+    // own log line (the reason an operator can tell the two directions apart).
+    if (!outboundAdmits(caller, msg.toAgentId)) {
       deps.log.info(
         `relay: rd/agentmsg not_allowed — ${msg.claimedFromAgentId} outbound policy excludes ${msg.toAgentId}`
       )
       return nak(msg.deliveryId, 'not_allowed')
     }
-    if (target.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(msg.claimedFromAgentId)) {
+    if (!inboundAdmits(target, msg.claimedFromAgentId)) {
       deps.log.info(`relay: rd/agentmsg not_allowed — ${msg.claimedFromAgentId} → ${msg.toAgentId} (target selected)`)
       return nak(msg.deliveryId, 'not_allowed')
     }
@@ -104,12 +141,19 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     const conn = deps.daemons()?.get(target.daemonId)
     if (!conn) return nak(msg.deliveryId, 'offline')
 
+    // Delivery detail, NOT authorization: the DEFINITE reply integration (§6.2). The same
+    // agent can reach two channels via two different bots, so prefer its placement in the
+    // coords channel and fall back to the directory entry when it has no row there (an
+    // integration-less peer legitimately has none).
+    const { platform, channel } = msg.coords
+    const integrationId = router.resolve(orgId, platform, channel, msg.toAgentId)?.integrationId ?? target.integrationId
+
     try {
       return await conn.forwardAgentMsg({
         trustedFromAgentId: msg.claimedFromAgentId, // now VALIDATED — the target may trust it
         orgId,
         toAgentId: msg.toAgentId,
-        ...(target.integrationId !== undefined ? { integrationId: target.integrationId } : {}),
+        ...(integrationId !== undefined ? { integrationId } : {}),
         text: msg.text,
         coords: msg.coords,
         ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),

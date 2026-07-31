@@ -4,8 +4,9 @@ import type { NormalizedMessage } from '../messages/normalized.js'
  * Self-introduce-on-channel-join (issue #536).
  *
  * When an agent genuinely JOINS a channel, it proactively introduces itself to the
- * other agents already there (via `listChannelAgents` → `messageAgent`) so those
- * peers can record it in their memory and know who to delegate to later. This module
+ * other agents already there (via `listAgents` FILTERED to that channel → a `sendMessage`
+ * wake) so those peers can record it in their memory and know who to delegate to later.
+ * The filter is load-bearing: `listAgents` is org-wide by default. This module
  * is the pure decision layer + the synthetic-turn builder; the daemon wires the
  * durable state and dispatch around it (see Daemon.maybeIntroduceOnJoin).
  *
@@ -60,16 +61,22 @@ export function planChannelIntros(
 }
 
 /** The one-shot instruction the joining agent runs. The turn is keyed to the REAL
- *  channel (but headless — no channel output), so `listChannelAgents` / `sendMessage`
- *  default to it and reach the right peers. Deliberately tightly bounded: introduce,
- *  then stop. `channel` is included only for the agent's own context/wording. */
+ *  channel (but headless — no channel output) so `sendMessage` defaults to it, and the
+ *  discovery step pins `listAgents` to that channel EXPLICITLY: `listAgents` now
+ *  defaults to the whole ORG directory, and an unfiltered call would fan an
+ *  introduction out to every agent in the organization on one channel join.
+ *  BELT AND BRACES — the instruction is not the bound: the daemon FORCES this channel as
+ *  the directory filter for an intro turn from the turn's trusted `CallMeta.introChannel`,
+ *  so a model that ignores (or rewrites) the argument still discovers only these peers.
+ *  Deliberately tightly bounded: introduce, then stop. */
 export function introPrompt(channel: string, agentId: string): string {
   return [
     `You've just joined the channel \`${channel}\`. Introduce yourself to the OTHER agents ` +
       `there so they can note who you are and delegate work to you later.`,
     ``,
     `Do exactly this and nothing else:`,
-    `1. Call \`listChannelAgents\` (it defaults to this channel) to see who else is here (ignore yourself).`,
+    `1. Call \`listAgents\` with the exact shape \`{"channel":"${channel}"}\` — the channel filter is REQUIRED ` +
+      `here, so you introduce yourself only to the agents in THIS channel — to see who else is here (ignore yourself).`,
     `2. For EACH other agent, call \`sendMessage\` with the exact shape ` +
       `\`{"to":{"toAgent":"<their id>"},"message":"<short introduction>"}\` (no \`channel\`, so it is a ` +
       `silent wake). The introduction should contain your name, one line on what you do, and that they can reach ` +
@@ -77,7 +84,7 @@ export function introPrompt(channel: string, agentId: string): string {
       `their memory and tell them no reply is needed.`,
     ``,
     `Introduce yourself ONLY — do not post to the channel, do not @mention or ping any human, and ` +
-      `do not start any task or ask questions. If \`listChannelAgents\` returns no other agents, do nothing.`
+      `do not start any task or ask questions. If \`listAgents\` returns no other agents, do nothing.`
   ].join('\n')
 }
 
@@ -88,9 +95,10 @@ export function introPrompt(channel: string, agentId: string): string {
  * itself purely through `sendMessage` (silent `to.toAgent` wakes), and (via the caller turn's
  * `deliverHeadless` callMeta) the woken peers run headless too, recording it silently.
  *
- * The turn is keyed to the REAL `channel` so `ctx.channel` drives `listChannelAgents` /
- * `sendMessage` defaults and peer turns inherit a REAL channel (never a synthetic key
- * that a peer would fail to post to). A distinct synthetic `thread`, equal to
+ * The turn is keyed to the REAL `channel` so `ctx.channel` drives the `sendMessage`
+ * defaults (and the `listAgents` channel filter the prompt passes explicitly) and peer
+ * turns inherit a REAL channel (never a synthetic key that a peer would fail to post
+ * to). A distinct synthetic `thread`, equal to
  * `transcriptTs`, keeps it a root message (no thread-history backfill) on its own session.
  */
 export function buildIntroMessage(

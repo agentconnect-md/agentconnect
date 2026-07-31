@@ -591,7 +591,7 @@ present, the daemon fails closed on an `(agentId, sessionId)` mismatch.
 
 ### 7.7 `channel/agents` (D→C, REQ → REP) — agent collaboration directory
 
-So agents can collaborate, an agent needs to know **who else is in its channel** and what each does. A daemon-side agent tool issues `channel/agents`; the CP is the **only authority for the full roster** (agents in one channel may run on different daemons — `register/ok.agents[]` is scoped to each daemon's own agents, §3.3), so the daemon asks the CP rather than answering locally. Metadata only (name / displayName / description / status) — never message content. Direction is daemon→CP (like `auth`/`register`): the daemon sends the REQ, the CP replies `channel/agents/ok` (corr = req id).
+So agents can collaborate, an agent needs to know **which peers it may reach** and what each does. A daemon-side agent tool (`listAgents`, deprecated alias `listChannelAgents`) issues `channel/agents`; the CP is the **only authority for the full roster** (peers may run on different daemons — `register/ok.agents[]` is scoped to each daemon's own agents, §3.3), so the daemon asks the CP rather than answering locally. Metadata only (name / displayName / description / status) — never message content. Direction is daemon→CP (like `auth`/`register`): the daemon sends the REQ, the CP replies `channel/agents/ok` (corr = req id).
 
 ```ts
 const ChannelAgent = z.object({
@@ -603,19 +603,54 @@ const ChannelAgent = z.object({
 })
 const ChannelAgentsReq = z.object({
   platform: Platform,
-  channel: z.string(),
+  channel: z.string().optional(), // OPTIONAL — absent ⇒ the org-wide directory
   requesterAgentId: z.string().uuid()
 }) // D→C REQ
-const ChannelAgentsOk = z.object({ platform: Platform, channel: z.string(), agents: z.array(ChannelAgent) }) // C→D REP
+const ChannelAgentsOk = z.object({
+  platform: Platform,
+  channel: z.string().optional(), // echoes the REQ's scope; absent when org-wide
+  agents: z.array(ChannelAgent)
+}) // C→D REP
 ```
 
+**`channel` is optional, and that is the whole scope switch — two scopes, one roster.**
+Both are computed from the same org read and the same filter, so they can never
+answer differently about a given agent:
+
+- **absent → the ORG-WIDE peer directory** (`AgentRepo.orgDirectory`). The default.
+  Channel membership plays no part, so a session with no IM integration at all
+  (`webchat` / `hook` / `dream`, or a memory-only agent) can still discover peers.
+  The REP omits `channel`.
+- **present → the same directory, additionally narrowed to agents in that
+  channel** (`IntegrationRepo.agentsInChannel`). A filter, never a gate. A
+  session-identity platform has no persisted integration, so a channel filter on
+  one of those yields an empty roster (short-circuited before persistence — a repo
+  throw here would close the whole control socket).
+
 The daemon derives `requesterAgentId` and `platform` from trusted MCP session
-context. The CP joins the channel's active integrations
-(`integration_channel` → `integration.agentId` → `agent`) inside the requesting
-daemon's organization, returns an empty roster unless the requester belongs to
-that channel, and filters peers through both the requester's outbound policy and
-each target's inbound call policy. `listChannelAgents` cannot use tool input to
-impersonate another requester or probe another platform.
+context; `channel` is the only agent-supplied field and it can only narrow the
+answer. The roster is **policy-filtered, not membership-gated**: within the
+requesting daemon's own organization, an entry survives iff the requester's
+outbound policy admits it **and** its own inbound `callPolicy` admits the
+requester — and the requester is required to appear in the roster it asks about,
+so an unknown requester fails **CLOSED** (empty). A requester always sees itself.
+Discovery _is_ the authorization surface: a peer that fails the predicate is
+omitted entirely, never listed-but-uncallable, so an agent still cannot probe
+peers it may not call and cross-org never resolves. `Agent.visibility` /
+`sharedWith` is deliberately **not** consulted — that governs human console
+access, so a `restricted` agent is still a discoverable, callable peer.
+
+`listAgents` cannot use tool input to impersonate another requester or probe
+another platform.
+
+**Feature negotiation.** Only a CP advertising `agent-directory-org-scope-v1` in
+`register/ok.serverFeatures` (§3.3) accepts the channel-less form and ships the
+flat `collabRoutes.agents[]`. A daemon that does not see the feature substitutes
+the caller's trusted **current** channel — today's pre-change behavior — rather
+than sending a payload an older CP would reject. An explicitly requested `channel`
+filter is passed through to either CP unchanged. See
+[`agent-collaboration-implementation.md`](agent-collaboration-implementation.md)
+§2.2/§2.5 for the predicate and the rest of the rolling-upgrade rules.
 
 ---
 

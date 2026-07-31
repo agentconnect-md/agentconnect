@@ -42,7 +42,17 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     ...snap,
     relays,
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
-    serverFeatures: ['hook-report-ack-v1', 'gitcred-actions-v1', SESSION_LIVE_TAIL_FEATURE, SESSION_VISIBILITY_FEATURE]
+    // `agent-directory-org-scope-v1`: this CP accepts a `channel/agents` REQ with NO
+    // channel (the org-wide, policy-filtered peer directory) and ships the flat
+    // `collabRoutes.agents[]`. A daemon that does not see it must keep substituting the
+    // caller's current channel, because an older CP rejects a channel-less payload.
+    serverFeatures: [
+      'hook-report-ack-v1',
+      'gitcred-actions-v1',
+      'agent-directory-org-scope-v1',
+      SESSION_LIVE_TAIL_FEATURE,
+      SESSION_VISIBILITY_FEATURE
+    ]
   })
   deps.connReg.markReady(conn.daemonId, conn)
 

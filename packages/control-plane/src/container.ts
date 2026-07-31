@@ -457,7 +457,7 @@ export function buildContainer(
 
   // Bot-agnostic collaboration routing snapshot fan-out (agent-collaboration
   // §2.3/§6.2): relays get the all-org table; daemons get their org-scoped copy.
-  const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, relayControl, sender)
+  const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, repos.agent, relayControl, sender)
   const agentMutations = new AgentMutationGate()
   const memoryConnectionMutations = new ExclusiveMutationGate()
 

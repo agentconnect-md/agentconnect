@@ -1129,6 +1129,85 @@ describe('channel agent directory frames (agent collaboration)', () => {
     expect(ok.frame.payload.agents[0]!.description).toBe('ships deploys')
     expect(ok.frame.payload.agents[1]!.displayName).toBeUndefined()
   })
+
+  // Channel is a filter, not a gate: the channel-less form is what a session with no IM
+  // integration (webchat / hook / dream) sends, and it must decode on both legs.
+  it('channel/agents REQ + REP round-trip with NO channel (org-wide directory)', () => {
+    const req = decodeEnvelope(envelope('channel/agents', { platform: 'webchat', requesterAgentId: AGENT_ID }))
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('channel/agents')(req.frame)) throw new Error('expected channel/agents')
+    expect(req.frame.payload.channel).toBeUndefined()
+
+    const ok = decodeEnvelope(
+      envelope('channel/agents/ok', {
+        platform: 'webchat',
+        agents: [{ agentId: AGENT_ID, name: 'deploy-bot', status: 'active' }]
+      })
+    )
+    expect(ok.ok).toBe(true)
+    if (!ok.ok || !isFrame('channel/agents/ok')(ok.frame)) throw new Error('expected channel/agents/ok')
+    expect(ok.frame.payload.channel).toBeUndefined()
+    expect(ok.frame.payload.agents).toHaveLength(1)
+  })
+})
+
+describe('collaboration/routes snapshot', () => {
+  const ORG_ID = 'org_default000000000000000'
+
+  it('round-trips the flat org-scoped agents[] alongside channels[]', () => {
+    const r = decodeEnvelope(
+      envelope('collaboration/routes', {
+        generation: 7,
+        channels: [
+          {
+            orgId: ORG_ID,
+            platform: 'slack',
+            channelId: 'C123',
+            agents: [{ agentId: AGENT_ID, daemonId: DAEMON_ID }]
+          }
+        ],
+        // The integration-less agent exists ONLY here — no channels[] entry can carry it.
+        agents: [
+          {
+            agentId: LAUNCH_ID,
+            daemonId: DAEMON_ID,
+            orgId: ORG_ID,
+            outboundPolicy: 'selected',
+            allowedTargetAgentIds: [AGENT_ID],
+            name: 'dreamer'
+          }
+        ]
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('collaboration/routes')(r.frame)) throw new Error('expected collaboration/routes')
+    expect(r.frame.payload.channels).toHaveLength(1)
+    expect(r.frame.payload.agents).toHaveLength(1)
+    expect(r.frame.payload.agents[0]!.orgId).toBe(ORG_ID)
+    expect(r.frame.payload.agents[0]!.allowedTargetAgentIds).toEqual([AGENT_ID])
+    // Placement defaults still apply through the .extend()
+    expect(r.frame.payload.agents[0]!.callPolicy).toBe('all')
+    expect(r.frame.payload.agents[0]!.allowedCallerAgentIds).toEqual([])
+  })
+
+  // An older CP emits no `agents` at all — the snapshot must still decode (default []).
+  it('decodes an old-shape snapshot with no agents[]', () => {
+    const r = decodeEnvelope(
+      envelope('collaboration/routes', {
+        generation: 1,
+        channels: [{ orgId: ORG_ID, platform: 'slack', channelId: 'C1', agents: [] }]
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('collaboration/routes')(r.frame)) throw new Error('expected collaboration/routes')
+    expect(r.frame.payload.agents).toEqual([])
+  })
+
+  // orgId is required on a flat entry — cross-org authorization has no fallback scope.
+  it('rejects a flat agent entry without orgId', () => {
+    const r = decodeEnvelope(envelope('collaboration/routes', { agents: [{ agentId: AGENT_ID, daemonId: DAEMON_ID }] }))
+    expect(r.ok).toBe(false)
+  })
 })
 
 describe('event/session sessionKey (session-metadata sync)', () => {

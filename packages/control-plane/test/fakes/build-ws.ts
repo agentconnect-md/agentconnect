@@ -124,6 +124,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const collabRoutes = new CollabRoutesService(
     repos.daemon,
     repos.integration,
+    repos.agent,
     new RelayControlSender(new RelayRegistry()),
     sender
   )
