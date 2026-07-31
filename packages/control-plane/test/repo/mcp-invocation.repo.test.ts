@@ -507,13 +507,13 @@ describe('PgMcpInvocationRepo (real Postgres)', () => {
         data: { id: 'mcp-invocation-resource-owner', email: 'mcp-invocation-resource-owner@example.com' }
       })
       await prisma.membership.create({
-        data: { orgId: DEFAULT_ORG_ID, userId: resourceOwner.id, role: 'collaborator' }
+        data: { orgId: DEFAULT_ORG_ID, userId: resourceOwner.id, role: 'owner' }
       })
       await prisma.agent.update({
         where: { id: AGENT },
         data: { ownerUserId: resourceOwner.id }
       })
-      await new PgUserRepo(prisma).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'collaborator')
+      await new PgUserRepo(prisma).setMemberRole(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'collaborator', resourceOwner.id)
       await new PgAgentRepo(prisma).setSharing(AgentId(AGENT), {
         visibility: 'restricted',
         sharedWith: [DEFAULT_OWNER_ID]
