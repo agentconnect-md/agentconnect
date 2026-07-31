@@ -466,27 +466,29 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.mutedChannels).toEqual(['C9'])
     })
 
-    // The §14.3 notice is what tells someone a gated conversation was never enabled.
-    // Muting the channel would suppress it and leave the bot looking dead, so an Off
-    // channel of a GATED owner is the gate, not an operator's mute.
-    it("never mutes a GATED owner's Off channel — that Off is the gate, and keeps its notice", async () => {
+    // The fence covers every Off channel: dropping the route is not enough, because
+    // the keyword and defaultAgentId rungs are unscoped and would hand a bare @bot to
+    // a mixed bot's public default in a channel the console shows as Off.
+    it("mutes a GATED owner's Off channel too, and marks it as still owing a notice", async () => {
       gatedAgents = new Set([ALICE])
       channels = [channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' })]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([])
-      expect(assign.mutedChannels).toEqual([])
+      expect(assign.mutedChannels).toEqual(['C9'])
+      expect(assign.gatedOffChannels).toEqual(['C9'])
     })
 
-    it('mutes an ungated owner while the gated sibling keeps its gate, on one mixed bot', async () => {
+    it('separates the two kinds of Off on one mixed bot: both muted, only the gated one speaks', async () => {
       gatedAgents = new Set([ALICE])
       channels = [
-        channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' }), // gated → gate
-        channel({ integrationId: INT_B, channelId: 'C8', agentId: BOB, trigger: 'off' }) // ungated → mute
+        channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' }), // gate
+        channel({ integrationId: INT_B, channelId: 'C8', agentId: BOB, trigger: 'off' }) // operator mute
       ]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
-      expect(assign.mutedChannels).toEqual(['C8'])
+      expect([...assign.mutedChannels].sort()).toEqual(['C8', 'C9'])
+      expect(assign.gatedOffChannels).toEqual(['C9'])
     })
 
     it('leaves an active channel unmuted', async () => {

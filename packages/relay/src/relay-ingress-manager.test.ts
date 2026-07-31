@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   RdAck,
   RdMsgFeishuAction,
+  RdMsgIm,
   RdMsgSlackAction,
   RcBotChannels,
   RcThreadAssign,
@@ -1088,18 +1089,58 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
-  // A mixed-visibility bot makes EVERY unrouted mention a notice candidate, whichever
-  // agent owns the channel. An operator who set an org-visible agent's channel to Off
-  // has already decided; "ask an admin to enable it" would be both a broken Off and
-  // misleading advice. The CP never mutes a gated owner's Off channel, so the §14.3
-  // notice above is untouched.
-  it('a MUTED channel stays silent on a mixed bot, even for an explicit @bot', async () => {
+  // Every Off channel is muted for ROUTING; only the reason differs for the NOTICE.
+  // On a mixed bot a gated member makes every unrouted mention a notice candidate, so
+  // without the split an operator's Off would be answered with "ask an admin to enable
+  // it" — a broken Off and the opposite of what happened.
+  it('an OPERATOR-muted channel stays silent, even for an explicit @bot', async () => {
     const auth = pod(true)
     const a = auth.internals.router.get(BOT_ID)!
-    a.mutedChannels = ['C9'] // ungated member's channel, switched Off in the console
+    a.mutedChannels = ['C9'] // switched Off in the console; NOT in gatedOffChannels
     await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
     await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
     expect(auth.ingest.postText).not.toHaveBeenCalled()
+  })
+
+  // The reviewer's end-to-end case: a gated owner's Off channel on a bot that also has
+  // an ungated default. It must neither activate the public agent nor go silently
+  // indistinguishable from an operator mute — it is unroutable AND says so, once.
+  it('a GATED-Off channel is unroutable but still notices once', async () => {
+    const sendMsg = vi.fn(async (msg: RdMsgIm): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const daemon = { sendMsg } as unknown as RelayDaemonConnection
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, selfRelayId: () => SELF_RELAY }))
+    const internals = manager as unknown as ManagerInternals
+    const ingest = fakeIngest()
+    internals.ingests.set(BOT_ID, ingest)
+    internals.router.upsert({
+      ...gatedAssignment(),
+      agents: [
+        { agentId: AGENT_ID, name: 'agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        { agentId: OTHER_AGENT_ID, name: 'public', daemonId: DAEMON_ID, integrationId: OTHER_INTEGRATION_ID }
+      ],
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID, OTHER_AGENT_ID] }],
+      // The ungated sibling's unscoped rungs — exactly what a missing route cannot suppress.
+      routes: [
+        {
+          agentId: OTHER_AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'public' }
+        }
+      ],
+      defaultAgentId: OTHER_AGENT_ID,
+      defaultDaemonId: DAEMON_ID,
+      mutedChannels: ['C9'],
+      gatedOffChannels: ['C9']
+    })
+
+    await internals.forward(BOT_ID, mention(M1, '1.1'))
+
+    expect(sendMsg).not.toHaveBeenCalled() // the public agent was NOT activated
+    expect(ingest.postText).toHaveBeenCalledTimes(1) // …and the gate explained itself
+    expect(ingest.postText.mock.calls[0]![0]).toBe('C9')
+    await internals.forward(BOT_ID, mention(M2, '2.2')) // still once per conversation
+    expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
   it('mutes only the named channel — another gated conversation still gets its notice', async () => {

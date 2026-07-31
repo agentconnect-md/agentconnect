@@ -427,6 +427,7 @@ export class RelayIngressManager {
       | 'defaultDaemonId'
       | 'gatedAgentIds'
       | 'mutedChannels'
+      | 'gatedOffChannels'
       | 'noticeAuthority'
       | 'noticedDmConversations'
     >
@@ -644,15 +645,16 @@ export class RelayIngressManager {
       // conversation (the DM row itself was already reported above, un-gated on
       // the routing outcome).
       //
-      // A MUTED channel is the one unroutable case that must stay silent: the notice
-      // exists to tell someone a conversation was never enabled, and an operator who
-      // set this channel to Off already decided. Posting "ask an admin to enable it"
-      // there would both break the Off invariant and give misleading advice. Only
-      // reachable on a mixed-visibility bot, where a gated member makes every
-      // unrouted mention a notice candidate regardless of which agent owns the
-      // channel. The CP never mutes a gated owner's Off channel, so this cannot
-      // swallow a genuine §14.3 notice.
-      if (!msg.sender.isBot && hasGatedMembers && !this.router.channelMuted(botId, msg.channel)) {
+      // Every Off channel arrives here unroutable, and the two kinds answer
+      // differently. A channel an OPERATOR silenced says nothing: they already
+      // decided, and "ask an admin to enable it" would be the opposite of what
+      // happened. A channel that is Off because §14 never enabled its gated owner
+      // still speaks once — the person asking had no way to know the agent is
+      // private. Only ownership separates them (they share a trigger value), so the
+      // CP marks the gated ones and the fence and the notice stay independent.
+      const muted = this.router.channelMuted(botId, msg.channel)
+      const speaks = !muted || this.router.channelGatedOff(botId, msg.channel)
+      if (!msg.sender.isBot && hasGatedMembers && speaks) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
           // Feishu callback credentials are receive-only. For its currently

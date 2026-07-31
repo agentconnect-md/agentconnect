@@ -45,10 +45,14 @@ export interface BotAssignment {
    *  in the conversation — a binding made before the gate was applied must not keep
    *  routing a private agent in a now-Off conversation. */
   gatedAgentIds?: string[]
-  /** Channels the operator switched OFF. The ladder below has rungs no missing route
-   *  can suppress — thread continuity, the unscoped keyword slug, `defaultAgentId` —
-   *  so Off is a fence rather than an omission: a muted channel resolves to nothing. */
+  /** Channels switched OFF. The ladder below has rungs no missing route can suppress
+   *  — thread continuity, the unscoped keyword slug, `defaultAgentId` — so Off is a
+   *  fence rather than an omission: a muted channel resolves to nothing. */
   mutedChannels?: string[]
+  /** The muted channels whose owner is GATED (§14 never enabled them). They resolve to
+   *  nothing like any mute, but unlike an operator's mute they keep the one-time notice:
+   *  someone who could not know the agent is private must not meet a dead bot. */
+  gatedOffChannels?: string[]
   /** §14.3: the relayId deterministically responsible for this bot's one-time
    *  CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
@@ -203,6 +207,7 @@ export class BotArbitrationRouter {
       | 'defaultDaemonId'
       | 'gatedAgentIds'
       | 'mutedChannels'
+      | 'gatedOffChannels'
       | 'noticeAuthority'
       | 'noticedDmConversations'
     >
@@ -216,6 +221,7 @@ export class BotArbitrationRouter {
     a.defaultDaemonId = patch.defaultDaemonId
     a.gatedAgentIds = patch.gatedAgentIds
     a.mutedChannels = patch.mutedChannels
+    a.gatedOffChannels = patch.gatedOffChannels
     a.noticeAuthority = patch.noticeAuthority
     a.noticedDmConversations = patch.noticedDmConversations
   }
@@ -328,12 +334,16 @@ export class BotArbitrationRouter {
     return candidate
   }
 
-  /** True iff the operator switched `channelId` Off. `arbitrate()` already refuses it,
-   *  but the caller has to tell a mute apart from the other reasons arbitration returns
-   *  null: an unroutable conversation on a gated bot earns a one-time notice, while a
-   *  muted channel is silent by the operator's own decision (§14.3 vs the Off trigger). */
+  /** True iff `channelId` is Off. `arbitrate()` already refuses it; the caller needs
+   *  this to tell a mute apart from the other reasons arbitration returns null. */
   channelMuted(botId: string, channelId: string): boolean {
     return this.bots.get(botId)?.mutedChannels?.includes(channelId) ?? false
+  }
+
+  /** True iff `channelId` is Off because §14 never enabled its gated owner — the one
+   *  muted case that still speaks, once, to say the agent is private. */
+  channelGatedOff(botId: string, channelId: string): boolean {
+    return this.bots.get(botId)?.gatedOffChannels?.includes(channelId) ?? false
   }
 
   /** True iff `channelId` has a channel-scoped `auto` owner — a rule that fires on
