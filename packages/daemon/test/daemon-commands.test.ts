@@ -1062,6 +1062,42 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('backfill ignores AgentConnect metadata from an unrelated Slack app', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon) as any
+    conn.botUserId = 'UOWN'
+    conn.botId = 'BOWN'
+    conn.getThreadReplies = vi.fn(async () => [
+      {
+        sender: 'BOTHER',
+        agentAuthorId: 'bot-a',
+        appId: 'AOTHER',
+        ts: '100.2',
+        text: 'unrelated app payload',
+        isBot: true,
+        chrome: false,
+        attachments: []
+      },
+      {
+        sender: 'BOTHER',
+        appId: 'AOTHER',
+        ts: '100.3',
+        text: 'unrelated chrome marker',
+        isBot: true,
+        chrome: true,
+        attachments: []
+      }
+    ])
+
+    await expect((daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')).resolves.toEqual([
+      { sender: 'BOTHER', ts: '100.2', text: 'unrelated app payload' },
+      { sender: 'BOTHER', ts: '100.3', text: 'unrelated chrome marker' }
+    ])
+
+    await daemon.stop()
+  }, 15_000)
+
   it('records an unrouted message while a long turn is in flight even if the session looks idle-stale', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
@@ -1591,7 +1627,7 @@ describe('Slack interactive status bar', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
-    ;(conn as any).botUserId = 'BOT-A'
+    ;(conn as any).botId = 'B-X'
     ;(conn as any).getThreadReplies = vi.fn(async () => [
       { sender: 'U1', ts: '1.1', text: 'human msg', isBot: false, chrome: false, attachments: [] },
       {

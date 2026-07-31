@@ -775,13 +775,14 @@ export default function SessionDetailView() {
     return pictures
   }, [members])
   const attributedAgentIdBySender = useMemo(
-    () => sessionAttributionAgentAuthors(msgs ?? [], agentById),
-    [msgs, agentById]
+    () => sessionAttributionAgentAuthors(session?.platform ?? '', msgs ?? [], agentById),
+    [session?.platform, msgs, agentById]
   )
   const participantAgent = (sender: string, text: string): Agent | undefined => {
     const id = agentById.has(sender)
       ? sender
-      : (sessionAttributionAgentId(text, agentById) ?? attributedAgentIdBySender.get(sender))
+      : (sessionAttributionAgentId(session?.platform ?? '', sender, text, agentById) ??
+        attributedAgentIdBySender.get(sender))
     return id ? agentById.get(id) : undefined
   }
   // The viewer's own webchat messages render as "You" (like the live playground) instead

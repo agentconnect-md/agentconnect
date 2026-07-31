@@ -220,22 +220,29 @@ describe('legacy Slack Agent attribution', () => {
     const reviewFooter =
       'done\nsent by <https://test.example.test/team/agents/review-id|review-bot> (Codex) · <https://test.example.test/sessions/1|open in session>'
 
-    expect(sessionAttributionAgentId(reviewFooter, agents)).toBe('review-id')
-    expect(sessionAttributionAgentId('sent by <https://other.test/agents/private-id|private>', agents)).toBeUndefined()
+    expect(sessionAttributionAgentId('slack', 'B0REVIEW', reviewFooter, agents)).toBe('review-id')
+    expect(
+      sessionAttributionAgentId('slack', 'B0REVIEW', 'sent by <https://other.test/agents/private-id|private>', agents)
+    ).toBeUndefined()
+    expect(sessionAttributionAgentId('slack', 'U0HUMAN', reviewFooter, agents)).toBeUndefined()
+    expect(sessionAttributionAgentId('webchat', 'B0REVIEW', reviewFooter, agents)).toBeUndefined()
 
     const authors = sessionAttributionAgentAuthors(
+      'slack',
       [
-        { sender: 'B-REVIEW', text: reviewFooter },
-        { sender: 'B-REVIEW', text: 'an older row without a footer' },
-        { sender: 'B-SHARED', text: reviewFooter },
+        { sender: 'B0REVIEW', text: reviewFooter },
+        { sender: 'B0REVIEW', text: 'an older row without a footer' },
+        { sender: 'B0SHARED', text: reviewFooter },
         {
-          sender: 'B-SHARED',
+          sender: 'B0SHARED',
           text: 'sent by <https://test.example.test/team/agents/test-id|test> (Claude)'
-        }
+        },
+        { sender: 'U0HUMAN', text: reviewFooter }
       ],
       agents
     )
-    expect(authors.get('B-REVIEW')).toBe('review-id')
-    expect(authors.has('B-SHARED')).toBe(false)
+    expect(authors.get('B0REVIEW')).toBe('review-id')
+    expect(authors.has('B0SHARED')).toBe(false)
+    expect(authors.has('U0HUMAN')).toBe(false)
   })
 })

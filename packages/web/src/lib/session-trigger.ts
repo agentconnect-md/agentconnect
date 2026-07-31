@@ -5,9 +5,17 @@ export type SessionTriggerKind = 'agent' | 'person' | 'github' | 'webhook' | 'sc
 type IdLookup = { has(id: string): boolean }
 const GITHUB_REPO_TRIGGER_PREFIX = 'github-repo:'
 
-/** Recover the stable author from pre-metadata Slack attribution footers. Only ids
- *  that are visible in the current Agent directory are accepted. */
-export function sessionAttributionAgentId(text: string, agentIds: IdLookup): string | undefined {
+/** Recover the stable author from a pre-metadata Slack bot attribution footer. The
+ *  sender is daemon-recorded provider identity: Slack reserves B-prefixed ids for bots,
+ *  so human U/W senders and every non-Slack transport are rejected before inspecting
+ *  user-controlled text. Only ids visible in the current Agent directory are accepted. */
+export function sessionAttributionAgentId(
+  platform: string,
+  sender: string,
+  text: string,
+  agentIds: IdLookup
+): string | undefined {
+  if (platform !== 'slack' || !/^B[A-Z0-9]+$/.test(sender)) return undefined
   const ids = new Set<string>()
   for (const match of text.matchAll(/(?:^|\n)sent by <https?:\/\/[^<>\s|]+\/agents\/([^/?#|>]+)\|[^>\n]+>/g)) {
     try {
@@ -24,12 +32,13 @@ export function sessionAttributionAgentId(text: string, agentIds: IdLookup): str
  *  exactly one attributed Agent elsewhere in this transcript. Shared/ambiguous bot ids
  *  deliberately remain unresolved. */
 export function sessionAttributionAgentAuthors(
+  platform: string,
   messages: readonly { sender: string; text: string }[],
   agentIds: IdLookup
 ): ReadonlyMap<string, string> {
   const candidates = new Map<string, Set<string>>()
   for (const message of messages) {
-    const id = sessionAttributionAgentId(message.text, agentIds)
+    const id = sessionAttributionAgentId(platform, message.sender, message.text, agentIds)
     if (!id) continue
     const ids = candidates.get(message.sender) ?? new Set<string>()
     ids.add(id)

@@ -263,6 +263,7 @@ describe('SlackConnection.getThreadReplies', () => {
         {
           ts: '100.3',
           bot_id: 'BSHARED',
+          app_id: 'AAGENTCONNECT',
           text: '@agent-a → @agent-b: review this',
           metadata: {
             event_type: 'agentconnect_thread_event',
@@ -287,7 +288,12 @@ describe('SlackConnection.getThreadReplies', () => {
     )
 
     await expect(conn.getThreadReplies('C1', '100.1')).resolves.toEqual([
-      expect.objectContaining({ sender: 'BSHARED', agentAuthorId: 'agent-a', isBot: true })
+      expect.objectContaining({
+        sender: 'BSHARED',
+        agentAuthorId: 'agent-a',
+        appId: 'AAGENTCONNECT',
+        isBot: true
+      })
     ])
   })
 

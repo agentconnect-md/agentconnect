@@ -280,6 +280,8 @@ type AppLike = {
         messages?: {
           user?: string
           bot_id?: string
+          app_id?: string
+          bot_profile?: { app_id?: string }
           ts?: string
           text?: string
           subtype?: string
@@ -952,6 +954,7 @@ export class SlackConnection {
     {
       sender: string
       agentAuthorId?: string
+      appId?: string
       ts: string
       text: string
       isBot: boolean
@@ -962,6 +965,7 @@ export class SlackConnection {
     const out: {
       sender: string
       agentAuthorId?: string
+      appId?: string
       ts: string
       text: string
       isBot: boolean
@@ -987,6 +991,7 @@ export class SlackConnection {
         })
         for (const m of res.messages ?? []) {
           if (!m.ts) continue
+          const appId = m.app_id ?? m.bot_profile?.app_id
           const metadataAuthor =
             m.metadata?.event_type === 'agentconnect_thread_event' &&
             typeof m.metadata.event_payload?.author_agent_id === 'string'
@@ -995,9 +1000,10 @@ export class SlackConnection {
           out.push({
             sender: m.user ?? m.bot_id ?? 'unknown',
             ...(metadataAuthor ? { agentAuthorId: metadataAuthor } : {}),
+            ...(appId ? { appId } : {}),
             ts: m.ts,
             text: extractSlackMessageText(m),
-            isBot: Boolean(m.bot_id),
+            isBot: Boolean(m.bot_id || appId),
             chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE,
             attachments: (m.files ?? [])
               .map(toAttachment)

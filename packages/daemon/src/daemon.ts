@@ -4438,13 +4438,16 @@ export class Daemon {
    *  conversation history, but are never an activation path. Same-daemon bots use their
    *  resolved Slack identities; cross-daemon bots use the CP collaboration snapshot's
    *  public Slack app ids. Internal `messageAgent` delivery bypasses platform ingress. */
+  private isManagedSlackBotIdentity(channel: string, senderId: string, appId?: string): boolean {
+    const localIdentity = [...this.connByIntegration.values()].some(
+      (conn) => (!!conn.botUserId && senderId === conn.botUserId) || (!!conn.botId && senderId === conn.botId)
+    )
+    return localIdentity || (!!appId && this.cpCollab.isAgentBotApp('slack', channel, appId))
+  }
+
   private isAgentBotMessage(msg: NormalizedMessage): boolean {
     if (msg.source !== 'user' || msg.platform !== 'slack') return false
-    const localIdentity = [...this.connByIntegration.values()].some(
-      (conn) => (!!conn.botUserId && msg.sender.id === conn.botUserId) || (!!conn.botId && msg.sender.id === conn.botId)
-    )
-    if (localIdentity) return true
-    return !!msg.sender.appId && this.cpCollab.isAgentBotApp(msg.platform, msg.channel, msg.sender.appId)
+    return this.isManagedSlackBotIdentity(msg.channel, msg.sender.id, msg.sender.appId)
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -7378,19 +7381,29 @@ export class Daemon {
     })
     return (
       replies
+        .map((reply) => ({
+          reply,
+          // Slack metadata event names and payloads are app-defined. Trust AgentConnect
+          // authorship/chrome only when the provider identity belongs to one of our local
+          // bots or to a CP-advertised AgentConnect app in this channel.
+          trustedAgentBot: reply.isBot && this.isManagedSlackBotIdentity(channel, reply.sender, reply.appId)
+        }))
         // Skip daemon CHROME (status bar, progress/plan/reasoning, notices, cards). It is not
-        // conversation and must not be re-ingested as a transcript text row — that leaked, e.g.,
-        // a peer agent's status bar into another agent's session view. New chrome carries the
-        // metadata marker (r.chrome); `isSlackStatusBarText` also catches status bars posted
-        // before the marker existed (transition safety).
-        .filter((r) => !r.chrome && !isSlackStatusBarText(r.text))
-        .map((r) => {
+        // conversation and must not be re-ingested as a transcript text row. The legacy
+        // status-bar text fallback is provenance-gated too, so another app or a human cannot
+        // make ordinary conversation disappear by copying AgentConnect's marker or text.
+        .filter(
+          ({ reply, trustedAgentBot }) => !trustedAgentBot || (!reply.chrome && !isSlackStatusBarText(reply.text))
+        )
+        .map(({ reply: r, trustedAgentBot }) => {
           const mention = attachmentMention(r.attachments)
           return {
             // A shareable Slack app gives every agent-authored message the same bot_id.
-            // Prefer our stable per-message metadata so a remote A is not mistaken for
-            // this local B and then discarded by SessionManager's own-author filter.
-            sender: r.agentAuthorId ?? (r.isBot && ours.has(r.sender) ? agentId : r.sender),
+            // Prefer stable per-message metadata only after verifying the producing app,
+            // so an unrelated app cannot impersonate this or a peer Agent and trip the
+            // SessionManager own-author filter.
+            sender:
+              (trustedAgentBot ? r.agentAuthorId : undefined) ?? (r.isBot && ours.has(r.sender) ? agentId : r.sender),
             ts: r.ts,
             text: mention ? `${r.text}\n${mention}`.trim() : r.text
           }
