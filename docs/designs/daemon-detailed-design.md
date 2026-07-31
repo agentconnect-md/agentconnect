@@ -666,16 +666,17 @@ private HTTPS MCP headers scoped to one ACP session and out of model context,
 transcripts, and diagnostics. The host operating system and daemon sandbox policy
 are irrelevant to this feature.
 
-On success, daemon registration advertises `webchat_remote_mcp_v1`. The CP issues a
-short-lived opaque grant bound to the durable private webchat conversation. The
-daemon attaches the CP MCP URL and Bearer grant to `session/new` or `session/load`
+On success, daemon registration advertises `webchat_remote_mcp_v1`. The relay
+delivers only a non-secret entitlement. The daemon obtains a short-lived opaque
+grant from the CP over revision-fenced issue/accept/activate control frames, then
+attaches the CP MCP URL and active Bearer grant to `session/new` or `session/load`
 as structured runtime configuration. It does not put the grant in the prompt,
 proxy MCP requests, mint per-request assertions, or run an administrative broker.
 
 The runtime calls the standard CP `POST /api/v1/mcp` endpoint directly. The CP
 derives the actor from the stored grant and durable webchat owner, re-runs live
-authorization, and provides conversation-authority-scoped request idempotency. Tool
-catalog execution is therefore a control operation; browser messages and ACP
+authorization, and provides conversation-scoped request idempotency across
+authority generations. Tool catalog execution is therefore a control operation; browser messages and ACP
 `session/update` streams remain on the relay↔daemon/daemon-local data path and
 never cross the CP.
 
@@ -966,6 +967,8 @@ Envelope:
 | `facts/daemon-runtimes` and `facts/*`    | Runtime/MCP/memory probe snapshots                                                                                                   | Observed facts with REPLACE semantics.                                                     |
 | `mcp/invocation/mint` (legacy)           | Old broker delegation and exact-request fields                                                                                       | Superseded by direct runtime-to-CP remote MCP; never emitted with `webchat_remote_mcp_v1`. |
 | `webchat/mcp-delegation/revoke` (legacy) | Old broker delegation id and generation                                                                                              | Superseded by access grants; retained only while the old capability is supported.          |
+| `webchat/mcp-grant/issue`                | `{ conversationId, descriptorInstanceId }`                                                                                           | Request a new pending revision for one exact session descriptor.                           |
+| `webchat/mcp-grant/accept`               | `{ grantId, authorityGeneration, descriptorInstanceId, grantRevision }`                                                              | Accept one exact staged revision; CP activates it and revokes its predecessor atomically.  |
 | `webchat/mcp-grant/revoke`               | `{ conversationId, authorityGeneration, reason }`                                                                                    | Revoke every access grant for one exact logical authority generation.                      |
 
 Metrics and traces use the direct **OTLP side path** bootstrapped by `OTEL_*`,
@@ -977,6 +980,8 @@ control channel.
 | Type                                        | Payload highlights                                                                                                                              | Daemon action                                                                                                                                                     |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `config/push` EVT                           | `{ keys }` only                                                                                                                                 | Merge allowlisted `logging.level`, `limits.*` into memory immediately; no disk/reply; ignore+log others.                                                          |
+| `webchat/mcp-grant/issued`                  | `{ grantId, authorityGeneration, descriptorInstanceId, grantRevision, token, expiresAt }`                                                       | CAS-stage only a newer pending revision; raw token remains memory-only.                                                                                           |
+| `webchat/mcp-grant/activate`                | Same exact grant/revision tuple as the accepted request                                                                                         | CAS-install only the activated revision into the exact runtime session descriptor.                                                                                |
 | `agent/upsert` / `agent/remove`             | `{ agentId, spec }` / `{ agentId }`                                                                                                             | Write/delete `agents/<id>/agent.json`; hot reload.                                                                                                                |
 | `agent/launch`                              | `{ agentId, runtime, workspaceId, capabilities, spec, mode }` with launchId fence                                                               | CP-started agent; reply `agent/launched`.                                                                                                                         |
 | `agent/detach` / `agent/activate`           | `{ agentId, moveId, ... }`                                                                                                                      | Safe cold move: quiesce+archive local root / atomically apply authoritative bundle and resume.                                                                    |
@@ -1027,7 +1032,8 @@ WebSocket drop -> CP-Client enters DEGRADED and reconnects with backoff. Daemon 
 This feature is operator opt-in and the CP gate defaults off. Before setting
 `WEBCHAT_PRESET_MCP_ENABLED=true`, deploy compatible CP, relay, daemon, and runtime
 builds; verify private webchat session enforcement, credential redaction, exact
-grant revocation, and conversation-authority-scoped idempotency; then confirm live
+grant revocation, revision-fenced descriptor activation, and conversation-scoped
+cross-generation idempotency; then confirm live
 registration advertises both `session-visibility-v1` and
 `webchat_remote_mcp_v1`.
 
