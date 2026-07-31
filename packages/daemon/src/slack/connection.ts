@@ -30,9 +30,10 @@ export interface ConsolidatedGroup {
   integrations: { agentId: string; integrationId: string }[]
 }
 
-/** Optional per-message rendering controls. The authorship fields both require
- *  Slack's `chat:write.customize` scope; {@link SlackConnection} transparently falls
- *  back to the app identity for older installations that do not have it yet. */
+/** Optional per-message rendering controls. `username` / `icon_url` require Slack's
+ *  `chat:write.customize` scope; {@link SlackConnection} transparently falls back to
+ *  the app identity for older installations that do not have it yet. Stable AgentConnect
+ *  authorship travels separately in message metadata. */
 export interface SlackPostOptions {
   username?: string
   /** Public https image URL for the message avatar (the agent's icon). */
@@ -62,6 +63,19 @@ export interface SlackStatusOptions {
 /** Slack message `metadata.event_type` marking a message as daemon chrome (see
  *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
 export const SLACK_CHROME_EVENT_TYPE = 'agentconnect_chrome'
+
+function slackMessageMetadata(options?: Pick<SlackPostOptions, 'agentAuthorId' | 'chrome'>) {
+  const agentAuthorId = options?.agentAuthorId?.trim()
+  if (agentAuthorId) {
+    return {
+      metadata: {
+        event_type: 'agentconnect_thread_event',
+        event_payload: { author_agent_id: agentAuthorId }
+      }
+    }
+  }
+  return options?.chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {}
+}
 
 /** App-level tokens are structured `xapp-1-{APP_ID}-{epoch}-{hex}`. Keep this
  * local fallback for hand-authored direct integrations; CP-pushed shared specs
@@ -266,6 +280,8 @@ type AppLike = {
         messages?: {
           user?: string
           bot_id?: string
+          app_id?: string
+          bot_profile?: { app_id?: string }
           ts?: string
           text?: string
           subtype?: string
@@ -797,7 +813,6 @@ export class SlackConnection {
     return this.queue.enqueue(async () => {
       const body = markdownBlock(text)
       const trailing = options?.trailingBlocks
-      const agentAuthorId = options?.agentAuthorId?.trim()
       const res = await this.postChatMessage(
         channel,
         threadTs,
@@ -807,16 +822,7 @@ export class SlackConnection {
           ...body,
           // A conversational agent message carries its author id; chrome carries a distinct
           // marker so a peer daemon's backfill can skip it. The two are mutually exclusive.
-          ...(agentAuthorId
-            ? {
-                metadata: {
-                  event_type: 'agentconnect_thread_event',
-                  event_payload: { author_agent_id: agentAuthorId }
-                }
-              }
-            : options?.chrome
-              ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } }
-              : {}),
+          ...slackMessageMetadata(options),
           ...(trailing?.length
             ? {
                 blocks: [...body.blocks, ...trailing],
@@ -833,16 +839,22 @@ export class SlackConnection {
 
   /** Edit a previously-posted message in place (chat.update) — the §9.1 "in-place update"
    *  primitive for the main progress / plan message. Best-effort: swallows errors.
-   *  `chrome` re-stamps the chrome metadata: chat.update drops metadata that isn't
-   *  re-supplied, so a chrome message updated in place would otherwise lose its marker. */
-  async updateMessage(channel: string, ts: string, text: string, chrome = false): Promise<void> {
+   *  `chrome` / `agentAuthorId` re-stamp metadata: chat.update drops metadata that isn't
+   *  re-supplied, so an updated row would otherwise lose its transcript identity. */
+  async updateMessage(
+    channel: string,
+    ts: string,
+    text: string,
+    chrome = false,
+    agentAuthorId?: string
+  ): Promise<void> {
     await this.queue.enqueue(async () => {
       try {
         await this.app.client.chat.update({
           channel,
           ts,
           ...markdownBlock(text),
-          ...(chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {})
+          ...slackMessageMetadata({ chrome, agentAuthorId })
         })
       } catch (err) {
         this.deps.log?.debug(`slack: chat.update failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
@@ -873,7 +885,7 @@ export class SlackConnection {
           unfurl_links: false,
           unfurl_media: false,
           // Block Kit chrome (status bar, cards) — mark it so the backfill skips it.
-          ...(options?.chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {})
+          ...slackMessageMetadata(options)
         },
         options
       )
@@ -884,7 +896,14 @@ export class SlackConnection {
   /** Edit a previously-posted Block Kit message in place (chat.update). Best-effort;
    *  returns false after logging so footer migration can retry a failed cleanup. `text`
    *  is optional so callers can preserve the original notification fallback. */
-  async updateBlocks(channel: string, ts: string, blocks: unknown[], text?: string, chrome = false): Promise<boolean> {
+  async updateBlocks(
+    channel: string,
+    ts: string,
+    blocks: unknown[],
+    text?: string,
+    chrome = false,
+    agentAuthorId?: string
+  ): Promise<boolean> {
     try {
       return await this.queue.enqueue(async () => {
         await this.app.client.chat.update({
@@ -894,7 +913,7 @@ export class SlackConnection {
           blocks,
           unfurl_links: false,
           unfurl_media: false,
-          ...(chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {})
+          ...slackMessageMetadata({ chrome, agentAuthorId })
         })
         return true
       })
@@ -935,6 +954,7 @@ export class SlackConnection {
     {
       sender: string
       agentAuthorId?: string
+      appId?: string
       ts: string
       text: string
       isBot: boolean
@@ -945,6 +965,7 @@ export class SlackConnection {
     const out: {
       sender: string
       agentAuthorId?: string
+      appId?: string
       ts: string
       text: string
       isBot: boolean
@@ -970,17 +991,21 @@ export class SlackConnection {
         })
         for (const m of res.messages ?? []) {
           if (!m.ts) continue
+          const appId = m.app_id ?? m.bot_profile?.app_id
           const metadataAuthor =
             m.metadata?.event_type === 'agentconnect_thread_event' &&
             typeof m.metadata.event_payload?.author_agent_id === 'string'
               ? m.metadata.event_payload.author_agent_id.trim()
               : ''
           out.push({
-            sender: m.user ?? m.bot_id ?? 'unknown',
+            // Some Slack bot rows expose both `user` and `bot_id`. Keep the stable bot
+            // identity as sender so legacy rows from the same app reconcile consistently.
+            sender: m.bot_id ?? m.user ?? 'unknown',
             ...(metadataAuthor ? { agentAuthorId: metadataAuthor } : {}),
+            ...(appId ? { appId } : {}),
             ts: m.ts,
             text: extractSlackMessageText(m),
-            isBot: Boolean(m.bot_id),
+            isBot: Boolean(m.bot_id || appId),
             chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE,
             attachments: (m.files ?? [])
               .map(toAttachment)

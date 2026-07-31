@@ -9,6 +9,8 @@ import {
 import { platName, sessionPlatform } from './data'
 import {
   githubRepoIdFromSessionTriggerFilter,
+  sessionAttributionAgentAuthors,
+  sessionAttributionAgentId,
   sessionSenderLabel,
   sessionTriggerFilterValue,
   sessionTriggerKind
@@ -209,5 +211,45 @@ describe('sessionSenderLabel', () => {
     expect(sessionSenderLabel('agent-id', 'agent-id', agents, members, me)).toBe('Release agent')
     expect(sessionSenderLabel('member-id', 'member-id', agents, members, me)).toBe('Ada')
     expect(sessionSenderLabel('me', 'me', agents, members, me)).toBe('You')
+  })
+})
+
+describe('legacy Slack Agent attribution', () => {
+  it('recovers only visible, unambiguous Agent authors', () => {
+    const agents = new Set(['review-id', 'test-id'])
+    const reviewFooter =
+      'done\nsent by <https://test.example.test/team/agents/review-id|review-bot> (Codex) · <https://test.example.test/sessions/1|open in session>'
+
+    expect(sessionAttributionAgentId('slack', { text: reviewFooter, trustedAgentBot: true }, agents)).toBe('review-id')
+    expect(
+      sessionAttributionAgentId(
+        'slack',
+        { text: 'sent by <https://other.test/agents/private-id|private>', trustedAgentBot: true },
+        agents
+      )
+    ).toBeUndefined()
+    expect(sessionAttributionAgentId('slack', { text: reviewFooter }, agents)).toBeUndefined()
+    expect(sessionAttributionAgentId('webchat', { text: reviewFooter, trustedAgentBot: true }, agents)).toBeUndefined()
+
+    const authors = sessionAttributionAgentAuthors(
+      'slack',
+      [
+        { sender: 'B0REVIEW', text: reviewFooter, trustedAgentBot: true },
+        { sender: 'B0REVIEW', text: 'an older row without a footer' },
+        { sender: 'U0BOTUSER', text: reviewFooter, trustedAgentBot: true },
+        { sender: 'B0SHARED', text: reviewFooter, trustedAgentBot: true },
+        {
+          sender: 'B0SHARED',
+          text: 'sent by <https://test.example.test/team/agents/test-id|test> (Claude)',
+          trustedAgentBot: true
+        },
+        { sender: 'B0UNTRUSTED', text: reviewFooter }
+      ],
+      agents
+    )
+    expect(authors.get('B0REVIEW')).toBe('review-id')
+    expect(authors.get('U0BOTUSER')).toBe('review-id')
+    expect(authors.has('B0SHARED')).toBe(false)
+    expect(authors.has('B0UNTRUSTED')).toBe(false)
   })
 })

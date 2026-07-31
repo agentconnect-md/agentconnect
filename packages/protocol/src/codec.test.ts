@@ -775,6 +775,7 @@ describe('session read-back frames (console history pull)', () => {
           {
             seq: 1,
             sender: '@dana',
+            trustedAgentBot: true,
             ts: '1718000000.000100',
             kind: 'text',
             text: 'ship it',
@@ -789,6 +790,7 @@ describe('session read-back frames (console history pull)', () => {
     expect(page.ok).toBe(true)
     if (!page.ok || !isFrame('session/history/page')(page.frame)) throw new Error('expected page')
     expect(page.frame.payload.messages[0]!.text).toBe('ship it')
+    expect(page.frame.payload.messages[0]!.trustedAgentBot).toBe(true)
     expect(page.frame.payload.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
     expect(page.frame.payload.nextCursor).toBe('c-50')
     expect(page.frame.payload.liveCursor).toBe('42')

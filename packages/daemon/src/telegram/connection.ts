@@ -305,9 +305,9 @@ export class TelegramConnection {
     threadTs?: string,
     // `replyTo` (a message id) anchors the post as a reply. The cross-platform
     // MessageGateway contract passes a sender-identity object in this 4th slot, which
-    // Telegram can't honor (no per-message identity) — so `username`/`icon_url` are
-    // accepted for structural compatibility and ignored.
-    opts?: { replyTo?: number; username?: string; icon_url?: string }
+    // Telegram can't honor (no per-message identity) — so those fields are accepted
+    // for structural compatibility and ignored.
+    opts?: { replyTo?: number; username?: string; icon_url?: string; agentAuthorId?: string }
   ): Promise<string | undefined> {
     const replyTo = opts?.replyTo
     const thread = threadTs != null && /^\d+$/.test(threadTs) ? Number(threadTs) : undefined

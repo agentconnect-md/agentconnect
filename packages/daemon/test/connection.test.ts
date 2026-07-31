@@ -262,7 +262,9 @@ describe('SlackConnection.getThreadReplies', () => {
       messages: [
         {
           ts: '100.3',
+          user: 'USHARED',
           bot_id: 'BSHARED',
+          app_id: 'AAGENTCONNECT',
           text: '@agent-a → @agent-b: review this',
           metadata: {
             event_type: 'agentconnect_thread_event',
@@ -287,7 +289,12 @@ describe('SlackConnection.getThreadReplies', () => {
     )
 
     await expect(conn.getThreadReplies('C1', '100.1')).resolves.toEqual([
-      expect.objectContaining({ sender: 'BSHARED', agentAuthorId: 'agent-a', isBot: true })
+      expect.objectContaining({
+        sender: 'BSHARED',
+        agentAuthorId: 'agent-a',
+        appId: 'AAGENTCONNECT',
+        isBot: true
+      })
     ])
   })
 
@@ -966,6 +973,24 @@ describe('SlackConnection.updateBlocks', () => {
         unfurl_media: false
       }
     ])
+  })
+
+  it('re-stamps stable agent authorship when an agent reply is edited', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withUpdate(async (payload) => void calls.push(payload)) as any
+    )
+    const blocks = [{ type: 'markdown', text: 'updated answer' }]
+
+    await expect(conn.updateBlocks('C1', '123.45', blocks, 'updated answer', false, 'agent-a')).resolves.toBe(true)
+
+    expect(calls[0]).toMatchObject({
+      metadata: {
+        event_type: 'agentconnect_thread_event',
+        event_payload: { author_agent_id: 'agent-a' }
+      }
+    })
   })
 
   it('returns false when the best-effort update fails so callers can retry cleanup', async () => {

@@ -116,7 +116,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
     const out = await client.callTool({ name: 'sendMessage', arguments: { to: { channel: 'C9' }, message: 'e2e hi' } })
     expect(out.isError).toBeFalsy()
     // No `thread` ⇒ post to the channel ROOT (undefined), not the current thread.
-    expect(gw.postMessage).toHaveBeenCalledWith('C9', 'e2e hi', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('C9', 'e2e hi', undefined, { agentAuthorId: 'bot-a' })
     expect(recorded).toEqual([{ channel: 'C9', text: 'e2e hi', ts: 'ts-42' }])
   }, 20_000)
 

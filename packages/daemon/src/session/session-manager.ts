@@ -223,7 +223,7 @@ export class SessionManager {
         threadTs: string,
         cutoffTs?: string,
         afterTs?: string | null
-      ) => Promise<{ sender: string; ts: string; text: string }[]>
+      ) => Promise<{ sender: string; ts: string; text: string; trustedAgentBot?: boolean }[]>
     }
   ) {}
 
@@ -812,6 +812,7 @@ export class SessionManager {
           thread,
           ts: h.ts,
           sender: h.sender,
+          ...(h.trustedAgentBot ? { trustedAgentBot: true } : {}),
           // Snapshotted thread history is context THIS agent's turn receives.
           recipient: agentId,
           kind: 'text',

@@ -107,6 +107,18 @@ describe('LocalStore', () => {
       ['text', 'old one'],
       ['text', 'old two']
     ])
+    // A later authoritative Slack snapshot can safely upgrade a pre-column row in
+    // place; absent provenance remains fail-closed until it is re-observed.
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T',
+      ts: '100.1',
+      sender: 'U1',
+      trustedAgentBot: true,
+      kind: 'text',
+      text: 'old one'
+    })
+    expect(s.threadTranscript('C1', 'T').find((row) => row.ts === '100.1')?.trustedAgentBot).toBeTruthy()
     // …and the new kind column is usable afterward.
     s.appendTranscript({ channel: 'C1', thread: 'T', ts: '100.3', sender: 'bot', kind: 'tool', text: 'Edit y' })
     expect(s.transcriptSince('C1', 'T', null).map((e) => e.text)).toEqual(['old one', 'old two'])

@@ -2131,6 +2131,7 @@ export const SessionMessageDto = z.object({
   seq: z.number(),
   sender: z.string(),
   senderName: z.string().optional(), // daemon-resolved display name; absent if unknown
+  trustedAgentBot: z.boolean().optional(), // daemon-verified AgentConnect Slack bot provenance
   ts: z.string(),
   kind: z.string(),
   text: z.string(),

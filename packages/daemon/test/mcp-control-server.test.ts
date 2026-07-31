@@ -107,7 +107,7 @@ describe('McpControlServer IPC', () => {
     expect(res.ok).toBe(true)
     // A deliberate sendMessage with no `thread` posts to the channel ROOT (undefined), not the
     // current thread — "reply here" is the agent's normal turn output.
-    expect(gw.postMessage).toHaveBeenCalledWith('C1', 'hello', undefined)
+    expect(gw.postMessage).toHaveBeenCalledWith('C1', 'hello', undefined, { agentAuthorId: 'bot-a' })
     expect(recorded).toEqual([{ channel: 'C1', text: 'hello', ts: 'ts-9' }])
   })
 

@@ -19,19 +19,21 @@ import type {
  * of the underlying platform SDK response. "channel" is the platform conversation
  * id (Slack channel `C…` / Telegram chat id); "user" is a platform user id.
  */
-/** Optional per-message sender-identity overrides for {@link MessageGateway}. Only
- *  Slack can honor these (via `chat:write.customize`); other platforms have no
- *  per-message identity, so they don't implement the identity-aware send at all. */
+/** Optional per-message sender identity for {@link MessageGateway}. Slack can render
+ *  the name/avatar (via `chat:write.customize`) and persist the stable AgentConnect
+ *  author id in message metadata; other platforms ignore these fields. */
 export interface SendIdentity {
   username?: string
   /** Public https image URL for the message avatar (the agent's icon). */
   icon_url?: string
+  /** Stable AgentConnect author id persisted in Slack message metadata. */
+  agentAuthorId?: string
 }
 
 export interface MessageGateway {
   /** Post a message; returns the resulting message id (`ts` / message_id) so the
-   *  daemon can record it. `identity` carries the agent's sender name/avatar — only
-   *  Slack honors it (`chat:write.customize`); other platforms ignore it. */
+   *  daemon can record it. `identity` carries the agent's stable id and optional
+   *  visual identity; other platforms may ignore it. */
   postMessage(channel: string, text: string, threadTs?: string, identity?: SendIdentity): Promise<string | undefined>
   getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }>
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
@@ -765,12 +767,10 @@ export async function executeTool(
       }
       const identity: SendIdentity = {
         ...(ctx.agentName ? { username: ctx.agentName } : {}),
-        ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {})
+        ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
+        agentAuthorId: ctx.agentId
       }
-      const ts =
-        (Object.keys(identity).length > 0
-          ? await gw.postMessage(channel, body, thread, identity)
-          : await gw.postMessage(channel, body, thread)) ?? `local-${deps.now()}`
+      const ts = (await gw.postMessage(channel, body, thread, identity)) ?? `local-${deps.now()}`
       // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
       // continuous conversation, and no id carries that — ask the platform, once, and only where
       // the answer can change the key. A failed lookup falls back to the non-DM conversation

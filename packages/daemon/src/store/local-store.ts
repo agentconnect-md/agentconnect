@@ -174,6 +174,9 @@ export interface TranscriptEntry {
   // prompt replay still compares the original platform `ts`.
   ts: string
   sender: string
+  /** True only when the daemon verified that this Slack history row came from an
+   *  AgentConnect-managed bot identity. Legacy rows and all other platforms omit it. */
+  trustedAgentBot?: boolean
   kind: TranscriptKind
   text: string
   /** Bounded inline webchat images. Persisted daemon-side; never provider-backed files. */
@@ -501,7 +504,7 @@ export class LocalStore {
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
-        attachmentsJson TEXT, revision INTEGER NOT NULL DEFAULT 0
+        attachmentsJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
@@ -716,6 +719,7 @@ export class LocalStore {
     this.migrateTranscriptToolBody()
     this.migrateTranscriptAttachments()
     this.migrateTranscriptRecipient()
+    this.migrateTranscriptTrustedAgentBot()
     this.migrateTranscriptEventTime()
     this.migrateTranscriptRevision()
     this.migrateInboxHookContext()
@@ -746,6 +750,14 @@ export class LocalStore {
   private migrateTranscriptRecipient(): void {
     const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'recipient')) this.db.exec('ALTER TABLE transcript ADD COLUMN recipient TEXT')
+  }
+
+  /** Preserve only daemon-verified Slack bot provenance. Existing rows remain NULL so
+   *  readers fail closed instead of inferring trust from a provider-shaped sender id. */
+  private migrateTranscriptTrustedAgentBot(): void {
+    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'trustedAgentBot'))
+      this.db.exec('ALTER TABLE transcript ADD COLUMN trustedAgentBot INTEGER')
   }
 
   /**
@@ -2142,23 +2154,37 @@ export class LocalStore {
   }
 
   appendTranscript(e: TranscriptEntry): void {
-    const { attachments, ...entry } = e
+    const { attachments, trustedAgentBot, ...entry } = e
     const revision = this.transcriptRevision + 1
     const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, revision)
+           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, trustedAgentBot, revision)
          VALUES
-           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @revision)`
+           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @trustedAgentBot, @revision)`
       )
       .run({
         ...entry,
         recipient: e.recipient ?? null,
         eventTimeUs: transcriptEventTimeUs(e.ts),
         attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
+        trustedAgentBot: trustedAgentBot ? 1 : null,
         revision
       } as unknown as SqlParams)
     if (Number(inserted.changes) === 1) this.transcriptRevision = revision
+    // A row may predate this column and later be re-observed in an authoritative Slack
+    // snapshot. Upgrade only toward trusted=true; an untrusted replay can never clear or
+    // manufacture provenance, and the stable text-row coordinates keep this scoped.
+    const provenanceUpgraded =
+      Number(inserted.changes) === 0 && trustedAgentBot
+        ? this.db
+            .prepare(
+              `UPDATE transcript SET trustedAgentBot = 1
+               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+                 AND COALESCE(trustedAgentBot, 0) = 0`
+            )
+            .run(e.channel, e.thread, e.ts)
+        : undefined
     // Record the delivery separately so it survives the text-row dedup above: if this same
     // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
     // dropped this row and its `recipient`, but the message WAS delivered to this agent too.
@@ -2171,13 +2197,13 @@ export class LocalStore {
 
     if (Number(inserted.changes) === 1) {
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], revision)
-    } else if (e.recipient && Number(delivered?.changes ?? 0) === 1) {
+    } else if (Number(provenanceUpgraded?.changes ?? 0) === 1 || Number(delivered?.changes ?? 0) === 1) {
       const deliveryRevision = this.transcriptRevision + 1
       this.db
         .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
         .run(deliveryRevision, e.channel, e.thread, e.ts)
       this.transcriptRevision = deliveryRevision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.recipient], deliveryRevision)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], deliveryRevision)
     }
   }
 

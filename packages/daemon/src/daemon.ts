@@ -4438,13 +4438,16 @@ export class Daemon {
    *  conversation history, but are never an activation path. Same-daemon bots use their
    *  resolved Slack identities; cross-daemon bots use the CP collaboration snapshot's
    *  public Slack app ids. Internal `messageAgent` delivery bypasses platform ingress. */
+  private isManagedSlackBotIdentity(channel: string, senderId: string, appId?: string): boolean {
+    const localIdentity = [...this.connByIntegration.values()].some(
+      (conn) => (!!conn.botUserId && senderId === conn.botUserId) || (!!conn.botId && senderId === conn.botId)
+    )
+    return localIdentity || (!!appId && this.cpCollab.isAgentBotApp('slack', channel, appId))
+  }
+
   private isAgentBotMessage(msg: NormalizedMessage): boolean {
     if (msg.source !== 'user' || msg.platform !== 'slack') return false
-    const localIdentity = [...this.connByIntegration.values()].some(
-      (conn) => (!!conn.botUserId && msg.sender.id === conn.botUserId) || (!!conn.botId && msg.sender.id === conn.botId)
-    )
-    if (localIdentity) return true
-    return !!msg.sender.appId && this.cpCollab.isAgentBotApp(msg.platform, msg.channel, msg.sender.appId)
+    return this.isManagedSlackBotIdentity(msg.channel, msg.sender.id, msg.sender.appId)
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -7365,7 +7368,7 @@ export class Daemon {
     threadTs: string,
     cutoffTs?: string,
     afterTs?: string | null
-  ): Promise<{ sender: string; ts: string; text: string }[]> {
+  ): Promise<{ sender: string; ts: string; text: string; trustedAgentBot?: boolean }[]> {
     const conn = this.replyConnFor(agentId) as Partial<SlackConnection> | undefined
     // Only Slack can pull thread history (conversations.replies). Telegram long-poll
     // has no arbitrary-history API, so a cold mid-thread mention just starts fresh.
@@ -7378,21 +7381,32 @@ export class Daemon {
     })
     return (
       replies
+        .map((reply) => ({
+          reply,
+          // Slack metadata event names and payloads are app-defined. Trust AgentConnect
+          // authorship/chrome only when the provider identity belongs to one of our local
+          // bots or to a CP-advertised AgentConnect app in this channel.
+          trustedAgentBot: reply.isBot && this.isManagedSlackBotIdentity(channel, reply.sender, reply.appId)
+        }))
         // Skip daemon CHROME (status bar, progress/plan/reasoning, notices, cards). It is not
-        // conversation and must not be re-ingested as a transcript text row — that leaked, e.g.,
-        // a peer agent's status bar into another agent's session view. New chrome carries the
-        // metadata marker (r.chrome); `isSlackStatusBarText` also catches status bars posted
-        // before the marker existed (transition safety).
-        .filter((r) => !r.chrome && !isSlackStatusBarText(r.text))
-        .map((r) => {
+        // conversation and must not be re-ingested as a transcript text row. The legacy
+        // status-bar text fallback is provenance-gated too, so another app or a human cannot
+        // make ordinary conversation disappear by copying AgentConnect's marker or text.
+        .filter(
+          ({ reply, trustedAgentBot }) => !trustedAgentBot || (!reply.chrome && !isSlackStatusBarText(reply.text))
+        )
+        .map(({ reply: r, trustedAgentBot }) => {
           const mention = attachmentMention(r.attachments)
           return {
             // A shareable Slack app gives every agent-authored message the same bot_id.
-            // Prefer our stable per-message metadata so a remote A is not mistaken for
-            // this local B and then discarded by SessionManager's own-author filter.
-            sender: r.agentAuthorId ?? (r.isBot && ours.has(r.sender) ? agentId : r.sender),
+            // Prefer stable per-message metadata only after verifying the producing app,
+            // so an unrelated app cannot impersonate this or a peer Agent and trip the
+            // SessionManager own-author filter.
+            sender:
+              (trustedAgentBot ? r.agentAuthorId : undefined) ?? (r.isBot && ours.has(r.sender) ? agentId : r.sender),
             ts: r.ts,
-            text: mention ? `${r.text}\n${mention}`.trim() : r.text
+            text: mention ? `${r.text}\n${mention}`.trim() : r.text,
+            ...(trustedAgentBot ? { trustedAgentBot: true } : {})
           }
         })
     )
@@ -10182,12 +10196,24 @@ export class Daemon {
     return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
   }
 
-  /** Agent-authored messages use the selected agent identity in both channels and DMs.
-   *  DM system chrome continues through {@link slackPostOptions} without overrides so
-   *  status bars, cards, and notices remain visibly owned by the Slack App. */
-  private slackAgentPostOptions(p: Pick<Pending, 'platform' | 'agentName' | 'iconUrl'>): SlackPostOptions | undefined {
+  /** Visual identity for Slack rows owned by the selected agent. Kept separate from
+   *  conversational authorship because status/chrome rows must retain their chrome
+   *  metadata marker instead of masquerading as transcript messages. */
+  private slackAgentIdentityOptions(
+    p: Pick<Pending, 'platform' | 'agentName' | 'iconUrl'>
+  ): SlackPostOptions | undefined {
     if (p.platform !== 'slack') return undefined
     return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
+  }
+
+  /** Agent-authored conversation messages add a stable author id to Slack metadata.
+   *  Peer daemons use it during thread backfill, so shared/custom bot ids never replace
+   *  the Agent's name and icon in the Console transcript. */
+  private slackAgentPostOptions(
+    p: Pick<Pending, 'platform' | 'agentId' | 'agentName' | 'iconUrl'>
+  ): SlackPostOptions | undefined {
+    const identity = this.slackAgentIdentityOptions(p)
+    return identity ? { ...identity, agentAuthorId: p.agentId } : undefined
   }
 
   /** Opaque routing target attached to daemon-rendered interactive Slack blocks when
@@ -10222,7 +10248,14 @@ export class Daemon {
     const failed: { ts: string; text: string }[] = []
     for (const reply of new Map(pending.map((item) => [item.ts, item])).values()) {
       try {
-        const updated = await conn.updateBlocks(p.channel, reply.ts, [{ type: 'markdown', text: reply.text }])
+        const updated = await conn.updateBlocks(
+          p.channel,
+          reply.ts,
+          [{ type: 'markdown', text: reply.text }],
+          undefined,
+          false,
+          p.agentId
+        )
         if (updated === false) failed.push(reply)
       } catch (err) {
         // Real SlackConnection normalizes API/queue failures to false. Keep this guard
@@ -10286,7 +10319,7 @@ export class Daemon {
     if (!p.liveReplyTs) return
     const attribution = p.attribution
     if (!attribution) {
-      await conn.updateMessage(p.channel, p.liveReplyTs, text)
+      await conn.updateMessage(p.channel, p.liveReplyTs, text, false, p.agentId)
       if (p.lastReply?.ts === p.liveReplyTs) {
         p.lastReply.text = text
         delete p.lastReply.footerKey
@@ -10297,7 +10330,9 @@ export class Daemon {
       p.channel,
       p.liveReplyTs,
       [{ type: 'markdown', text }, ...attribution.blocks],
-      text
+      text,
+      false,
+      p.agentId
     )
     if (updated !== false && p.lastReply?.ts === p.liveReplyTs) {
       p.lastReply.text = text
@@ -10330,7 +10365,7 @@ export class Daemon {
       return
     }
     const postOptions = this.slackPostOptions(p)
-    const statusBarPostOptions = this.slackAgentPostOptions(p)
+    const statusBarPostOptions = this.slackAgentIdentityOptions(p)
     // Chrome variant of the post options: marks status/progress/plan/reasoning/notice/card
     // messages so a peer daemon's thread backfill skips them (they are not conversation).
     const chromeOptions: SlackPostOptions = { ...(postOptions ?? {}), chrome: true }
@@ -10386,7 +10421,9 @@ export class Daemon {
               p.channel,
               p.liveReplyTs,
               [{ type: 'markdown', text: p.liveReplyText }, ...action.blocks],
-              p.liveReplyText
+              p.liveReplyText,
+              false,
+              p.agentId
             )
             if (updated !== false) {
               p.lastReply.text = p.liveReplyText
@@ -14547,6 +14584,7 @@ export class Daemon {
             const options = agent
               ? this.slackAgentPostOptions({
                   platform: msg.platform,
+                  agentId,
                   agentName: agent.displayName?.trim() || agent.name,
                   ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
                 })

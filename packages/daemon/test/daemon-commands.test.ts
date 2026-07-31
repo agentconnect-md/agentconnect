@@ -1027,7 +1027,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     const out = await (daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')
     expect(out).toEqual([
       { sender: 'U2', ts: '100.1', text: 'human asks' },
-      { sender: 'bot-a', ts: '100.2', text: 'bot replied' }, // own bot frame → agentId
+      { sender: 'bot-a', ts: '100.2', text: 'bot replied', trustedAgentBot: true }, // own bot frame → agentId
       { sender: 'U2', ts: '100.3', text: '[attached: shot.png (image/png)]' } // mention synthesized
     ])
 
@@ -1055,8 +1055,45 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       {
         sender: 'remote-agent-a',
         ts: '100.2',
-        text: '@remote-agent-a → @bot-a: review this'
+        text: '@remote-agent-a → @bot-a: review this',
+        trustedAgentBot: true
       }
+    ])
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('backfill ignores AgentConnect metadata from an unrelated Slack app', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon) as any
+    conn.botUserId = 'UOWN'
+    conn.botId = 'BOWN'
+    conn.getThreadReplies = vi.fn(async () => [
+      {
+        sender: 'BOTHER',
+        agentAuthorId: 'bot-a',
+        appId: 'AOTHER',
+        ts: '100.2',
+        text: 'unrelated app payload',
+        isBot: true,
+        chrome: false,
+        attachments: []
+      },
+      {
+        sender: 'BOTHER',
+        appId: 'AOTHER',
+        ts: '100.3',
+        text: 'unrelated chrome marker',
+        isBot: true,
+        chrome: true,
+        attachments: []
+      }
+    ])
+
+    await expect((daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')).resolves.toEqual([
+      { sender: 'BOTHER', ts: '100.2', text: 'unrelated app payload' },
+      { sender: 'BOTHER', ts: '100.3', text: 'unrelated chrome marker' }
     ])
 
     await daemon.stop()
@@ -1591,7 +1628,7 @@ describe('Slack interactive status bar', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
-    ;(conn as any).botUserId = 'BOT-A'
+    ;(conn as any).botId = 'B-X'
     ;(conn as any).getThreadReplies = vi.fn(async () => [
       { sender: 'U1', ts: '1.1', text: 'human msg', isBot: false, chrome: false, attachments: [] },
       {
