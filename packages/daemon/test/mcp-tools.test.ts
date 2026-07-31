@@ -18,7 +18,8 @@ describe('toolsForIntegrations', () => {
   const sendTool = (ints: Integration[]) => toolsForIntegrations(ints).find((t) => t.name === 'sendMessage')
   type ObjectSchema = {
     type?: string
-    properties: Record<string, { enum?: string[] }>
+    description?: string
+    properties: Record<string, { enum?: string[]; description?: string }>
     required?: string[]
     additionalProperties?: boolean
     oneOf?: ObjectSchema[]
@@ -122,6 +123,32 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toContain('{"to":{"toAgent":"<agent id>"},"message":"..."}')
     expect(tool.description).toContain('{"to":{"channel":"<channel id>"},"message":"..."}')
     expect(tool.description).toContain('{"to":{"sessionId":"<Parent session>"},"message":"..."}')
+  })
+
+  it('states what a channel-root post costs, and points a relayed answer at the parent session', () => {
+    // A coordinate-only description leaves the three branches reading as equivalent ways to
+    // "send somewhere", so an agent asked to relay an answer back to a customer picks the
+    // channel it can see and posts at its root — a top-level message plus a NEW session,
+    // instead of a reply in the conversation that asked. The consequence has to be ON the
+    // branch that carries it, and the tool has to say the turn's own reply already lands here.
+    const description = sendTool([slackInt])!.description
+    expect(description).toContain('use this tool only to reach a DIFFERENT channel, session, or agent')
+    expect(description).toContain('opens a NEW session')
+    expect(description).toContain('never by posting it to their channel')
+
+    expect(sendTargetBranch([slackInt], 'channel').description).toContain(
+      'does not continue the conversation you are in'
+    )
+    expect(sendTargetBranch([slackInt], 'channel').properties.thread!.description).toContain('opens a new session')
+    expect(sendTargetBranch([slackInt], 'sessionId').description).toContain('would start a new one')
+
+    // Collaboration off ⇒ only the channel branch exists, and it is then the ONLY way to send —
+    // so the root-post cost must be stated there too (spawnChannelRootSession runs either way).
+    const soloDescription = toolsForIntegrations([slackInt], { collaboration: false }).find(
+      (t) => t.name === 'sendMessage'
+    )!.description
+    expect(soloDescription).toContain('opens a NEW session')
+    expect(soloDescription).toContain('use this tool only to reach a DIFFERENT channel')
   })
 
   it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {
