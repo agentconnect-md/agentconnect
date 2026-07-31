@@ -76,12 +76,15 @@ export default function HomeView() {
     !!daemons.find((d) => d.daemonId === a.daemon)?.runtimeModels.find((r) => r.runtime === a.runtime)?.authRequired
   const agentReady = (a: Agent) => isOnline(a) && !authRequiredFor(a)
 
-  // Preferred default agent: the "agentconnect" preset if present, else the first
-  // READY one, else the first (so the composer defaults to something startable).
-  const preferred = useMemo(
-    () => agents.find((a) => a.name === 'agentconnect') ?? agents.find(agentReady) ?? agents[0],
-    [agents, daemons]
-  )
+  // Preferred default agent: the "agentconnect" preset when it's READY, else the
+  // first READY one, else the preset, else the first. Readiness outranks the preset:
+  // if the preset's daemon is offline/unsigned-in while another daemon serves ready
+  // agents, defaulting to the preset would flash the blocked banner for a daemon the
+  // user isn't even using (composer must default to something startable).
+  const preferred = useMemo(() => {
+    const preset = agents.find((a) => a.name === 'agentconnect')
+    return preset && agentReady(preset) ? preset : (agents.find(agentReady) ?? preset ?? agents[0])
+  }, [agents, daemons])
   const [agentId, setAgentId] = useState<string | undefined>(undefined)
   const agent = agents.find((a) => a.id === agentId) ?? preferred
   const agentOnline = agent ? isOnline(agent) : false
