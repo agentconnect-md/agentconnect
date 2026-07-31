@@ -1061,10 +1061,10 @@ and transcript content.
 Rollback starts by setting `WEBCHAT_PRESET_MCP_ENABLED=false` and restarting the
 CP. That stops new delegation issuance while preserving ordinary webchat, but it
 does not revoke an already issued generation. Existing authority is revoked only
-when its logical session closes or expires, or when its agent detaches/moves.
-Browser socket close is a no-op, and ordinary daemon/agent drain, stop, restart, or
-upgrade performs local host/broker cleanup while retaining authority for a possible
-resume.
+when its session reaches TTL expiry or when its agent detaches/moves. No production
+logical-session-close path emits a revoke today. Browser socket close is a no-op,
+and ordinary daemon/agent drain, stop, restart, or upgrade performs local
+host/broker cleanup while retaining authority for a possible resume.
 
 No fleet-wide bulk revoke API exists. For urgent containment, detach the affected
 agent/placement, or isolate the daemon / make it omit

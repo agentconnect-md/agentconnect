@@ -5,7 +5,7 @@ import type { DelegationDenialReason } from '../registry/webchatMcpDelegationSer
 export type DelegationMetricEvent = 'established' | 'reused' | 'rotated' | 'expired' | 'denied'
 export type AssertionMetricEvent = 'minted' | 'claimed' | 'expired' | 'replayed' | 'conflicted' | 'denied'
 export type InvocationMetricOutcome = 'succeeded' | 'failed' | 'in_progress_retry' | 'ambiguous'
-export type ControlPlaneMcpRequestStage = 'nested_rest' | 'mcp_http'
+export type ControlPlaneMcpRequestStage = 'nested_rest'
 export type ControlPlaneMcpRequestOutcome = 'succeeded' | 'failed'
 
 interface CounterInstrument {

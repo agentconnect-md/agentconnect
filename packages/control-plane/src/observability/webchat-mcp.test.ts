@@ -67,12 +67,8 @@ describe('webchat MCP metrics', () => {
     const h = harness()
 
     h.metrics.requestDuration('nested_rest', -4, 'failed')
-    h.metrics.requestDuration('mcp_http', 12.5, 'succeeded')
 
-    expect(h.duration.record.mock.calls).toEqual([
-      [0, { stage: 'nested_rest', outcome: 'failed' }],
-      [12.5, { stage: 'mcp_http', outcome: 'succeeded' }]
-    ])
+    expect(h.duration.record.mock.calls).toEqual([[0, { stage: 'nested_rest', outcome: 'failed' }]])
   })
 
   it('does not turn an empty reaper batch into a transition', () => {
