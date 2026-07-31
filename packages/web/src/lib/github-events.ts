@@ -17,7 +17,7 @@ import type { GithubCommentFamily } from './api'
  *              an event fires ONLY when its text (issue/PR body, comment body,
  *              commit message) @-mentions the assigned agent or the App. The
  *              agent handle targets one rule; the App handle broadcasts.
- *              Comments additionally pass the relay's collaborator gate.
+ *              Thread actors additionally pass the relay's live maintainer gate.
  *
  * The REST DTO accepts finer `family:action` values — these helpers just never
  * emit them.

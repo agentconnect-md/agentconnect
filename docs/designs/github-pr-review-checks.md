@@ -388,17 +388,16 @@ meaning "no agent turn was attempted," not a runtime failure. The relay remains
 stateless and uses the ordinary fire-and-forget `rc/run-report`. When no HookRun
 exists, GitHub delivery reconciliation redelivers. When only some hooks have durable
 rows, the CP durably claims a one-time retry of the entire delivery only if all
-existing siblings are no-agent-effect `review_request_required`. PR lifecycle uses
-`OWNER/MEMBER/COLLABORATOR` as its local maintainer fast path. For any other or
-missing association, relay asks CP for the PR author's current write/admin permission
-before dispatching. The request is body-free and carries every matching hook's
-config/dispatch fence, so CP validates the complete durable fan-out around one GitHub
-permission lookup. Denial, incomplete metadata, rate limiting, or lookup failure
-fails the complete fan-out closed into the external-author path; one delivery cannot
-mix the two identity conclusions. A fan-out containing anything already executed or
-any other failure fails closed. Activating the button starts a new queued generation
-and clears the action; the button actor must still pass a live write/admin permission
-check.
+existing siblings are no-agent-effect `review_request_required`. For every PR lifecycle
+event, relay asks CP for the PR author's current write/admin permission before
+dispatching; webhook `author_association` is descriptive only and never authorizes the
+trigger. The request is body-free and carries every matching hook's config/dispatch
+fence, so CP validates the complete durable fan-out around one GitHub permission
+lookup. Denial, incomplete metadata, rate limiting, or lookup failure fails the
+complete fan-out closed into the external-author path; one delivery cannot mix the two
+identity conclusions. A fan-out containing anything already executed or any other
+failure fails closed. Activating the button starts a new queued generation and clears
+the action; the button actor must still pass a live write/admin permission check.
 
 ### 6. Informational Rerequest and Future R2b/R2c Boundaries
 

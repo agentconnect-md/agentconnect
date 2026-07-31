@@ -18,7 +18,6 @@ import { HookTable } from './hook-table.js'
 import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
-  githubRuleMatches,
   githubRuleVerdict,
   buildGithubContext,
   buildTrustedGithubMetadata,
@@ -70,20 +69,27 @@ function rule(
 
 /** A minimal `issues` payload; override to shape other events. */
 function issuesPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const sender = (overrides.sender as Record<string, unknown> | undefined) ?? { login: 'alice', type: 'User' }
+  const issue = {
+    number: 42,
+    title: 'db down',
+    body: 'the primary is unreachable',
+    html_url: 'https://github.com/acme/infra/issues/42',
+    user: { login: 'alice' },
+    author_association: 'MEMBER',
+    labels: [{ name: 'bug' }],
+    ...((overrides.issue as Record<string, unknown> | undefined) ?? {})
+  }
+  const commentOverride = overrides.comment as Record<string, unknown> | undefined
+  const comment = commentOverride ? { user: { login: sender.login }, ...commentOverride } : undefined
   return {
     action: 'opened',
     installation: { id: INSTALLATION },
     repository: { id: REPO_ID, full_name: 'acme/infra' },
-    sender: { login: 'alice', type: 'User' },
-    issue: {
-      number: 42,
-      title: 'db down',
-      body: 'the primary is unreachable',
-      html_url: 'https://github.com/acme/infra/issues/42',
-      author_association: 'MEMBER',
-      labels: [{ name: 'bug' }]
-    },
-    ...overrides
+    sender,
+    ...overrides,
+    issue,
+    ...(comment ? { comment } : {})
   }
 }
 
@@ -156,13 +162,13 @@ interface Harness {
   authzRequests: RcGithubCommentAuthz[]
   rerequestRequests: RcGithubRerequest[]
   rerequestResult: RcGithubRerequestResult | (() => Promise<RcGithubRerequestResult>)
-  authzResult: boolean | (() => Promise<boolean>)
+  authzResult: boolean | ((request: RcGithubCommentAuthz) => boolean | Promise<boolean>)
   ack: RdAck | (() => Promise<RdAck>)
   offline: boolean
   onlineDaemons: Set<string>
 }
 
-function makeHarness(): Harness {
+function makeHarness(authzCapacity = 20): Harness {
   const clock = new FakeClock()
   const h: Partial<Harness> &
     Pick<
@@ -175,7 +181,7 @@ function makeHarness(): Harness {
     doorbells: [],
     authzRequests: [],
     rerequestRequests: [],
-    authzResult: false,
+    authzResult: true,
     rerequestResult: { allowed: false },
     ack: { msgId: 'x', accepted: true },
     offline: false,
@@ -201,13 +207,13 @@ function makeHarness(): Harness {
     doorbell: (p) => h.doorbells.push(p),
     authorizeComment: async (request) => {
       h.authzRequests.push(request)
-      return typeof h.authzResult === 'function' ? h.authzResult() : h.authzResult!
+      return typeof h.authzResult === 'function' ? h.authzResult(request) : h.authzResult!
     },
     authorizeRerequest: async (request) => {
       h.rerequestRequests.push(request)
       return typeof h.rerequestResult === 'function' ? h.rerequestResult() : h.rerequestResult!
     },
-    authzLimiter: new HookRateLimiter(clock, { capacity: 3, refillPerSec: 0 }),
+    authzLimiter: new HookRateLimiter(clock, { capacity: authzCapacity, refillPerSec: 0 }),
     limiter: new HookRateLimiter(clock, { capacity: 3, refillPerSec: 0 }),
     clock,
     log,
@@ -478,6 +484,8 @@ describe('github ingress', () => {
     })
 
     it('exhausts the authorization budget before doing another CP projection lookup', async () => {
+      await h.app.close()
+      h = makeHarness(3)
       h.table.upsert(rule())
 
       for (let i = 0; i < 4; i++) {
@@ -764,6 +772,7 @@ describe('github ingress', () => {
       'keeps an external PR %s out of the daemon and publishes the manual-request Check intent',
       async (action) => {
         h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+        h.authzResult = false
 
         await post('pull_request', pullPayload({ action }))
         await flush()
@@ -793,7 +802,7 @@ describe('github ingress', () => {
     )
 
     it.each(['OWNER', 'MEMBER', 'COLLABORATOR'] as const)(
-      'automatically reviews a PR authored by a trusted %s association',
+      'live-checks a PR author even when the payload association is %s',
       async (authorAssociation) => {
         h.table.upsert(rule({}, { events: ['pull_request:*'] }))
         const pullRequest = pullPayload().pull_request as Record<string, unknown>
@@ -809,13 +818,13 @@ describe('github ingress', () => {
         )
         await flush()
 
-        expect(h.authzRequests).toHaveLength(0)
+        expect(h.authzRequests).toEqual([expect.objectContaining({ senderLogin: 'alice' })])
         expect(h.sent).toHaveLength(1)
         expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
       }
     )
 
-    it('fans out a trusted PR association without a separate permission lookup', async () => {
+    it('live-checks a PR author once before dispatching the complete fan-out', async () => {
       h.table.upsert(rule({}, { events: ['pull_request:*'] }))
       h.table.upsert(
         rule(
@@ -842,7 +851,12 @@ describe('github ingress', () => {
       )
       await flush()
 
-      expect(h.authzRequests).toHaveLength(0)
+      expect(h.authzRequests).toEqual([
+        expect.objectContaining({
+          senderLogin: 'alice',
+          siblingFences: [{ hookId: HOOK_B, configRevision: '3', dispatchRevision: '5' }]
+        })
+      ])
       expect(h.sent).toHaveLength(2)
       expect(h.reports).toHaveLength(2)
       expect(h.reports.every((report) => report.status === 'accepted')).toBe(true)
@@ -901,6 +915,7 @@ describe('github ingress', () => {
       const external = pullPayload()
       const externalSubject = external.pull_request as Record<string, unknown>
       externalSubject.body = '@example-review-app please review'
+      h.authzResult = false
 
       await post('pull_request', external, { headers: { 'x-github-delivery': 'external-body-mention' } })
       await flush()
@@ -909,6 +924,7 @@ describe('github ingress', () => {
         status: 'failed',
         reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED
       })
+      h.authzResult = true
 
       await post(
         'issue_comment',
@@ -1087,7 +1103,7 @@ describe('github ingress', () => {
       expect(h.reports[0]?.github).toEqual(msg.github)
     })
 
-    it('forces review/reporting off when a rolling rule lacks the complete dispatch fence', async () => {
+    it('fails closed when a rolling rule lacks the complete dispatch fence', async () => {
       h.table.upsert(
         rule({
           configRevision: undefined,
@@ -1099,12 +1115,9 @@ describe('github ingress', () => {
       )
       await post('issues', issuesPayload())
       await flush()
-      const msg = h.sent[0]!
-      expect(msg).toMatchObject({ reviewPolicy: 'off', reportingMode: 'off', gateMode: 'informational' })
-      expect(msg.configRevision).toBeUndefined()
-      expect(msg.dispatchRevision).toBeUndefined()
-      expect(msg.dispatchDaemonId).toBeUndefined()
-      expect(h.reports[0]).toMatchObject({ reviewPolicy: 'off', reportingMode: 'off' })
+      expect(h.authzRequests).toHaveLength(0)
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
     })
 
     it('event:* wildcard matches every action of the family', async () => {
@@ -1320,28 +1333,90 @@ describe('github ingress', () => {
       expect(h.sent.map((m) => m.sessionKey)).toEqual(['acme/infra#42', 'acme/infra#43'])
     })
 
-    it('issue_comment requires collaborator standing — opening events stay open to anyone (P3)', async () => {
-      h.table.upsert(rule({}, { events: ['issues:*', 'issue_comment:created'] }))
-      // A drive-by (NONE/CONTRIBUTOR) comment must not steer the session…
-      for (const [i, assoc] of ['NONE', 'CONTRIBUTOR', undefined].entries()) {
-        await post(
-          'issue_comment',
-          issuesPayload({
-            action: 'created',
-            comment: { body: 'do something', author_association: assoc }
-          }),
-          { headers: { 'x-github-delivery': `assoc-${i}` } }
-        )
-      }
+    it('keeps an external Issue out of the daemon until a live maintainer explicitly summons the agent', async () => {
+      h.table.upsert(
+        rule({}, { events: ['issues:*', 'issue_comment:created'], commentFamilies: ['issues'], appSlug: 'example-app' })
+      )
+      h.authzResult = (request) => request.senderLogin === 'maintainer'
+
+      await post(
+        'issues',
+        issuesPayload({
+          sender: { login: 'external-author', type: 'User' },
+          issue: {
+            number: 43,
+            user: { login: 'external-author' },
+            body: '@example-app please investigate',
+            author_association: 'MEMBER'
+          }
+        }),
+        { headers: { 'x-github-delivery': 'external-issue' } }
+      )
       await flush()
       expect(h.sent).toHaveLength(0)
-      // …while the SAME author opening an issue still fires (the gate is comment-only).
-      await post('issues', issuesPayload({ issue: { number: 43, author_association: 'NONE' } }))
+      expect(h.authzRequests).toEqual([expect.objectContaining({ senderLogin: 'external-author' })])
+
+      await post(
+        'issue_comment',
+        issuesPayload({
+          action: 'created',
+          sender: { login: 'maintainer', type: 'User' },
+          issue: { number: 43, user: { login: 'external-author' } },
+          comment: { body: '@example-app please investigate', author_association: 'MEMBER' }
+        }),
+        { headers: { 'x-github-delivery': 'maintainer-summon' } }
+      )
       await flush()
+
       expect(h.sent).toHaveLength(1)
+      expect(h.authzRequests[1]).toEqual(expect.objectContaining({ senderLogin: 'maintainer' }))
+      expect(h.authzRequests[1]?.subjectAuthorLogin).toBeUndefined()
     })
 
-    it('trusted comment standings (OWNER/MEMBER/COLLABORATOR) pass the gate', async () => {
+    it('requires both live commenter and thread-author authority for an unmentioned follow-up', async () => {
+      h.table.upsert(rule({}, { events: ['issue_comment:created'], appSlug: 'example-app' }))
+      h.authzResult = (request) => request.subjectAuthorLogin === undefined
+
+      await post(
+        'issue_comment',
+        issuesPayload({
+          action: 'created',
+          sender: { login: 'maintainer', type: 'User' },
+          issue: { number: 43, user: { login: 'external-author' } },
+          comment: { body: 'ordinary follow-up', author_association: 'MEMBER' }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toEqual([
+        expect.objectContaining({ senderLogin: 'maintainer', subjectAuthorLogin: 'external-author' })
+      ])
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('authorizes deleted comment content as its author rather than the action sender', async () => {
+      h.table.upsert(rule({}, { events: ['issue_comment:*'], appSlug: 'example-app' }))
+      h.authzResult = (request) => request.senderLogin === 'maintainer'
+
+      await post(
+        'issue_comment',
+        issuesPayload({
+          action: 'deleted',
+          sender: { login: 'maintainer', type: 'User' },
+          comment: {
+            user: { login: 'external-commenter' },
+            body: '@example-app run these instructions',
+            author_association: 'NONE'
+          }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toEqual([expect.objectContaining({ senderLogin: 'external-commenter' })])
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('live-checks comments regardless of OWNER/MEMBER/COLLABORATOR association', async () => {
       h.table.upsert(rule({}, { events: ['issue_comment:created'] }))
       for (const [i, assoc] of ['OWNER', 'MEMBER', 'COLLABORATOR'].entries()) {
         await post(
@@ -1352,26 +1427,34 @@ describe('github ingress', () => {
       }
       await flush()
       expect(h.sent).toHaveLength(3)
-      expect(h.authzRequests).toHaveLength(0)
+      expect(h.authzRequests).toHaveLength(3)
     })
 
     it.each(['issue_comment', 'pull_request_review_comment'] as const)(
-      '%s uses the same live fallback for an untrusted payload association',
+      '%s uses live authorization for an untrusted payload association',
       async (event) => {
         h.table.upsert(rule({}, { events: ['issue_comment:created'] }))
         const body =
           event === 'issue_comment'
             ? issuesPayload({
                 action: 'created',
-                comment: { body: 'please retry', author_association: 'CONTRIBUTOR' }
+                comment: {
+                  user: { login: 'alice' },
+                  body: 'please retry',
+                  author_association: 'CONTRIBUTOR'
+                }
               })
             : {
                 action: 'created',
                 installation: { id: INSTALLATION },
                 repository: { id: REPO_ID, full_name: 'acme/infra' },
                 sender: { login: 'alice', type: 'User' },
-                pull_request: { number: 7 },
-                comment: { body: 'please retry', author_association: 'CONTRIBUTOR' }
+                pull_request: { number: 7, user: { login: 'alice' } },
+                comment: {
+                  user: { login: 'alice' },
+                  body: 'please retry',
+                  author_association: 'CONTRIBUTOR'
+                }
               }
 
         h.authzResult = true
@@ -1433,24 +1516,26 @@ describe('github ingress', () => {
       expect(h.reports).toHaveLength(0)
     })
 
-    it('shares the authz budget across hooks watching the same repository', async () => {
+    it('batches matching hooks into one repository-scoped authorization', async () => {
+      await h.app.close()
+      h = makeHarness(1)
       h.table.upsert(rule({}, { events: ['issue_comment:created'] }))
       h.table.upsert(rule({ hookId: HOOK_B }, { events: ['issue_comment:created'] }))
-      h.authzResult = false
       const payload = issuesPayload({
         action: 'created',
         comment: { body: 'please retry', author_association: 'CONTRIBUTOR' }
       })
 
-      await post('issue_comment', payload, { headers: { 'x-github-delivery': 'fanout-1' } })
-      await post('issue_comment', payload, { headers: { 'x-github-delivery': 'fanout-2' } })
+      await post('issue_comment', payload, { headers: { 'x-github-delivery': 'fanout' } })
       await flush()
 
-      // Capacity is three per installation+repo, not three per hook: the two
-      // deliveries would otherwise have issued four upstream authorizations.
-      expect(h.authzRequests).toHaveLength(3)
-      expect(new Set(h.authzRequests.map((request) => request.hookId))).toEqual(new Set([HOOK, HOOK_B]))
-      expect(h.sent).toHaveLength(0)
+      expect(h.authzRequests).toEqual([
+        expect.objectContaining({
+          hookId: HOOK,
+          siblingFences: [{ hookId: HOOK_B, configRevision: '3', dispatchRevision: '5' }]
+        })
+      ])
+      expect(h.sent).toHaveLength(2)
     })
 
     it('created mode accepts later explicit summons but not ordinary or out-of-scope updates', async () => {
@@ -1471,6 +1556,7 @@ describe('github ingress', () => {
           { headers: { 'x-github-delivery': key } }
         )
 
+      h.authzResult = false
       await comment('ordinary follow-up', 'MEMBER', 'created-summon-0')
       await comment('@example-review-app please look', 'NONE', 'created-summon-1')
       await post('issues', issuesPayload({ action: 'labeled', issue: { number: 42, body: 'ordinary update' } }), {
@@ -1479,6 +1565,7 @@ describe('github ingress', () => {
       await flush()
       expect(h.sent).toHaveLength(0)
 
+      h.authzResult = true
       await comment('@example-review-app please look', 'COLLABORATOR', 'created-summon-3')
       await post(
         'issues',
@@ -1613,10 +1700,11 @@ describe('github ingress', () => {
             installation: { id: INSTALLATION },
             repository: { id: REPO_ID, full_name: 'acme/infra' },
             sender: { login: 'alice', type: 'User' },
-            pull_request: { number: 7, title: 'tighten backoff' },
+            pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
             comment: {
               id: 3565283658,
               in_reply_to_id: null,
+              user: { login: 'alice' },
               body: 'should this retry be exponential?',
               html_url: 'https://github.com/acme/infra/pull/7#discussion_r1',
               author_association: assoc
@@ -1625,10 +1713,12 @@ describe('github ingress', () => {
           { headers: { 'x-github-delivery': key } }
         )
 
-      await reviewComment('NONE', 'rc-0') // collaborator gate applies to review comments too
+      h.authzResult = false
+      await reviewComment('NONE', 'rc-0')
       await flush()
       expect(h.sent).toHaveLength(0)
 
+      h.authzResult = true
       await reviewComment('COLLABORATOR', 'rc-1')
       await flush()
       expect(h.sent).toHaveLength(1)
@@ -1655,10 +1745,11 @@ describe('github ingress', () => {
         installation: { id: INSTALLATION },
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         sender: { login: 'alice', type: 'User' },
-        pull_request: { number: 7, title: 'tighten backoff' },
+        pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
         comment: {
           id: 3565656411,
           in_reply_to_id: 3565283658,
+          user: { login: 'alice' },
           body: 'translate this?',
           author_association: 'COLLABORATOR'
         }
@@ -1680,8 +1771,12 @@ describe('github ingress', () => {
         installation: { id: INSTALLATION },
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         sender: { login: 'alice', type: 'User' },
-        pull_request: { number: 7, title: 'tighten backoff' },
-        comment: { body: 'should this retry be exponential?', author_association: 'MEMBER' }
+        pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
+        comment: {
+          user: { login: 'alice' },
+          body: 'should this retry be exponential?',
+          author_association: 'MEMBER'
+        }
       }
 
       h.table.upsert(rule({}, { events: ['issues:*', 'issue_comment:created'], commentFamilies: ['issues'] }))
@@ -1707,8 +1802,12 @@ describe('github ingress', () => {
         installation: { id: INSTALLATION },
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         sender: { login: 'alice', type: 'User' },
-        pull_request: { number: 7, title: 'tighten backoff' },
-        comment: { body: '@example-review-app is this right?', author_association: 'MEMBER' }
+        pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
+        comment: {
+          user: { login: 'alice' },
+          body: '@example-review-app is this right?',
+          author_association: 'MEMBER'
+        }
       }
 
       h.table.upsert(
@@ -1759,8 +1858,8 @@ describe('github ingress', () => {
         installation: { id: INSTALLATION },
         repository: { id: REPO_ID, full_name: 'acme/infra' },
         sender: { login: 'alice', type: 'User' },
-        pull_request: { number: 7 },
-        comment: { body: 'explicitly subscribed', author_association: 'MEMBER' }
+        pull_request: { number: 7, user: { login: 'alice' } },
+        comment: { user: { login: 'alice' }, body: 'explicitly subscribed', author_association: 'MEMBER' }
       })
       await flush()
 
@@ -1777,8 +1876,8 @@ describe('github ingress', () => {
             installation: { id: INSTALLATION },
             repository: { id: REPO_ID, full_name: 'acme/infra' },
             sender: { login: 'alice', type: 'User' },
-            pull_request: { number: 7 },
-            comment: { body, author_association: 'MEMBER' }
+            pull_request: { number: 7, user: { login: 'alice' } },
+            comment: { user: { login: 'alice' }, body, author_association: 'MEMBER' }
           },
           { headers: { 'x-github-delivery': key } }
         )
@@ -2003,17 +2102,17 @@ describe('buildTrustedGithubMetadata review comment ids', () => {
   )
 })
 
-describe('githubRuleMatches (pure predicate)', () => {
+describe('githubRuleVerdict (pure predicate)', () => {
   const ctx = {
     event: 'issues',
     eventAction: 'issues:opened',
     installationId: String(INSTALLATION),
     labels: ['bug'],
     senderType: 'User' as string | undefined,
-    authorAssociation: undefined as string | undefined,
     mentionText: undefined as string | undefined,
     commentSubjectFamily: undefined as 'issues' | 'pull_request' | undefined
   }
+  const matches = (candidate: RcHookAssign, context = ctx) => githubRuleVerdict(candidate, context) !== 'no-match'
 
   it('treats summons as additive in created mode and exclusive in mention-only mode', () => {
     const update = { ...ctx, eventAction: 'issues:labeled', mentionText: 'ordinary update' }
@@ -2022,24 +2121,24 @@ describe('githubRuleMatches (pure predicate)', () => {
     const updated = rule({}, { events: ['issues:*'], appSlug: 'example-review-app' })
     const mentionOnly = rule({}, { events: ['issues:*'], mentionOnly: true, appSlug: 'example-review-app' })
 
-    expect(githubRuleMatches(created, update)).toBe(false)
-    expect(githubRuleMatches(created, summoned)).toBe(true)
-    expect(githubRuleMatches(updated, update)).toBe(true)
-    expect(githubRuleMatches(updated, summoned)).toBe(true)
-    expect(githubRuleMatches(mentionOnly, update)).toBe(false)
-    expect(githubRuleMatches(mentionOnly, summoned)).toBe(true)
+    expect(matches(created, update)).toBe(false)
+    expect(matches(created, summoned)).toBe(true)
+    expect(matches(updated, update)).toBe(true)
+    expect(matches(updated, summoned)).toBe(true)
+    expect(matches(mentionOnly, update)).toBe(false)
+    expect(matches(mentionOnly, summoned)).toBe(true)
   })
 
   it('mention mode gates EVERY event on its text — no mention (or no text) fails closed', () => {
     const r = rule({}, { mentionOnly: true, appSlug: 'example-review-app' })
-    expect(githubRuleMatches(r, ctx)).toBe(false) // no text at all
-    expect(githubRuleMatches(r, { ...ctx, mentionText: 'just an issue body' })).toBe(false)
-    expect(githubRuleMatches(r, { ...ctx, mentionText: 'summon @example-review-app please' })).toBe(true)
+    expect(matches(r, ctx)).toBe(false) // no text at all
+    expect(matches(r, { ...ctx, mentionText: 'just an issue body' })).toBe(false)
+    expect(matches(r, { ...ctx, mentionText: 'summon @example-review-app please' })).toBe(true)
     // Bounded on BOTH sides — emails/URLs are not mentions, and neither is a
     // longer login that merely starts with our slug.
-    expect(githubRuleMatches(r, { ...ctx, mentionText: 'mail team@example-review-app.test' })).toBe(false)
-    expect(githubRuleMatches(r, { ...ctx, mentionText: 'see /apps/@example-review-app/config' })).toBe(true) // '/' is a boundary
-    expect(githubRuleMatches(r, { ...ctx, mentionText: 'cc @example-review-apper' })).toBe(false)
+    expect(matches(r, { ...ctx, mentionText: 'mail team@example-review-app.test' })).toBe(false)
+    expect(matches(r, { ...ctx, mentionText: 'see /apps/@example-review-app/config' })).toBe(true) // '/' is a boundary
+    expect(matches(r, { ...ctx, mentionText: 'cc @example-review-apper' })).toBe(false)
   })
 
   it.each([
@@ -2050,21 +2149,14 @@ describe('githubRuleMatches (pure predicate)', () => {
     ['pull_request', 'pull_request:edited'],
     ['pull_request', 'pull_request:reopened']
   ])('hard-vetoes silent %s action even for an explicit legacy subscription', (event, eventAction) => {
-    expect(githubRuleMatches(rule({}, { events: [eventAction] }), { ...ctx, event, eventAction })).toBe(false)
+    expect(matches(rule({}, { events: [eventAction] }), { ...ctx, event, eventAction })).toBe(false)
   })
 
   it('keeps PR synchronize while vetoing every edited action', () => {
     const r = rule({}, { events: ['pull_request:*'] })
     const pr = { ...ctx, event: 'pull_request' }
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
-    expect(
-      githubRuleMatches(r, {
-        ...pr,
-        eventAction: 'pull_request:synchronize',
-        pullAuthorAssociation: 'MEMBER'
-      })
-    ).toBe(true)
-    expect(githubRuleMatches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
+    expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
   })
 
   it('applies comment subject scope only when commentFamilies is non-empty', () => {
@@ -2072,22 +2164,19 @@ describe('githubRuleMatches (pure predicate)', () => {
       ...ctx,
       event: 'issue_comment',
       eventAction: 'issue_comment:created',
-      authorAssociation: 'MEMBER',
       mentionText: 'reply',
       commentSubjectFamily: 'pull_request' as const
     }
     const mixed = { events: ['issues:*', 'issue_comment:created'] }
 
-    expect(githubRuleMatches(rule({}, mixed), commentCtx)).toBe(true)
-    expect(githubRuleMatches(rule({}, { ...mixed, commentFamilies: [] }), commentCtx)).toBe(true)
-    expect(githubRuleMatches(rule({}, { ...mixed, commentFamilies: ['issues'] }), commentCtx)).toBe(false)
-    expect(githubRuleMatches(rule({}, { ...mixed, commentFamilies: ['pull_request'] }), commentCtx)).toBe(true)
+    expect(matches(rule({}, mixed), commentCtx)).toBe(true)
+    expect(matches(rule({}, { ...mixed, commentFamilies: [] }), commentCtx)).toBe(true)
+    expect(matches(rule({}, { ...mixed, commentFamilies: ['issues'] }), commentCtx)).toBe(false)
+    expect(matches(rule({}, { ...mixed, commentFamilies: ['pull_request'] }), commentCtx)).toBe(true)
   })
 
   it('a webhook-kind rule never matches', () => {
-    expect(githubRuleMatches({ ...rule(), kind: 'webhook', github: undefined, webhook: { urlToken: 't' } }, ctx)).toBe(
-      false
-    )
+    expect(matches({ ...rule(), kind: 'webhook', github: undefined, webhook: { urlToken: 't' } }, ctx)).toBe(false)
   })
 })
 

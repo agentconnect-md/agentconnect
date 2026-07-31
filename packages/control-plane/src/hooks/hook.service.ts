@@ -129,7 +129,7 @@ export class HookService {
         ...(hook.commentFamilies.length > 0 ? { commentFamilies: hook.commentFamilies } : {}),
         labelFilter: hook.labelFilter,
         // P3: the App slug broadcasts to every matching rule; the immutable
-        // agent slug targets this rule. Comments also pass the collaborator gate.
+        // agent slug targets this rule. Thread actors also pass live maintainer auth.
         mentionOnly: hook.mentionOnly,
         ...(this.appSlug ? { appSlug: this.appSlug } : {}),
         agentName: agent.name,
