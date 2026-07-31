@@ -17,7 +17,7 @@ import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 const fill = { width: '60%', height: '60%', display: 'block' } as const
 
-export function AgentMark({ model }: { model: string }) {
+export function AgentMark({ model, fillPct = 60 }: { model: string; fillPct?: number }) {
   const registry = useAcpRegistry()
   const registryIcon = acpRuntime(registry, model)?.icon
   if (!registryIcon) return null
@@ -25,7 +25,8 @@ export function AgentMark({ model }: { model: string }) {
     <img
       src={registryIcon}
       alt=""
-      className="block h-[60%] w-[60%] object-contain [html[data-theme='dark']_&]:invert"
+      style={{ width: `${fillPct}%`, height: `${fillPct}%` }}
+      className="block object-contain [html[data-theme='dark']_&]:invert"
     />
   )
 }
@@ -79,20 +80,29 @@ export function modelProviderSlug(model: string): string | null {
 // A model's provider brand mark (lobehub icon set — same CDN the ACP registry's
 // curated runtimes use). Distinct from <AgentMark>, which is the runtime brand:
 // an `opencode` agent running `deepseek/…` shows the deepseek mark here, opencode there.
-export function ModelMark({ model, fallbackRuntime }: { model: string; fallbackRuntime: string }) {
+export function ModelMark({
+  model,
+  fallbackRuntime,
+  fillPct = 80
+}: {
+  model: string
+  fallbackRuntime: string
+  fillPct?: number
+}) {
   const slug = modelProviderSlug(model)
   // Latch the slug whose icon 404s so we fall back to the runtime mark. Keyed by
   // slug (not a boolean) so switching model re-attempts the new provider's icon —
   // no reset effect needed; `key` gives the img a fresh load per slug.
   const [failedSlug, setFailedSlug] = useState<string | null>(null)
-  if (!slug || failedSlug === slug) return <AgentMark model={fallbackRuntime} />
+  if (!slug || failedSlug === slug) return <AgentMark model={fallbackRuntime} fillPct={fillPct} />
   return (
     <img
       key={slug}
       src={`https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/${slug}.svg`}
       alt=""
       onError={() => setFailedSlug(slug)}
-      className="block h-[80%] w-[80%] object-contain [html[data-theme='dark']_&]:invert"
+      style={{ width: `${fillPct}%`, height: `${fillPct}%` }}
+      className="block object-contain [html[data-theme='dark']_&]:invert"
     />
   )
 }
