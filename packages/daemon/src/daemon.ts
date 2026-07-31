@@ -4456,6 +4456,8 @@ export class Daemon {
         })
         return reply.items
       },
+      managedSkillsFor: (agentId) =>
+        (this.agents.get(agentId)?.managedSkills ?? []).map(({ id, name, revision }) => ({ id, name, revision })),
       onOrganizationSuggestions: () =>
         this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion sync failed (${err instanceof Error ? err.name : 'unknown'})`)

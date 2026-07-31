@@ -1095,19 +1095,33 @@ export const OrganizationSuggestionContentDto = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('knowledge'),
     digest: z.string(),
+    snapshotToken: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     content: z.string(),
     summary: z.string().nullable(),
     tags: z.array(z.string())
   }),
-  z.object({ kind: z.literal('skill'), digest: z.string(), files: z.array(SkillBundleFileDto) })
+  z.object({
+    kind: z.literal('skill'),
+    digest: z.string(),
+    snapshotToken: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    files: z.array(SkillBundleFileDto)
+  })
 ])
 
-export const ReviewOrganizationSuggestionBody = z
-  .object({
-    decision: z.enum(['accept', 'reject']),
-    reason: z.string().trim().max(1024).optional()
-  })
-  .strict()
+export const ReviewOrganizationSuggestionBody = z.discriminatedUnion('decision', [
+  z
+    .object({
+      decision: z.literal('accept'),
+      snapshotToken: z.string().regex(/^sha256:[0-9a-f]{64}$/)
+    })
+    .strict(),
+  z
+    .object({
+      decision: z.literal('reject'),
+      reason: z.string().trim().max(1024).optional()
+    })
+    .strict()
+])
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────
 /** Whether the open-connector integration is configured on this CP (drives the

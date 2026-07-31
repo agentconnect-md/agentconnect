@@ -135,6 +135,24 @@ describe('ManagedSkillCache', () => {
     expect(warnings.join(' ')).toMatch(/unsafe path|one expected root/)
   })
 
+  it('rejects file/ancestor collisions before materialization', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-managed-skills-'))
+    const archive = archiveOf('deploy-safe', {
+      'references/conflict': strToU8('file'),
+      'references/conflict/child.md': strToU8('child')
+    })
+    const binding = bindingFor(archive)
+    const warnings: string[] = []
+
+    expect(
+      await new ManagedSkillCache(root, {
+        read: readerFor(archive, binding),
+        warn: (message) => warnings.push(message)
+      }).resolve({ id: 'agent-a', managedSkills: [binding] })
+    ).toEqual([])
+    expect(warnings.join(' ')).toContain('file/directory path collision')
+  })
+
   it('rejects a SKILL.md manifest whose name does not match the enabled bundle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-managed-skills-'))
     const archive = zipSync(

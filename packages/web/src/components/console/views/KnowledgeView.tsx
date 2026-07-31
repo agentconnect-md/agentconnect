@@ -2,21 +2,25 @@
 
 import dynamic from 'next/dynamic'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
 import {
   ApiError,
   createOrganizationKnowledge,
   fetchOrganizationSuggestionContent,
+  listManagedSkillRevisions,
   listManagedSkills,
   listOrganizationKnowledge,
+  listOrganizationKnowledgeRevisions,
   listOrganizationSuggestions,
   reviewOrganizationSuggestion,
   setManagedSkillArchived,
   setOrganizationKnowledgeArchived,
   updateOrganizationKnowledge,
   type ManagedSkillDto,
+  type ManagedSkillRevisionDto,
   type OrganizationKnowledgeDto,
+  type OrganizationKnowledgeRevisionDto,
   type OrganizationSuggestionContentDto,
   type OrganizationSuggestionDto
 } from '@/lib/api'
@@ -129,11 +133,15 @@ export function SuggestionCard({
   )
 
   const review = async (decision: 'accept' | 'reject') => {
-    if (busy) return
+    const inspectedSnapshotToken = content?.snapshotToken
+    if (busy || (decision === 'accept' && !inspectedSnapshotToken)) return
     setBusy(decision)
     setError(null)
     try {
-      await reviewOrganizationSuggestion(suggestion.id, decision)
+      if (decision === 'accept') {
+        if (!inspectedSnapshotToken) return
+        await reviewOrganizationSuggestion(suggestion.id, 'accept', inspectedSnapshotToken)
+      } else await reviewOrganizationSuggestion(suggestion.id, 'reject')
       await onReviewed()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -256,6 +264,258 @@ export function SuggestionCard({
         {error && <div className="mt-3 font-sans text-[12px] text-(--status-error)">{error}</div>}
       </div>
     </article>
+  )
+}
+
+type RevisionProvenance = Pick<
+  OrganizationKnowledgeRevisionDto | ManagedSkillRevisionDto,
+  | 'source'
+  | 'sourceAgentId'
+  | 'sourceDreamId'
+  | 'sourceSessionIds'
+  | 'createdByUserId'
+  | 'reviewedByUserId'
+  | 'createdAt'
+  | 'digest'
+>
+
+function Provenance({ value }: { value: RevisionProvenance }) {
+  return (
+    <div className="flex flex-wrap gap-x-2 gap-y-1 font-mono text-[10px] text-(--text-disabled)">
+      <span>{value.source === 'dream' ? 'Dream proposal' : 'manual publish'}</span>
+      <span aria-hidden>·</span>
+      <time dateTime={value.createdAt}>{when(value.createdAt)}</time>
+      {value.sourceAgentId && (
+        <>
+          <span aria-hidden>·</span>
+          <span title={value.sourceAgentId}>agent {value.sourceAgentId}</span>
+        </>
+      )}
+      {value.sourceDreamId && (
+        <>
+          <span aria-hidden>·</span>
+          <span title={value.sourceDreamId}>dream {value.sourceDreamId}</span>
+        </>
+      )}
+      {value.sourceSessionIds.length > 0 && (
+        <>
+          <span aria-hidden>·</span>
+          <span title={value.sourceSessionIds.join(', ')}>
+            {value.sourceSessionIds.length} source session{value.sourceSessionIds.length === 1 ? '' : 's'}
+          </span>
+        </>
+      )}
+      {value.reviewedByUserId ? (
+        <>
+          <span aria-hidden>·</span>
+          <span>reviewed by {value.reviewedByUserId}</span>
+        </>
+      ) : value.createdByUserId ? (
+        <>
+          <span aria-hidden>·</span>
+          <span>published by {value.createdByUserId}</span>
+        </>
+      ) : null}
+      <span aria-hidden>·</span>
+      <span title={value.digest}>{value.digest.slice(0, 19)}…</span>
+    </div>
+  )
+}
+
+export function KnowledgeEntry({
+  record,
+  canManage,
+  onEdit,
+  onArchive
+}: {
+  record: OrganizationKnowledgeDto
+  canManage: boolean
+  onEdit: () => void
+  onArchive: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [selectedRevision, setSelectedRevision] = useState(record.currentRevision)
+  useEffect(() => setSelectedRevision(record.currentRevision), [record.currentRevision])
+  const history = useSWR(open ? ['organization-knowledge-revisions', record.id] : null, () =>
+    listOrganizationKnowledgeRevisions(record.id)
+  )
+  const selected = history.data?.find((revision) => revision.revision === selectedRevision)
+
+  return (
+    <details
+      className={`group ${record.archivedAt ? 'opacity-60' : ''}`}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 marker:hidden">
+        <Icon name="chevron-right" size={15} className="mt-[2px] flex-none group-open:rotate-90" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-sans text-[13px] font-semibold text-(--text-primary)">{record.title}</span>
+            <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-tertiary)">
+              rev {record.currentRevision}
+            </span>
+            {record.archivedAt && (
+              <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-disabled)">archived</span>
+            )}
+          </div>
+          {record.summary && (
+            <p className="mt-1 font-sans text-[12px] leading-[1.45] text-(--text-secondary)">{record.summary}</p>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Tags values={record.tags} />
+            <span className="font-sans text-[10.5px] text-(--text-disabled)">
+              updated {when(record.updatedAt)} · {record.source === 'dream' ? 'Dream proposal' : 'manual'}
+            </span>
+          </div>
+        </div>
+        {canManage && (
+          <div className="flex flex-none items-center gap-1" onClick={(event) => event.preventDefault()}>
+            {!record.archivedAt && (
+              <button className="iconbtn" title="Publish a new revision" onClick={onEdit}>
+                <Icon name="pencil" size={13} />
+              </button>
+            )}
+            <button className="iconbtn" title={record.archivedAt ? 'Restore' : 'Archive'} onClick={onArchive}>
+              <Icon name={record.archivedAt ? 'archive-restore' : 'archive'} size={13} />
+            </button>
+          </div>
+        )}
+      </summary>
+      <div className="border-t border-(--border-subtle) px-5 py-4">
+        {history.isLoading ? (
+          <LoadingState size={18} padding={12} />
+        ) : history.error ? (
+          <div className="font-sans text-[12px] text-(--status-error)">{history.error.message}</div>
+        ) : !selected ? (
+          <div className="font-sans text-[12px] text-(--text-tertiary)">Revision history is unavailable.</div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-wrap items-center gap-3 rounded-md bg-(--surface-sunken) px-3 py-2">
+              <label className="flex items-center gap-2 font-sans text-[11px] text-(--text-tertiary)">
+                Revision
+                <select
+                  className="inp h-7 min-w-20 py-0 text-[11px]"
+                  aria-label={`Revision for ${record.title}`}
+                  value={selectedRevision}
+                  onChange={(event) => setSelectedRevision(Number(event.target.value))}
+                >
+                  {history.data?.map((revision) => (
+                    <option key={revision.revision} value={revision.revision}>
+                      {revision.revision}
+                      {revision.revision === record.currentRevision ? ' (current)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="min-w-0 flex-1">
+                <Provenance value={selected} />
+              </div>
+            </div>
+            {selected.summary && <p className="font-sans text-[12px] text-(--text-secondary)">{selected.summary}</p>}
+            <Tags values={selected.tags} />
+            <MarkdownView content={selected.content} />
+          </div>
+        )}
+      </div>
+    </details>
+  )
+}
+
+export function ManagedSkillEntry({
+  skill,
+  canManage,
+  onArchive
+}: {
+  skill: ManagedSkillDto
+  canManage: boolean
+  onArchive: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [selectedRevision, setSelectedRevision] = useState(skill.currentRevision)
+  useEffect(() => setSelectedRevision(skill.currentRevision), [skill.currentRevision])
+  const history = useSWR(open ? ['managed-skill-revisions', skill.id] : null, () => listManagedSkillRevisions(skill.id))
+  const selected = history.data?.find((revision) => revision.revision === selectedRevision)
+
+  return (
+    <details
+      className={`border-(--border-subtle) desktop:border-b desktop:odd:border-r ${skill.archivedAt ? 'opacity-60' : ''}`}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 marker:hidden">
+        <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--brand-soft)">
+          <Icon name="sparkles" size={15} color="var(--brand)" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-[12px] font-semibold text-(--text-primary)">{skill.name}</span>
+            <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-tertiary)">
+              rev {skill.currentRevision}
+            </span>
+            {skill.archivedAt && <span className="badge text-[9.5px]">archived</span>}
+          </div>
+          <p className="mt-1 font-sans text-[11.5px] leading-[1.45] text-(--text-secondary)">{skill.description}</p>
+          <div className="mono mt-2 text-[10px] text-(--text-disabled)">
+            {skill.fileCount} files · {bytes(skill.expandedBytes)} expanded · {bytes(skill.compressedBytes)} archive
+          </div>
+        </div>
+        {canManage && (
+          <button
+            className="iconbtn"
+            title={skill.archivedAt ? 'Restore' : 'Archive'}
+            onClick={(event) => {
+              event.preventDefault()
+              onArchive()
+            }}
+          >
+            <Icon name={skill.archivedAt ? 'archive-restore' : 'archive'} size={13} />
+          </button>
+        )}
+      </summary>
+      <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-3">
+        {history.isLoading ? (
+          <LoadingState size={18} padding={12} />
+        ) : history.error ? (
+          <div className="font-sans text-[12px] text-(--status-error)">{history.error.message}</div>
+        ) : !selected ? (
+          <div className="font-sans text-[12px] text-(--text-tertiary)">Revision history is unavailable.</div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 font-sans text-[11px] text-(--text-tertiary)">
+                Revision
+                <select
+                  className="inp h-7 min-w-20 py-0 text-[11px]"
+                  aria-label={`Revision for ${skill.name}`}
+                  value={selectedRevision}
+                  onChange={(event) => setSelectedRevision(Number(event.target.value))}
+                >
+                  {history.data?.map((revision) => (
+                    <option key={revision.revision} value={revision.revision}>
+                      {revision.revision}
+                      {revision.revision === skill.currentRevision ? ' (current)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span className="font-mono text-[10px] text-(--text-disabled)">
+                {selected.fileCount} files · {bytes(selected.expandedBytes)} expanded ·{' '}
+                {bytes(selected.compressedBytes)} archive
+              </span>
+            </div>
+            <Provenance value={selected} />
+            <div>
+              {(selected.manifest.files ?? []).map((file) => (
+                <div key={file.path} className="flex gap-2 py-[3px] font-mono text-[10.5px] text-(--text-tertiary)">
+                  <Icon name="file" size={12} />
+                  <span className="min-w-0 flex-1 truncate">{file.path}</span>
+                  <span>{bytes(file.bytes)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
   )
 }
 
@@ -464,65 +724,13 @@ export default function KnowledgeView() {
             ) : (
               <div className="divide-y divide-(--border-subtle)">
                 {knowledge.data.map((record) => (
-                  <details key={record.id} className={`group ${record.archivedAt ? 'opacity-60' : ''}`}>
-                    <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 marker:hidden">
-                      <Icon name="chevron-right" size={15} className="mt-[2px] flex-none group-open:rotate-90" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-sans text-[13px] font-semibold text-(--text-primary)">
-                            {record.title}
-                          </span>
-                          <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-tertiary)">
-                            rev {record.currentRevision}
-                          </span>
-                          {record.archivedAt && (
-                            <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-disabled)">
-                              archived
-                            </span>
-                          )}
-                        </div>
-                        {record.summary && (
-                          <p className="mt-1 font-sans text-[12px] leading-[1.45] text-(--text-secondary)">
-                            {record.summary}
-                          </p>
-                        )}
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <Tags values={record.tags} />
-                          <span className="font-sans text-[10.5px] text-(--text-disabled)">
-                            updated {when(record.updatedAt)} · {record.source === 'dream' ? 'Dream proposal' : 'manual'}
-                            {record.reviewedByUserId
-                              ? ` · reviewed by ${record.reviewedByUserId}`
-                              : record.createdByUserId
-                                ? ` · published by ${record.createdByUserId}`
-                                : ''}
-                          </span>
-                        </div>
-                      </div>
-                      {canManage && (
-                        <div className="flex flex-none items-center gap-1" onClick={(event) => event.preventDefault()}>
-                          {!record.archivedAt && (
-                            <button
-                              className="iconbtn"
-                              title="Publish a new revision"
-                              onClick={() => setEditor(record)}
-                            >
-                              <Icon name="pencil" size={13} />
-                            </button>
-                          )}
-                          <button
-                            className="iconbtn"
-                            title={record.archivedAt ? 'Restore' : 'Archive'}
-                            onClick={() => void archiveKnowledge(record)}
-                          >
-                            <Icon name={record.archivedAt ? 'archive-restore' : 'archive'} size={13} />
-                          </button>
-                        </div>
-                      )}
-                    </summary>
-                    <div className="border-t border-(--border-subtle) px-5 py-4">
-                      <MarkdownView content={record.content} />
-                    </div>
-                  </details>
+                  <KnowledgeEntry
+                    key={record.id}
+                    record={record}
+                    canManage={canManage}
+                    onEdit={() => setEditor(record)}
+                    onArchive={() => void archiveKnowledge(record)}
+                  />
                 ))}
               </div>
             )}
@@ -545,58 +753,12 @@ export default function KnowledgeView() {
             ) : (
               <div className="grid grid-cols-1 divide-y divide-(--border-subtle) desktop:grid-cols-2 desktop:divide-y-0">
                 {managedSkills.data.map((skill) => (
-                  <details
+                  <ManagedSkillEntry
                     key={skill.id}
-                    className={`border-(--border-subtle) desktop:border-b desktop:odd:border-r ${skill.archivedAt ? 'opacity-60' : ''}`}
-                  >
-                    <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 marker:hidden">
-                      <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--brand-soft)">
-                        <Icon name="sparkles" size={15} color="var(--brand)" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono text-[12px] font-semibold text-(--text-primary)">
-                            {skill.name}
-                          </span>
-                          <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-tertiary)">
-                            rev {skill.currentRevision}
-                          </span>
-                          {skill.archivedAt && <span className="badge text-[9.5px]">archived</span>}
-                        </div>
-                        <p className="mt-1 font-sans text-[11.5px] leading-[1.45] text-(--text-secondary)">
-                          {skill.description}
-                        </p>
-                        <div className="mono mt-2 text-[10px] text-(--text-disabled)">
-                          {skill.fileCount} files · {bytes(skill.expandedBytes)} expanded ·{' '}
-                          {bytes(skill.compressedBytes)} archive
-                        </div>
-                      </div>
-                      {canManage && (
-                        <button
-                          className="iconbtn"
-                          title={skill.archivedAt ? 'Restore' : 'Archive'}
-                          onClick={(event) => {
-                            event.preventDefault()
-                            void archiveSkill(skill)
-                          }}
-                        >
-                          <Icon name={skill.archivedAt ? 'archive-restore' : 'archive'} size={13} />
-                        </button>
-                      )}
-                    </summary>
-                    <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-3">
-                      {(skill.manifest.files ?? []).map((file) => (
-                        <div
-                          key={file.path}
-                          className="flex gap-2 py-[3px] font-mono text-[10.5px] text-(--text-tertiary)"
-                        >
-                          <Icon name="file" size={12} />
-                          <span className="min-w-0 flex-1 truncate">{file.path}</span>
-                          <span>{bytes(file.bytes)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
+                    skill={skill}
+                    canManage={canManage}
+                    onArchive={() => void archiveSkill(skill)}
+                  />
                 ))}
               </div>
             )}

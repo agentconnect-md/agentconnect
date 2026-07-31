@@ -65,6 +65,18 @@ describe('dream prompt', () => {
     expect(prompt).toContain('revision="3"')
     expect(prompt).toContain('Use the promotion gate.')
   })
+
+  it('delimits exact managed-skill targets for fenced revision proposals', () => {
+    const prompt = buildDreamPrompt({
+      files: [],
+      transcripts: [],
+      managedSkills: [{ id: '22222222-2222-4222-8222-222222222222', name: 'release-service', revision: 4 }]
+    })
+    expect(prompt).toContain('<accepted-managed-skills>')
+    expect(prompt).toContain('id="22222222-2222-4222-8222-222222222222"')
+    expect(prompt).toContain('revision="4"')
+    expect(prompt).toContain('name="release-service"')
+  })
 })
 
 describe('dream proposal parsing', () => {
@@ -319,6 +331,37 @@ describe('structured organization proposals', () => {
     ])
   })
 
+  it('accepts only exact trusted id/name/revision fences for organization skill updates', () => {
+    const target = '22222222-2222-4222-8222-222222222222'
+    const update = (revision: number, name = 'release-service') => ({
+      operation: 'update',
+      targetId: target,
+      targetRevision: revision,
+      name,
+      files: [{ path: 'SKILL.md', content: skillMd(name) }],
+      sessionIds: ['sess-1', 'sess-2']
+    })
+
+    expect(
+      parseOrganizationSkills(
+        [update(4), update(3), update(4, 'renamed-service')],
+        ['sess-1', 'sess-2'],
+        [{ id: target, name: 'release-service', revision: 4 }]
+      )
+    ).toEqual([
+      {
+        operation: 'update',
+        targetId: target,
+        targetRevision: 4,
+        title: 'release-service',
+        summary: 'Release a service safely',
+        files: [{ path: 'SKILL.md', encoding: 'utf8', content: skillMd() }],
+        sessionIds: ['sess-1', 'sess-2']
+      }
+    ])
+    expect(parseOrganizationSkills([update(4)], ['sess-1', 'sess-2'])).toEqual([])
+  })
+
   it('drops the whole skill candidate for traversal, case collisions, malformed base64, or size overflow', () => {
     const candidate = (files: unknown[]) => ({
       operation: 'create',
@@ -330,6 +373,11 @@ describe('structured organization proposals', () => {
     const malformed = [
       candidate([manifest, { path: '../escape', content: 'x' }]),
       candidate([manifest, { path: 'references/A.md', content: 'a' }, { path: 'references/a.md', content: 'b' }]),
+      candidate([
+        manifest,
+        { path: 'references/conflict', content: 'file' },
+        { path: 'references/conflict/child.md', content: 'child' }
+      ]),
       candidate([manifest, { path: 'assets/x.bin', encoding: 'base64', content: 'not-base64' }]),
       candidate([manifest, { path: 'assets/huge.bin', content: 'x'.repeat(MAX_SKILL_TREE_FILE_BYTES + 1) }]),
       null
@@ -483,6 +531,7 @@ describe('mined skill candidates', () => {
     expect(dreamSystemPrompt(true)).toContain('extract procedures')
     expect(dreamSystemPrompt(true)).toContain('organizationSkills')
     expect(dreamSystemPrompt(true)).toContain('complete Agent Skills file tree')
+    expect(dreamSystemPrompt(true)).toContain('<accepted-managed-skills>')
     expect(dreamSystemPrompt(true)).toContain('never "groundedSessionIds"')
     expect(dreamSystemPrompt(true)).toContain('agentMemory.index is always the complete, non-empty MEMORY.md text')
     expect(dreamSystemPrompt(true).startsWith(MEMORY_DREAM_SYSTEM_PROMPT)).toBe(true)

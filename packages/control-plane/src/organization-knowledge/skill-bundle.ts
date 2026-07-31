@@ -12,6 +12,8 @@ export const MAX_MANAGED_SKILL_COMPRESSION_RATIO = 200
 
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
 const ZIP_MTIME = new Date('1980-01-01T00:00:00.000Z')
+const ZIP_EOCD_SIGNATURE = 0x06054b50
+const ZIP_CENTRAL_SIGNATURE = 0x02014b50
 
 export class SkillBundleValidationError extends Error {
   constructor(message: string) {
@@ -106,6 +108,35 @@ function manifestFromSkillMd(skillMd: Uint8Array): { name: string; description: 
   return { name: row.name, description: row.description.trim() }
 }
 
+/** Sum the actual compressed entry payloads in the deterministic ZIP we just
+ * produced. The daemon applies its bomb ratio to this denominator too; using
+ * the whole archive here would count headers and let centrally-approved
+ * bundles fail forever at the daemon trust boundary. */
+function compressedPayloadBytes(archive: Uint8Array): number {
+  const view = Buffer.from(archive.buffer, archive.byteOffset, archive.byteLength)
+  const searchStart = Math.max(0, view.length - 65_557)
+  let eocd = -1
+  for (let offset = view.length - 22; offset >= searchStart; offset -= 1) {
+    if (view.readUInt32LE(offset) === ZIP_EOCD_SIGNATURE) {
+      eocd = offset
+      break
+    }
+  }
+  if (eocd < 0 || eocd + 22 > view.length) throw new SkillBundleValidationError('generated skill archive is invalid')
+  const entryCount = view.readUInt16LE(eocd + 10)
+  let cursor = view.readUInt32LE(eocd + 16)
+  let compressed = 0
+  for (let index = 0; index < entryCount; index += 1) {
+    if (cursor + 46 > eocd || view.readUInt32LE(cursor) !== ZIP_CENTRAL_SIGNATURE) {
+      throw new SkillBundleValidationError('generated skill archive is invalid')
+    }
+    compressed += view.readUInt32LE(cursor + 20)
+    cursor += 46 + view.readUInt16LE(cursor + 28) + view.readUInt16LE(cursor + 30) + view.readUInt16LE(cursor + 32)
+  }
+  if (cursor !== eocd) throw new SkillBundleValidationError('generated skill archive is invalid')
+  return compressed
+}
+
 /** Validate a model-proposed complete Agent Skills directory and package it as
  * the official `.skill` shape: one root directory containing SKILL.md plus any
  * scripts/references/assets. Input files are regular files only, so symlinks and
@@ -134,6 +165,16 @@ export function packageSkillBundle(files: readonly SkillBundleTextFile[], expect
     decoded.set(path, bytes)
   }
 
+  for (const path of decoded.keys()) {
+    const segments = path.split('/')
+    for (let end = 1; end < segments.length; end += 1) {
+      const ancestor = segments.slice(0, end).join('/')
+      if (folded.has(ancestor.toLocaleLowerCase('en-US'))) {
+        throw new SkillBundleValidationError(`skill file path collides with a parent file: ${path}`)
+      }
+    }
+  }
+
   const skillMd = decoded.get('SKILL.md')
   if (!skillMd) throw new SkillBundleValidationError('skill bundle must contain root SKILL.md')
   const metadata = manifestFromSkillMd(skillMd)
@@ -154,7 +195,8 @@ export function packageSkillBundle(files: readonly SkillBundleTextFile[], expect
   if (rawArchive.byteLength > MAX_MANAGED_SKILL_ARCHIVE_BYTES) {
     throw new SkillBundleValidationError(`skill archive exceeds ${MAX_MANAGED_SKILL_ARCHIVE_BYTES} compressed bytes`)
   }
-  if (expandedBytes > 64 * 1024 && expandedBytes > rawArchive.byteLength * MAX_MANAGED_SKILL_COMPRESSION_RATIO) {
+  const compressedPayload = compressedPayloadBytes(rawArchive)
+  if (expandedBytes > 64 * 1024 && expandedBytes > compressedPayload * MAX_MANAGED_SKILL_COMPRESSION_RATIO) {
     throw new SkillBundleValidationError('skill archive has a suspicious compression ratio')
   }
   const archive = new Uint8Array(rawArchive.byteLength)

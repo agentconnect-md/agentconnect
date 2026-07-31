@@ -20,6 +20,7 @@ import type {
 } from '../ports.js'
 import type { OrganizationSuggestionInfo } from '@agentconnect.md/protocol'
 import { OrgId } from '../../domain/ids.js'
+import { organizationSuggestionSnapshotToken } from '../../organization-knowledge/suggestion-snapshot.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 
 type KnowledgeWithRevision = OrganizationKnowledge & { revisions: OrganizationKnowledgeRevision[] }
@@ -505,6 +506,7 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   async acceptKnowledgeSuggestion(
     id: string,
     body: { title: string; content: string; summary: string | null; tags: string[] },
+    expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult> {
     return withAmbientTx(this.db, async (tx) => {
@@ -512,6 +514,9 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       const suggestion = await tx.organizationSuggestion.findUniqueOrThrow({ where: { id } })
       if (suggestion.state !== 'pending') return { outcome: 'not_pending', suggestion: toSuggestion(suggestion) }
       if (suggestion.kind !== 'knowledge') throw new Error('suggestion kind mismatch')
+      if (organizationSuggestionSnapshotToken(toSuggestion(suggestion)) !== expectedSnapshotToken) {
+        return { outcome: 'metadata_changed', suggestion: toSuggestion(suggestion) }
+      }
       if (sha256(body.content) !== suggestion.digest) throw new Error('suggestion digest mismatch')
       if (
         suggestion.title !== body.title ||
@@ -608,6 +613,7 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       name: string
       description: string
     },
+    expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult> {
     try {
@@ -616,6 +622,9 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
         const suggestion = await tx.organizationSuggestion.findUniqueOrThrow({ where: { id } })
         if (suggestion.state !== 'pending') return { outcome: 'not_pending', suggestion: toSuggestion(suggestion) }
         if (suggestion.kind !== 'skill') throw new Error('suggestion kind mismatch')
+        if (organizationSuggestionSnapshotToken(toSuggestion(suggestion)) !== expectedSnapshotToken) {
+          return { outcome: 'metadata_changed', suggestion: toSuggestion(suggestion) }
+        }
         if (body.candidateDigest !== suggestion.digest || sha256(body.archive) !== body.digest)
           throw new Error('suggestion digest mismatch')
         if (suggestion.title !== body.name || suggestion.summary !== body.description) {

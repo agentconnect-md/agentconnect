@@ -171,7 +171,7 @@ function inspectZip(archive: Uint8Array, expectedRoot: string): Map<string, Cent
   }
 
   const entries = new Map<string, CentralEntry>()
-  const folded = new Set<string>()
+  const paths = new Map<string, boolean>()
   let files = 0
   let expanded = 0
   let compressed = 0
@@ -207,9 +207,17 @@ function inspectZip(archive: Uint8Array, expectedRoot: string): Map<string, Cent
     if ((validated.directory && unixType === 0o100000) || (!validated.directory && unixType === 0o040000)) {
       throw new Error('managed skill archive entry type does not match its path')
     }
-    const key = name.toLocaleLowerCase('en-US')
-    if (folded.has(key)) throw new Error('managed skill archive contains colliding paths')
-    folded.add(key)
+    const key = validated.relative.toLocaleLowerCase('en-US')
+    if (paths.has(key)) throw new Error('managed skill archive contains colliding paths')
+    for (const [existing, existingDirectory] of paths) {
+      if (
+        (!existingDirectory && key.startsWith(`${existing}/`)) ||
+        (!validated.directory && existing.startsWith(`${key}/`))
+      ) {
+        throw new Error('managed skill archive contains a file/directory path collision')
+      }
+    }
+    paths.set(key, validated.directory)
 
     if (localOffset + 30 > centralOffset || view.readUInt32LE(localOffset) !== LOCAL_SIGNATURE) {
       throw new Error('managed skill archive has a malformed local entry')

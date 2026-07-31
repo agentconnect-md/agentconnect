@@ -59,4 +59,23 @@ describe('packageSkillBundle', () => {
       'SKILL.md name must match suggestion title'
     )
   })
+
+  it('rejects file/ancestor collisions before producing an uninstallable bundle', () => {
+    expect(() =>
+      packageSkillBundle([
+        { path: 'SKILL.md', encoding: 'utf8', content: manifest },
+        { path: 'references/conflict', encoding: 'utf8', content: 'file' },
+        { path: 'references/conflict/child.md', encoding: 'utf8', content: 'child' }
+      ])
+    ).toThrow('collides with a parent file')
+  })
+
+  it('uses compressed entry payload bytes for the same ratio gate as the daemon', () => {
+    expect(() =>
+      packageSkillBundle([
+        { path: 'SKILL.md', encoding: 'utf8', content: manifest },
+        { path: 'references/repeated.md', encoding: 'utf8', content: 'x'.repeat(66 * 1024) }
+      ])
+    ).toThrow('suspicious compression ratio')
+  })
 })

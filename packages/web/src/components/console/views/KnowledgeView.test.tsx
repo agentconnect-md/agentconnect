@@ -4,7 +4,12 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { setApiOrgId, type OrganizationSuggestionDto } from '@/lib/api'
+import {
+  setApiOrgId,
+  type ManagedSkillDto,
+  type OrganizationKnowledgeDto,
+  type OrganizationSuggestionDto
+} from '@/lib/api'
 
 vi.mock('next/dynamic', () => ({
   default: () =>
@@ -13,7 +18,7 @@ vi.mock('next/dynamic', () => ({
     }
 }))
 
-import { SuggestionCard } from './KnowledgeView'
+import { KnowledgeEntry, ManagedSkillEntry, SuggestionCard } from './KnowledgeView'
 
 const BASE: OrganizationSuggestionDto = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -135,6 +140,7 @@ describe('organization suggestion review card', () => {
           JSON.stringify({
             kind: 'knowledge',
             digest: BASE.digest,
+            snapshotToken: `sha256:${'b'.repeat(64)}`,
             content: '# Deployment\nRun every gate.',
             summary: BASE.summary,
             tags: BASE.tags
@@ -151,7 +157,10 @@ describe('organization suggestion review card', () => {
     await act(async () => button('Accept').click())
     await settleUntil(() => onReviewed.mock.calls.length === 1)
     const reviewCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/review'))
-    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({ decision: 'accept' })
+    expect(JSON.parse(String(reviewCall?.[1]?.body))).toEqual({
+      decision: 'accept',
+      snapshotToken: `sha256:${'b'.repeat(64)}`
+    })
     expect(onReviewed).toHaveBeenCalledTimes(1)
   })
 
@@ -162,6 +171,7 @@ describe('organization suggestion review card', () => {
           JSON.stringify({
             kind: 'skill',
             digest: BASE.digest,
+            snapshotToken: `sha256:${'b'.repeat(64)}`,
             files: [
               {
                 path: 'SKILL.md',
@@ -186,5 +196,152 @@ describe('organization suggestion review card', () => {
     expect(host.textContent).toContain('echo ready')
     expect(host.textContent).toContain('assets/logo.png')
     expect(host.textContent).toContain('Binary asset')
+  })
+})
+
+describe('immutable organization artifact history', () => {
+  it('loads and selects historical knowledge content and managed-skill bundle metadata on expansion', async () => {
+    const knowledge: OrganizationKnowledgeDto = {
+      id: '55555555-5555-4555-8555-555555555555',
+      title: 'Release policy',
+      content: '# Current',
+      summary: 'Current summary',
+      tags: ['release'],
+      currentRevision: 2,
+      digest: `sha256:${'c'.repeat(64)}`,
+      source: 'manual',
+      sourceAgentId: null,
+      sourceDreamId: null,
+      sourceSessionIds: [],
+      createdByUserId: 'owner-1',
+      reviewedByUserId: null,
+      archivedAt: null,
+      createdAt: '2026-07-30T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:00:00.000Z',
+      revisionCreatedAt: '2026-07-31T00:00:00.000Z',
+      canManage: true
+    }
+    const skill: ManagedSkillDto = {
+      id: '66666666-6666-4666-8666-666666666666',
+      name: 'release-service',
+      description: 'Release safely',
+      currentRevision: 2,
+      digest: `sha256:${'d'.repeat(64)}`,
+      compressedBytes: 120,
+      expandedBytes: 300,
+      fileCount: 2,
+      manifest: { files: [{ path: 'SKILL.md', bytes: 100, digest: `sha256:${'e'.repeat(64)}` }] },
+      archivedAt: null,
+      createdAt: '2026-07-30T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:00:00.000Z',
+      canManage: true
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const body = url.includes('/knowledge/')
+        ? [
+            {
+              knowledgeId: knowledge.id,
+              revision: 2,
+              content: '# Current',
+              summary: 'Current summary',
+              tags: ['release'],
+              digest: knowledge.digest,
+              source: 'manual',
+              sourceAgentId: null,
+              sourceDreamId: null,
+              sourceSessionIds: [],
+              createdByUserId: 'owner-1',
+              reviewedByUserId: null,
+              createdAt: '2026-07-31T00:00:00.000Z'
+            },
+            {
+              knowledgeId: knowledge.id,
+              revision: 1,
+              content: '# Historical policy',
+              summary: 'Initial summary',
+              tags: ['history'],
+              digest: `sha256:${'f'.repeat(64)}`,
+              source: 'dream',
+              sourceAgentId: 'agent-1',
+              sourceDreamId: 'dream-1',
+              sourceSessionIds: ['session-1'],
+              createdByUserId: null,
+              reviewedByUserId: 'owner-1',
+              createdAt: '2026-07-30T00:00:00.000Z'
+            }
+          ]
+        : [
+            {
+              managedSkillId: skill.id,
+              revision: 2,
+              digest: skill.digest,
+              compressedBytes: 120,
+              expandedBytes: 300,
+              fileCount: 2,
+              manifest: skill.manifest,
+              source: 'dream',
+              sourceAgentId: 'agent-1',
+              sourceDreamId: 'dream-2',
+              sourceSessionIds: ['session-2'],
+              createdByUserId: null,
+              reviewedByUserId: 'owner-1',
+              createdAt: '2026-07-31T00:00:00.000Z'
+            },
+            {
+              managedSkillId: skill.id,
+              revision: 1,
+              digest: `sha256:${'1'.repeat(64)}`,
+              compressedBytes: 90,
+              expandedBytes: 180,
+              fileCount: 1,
+              manifest: {
+                files: [{ path: 'references/initial.md', bytes: 80, digest: `sha256:${'2'.repeat(64)}` }]
+              },
+              source: 'dream',
+              sourceAgentId: 'agent-1',
+              sourceDreamId: 'dream-1',
+              sourceSessionIds: ['session-1'],
+              createdByUserId: null,
+              reviewedByUserId: 'owner-1',
+              createdAt: '2026-07-30T00:00:00.000Z'
+            }
+          ]
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <KnowledgeEntry record={knowledge} canManage={false} onEdit={() => undefined} onArchive={() => undefined} />
+          <ManagedSkillEntry skill={skill} canManage={false} onArchive={() => undefined} />
+        </SWRConfig>
+      )
+    })
+    await act(async () => {
+      for (const details of host.querySelectorAll('details')) {
+        details.open = true
+        details.dispatchEvent(new Event('toggle'))
+      }
+    })
+    await settleUntil(() => host.querySelectorAll('select').length === 2)
+
+    const [knowledgeSelect, skillSelect] = [...host.querySelectorAll('select')]
+    await act(async () => {
+      knowledgeSelect!.value = '1'
+      knowledgeSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+      skillSelect!.value = '1'
+      skillSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(host.textContent).toContain('# Historical policy')
+    expect(host.textContent).toContain('reviewed by owner-1')
+    expect(host.textContent).toContain('references/initial.md')
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`/knowledge/${knowledge.id}/revisions`),
+        expect.stringContaining(`/managed-skills/${skill.id}/revisions`)
+      ])
+    )
   })
 })

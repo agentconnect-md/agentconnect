@@ -14,6 +14,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { ProtocolError } from '../../domain/errors.js'
 import { ConnectionClosed } from '../../ws/registry.js'
 import { packageSkillBundle, SkillBundleValidationError } from '../../organization-knowledge/skill-bundle.js'
+import { organizationSuggestionSnapshotToken } from '../../organization-knowledge/suggestion-snapshot.js'
 import type {
   ManagedSkillRecord,
   ManagedSkillRevisionRecord,
@@ -228,6 +229,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'List accepted organization knowledge',
+          description: 'Lists the current accepted knowledge revision visible to every member of the organization.',
           operationId: 'listOrganizationKnowledge',
           querystring: IncludeArchivedQuery,
           response: { 200: OrganizationKnowledgeListDto, 503: ErrorDto }
@@ -247,6 +249,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Publish organization knowledge manually',
+          description: 'Publishes the first immutable revision of an owner-authored organization knowledge entry.',
           operationId: 'createOrganizationKnowledge',
           body: CreateOrganizationKnowledgeBody,
           response: { 201: OrganizationKnowledgeDto, 403: ErrorDto, 503: ErrorDto }
@@ -269,6 +272,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Get organization knowledge',
+          description: 'Returns the current accepted revision of one organization knowledge entry.',
           operationId: 'getOrganizationKnowledge',
           params: IdParam,
           response: { 200: OrganizationKnowledgeDto, 404: ErrorDto, 503: ErrorDto }
@@ -288,6 +292,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Publish a new immutable knowledge revision',
+          description: 'Publishes an owner-authored revision using optimistic revision fencing.',
           operationId: 'updateOrganizationKnowledge',
           params: IdParam,
           body: UpdateOrganizationKnowledgeBody,
@@ -321,6 +326,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'List immutable organization knowledge revisions',
+          description: 'Lists every immutable revision and its provenance, newest first.',
           operationId: 'listOrganizationKnowledgeRevisions',
           params: IdParam,
           response: { 200: OrganizationKnowledgeRevisionListDto, 404: ErrorDto, 503: ErrorDto }
@@ -340,6 +346,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Archive or restore organization knowledge',
+          description: 'Archives or restores an organization knowledge entry without deleting its revisions.',
           operationId: 'archiveOrganizationKnowledge',
           params: IdParam,
           body: SetOrganizationArtifactArchivedBody,
@@ -362,6 +369,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'List accepted managed Agent Skills bundles',
+          description: 'Lists current centrally approved managed Agent Skills bundles for the organization.',
           operationId: 'listManagedSkills',
           querystring: IncludeArchivedQuery,
           response: { 200: ManagedSkillListDto, 503: ErrorDto }
@@ -381,6 +389,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Get a managed Agent Skills bundle',
+          description: 'Returns the current approved metadata for one managed Agent Skills bundle.',
           operationId: 'getManagedSkill',
           params: IdParam,
           response: { 200: ManagedSkillDto, 404: ErrorDto, 503: ErrorDto }
@@ -400,6 +409,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'List immutable managed skill revisions',
+          description: 'Lists every immutable managed-skill revision with bundle metadata and provenance.',
           operationId: 'listManagedSkillRevisions',
           params: IdParam,
           response: { 200: ManagedSkillRevisionListDto, 404: ErrorDto, 503: ErrorDto }
@@ -419,6 +429,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Archive or restore a managed Agent Skills bundle',
+          description: 'Archives or restores a managed skill and reconciles agents that enable it.',
           operationId: 'archiveManagedSkill',
           params: IdParam,
           body: SetOrganizationArtifactArchivedBody,
@@ -445,6 +456,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'List retained Dream suggestions',
+          description: 'Lists owner-reviewable Dream suggestion metadata retained by the control plane.',
           operationId: 'listOrganizationKnowledgeSuggestions',
           querystring: OrganizationSuggestionListQuery,
           response: { 200: OrganizationSuggestionListDto, 403: ErrorDto, 503: ErrorDto }
@@ -492,6 +504,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Read one daemon-local suggestion body',
+          description: 'Reads and verifies the staged body and returns a token binding the inspected snapshot.',
           operationId: 'readOrganizationKnowledgeSuggestion',
           params: IdParam,
           response: {
@@ -533,11 +546,17 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
             ? {
                 kind: 'knowledge' as const,
                 digest: content.digest,
+                snapshotToken: organizationSuggestionSnapshotToken(suggestion),
                 content: content.body.content,
                 summary: suggestion.summary,
                 tags: suggestion.tags
               }
-            : { kind: 'skill' as const, digest: content.digest, files: content.body.files }
+            : {
+                kind: 'skill' as const,
+                digest: content.digest,
+                snapshotToken: organizationSuggestionSnapshotToken(suggestion),
+                files: content.body.files
+              }
         } catch (err) {
           if (suggestionReadUnavailable(err)) {
             app.log.warn({ err, suggestionId: suggestion.id }, 'organization suggestion content read unavailable')
@@ -554,6 +573,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Accept or reject one Dream suggestion',
+          description: 'Records an owner decision; acceptance requires the exact token returned during inspection.',
           operationId: 'reviewOrganizationKnowledgeSuggestion',
           params: IdParam,
           body: ReviewOrganizationSuggestionBody,
@@ -602,6 +622,14 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
           return suggestionDto(rejected, agent?.displayName ?? agent?.name ?? null, false)
         }
 
+        if (req.body.snapshotToken !== organizationSuggestionSnapshotToken(suggestion)) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'suggestion metadata changed after it was inspected; refresh and inspect it again'
+          })
+        }
+
         if (!suggestion.sourceDaemonId) return unavailable(reply)
         if (!(await suggestionSourceAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
           return unavailable(reply)
@@ -640,6 +668,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
                 summary: suggestion.summary,
                 tags: suggestion.tags
               },
+              req.body.snapshotToken,
               ctxOf(req).userId
             )
           } else if (suggestion.kind === 'skill' && content.body.kind === 'skill') {
@@ -647,6 +676,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
             result = await repo.acceptSkillSuggestion(
               suggestion.id,
               { ...bundle, name: suggestion.title, candidateDigest: content.digest },
+              req.body.snapshotToken,
               ctxOf(req).userId
             )
           } else {

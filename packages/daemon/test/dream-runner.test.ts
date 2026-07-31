@@ -98,6 +98,7 @@ async function setup(opts: {
   extractionResult?: DreamExtractionResult
   onEvent?: (event: DreamLifecycleEvent) => void
   findOrganizationKnowledge?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['findOrganizationKnowledge']>
+  managedSkillsFor?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['managedSkillsFor']>
   onOrganizationSuggestions?: () => void | Promise<void>
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
@@ -117,6 +118,7 @@ async function setup(opts: {
     },
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
     ...(opts.findOrganizationKnowledge ? { findOrganizationKnowledge: opts.findOrganizationKnowledge } : {}),
+    ...(opts.managedSkillsFor ? { managedSkillsFor: opts.managedSkillsFor } : {}),
     ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
     log: silent
@@ -1057,6 +1059,55 @@ describe('DreamRunner organization suggestions', () => {
     })
     const offlineStart = await offline.runner.start('a1', { trigger: 'manual' })
     expect((await settle(offline.store, offlineStart.dreamId)).organizationSuggestions).toBeUndefined()
+  })
+
+  it('stages a managed-skill update only against the exact AgentSpec target', async () => {
+    const targetId = '44444444-4444-4444-8444-444444444444'
+    const updateOutput = JSON.stringify({
+      agentMemory: { index: '# Memory', files: [] },
+      agentSkills: [],
+      organizationKnowledge: [],
+      organizationSkills: [
+        {
+          operation: 'update',
+          targetId,
+          targetRevision: 2,
+          name: 'release-service',
+          files: [
+            {
+              path: 'SKILL.md',
+              content:
+                '---\nname: release-service\ndescription: Release with rollback validation\n---\n\n# Release v3\n'
+            }
+          ],
+          sessionIds: ['sess-1', 'sess-2']
+        }
+      ]
+    })
+    const trusted = await setup({
+      policy: { enabled: true, mineSkills: true },
+      extract: async () => updateOutput,
+      managedSkillsFor: () => [{ id: targetId, name: 'release-service', revision: 2 }]
+    })
+    trusted.store.sources.push({ sessionId: 'sess-2', channel: 'C2', thread: 'T2' })
+    const started = await trusted.runner.start('a1', { trigger: 'manual' })
+    expect((await settle(trusted.store, started.dreamId)).organizationSuggestions?.[0]).toMatchObject({
+      kind: 'skill',
+      operation: 'update',
+      targetId,
+      targetRevision: 2,
+      title: 'release-service'
+    })
+    expect(trusted.prompts[0]?.prompt).toContain(`<managed-skill id="${targetId}" revision="2"`)
+
+    const unfenced = await setup({
+      policy: { enabled: true, mineSkills: true },
+      extract: async () => updateOutput,
+      managedSkillsFor: () => []
+    })
+    unfenced.store.sources.push({ sessionId: 'sess-2', channel: 'C2', thread: 'T2' })
+    const unfencedStart = await unfenced.runner.start('a1', { trigger: 'manual' })
+    expect((await settle(unfenced.store, unfencedStart.dreamId)).organizationSuggestions).toBeUndefined()
   })
 })
 

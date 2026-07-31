@@ -43,7 +43,8 @@ import {
   parseDreamProposal,
   storeDigest,
   type DreamProposal,
-  type DreamTranscriptSource
+  type DreamTranscriptSource,
+  type TrustedOrganizationSkillTarget
 } from './memory-dreamer.js'
 
 /**
@@ -160,6 +161,8 @@ export interface DreamRunnerDeps {
   /** Dream-only, on-demand CP retrieval. Failure is non-fatal and produces an
    * empty context; ordinary agent turns never call this seam. */
   findOrganizationKnowledge?(agentId: string, query: string): Promise<KnowledgeSearchItem[]>
+  /** Exact managed-skill targets from the CP-authored AgentSpec. */
+  managedSkillsFor?(agentId: string): TrustedOrganizationSkillTarget[]
   /** Best-effort inventory convergence after completion/review. */
   onOrganizationSuggestions?(): void | Promise<void>
   log: { info(msg: string): void; warn(msg: string): void }
@@ -414,12 +417,14 @@ export class DreamRunner {
           })
         }
       }
+      const managedSkills = mineSkills ? (this.deps.managedSkillsFor?.(agentId) ?? []) : []
 
       const prompt = buildDreamPrompt({
         files,
         transcripts,
         mineSkills,
         organizationKnowledge,
+        managedSkills,
         ...(mineSkills ? { dismissedSkills: this.dismissedSkillNames(agentId) } : {}),
         ...(dream.instructions ? { instructions: dream.instructions } : {})
       })
@@ -451,7 +456,8 @@ export class DreamRunner {
       const proposal = parseDreamProposal(
         output,
         sources.map((s) => s.sessionId),
-        organizationKnowledge.map(({ id, revision }) => ({ id, revision }))
+        organizationKnowledge.map(({ id, revision }) => ({ id, revision })),
+        managedSkills
       )
       if (!proposal) {
         this.finish(agentId, dreamId, {

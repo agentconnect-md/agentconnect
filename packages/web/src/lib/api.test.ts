@@ -17,7 +17,9 @@ import {
   listMemoryFileHistory,
   listMemoryRecords,
   listOrganizationKnowledge,
+  listOrganizationKnowledgeRevisions,
   listManagedSkills,
+  listManagedSkillRevisions,
   listOrganizationSuggestions,
   fetchOrganizationSuggestionContent,
   createOrganizationKnowledge,
@@ -565,7 +567,14 @@ describe('organization knowledge API', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const path = String(input)
       const body = path.endsWith('/content')
-        ? { kind: 'knowledge', digest: `sha256:${'a'.repeat(64)}`, content: '# Safe', summary: null, tags: [] }
+        ? {
+            kind: 'knowledge',
+            digest: `sha256:${'a'.repeat(64)}`,
+            snapshotToken: `sha256:${'b'.repeat(64)}`,
+            content: '# Safe',
+            summary: null,
+            tags: []
+          }
         : {
             id: '11111111-1111-4111-8111-111111111111',
             title: 'Safe deploy',
@@ -588,6 +597,8 @@ describe('organization knowledge API', () => {
       expectedRevision: 3
     })
     await setOrganizationKnowledgeArchived('knowledge one', true)
+    await listOrganizationKnowledgeRevisions('knowledge one')
+    await listManagedSkillRevisions('skill one')
     await fetchOrganizationSuggestionContent('suggestion one')
     await reviewOrganizationSuggestion('suggestion one', 'reject', 'Duplicates the runbook')
 
@@ -607,10 +618,18 @@ describe('organization knowledge API', () => {
     })
     expect(calls[2]).toMatchObject({ method: 'POST', body: { archived: true } })
     expect(calls[3]).toMatchObject({
-      path: expect.stringContaining('/knowledge-suggestions/suggestion%20one/content'),
+      path: expect.stringContaining('/knowledge/knowledge%20one/revisions'),
       method: 'GET'
     })
     expect(calls[4]).toMatchObject({
+      path: expect.stringContaining('/managed-skills/skill%20one/revisions'),
+      method: 'GET'
+    })
+    expect(calls[5]).toMatchObject({
+      path: expect.stringContaining('/knowledge-suggestions/suggestion%20one/content'),
+      method: 'GET'
+    })
+    expect(calls[6]).toMatchObject({
       method: 'POST',
       body: { decision: 'reject', reason: 'Duplicates the runbook' }
     })

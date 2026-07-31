@@ -34,8 +34,9 @@ The console gains a separate top-level **Knowledge** destination at
 
 1. **Organization** lists accepted, non-archived knowledge. A row shows title,
    summary, tags, revision, provenance, author/reviewer, and timestamps; opening
-   it renders the approved Markdown. Owners may create, edit, archive, and
-   restore. Editing creates a new immutable revision.
+   it loads a revision selector and renders the selected immutable Markdown plus
+   its provenance. Owners may create, edit, archive, and restore. Editing creates
+   a new immutable revision.
 2. **Suggestions** lists Dream candidates. Each card shows its title or skill
    name, rendered Markdown or complete file tree, proposing agent, source Dream
    and sessions, operation (`create` or `update`), creation time, and review
@@ -44,6 +45,8 @@ The console gains a separate top-level **Knowledge** destination at
 
 Managed organization skills appear below the knowledge library on the
 Knowledge/Organization tab, while Git-backed sources remain in Tools & Skills.
+Opening one loads the immutable revision history and shows the selected bundle's
+manifest, sizes, digest, and provenance.
 Pending skill candidates remain reviewable from Knowledge/Suggestions;
 accepted bundles are never enabled automatically. An agent editor must select
 each managed skill explicitly.
@@ -131,6 +134,14 @@ The new Dream JSON contract names every output class explicitly:
         { "path": "references/runbook.md", "content": "..." }
       ],
       "sessionIds": ["s1", "s2"]
+    },
+    {
+      "operation": "update",
+      "targetId": "7c1...",
+      "targetRevision": 2,
+      "name": "release-service",
+      "files": [{ "path": "SKILL.md", "content": "---\nname: release-service\ndescription: ...\n---\n..." }],
+      "sessionIds": ["s3", "s4"]
     }
   ]
 }
@@ -145,8 +156,10 @@ Validation rules:
 - candidate IDs are daemon-generated UUIDs; model IDs are never authoritative;
 - an organization knowledge candidate cites at least one actually mined
   session; a skill continues to require two distinct mined sessions;
-- an update target is accepted only when its ID and revision appeared in the
-  trusted organization context supplied to this Dream;
+- a knowledge update target is accepted only when its ID and revision appeared
+  in the trusted organization context supplied to this Dream; a skill update
+  additionally requires the exact unchanged name from the agent's CP-authored
+  managed-skill binding;
 - organization candidate bodies pass existing secret masking and byte limits;
 - organization knowledge excludes personal preferences, one-off task progress,
   credentials, host-specific details, and agent-local instructions;
@@ -176,11 +189,13 @@ The reference validator checks manifest shape but is not an archive security
 boundary. AgentConnect additionally rejects:
 
 - absolute paths, `..`, `.`, empty components, NULs, backslashes, duplicate
-  normalized paths, and case-colliding paths;
+  normalized paths, case-colliding paths, and file/directory ancestor
+  collisions;
 - symlinks, hard links, devices, sockets, FIFOs, encrypted entries, and nested
   archive expansion;
 - more than 64 files, a compressed bundle over 512 KiB, an expanded bundle over
-  4 MiB, an individual file over 512 KiB, or a suspicious compression ratio;
+  4 MiB, an individual file over 512 KiB, or a suspicious compression ratio
+  measured against compressed entry payload bytes on both trust boundaries;
 - a root directory/frontmatter `name` mismatch, invalid manifest frontmatter,
   invalid UTF-8 `SKILL.md`, or malformed/non-canonical base64.
 
@@ -204,6 +219,12 @@ block. Extraction still receives no AgentConnect MCP tools. A control-plane
 outage is fail-open for agent-memory consolidation: the Dream continues without
 organization context. It may propose new organization artifacts, but it cannot
 invent a valid update target.
+
+When skill mining is enabled, the daemon also supplies a bounded list of exact
+managed-skill ID/name/revision bindings from the current agent's CP-authored
+`AgentSpec`. The model may propose a complete replacement tree for one of those
+targets, but the parser independently checks the same trusted binding before it
+stages an `update`; offline or invented targets are dropped.
 
 ## 7. Suggestion lifecycle
 
@@ -257,16 +278,20 @@ artifact/revision. It has no candidate body column.
 
 ### 7.3 Accept
 
-1. An owner requests acceptance of a pending suggestion.
-2. The control plane resolves the source agent's current daemon and requests the
-   candidate body over `knowledge/suggestion/read`.
-3. It validates identity, kind, digest, limits, and the complete review-visible
+1. An owner inspects a pending suggestion. The control plane resolves the source
+   agent's current daemon, requests the body over `knowledge/suggestion/read`,
+   validates it, and returns an opaque snapshot token covering body digest,
+   metadata, target fence, and provenance.
+2. Acceptance submits that exact snapshot token. The route rejects a token that
+   no longer matches the current pending row before fetching executable content.
+3. The control plane reads the body again and validates identity, kind, digest,
+   limits, and the complete review-visible
    metadata against the indexed snapshot (`title`, nullable `summary`, and
    `tags` for knowledge; manifest `name` and `description` for skills).
 4. A PostgreSQL transaction locks the suggestion, rechecks `pending`, applies
-   both the metadata and target-revision fences, rejects archived update
-   targets, creates the immutable knowledge or skill revision, advances the
-   logical artifact, and marks the suggestion accepted.
+   the snapshot token again plus the metadata and target-revision fences,
+   rejects archived update targets, creates the immutable knowledge or skill
+   revision, advances the logical artifact, and marks the suggestion accepted.
 5. A best-effort `knowledge/suggestion/review` command marks the local candidate
    accepted. The next sync is the crash/loss backstop.
 
@@ -418,8 +443,10 @@ GET    /api/v1/orgs/:orgId/managed-skills/:id/revisions
 POST   /api/v1/orgs/:orgId/managed-skills/:id/archive
 ```
 
-The archive endpoints take `{ archived: boolean }`, and the suggestion review
-endpoint takes `{ decision: "accept" | "reject", reason? }`.
+The archive endpoints take `{ archived: boolean }`. Suggestion rejection takes
+`{ decision: "reject", reason? }`; acceptance takes
+`{ decision: "accept", snapshotToken }`, where the token comes from the content
+inspection response.
 
 The agent create/update DTO exposes managed-skill IDs and rejects an archived,
 missing, or cross-organization ID. Enabling a managed skill for an agent on an
@@ -456,10 +483,12 @@ daemon converges without waiting for an unrelated agent edit or restart.
   acceptance, and monotonic sync.
 - **Managed skills:** deterministic ZIP, safe extraction, digest failure,
   traversal/symlink/ZIP bomb rejection, cache hit/miss/update/offline behavior,
-  collision precedence, and disable cleanup.
+  compression-ratio parity, ancestor-collision rejection, collision precedence,
+  and disable cleanup.
 - **Web:** separate route/nav, both tabs, Markdown safety, loading/empty/error and
   offline states, role-gated controls, accept/reject refresh, responsive layout,
-  managed skills in library and agent picker.
+  knowledge and managed-skill revision selectors/provenance, managed skills in
+  library and agent picker.
 - **Repository:** migration from empty and existing PostgreSQL, protocol/daemon/
   control-plane/web tests, typecheck, lint, formatting, production build, and
   desktop/mobile browser smoke.

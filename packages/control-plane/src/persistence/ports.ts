@@ -3707,6 +3707,7 @@ export interface OrganizationKnowledgeRepo {
   acceptKnowledgeSuggestion(
     id: string,
     body: { title: string; content: string; summary: string | null; tags: string[] },
+    expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult>
   acceptSkillSuggestion(
@@ -3726,6 +3727,7 @@ export interface OrganizationKnowledgeRepo {
       name: string
       description: string
     },
+    expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult>
 }

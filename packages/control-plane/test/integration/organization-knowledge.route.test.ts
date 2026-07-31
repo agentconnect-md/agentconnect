@@ -16,6 +16,7 @@ import { AgentId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
+import { organizationSuggestionSnapshotToken } from '../../src/organization-knowledge/suggestion-snapshot.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
@@ -237,6 +238,7 @@ describe('Dream organization suggestion review', () => {
       }
     ])
     expect(pending).toBeDefined()
+    const snapshotToken = organizationSuggestionSnapshotToken(pending!)
 
     const listed = await owner.app.inject({ method: 'GET', url: `${ORG}/knowledge-suggestions?state=pending` })
     expect(listed.statusCode).toBe(200)
@@ -252,6 +254,7 @@ describe('Dream organization suggestion review', () => {
     expect(body.json()).toEqual({
       kind: 'knowledge',
       digest: candidateDigest,
+      snapshotToken,
       content,
       summary: 'Signing-key rotation',
       tags: ['security']
@@ -260,7 +263,7 @@ describe('Dream organization suggestion review', () => {
     const accepted = await owner.app.inject({
       method: 'POST',
       url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
-      payload: { decision: 'accept' }
+      payload: { decision: 'accept', snapshotToken }
     })
     expect(accepted.statusCode).toBe(200)
     const acceptedDto = accepted.json() as {
@@ -292,7 +295,7 @@ describe('Dream organization suggestion review', () => {
         await owner.app.inject({
           method: 'POST',
           url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
-          payload: { decision: 'accept' }
+          payload: { decision: 'accept', snapshotToken }
         })
       ).statusCode
     ).toBe(409)
@@ -354,13 +357,14 @@ describe('Dream organization suggestion review', () => {
         createdAt: '2026-07-31T10:30:00.000Z'
       }
     ])
+    const snapshotToken = organizationSuggestionSnapshotToken(pending!)
 
     const responses = await Promise.all(
       [0, 1].map(() =>
         owner.app.inject({
           method: 'POST',
           url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
-          payload: { decision: 'accept' }
+          payload: { decision: 'accept', snapshotToken }
         })
       )
     )
@@ -412,11 +416,12 @@ describe('Dream organization suggestion review', () => {
         createdAt: '2026-07-31T10:45:00.000Z'
       }
     ])
+    const snapshotToken = organizationSuggestionSnapshotToken(pending!)
 
     const response = await owner.app.inject({
       method: 'POST',
       url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
-      payload: { decision: 'accept' }
+      payload: { decision: 'accept', snapshotToken }
     })
     expect(response.statusCode).toBe(409)
     expect(await repo.getSuggestion(pending!.id)).toMatchObject({ state: 'pending', acceptedArtifactId: null })
@@ -464,15 +469,18 @@ describe('Dream organization suggestion review', () => {
       createdAt: '2026-07-31T11:00:00.000Z'
     }
     const [pending] = await repo.syncSuggestions(DEF_ORG, DAEMON, [candidate])
-    control.onRead = async () => {
-      control.onRead = undefined
-      await repo.syncSuggestions(DEF_ORG, DAEMON, [{ ...candidate, title: 'Refreshed title' }])
-    }
+    const inspected = await owner.app.inject({
+      method: 'GET',
+      url: `${ORG}/knowledge-suggestions/${pending!.id}/content`
+    })
+    expect(inspected.statusCode).toBe(200)
+    const snapshotToken = (inspected.json() as { snapshotToken: string }).snapshotToken
+    await repo.syncSuggestions(DEF_ORG, DAEMON, [{ ...candidate, title: 'Refreshed title' }])
 
     const response = await owner.app.inject({
       method: 'POST',
       url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
-      payload: { decision: 'accept' }
+      payload: { decision: 'accept', snapshotToken }
     })
     expect(response.statusCode).toBe(409)
     expect(response.json()).toMatchObject({ message: expect.stringContaining('metadata changed') })
@@ -527,6 +535,7 @@ describe('Dream organization suggestion review', () => {
         createdAt: '2026-07-31T11:30:00.000Z'
       }
     ])
+    const snapshotToken = organizationSuggestionSnapshotToken(pending!)
     await repo.updateKnowledge(
       target.id,
       1,
@@ -537,7 +546,7 @@ describe('Dream organization suggestion review', () => {
     const response = await owner.app.inject({
       method: 'POST',
       url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
-      payload: { decision: 'accept' }
+      payload: { decision: 'accept', snapshotToken }
     })
     expect(response.statusCode).toBe(409)
     expect(response.json()).toMatchObject({ message: 'the target has a newer revision; regenerate the suggestion' })
@@ -694,11 +703,12 @@ describe('managed organization skills', () => {
         createdAt: '2026-07-31T13:00:00.000Z'
       }
     ])
+    const snapshotToken = organizationSuggestionSnapshotToken(pending!)
 
     const accepted = await owner.app.inject({
       method: 'POST',
       url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
-      payload: { decision: 'accept' }
+      payload: { decision: 'accept', snapshotToken }
     })
     expect(accepted.statusCode).toBe(200)
     const skillId = (accepted.json() as { acceptedArtifactId: string }).acceptedArtifactId
@@ -785,10 +795,11 @@ describe('managed organization skills', () => {
         createdAt: '2026-07-31T13:15:00.000Z'
       }
     ])
+    const updateSnapshotToken = organizationSuggestionSnapshotToken(updateSuggestion!)
     const updated = await owner.app.inject({
       method: 'POST',
       url: `${ORG}/knowledge-suggestions/${updateSuggestion!.id}/review`,
-      payload: { decision: 'accept' }
+      payload: { decision: 'accept', snapshotToken: updateSnapshotToken }
     })
     expect(updated.statusCode).toBe(200)
     expect(updated.json()).toMatchObject({ acceptedArtifactId: skillId, acceptedArtifactRevision: 2 })

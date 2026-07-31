@@ -3952,6 +3952,22 @@ export interface OrganizationKnowledgeDto {
   canManage: boolean
 }
 
+export interface OrganizationKnowledgeRevisionDto {
+  knowledgeId: string
+  revision: number
+  content: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  source: 'manual' | 'dream'
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: string
+}
+
 export interface ManagedSkillDto {
   id: string
   name: string
@@ -3971,6 +3987,23 @@ export interface ManagedSkillDto {
   createdAt: string
   updatedAt: string
   canManage: boolean
+}
+
+export interface ManagedSkillRevisionDto {
+  managedSkillId: string
+  revision: number
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: ManagedSkillDto['manifest']
+  source: 'manual' | 'dream'
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: string
 }
 
 export interface OrganizationSuggestionDto {
@@ -4001,10 +4034,18 @@ export interface OrganizationSuggestionDto {
 }
 
 export type OrganizationSuggestionContentDto =
-  | { kind: 'knowledge'; digest: string; content: string; summary: string | null; tags: string[] }
+  | {
+      kind: 'knowledge'
+      digest: string
+      snapshotToken: string
+      content: string
+      summary: string | null
+      tags: string[]
+    }
   | {
       kind: 'skill'
       digest: string
+      snapshotToken: string
       files: Array<{ path: string; encoding: 'utf8' | 'base64'; content: string }>
     }
 
@@ -4012,6 +4053,10 @@ export function listOrganizationKnowledge(includeArchived = false): Promise<Orga
   return apiGet<OrganizationKnowledgeDto[]>(
     `${orgBase()}/knowledge?includeArchived=${includeArchived ? 'true' : 'false'}`
   )
+}
+
+export function listOrganizationKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionDto[]> {
+  return apiGet<OrganizationKnowledgeRevisionDto[]>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/revisions`)
 }
 
 export function createOrganizationKnowledge(input: {
@@ -4036,6 +4081,10 @@ export function setOrganizationKnowledgeArchived(id: string, archived: boolean):
 
 export function listManagedSkills(includeArchived = false): Promise<ManagedSkillDto[]> {
   return apiGet<ManagedSkillDto[]>(`${orgBase()}/managed-skills?includeArchived=${includeArchived ? 'true' : 'false'}`)
+}
+
+export function listManagedSkillRevisions(id: string): Promise<ManagedSkillRevisionDto[]> {
+  return apiGet<ManagedSkillRevisionDto[]>(`${orgBase()}/managed-skills/${encodeURIComponent(id)}/revisions`)
 }
 
 export function setManagedSkillArchived(id: string, archived: boolean): Promise<ManagedSkillDto> {
@@ -4065,11 +4114,21 @@ export function fetchOrganizationSuggestionContent(id: string): Promise<Organiza
 
 export function reviewOrganizationSuggestion(
   id: string,
-  decision: 'accept' | 'reject',
+  decision: 'accept',
+  snapshotToken: string
+): Promise<OrganizationSuggestionDto>
+export function reviewOrganizationSuggestion(
+  id: string,
+  decision: 'reject',
   reason?: string
+): Promise<OrganizationSuggestionDto>
+export function reviewOrganizationSuggestion(
+  id: string,
+  decision: 'accept' | 'reject',
+  detail?: string
 ): Promise<OrganizationSuggestionDto> {
   return apiPost<OrganizationSuggestionDto>(`${orgBase()}/knowledge-suggestions/${encodeURIComponent(id)}/review`, {
     decision,
-    ...(reason?.trim() ? { reason: reason.trim() } : {})
+    ...(decision === 'accept' ? { snapshotToken: detail } : detail?.trim() ? { reason: detail.trim() } : {})
   })
 }
