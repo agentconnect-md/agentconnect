@@ -132,7 +132,7 @@ describe('toolsForIntegrations', () => {
     // instead of a reply in the conversation that asked. The consequence has to be ON the
     // branch that carries it, and the tool has to say the turn's own reply already lands here.
     const description = sendTool([slackInt])!.description
-    expect(description).toContain('use this tool to reach a DIFFERENT conversation')
+    expect(description).toContain('reach a DIFFERENT conversation')
     expect(description).toContain('opens a NEW session')
     expect(description).toContain('never by posting it at their channel root')
 
@@ -144,12 +144,16 @@ describe('toolsForIntegrations', () => {
       'channel ROOT instead would start a new one'
     )
 
-    // The cost is ROOT-only: an explicit thread joins a conversation, and same-channel sends
-    // (another thread, or `toUser` addressing a human) stay legitimate — so the guidance says
-    // "a different conversation", never "a different channel".
+    // The cost is ROOT-only: an explicit thread joins a conversation rather than forking one, so
+    // the guidance says "a different conversation", never "a different channel".
     expect(description).not.toContain('DIFFERENT channel,')
     for (const text of [description, sendTargetBranch([slackInt], 'channel').description!])
       expect(text).toMatch(/(at )?channel root/i)
+
+    // …and "different conversation" is not the whole rule either: `toUser` exists to @-mention a
+    // human, which is a legitimate reason to send into the conversation the agent is already in.
+    // Excluding it would make the preamble contradict the branch it introduces.
+    expect(description).toContain('@-mention a specific human with `toUser`, which may be right here')
 
     // Collaboration off ⇒ only the channel branch exists, and it is then the ONLY way to send —
     // so the root-post cost must be stated there too (spawnChannelRootSession runs either way).
@@ -157,7 +161,8 @@ describe('toolsForIntegrations', () => {
       (t) => t.name === 'sendMessage'
     )!.description
     expect(soloDescription).toContain('opens a NEW session')
-    expect(soloDescription).toContain('use this tool to reach a DIFFERENT conversation')
+    expect(soloDescription).toContain('use this tool for what that reply cannot do')
+    expect(soloDescription).toContain('@-mention a specific human with `toUser`, which may be right here')
   })
 
   it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {

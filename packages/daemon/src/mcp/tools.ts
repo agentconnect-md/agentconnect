@@ -200,9 +200,10 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
   return {
     name: 'sendMessage',
     description: collaboration
-      ? 'Send one message to exactly one target. Your own turn reply already reaches the conversation you are in, ' +
-        'so use this tool to reach a DIFFERENT conversation — another channel or thread, a session, or a peer ' +
-        'agent. Choose one form:\n' +
+      ? 'Send one message to exactly one target. Your own turn reply already reaches the conversation you are in, so ' +
+        'use this tool for what that reply cannot do: reach a DIFFERENT conversation — another channel or thread, a ' +
+        'session, or a peer agent — or @-mention a specific human with `toUser`, which may be right here. Choose one ' +
+        'form:\n' +
         '- Peer agent (direct wake): `{"to":{"toAgent":"<agent id>"},"message":"..."}` is a postless wake. Add a ' +
         '`channel` (and optional `thread`) to also post a visible message and thread the peer’s reply there. Get the ' +
         'id from listChannelAgents and send one call per peer; never substitute a platform member id. When the wake ' +
@@ -219,8 +220,9 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'channel root.\n' +
         'Write `message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone or wake yourself.'
       : 'Post one visible message to exactly one platform channel or human. Your own turn reply already reaches the ' +
-        'conversation you are in, so use this tool to reach a DIFFERENT conversation — another channel, or another ' +
-        'thread in this one. Use ' +
+        'conversation you are in, so use this tool for what that reply cannot do: reach a DIFFERENT conversation — ' +
+        'another channel, or another thread in this one — or @-mention a specific human with `toUser`, which may be ' +
+        'right here. Use ' +
         '`{"to":{"channel":"<channel id>"},"message":"..."}` and add `toUser`, `platform`, `thread`, or ' +
         '`integrationId` only when needed. Without a `thread` this posts at channel root, which opens a NEW session ' +
         'of your own on that post. Peer-agent and parent-session delivery are disabled for this run. Write ' +
