@@ -26,6 +26,7 @@ import type {
   SlackOAuthExchangeResult,
   SlackRotateResult
 } from '../../src/http/slack-config-api.js'
+import { PLATFORM_APP_DESCRIPTION } from '../../src/http/platform-app-description.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -206,7 +207,7 @@ describe('slack auto-install funnel', () => {
       oauth_config: { redirect_urls: string[] }
     }
     expect(manifest.oauth_config.redirect_urls).toEqual(['https://cp.example/v1/integrations/slack/oauth/callback'])
-    expect(manifest.features.agent_view.agent_description).toBe('Helps teammates solve support requests.')
+    expect(manifest.features.agent_view.agent_description).toBe(PLATFORM_APP_DESCRIPTION)
     const row = await prisma.slackInstall.findUnique({ where: { id: dto.installId } })
     expect(row).toMatchObject({ appId: 'A1TEST', clientSecret: 'csecret', botToken: null })
     expect(JSON.stringify(dto)).not.toContain('csecret')

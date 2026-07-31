@@ -6,11 +6,7 @@
  * template before creating the app.
  */
 import { gzipSync } from 'node:zlib'
-import {
-  DEFAULT_PLATFORM_APP_DESCRIPTION,
-  LARK_APP_DESCRIPTION_MAX_LENGTH,
-  platformAppDescription
-} from './platform-app-description.js'
+import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
 
 export const AGENTCONNECT_FEISHU_SCOPES = [
   'application:application:patch',
@@ -30,7 +26,7 @@ export const AGENTCONNECT_FEISHU_CALLBACKS = ['card.action.trigger'] as const
 
 export const AGENTCONNECT_FEISHU_APP_TEMPLATE = {
   archetype: 'PersonalAgent',
-  description: DEFAULT_PLATFORM_APP_DESCRIPTION,
+  description: PLATFORM_APP_DESCRIPTION,
   addons: {
     preset: true,
     scopes: { tenant: [...AGENTCONNECT_FEISHU_SCOPES] },
@@ -50,7 +46,6 @@ function encodeAddons(): string {
 
 export interface FeishuAppPreset {
   avatarUrl?: string
-  description?: string | null
 }
 
 export function buildFeishuAuthorizationUrl(
@@ -64,7 +59,7 @@ export function buildFeishuAuthorizationUrl(
   url.searchParams.set('tp', 'sdk')
   if (preset.avatarUrl) url.searchParams.set('avatar', preset.avatarUrl)
   url.searchParams.set('name', appName)
-  url.searchParams.set('desc', platformAppDescription(preset.description, LARK_APP_DESCRIPTION_MAX_LENGTH))
+  url.searchParams.set('desc', PLATFORM_APP_DESCRIPTION)
   url.searchParams.set('addons', encodeAddons())
   url.searchParams.set('createOnly', 'true')
   return url.toString()

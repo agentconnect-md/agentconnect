@@ -122,7 +122,6 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
             transport,
             appName,
             ...(avatarUrl ? { avatarUrl } : {}),
-            description: agent.description,
             ...(providedName ? { requestedName: providedName } : {}),
             createdByUserId
           })

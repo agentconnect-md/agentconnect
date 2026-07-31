@@ -8,12 +8,7 @@ import {
   DEFAULT_SLACK_APP_NAME
 } from './slack-manifest.js'
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
-import {
-  DEFAULT_PLATFORM_APP_DESCRIPTION,
-  PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS,
-  SLACK_APP_DESCRIPTION_MAX_BYTES,
-  utf8ByteLength
-} from './platform-app-description.js'
+import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
 
 // The PUBLIC form — `/v1`, not the internal `/api/v1` (see SLACK_OAUTH_CALLBACK_PATH).
 const REDIRECT = 'https://cp.example/v1/integrations/slack/oauth/callback'
@@ -75,29 +70,12 @@ describe('buildInstallManifest', () => {
     expect(branded.display_information.background_color).toBe('#c62a78')
   })
 
-  it('uses the agent description with a fallback and a Unicode-safe platform limit', () => {
-    const longDescription = 'a'.repeat(PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS + 1)
-    const wideDescription = `${'😀'.repeat(75)}a`
-    expect([...wideDescription]).toHaveLength(76)
-    expect(utf8ByteLength(wideDescription)).toBeGreaterThan(SLACK_APP_DESCRIPTION_MAX_BYTES)
-
-    const long = buildInstallManifest('acme-bot', REDIRECT, { description: longDescription }) as {
-      features: { agent_view: { agent_description: string } }
-    }
-    const wide = buildInstallManifest('acme-bot', REDIRECT, { description: wideDescription }) as {
-      features: { agent_view: { agent_description: string } }
-    }
-    const fallback = buildInstallManifest('acme-bot', REDIRECT, { description: '   ' }) as {
+  it('uses the generic public app description', () => {
+    const manifest = buildInstallManifest('acme-bot', REDIRECT) as {
       features: { agent_view: { agent_description: string } }
     }
 
-    expect(long.features.agent_view.agent_description).toBe(`${'a'.repeat(99)}…`)
-    expect([...long.features.agent_view.agent_description]).toHaveLength(PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS)
-    expect(wide.features.agent_view.agent_description).toBe(`${'😀'.repeat(74)}…`)
-    expect(utf8ByteLength(wide.features.agent_view.agent_description)).toBeLessThanOrEqual(
-      SLACK_APP_DESCRIPTION_MAX_BYTES
-    )
-    expect(fallback.features.agent_view.agent_description).toBe(DEFAULT_PLATFORM_APP_DESCRIPTION)
+    expect(manifest.features.agent_view.agent_description).toBe(PLATFORM_APP_DESCRIPTION)
   })
 
   // Drift guard: these scopes/events MUST stay in lock-step with the manual manifest
@@ -210,7 +188,7 @@ describe('mergeManagedSlackManifest', () => {
     expect(merged.features.app_home.home_tab_enabled).toBe(true)
     expect(merged.features.app_home.messages_tab_enabled).toBe(true)
     expect(merged.features.app_home.messages_tab_read_only_enabled).toBe(false)
-    expect(merged.features.agent_view.agent_description).toBe('Keep this agent description')
+    expect(merged.features.agent_view.agent_description).toBe(PLATFORM_APP_DESCRIPTION)
     expect(merged.oauth_config.redirect_urls).toEqual(['https://custom.example/slack/callback', REDIRECT])
     expect(merged.oauth_config.scopes.bot).toEqual(expect.arrayContaining(['bookmarks:read', ...SLACK_BOT_SCOPES]))
     expect(merged.oauth_config.scopes.user).toEqual(['users.profile:read'])

@@ -11,6 +11,7 @@ import {
   AGENTCONNECT_FEISHU_EVENTS,
   AGENTCONNECT_FEISHU_SCOPES
 } from '../../src/http/feishu-app-template.js'
+import { PLATFORM_APP_DESCRIPTION } from '../../src/http/platform-app-description.js'
 import {
   FEISHU_REGISTRATION_DOMAIN,
   LARK_LAUNCHER_DOMAIN,
@@ -90,10 +91,8 @@ describe('Feishu/Lark one-click app registration', () => {
         })
       )
     })
-    const description = `${'a'.repeat(117)}😀tail`
     const begun = await new OfficialFeishuRegistrationProvider(fetcher).begin('AgentConnect Lark', 'lark', {
-      avatarUrl: 'https://cdn.example.test/agent.png',
-      description
+      avatarUrl: 'https://cdn.example.test/agent.png'
     })
 
     expect(new URL(String(fetcher.mock.calls[0]![0])).hostname).toBe(FEISHU_REGISTRATION_DOMAIN)
@@ -101,8 +100,7 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(authorizationUrl.hostname).toBe(LARK_LAUNCHER_DOMAIN)
     expect(authorizationUrl.searchParams.get('user_code')).toBe('LARK')
     expect(authorizationUrl.searchParams.get('avatar')).toBe('https://cdn.example.test/agent.png')
-    expect(authorizationUrl.searchParams.get('desc')).toBe(`${'a'.repeat(99)}…`)
-    expect(authorizationUrl.searchParams.get('desc')!.length).toBe(100)
+    expect(authorizationUrl.searchParams.get('desc')).toBe(PLATFORM_APP_DESCRIPTION)
     expect(begun.providerDomain).toBe(FEISHU_REGISTRATION_DOMAIN)
   })
 
@@ -153,7 +151,7 @@ describe('Feishu/Lark one-click app registration', () => {
     const authorizationUrl = new URL(startDto.authorizationUrl)
     expect(authorizationUrl.searchParams.get('createOnly')).toBe('true')
     expect(authorizationUrl.searchParams.get('name')).toBe('AgentConnect Lark')
-    expect(authorizationUrl.searchParams.get('desc')).toBe('Helps teammates solve support requests.')
+    expect(authorizationUrl.searchParams.get('desc')).toBe(PLATFORM_APP_DESCRIPTION)
     const avatarUrl = new URL(authorizationUrl.searchParams.get('avatar')!)
     expect(avatarUrl.origin).toBe('https://cp.example.test')
     expect(avatarUrl.pathname).toBe(`/v1/agents/${agentId}/icon`)

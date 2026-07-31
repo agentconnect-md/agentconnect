@@ -240,8 +240,6 @@ export interface Agent {
   runtime: string
   /** One-line summary shown on the detail page's General card. */
   desc: string
-  /** Raw description when set; unlike `desc`, never contains the display placeholder. */
-  description?: string
   /** Platform output verbosity: low | medium | high; '—' when unset (daemon default). */
   outputMode: string
   /** Whether platform replies include attribution/session footer chrome. */

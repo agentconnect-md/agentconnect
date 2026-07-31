@@ -2,7 +2,7 @@ import sharp from 'sharp'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IconStore } from '../icons/icon-store.js'
 import { createDiscordBotProfileSyncer } from './discord-bot-profile.js'
-import { PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS } from './platform-app-description.js'
+import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
 
 const realFetch = globalThis.fetch
 
@@ -21,15 +21,14 @@ function dataUriBytes(data: string): Buffer {
 }
 
 describe('createDiscordBotProfileSyncer', () => {
-  it('renders the brand glyph and applies a bounded application description', async () => {
+  it('renders the brand glyph and applies the generic public description', async () => {
     successfulDiscordFetch()
     const sync = createDiscordBotProfileSyncer()
 
     await sync('discord-secret', {
       id: '00000000-0000-4000-8000-000000000001',
       icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' },
-      runtime: 'claude',
-      description: `${'😀'.repeat(PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS)}a`
+      runtime: 'claude'
     })
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(2)
@@ -44,8 +43,7 @@ describe('createDiscordBotProfileSyncer', () => {
     const botBody = JSON.parse(requests[0]!.body as string) as { avatar: string }
     const appBody = JSON.parse(requests[1]!.body as string) as { icon: string; description: string }
     expect(appBody.icon).toBe(botBody.avatar)
-    expect(appBody.description).toBe(`${'😀'.repeat(PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS - 1)}…`)
-    expect([...appBody.description]).toHaveLength(PLATFORM_APP_DESCRIPTION_MAX_CHARACTERS)
+    expect(appBody.description).toBe(PLATFORM_APP_DESCRIPTION)
     const png = dataUriBytes(botBody.avatar)
     const metadata = await sharp(png).metadata()
     expect(metadata).toMatchObject({ format: 'png', width: 512, height: 512, hasAlpha: false })
@@ -71,8 +69,7 @@ describe('createDiscordBotProfileSyncer', () => {
     await sync('discord-secret', {
       id: '00000000-0000-4000-8000-000000000002',
       icon: { kind: 'image' },
-      runtime: 'codex',
-      description: null
+      runtime: 'codex'
     })
 
     expect(store.get).toHaveBeenCalledWith('icon/agents/00000000-0000-4000-8000-000000000002')

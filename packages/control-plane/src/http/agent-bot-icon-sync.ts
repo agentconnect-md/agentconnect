@@ -91,10 +91,15 @@ async function syncBotIconUntilCurrent(
     }
 
     try {
+      const profileAgent: BotProfileIconAgent = {
+        id: state.agent.id,
+        icon: state.agent.icon,
+        runtime: state.agent.runtime
+      }
       if (state.bot.platform === 'telegram' && deps.syncTelegramBotIcon) {
-        await deps.syncTelegramBotIcon(secret.botToken, state.agent)
+        await deps.syncTelegramBotIcon(secret.botToken, profileAgent)
       } else if (state.bot.platform === 'discord' && deps.syncDiscordBotProfile) {
-        await deps.syncDiscordBotProfile(secret.botToken, state.agent)
+        await deps.syncDiscordBotProfile(secret.botToken, profileAgent)
       } else if (state.bot.platform === 'feishu' && deps.syncFeishuAppIcon) {
         // The secret row keeps the credential pair together; public bot
         // metadata is only the fallback for older rows.
@@ -106,7 +111,7 @@ async function syncBotIconUntilCurrent(
           )
           return
         }
-        await deps.syncFeishuAppIcon(appId, secret.botToken, state.bot.feishuRegion ?? 'feishu', state.agent)
+        await deps.syncFeishuAppIcon(appId, secret.botToken, state.bot.feishuRegion ?? 'feishu', profileAgent)
       }
     } catch (err) {
       log.warn(
