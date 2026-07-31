@@ -29,7 +29,7 @@ interface MemberBody {
 
 interface PreviewBody {
   transferTo: MemberBody | null
-  resources: { kind: string; owned: number; restricted: number }[]
+  resources: { kind: string; owned: number; restricted: number; recipientOnly: number }[]
 }
 
 const signup = (oidcSubject: string, email: string) =>
@@ -339,7 +339,64 @@ describe('GET /members/:id/removal-preview', () => {
       const body = res.json() as PreviewBody
       expect(body.transferTo).toMatchObject({ userId: DEFAULT_OWNER_ID, isCurrentUser: false })
       // Kinds they own nothing of stay out of the sentence entirely.
-      expect(body.resources).toEqual([{ kind: 'agent', owned: 2, restricted: 1 }])
+      expect(body.resources).toEqual([{ kind: 'agent', owned: 2, restricted: 1, recipientOnly: 1 }])
+    } finally {
+      await close()
+    }
+  })
+
+  it('counts a restricted resource as recipient-only ONLY when no member keeps a share', async () => {
+    // `canView` admits the ownership arm OR a share, and removal prunes only the
+    // departing id — so a resource someone else is still shared with does not
+    // become invisible, and the dialog must not claim it does.
+    const dana = await signup('sub-dana', 'dana@acme.dev')
+    const bob = await signup('sub-bob', 'bob@acme.dev')
+    const repo = new PgUserRepo(prisma)
+    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
+    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'bob@acme.dev', 'collaborator')
+    const departed = await signup('sub-departed', 'departed@acme.dev')
+
+    // Still shared with Bob, a current member ⇒ restricted but NOT recipient-only.
+    await seedAgent(prisma, randomUUID(), {
+      visibility: 'restricted',
+      ownerUserId: dana.userId,
+      sharedWith: [bob.userId]
+    })
+    // Shared only with the departing owner and a stale non-member: nobody who can
+    // still reach the org holds a grant, so it does become recipient-only.
+    await seedAgent(prisma, randomUUID(), {
+      visibility: 'restricted',
+      ownerUserId: dana.userId,
+      sharedWith: [dana.userId, departed.userId]
+    })
+    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/members/${dana.userId}/removal-preview` })
+      expect(res.statusCode).toBe(200)
+      expect((res.json() as PreviewBody).resources).toEqual([
+        { kind: 'agent', owned: 2, restricted: 2, recipientOnly: 1 }
+      ])
+    } finally {
+      await close()
+    }
+  })
+
+  it('does not count the recipient’s own share against recipient-only', async () => {
+    const dana = await signup('sub-dana', 'dana@acme.dev')
+    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
+    // The successor is already shared in: after the transfer they are still the
+    // only one who can see it, so the warning stands.
+    await seedAgent(prisma, randomUUID(), {
+      visibility: 'restricted',
+      ownerUserId: dana.userId,
+      sharedWith: [DEFAULT_OWNER_ID]
+    })
+    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/members/${dana.userId}/removal-preview` })
+      expect((res.json() as PreviewBody).resources).toEqual([
+        { kind: 'agent', owned: 1, restricted: 1, recipientOnly: 1 }
+      ])
     } finally {
       await close()
     }

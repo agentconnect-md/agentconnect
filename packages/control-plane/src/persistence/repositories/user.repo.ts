@@ -20,6 +20,7 @@ import {
   type MemberRemovalPreview,
   type OrgMemberRecord,
   type OrgMemberRole,
+  type OwnedResourceKind,
   type UserProfileRecord,
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
@@ -98,6 +99,65 @@ function mergeResourceAuthoritySql(table: (typeof RESOURCE_AUTHORITY_TABLES)[num
       )
     WHERE resource."ownerUserId" = ${from}
        OR ${from} = ANY(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
+  `
+}
+
+/** Kind label (the API's vocabulary) → the table ownership transfers from. */
+const OWNED_RESOURCE_KINDS = [
+  ['agent', 'agent'],
+  ['daemon', 'daemon'],
+  ['cron', 'cron_def'],
+  ['mcpProvider', 'mcp_provider'],
+  ['skillSource', 'skill_source']
+] as const satisfies ReadonlyArray<readonly [OwnedResourceKind, (typeof RESOURCE_AUTHORITY_TABLES)[number]]>
+
+interface OwnedResourceCountRow {
+  kind: OwnedResourceKind
+  owned: number
+  restricted: number
+  recipientOnly: number
+}
+
+/**
+ * One kind's slice of the removal preview: how much of `table` this member owns,
+ * how much of it is restricted, and how much of THAT only `recipient` would be
+ * left able to see.
+ *
+ * The last number is the one worth warning about, and it is not simply
+ * "restricted": `canView` admits the ownership arm OR an explicit share, and
+ * removal prunes only the departing id from `sharedWith` (§8.1), so a resource
+ * shared with anyone still in the organization does not vanish for them. The
+ * share set is intersected with CURRENT membership here for the same reason a
+ * role never widens visibility — an id that is no longer a member cannot see
+ * anything, so counting it as a viewer would suppress a warning that is due.
+ */
+function ownedResourceCountsSql(
+  table: (typeof RESOURCE_AUTHORITY_TABLES)[number],
+  kind: OwnedResourceKind,
+  orgId: string,
+  ownerUserId: string,
+  recipientUserId: string
+) {
+  return Prisma.sql`
+    SELECT
+      ${kind} AS "kind",
+      count(*)::int AS "owned",
+      (count(*) FILTER (WHERE resource."visibility" = 'restricted'))::int AS "restricted",
+      (count(*) FILTER (
+        WHERE resource."visibility" = 'restricted'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[])) AS shared(user_id)
+            JOIN "membership" AS other
+              ON other."userId" = shared.user_id
+             AND other."orgId" = resource."orgId"
+            WHERE shared.user_id <> ${ownerUserId}
+              AND shared.user_id <> ${recipientUserId}
+          )
+      ))::int AS "recipientOnly"
+    FROM ${Prisma.raw(`"public"."${table}"`)} AS resource
+    WHERE resource."orgId" = ${orgId}
+      AND resource."ownerUserId" = ${ownerUserId}
   `
 }
 
@@ -669,34 +729,23 @@ export class PgUserRepo implements UserRepo {
     )
     const recipient = rows.find((row) => row.userId === recipientId)
 
-    const owned = { orgId, ownerUserId: userId }
-    const [agent, daemon, cron, mcpProvider, skillSource] = await Promise.all([
-      this.db.agent.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
-      this.db.daemon.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
-      this.db.cronDef.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
-      this.db.mcpProvider.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } }),
-      this.db.skillSource.groupBy({ by: ['visibility'], where: owned, _count: { _all: true } })
-    ])
+    const counts = await this.db.$queryRaw<OwnedResourceCountRow[]>(
+      Prisma.join(
+        OWNED_RESOURCE_KINDS.map(([kind, table]) =>
+          ownedResourceCountsSql(table, kind, orgId, userId, recipientId ?? '')
+        ),
+        ' UNION ALL '
+      )
+    )
+    // UNION ALL has no defined order; re-impose the declared one so the dialog
+    // always lists kinds the same way.
+    const byKind = new Map(counts.map((row) => [row.kind, row]))
 
     return {
       transferTo: recipient ? toMemberRecord(recipient) : null,
-      resources: (
-        [
-          ['agent', agent],
-          ['daemon', daemon],
-          ['cron', cron],
-          ['mcpProvider', mcpProvider],
-          ['skillSource', skillSource]
-        ] as const
-      )
-        .map(([kind, groups]) => ({
-          kind,
-          owned: groups.reduce((total, group) => total + group._count._all, 0),
-          restricted: groups
-            .filter((group) => group.visibility === 'restricted')
-            .reduce((total, group) => total + group._count._all, 0)
-        }))
-        .filter((entry) => entry.owned > 0)
+      resources: OWNED_RESOURCE_KINDS.map(([kind]) => byKind.get(kind)).filter(
+        (row) => row !== undefined && row.owned > 0
+      ) as MemberRemovalPreview['resources']
     }
   }
 

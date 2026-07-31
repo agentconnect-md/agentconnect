@@ -63,11 +63,35 @@ function countPhrase(resources: MemberRemovalPreviewDto['resources']): string {
 }
 
 /**
+ * The privacy half of the sentence.
+ *
+ * A restricted resource is reached through its owner OR an explicit share, so
+ * only the `recipientOnly` ones actually leave everyone else's console when
+ * ownership moves — the rest stay visible to the members they were shared with.
+ * Saying "only X can see it" about those would be false, and this dialog exists
+ * precisely to stop the transfer from surprising anyone.
+ */
+function privacyClause(recipientOnly: number, alsoShared: number, recipient: string): string {
+  if (recipientOnly === 0 && alsoShared === 0) return ''
+  if (alsoShared === 0) {
+    return recipientOnly === 1
+      ? ` 1 is private — afterwards only ${recipient} can see it.`
+      : ` ${recipientOnly} are private — afterwards only ${recipient} can see them.`
+  }
+  if (recipientOnly === 0) {
+    return alsoShared === 1
+      ? ' 1 is private, and stays visible to the members it is shared with.'
+      : ` ${alsoShared} are private, and stay visible to the members they are shared with.`
+  }
+  return ` ${recipientOnly + alsoShared} are private: ${recipientOnly} will be visible only to ${recipient}, and ${alsoShared} ${alsoShared === 1 ? 'stays' : 'stay'} visible to the members already shared with ${alsoShared === 1 ? 'it' : 'them'}.`
+}
+
+/**
  * The danger card's subtitle: exactly where this member's resources land.
  *
- * Ownership decides who can see a RESTRICTED resource at all, so a transfer the
+ * Ownership decides who can still reach a private resource, so a transfer the
  * departing member can't predict reads as data loss. Named recipient first,
- * private count second — the two facts you can't recover after the fact.
+ * what actually goes private second — the two facts you can't recover after.
  */
 function transferSentence(preview: MemberRemovalPreviewDto, leaving: boolean): string {
   // No successor ⇒ the last owner, which the CP refuses anyway (the button is
@@ -83,13 +107,9 @@ function transferSentence(preview: MemberRemovalPreviewDto, leaving: boolean): s
   const recipient = to.isCurrentUser ? 'you' : (to.name ?? to.email ?? 'the longest-standing owner')
   const total = preview.resources.reduce((count, r) => count + r.owned, 0)
   const moved = `${possessive} ${countPhrase(preview.resources)} ${total === 1 ? 'transfers' : 'transfer'} to ${recipient}.`
+  const recipientOnly = preview.resources.reduce((count, r) => count + r.recipientOnly, 0)
   const restricted = preview.resources.reduce((count, r) => count + r.restricted, 0)
-  if (restricted === 0) return moved
-  // Restricted resources are reachable ONLY through their owner, so this is the
-  // difference between "moved" and "gone" for everyone else in the org.
-  return restricted === 1
-    ? `${moved} 1 is private — afterwards only ${recipient} can see it.`
-    : `${moved} ${restricted} are private — afterwards only ${recipient} can see them.`
+  return `${moved}${privacyClause(recipientOnly, restricted - recipientOnly, recipient)}`
 }
 
 const dotOn = 'mt-[3px] h-[14px] w-[14px] flex-none rounded-full border-4 border-(--brand) bg-(--surface-card)'

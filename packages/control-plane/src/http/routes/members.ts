@@ -117,7 +117,7 @@ export function memberRoutes(deps: HttpDeps) {
           tags: [Tag.Members],
           summary: 'Preview a leave or removal',
           description:
-            'What DELETE /members/:id would do: which member inherits the departing member’s resources, and how many they own (with the restricted subset — those are visible only through their owner, so the recipient decides whether anyone can still find them). Same authorization as the removal itself. Advisory only: nothing is locked, and the removal re-derives its recipient inside the transaction.',
+            'What DELETE /members/:id would do: which member inherits the departing member’s resources, and how many they own — split into the restricted ones (reached through ownership or an explicit share) and the `recipientOnly` subset of those that no remaining member is shared with, which only the recipient would still be able to see. Same authorization as the removal itself. Advisory only: nothing is locked, and the removal re-derives its recipient inside the transaction.',
           operationId: 'previewMemberRemoval',
           params: IdParam,
           response: { 200: MemberRemovalPreviewDto, 403: ErrorDto, 404: ErrorDto }

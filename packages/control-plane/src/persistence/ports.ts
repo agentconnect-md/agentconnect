@@ -3045,17 +3045,28 @@ export type OwnedResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 's
 /**
  * What removing one member would do, read before the fact (resource-visibility.md
  * §8.2). The console shows it in the leave/remove confirmation so the transfer is
- * predictable rather than discovered afterwards — a restricted resource is
- * visible ONLY through its ownership arm, so "which owner inherits it" decides
- * whether anyone can still find it.
+ * predictable rather than discovered afterwards: a restricted resource is reached
+ * through its ownership arm OR an explicit share, so where the arm lands decides
+ * who can still find the ones nobody else was given.
  */
 export interface MemberRemovalPreview {
   /** The member who inherits ownership; null when removal would be refused
    *  (the departing member is the last owner). */
   transferTo: OrgMemberRecord | null
   /** Per-kind counts of the departing member's owned resources; kinds they own
-   *  nothing of are omitted. `restricted` is the subset only the owner can see. */
-  resources: Array<{ kind: OwnedResourceKind; owned: number; restricted: number }>
+   *  nothing of are omitted. */
+  resources: Array<{
+    kind: OwnedResourceKind
+    owned: number
+    /** Not org-visible: reachable only via ownership or `sharedWith`. */
+    restricted: number
+    /** The subset of `restricted` that `transferTo` alone would be able to see —
+     *  no remaining member holds a share. This, not `restricted`, is what
+     *  disappears from everyone else's console, so it is the number the dialog
+     *  warns about. Counted against CURRENT membership: a `sharedWith` id that
+     *  is no longer a member cannot see anything either. */
+    recipientOnly: number
+  }>
 }
 
 /** The caller's own profile (the console `/me` surface). */

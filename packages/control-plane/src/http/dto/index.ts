@@ -1585,9 +1585,13 @@ export const MemberRemovalPreviewDto = z.object({
     z.object({
       kind: z.enum(['agent', 'daemon', 'cron', 'mcpProvider', 'skillSource']),
       owned: z.number().int(),
-      // The subset nobody but the owner can see — the part that would otherwise
-      // silently disappear from everyone else's console.
-      restricted: z.number().int()
+      // Not org-visible: reached through ownership or an explicit share.
+      restricted: z.number().int(),
+      // The subset of `restricted` with no OTHER member on its share list, so
+      // after the transfer only `transferTo` could see it. This is the part that
+      // silently disappears from everyone else's console; the rest stay visible
+      // to the members they are already shared with.
+      recipientOnly: z.number().int()
     })
   )
 })

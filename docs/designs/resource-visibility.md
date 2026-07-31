@@ -511,10 +511,13 @@ This workflow covers managed membership removal only. Direct deletion of an
 ### 8.2 Choosing the recipient, and showing it before the fact
 
 Transfer keeps a resource inside the organization, but for a **restricted** one
-it also decides who can still see it: visibility follows the ownership arm, and
-no role overrides it (§4). "Which owner inherits" is therefore a
-user-visible outcome, not an implementation detail — an unlucky choice reads as
-data loss to everyone else, including other owners.
+it also decides who can still see it. A restricted resource is reached through
+its ownership arm OR an explicit `sharedWith` grant, and no role overrides
+either (§4); removal preserves every remaining member's grant and prunes only
+the departing one (§8.1). So the ones whose visibility actually rides on this
+decision are those **nobody else was granted** — for them, "which owner
+inherits" is a user-visible outcome, not an implementation detail, and an
+unlucky choice reads as data loss to everyone else, including other owners.
 
 Two cases, one rule each:
 
@@ -539,11 +542,15 @@ whose id is not a cuid fall back to `max(account, organization)` creation.
 
 Because the choice is consequential, it is also **shown before it happens**.
 `GET /members/:id/removal-preview` returns the prospective recipient plus the
-departing member's owned-resource counts per kind, with the restricted subset
-called out, and the console renders it in the leave/remove confirmation. The
-preview takes no locks and is never an authorization input: it shares the
-removal's authorization (§8.1) but the transaction re-derives the recipient
-itself, so a race can only make the dialog stale, never the transfer wrong.
+departing member's owned-resource counts per kind, and the console renders it in
+the leave/remove confirmation. The counts distinguish `restricted` from the
+`recipientOnly` subset of it — restricted rows whose remaining `sharedWith`
+holds no other CURRENT member — because only the latter leaves everyone else's
+console. Claiming otherwise would be the same mistake the preview exists to
+prevent, in the opposite direction. The preview takes no locks and is never an
+authorization input: it shares the removal's authorization (§8.1) but the
+transaction re-derives the recipient itself, so a race can only make the dialog
+stale, never the transfer wrong.
 
 This does not extend visibility to the other owners. A restricted resource stays
 restricted across a transfer; the recipient may widen it afterwards through the

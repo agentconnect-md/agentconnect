@@ -902,14 +902,14 @@ export interface MemberDto {
 }
 
 // What leaving / removing a member would do, shown in the confirmation dialog.
-// Ownership of everything they own moves to ONE member; anything restricted is
-// visible only through that owner, so this is the difference between "moved" and
-// "gone" for whoever is watching.
+// Ownership of everything they own moves to ONE member. A restricted resource is
+// reached through ownership OR an explicit share, so only the `recipientOnly`
+// ones — nobody else is shared with them — actually leave everyone's console.
 export type OwnedResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
 
 export interface MemberRemovalPreviewDto {
   transferTo: MemberDto | null // null only when there is no successor (last owner)
-  resources: { kind: OwnedResourceKind; owned: number; restricted: number }[]
+  resources: { kind: OwnedResourceKind; owned: number; restricted: number; recipientOnly: number }[]
 }
 
 export interface OrgInviteLinkDto {
