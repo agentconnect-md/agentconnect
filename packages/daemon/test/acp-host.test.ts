@@ -64,12 +64,9 @@ describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {
       }
     )
     await host.start()
-    expect(host.mcpCapabilities()).toEqual({
-      http: true,
-      sse: false,
-      privateSessionHeaders: true,
-      stableInvocationId: true
-    })
+    // Security-sensitive remote-MCP properties are never trusted from the ACP
+    // initialize response; only the daemon-owned behavioral probe may add them.
+    expect(host.mcpCapabilities()).toEqual({ http: true, sse: false })
     await host.stop()
   }, 15_000)
 })

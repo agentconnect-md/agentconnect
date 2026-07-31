@@ -633,12 +633,12 @@ export class PgSessionRepo implements SessionRepo {
       where: {
         agentId,
         platform: 'webchat',
-        channel: conversationId,
-        visibility: 'private'
+        channel: conversationId
       },
-      select: { id: true }
+      orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
+      select: { visibility: true }
     })
-    return row !== null
+    return row?.visibility === 'private'
   }
 
   async listChildren(

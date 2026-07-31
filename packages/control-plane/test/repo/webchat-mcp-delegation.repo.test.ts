@@ -3,6 +3,7 @@ import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { PgWebchatMcpDelegationRepo } from '../../src/persistence/repositories/webchat-mcp-delegation.repo.js'
+import { PgMcpInvocationRepo } from '../../src/persistence/repositories/mcp-invocation.repo.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { McpInvocationReaper } from '../../src/orchestrator/mcpInvocationReaper.js'
 import { FakeClock } from '../fakes/fake-clock.js'
@@ -534,5 +535,62 @@ describe('PgWebchatMcpDelegationRepo (real Postgres)', () => {
 
     expect(await repo.reapExpired(at(1_000))).toEqual({ deleted: 4, expired: 2 })
     expect(await repo.reapExpired(at(1_000))).toEqual({ deleted: 0, expired: 0 })
+  })
+})
+
+describe('PgMcpInvocationRepo live authorization fence (real Postgres)', () => {
+  it('elects only against the newest exact webchat session visibility', async () => {
+    await fixtures()
+    await prisma.presetAgent.create({
+      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
+    })
+    const authority = (await new PgWebchatMcpDelegationRepo(prisma).establish(establishInput()))!
+    const grant = await prisma.webchatMcpAccessGrant.create({
+      data: {
+        authorityId: authority.id,
+        descriptorInstanceId: '88888888-8888-4888-8888-888888888888',
+        grantRevision: 1,
+        tokenHash: 'peppered:claim',
+        status: 'active',
+        pendingExpiresAt: at(60_000),
+        expiresAt: at(60_000),
+        activatedAt: NOW
+      }
+    })
+    const base = {
+      agentId: AGENT,
+      platform: 'webchat',
+      channel: CONVERSATION,
+      phase: 'start' as const,
+      orgId: DEFAULT_ORG_ID,
+      ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
+      visibilitySource: 'default' as const,
+      lastActivityAt: NOW,
+      startedAt: NOW
+    }
+    await prisma.sessionMeta.create({
+      data: { ...base, id: 'historical-private', visibility: 'private' }
+    })
+    await prisma.sessionMeta.create({
+      data: {
+        ...base,
+        id: 'current-org',
+        visibility: 'org',
+        lastActivityAt: at(1_000),
+        startedAt: at(1_000)
+      }
+    })
+
+    const claim = await new PgMcpInvocationRepo(prisma).claim({
+      invocationId: '99999999-9999-4999-8999-999999999999',
+      conversationId: CONVERSATION,
+      grantId: grant.id,
+      requestHash: 'request',
+      method: 'tools/list',
+      now: at(2_000)
+    })
+
+    expect(claim).toEqual({ kind: 'denied' })
+    expect(await prisma.mcpInvocation.count()).toBe(0)
   })
 })

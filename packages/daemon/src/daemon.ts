@@ -2403,7 +2403,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
-      this.remoteWebchatGrants?.clear()
+      await this.remoteWebchatGrants?.revokeAll('agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
       // removal needs no permanent gate once the host is proven stopped (the agent is
       // absent); a later toStart can then serve it normally. Safety-drain state is NOT
@@ -2475,7 +2475,7 @@ export class Daemon {
               `reconcile: host teardown failed for "${a.id}" — releasing admission gate anyway: ${formatErr(err)}`
             )
           }
-          this.remoteWebchatGrants?.clear()
+          await this.remoteWebchatGrants?.revokeAll('agent_detached')
         } finally {
           if (!wasDraining) this.drainingAgents.delete(a.id)
         }
@@ -13244,6 +13244,14 @@ export class Daemon {
     )
     if (closed.length) this.log.info(`idle: TTL-closed ${closed.length} session(s) (>${Math.round(ttl / 1000)}s)`)
     for (const row of closed) {
+      if (row.platform === 'webchat' && row.channel) {
+        const descriptor = this.remoteWebchatGrants
+        if (descriptor) {
+          void descriptor
+            .revokeConversation(row.channel, 'session_expired')
+            .catch((error) => this.log.warn(`remote MCP session-expiry revoke failed (${formatErr(error)})`))
+        }
+      }
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(row.agentId, row.acpSessionId)) // the session is gone — drop its lease
       this.emitSessionMetadataSnapshot({
@@ -13408,13 +13416,13 @@ export class Daemon {
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
       for (const id of [...this.hosts.keys()]) await this.stopHost(id)
-      this.remoteWebchatGrants?.clear()
+      await this.remoteWebchatGrants?.revokeAll('agent_detached')
       this.draining = false
       released = matched
     } else if (drain.scope.kind === 'agent') {
       await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
-      this.remoteWebchatGrants?.clear()
+      await this.remoteWebchatGrants?.revokeAll('agent_detached')
       this.drainingAgents.delete(drain.scope.agentId)
       released = matched
     } else {
@@ -13434,7 +13442,7 @@ export class Daemon {
     this.interruptAgentTurns(agentId, 'stop')
     await this.stopSelectedTurnHosts(targets)
     await this.stopHost(agentId)
-    this.remoteWebchatGrants?.clear()
+    await this.remoteWebchatGrants?.revokeAll('agent_detached')
     // A dispatch can have passed the gate and captured its reply connection while
     // still inside sessions.handle(), before it appears in `pending`. Wait that
     // whole turn, then stop once more in case it constructed a host after the
@@ -13443,7 +13451,7 @@ export class Daemon {
       await Promise.all([...this.activeDispatchesByAgent.get(agentId)!])
     }
     await this.stopHost(agentId)
-    this.remoteWebchatGrants?.clear()
+    await this.remoteWebchatGrants?.revokeAll('agent_detached')
     // gate intentionally left set (drainScope added it): a stopped agent must not
     // auto-respawn on the next message — agent/launch clears the gate.
   }
@@ -14000,7 +14008,7 @@ export class Daemon {
           // Placement is revalidated by the CP for every remote-MCP request.
           // Clearing the memory-only descriptors prevents local reuse while the
           // durable revocation sweep converges.
-          this.remoteWebchatGrants?.clear()
+          await this.remoteWebchatGrants?.revokeAll('agent_detached')
           await this.stopAgent(agentId)
           const fence = this.moveStageMetadata.get(agentId)
           if (fence?.moveId !== moveId || fence.state !== 'staging') {
@@ -15147,7 +15155,7 @@ export class Daemon {
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
     await Promise.allSettled(hostStarts)
-    this.remoteWebchatGrants?.clear()
+    await this.remoteWebchatGrants?.revokeAll('session_closed').catch((e) => errors.push(e))
     // After the hosts (and thus their spawned mcp-bridge subprocesses) are gone,
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))

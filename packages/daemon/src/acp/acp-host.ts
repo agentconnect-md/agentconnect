@@ -721,13 +721,9 @@ export class AcpHost {
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     const mcp = init.agentCapabilities?.mcpCapabilities
-    const extendedMcp = mcp as
-      { http?: boolean; sse?: boolean; privateSessionHeaders?: boolean; stableInvocationId?: boolean } | undefined
     this.mcpCaps = {
-      http: extendedMcp?.http ?? false,
-      sse: extendedMcp?.sse ?? false,
-      ...(extendedMcp?.privateSessionHeaders === true ? { privateSessionHeaders: true } : {}),
-      ...(extendedMcp?.stableInvocationId === true ? { stableInvocationId: true } : {})
+      http: mcp?.http ?? false,
+      sse: mcp?.sse ?? false
     }
     // agentInfo is optional per the ACP spec; keep only the fields we surface.
     this.agentInfo = init.agentInfo

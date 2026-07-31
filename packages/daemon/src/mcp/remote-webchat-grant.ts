@@ -128,17 +128,33 @@ export class RemoteWebchatGrantManager {
     entitlement: WebchatRemoteMcpEntitlement,
     reason: WebchatMcpGrantRevoke['reason']
   ): Promise<void> {
-    this.active.delete(conversationId)
     await this.client.revokeWebchatMcpGrant({
       authorityId: entitlement.authorityId,
       authorityGeneration: entitlement.authorityGeneration,
       conversationId,
       reason
     })
+    const current = this.active.get(conversationId)
+    if (current && sameEntitlement(current.entitlement, entitlement)) this.active.delete(conversationId)
   }
 
-  clear(): void {
-    this.active.clear()
+  async revokeConversation(conversationId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
+    const current = this.active.get(conversationId)
+    if (!current) return
+    await this.revoke(conversationId, current.entitlement, reason)
+  }
+
+  async revokeAll(reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
+    const entries = [...this.active.entries()]
+    const results = await Promise.allSettled(
+      entries.map(([conversationId, descriptor]) => this.revoke(conversationId, descriptor.entitlement, reason))
+    )
+    const failures = results.filter((result) => result.status === 'rejected')
+    if (failures.length)
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        'remote MCP revoke failed'
+      )
   }
 
   private assertIssued(
