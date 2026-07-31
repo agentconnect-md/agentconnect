@@ -35,6 +35,33 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
            AND conversation."userId" = authority."userId"
            AND conversation."orgId" = authority."orgId"
            AND conversation."agentId" = authority."agentId"
+          JOIN "membership" AS member
+            ON member."orgId" = authority."orgId"
+           AND member."userId" = authority."userId"
+          JOIN "agent" AS delegated_agent
+            ON delegated_agent."id" = authority."agentId"
+           AND delegated_agent."orgId" = authority."orgId"
+           AND delegated_agent."daemonId" = authority."daemonId"
+           AND (
+             delegated_agent."visibility" = 'org'
+             OR delegated_agent."ownerUserId" = authority."userId"
+             OR authority."userId" = ANY(delegated_agent."sharedWith")
+           )
+          JOIN "preset_agent" AS preset
+            ON preset."orgId" = authority."orgId"
+           AND preset."preset" = 'general'
+           AND preset."status" = 'created'
+           AND preset."agentId" = authority."agentId"
+          JOIN LATERAL (
+            SELECT candidate.*
+            FROM "session_meta" AS candidate
+            WHERE candidate."agentId" = authority."agentId"
+              AND candidate."platform" = 'webchat'
+              AND candidate."channel" = authority."conversationId"::text
+              AND candidate."endedAt" IS NULL
+            ORDER BY candidate."lastActivityAt" DESC, candidate."startedAt" DESC, candidate."id" DESC
+            LIMIT 1
+          ) AS active_session ON active_session."visibility" = 'private'
           WHERE access_grant."id" = ${input.grantId}
             AND access_grant."status" = 'active'
             AND access_grant."revokedAt" IS NULL
@@ -44,7 +71,7 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
             AND authority."userId" = ${input.userId}
             AND authority."revokedAt" IS NULL
             AND authority."expiresAt" > ${input.now}
-          FOR UPDATE OF access_grant, authority, conversation
+          FOR UPDATE OF access_grant, authority, conversation, member, delegated_agent, preset, active_session
         `)
         if (!liveGrant) return { kind: 'denied' }
 
@@ -182,6 +209,7 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
             WHERE candidate."agentId" = authority."agentId"
               AND candidate."platform" = 'webchat'
               AND candidate."channel" = authority."conversationId"::text
+              AND candidate."endedAt" IS NULL
             ORDER BY candidate."lastActivityAt" DESC, candidate."startedAt" DESC, candidate."id" DESC
             LIMIT 1
           ) AS active_session ON active_session."visibility" = 'private'

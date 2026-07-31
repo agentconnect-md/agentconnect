@@ -41,6 +41,30 @@ function ev(phase: 'start' | 'plan' | 'problem' | 'end', extra: Record<string, u
 }
 
 describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () => {
+  it('authorizes only the unended current webchat session', async () => {
+    await fixtures()
+    const repo = new PgSessionRepo(prisma)
+    const base = {
+      agentId: AGENT,
+      platform: 'webchat',
+      channel: 'conversation-current-fence',
+      phase: 'start' as const,
+      orgId: DEF_ORG,
+      ownerIdentity: 'user:owner',
+      visibilitySource: 'default' as const,
+      lastActivityAt: new Date('2026-07-05T10:00:00.000Z'),
+      startedAt: new Date('2026-07-05T10:00:00.000Z')
+    }
+    await prisma.sessionMeta.create({
+      data: { ...base, id: 'historical-private-fence', visibility: 'private', endedAt: new Date() }
+    })
+    await prisma.sessionMeta.create({
+      data: { ...base, id: 'current-org-fence', visibility: 'org', startedAt: new Date('2026-07-05T11:00:00.000Z') }
+    })
+
+    expect(await repo.hasPrivateWebchatSession('conversation-current-fence', AgentId(AGENT))).toBe(false)
+  })
+
   it('creates a session row on the first milestone with the launch tie', async () => {
     await fixtures()
     const repo = new PgSessionRepo(prisma)

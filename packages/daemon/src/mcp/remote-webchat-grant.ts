@@ -20,6 +20,7 @@ export interface RemoteWebchatGrantClient {
 }
 
 interface ActiveDescriptor {
+  agentId?: string
   entitlement: WebchatRemoteMcpEntitlement
   descriptorInstanceId: string
   grantId: string
@@ -65,7 +66,8 @@ export class RemoteWebchatGrantManager {
   async provision(
     conversationId: string,
     entitlement: WebchatRemoteMcpEntitlement,
-    now = Date.now()
+    now = Date.now(),
+    agentId?: string
   ): Promise<{ server: McpServer; changed: boolean }> {
     const current = this.active.get(conversationId)
     if (
@@ -113,6 +115,7 @@ export class RemoteWebchatGrantManager {
       headers: [{ name: 'Authorization', value: `Bearer ${issued.token}` }]
     }
     this.active.set(conversationId, {
+      ...(agentId ? { agentId } : {}),
       entitlement: { ...entitlement },
       descriptorInstanceId,
       grantId: issued.grantId,
@@ -142,6 +145,20 @@ export class RemoteWebchatGrantManager {
     const current = this.active.get(conversationId)
     if (!current) return
     await this.revoke(conversationId, current.entitlement, reason)
+  }
+
+  async revokeAgent(agentId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
+    const entries = [...this.active.entries()].filter(([, descriptor]) => descriptor.agentId === agentId)
+    const results = await Promise.allSettled(
+      entries.map(([conversationId, descriptor]) => this.revoke(conversationId, descriptor.entitlement, reason))
+    )
+    const failures = results.filter((result) => result.status === 'rejected')
+    if (failures.length) {
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        `remote MCP revoke failed for agent ${agentId}`
+      )
+    }
   }
 
   async revokeAll(reason: WebchatMcpGrantRevoke['reason']): Promise<void> {

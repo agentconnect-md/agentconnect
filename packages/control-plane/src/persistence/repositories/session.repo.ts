@@ -633,7 +633,11 @@ export class PgSessionRepo implements SessionRepo {
       where: {
         agentId,
         platform: 'webchat',
-        channel: conversationId
+        channel: conversationId,
+        // A conversation may retain historical ACP rows after a rebuild. Only
+        // an unended row is authoritative for the currently installed session;
+        // an old private row must not authorize a replacement widened to org.
+        endedAt: null
       },
       orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
       select: { visibility: true }
