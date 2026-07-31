@@ -5,7 +5,9 @@ import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { refreshMySocialIdentities } from '@/lib/api'
 import {
+  LogtoAccountError,
   accountErrorMessage,
+  forgetOwnershipProof,
   saveSocialIdentity,
   takeSocialLinkFlow,
   verifySocialVerification
@@ -54,6 +56,11 @@ export default function SocialAccountCallback() {
       // says it better than a banner that outlives the action.
       .then(() => window.location.replace(flow.returnTo))
       .catch((caught) => {
+        // A refused ownership proof must not be reused: it would fail the same
+        // way every time. Dropping it makes the next attempt ask for a code.
+        if (caught instanceof LogtoAccountError && (caught.status === 403 || caught.status === 401)) {
+          forgetOwnershipProof()
+        }
         setError(accountErrorMessage(caught, { providerName: flow.providerName, linking: true }))
       })
   }, [])

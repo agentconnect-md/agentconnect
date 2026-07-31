@@ -17,6 +17,8 @@ import {
   accountErrorMessage,
   createSocialState,
   createSocialVerification,
+  rememberOwnershipProof,
+  reusableOwnershipProof,
   requestEmailVerification,
   verifyEmailCode,
   writeSocialLinkFlow,
@@ -302,6 +304,13 @@ export default function SocialSignInCard({
   // with a security verification method take the code detour first.
   const beginLink = (provider: SocialLoginProvider) => {
     if (currentAccount?.hasSecurityVerificationMethod) {
+      // One code covers every link in its window, so a second provider in the
+      // same sitting reuses the proof instead of asking again.
+      const proof = reusableOwnershipProof()
+      if (proof) {
+        void startLink(provider, proof)
+        return
+      }
       setPendingVerify(provider)
       return
     }
@@ -488,6 +497,7 @@ export default function SocialSignInCard({
           email={currentAccount?.primaryEmail}
           onVerified={async (currentVerificationRecordId) => {
             setPendingVerify(undefined)
+            rememberOwnershipProof(currentVerificationRecordId)
             await startLink(pendingVerify, currentVerificationRecordId)
           }}
           onClose={() => setPendingVerify(undefined)}
