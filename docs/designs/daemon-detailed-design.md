@@ -674,8 +674,8 @@ proxy MCP requests, mint per-request assertions, or run an administrative broker
 
 The runtime calls the standard CP `POST /api/v1/mcp` endpoint directly. The CP
 derives the actor from the stored grant and durable webchat owner, re-runs live
-authorization, and provides grant-scoped request idempotency. Tool catalog
-execution is therefore a control operation; browser messages and ACP
+authorization, and provides conversation-authority-scoped request idempotency. Tool
+catalog execution is therefore a control operation; browser messages and ACP
 `session/update` streams remain on the relay↔daemon/daemon-local data path and
 never cross the CP.
 
@@ -955,17 +955,18 @@ Envelope:
 
 **Upstream, daemon -> CP**
 
-| Type                                  | Payload highlights                                                                                                                   | Semantics                                                                    |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `auth`                                | `{ apiKey, daemonId? }`                                                                                                              | First-frame opaque-token auth.                                               |
-| `register`                            | `{ host, capabilities:{platforms,runtimes,acp,features}, maxAgents, localState:{assignments,crons,leases,agents[],integrations[]} }` | Register/capabilities/local state for reconcile.                             |
-| `heartbeat`                           | `{ load:{cpu,mem,agents}, health:"ok\|degraded", activeSessions, degradedScopes[] }`                                                 | Heartbeat/load/degraded scopes.                                              |
-| `ack`                                 | `{ refId, ok, error? }`                                                                                                              | Persistence/convergence result for downstream REQ.                           |
-| `event/session`                       | `{ sessionId, agentId, phase:"start\|plan\|problem\|end", link, summary }`                                                           | Converged UI event, not body.                                                |
-| `usage/report`                        | `{ sessionId, agentId, platform?, channel?, lastActivityAt, usage }`                                                                 | Latest-wins session token/cost.                                              |
-| `facts/daemon-runtimes` and `facts/*` | Runtime/MCP/memory probe snapshots                                                                                                   | Observed facts with REPLACE semantics.                                       |
-| `mcp/invocation/mint`                 | Delegation generation, immutable agent/conversation binding, invocation id, exact request hash, method, and optional tool name       | Request one short-lived assertion for the exact delegated admin-MCP request. |
-| `webchat/mcp-delegation/revoke`       | Delegation id, generation, and closed/expired/detached reason                                                                        | Revoke one exact logical-session authority generation.                       |
+| Type                                     | Payload highlights                                                                                                                   | Semantics                                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `auth`                                   | `{ apiKey, daemonId? }`                                                                                                              | First-frame opaque-token auth.                                                             |
+| `register`                               | `{ host, capabilities:{platforms,runtimes,acp,features}, maxAgents, localState:{assignments,crons,leases,agents[],integrations[]} }` | Register/capabilities/local state for reconcile.                                           |
+| `heartbeat`                              | `{ load:{cpu,mem,agents}, health:"ok\|degraded", activeSessions, degradedScopes[] }`                                                 | Heartbeat/load/degraded scopes.                                                            |
+| `ack`                                    | `{ refId, ok, error? }`                                                                                                              | Persistence/convergence result for downstream REQ.                                         |
+| `event/session`                          | `{ sessionId, agentId, phase:"start\|plan\|problem\|end", link, summary }`                                                           | Converged UI event, not body.                                                              |
+| `usage/report`                           | `{ sessionId, agentId, platform?, channel?, lastActivityAt, usage }`                                                                 | Latest-wins session token/cost.                                                            |
+| `facts/daemon-runtimes` and `facts/*`    | Runtime/MCP/memory probe snapshots                                                                                                   | Observed facts with REPLACE semantics.                                                     |
+| `mcp/invocation/mint` (legacy)           | Old broker delegation and exact-request fields                                                                                       | Superseded by direct runtime-to-CP remote MCP; never emitted with `webchat_remote_mcp_v1`. |
+| `webchat/mcp-delegation/revoke` (legacy) | Old broker delegation id and generation                                                                                              | Superseded by access grants; retained only while the old capability is supported.          |
+| `webchat/mcp-grant/revoke`               | `{ conversationId, authorityGeneration, reason }`                                                                                    | Revoke every access grant for one exact logical authority generation.                      |
 
 Metrics and traces use the direct **OTLP side path** bootstrapped by `OTEL_*`,
 not the Control Plane WebSocket. Only `usage/report` and `facts/*` use the
@@ -1026,8 +1027,9 @@ WebSocket drop -> CP-Client enters DEGRADED and reconnects with backoff. Daemon 
 This feature is operator opt-in and the CP gate defaults off. Before setting
 `WEBCHAT_PRESET_MCP_ENABLED=true`, deploy compatible CP, relay, daemon, and runtime
 builds; verify private webchat session enforcement, credential redaction, exact
-grant revocation, and grant-scoped idempotency; then confirm live registration
-advertises both `session-visibility-v1` and `webchat_remote_mcp_v1`.
+grant revocation, and conversation-authority-scoped idempotency; then confirm live
+registration advertises both `session-visibility-v1` and
+`webchat_remote_mcp_v1`.
 
 No OS sandbox package or Linux kernel setting is a feature prerequisite. Instead,
 the runtime probe must prove that remote MCP Authorization headers are private,

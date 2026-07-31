@@ -83,23 +83,25 @@ runtime.
    runtime, model, or MCP arguments never select the acting principal.
 2. The grant is accepted only by the AgentConnect MCP endpoint and exposes only the
    delegated preset catalog. It is not valid for ordinary REST authentication.
-3. A grant is bound to one immutable conversation tuple:
-   `(conversationId, userId, orgId, agentId, generation)`.
+3. Every access grant is bound to one immutable logical-authority tuple:
+   `(conversationId, userId, orgId, agentId, authorityGeneration)`. Multiple
+   short-lived access grants may belong to the same authority generation.
 4. A grant has a short absolute expiry, can be revoked immediately, and is invalid
-   after its conversation generation changes.
-5. The raw grant credential appears only in the CP issuance response, daemon memory,
-   and runtime-private MCP transport configuration. It never appears in model
-   context, tool schemas or arguments, transcript bodies, audit details, metrics, or
-   logs.
+   after its logical authority generation changes.
+5. The raw grant credential appears only transiently in the CP issuance response,
+   relay forwarding memory, daemon memory, and runtime-private MCP transport
+   configuration. It never appears in model context, tool schemas or arguments,
+   transcript bodies, audit details, metrics, logs, or durable relay state.
 6. Every MCP request re-checks current membership, role, resource visibility, preset
    entitlement, agent placement where relevant, catalog scope, and confirmation
    policy.
 7. Delegated calls cannot mutate their own host preset agent. `updateAgent` and
    `deleteAgent` fail before REST dispatch when their target is the grant's
    `agentId`.
-8. One `(grantId, invocationId)` is bound to one canonical request hash. A retry may
-   retrieve the same result but cannot execute different bytes or repeat a completed
-   write.
+8. One `(conversationId, authorityGeneration, invocationId)` is bound to one
+   canonical request hash. Credential renewal does not change this key. A transport
+   retry may retrieve the same result but cannot execute different bytes or repeat
+   a completed write.
 9. The feature never falls back to a daemon API key, organization principal, user
    API key, system-prompt secret, or unscoped MCP credential.
 10. Disabling or failing delegated MCP removes only `agentconnect-admin`; ordinary
@@ -138,8 +140,10 @@ sequenceDiagram
 ```
 
 The grant may travel with trusted relay routing metadata because the relay already
-receives the CP verification result and forwards directly to the owning daemon. It
-must not be serialized into message content or any durable relay store.
+receives the CP verification result and forwards directly to the owning daemon. The
+raw credential exists transiently in CP, relay, daemon, and runtime memory during
+that delivery. It must not be serialized into message content or any durable relay
+store.
 
 If a future protocol can deliver the grant directly over daemon↔CP control signaling
 without putting message content on that connection, that is also valid. In either
@@ -159,7 +163,7 @@ interface WebchatMcpGrant {
   userId: string
   orgId: string
   agentId: string
-  generation: number
+  authorityGeneration: number
   catalog: 'agentconnect-admin'
   issuedAt: Date
   expiresAt: Date
@@ -188,15 +192,32 @@ The CP may issue a grant only when all of the following hold:
 - the user may currently view and use the agent; and
 - the selected runtime advertises support for private HTTPS MCP transport headers.
 
-Issuing a new generation atomically revokes the previous generation. An ordinary
-browser transport reconnect may reuse a still-valid generation; an ownership,
-placement, or logical-session change rotates it.
+The raw credential is returned exactly once, in the issuance response that delivers
+it to the runtime. Because the CP retains only its hash, it never attempts to
+reconstruct or re-deliver an existing credential.
+
+Whenever a browser verification, daemon restart, ACP session rebuild, or scheduled
+credential renewal requires raw material, the CP issues a fresh access grant under
+the current logical authority generation. Access-grant renewal does not rotate that
+generation and therefore does not reset invocation idempotency.
+
+Up to four unexpired access grants may coexist for one
+`(conversationId, authorityGeneration)`. This supports concurrent browser tabs and
+an overlap window while a runtime replaces its descriptor. Issuance beyond the
+bound marks the oldest access grant for revocation, but revokes it only after the
+daemon acknowledges that the replacement descriptor was installed. A failed or
+lost delivery leaves the prior grant usable until its normal expiry. Logical
+conversation close, ownership change, incompatible placement change, or security
+revocation increments the authority generation and atomically revokes all access
+grants from the previous generation.
 
 ### 5.3 Lifetime
 
-The initial access-grant lifetime is 30 minutes. It has no refresh token. A runtime
-that cannot update an MCP descriptor receives a bounded authorization-expired tool
-error after expiry; reconnecting or rebuilding the ACP session obtains a fresh grant.
+The initial access-grant lifetime is 30 minutes. It has no refresh token. Descriptor
+replacement requests a newly issued access grant while preserving the logical
+authority generation. A runtime that cannot replace a descriptor receives a bounded
+authorization-expired tool error after expiry; reconnecting or rebuilding the ACP
+session obtains a fresh grant.
 
 Before implementation ships, runtime probes must establish whether each curated
 runtime can update the descriptor safely. A longer lifetime is not an acceptable
@@ -205,7 +226,7 @@ substitute for a missing rotation mechanism without a separate design review.
 The grant is revoked on:
 
 - logical conversation close or expiry;
-- generation rotation;
+- logical authority-generation rotation;
 - user sign-out when the product revokes the conversation;
 - membership removal;
 - agent detach, deletion, or incompatible placement change;
@@ -232,6 +253,7 @@ Requirements:
 
 - The descriptor is structured ACP/runtime configuration, not prompt text.
 - The runtime must keep transport headers out of model input and tool arguments.
+- The runtime MCP client must implement the invocation-id contract in section 8.
 - The daemon must redact `headers` from diagnostics, errors, traces, and session
   dumps.
 - `session/new` and `session/load` attach the descriptor only to the exact eligible
@@ -239,7 +261,8 @@ Requirements:
 - Agent-scoped shared ACP hosts are permitted only when the runtime guarantees that
   MCP descriptors and credentials are session-scoped. If it has agent-wide MCP
   configuration, that runtime is ineligible until it supports session scoping.
-- The daemon must remove or replace the descriptor when a session generation rotates.
+- The daemon must remove or replace the descriptor when an access grant renews or
+  the logical authority generation rotates.
 - The raw token is never persisted in `agent.json`, the transcript store, memory, or
   workspace files.
 
@@ -255,7 +278,8 @@ delegated token as a personal API key.
 After constant-time token verification, the CP:
 
 1. loads the grant and durable conversation;
-2. verifies expiry, revocation, generation, owner tuple, preset, and feature gate;
+2. verifies expiry, revocation, authority generation, owner tuple, preset, and
+   feature gate;
 3. resolves the acting principal exclusively from stored records;
 4. validates the MCP tool against the delegated catalog;
 5. applies current membership, RBAC, and resource-visibility rules;
@@ -273,14 +297,30 @@ Hidden resources preserve the normal no-existence-oracle behavior.
 
 ## 8. Invocation idempotency
 
-Every delegated request carries a public UUID `invocationId`, preferably through a
-dedicated MCP metadata field or `Idempotency-Key` header. It is not a credential.
+The runtime MCP client, not the model or daemon, creates a UUIDv4 `invocationId`
+when it begins one logical `tools/call`. It sends that value in the
+`Idempotency-Key` HTTP header. The header is transport metadata and is not exposed
+as a tool argument.
+
+The client must retain the invocation id, canonical request bytes, and terminal
+state until it receives a terminal MCP response or the retry window expires.
+Automatic HTTP retries, credential replacement, reconnect, and `session/load` reuse
+the same id and exact request. The MCP JSON-RPC request id is unrelated and must not
+be used as the idempotency key.
+
+If credential replacement requires a runtime process restart, the runtime adapter
+must persist only the non-secret outstanding invocation records in its session
+state and restore them before retrying. A runtime that cannot satisfy and probe this
+contract is ineligible for `webchat_remote_mcp_v1`. This guarantee covers transport
+retry of an already-created invocation; it cannot deduplicate a model independently
+deciding later to create a new logical tool call.
 
 The CP canonicalizes the exact tool name and arguments and stores:
 
 ```ts
 interface WebchatMcpInvocation {
-  grantId: string
+  conversationId: string
+  authorityGeneration: number
   invocationId: string
   requestHash: string
   status: 'claimed' | 'completed' | 'failed' | 'ambiguous'
@@ -290,13 +330,17 @@ interface WebchatMcpInvocation {
 }
 ```
 
-The unique key is `(grantId, invocationId)`:
+The unique key is
+`(conversationId, authorityGeneration, invocationId)`, not an access-grant id:
 
 - first claim executes;
+- any access grant in the same live authority generation addresses the same ledger
+  entry;
 - the same hash observes in-progress state or receives the cached final response;
 - a different hash is rejected;
 - an ambiguous write is never executed automatically a second time; and
-- records and cached responses have bounded size and retention.
+- records and cached responses have bounded size and are retained through the full
+  conversation retry and confirmation window, plus a 24-hour safety margin.
 
 This ledger replaces the former mint/claim assertion exchange. The runtime already
 calls the final authentication and execution endpoint directly, so a second
@@ -314,7 +358,7 @@ authority.
 High-impact writes require a user confirmation bound to:
 
 ```text
-grantId + invocationId + requestHash + userId + expiresAt
+conversationId + authorityGeneration + invocationId + requestHash + userId + expiresAt
 ```
 
 The model cannot satisfy this confirmation by returning `yes`. The CP creates a
@@ -332,7 +376,7 @@ remote MCP easier to ship.
 
 1. Browser authenticates and requests a webchat token.
 2. CP creates `WebchatConversation` and its private owner binding.
-3. CP issues generation 1 and a short-lived MCP grant.
+3. CP creates authority generation 1 and issues a short-lived MCP access grant.
 4. Relay verifies and forwards routing plus grant metadata.
 5. Daemon starts or reuses the normal agent ACP host.
 6. Daemon creates the ACP session with the session-scoped remote MCP descriptor.
@@ -345,8 +389,10 @@ tools are unavailable.
 ### 10.2 Resume
 
 Resume succeeds only for the same authenticated owner, organization, agent, and
-conversation. The CP reuses a live grant or rotates it. The daemon must attach the
-current descriptor before `session/load` or the next prompt.
+conversation. The CP keeps the current logical authority generation but always
+issues a fresh access grant because stored hashes cannot be re-delivered. Concurrent
+tabs may retain their bounded, unexpired grants under the same generation. The daemon
+must attach the newly issued descriptor before `session/load` or the next prompt.
 
 ### 10.3 Close and revoke
 
@@ -359,18 +405,18 @@ organization, and global feature revocation without requiring daemon isolation.
 
 ## 11. Failure behavior
 
-| Failure                                                  | Behavior                                                                      |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Non-preset or non-webchat session                        | No `agentconnect-admin` descriptor.                                           |
-| Runtime lacks private, session-scoped remote MCP headers | Runtime is ineligible; ordinary chat continues.                               |
-| Grant missing, forged, expired, revoked, or stale        | MCP returns authorization expired/invalid; no fallback identity.              |
-| CP unavailable                                           | Admin tool returns a retryable error; ordinary chat and local tools continue. |
-| User removed or visibility changed                       | Next request fails under live authorization.                                  |
-| Agent moved or conversation generation changed           | Old grant fails; reconnect or session update installs the new descriptor.     |
-| Duplicate invocation                                     | Same request returns status/cached result; different request is rejected.     |
-| Ambiguous write                                          | Report ambiguous; do not retry execution automatically.                       |
-| Feature disabled                                         | Stop issuance, revoke active grants, and omit/remove descriptors.             |
-| Credential appears in a log or transcript                | Treat as a security incident and revoke the grant generation.                 |
+| Failure                                                  | Behavior                                                                          |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Non-preset or non-webchat session                        | No `agentconnect-admin` descriptor.                                               |
+| Runtime lacks private, session-scoped remote MCP headers | Runtime is ineligible; ordinary chat continues.                                   |
+| Grant missing, forged, expired, revoked, or stale        | MCP returns authorization expired/invalid; no fallback identity.                  |
+| CP unavailable                                           | Admin tool returns a retryable error; ordinary chat and local tools continue.     |
+| User removed or visibility changed                       | Next request fails under live authorization.                                      |
+| Agent moved or authority generation changed              | Old grants fail; reconnect or session update installs the new descriptor.         |
+| Duplicate invocation                                     | Same request returns status/cached result; different request is rejected.         |
+| Ambiguous write                                          | Report ambiguous; do not retry execution automatically.                           |
+| Feature disabled                                         | Stop issuance, revoke active grants, and omit/remove descriptors.                 |
+| Credential appears in a log or transcript                | Treat as a security incident and revoke the access grant or authority generation. |
 
 Errors shown to the user describe the action needed, for example:
 
@@ -414,7 +460,9 @@ The CP feature gate remains default-off. Enablement requires:
 2. relay/protocol support for confidential grant delivery;
 3. daemon support for exact-session descriptor attachment and removal;
 4. a passing runtime probe proving remote HTTPS MCP headers are session-scoped and
-   absent from model context and diagnostics;
+   absent from model context and diagnostics, and that `Idempotency-Key` is created
+   and preserved across every supported automatic retry and descriptor-renewal
+   path;
 5. private session visibility enforcement; and
 6. a tested revoke path.
 
@@ -461,7 +509,7 @@ The implementation adds:
 - confidential grant delivery in webchat verification/routing;
 - exact-session remote MCP descriptor lifecycle;
 - delegated Bearer authentication at `/api/v1/mcp`;
-- grant-scoped invocation idempotency;
+- conversation-authority-scoped invocation idempotency;
 - runtime capability probes for private headers and session scoping; and
 - credential redaction tests across CP, relay, daemon, and runtime adapters.
 
