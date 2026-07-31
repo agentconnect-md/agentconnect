@@ -1098,7 +1098,8 @@ export interface WebchatMcpDelegationRepo {
   getCurrent(delegationId: string): Promise<WebchatMcpDelegationRecord | null>
   /**
    * Delete expired delegations only after their invocation ledger is empty.
-   * `expired` counts only deleted rows that had not already been revoked.
+   * `expired` counts deleted rows whose natural expiry transition had not yet
+   * been observed, including rows marked expired during reconnect rotation.
    */
   reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult>
 }

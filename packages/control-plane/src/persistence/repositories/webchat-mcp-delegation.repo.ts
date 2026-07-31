@@ -189,7 +189,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
         FOR UPDATE
       `)
       if (candidates.length === 0) return { deleted: 0, expired: 0 }
-      const deleted = await tx.$queryRaw<{ revokedAt: Date | null }[]>(Prisma.sql`
+      const deleted = await tx.$queryRaw<{ revokedAt: Date | null; revokedReason: string | null }[]>(Prisma.sql`
         DELETE FROM "webchat_mcp_delegation" AS delegation
         WHERE delegation."id" IN (${Prisma.join(candidates.map(({ id }) => id))})
           AND delegation."expiresAt" <= ${expiredBefore}
@@ -198,11 +198,14 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
             FROM "mcp_invocation" AS invocation
             WHERE invocation."delegationId" = delegation."id"
           )
-        RETURNING delegation."revokedAt"
+        RETURNING delegation."revokedAt", delegation."revokedReason"
       `)
       return {
         deleted: deleted.length,
-        expired: deleted.reduce((count, row) => count + Number(row.revokedAt === null), 0)
+        expired: deleted.reduce(
+          (count, row) => count + Number(row.revokedAt === null || row.revokedReason === 'expired'),
+          0
+        )
       }
     })
   }
