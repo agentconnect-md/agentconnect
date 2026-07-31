@@ -19,6 +19,7 @@ import {
   permissionModeOptions,
   presentedDaemonStatus,
   resolveEffortForModel,
+  sessionChannelDisplay,
   sessionChannelFilterValue,
   status,
   type DaemonRow,
@@ -60,6 +61,30 @@ describe('sessionChannelFilterValue', () => {
 
   it('keeps a normal integration channel addressable by its raw id', () => {
     expect(sessionChannelFilterValue({ platform: 'slack', channel: '#general', channelId: 'C123' })).toBe('C123')
+  })
+})
+
+describe('sessionChannelDisplay', () => {
+  const cronName = (id: string) => (id === 'e23c6ea3-57bd-4bce-b014-81077c865059' ? 'Nightly report' : undefined)
+
+  it('resolves a headless cron channel to its schedule name under the schedule mark', () => {
+    expect(
+      sessionChannelDisplay({ platform: 'slack', channel: 'cron:e23c6ea3-57bd-4bce-b014-81077c865059' }, cronName)
+    ).toEqual({ platform: 'schedule', label: 'Nightly report' })
+  })
+
+  it('falls back to a short schedule id while the crons list is still loading', () => {
+    expect(sessionChannelDisplay({ platform: 'slack', channel: 'cron:0f9b3a10-dead-beef' }, cronName)).toEqual({
+      platform: 'schedule',
+      label: 'Schedule 0f9b3a10'
+    })
+  })
+
+  it('leaves real platform channels untouched', () => {
+    expect(sessionChannelDisplay({ platform: 'slack', channel: '#deploys' }, cronName)).toEqual({
+      platform: 'slack',
+      label: '#deploys'
+    })
   })
 })
 

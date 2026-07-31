@@ -942,6 +942,8 @@ export interface OrgDto {
   /** The signed-in user's role in this org. */
   role: MemberRole
   memberCount: number
+  /** Registered daemons in this org (any status); undefined on older CPs. */
+  daemonCount?: number
   createdAt: string // ISO-8601
 }
 

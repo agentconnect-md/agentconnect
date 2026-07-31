@@ -1665,6 +1665,9 @@ export const OrgDto = z.object({
   /** The CALLER's role in this org. */
   role: MemberRole,
   memberCount: z.number().int(),
+  /** Registered daemons in this org (any status) — lets the console skip the
+   *  onboarding redirect when ANY of the caller's orgs already runs a daemon. */
+  daemonCount: z.number().int(),
   createdAt: z.string() // ISO-8601
 })
 export const OrgListDto = z.array(OrgDto)

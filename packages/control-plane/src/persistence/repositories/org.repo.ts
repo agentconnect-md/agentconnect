@@ -29,7 +29,7 @@ export class PgOrgRepo implements OrgRepo {
   async listForUser(userId: string): Promise<OrgRecord[]> {
     const rows = await this.db.membership.findMany({
       where: { userId },
-      include: { org: { include: { _count: { select: { members: true } } } } },
+      include: { org: { include: { _count: { select: { members: true, daemons: true } } } } },
       orderBy: { id: 'asc' } // cuids are time-sortable ⇒ insertion order (personal org first)
     })
     return rows.map((m) => ({
@@ -39,6 +39,7 @@ export class PgOrgRepo implements OrgRepo {
       icon: parseAgentIcon(m.org.icon),
       role: m.role as OrgMemberRole,
       memberCount: m.org._count.members,
+      daemonCount: m.org._count.daemons,
       createdAt: m.org.createdAt,
       updatedAt: m.org.updatedAt
     }))
@@ -68,6 +69,7 @@ export class PgOrgRepo implements OrgRepo {
       icon: parseAgentIcon(org.icon),
       role: 'owner',
       memberCount: 1,
+      daemonCount: 0,
       createdAt: org.createdAt,
       updatedAt: org.updatedAt
     }

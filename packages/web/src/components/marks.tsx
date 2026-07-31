@@ -196,6 +196,14 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
   }
+  // Headless schedule fires — no real platform channel behind them.
+  if (x.includes('sched')) {
+    return (
+      <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
+        <Icon name="calendar-clock" className="h-full w-full" />
+      </span>
+    )
+  }
   if (x.includes('dream')) {
     return (
       <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
