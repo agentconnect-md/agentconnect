@@ -1,7 +1,16 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  accessSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 if (process.platform !== 'linux') throw new Error('SRT smoke test requires Linux')
@@ -9,35 +18,78 @@ if (process.platform !== 'linux') throw new Error('SRT smoke test requires Linux
 const entry = resolve(process.argv[2] ?? fileURLToPath(new URL('../dist/index.js', import.meta.url)))
 if (!isAbsolute(entry)) throw new Error('daemon entry must be absolute')
 
-const base = resolve(process.env.AGENTCONNECT_SRT_SMOKE_BASE ?? tmpdir())
+let defaultBase = dirname(entry)
+try {
+  accessSync(defaultBase, constants.W_OK)
+} catch {
+  // Installed package directories may be read-only; overlapping /tmp denies
+  // remain a valid fallback and exercise the same carve-back ordering.
+  defaultBase = tmpdir()
+}
+const base = resolve(process.env.AGENTCONNECT_SRT_SMOKE_BASE ?? defaultBase)
 mkdirSync(base, { recursive: true })
 const root = mkdtempSync(join(base, 'agentconnect-srt-smoke-'))
+const sharedTmp = mkdtempSync(join(tmpdir(), 'agentconnect-srt-shared-'))
+const sharedVarTmp = mkdtempSync('/var/tmp/agentconnect-srt-shared-')
 let orphanProviderPid
 
 try {
-  const agentDir = join(root, 'agent')
+  const daemonRoot = join(root, 'daemon')
+  const agentDir = join(daemonRoot, 'agents', 'agent-a')
+  const siblingAgent = join(daemonRoot, 'agents', 'agent-b')
   const workspace = join(agentDir, 'workspace')
   const home = join(agentDir, 'home')
   const memory = join(agentDir, 'memory')
-  const hostState = join(root, 'host', '.claude')
+  const hostHome = join(root, 'host-home')
+  const trustedRuntimeCode = join(hostHome, '.local', 'runtime', 'index.js')
+  const sharedCredentialDir = join(hostHome, '.claude', 'agentconnect-auth')
   const outside = join(root, 'outside.txt')
   const settingsDir = join(agentDir, '.agentconnect', 'sandbox')
   const settingsPath = join(settingsDir, 'settings.json')
 
-  for (const path of [workspace, home, memory, hostState, settingsDir]) mkdirSync(path, { recursive: true })
+  for (const path of [
+    workspace,
+    home,
+    memory,
+    siblingAgent,
+    dirname(trustedRuntimeCode),
+    sharedCredentialDir,
+    settingsDir
+  ]) {
+    mkdirSync(path, { recursive: true })
+  }
   mkdirSync(join(workspace, '.git', 'hooks'), { recursive: true })
   writeFileSync(join(workspace, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
   writeFileSync(join(agentDir, 'agent.json'), '{"secret":"hidden"}\n')
-  writeFileSync(join(hostState, '.credentials.json'), '{"secret":"host"}\n')
+  writeFileSync(join(daemonRoot, 'daemon-secret.json'), '{"secret":"daemon"}\n')
+  writeFileSync(join(siblingAgent, 'agent.json'), '{"secret":"sibling"}\n')
+  writeFileSync(join(hostHome, 'host-secret.txt'), 'host secret\n')
+  writeFileSync(trustedRuntimeCode, 'trusted runtime code\n')
+  writeFileSync(join(sharedCredentialDir, '.credentials.json'), '{"token":"initial"}\n')
+  writeFileSync(join(sharedTmp, 'secret.txt'), 'shared tmp\n')
+  writeFileSync(join(sharedVarTmp, 'secret.txt'), 'shared var tmp\n')
+
+  const contains = (rootPath, candidate) => {
+    const rel = relative(rootPath, candidate)
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+  }
+  const compact = (paths) => {
+    const sorted = [...new Set(paths.map((path) => realpathSync(path)))].sort(
+      (a, b) => a.length - b.length || a.localeCompare(b)
+    )
+    return sorted.filter((path, index) => !sorted.slice(0, index).some((parent) => contains(parent, path)))
+  }
+  const denyRead = compact([daemonRoot, hostHome, tmpdir(), '/var/tmp'])
+  const runtimeBin = realpathSync(dirname(process.execPath))
   writeFileSync(
     settingsPath,
     `${JSON.stringify(
       {
         network: { allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true },
         filesystem: {
-          denyRead: [agentDir, hostState, '/tmp/claude', '/private/tmp/claude'],
-          allowRead: [workspace, home, memory],
-          allowWrite: [workspace, home, memory],
+          denyRead,
+          allowRead: [workspace, home, memory, trustedRuntimeCode, sharedCredentialDir, runtimeBin],
+          allowWrite: [workspace, home, memory, sharedCredentialDir],
           denyWrite: ['/tmp/claude', '/private/tmp/claude'],
           allowGitConfig: false
         },
@@ -54,7 +106,19 @@ try {
     import { readFileSync, writeFileSync } from 'node:fs'
     import { createServer } from 'node:net'
 
-    const [agentDir, workspace, home, hostState, outside] = process.argv.slice(1)
+    const [
+      daemonRoot,
+      agentDir,
+      siblingAgent,
+      workspace,
+      home,
+      hostHome,
+      trustedRuntimeCode,
+      sharedCredentialDir,
+      sharedTmp,
+      sharedVarTmp,
+      outside
+    ] = process.argv.slice(1)
     const assert = (condition, message) => { if (!condition) throw new Error(message) }
     const denied = (operation) => { try { operation(); return false } catch { return true } }
 
@@ -62,7 +126,14 @@ try {
     assert(process.env.HOME === home, 'private HOME was not preserved')
     assert(process.env.TMPDIR === home + '/.tmp', 'temporary files were not redirected into private HOME')
     assert(denied(() => readFileSync(agentDir + '/agent.json')), 'agent metadata remained readable')
-    assert(denied(() => readFileSync(hostState + '/.credentials.json')), 'host runtime state remained readable')
+    assert(denied(() => readFileSync(daemonRoot + '/daemon-secret.json')), 'daemon state remained readable')
+    assert(denied(() => readFileSync(siblingAgent + '/agent.json')), 'sibling agent remained readable')
+    assert(denied(() => readFileSync(hostHome + '/host-secret.txt')), 'host HOME remained readable')
+    assert(denied(() => readFileSync(sharedTmp + '/secret.txt')), 'shared tmp remained readable')
+    assert(denied(() => readFileSync(sharedVarTmp + '/secret.txt')), 'shared var tmp remained readable')
+    assert(readFileSync(trustedRuntimeCode, 'utf8') === 'trusted runtime code\n', 'trusted runtime code was hidden')
+    writeFileSync(sharedCredentialDir + '/.credentials.json', '{"token":"refreshed"}\n')
+    assert(readFileSync(sharedCredentialDir + '/.credentials.json', 'utf8').includes('refreshed'), 'credential refresh failed')
     writeFileSync(workspace + '/ok.txt', 'ok')
     assert(readFileSync(workspace + '/ok.txt', 'utf8') === 'ok', 'workspace was not writable')
     assert(denied(() => writeFileSync(workspace + '/.git/hooks/post-merge', 'escape')), 'git hooks remained writable')
@@ -107,10 +178,16 @@ try {
       '--input-type=module',
       '-e',
       probe,
+      daemonRoot,
       agentDir,
+      siblingAgent,
       workspace,
       home,
-      hostState,
+      hostHome,
+      trustedRuntimeCode,
+      sharedCredentialDir,
+      sharedTmp,
+      sharedVarTmp,
       outside
     ],
     {
@@ -175,4 +252,6 @@ try {
     }
   }
   rmSync(root, { recursive: true, force: true })
+  rmSync(sharedTmp, { recursive: true, force: true })
+  rmSync(sharedVarTmp, { recursive: true, force: true })
 }

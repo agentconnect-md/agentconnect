@@ -83,6 +83,8 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
         curated: true,
         isolateAccountApps: cfg.security.isolateAccountApps,
         runInSandbox,
+        daemonRoot: root,
+        agentsRoot: cfg.agentsDir,
         sandboxMechanism,
         hostEnv: process.env
       }
@@ -119,6 +121,8 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     scopeDir: agent.dir,
     cwd: agent.workspace.path,
     runInSandbox,
+    daemonRoot: root,
+    agentsRoot: cfg.agentsDir,
     explicitEnv: {
       ...runtimeEnv,
       ...agentEnv,

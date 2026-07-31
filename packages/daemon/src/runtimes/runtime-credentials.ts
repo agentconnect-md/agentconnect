@@ -1,0 +1,377 @@
+import { randomUUID, timingSafeEqual } from 'node:crypto'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import type { RuntimeDef } from '../config/config-schema.js'
+
+export type SharedCredentialProfile = 'claude' | 'codex'
+
+export interface SharedRuntimeCredentialAccess {
+  env: Record<string, string>
+  /** Existing, credential-only host paths that the sandbox may update. */
+  writablePaths: string[]
+  /** Private-HOME destinations that must no longer receive copy-once auth. */
+  seedExclusions: string[]
+  /** Finish migration/linking after the private runtime HOME exists. */
+  preparePrivateHome: (runtimeHome: string) => void
+}
+
+function signature(runtime: RuntimeDef | undefined, pattern: RegExp): boolean {
+  return runtime ? [runtime.command, ...runtime.args].some((part) => pattern.test(part.toLowerCase())) : false
+}
+
+/** Runtime identity is daemon/registry-owned; an agent can select an id but
+ * cannot declare a credential profile or filesystem path. */
+export function sharedCredentialProfile(runtimeId: string, runtime?: RuntimeDef): SharedCredentialProfile | undefined {
+  if (runtimeId === 'claude-acp' || signature(runtime, /(?:^|[\\/@])claude(?:-[a-z-]+)?(?:@[^\\/]*)?$/)) {
+    return 'claude'
+  }
+  if (runtimeId === 'codex-acp' || signature(runtime, /(?:^|[\\/])codex-acp(?:@[^\\/]*)?$/)) {
+    return 'codex'
+  }
+  return undefined
+}
+
+function hostHome(env: NodeJS.ProcessEnv): string {
+  return env.HOME || homedir()
+}
+
+function absoluteConfiguredPath(raw: string, env: NodeJS.ProcessEnv, label: string): string {
+  const expanded = raw === '~' ? hostHome(env) : raw.startsWith('~/') ? join(hostHome(env), raw.slice(2)) : raw
+  if (!isAbsolute(expanded) || resolve(expanded) === sep) throw new Error(`unsafe ${label}: ${raw}`)
+  return resolve(expanded)
+}
+
+function ensureOwnedDirectory(path: string, label: string): string {
+  mkdirSync(path, { recursive: true, mode: 0o700 })
+  const real = realpathSync(path)
+  const stat = statSync(real)
+  if (!stat.isDirectory()) throw new Error(`${label} is not a directory: ${path}`)
+  const uid = process.getuid?.()
+  if (uid !== undefined && stat.uid !== uid) throw new Error(`${label} is not owned by the daemon user: ${real}`)
+  try {
+    chmodSync(real, 0o700)
+  } catch {
+    // Linux is the only enabled shared-login target; keep tests portable.
+  }
+  return real
+}
+
+function existingFileTarget(path: string): string {
+  const info = lstatSync(path)
+  const target = info.isSymbolicLink() ? realpathSync(path) : path
+  if (!statSync(target).isFile()) throw new Error(`credential path is not a regular file: ${path}`)
+  return target
+}
+
+function lstatIfPresent(path: string): ReturnType<typeof lstatSync> | undefined {
+  try {
+    return lstatSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+function secureCredentialFile(path: string): void {
+  try {
+    chmodSync(path, 0o600)
+  } catch {
+    // Best effort on non-POSIX test filesystems.
+  }
+}
+
+function jsonObject(path: string): Record<string, unknown> {
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Claude settings must contain a JSON object: ${path}`)
+  }
+  return parsed as Record<string, unknown>
+}
+
+function atomicJsonWrite(path: string, value: Record<string, unknown>): void {
+  const destination = existsSync(path) ? existingFileTarget(path) : path
+  mkdirSync(dirname(destination), { recursive: true, mode: 0o700 })
+  const mode = existsSync(destination) ? statSync(destination).mode & 0o777 : 0o600
+  const temporary = join(dirname(destination), `.${randomUUID()}.tmp`)
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: mode || 0o600 })
+    renameSync(temporary, destination)
+    secureCredentialFile(destination)
+  } catch (error) {
+    try {
+      unlinkSync(temporary)
+    } catch {
+      // The temporary file may not exist or may already have been renamed.
+    }
+    throw error
+  }
+}
+
+function sameFileContents(a: string, b: string): boolean {
+  const left = readFileSync(a)
+  const right = readFileSync(b)
+  return left.length === right.length && timingSafeEqual(left, right)
+}
+
+function claudeCredentialGeneration(path: string): number | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+      claudeAiOauth?: { expiresAt?: unknown; expires_at?: unknown }
+    }
+    const value = parsed.claudeAiOauth?.expiresAt ?? parsed.claudeAiOauth?.expires_at
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string') {
+      const numeric = Number(value)
+      if (Number.isFinite(numeric)) return numeric
+      const timestamp = Date.parse(value)
+      return Number.isFinite(timestamp) ? timestamp : undefined
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+function prepareClaudeCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
+  const configured = env.CLAUDE_CONFIG_DIR || join(hostHome(env), '.claude')
+  const configDir = ensureOwnedDirectory(
+    absoluteConfiguredPath(configured, env, 'host CLAUDE_CONFIG_DIR'),
+    'host Claude config directory'
+  )
+  const settingsPath = join(configDir, 'settings.json')
+  const settings = existsSync(settingsPath) ? jsonObject(settingsPath) : {}
+  const rawSettingsEnv = settings.env
+  if (
+    rawSettingsEnv !== undefined &&
+    (!rawSettingsEnv || typeof rawSettingsEnv !== 'object' || Array.isArray(rawSettingsEnv))
+  ) {
+    throw new Error(`Claude settings.env must contain a JSON object: ${settingsPath}`)
+  }
+  const settingsEnv = (rawSettingsEnv ?? {}) as Record<string, unknown>
+  const configuredSecureDir = settingsEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR
+  if (configuredSecureDir !== undefined && typeof configuredSecureDir !== 'string') {
+    throw new Error(`Claude settings env.CLAUDE_SECURESTORAGE_CONFIG_DIR must be a string: ${settingsPath}`)
+  }
+  const sharedDir = ensureOwnedDirectory(
+    absoluteConfiguredPath(
+      configuredSecureDir || join(configDir, 'agentconnect-auth'),
+      env,
+      'Claude secure credential directory'
+    ),
+    'Claude secure credential directory'
+  )
+  if (sharedDir === configDir || configDir.startsWith(sharedDir + sep)) {
+    throw new Error(
+      'Claude shared credential storage must be a dedicated directory, not the config directory or its parent'
+    )
+  }
+
+  const source = join(configDir, '.credentials.json')
+  const destination = join(sharedDir, '.credentials.json')
+  let moved = false
+  let removeLegacyAfterSettings = false
+  if (existsSync(source)) {
+    const sourceInfo = lstatSync(source)
+    const sourceTarget = existingFileTarget(source)
+    if (sourceInfo.isSymbolicLink() && (!existsSync(destination) || existingFileTarget(destination) !== sourceTarget)) {
+      throw new Error(`Claude credential symlink must already target the selected shared credential: ${source}`)
+    }
+    if (existsSync(destination)) {
+      const destinationTarget = existingFileTarget(destination)
+      if (sourceTarget === destinationTarget || sameFileContents(sourceTarget, destinationTarget)) {
+        removeLegacyAfterSettings = source !== destination
+      } else if (!configuredSecureDir) {
+        throw new Error(
+          `conflicting Claude credentials at ${source} and ${destination}; run host claude /login after resolving the conflict`
+        )
+      }
+      // If the host already selected this secure-storage directory, its file is
+      // authoritative and a leftover default-path file is deliberately ignored.
+    } else {
+      renameSync(sourceTarget, destination)
+      secureCredentialFile(destination)
+      moved = true
+    }
+  }
+
+  try {
+    if (configuredSecureDir !== sharedDir) {
+      atomicJsonWrite(settingsPath, {
+        ...settings,
+        env: { ...settingsEnv, CLAUDE_SECURESTORAGE_CONFIG_DIR: sharedDir }
+      })
+    }
+  } catch (error) {
+    if (moved && existsSync(destination) && !existsSync(source)) renameSync(destination, source)
+    throw error
+  }
+  if (removeLegacyAfterSettings && existsSync(source)) unlinkSync(source)
+  if (existsSync(destination)) secureCredentialFile(existingFileTarget(destination))
+
+  return {
+    env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: sharedDir },
+    writablePaths: [sharedDir],
+    seedExclusions: [join('.claude', '.credentials.json')],
+    preparePrivateHome: (runtimeHome) => {
+      const privateCredential = join(runtimeHome, '.claude', '.credentials.json')
+      const privateInfo = lstatIfPresent(privateCredential)
+      if (!privateInfo) return
+      if (privateInfo.isSymbolicLink()) {
+        let linked: string
+        try {
+          linked = realpathSync(privateCredential)
+        } catch {
+          throw new Error(`private Claude credential link is dangling: ${privateCredential}`)
+        }
+        if (!existsSync(destination) || linked !== existingFileTarget(destination)) {
+          throw new Error(
+            `private Claude credential link points outside the shared host credential: ${privateCredential}`
+          )
+        }
+        unlinkSync(privateCredential)
+        return
+      }
+      if (!privateInfo.isFile()) {
+        throw new Error(`private Claude credential path is not a regular file: ${privateCredential}`)
+      }
+
+      if (!existsSync(destination)) {
+        renameSync(privateCredential, destination)
+        secureCredentialFile(destination)
+        return
+      }
+      const authoritative = existingFileTarget(destination)
+      if (sameFileContents(privateCredential, authoritative)) {
+        unlinkSync(privateCredential)
+        return
+      }
+      const privateGeneration = claudeCredentialGeneration(privateCredential)
+      const hostGeneration = claudeCredentialGeneration(authoritative)
+      if (privateGeneration === undefined || hostGeneration === undefined || privateGeneration === hostGeneration) {
+        throw new Error(
+          `conflicting Claude credentials at ${privateCredential} and ${destination}; run host claude /login after resolving the conflict`
+        )
+      }
+      if (privateGeneration > hostGeneration) {
+        renameSync(privateCredential, authoritative)
+        secureCredentialFile(authoritative)
+      } else {
+        unlinkSync(privateCredential)
+      }
+    }
+  }
+}
+
+function refreshTimestamp(path: string): number | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { last_refresh?: unknown; lastRefresh?: unknown }
+    const value = parsed.last_refresh ?? parsed.lastRefresh
+    if (typeof value !== 'string') return undefined
+    const timestamp = Date.parse(value)
+    return Number.isFinite(timestamp) ? timestamp : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function prepareCodexCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
+  const configured = env.CODEX_HOME || join(hostHome(env), '.codex')
+  const codexHome = ensureOwnedDirectory(absoluteConfiguredPath(configured, env, 'host CODEX_HOME'), 'host CODEX_HOME')
+  const hostAuth = join(codexHome, 'auth.json')
+  if (existsSync(hostAuth)) secureCredentialFile(existingFileTarget(hostAuth))
+  const writablePaths = existsSync(hostAuth) ? [existingFileTarget(hostAuth)] : []
+
+  return {
+    env: {},
+    // A missing file cannot be rebound by SRT. The private link remains
+    // dangling until host `codex login` creates it; restarting the ACP host then
+    // picks it up without ever copying the credential.
+    writablePaths,
+    seedExclusions: [join('.codex', 'auth.json')],
+    preparePrivateHome: (runtimeHome) => {
+      const privateDir = ensureOwnedDirectory(join(runtimeHome, '.codex'), 'private Codex config directory')
+      const privateAuth = join(privateDir, 'auth.json')
+      const privateInfo = lstatIfPresent(privateAuth)
+      if (privateInfo) {
+        const info = privateInfo
+        if (info.isSymbolicLink()) {
+          let linked: string | undefined
+          try {
+            linked = realpathSync(privateAuth)
+          } catch {
+            // A dangling link is valid when the host has not logged in yet.
+          }
+          const authoritative = existsSync(hostAuth) ? existingFileTarget(hostAuth) : undefined
+          const lexicalTarget = resolve(dirname(privateAuth), readlinkSync(privateAuth))
+          if ((linked && authoritative && linked !== authoritative) || (!linked && lexicalTarget !== hostAuth)) {
+            throw new Error(`private Codex auth link points outside the shared host credential: ${privateAuth}`)
+          }
+          // Avoid a two-hop link through the hidden host HOME when auth.json is
+          // itself linked elsewhere. The private HOME should point directly at
+          // the exact writable file carved back into the sandbox.
+          if (authoritative && lexicalTarget !== authoritative) {
+            unlinkSync(privateAuth)
+            symlinkSync(authoritative, privateAuth)
+          }
+          return
+        }
+        if (!info.isFile()) throw new Error(`private Codex auth path is not a regular file: ${privateAuth}`)
+
+        if (!existsSync(hostAuth)) {
+          renameSync(privateAuth, hostAuth)
+          secureCredentialFile(hostAuth)
+          writablePaths.push(hostAuth)
+        } else {
+          const authoritative = existingFileTarget(hostAuth)
+          if (sameFileContents(privateAuth, authoritative)) {
+            unlinkSync(privateAuth)
+          } else {
+            const privateRefresh = refreshTimestamp(privateAuth)
+            const hostRefresh = refreshTimestamp(authoritative)
+            if (privateRefresh === undefined || hostRefresh === undefined || privateRefresh === hostRefresh) {
+              throw new Error(
+                `conflicting Codex credentials at ${privateAuth} and ${hostAuth}; run host codex login after resolving the conflict`
+              )
+            }
+            if (privateRefresh > hostRefresh) {
+              renameSync(privateAuth, authoritative)
+              secureCredentialFile(authoritative)
+            } else {
+              unlinkSync(privateAuth)
+            }
+          }
+        }
+      }
+      if (!lstatIfPresent(privateAuth)) {
+        symlinkSync(existsSync(hostAuth) ? existingFileTarget(hostAuth) : hostAuth, privateAuth)
+      }
+    }
+  }
+}
+
+export function prepareSharedRuntimeCredentials(opts: {
+  runtimeId: string
+  runtime?: RuntimeDef
+  hostEnv?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+}): SharedRuntimeCredentialAccess | undefined {
+  if ((opts.platform ?? process.platform) !== 'linux') return undefined
+  const profile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
+  if (!profile) return undefined
+  const env = opts.hostEnv ?? process.env
+  return profile === 'claude' ? prepareClaudeCredentials(env) : prepareCodexCredentials(env)
+}

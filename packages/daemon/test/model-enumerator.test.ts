@@ -8,7 +8,7 @@ import type { RuntimeDef } from '../src/config/config-schema.js'
 import { makeModelEnumerator } from '../src/runtimes/model-enumerator.js'
 import type { ProbeHostPolicy } from '../src/runtimes/runtime-prober.js'
 
-const runtime: RuntimeDef = { command: 'runtime', args: [], env: [] }
+const runtime: RuntimeDef = { command: process.execPath, args: [], env: [] }
 
 describe('makeModelEnumerator delegated private-root masks', () => {
   it('passes both daemon-private masks into the disposable bwrap host', async () => {
@@ -19,6 +19,7 @@ describe('makeModelEnumerator delegated private-root masks', () => {
     try {
       const enumerate = makeModelEnumerator({
         sandboxMechanism: 'bwrap',
+        daemonRoot: root,
         maskedReadRoots: maskedRoots,
         hostFactory: (_runtime, _id, _cwd, supplied) => {
           policy = supplied

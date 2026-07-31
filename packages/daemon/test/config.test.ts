@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config/load-config.js'
-import { McpServerDefSchema } from '../src/config/config-schema.js'
+import { McpServerDefSchema, RuntimeDefSchema } from '../src/config/config-schema.js'
 
 function tmpRoot(config: unknown): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-cfg-'))
@@ -138,6 +138,13 @@ describe('loadConfig', () => {
     const cfg = loadConfig({ root })
     expect(cfg.mcpServers?.files).toEqual({ transport: 'stdio', command: 'mcp-files', args: [], env: [], headers: [] })
     expect(cfg.mcpServers?.search?.url).toBe('http://localhost:9000/mcp')
+  })
+
+  it('accepts operator-owned runtime and stdio MCP read roots', () => {
+    expect(RuntimeDefSchema.parse({ command: 'runtime', readRoots: ['/opt/runtime'] }).readRoots).toEqual([
+      '/opt/runtime'
+    ])
+    expect(McpServerDefSchema.parse({ command: 'mcp', readRoots: ['/opt/mcp'] }).readRoots).toEqual(['/opt/mcp'])
   })
 
   it('loads an operator-owned stdio memory-plugin allowlist', () => {

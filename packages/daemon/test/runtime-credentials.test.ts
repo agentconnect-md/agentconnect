@@ -1,0 +1,152 @@
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
+
+const roots: string[] = []
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function fixture(): { root: string; daemonRoot: string; hostHome: string; scopeDir: string; cwd: string } {
+  const root = mkdtempSync(join(tmpdir(), 'ac-shared-login-'))
+  roots.push(root)
+  const daemonRoot = join(root, 'daemon')
+  const hostHome = join(root, 'host')
+  const scopeDir = join(daemonRoot, 'agents', 'agent-a')
+  const cwd = join(scopeDir, 'workspace')
+  mkdirSync(cwd, { recursive: true })
+  mkdirSync(hostHome)
+  return { root, daemonRoot, hostHome, scopeDir, cwd }
+}
+
+function settings(path: string): { filesystem: { allowWrite: string[] } } {
+  return JSON.parse(readFileSync(path, 'utf8')) as { filesystem: { allowWrite: string[] } }
+}
+
+describe('Linux shared runtime login', () => {
+  it('keeps Claude state private while host and agents share one refreshable credential directory', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostClaude = join(hostHome, '.claude')
+    const privateClaude = join(scopeDir, 'home', '.claude')
+    mkdirSync(hostClaude)
+    mkdirSync(privateClaude, { recursive: true })
+    writeFileSync(join(hostClaude, 'settings.json'), '{"theme":"dark"}')
+    writeFileSync(join(hostClaude, '.credentials.json'), '{"claudeAiOauth":{"expiresAt":1,"accessToken":"host-old"}}')
+    writeFileSync(
+      join(privateClaude, '.credentials.json'),
+      '{"claudeAiOauth":{"expiresAt":2,"accessToken":"agent-new"}}'
+    )
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      scopeDir,
+      cwd,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const sharedDir = realpathSync(join(hostClaude, 'agentconnect-auth'))
+    expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
+    expect(launch.env.CLAUDE_CONFIG_DIR).toBe(join(scopeDir, 'home', '.claude'))
+    expect(launch.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(sharedDir)
+    expect(JSON.parse(readFileSync(join(hostClaude, 'settings.json'), 'utf8'))).toMatchObject({
+      theme: 'dark',
+      env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: sharedDir }
+    })
+    expect(readFileSync(join(sharedDir, '.credentials.json'), 'utf8')).toContain('agent-new')
+    expect(existsSync(join(hostClaude, '.credentials.json'))).toBe(false)
+    expect(existsSync(join(privateClaude, '.credentials.json'))).toBe(false)
+    expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(sharedDir)
+
+    writeFileSync(join(sharedDir, '.credentials.json'), '{"accessToken":"refreshed"}')
+    const scopeB = join(daemonRoot, 'agents', 'agent-b')
+    const cwdB = join(scopeB, 'workspace')
+    mkdirSync(cwdB, { recursive: true })
+    const second = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      scopeDir: scopeB,
+      cwd: cwdB,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    expect(second.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(sharedDir)
+    expect(readFileSync(join(sharedDir, '.credentials.json'), 'utf8')).toContain('refreshed')
+  })
+
+  it('links private Codex homes to the newest shared auth file and preserves the link across refresh', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostCodex = join(hostHome, '.codex')
+    const privateCodex = join(scopeDir, 'home', '.codex')
+    mkdirSync(hostCodex)
+    mkdirSync(privateCodex, { recursive: true })
+    writeFileSync(join(hostCodex, 'auth.json'), '{"last_refresh":"2026-01-01T00:00:00Z","token":"old"}')
+    writeFileSync(join(privateCodex, 'auth.json'), '{"last_refresh":"2026-02-01T00:00:00Z","token":"new"}')
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      scopeDir,
+      cwd,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const privateAuth = join(privateCodex, 'auth.json')
+    const hostAuth = join(hostCodex, 'auth.json')
+    expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)
+    expect(realpathSync(privateAuth)).toBe(realpathSync(hostAuth))
+    expect(readFileSync(hostAuth, 'utf8')).toContain('"new"')
+    expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(realpathSync(hostAuth))
+
+    writeFileSync(privateAuth, '{"last_refresh":"2026-03-01T00:00:00Z","token":"refreshed"}')
+    expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)
+    expect(readFileSync(hostAuth, 'utf8')).toContain('refreshed')
+  })
+
+  it('does not silently choose between divergent Codex credentials with the same refresh generation', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostCodex = join(hostHome, '.codex')
+    const privateCodex = join(scopeDir, 'home', '.codex')
+    mkdirSync(hostCodex)
+    mkdirSync(privateCodex, { recursive: true })
+    writeFileSync(join(hostCodex, 'auth.json'), '{"last_refresh":"2026-01-01T00:00:00Z","token":"host"}')
+    writeFileSync(join(privateCodex, 'auth.json'), '{"last_refresh":"2026-01-01T00:00:00Z","token":"agent"}')
+
+    expect(() =>
+      prepareRuntimeLaunch({
+        runtimeId: 'codex-acp',
+        scopeDir,
+        cwd,
+        daemonRoot,
+        runInSandbox: true,
+        sandboxMechanism: 'bwrap',
+        credentialPlatform: 'linux',
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+      })
+    ).toThrow(/conflicting Codex credentials/)
+    expect(lstatSync(join(privateCodex, 'auth.json')).isSymbolicLink()).toBe(false)
+  })
+})

@@ -7,10 +7,11 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve, sep } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
@@ -29,6 +30,13 @@ function fixture(): { scopeDir: string; cwd: string; hostHome: string } {
   return { scopeDir, cwd, hostHome }
 }
 
+function coveredBy(paths: string[], target: string): boolean {
+  return paths.some((root) => {
+    const rel = relative(root, target)
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+  })
+}
+
 describe('prepareRuntimeLaunch', () => {
   it('carries the daemon broker mask only on an enforced bwrap launch', () => {
     const testRoot = mkdtempSync(join(tmpdir(), 'ac-runtime-mask-'))
@@ -37,8 +45,10 @@ describe('prepareRuntimeLaunch', () => {
     expect(resolvedRoot.startsWith(repoRoot + sep)).toBe(false)
     const scopeDir = join(testRoot, 'agent')
     const cwd = join(scopeDir, 'workspace')
+    const hostHome = join(testRoot, 'host-home')
     const maskedRoots = [join(testRoot, 'broker'), join(testRoot, 'webchat-hosts')]
     mkdirSync(cwd, { recursive: true })
+    mkdirSync(hostHome)
     for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
     try {
       const launch = prepareRuntimeLaunch({
@@ -46,8 +56,10 @@ describe('prepareRuntimeLaunch', () => {
         scopeDir,
         cwd,
         runInSandbox: true,
+        daemonRoot: testRoot,
         sandboxMechanism: 'bwrap',
-        maskedReadRoots: maskedRoots
+        maskedReadRoots: maskedRoots,
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
       })
       expect(launch.sandbox?.maskedReadRoots).toEqual(maskedRoots)
       expect(launch.sandbox?.settingsPath).toBe(
@@ -55,9 +67,7 @@ describe('prepareRuntimeLaunch', () => {
       )
       expect(launch.sandbox?.cwd).toBe(realpathSync(cwd))
       const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
-      expect(settings.filesystem.denyRead).toEqual(
-        expect.arrayContaining(maskedRoots.map((path) => realpathSync(path)))
-      )
+      for (const path of maskedRoots) expect(coveredBy(settings.filesystem.denyRead, realpathSync(path))).toBe(true)
     } finally {
       rmSync(testRoot, { recursive: true, force: true })
     }
@@ -80,14 +90,17 @@ describe('prepareRuntimeLaunch', () => {
 
   it('uses a private HOME only for an effective sandboxed launch', () => {
     const { scopeDir, cwd, hostHome } = fixture()
+    const customClaudeConfig = join(dirname(hostHome), 'host-claude-config')
+    mkdirSync(customClaudeConfig)
     const launch = prepareRuntimeLaunch({
       runtimeId: 'claude-acp',
       scopeDir,
       cwd,
       runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
       sandboxMechanism: 'bwrap',
       explicitEnv: { AGENT_VALUE: 'yes' },
-      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+      hostEnv: { HOME: hostHome, CLAUDE_CONFIG_DIR: customClaudeConfig, PATH: '/usr/bin' }
     })
 
     expect(launch.inheritProcessEnv).toBe(false)
@@ -98,9 +111,69 @@ describe('prepareRuntimeLaunch', () => {
     expect(existsSync(launch.sandbox!.settingsPath)).toBe(true)
     const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
     const canonicalHostHome = realpathSync(hostHome)
-    expect(settings.filesystem.denyRead).toEqual(
-      expect.arrayContaining([join(canonicalHostHome, '.claude'), join(canonicalHostHome, '.claude.json')])
+    expect(coveredBy(settings.filesystem.denyRead, canonicalHostHome)).toBe(true)
+    expect(coveredBy(settings.filesystem.denyRead, realpathSync(customClaudeConfig))).toBe(true)
+    expect(coveredBy(settings.filesystem.denyRead, realpathSync(dirname(scopeDir)))).toBe(true)
+    expect(settings.filesystem.allowRead).toEqual(
+      expect.arrayContaining([realpathSync(cwd), realpathSync(join(scopeDir, 'home'))])
     )
+  })
+
+  it('resolves version-manager PATH links before hiding the host HOME', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const versionBin = join(hostHome, '.nvm', 'versions', 'node', 'v24', 'bin')
+    const current = join(hostHome, '.nvm', 'current')
+    mkdirSync(versionBin, { recursive: true })
+    symlinkSync(join(hostHome, '.nvm', 'versions', 'node', 'v24'), current)
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'maki',
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      hostEnv: { HOME: hostHome, PATH: `${join(current, 'bin')}${delimiter}/usr/bin` }
+    })
+
+    expect(launch.env.PATH?.split(delimiter)[0]).toBe(realpathSync(versionBin))
+  })
+
+  it('reopens only reviewed runtime code below a denied root and rejects a broad exception', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const trustedCode = join(hostHome, '.local', 'lib', 'reviewed-runtime')
+    mkdirSync(trustedCode, { recursive: true })
+    const base = {
+      runtimeId: 'maki',
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap' as const,
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    }
+
+    const launch = prepareRuntimeLaunch({ ...base, trustedRuntimeReadRoots: [trustedCode] })
+    const policy = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    expect(policy.filesystem.allowRead).toContain(realpathSync(trustedCode))
+    expect(() => prepareRuntimeLaunch({ ...base, trustedRuntimeReadRoots: [hostHome] })).toThrow(
+      /would reopen protected path/
+    )
+  })
+
+  it('rejects root-level protected paths instead of generating an ineffective policy', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    expect(() =>
+      prepareRuntimeLaunch({
+        runtimeId: 'maki',
+        scopeDir,
+        cwd,
+        runInSandbox: true,
+        daemonRoot: '/',
+        sandboxMechanism: 'bwrap',
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+      })
+    ).toThrow(/unsafe AgentConnect daemon root/)
   })
 
   it('fails before creating a private HOME when sandboxing is required but unavailable', () => {

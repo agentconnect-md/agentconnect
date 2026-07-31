@@ -159,6 +159,37 @@ describe('delegated bwrap mount isolation', () => {
     expect(bindIndexes.at(-1)).toBeGreaterThan(homeMaskIndex)
   })
 
+  it('applies the common daemon-root read deny and only carves back reviewed paths', () => {
+    const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
+    const sourceDir = join(maskedRoot, 'cell-a')
+    mkdirSync(sourceDir)
+    const homeMount = privateHomeMount()
+    const writable = join(repoRoot, 'packages', 'daemon', 'test')
+    const readable = join(repoRoot, 'packages', 'daemon', 'src')
+
+    const { args } = delegatedCellSandboxWrap(
+      'codex',
+      ['--acp'],
+      [writable],
+      { maskedRoot, sourceDir, targetDir: PRIVATE_TARGET_DIRECTORY },
+      homeMount,
+      [maskedRoot, homeMount.maskedRoot],
+      [repoRoot],
+      [readable]
+    )
+
+    const denyIndex = args.findIndex((arg, index) => arg === repoRoot && args[index - 1] === '--tmpfs')
+    const writeIndex = args.findIndex(
+      (arg, index) => arg === realpathSync(writable) && args[index - 1] === '--bind' && args[index + 1] === arg
+    )
+    const readIndex = args.findIndex(
+      (arg, index) => arg === realpathSync(readable) && args[index - 1] === '--ro-bind' && args[index + 1] === arg
+    )
+    expect(denyIndex).toBeGreaterThan(-1)
+    expect(writeIndex).toBeGreaterThan(denyIndex)
+    expect(readIndex).toBeGreaterThan(denyIndex)
+  })
+
   it('creates the designated endpoint inside bwrap private tmp without overlaying a broad host directory', () => {
     const maskedRoot = mkdtempSync(join(tmpdir(), 'ac-admin-sockets-'))
     const sourceDir = join(maskedRoot, 'cell-a')
@@ -186,7 +217,7 @@ describe('delegated bwrap mount isolation', () => {
         args[index - 1] === '--bind' &&
         args[index + 1] === CANONICAL_PRIVATE_TARGET_DIRECTORY
     )
-    expect(args.filter((arg, index) => arg === tmpdir() && args[index - 1] === '--tmpfs')).toHaveLength(1)
+    expect(args.filter((arg, index) => arg === realpathSync(tmpdir()) && args[index - 1] === '--tmpfs')).toHaveLength(1)
     expect(args).not.toContain('/run/agentconnect-admin')
     expect(targetCreation).toBeGreaterThan(args.indexOf(realpathSync(maskedRoot)))
     expect(entitledBind).toBeGreaterThan(targetCreation)

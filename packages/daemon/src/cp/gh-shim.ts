@@ -21,7 +21,7 @@
  * daemon boot, like `git-credential-helper.sh`. Tokens transit a shell
  * variable and the exec'd process env — never argv, never disk.
  */
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
@@ -39,15 +39,16 @@ export function writeGhShim(root: string, cliEntry: string): string {
     /* best-effort */
   }
   const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
+  const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
   // Dev daemons run under tsx with a .ts argv[1] — route through the tsx CLI
   // (the git-credential shim precedent; plain `node entry.ts` dies on
   // .js-suffixed imports).
-  const argv = [q(process.execPath)]
-  if (cliEntry.endsWith('.ts')) {
+  const argv = [q(realpathSync(process.execPath))]
+  if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
     argv.push(q(req.resolve('tsx/cli')))
   }
-  argv.push(q(cliEntry))
+  argv.push(q(executableEntry))
   const cli = argv.join(' ')
   const body = `#!/bin/sh
 # agentconnect gh wrapper — regenerated on daemon start; NO secrets.

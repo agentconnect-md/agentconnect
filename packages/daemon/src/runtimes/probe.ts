@@ -157,7 +157,8 @@ const QODER_SEED = (brand: string): readonly string[] => [
 ]
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
-  // Anthropic Claude Code — ~/.claude state dir + ~/.claude.json global config.
+  // Anthropic Claude Code — $CLAUDE_CONFIG_DIR (or ~/.claude) state +
+  // ~/.claude.json global config.
   // The daemon pins CLAUDE_CONFIG_DIR=<private-home>/.claude (RUNTIME_PRIVATE_ENV),
   // and Claude Code then reads its global config — including the GrowthBook feature
   // cache that gates newer models (e.g. Fable 5) — from $CLAUDE_CONFIG_DIR/.claude.json,
@@ -165,6 +166,7 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // launch actually reads (without it the private home advertises a stale, reduced
   // model list); the HOME-root copy stays for Claude versions that ignore the env.
   'claude-acp': (env) => [
+    ...state(env.CLAUDE_CONFIG_DIR, '.claude'),
     ...state(join(home(env), '.claude'), '.claude'),
     ...state(join(home(env), '.claude.json'), '.claude.json'),
     ...state(join(home(env), '.claude.json'), join('.claude', '.claude.json'))
