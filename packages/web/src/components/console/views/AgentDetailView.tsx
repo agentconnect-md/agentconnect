@@ -696,11 +696,11 @@ export default function AgentDetailView() {
       </div>
 
       {/* Config tab — one grid: mobile stacks Basics → Runtime → Description →
-          Access → Variables → Secrets → Approval requests (flex order). Desktop
-          puts Basics + Runtime in the 340px left column and the rest in the right
-          column (the wrapper is display:contents on mobile so all the cards sit in
-          the same flex column). Workspace is NOT here — it moved into the
-          Workspace tab, next to the files it configures. */}
+          Access → Variables → Secrets (flex order). Desktop puts Basics + Runtime
+          in the 340px left column and the rest in the right column (the wrapper is
+          display:contents on mobile so all the cards sit in the same flex column).
+          Workspace is NOT here — it moved into the Workspace tab, next to the
+          files it configures. */}
       {tab === 'config' && (
         <div className="flex flex-col gap-4 p-4 desktop:grid desktop:grid-cols-[340px_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
           <div className="contents desktop:flex desktop:min-w-0 desktop:flex-col desktop:gap-[18px]">
@@ -971,8 +971,7 @@ export default function AgentDetailView() {
             {/* Description card (design): its own card at the top of the right column,
                 and the ONE group edited on its own (EditDescriptionModal) rather than
                 through the sectioned Edit-agent modal. Mobile order: Basics 1 → Runtime
-                behavior 2 → Description 3 → Access 4 → Variables 5 → Secrets 6 →
-                Approval requests 7. */}
+                behavior 2 → Description 3 → Access 4 → Variables 5 → Secrets 6. */}
             <div className="card order-3 overflow-hidden max-desktop:rounded-lg">
               <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
                 <span className="font-sans text-[14px] font-semibold leading-normal">Description</span>
@@ -1081,10 +1080,6 @@ export default function AgentDetailView() {
             <div className="order-6 min-w-0">
               <AgentSecretsCard agent={da} />
             </div>
-
-            {da.canEdit && !da.name.startsWith(MOCK_PREFIX) && (
-              <ApprovalRequestsCard agentId={da.id} className="order-7 max-desktop:rounded-lg" />
-            )}
           </div>
         </div>
       )}
@@ -1513,17 +1508,22 @@ export default function AgentDetailView() {
             )}
           </div>
 
-          {/* This agent's recent sessions — same card as Home's Recent list. */}
-          <RecentSessionsCard
-            title="Recent sessions"
-            sessions={recentSessions}
-            limit={12}
-            loading={agentSessionsLoading}
-            allHref={orgPath(`/sessions?agent=${da.id}`)}
-            emptyText="No sessions yet."
-            showAgent={false}
-            className="max-desktop:rounded-lg"
-          />
+          <div className="flex min-w-0 flex-col gap-4 desktop:gap-[18px]">
+            {da.canEdit && !da.name.startsWith(MOCK_PREFIX) && (
+              <ApprovalRequestsCard agentId={da.id} className="max-desktop:rounded-lg" />
+            )}
+            {/* This agent's recent sessions — same card as Home's Recent list. */}
+            <RecentSessionsCard
+              title="Recent sessions"
+              sessions={recentSessions}
+              limit={12}
+              loading={agentSessionsLoading}
+              allHref={orgPath(`/sessions?agent=${da.id}`)}
+              emptyText="No sessions yet."
+              showAgent={false}
+              className="max-desktop:rounded-lg"
+            />
+          </div>
         </div>
       )}
 
