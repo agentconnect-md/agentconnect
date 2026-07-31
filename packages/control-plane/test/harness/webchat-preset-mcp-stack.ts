@@ -32,6 +32,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const acpFixture = join(repoRoot, 'packages/daemon/test/fixtures/delegated-mcp-acp-agent.mjs')
 const daemonEntry = join(repoRoot, 'packages/daemon/dist/index.js')
 const silentLog: RelayLogger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+const WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000
 
 type BrowserFrame = {
   type?: string
@@ -71,9 +72,108 @@ async function waitFor(check: () => boolean, label: string, timeoutMs = 20_000):
   }
 }
 
-function websocketClosed(socket: WebSocket): Promise<void> {
-  if (socket.readyState === WebSocket.CLOSED) return Promise.resolve()
-  return new Promise((resolve) => socket.once('close', () => resolve()))
+function socketClosedWithin(socket: WebSocket, timeoutMs: number): Promise<boolean> {
+  if (socket.readyState === WebSocket.CLOSED) return Promise.resolve(true)
+  return new Promise((resolveClosed) => {
+    let settled = false
+    const finish = (closed: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.off('close', onClose)
+      resolveClosed(closed)
+    }
+    const onClose = () => finish(true)
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    socket.once('close', onClose)
+    if (socket.readyState === WebSocket.CLOSED) finish(true)
+  })
+}
+
+export async function closeWebSocket(socket: WebSocket, timeoutMs = WEBSOCKET_CLOSE_TIMEOUT_MS): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return
+  try {
+    socket.close()
+  } catch {
+    // Termination below is the bounded fallback for a socket that cannot close gracefully.
+  }
+  if (await socketClosedWithin(socket, timeoutMs)) return
+  socket.terminate()
+  if (await socketClosedWithin(socket, timeoutMs)) return
+  throw new Error('WebSocket close timed out after terminate')
+}
+
+async function terminateWebSocket(socket: WebSocket, timeoutMs: number): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return
+  socket.terminate()
+  if (await socketClosedWithin(socket, timeoutMs)) return
+  throw new Error('WebSocket terminate timed out')
+}
+
+const CLOSE_TIMEOUT = Symbol('close-timeout')
+
+function resultWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | typeof CLOSE_TIMEOUT> {
+  return new Promise((resolveResult) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolveResult(CLOSE_TIMEOUT)
+    }, timeoutMs)
+    void promise.then((result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveResult(result)
+    })
+  })
+}
+
+function cleanupErrors(error: unknown): unknown[] {
+  return error instanceof AggregateError ? error.errors : [error]
+}
+
+export function createSharedBestEffortDisposer(
+  steps: Array<() => Promise<void> | void>,
+  finalize: () => Promise<void> | void
+): () => Promise<void> {
+  let disposePromise: Promise<void> | undefined
+  return () => {
+    disposePromise ??= (async () => {
+      const errors: unknown[] = []
+      try {
+        for (const step of steps) {
+          try {
+            await step()
+          } catch (error) {
+            errors.push(...cleanupErrors(error))
+          }
+        }
+      } finally {
+        try {
+          await finalize()
+        } catch (error) {
+          errors.push(...cleanupErrors(error))
+        }
+      }
+      if (errors.length > 0) throw new AggregateError(errors, 'webchat preset MCP stack cleanup failed')
+    })()
+    return disposePromise
+  }
+}
+
+export function attachCleanupError(setupError: unknown, cleanupError: unknown): unknown {
+  if ((typeof setupError === 'object' && setupError !== null) || typeof setupError === 'function') {
+    try {
+      Object.defineProperty(setupError, 'cleanupError', {
+        configurable: true,
+        value: cleanupError
+      })
+    } catch {
+      // A frozen/non-extensible thrown value remains the primary setup error.
+    }
+  }
+  return setupError
 }
 
 class BufferedBrowser implements WebchatBrowser {
@@ -118,10 +218,7 @@ class BufferedBrowser implements WebchatBrowser {
   }
 
   async close(): Promise<void> {
-    if (this.socket.readyState === WebSocket.CLOSED) return
-    const closed = websocketClosed(this.socket)
-    this.socket.close()
-    await closed
+    await closeWebSocket(this.socket)
   }
 
   private async next(predicate: (frame: BrowserFrame) => boolean, label: string): Promise<BrowserFrame> {
@@ -147,9 +244,49 @@ class BufferedBrowser implements WebchatBrowser {
   }
 }
 
-async function closeWss(server: WebSocketServer): Promise<void> {
-  for (const client of server.clients) client.terminate()
-  await new Promise<void>((resolveClose) => server.close(() => resolveClose()))
+export async function closeWebSocketServer(
+  server: WebSocketServer,
+  timeoutMs = WEBSOCKET_CLOSE_TIMEOUT_MS
+): Promise<void> {
+  const errors: unknown[] = []
+  const serverClosed = new Promise<Error | undefined>((resolveClose) => {
+    try {
+      // Fence handleUpgrade before taking a client snapshot: an in-flight upgrade may
+      // still land, so the timeout fallback below deliberately resnapshots clients.
+      server.close((error) => resolveClose(error))
+    } catch (error) {
+      resolveClose(error instanceof Error ? error : new Error('WebSocket server close failed'))
+    }
+  })
+
+  const clientResults = await Promise.allSettled([...server.clients].map((client) => closeWebSocket(client, timeoutMs)))
+  for (const result of clientResults) {
+    if (result.status === 'rejected') errors.push(...cleanupErrors(result.reason))
+  }
+
+  let serverResult = await resultWithin(serverClosed, timeoutMs)
+  if (serverResult === CLOSE_TIMEOUT) {
+    const terminateResults = await Promise.allSettled(
+      [...server.clients].map((client) => terminateWebSocket(client, timeoutMs))
+    )
+    for (const result of terminateResults) {
+      if (result.status === 'rejected') errors.push(...cleanupErrors(result.reason))
+    }
+    serverResult = await resultWithin(serverClosed, timeoutMs)
+    if (serverResult === CLOSE_TIMEOUT) {
+      const finalTerminateResults = await Promise.allSettled(
+        [...server.clients].map((client) => terminateWebSocket(client, timeoutMs))
+      )
+      for (const result of finalTerminateResults) {
+        if (result.status === 'rejected') errors.push(...cleanupErrors(result.reason))
+      }
+      errors.push(new Error('WebSocket server close timed out'))
+    }
+  }
+  if (serverResult !== CLOSE_TIMEOUT && serverResult) errors.push(serverResult)
+
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1) throw new AggregateError(errors, 'WebSocket server cleanup failed')
 }
 
 export async function startWebchatPresetMcpStack(prisma: PrismaClient): Promise<WebchatPresetMcpStack> {
@@ -159,7 +296,6 @@ export async function startWebchatPresetMcpStack(prisma: PrismaClient): Promise<
   }
 
   let cp: App | undefined
-  let cpStopped = false
   let relay: ReturnType<typeof buildRelayServer> | undefined
   let relayClient: RelayCpClient | undefined
   let rdServer: RelayDaemonServer | undefined
@@ -168,31 +304,39 @@ export async function startWebchatPresetMcpStack(prisma: PrismaClient): Promise<
   let daemonRoot: string | undefined
   const browsers = new Set<BufferedBrowser>()
   const previousDaemonEntry = process.env.AGENTCONNECT_DAEMON_ENTRY
-  let disposing = false
 
-  const stopCp = async (): Promise<void> => {
-    if (!cp || cpStopped) return
-    cp.beginShutdown()
-    await cp.drainWs()
-    await cp.http.close()
-    await cp.shutdown()
-    cpStopped = true
-  }
-  const dispose = async (): Promise<void> => {
-    if (disposing) return
-    disposing = true
-    await Promise.all([...browsers].map((browser) => browser.close().catch(() => {})))
-    browsers.clear()
-    await daemon?.stop().catch(() => {})
-    await relayClient?.stop().catch(() => {})
-    if (browserServer) await closeWss(browserServer)
-    if (rdServer) await closeWss(rdServer.wss)
-    await relay?.close().catch(() => {})
-    await stopCp().catch(() => {})
-    if (daemonRoot) rmSync(daemonRoot, { recursive: true, force: true })
-    if (previousDaemonEntry === undefined) delete process.env.AGENTCONNECT_DAEMON_ENTRY
-    else process.env.AGENTCONNECT_DAEMON_ENTRY = previousDaemonEntry
-  }
+  const stopCp = createSharedBestEffortDisposer(
+    [() => cp?.beginShutdown(), async () => cp?.drainWs(), async () => cp?.http.close(), async () => cp?.shutdown()],
+    () => {}
+  )
+  const dispose = createSharedBestEffortDisposer(
+    [
+      async () => {
+        const results = await Promise.allSettled([...browsers].map((browser) => browser.close()))
+        browsers.clear()
+        const errors = results.flatMap((result) => (result.status === 'rejected' ? cleanupErrors(result.reason) : []))
+        if (errors.length > 0) throw new AggregateError(errors, 'browser cleanup failed')
+      },
+      async () => daemon?.stop(),
+      async () => relayClient?.stop(),
+      async () => {
+        if (browserServer) await closeWebSocketServer(browserServer)
+      },
+      async () => {
+        if (rdServer) await closeWebSocketServer(rdServer.wss)
+      },
+      async () => relay?.close(),
+      stopCp
+    ],
+    () => {
+      try {
+        if (daemonRoot) rmSync(daemonRoot, { recursive: true, force: true })
+      } finally {
+        if (previousDaemonEntry === undefined) delete process.env.AGENTCONNECT_DAEMON_ENTRY
+        else process.env.AGENTCONNECT_DAEMON_ENTRY = previousDaemonEntry
+      }
+    }
+  )
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER })
   const daemonKey = codec.mint()
@@ -416,7 +560,11 @@ export async function startWebchatPresetMcpStack(prisma: PrismaClient): Promise<
       close: dispose
     }
   } catch (error) {
-    await dispose()
+    try {
+      await dispose()
+    } catch (cleanupError) {
+      attachCleanupError(error, cleanupError)
+    }
     throw error
   }
 }
