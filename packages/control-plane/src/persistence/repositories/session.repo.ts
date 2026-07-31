@@ -628,6 +628,19 @@ export class PgSessionRepo implements SessionRepo {
     return s ? toRecord(s) : null
   }
 
+  async hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean> {
+    const row = await this.db.sessionMeta.findFirst({
+      where: {
+        agentId,
+        platform: 'webchat',
+        channel: conversationId,
+        visibility: 'private'
+      },
+      select: { id: true }
+    })
+    return row !== null
+  }
+
   async listChildren(
     parentSessionId: SessionId,
     agentIds: AgentId[],

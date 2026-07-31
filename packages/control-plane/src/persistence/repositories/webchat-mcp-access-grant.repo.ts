@@ -98,15 +98,24 @@ export class PgWebchatMcpAccessGrantRepo implements WebchatMcpAccessGrantRepo {
 
   async revokeAuthority(input: RevokeWebchatMcpGrantsInput): Promise<boolean> {
     return this.db.$transaction(async (tx) => {
-      const authority = await tx.webchatMcpDelegation.findFirst({
-        where: {
-          id: input.authorityId,
-          generation: input.authorityGeneration,
-          conversationId: input.conversationId,
-          daemonId: input.authenticatedDaemonId
-        }
-      })
+      const [authority] = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        SELECT "id"
+        FROM "webchat_mcp_delegation"
+        WHERE "id" = ${input.authorityId}
+          AND "generation" = ${input.authorityGeneration}
+          AND "conversationId" = ${input.conversationId}
+          AND "daemonId" = ${input.authenticatedDaemonId}
+        FOR UPDATE
+      `)
       if (!authority) return false
+      // Serialize with invocation claim, which locks the same active grant row.
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id"
+        FROM "webchat_mcp_access_grant"
+        WHERE "authorityId" = ${authority.id}
+          AND "status" IN ('pending', 'active')
+        FOR UPDATE
+      `)
       await tx.webchatMcpAccessGrant.updateMany({
         where: { authorityId: authority.id, status: { in: ['pending', 'active'] } },
         data: { status: 'revoked', revokedAt: input.now, revokedReason: input.reason }

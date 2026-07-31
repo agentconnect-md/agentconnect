@@ -161,6 +161,7 @@ export function buildHttpApp(
   const webchatMcpDelegationRepo = new PgWebchatMcpDelegationRepo(prisma)
   const webchatMcpAccessGrantRepo = new PgWebchatMcpAccessGrantRepo(prisma)
   const mcpInvocationRepo = new PgMcpInvocationRepo(prisma, clock)
+  const sessionRepo = new PgSessionRepo(prisma)
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
@@ -173,6 +174,7 @@ export function buildHttpApp(
     depsOverrides?.remoteGrantAuth ??
     new RemoteGrantAuthenticator({
       clock,
+      featureEnabled: () => true,
       tokenCodec: new WebchatMcpGrantTokenCodec(TEST_API_KEY_PEPPER),
       conversations: webchatConversationRepo,
       orgs: orgRepo,
@@ -182,7 +184,11 @@ export function buildHttpApp(
       grants: webchatMcpAccessGrantRepo,
       authorities: webchatMcpDelegationRepo,
       invocations: mcpInvocationRepo,
-      isCuratedTool: (toolName) => findTool(toolName) !== undefined
+      sessions: sessionRepo,
+      isCuratedTool: (toolName) => {
+        const tool = findTool(toolName)
+        return tool !== undefined && tool.destructive !== true
+      }
     })
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
 
@@ -196,7 +202,7 @@ export function buildHttpApp(
       hook: hookRepo,
       hookSecret: hookSecretStore,
       relay: new PgRelayRepo(prisma),
-      session: new PgSessionRepo(prisma),
+      session: sessionRepo,
       sessionUsage: new PgSessionUsageRepo(prisma),
       webchatConversation: webchatConversationRepo,
       user: new PgUserRepo(prisma, !waitlistMode),

@@ -1,4 +1,4 @@
-import type { McpInvocation } from '../../generated/prisma/client.js'
+import { Prisma, type McpInvocation } from '../../generated/prisma/client.js'
 import type { Clock } from '../../domain/clock.js'
 import { systemClock } from '../../domain/clock.js'
 import type { PrismaLike } from '../prisma.js'
@@ -25,46 +25,60 @@ export class PgMcpInvocationRepo implements McpInvocationRepo {
   ) {}
 
   async claim(input: ClaimMcpInvocationInput): Promise<ClaimMcpInvocationResult> {
-    const grant = await this.db.webchatMcpAccessGrant.findFirst({
-      where: {
-        id: input.grantId,
-        status: 'active',
-        revokedAt: null,
-        expiresAt: { gt: input.now },
-        authority: { conversationId: input.conversationId, revokedAt: null, expiresAt: { gt: input.now } }
-      }
-    })
-    if (!grant) return { kind: 'denied' }
+    return this.db.$transaction(async (tx) => {
+      // Revoke/rotation takes the same grant-row lock before changing status.
+      // Holding it through invocation insertion makes "authorized and claimed"
+      // one atomic ordering point: either revocation wins and this is denied, or
+      // this claim commits first and owns exactly one execution.
+      const [grant] = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        SELECT access_grant."id"
+        FROM "webchat_mcp_access_grant" AS access_grant
+        JOIN "webchat_mcp_delegation" AS authority
+          ON authority."id" = access_grant."authorityId"
+        JOIN "webchat_conversation" AS conversation
+          ON conversation."id" = authority."conversationId"
+         AND conversation."delegationGeneration" = authority."generation"
+        WHERE access_grant."id" = ${input.grantId}
+          AND access_grant."status" = 'active'
+          AND access_grant."revokedAt" IS NULL
+          AND access_grant."expiresAt" > ${input.now}
+          AND authority."conversationId" = ${input.conversationId}
+          AND authority."revokedAt" IS NULL
+          AND authority."expiresAt" > ${input.now}
+        FOR UPDATE OF access_grant
+      `)
+      if (!grant) return { kind: 'denied' }
 
-    const inserted = await this.db.mcpInvocation.createMany({
-      data: [
-        {
-          id: input.invocationId,
-          conversationId: input.conversationId,
-          grantId: input.grantId,
-          requestHash: input.requestHash,
-          method: input.method,
-          toolName: input.toolName ?? null,
-          status: 'running',
-          startedAt: input.now,
-          createdAt: input.now
-        }
-      ],
-      skipDuplicates: true
+      const inserted = await tx.mcpInvocation.createMany({
+        data: [
+          {
+            id: input.invocationId,
+            conversationId: input.conversationId,
+            grantId: input.grantId,
+            requestHash: input.requestHash,
+            method: input.method,
+            toolName: input.toolName ?? null,
+            status: 'running',
+            startedAt: input.now,
+            createdAt: input.now
+          }
+        ],
+        skipDuplicates: true
+      })
+      const current = await tx.mcpInvocation.findUnique({ where: { id: input.invocationId } })
+      if (!current) return { kind: 'conflict' }
+      if (
+        current.conversationId !== input.conversationId ||
+        current.requestHash !== input.requestHash ||
+        current.method !== input.method ||
+        current.toolName !== (input.toolName ?? null)
+      ) {
+        return { kind: 'conflict' }
+      }
+      return inserted.count === 1
+        ? { kind: 'claimed', invocation: toRecord(current) }
+        : { kind: 'existing', invocation: toRecord(current) }
     })
-    const current = await this.db.mcpInvocation.findUnique({ where: { id: input.invocationId } })
-    if (!current) return { kind: 'conflict' }
-    if (
-      current.conversationId !== input.conversationId ||
-      current.requestHash !== input.requestHash ||
-      current.method !== input.method ||
-      current.toolName !== (input.toolName ?? null)
-    ) {
-      return { kind: 'conflict' }
-    }
-    return inserted.count === 1
-      ? { kind: 'claimed', invocation: toRecord(current) }
-      : { kind: 'existing', invocation: toRecord(current) }
   }
 
   async complete(input: CompleteMcpInvocationInput): Promise<boolean> {

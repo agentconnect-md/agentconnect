@@ -972,6 +972,9 @@ export interface SessionRepo {
   listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex>
   list(q: SessionQuery): Promise<SessionListRecord[]>
   get(id: SessionId): Promise<SessionMetaRecord | null>
+  /** Fail-closed proof that the durable webchat session for this conversation
+   * remains private before a remote administrative MCP invocation executes. */
+  hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean>
   /** Visible-child lookup for the session detail page. Parent ids are opaque and
    *  deliberately not foreign-keyed, so this remains a metadata query. `viewer`
    *  applies the same session predicate as the list (absent ⇒ internal fail-open). */
@@ -1194,7 +1197,10 @@ export type ClaimMcpInvocationResult =
   | { kind: 'conflict' }
 
 export const MCP_INVOCATION_MAX_RESPONSE_BYTES = 256 * 1024
-export const MCP_INVOCATION_RESPONSE_CACHE_TTL_MS = 15 * 60_000
+// A terminal row is an execution tombstone, not merely a response cache. Keep it
+// beyond every 30-minute grant and normal authority lifetime so credential renewal
+// cannot make the same logical invocation executable again.
+export const MCP_INVOCATION_RESPONSE_CACHE_TTL_MS = 24 * 60 * 60_000
 
 export interface CompleteMcpInvocationInput {
   invocationId: string

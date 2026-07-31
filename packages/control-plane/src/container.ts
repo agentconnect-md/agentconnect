@@ -396,6 +396,7 @@ export function buildContainer(
   const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
   const webchatRemoteMcp = new WebchatRemoteMcpService({
     clock,
+    featureEnabled: () => config.WEBCHAT_PRESET_MCP_ENABLED,
     tokenCodec: webchatMcpGrantToken,
     conversations: repos.webchatConversation,
     orgs: repos.org,
@@ -408,6 +409,7 @@ export function buildContainer(
   })
   const remoteGrantAuth = new RemoteGrantAuthenticator({
     clock,
+    featureEnabled: () => config.WEBCHAT_PRESET_MCP_ENABLED,
     tokenCodec: webchatMcpGrantToken,
     conversations: repos.webchatConversation,
     orgs: repos.org,
@@ -417,7 +419,13 @@ export function buildContainer(
     grants: repos.webchatMcpAccessGrant,
     authorities: repos.webchatMcpDelegation,
     invocations: repos.mcpInvocation,
-    isCuratedTool: (toolName) => findTool(toolName) !== undefined
+    sessions: repos.session,
+    // Until browser-bound confirmation is implemented, keep the existing
+    // catalog's stricter exclusion: destructive tools are not remotely exposed.
+    isCuratedTool: (toolName) => {
+      const tool = findTool(toolName)
+      return tool !== undefined && tool.destructive !== true
+    }
   })
   const internalInvocationAuth = new InternalInvocationAuth()
 

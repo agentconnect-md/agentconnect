@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Clock } from '../../domain/clock.js'
+import type { AgentId } from '../../domain/ids.js'
 import {
   MCP_INVOCATION_RESPONSE_CACHE_TTL_MS,
   type McpInvocationRecord,
@@ -35,6 +36,8 @@ export type RemoteGrantClaimResult =
 
 export interface RemoteGrantAuthenticatorDeps extends LiveWebchatMcpAuthorityDeps {
   clock: Pick<Clock, 'now'>
+  featureEnabled(): boolean
+  sessions: { hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean> }
   tokenCodec: Pick<WebchatMcpGrantTokenCodec, 'hash'>
   grants: Pick<WebchatMcpAccessGrantRepo, 'getByTokenHash'>
   authorities: Pick<WebchatMcpDelegationRepo, 'getCurrent'>
@@ -53,6 +56,7 @@ export class RemoteGrantAuthenticator {
     requestBytes: Uint8Array
     parseMetadata(): ParsedInvocationMetadata | Promise<ParsedInvocationMetadata>
   }): Promise<RemoteGrantClaimResult> {
+    if (!this.deps.featureEnabled()) return { kind: 'denied', reason: 'feature_disabled' }
     const tokenHash = this.deps.tokenCodec.hash(input.bearer)
     if (!tokenHash || !UUID_V4_RE.test(input.invocationId)) return { kind: 'denied', reason: 'credential' }
     const now = new Date(this.deps.clock.now())
@@ -72,6 +76,9 @@ export class RemoteGrantAuthenticator {
       daemonId: authority.daemonId
     })
     if (!live.ok) return { kind: 'denied', reason: live.reason }
+    if (!(await this.deps.sessions.hasPrivateWebchatSession(authority.conversationId, authority.agentId as AgentId))) {
+      return { kind: 'denied', reason: 'session_not_private' }
+    }
 
     let metadata: ParsedInvocationMetadata
     try {

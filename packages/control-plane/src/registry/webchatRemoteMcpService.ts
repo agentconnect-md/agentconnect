@@ -25,6 +25,7 @@ export interface EstablishRemoteMcpInput {
 
 export interface WebchatRemoteMcpServiceDeps extends LiveWebchatMcpAuthorityDeps {
   clock: Pick<Clock, 'now'>
+  featureEnabled(): boolean
   tokenCodec: WebchatMcpGrantTokenCodec
   authorities: Pick<WebchatMcpDelegationRepo, 'establish' | 'getCurrent'>
   grants: WebchatMcpAccessGrantRepo
@@ -35,6 +36,7 @@ export class WebchatRemoteMcpService {
   constructor(private readonly deps: WebchatRemoteMcpServiceDeps) {}
 
   async establish(input: EstablishRemoteMcpInput): Promise<WebchatRemoteMcpEntitlement | null> {
+    if (!this.deps.featureEnabled()) return null
     const now = new Date(this.deps.clock.now())
     const defaultExpiry = new Date(now.getTime() + WEBCHAT_MCP_AUTHORITY_TTL_MS)
     const expiresAt =
@@ -67,6 +69,7 @@ export class WebchatRemoteMcpService {
   }
 
   async issue(input: WebchatMcpGrantIssue & { authenticatedDaemonId: string }) {
+    if (!this.deps.featureEnabled()) return null
     const now = new Date(this.deps.clock.now())
     const authority = await this.deps.authorities.getCurrent(input.authorityId)
     if (
@@ -113,6 +116,7 @@ export class WebchatRemoteMcpService {
   }
 
   async accept(input: WebchatMcpGrantAccept & { authenticatedDaemonId: string }) {
+    if (!this.deps.featureEnabled()) return null
     return this.deps.grants.accept({ ...input, now: new Date(this.deps.clock.now()) })
   }
 
