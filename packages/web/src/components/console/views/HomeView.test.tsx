@@ -56,8 +56,10 @@ vi.mock('@/components/marks', () => ({
   AgentIconView: () => <span />,
   ModelMark: () => <span />,
   PlatformMark: () => <span />,
+  LogoMark: () => <span />,
   LoadingState: () => <span>loading</span>
 }))
+vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: { name: 'Riley Kim', initials: 'RK' }, me: null }) }))
 vi.mock('@/components/ui', () => ({ Icon: () => <span /> }))
 
 import HomeView from './HomeView'
