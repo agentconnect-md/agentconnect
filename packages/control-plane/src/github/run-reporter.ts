@@ -89,6 +89,13 @@ interface SubjectAssociationResult {
   errorCode: SubjectAssociationErrorCode | null
 }
 
+/** One `Request review`-style button GitHub renders on the Check. */
+interface CheckAction {
+  label: string
+  description: string
+  identifier: string
+}
+
 interface CheckPresentation {
   detailsUrl?: string
   agentUrl?: string
@@ -596,7 +603,14 @@ export class GithubRunReporter {
         )
         const checkRunId = String(created.id)
         if (await this.finish(projection, marker, checkRunId, installationId, effectiveState, associationError)) {
-          await this.renameCreatedCheck(projection, checkRunId, token, owner, repo)
+          await this.renameCreatedCheck(
+            projection,
+            checkRunId,
+            token,
+            owner,
+            repo,
+            payload.actions as readonly CheckAction[]
+          )
         }
       }
     } catch (err) {
@@ -860,18 +874,27 @@ export class GithubRunReporter {
     checkRunId: string,
     token: string,
     owner: string,
-    repo: string
+    repo: string,
+    actions?: readonly CheckAction[]
   ): Promise<void> {
     // This cosmetic write happens only after checkRunId is durable. It does not
     // need the projection write mutex: an ambiguous outcome cannot regress the
     // Check state, and every later state PATCH also carries the readable name.
+    //
+    // It must re-assert `actions`, though. A projection whose first write is
+    // already terminal — an external PR parked on `review_request_required` —
+    // never receives a later state PATCH, so this is the last request GitHub
+    // sees for that Check. Sending name alone would leave the buttons of the
+    // create POST as an unrepeated claim. Callers that recover an ambiguous
+    // create pass nothing here: that path knows only what GitHub observed and
+    // must not invent presentation.
     try {
       await githubRequest<CheckRunResponse>(
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${encodeURIComponent(checkRunId)}`,
         {
           method: 'PATCH',
           auth: token,
-          body: { name: checkName(projection) },
+          body: { name: checkName(projection), ...(actions ? { actions } : {}) },
           fetchImpl: this.deps.fetchImpl,
           baseUrl: this.deps.baseUrl,
           bigIdsAsStrings: true
@@ -1025,7 +1048,7 @@ function checkPayload(
     title: checkOutputTitle(state, associationError, presentation),
     summary: normalizedSummary
   }
-  const actions = presentation.requestReviewAction
+  const actions: CheckAction[] = presentation.requestReviewAction
     ? [
         {
           label: 'Request review',

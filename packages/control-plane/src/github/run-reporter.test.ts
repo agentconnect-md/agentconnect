@@ -744,7 +744,7 @@ describe('GithubRunReporter', () => {
     const [renameUrl, renameInit] = fetchImpl.mock.calls[1]!
     expect(renameUrl).toBe('https://api.github.com/repos/acme/repo/check-runs/90071992547409931')
     expect(renameInit?.method).toBe('PATCH')
-    expect(JSON.parse(String(renameInit?.body))).toEqual({ name: CHECK_NAME_FOR_TEST })
+    expect(JSON.parse(String(renameInit?.body))).toEqual({ name: CHECK_NAME_FOR_TEST, actions: [] })
     expect(hooks.completeProjectionWrite.mock.invocationCallOrder[0]).toBeLessThan(
       fetchImpl.mock.invocationCallOrder[1]!
     )
@@ -776,7 +776,8 @@ describe('GithubRunReporter', () => {
       await reporter.tick()
 
       expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toEqual({
-        name: `AgentConnect PR Review: ${agentName}`
+        name: `AgentConnect PR Review: ${agentName}`,
+        actions: []
       })
     }
   )
@@ -1069,6 +1070,36 @@ describe('GithubRunReporter', () => {
     expect(body.actions).toEqual([
       { label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }
     ])
+  })
+
+  it('re-asserts the Request review action on the rename that follows a terminal create', async () => {
+    // A Check created already terminal never gets a later state PATCH, so the
+    // cosmetic rename is the last request GitHub sees. A name-only PATCH there
+    // leaves the create POST's buttons unrepeated.
+    const p = projection({ desiredState: 'skipped', observedState: null, checkRunId: null })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
+      if (init?.method === 'POST') return Response.json({ id: '90071992547409933', external_id: p.externalId })
+      return Response.json({ id: '90071992547409933' })
+    })
+    const { reporter } = worker(p, fetchImpl, {
+      getRunById: vi.fn(async () =>
+        run({
+          status: 'failed',
+          completedAt: new Date(NOW),
+          reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED
+        })
+      )
+    })
+
+    await reporter.tick()
+
+    const renameInit = fetchImpl.mock.calls.at(-1)![1]
+    expect(renameInit?.method).toBe('PATCH')
+    expect(JSON.parse(String(renameInit?.body))).toEqual({
+      name: CHECK_NAME_FOR_TEST,
+      actions: [{ label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }]
+    })
   })
 
   it('retries before writing when skipped presentation metadata is temporarily unavailable', async () => {
