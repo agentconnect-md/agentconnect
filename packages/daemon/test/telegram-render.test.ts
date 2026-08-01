@@ -48,6 +48,18 @@ describe('TelegramConverger body buffering', () => {
     ).toBe(true)
   })
 
+  it('flushTerminal drains a boundary-less body and a held tail — the turn never reaches onFinal', () => {
+    const noBreak = new TelegramConverger('medium')
+    noBreak.onUpdate(chunk("You've hit your usage limit."))
+    expect(noBreak.flushTerminal()).toEqual([{ kind: 'post', text: "You've hit your usage limit." }])
+    expect(noBreak.hasBuffered()).toBe(false)
+
+    const withTail = new TelegramConverger('medium')
+    withTail.onUpdate(chunk('Quota exceeded.\n\nRetry after the reset at'))
+    expect(withTail.flushTerminal()).toEqual([{ kind: 'post', text: 'Quota exceeded.\n\nRetry after the reset at' }])
+    expect(withTail.hasBuffered()).toBe(false)
+  })
+
   it('splits an over-long body across posts at the 4096 cap', () => {
     const c = new TelegramConverger('low')
     const line = 'x'.repeat(3000)

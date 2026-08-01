@@ -227,14 +227,27 @@ export class TelegramConverger {
   /** Idle-timer flush: one in-place reasoning update (high) placed ABOVE the body, then the body.
    *  minimal: just refresh the single in-place `live-reply` with the current segment. */
   flushBuffered(): TelegramAction[] {
-    if (this.mode === 'minimal') {
-      const trimmed = this.buf.trim()
-      // Hold the live reply while the body could still be the bare response-control marker, so a
-      // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
-      if (!trimmed || isNoResponsePrefix(trimmed)) return []
-      return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
-    }
+    if (this.mode === 'minimal') return this.liveRefresh()
     return [...this.drainReasoning(), ...this.flushStreaming()]
+  }
+
+  /** Drain everything for a turn that is ending abnormally: the runtime narrated its terminal
+   *  error into the message stream and then rejected the prompt, so `onFinal` never runs and
+   *  there is no later flush to hold a partial paragraph for. Unlike the idle flush this takes
+   *  the whole buffer, paragraph break or not — otherwise the runtime's own error text is
+   *  dropped and replaced by the generic failure notice. */
+  flushTerminal(): TelegramAction[] {
+    if (this.mode === 'minimal') return this.liveRefresh()
+    return [...this.drainReasoning(), ...this.flush()]
+  }
+
+  /** minimal: refresh the single in-place `live-reply` with the current segment. */
+  private liveRefresh(): TelegramAction[] {
+    const trimmed = this.buf.trim()
+    // Hold the live reply while the body could still be the bare response-control marker, so a
+    // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
+    if (!trimmed || isNoResponsePrefix(trimmed)) return []
+    return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
   }
 
   /** minimal: a Telegram message caps at 4096 chars; head-clamp the live view when longer

@@ -606,6 +606,27 @@ describe('OutputConverger', () => {
     expect(c.hasBuffered()).toBe(true) // still buffered, not dropped
   })
 
+  it('flushTerminal drains a body with no paragraph break — the turn never reaches onFinal', () => {
+    const c = new OutputConverger('medium')
+    // A runtime that narrates its terminal error then rejects the prompt: one line, no break.
+    c.onUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: "You've hit your usage limit." }
+    } as any)
+    expect(c.flushTerminal()).toEqual([{ kind: 'post', text: "You've hit your usage limit." }])
+    expect(c.hasBuffered()).toBe(false)
+  })
+
+  it('flushTerminal drains the held tail too, not just the completed paragraph', () => {
+    const c = new OutputConverger('medium')
+    c.onUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Quota exceeded.\n\nRetry after the reset at' }
+    } as any)
+    expect(c.flushTerminal()).toEqual([{ kind: 'post', text: 'Quota exceeded.\n\nRetry after the reset at' }])
+    expect(c.hasBuffered()).toBe(false)
+  })
+
   it('a tool boundary still drains the whole buffer — the model finished that text block', () => {
     const c = new OutputConverger('low')
     c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Let me check.' } } as any)
