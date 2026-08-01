@@ -59,7 +59,14 @@ const TARGETS = (process.env.REMOTE_MCP_ADAPTER_IT ?? '')
   .map((part) => part.trim())
   .filter(Boolean)
 
-/** Must stay byte-identical to VALIDATED_REMOTE_MCP_LAUNCHES. */
+/**
+ * Candidate launches. Every entry admitted by VALIDATED_REMOTE_MCP_LAUNCHES
+ * must appear here byte-identically and must PASS; an entry may also be listed
+ * while it is only a candidate, so a future release can be re-validated here
+ * before being admitted. `codex-acp@1.1.7` is currently such a candidate — it
+ * fetches `tools/list` over the descriptor but never exposes those tools to the
+ * model, so it fails this harness and stays out of the allowlist.
+ */
 const ADAPTERS: Record<string, { command: string; args: string[] }> = {
   'claude-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'] },
   'codex-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.1.7'] }

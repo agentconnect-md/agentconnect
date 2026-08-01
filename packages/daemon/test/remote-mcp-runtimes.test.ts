@@ -20,7 +20,9 @@ const CODEX = ['-y', '@agentclientprotocol/codex-acp@1.1.7']
 describe('isValidatedRemoteMcpRuntime', () => {
   it('admits exactly the validated launch shapes', () => {
     expect(isValidatedRemoteMcpRuntime('claude-acp', entry('registry', 'npx', CLAUDE))).toBe(true)
-    expect(isValidatedRemoteMcpRuntime('codex-acp', entry('registry', 'npx', CODEX))).toBe(true)
+    // codex-acp is deliberately NOT admitted: @1.1.7 never exposes remote MCP
+    // tools to the model, so §13's tool-execution evidence cannot be met.
+    expect(isValidatedRemoteMcpRuntime('codex-acp', entry('registry', 'npx', CODEX))).toBe(false)
     expect(isValidatedRemoteMcpRuntime('claude-acp', entry('curated', 'npx', CLAUDE))).toBe(true)
   })
 
