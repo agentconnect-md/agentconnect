@@ -58,7 +58,13 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
-import { DreamRunner, DreamStateError, type DreamLifecycleEvent } from './agents/dream-runner.js'
+import {
+  DREAM_MODEL_READABLE_CREDENTIALS_REASON,
+  DreamRunner,
+  DreamStateError,
+  type DreamLifecycleEvent,
+  type DreamOperationPolicy
+} from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
@@ -465,8 +471,8 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
-/** An agent's effective dreaming policy. Managed memory defaults to a daily
- *  auto-adopting dream; an explicit disabled policy or non-managed provider is
+/** An agent's effective dreaming policy. Managed memory defaults to a daily,
+ *  review-first dream; an explicit disabled policy or non-managed provider is
  *  preserved by the shared resolver. */
 function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): MemoryDreamingPolicy | undefined {
   if (!agent) return undefined
@@ -1635,6 +1641,9 @@ export class Daemon {
       overrides?: FlatOverrides
       agentName?: string
       hostFactory?: (agent: Agent, onUpdate: (sid: string, u: any) => void) => AcpHost
+      /** Explicit test/evaluation-only Dream bypass. It is honored only with an
+       * injected hostFactory, never by the production CLI/config surface. */
+      dreamOperationPolicy?: DreamOperationPolicy
       /** Time seam for the idle sweep + cancel backstop (FakeClock in tests). */
       clock?: Clock
       /** How the daemon exits for daemon/restart + daemon/upgrade (spied in tests). */
@@ -2389,7 +2398,7 @@ export class Daemon {
 
     // register crons (sync per agent — the same converge reconcile re-runs on change)
     for (const a of agents) this.scheduler.sync(a.id, a.crons)
-    for (const a of agents) this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
+    for (const a of agents) this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
 
@@ -2554,7 +2563,7 @@ export class Daemon {
       // crons live in the whole-agent signature, so any change re-syncs the agent's
       // job set (design §5.2: crons change → Scheduler upsert/remove). Idempotent.
       this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
+      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
@@ -2605,7 +2614,7 @@ export class Daemon {
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
       this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
+      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -4078,6 +4087,10 @@ export class Daemon {
     stopReason: string
     usage?: StoredUsage
   }> {
+    // Defense in depth: DreamRunner is the intended caller and already checks
+    // admission before creating a job. Keep the extraction seam independently
+    // fail-closed so a future caller cannot bypass that gate accidentally.
+    if (!this.dreamOperationsAllowed()) throw new DreamStateError(DREAM_MODEL_READABLE_CREDENTIALS_REASON)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
@@ -4370,6 +4383,7 @@ export class Daemon {
   /** The daemon's single dream-job engine, built on first use (the local store
    *  must exist for the boot-time crash-recovery sweep). */
   private async syncOrganizationSuggestions(): Promise<void> {
+    if (!this.dreamOperationsAllowed()) return
     const client = this.cpClient
     const runner = this.dreamRunnerInstance
     if (!client || !runner || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
@@ -4381,6 +4395,7 @@ export class Daemon {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
+      operationPolicy: this.dreamOperationsAllowed() ? 'test-only' : 'blocked',
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
@@ -4405,6 +4420,17 @@ export class Daemon {
       log: this.log
     })
     return this.dreamRunnerInstance
+  }
+
+  /** Credential-backed production Dream hosts are held closed until their
+   * provider authentication can be kept outside every model-readable path.
+   * Injected hosts are deterministic test/evaluation seams and remain enabled. */
+  private dreamOperationsAllowed(): boolean {
+    return this.opts.hostFactory !== undefined && this.opts.dreamOperationPolicy === 'test-only'
+  }
+
+  private dreamSchedulePolicyFor(agent: { memory?: Agent['memory'] }): MemoryDreamingPolicy | undefined {
+    return this.dreamOperationsAllowed() ? dreamingPolicyOf(agent) : undefined
   }
 
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
@@ -15174,6 +15200,13 @@ export class Daemon {
     }
     if (this.draining || this.drainingAgents.has(agentId)) {
       this.log.info(`scheduled dream skipped for agent "${agentId}": draining`)
+      return
+    }
+    // A stale Cron callback can already be queued while reconcile removes the
+    // production schedule. Repeat the admission gate here so it cannot create
+    // Dream metadata, snapshot memory, or materialize staged content.
+    if (!this.dreamOperationsAllowed()) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": ${DREAM_MODEL_READABLE_CREDENTIALS_REASON}`)
       return
     }
     void this.dreamRunner()

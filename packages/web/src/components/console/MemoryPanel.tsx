@@ -729,7 +729,7 @@ export function MemoryPanel({
                             setProviderError(null)
                           }}
                         />
-                        Automatically adopt completed memory results without review.
+                        Automatically adopt completed memory results without review (opt in).
                       </label>
                       {settings.dreaming.autoAdopt ? (
                         <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--amber-500)">

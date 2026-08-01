@@ -188,7 +188,7 @@ export interface MemoryDreamingConfig {
   timezone?: string // IANA zone the schedule is evaluated in (absent ⇒ daemon local)
   instructions?: string // operator steering text (≤4096 chars)
   mineSkills?: boolean // also mine reusable procedures (D-3)
-  autoAdopt?: boolean // adopt automatically without content review; absent defaults on
+  autoAdopt?: boolean // adopt automatically without content review; absent defaults off
 }
 
 export type AgentMemoryConfig =

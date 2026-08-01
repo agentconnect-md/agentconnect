@@ -233,7 +233,7 @@ describe('MemoryPanel file editor', () => {
 })
 
 describe('MemoryPanel settings draft', () => {
-  it('defaults managed memory to daily dreaming and lets users disable automatic acceptance', async () => {
+  it('defaults managed memory to daily dreaming and lets users opt in to automatic acceptance', async () => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -257,12 +257,12 @@ describe('MemoryPanel settings draft', () => {
 
     expect(checkboxFor('Enable dreaming')?.checked).toBe(true)
     expect(checkboxFor('Run on a schedule')?.checked).toBe(true)
-    expect(checkboxFor('Automatically adopt completed memory results')?.checked).toBe(true)
+    expect(checkboxFor('Automatically adopt completed memory results')?.checked).toBe(false)
     expect(container.textContent).toContain('Daily')
-    expect(container.textContent).toContain('Dream memory results can be inaccurate')
+    expect(container.textContent).not.toContain('Dream memory results can be inaccurate')
 
     await act(async () => checkboxFor('Automatically adopt completed memory results')?.click())
-    expect(container.textContent).not.toContain('Dream memory results can be inaccurate')
+    expect(container.textContent).toContain('Dream memory results can be inaccurate')
     const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Save memory settings'
     )
@@ -272,7 +272,7 @@ describe('MemoryPanel settings draft', () => {
       memory: {
         provider: 'managed',
         autoDistill: false,
-        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: false }
+        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: true }
       }
     })
   })
@@ -318,7 +318,7 @@ describe('MemoryPanel settings draft', () => {
       memory: {
         provider: 'managed',
         autoDistill: false,
-        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: true, mineSkills: true }
+        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: false, mineSkills: true }
       }
     })
   })
@@ -344,7 +344,7 @@ describe('MemoryPanel settings draft', () => {
     expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
     expect(container.textContent).toContain('Managed')
     expect(container.textContent).toContain('Dreaming daily')
-    expect(container.textContent).toContain('Auto-accept on')
+    expect(container.textContent).toContain('Auto-accept off')
     expect(container.textContent).toContain('Agent scope')
     expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
 

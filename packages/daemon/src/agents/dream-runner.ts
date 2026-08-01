@@ -77,6 +77,24 @@ export class DreamStateError extends Error {
   }
 }
 
+/** Production admission reason while provider authentication is necessarily
+ * materialized in files that the Dream model's read-only tools can inspect.
+ * Keep this stable and actionable: it is returned verbatim by the CP start API
+ * and recorded in scheduled-skip logs. */
+export const DREAM_MODEL_READABLE_CREDENTIALS_REASON =
+  'memory Dream execution is blocked because provider authentication cannot be isolated from model-readable paths; use a credential-isolated Dream runtime (model_readable_credentials)'
+
+/** Historical proposals were staged before review/adoption was bound to one
+ * immutable content digest. Their bytes must remain untouched until the secure
+ * execution boundary can create a fresh, review-bound proposal. */
+export const DREAM_UNBOUND_STAGED_CONTENT_REASON =
+  'historical Dream staged content is blocked because its reviewed bytes are not cryptographically bound to adoption; rerun after credential-isolated Dream execution is available (unbound_staged_content)'
+
+/** One fail-closed policy covers every operation that can execute a Dream or
+ * touch staged model output. Only daemon tests with an injected host factory,
+ * and standalone deterministic runner tests, may opt into `test-only`. */
+export type DreamOperationPolicy = 'blocked' | 'test-only'
+
 export interface DreamStorePort {
   insertDream(dream: DreamInfo): void
   updateDream(dream: DreamInfo): void
@@ -142,6 +160,9 @@ export interface DreamRunnerDeps {
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
   dreamingPolicyFor(agentId: string): MemoryDreamingPolicy | undefined
+  /** Omission is deliberately `blocked`. Production must never infer authority
+   * from runtime configuration; deterministic tests opt in explicitly. */
+  operationPolicy?: DreamOperationPolicy
   store: DreamStorePort
   /** Run one isolated dream extraction and return the streamed text. daemon.ts
    *  owns the session/trust mechanics; the prompt is fully assembled here. The
@@ -255,14 +276,28 @@ export class DreamRunner {
     // older daemon. Their metadata is already safe; sweep the corresponding
     // store staging now that the runner can resolve agent directories. Proposed
     // skills keep their independent review lifecycle.
-    for (const dream of this.deps.store.supersededDreams()) {
-      if (!this.deps.agentDirByAgent(dream.agentId)) continue
-      void this.removeStoreStaging(dream.agentId, dream).catch((err) => {
-        this.deps.log.warn(
-          `dream ${dream.dreamId}: could not remove superseded store staging (${err instanceof Error ? err.message : 'unknown'})`
-        )
-      })
+    if (this.operationsAllowed()) {
+      for (const dream of this.deps.store.supersededDreams()) {
+        if (!this.deps.agentDirByAgent(dream.agentId)) continue
+        void this.removeStoreStaging(dream.agentId, dream).catch((err) => {
+          this.deps.log.warn(
+            `dream ${dream.dreamId}: could not remove superseded store staging (${err instanceof Error ? err.message : 'unknown'})`
+          )
+        })
+      }
     }
+  }
+
+  private operationsAllowed(): boolean {
+    return this.deps.operationPolicy === 'test-only'
+  }
+
+  private assertExecutionAllowed(): void {
+    if (!this.operationsAllowed()) throw new DreamStateError(DREAM_MODEL_READABLE_CREDENTIALS_REASON)
+  }
+
+  private assertStagedContentAllowed(): void {
+    if (!this.operationsAllowed()) throw new DreamStateError(DREAM_UNBOUND_STAGED_CONTENT_REASON)
   }
 
   private nowIso(): string {
@@ -300,6 +335,10 @@ export class DreamRunner {
     agentId: string,
     opts: { trigger: DreamTrigger; sessionWindow?: number; instructions?: string }
   ): Promise<DreamInfo> {
+    // This must precede agent lookup, policy resolution, snapshots, corpus
+    // selection, reservation, and persistence. A blocked production request is
+    // observationally equivalent to never having started a Dream.
+    this.assertExecutionAllowed()
     const dir = this.dirFor(agentId)
     const policy = this.deps.dreamingPolicyFor(agentId)
     if (!policy?.enabled) {
@@ -755,6 +794,7 @@ export class DreamRunner {
    * replacement and adoption proceeds; anything else still refuses.
    */
   async adopt(agentId: string, dreamId: string, force: boolean): Promise<DreamInfo> {
+    this.assertStagedContentAllowed()
     const dir = this.dirFor(agentId)
     return this.withLock(agentId, async () => {
       const dream = this.getDream(agentId, dreamId)
@@ -899,8 +939,8 @@ export class DreamRunner {
 
   /**
    * Adopt a just-completed dream without review when the agent opted in
-   * (`dreaming.autoAdopt`). The user explicitly opted out of reviewing completed
-   * results, so the runtime's system-prompt transport does not add a second
+   * (`dreaming.autoAdopt`). The user explicitly opted in to accepting completed
+   * results without review, so the runtime's system-prompt transport does not add a second
    * review gate. Never throws — a live-memory fence conflict or failed swap
    * still leaves the dream `completed` and awaiting review.
    */
@@ -1021,6 +1061,7 @@ export class DreamRunner {
   /** Discard a terminal dream's staging. Keeps the job record for history.
    *  Serialized per agent so it can't race an adopt reading the same staging. */
   async discard(agentId: string, dreamId: string): Promise<DreamInfo> {
+    this.assertStagedContentAllowed()
     this.dirFor(agentId)
     return this.withLock(agentId, async () => {
       const dream = this.getDream(agentId, dreamId)
@@ -1039,6 +1080,7 @@ export class DreamRunner {
    *  fenced by definition. Make that invalidation explicit and remove only its
    *  memory-store staging; proposed skills remain independently reviewable. */
   private async supersedeCompletedDreams(agentId: string, adoptedDreamId: string, adoptedAt: string): Promise<number> {
+    this.assertStagedContentAllowed()
     const candidates = this.deps.store.completedDreams(agentId).filter((dream) => dream.dreamId !== adoptedDreamId)
     for (const dream of candidates) {
       this.deps.store.updateDream({ ...dream, status: 'superseded', endedAt: adoptedAt })
@@ -1056,6 +1098,7 @@ export class DreamRunner {
   /** Skills have an INDEPENDENT review lifecycle (design §7): removing a store
    *  proposal must not destroy a candidate the user has not ruled on. */
   private async removeStoreStaging(agentId: string, dream: DreamInfo): Promise<void> {
+    this.assertStagedContentAllowed()
     const base = this.dreamDir(agentId, dream.dreamId)
     const pending =
       (dream.skills ?? []).some((skill) => skill.state === 'proposed') ||
@@ -1084,6 +1127,7 @@ export class DreamRunner {
    * review metadata, and dismissal all work; only acceptance waits.
    */
   async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
+    this.assertStagedContentAllowed()
     const dir = this.dirFor(agentId)
     return this.withLock(agentId, async () => {
       const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
@@ -1111,6 +1155,7 @@ export class DreamRunner {
   /** Dismiss one candidate: drop its staging and record the decision, so later
    *  dreams can be told not to propose it again. */
   async skillDismiss(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
+    this.assertStagedContentAllowed()
     this.dirFor(agentId)
     return this.withLock(agentId, async () => {
       const { dream, skill } = this.skillCandidate(agentId, dreamId, name)
@@ -1140,6 +1185,7 @@ export class DreamRunner {
    *  review lifecycle is pending; once every local and organization candidate
    *  is terminal there is nothing left to inspect. */
   private async sweepReviewedStaging(agentId: string, dream: DreamInfo): Promise<void> {
+    this.assertStagedContentAllowed()
     if (dream.status !== 'discarded' && dream.status !== 'superseded') return
     if ((dream.skills ?? []).some((skill) => skill.state === 'proposed')) return
     if ((dream.organizationSuggestions ?? []).some((suggestion) => suggestion.state === 'proposed')) return
@@ -1176,6 +1222,7 @@ export class DreamRunner {
     skill: string
     scripts: { path: string; content: string }[]
   } | null> {
+    this.assertStagedContentAllowed()
     this.skillCandidate(agentId, dreamId, name)
     const dir = join(this.dreamDir(agentId, dreamId), 'skills', name)
     let skill: string
@@ -1217,6 +1264,7 @@ export class DreamRunner {
   }
 
   async organizationSuggestionRead(req: OrganizationSuggestionReadReq): Promise<OrganizationSuggestionChunk> {
+    this.assertStagedContentAllowed()
     const dream = this.getDream(req.sourceAgentId, req.dreamId)
     const suggestion = dream.organizationSuggestions?.find((candidate) => candidate.candidateId === req.candidateId)
     const absent = {
@@ -1260,6 +1308,7 @@ export class DreamRunner {
   }
 
   async organizationSuggestionReview(req: OrganizationSuggestionReviewReq): Promise<Ack> {
+    this.assertStagedContentAllowed()
     const dream = this.getDream(req.sourceAgentId, req.dreamId)
     const suggestion = dream.organizationSuggestions?.find((candidate) => candidate.candidateId === req.candidateId)
     if (!suggestion) throw new DreamViolationError(`unknown organization suggestion ${req.candidateId}`)
@@ -1288,6 +1337,7 @@ export class DreamRunner {
 
   /** Staged output listing for the review screen. Missing staging is DATA. */
   async stagedFiles(agentId: string, dreamId: string): Promise<{ name: string; size: number; mtime: string }[] | null> {
+    this.assertStagedContentAllowed()
     this.getDream(agentId, dreamId)
     const out = join(this.dreamDir(agentId, dreamId), 'output')
     let names: string[]
@@ -1318,6 +1368,7 @@ export class DreamRunner {
   /** Whole staged file text, or null when absent. Byte-slicing for the wire is
    *  the CP adapter's concern (cp/dream-reader.ts), mirroring memory-reader. */
   async stagedRead(agentId: string, dreamId: string, path: string): Promise<{ content: string; mtime: string } | null> {
+    this.assertStagedContentAllowed()
     this.getDream(agentId, dreamId)
     if (!stagedPathOk(path)) throw new DreamViolationError('staged memory paths are plain kebab-case .md names')
     const abs = join(this.dreamDir(agentId, dreamId), 'output', path)

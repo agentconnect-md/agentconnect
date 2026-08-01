@@ -399,11 +399,12 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
       'in the topic files. Flat directory — no subfolders in the path.\n' +
       'Two modes:\n' +
       '• `content` — create a file or fully replace it.\n' +
-      '• `oldString` + `newString` — targeted edit. Copy `oldString` verbatim from the injected memory-file boundary ' +
-      'or a fresh `readMemory` result, never from surrounding session context (for example workspace or git status). ' +
-      'It must occur exactly once; include enough file context to make it unique. If unsure, or retrying after a write ' +
-      'or failed replace, call `readMemory` first. Pass `newString: ""` to delete. Prefer this mode for existing files ' +
-      'so you do not resend the whole file. Provide exactly one mode.',
+      '• `oldString` + `newString` — targeted edit. Copy `oldString` verbatim from a fresh `readMemory` result, or ' +
+      "decode exactly one layer of the injected boundary's documented XML character references first. Never source " +
+      'it from surrounding session context (for example workspace or git status). It must occur exactly once; include ' +
+      'enough file context to make it unique. If unsure, or retrying after a write or failed replace, call `readMemory` ' +
+      'first. Pass `newString: ""` to delete. Prefer this mode for existing files so you do not resend the whole file. ' +
+      'Provide exactly one mode.',
     inputSchema: obj({
       path: {
         type: 'string',

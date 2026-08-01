@@ -24,12 +24,12 @@ export interface DreamingDraft {
 }
 
 /** Managed memory dreams daily at 04:00 in the daemon host's timezone and
- * accepts safe results automatically unless the user opts out. */
+ * leaves every result for review unless the user explicitly opts in to adoption. */
 export const DEFAULT_DREAMING_DRAFT: DreamingDraft = {
   enabled: true,
   instructions: '',
   schedule: '0 4 * * *',
-  autoAdopt: true
+  autoAdopt: false
 }
 
 export type MemoryProviderChoice = 'managed' | 'native' | 'external' | 'none'
@@ -95,7 +95,7 @@ export function memorySettingsDraft(input: {
       ? {
           enabled: input.dreaming.enabled,
           instructions: input.dreaming.instructions ?? '',
-          autoAdopt: input.dreaming.autoAdopt ?? true,
+          autoAdopt: input.dreaming.autoAdopt ?? false,
           ...(input.dreaming.sessionWindow !== undefined ? { sessionWindow: input.dreaming.sessionWindow } : {}),
           ...(input.dreaming.schedule ? { schedule: input.dreaming.schedule } : {}),
           ...(input.dreaming.timezone ? { timezone: input.dreaming.timezone } : {}),
@@ -186,7 +186,7 @@ export function memoryConfigForDraft(draft: MemorySettingsDraft): AgentMemoryCon
 
 /** Map the dreaming form back to the wire policy, preserving every preserved
  *  field. When a policy differs from the defaults, `autoAdopt` is explicit so
- *  false remains a durable opt-out. */
+ *  true remains a durable opt-in. */
 export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConfig | undefined {
   const instructions = draft.instructions.trim()
   const schedule = draft.schedule?.trim()

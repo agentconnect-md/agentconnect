@@ -7,7 +7,7 @@ import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
 const AGENT_ID = 'evaluation-agent'
 
-function scaffold(opts: { runtimeCommand?: string; model?: string } = {}): string {
+function scaffold(opts: { runtimeCommand?: string; model?: string; autoAdopt?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-evaluation-daemon-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -29,6 +29,9 @@ function scaffold(opts: { runtimeCommand?: string; model?: string } = {}): strin
       workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
       integrations: [],
       output: { mode: 'medium' },
+      ...(opts.autoAdopt !== undefined
+        ? { memory: { provider: 'managed', dreaming: { enabled: true, autoAdopt: opts.autoAdopt } } }
+        : {}),
       ...(opts.model ? { runtimeOverrides: { model: opts.model } } : {})
     })
   )
@@ -187,11 +190,12 @@ describe('Daemon evaluation surface', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
-      root: scaffold(),
+      root: scaffold({ autoAdopt: true }),
       hostFactory: (_agent, update) => {
         onUpdate = update
         return host as any
       },
+      dreamOperationPolicy: 'test-only',
       evaluation: { observer: collector, runId: 'eval-run-dream' }
     })
     await daemon.start()
@@ -346,11 +350,12 @@ describe('Daemon evaluation surface', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
-      root: scaffold({ runtimeCommand: 'codex-acp', model: 'gpt-5.6' }),
+      root: scaffold({ runtimeCommand: 'codex-acp', model: 'gpt-5.6', autoAdopt: true }),
       hostFactory: (_agent, update) => {
         onUpdate = update
         return host as any
       },
+      dreamOperationPolicy: 'test-only',
       evaluation: { observer: collector, runId: 'eval-run-dream-default-model' }
     })
     await daemon.start()
@@ -404,6 +409,7 @@ describe('Daemon evaluation surface', () => {
         onUpdate = update
         return host as any
       },
+      dreamOperationPolicy: 'test-only',
       evaluation: { observer: collector, runId: 'eval-run-dream-ignored-cancel' }
     })
     await daemon.start()

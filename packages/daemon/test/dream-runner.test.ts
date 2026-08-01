@@ -2,10 +2,12 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
 import {
+  DREAM_MODEL_READABLE_CREDENTIALS_REASON,
+  DREAM_UNBOUND_STAGED_CONTENT_REASON,
   DreamRunner,
   DreamStateError,
   type DreamExtractionResult,
@@ -100,6 +102,7 @@ async function setup(opts: {
   findOrganizationKnowledge?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['findOrganizationKnowledge']>
   managedSkillsFor?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['managedSkillsFor']>
   onOrganizationSuggestions?: () => void | Promise<void>
+  operationPolicy?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['operationPolicy']>
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -109,6 +112,7 @@ async function setup(opts: {
   const runner = new DreamRunner({
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
+    operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
     extract: async (agentId, systemPrompt, prompt, signal) => {
       prompts.push({ systemPrompt, prompt })
@@ -214,6 +218,31 @@ describe('DreamRunner pipeline', () => {
     await settle(store, first.dreamId)
   })
 
+  it('blocks production execution before agent lookup, policy, corpus, state, or extraction', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-held-'))
+    const store = new FakeStore()
+    const agentDirByAgent = vi.fn(() => dir)
+    const dreamingPolicyFor = vi.fn(() => ({ enabled: true }))
+    const extract = vi.fn(async () => ({ output: PROPOSAL }))
+    const sources = vi.spyOn(store, 'dreamSessionSources')
+    const runner = new DreamRunner({
+      agentDirByAgent,
+      dreamingPolicyFor,
+      store,
+      extract,
+      log: silent
+    })
+
+    await expect(runner.start('a1', { trigger: 'manual' })).rejects.toThrow(DREAM_MODEL_READABLE_CREDENTIALS_REASON)
+
+    expect(agentDirByAgent).not.toHaveBeenCalled()
+    expect(dreamingPolicyFor).not.toHaveBeenCalled()
+    expect(sources).not.toHaveBeenCalled()
+    expect(extract).not.toHaveBeenCalled()
+    expect(store.dreams.size).toBe(0)
+    expect(await readdir(dir)).toEqual([])
+  })
+
   it('serializes concurrent starts so exactly one dream is created', async () => {
     let release!: (v: string) => void
     const gate = new Promise<string>((r) => (release = r))
@@ -244,6 +273,7 @@ describe('DreamRunner pipeline', () => {
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
       store,
       extract: async () => ({ output: PROPOSAL }),
       log: silent
@@ -273,6 +303,7 @@ describe('DreamRunner pipeline', () => {
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
       store,
       extract: async () => ({ output: PROPOSAL }),
       onStaged: (agentId, dreamId) => {
@@ -751,6 +782,7 @@ describe('DreamRunner crash recovery', () => {
     new DreamRunner({
       agentDirByAgent: () => undefined,
       dreamingPolicyFor: () => undefined,
+      operationPolicy: 'test-only',
       store,
       extract: async () => '',
       log: silent
@@ -785,6 +817,7 @@ describe('DreamRunner crash recovery', () => {
     new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
       dreamingPolicyFor: () => undefined,
+      operationPolicy: 'test-only',
       store,
       extract: async () => ({ output: '' }),
       log: silent
@@ -796,6 +829,167 @@ describe('DreamRunner crash recovery', () => {
 
     expect(await readdir(base)).toEqual(['skills'])
     expect(await readFile(join(base, 'skills', 'keep-me', 'SKILL.md'), 'utf8')).toBe('# keep')
+  })
+})
+
+describe('DreamRunner production security hold', () => {
+  it('blocks every staged-content operation without changing files or metadata', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-held-'))
+    ensureMemory(dir, 'bot')
+    await writeMemoryFile(dir, 'prefs.md', '- live value\n', undefined, 'tool')
+
+    const dreamId = 'drm-held'
+    const candidateId = '11111111-1111-4111-8111-111111111111'
+    const base = join(dir, 'memory-dreams', dreamId)
+    await mkdir(join(base, 'output'), { recursive: true })
+    await mkdir(join(base, 'skills', 'deploy-staging', 'scripts'), { recursive: true })
+    await mkdir(join(base, 'organization'), { recursive: true })
+    await writeFile(join(base, 'output', 'MEMORY.md'), '# Held memory\n')
+    await writeFile(join(base, 'output', 'prefs.md'), '- staged value\n')
+    await writeFile(join(base, 'skills', 'deploy-staging', 'SKILL.md'), '# Held skill\n')
+    await writeFile(join(base, 'skills', 'deploy-staging', 'scripts', 'deploy.sh'), 'echo held\n')
+    await writeFile(join(base, 'organization', `${candidateId}.json`), '{"kind":"knowledge","content":"held"}')
+
+    const store = new FakeStore()
+    const held: DreamInfo = {
+      dreamId,
+      agentId: 'a1',
+      status: 'completed',
+      trigger: 'manual',
+      sessionIds: ['sess-1'],
+      snapshotDigest: `sha256:${'b'.repeat(64)}`,
+      skills: [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }],
+      organizationSuggestions: [
+        {
+          candidateId,
+          kind: 'knowledge',
+          operation: 'create',
+          title: 'Held knowledge',
+          digest: `sha256:${'a'.repeat(64)}`,
+          contentBytes: 36,
+          state: 'proposed',
+          sessionIds: ['sess-1'],
+          createdAt: '2026-07-24T00:00:00.000Z'
+        }
+      ],
+      createdAt: '2026-07-24T00:00:00.000Z',
+      endedAt: '2026-07-24T00:01:00.000Z'
+    }
+    store.insertDream(held)
+    const before = JSON.stringify(store.getDream('a1', dreamId))
+    const runner = new DreamRunner({
+      agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
+      dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'blocked',
+      store,
+      extract: async () => ({ output: PROPOSAL }),
+      log: silent
+    })
+
+    const operations: Array<() => Promise<unknown>> = [
+      () => runner.adopt('a1', dreamId, false),
+      () => runner.discard('a1', dreamId),
+      () => runner.stagedFiles('a1', dreamId),
+      () => runner.stagedRead('a1', dreamId, 'prefs.md'),
+      () => runner.stagedSkill('a1', dreamId, 'deploy-staging'),
+      () => runner.skillAccept('a1', dreamId, 'deploy-staging'),
+      () => runner.skillDismiss('a1', dreamId, 'deploy-staging'),
+      () =>
+        runner.organizationSuggestionRead({
+          sourceAgentId: 'a1',
+          dreamId,
+          candidateId,
+          kind: 'knowledge',
+          offset: 0,
+          limit: 64
+        }),
+      () =>
+        runner.organizationSuggestionReview({
+          sourceAgentId: 'a1',
+          dreamId,
+          candidateId,
+          state: 'accepted'
+        }),
+      () =>
+        runner.organizationSuggestionReview({
+          sourceAgentId: 'a1',
+          dreamId,
+          candidateId,
+          state: 'rejected'
+        })
+    ]
+    for (const operation of operations) {
+      await expect(operation()).rejects.toThrow(DREAM_UNBOUND_STAGED_CONTENT_REASON)
+    }
+
+    expect(JSON.stringify(store.getDream('a1', dreamId))).toBe(before)
+    expect(await readMemoryFile(dir, 'prefs.md')).toBe('- live value\n')
+    expect(await readFile(join(base, 'output', 'MEMORY.md'), 'utf8')).toBe('# Held memory\n')
+    expect(await readFile(join(base, 'output', 'prefs.md'), 'utf8')).toBe('- staged value\n')
+    expect(await readFile(join(base, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toBe('# Held skill\n')
+    expect(await readFile(join(base, 'skills', 'deploy-staging', 'scripts', 'deploy.sh'), 'utf8')).toBe('echo held\n')
+    expect(await readFile(join(base, 'organization', `${candidateId}.json`), 'utf8')).toBe(
+      '{"kind":"knowledge","content":"held"}'
+    )
+    await expect(readdir(join(dir, 'skills'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not sweep superseded staging, while metadata and cancel remain available', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-held-'))
+    const base = join(dir, 'memory-dreams', 'drm-superseded')
+    await mkdir(join(base, 'output'), { recursive: true })
+    await writeFile(join(base, 'output', 'MEMORY.md'), '# retained\n')
+    const store = new FakeStore()
+    store.insertDream({
+      dreamId: 'drm-superseded',
+      agentId: 'a1',
+      status: 'superseded',
+      trigger: 'manual',
+      sessionIds: [],
+      snapshotDigest: `sha256:${'c'.repeat(64)}`,
+      organizationSuggestions: [
+        {
+          candidateId: '22222222-2222-4222-8222-222222222222',
+          kind: 'knowledge',
+          operation: 'create',
+          title: 'Metadata only',
+          digest: `sha256:${'d'.repeat(64)}`,
+          contentBytes: 1,
+          state: 'proposed',
+          sessionIds: ['sess-1'],
+          createdAt: '2026-07-24T00:00:00.000Z'
+        }
+      ],
+      createdAt: '2026-07-24T00:00:00.000Z',
+      endedAt: '2026-07-24T00:01:00.000Z'
+    })
+    const supersededDreams = vi.spyOn(store, 'supersededDreams')
+    const runner = new DreamRunner({
+      agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
+      dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'blocked',
+      store,
+      extract: async () => ({ output: PROPOSAL }),
+      log: silent
+    })
+
+    expect(supersededDreams).not.toHaveBeenCalled()
+    expect(await readFile(join(base, 'output', 'MEMORY.md'), 'utf8')).toBe('# retained\n')
+    expect(runner.get('a1', 'drm-superseded').status).toBe('superseded')
+    expect(runner.list('a1', 10).map((dream) => dream.dreamId)).toContain('drm-superseded')
+    expect(runner.organizationSuggestionInventory()).toHaveLength(1)
+
+    store.insertDream({
+      dreamId: 'drm-running',
+      agentId: 'a1',
+      status: 'running',
+      trigger: 'manual',
+      sessionIds: [],
+      snapshotDigest: `sha256:${'e'.repeat(64)}`,
+      createdAt: '2026-07-24T00:02:00.000Z'
+    })
+    expect(runner.cancel('a1', 'drm-running').status).toBe('canceled')
+    expect(runner.get('a1', 'drm-running').status).toBe('canceled')
   })
 })
 
@@ -851,6 +1045,7 @@ describe('DreamRunner store persistence', () => {
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
       store,
       extract: async () => ({ output: PROPOSAL }),
       log: silent
@@ -1190,6 +1385,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
+      operationPolicy: 'test-only',
       store,
       extract: async () => ({ output: proposal }),
       ...(onEvent ? { onEvent } : {}),
@@ -1222,6 +1418,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }), // mineSkills off
+      operationPolicy: 'test-only',
       store,
       extract: async (_a, systemPrompt) => {
         prompts.push(systemPrompt)
@@ -1312,6 +1509,7 @@ describe('DreamRunner skill mining — review findings', () => {
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
+      operationPolicy: 'test-only',
       store,
       extract: async (_a, _s, prompt) => {
         prompts.push(prompt)
@@ -1344,6 +1542,7 @@ describe('DreamRunner skill mining — review findings', () => {
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true }), // mining off
+      operationPolicy: 'test-only',
       store,
       extract: async (_a, _s, prompt) => {
         prompts.push(prompt)

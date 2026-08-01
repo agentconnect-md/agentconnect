@@ -70,7 +70,7 @@ describe('memory settings UX model', () => {
   })
 
   it('builds the same guarded API shapes for every mode', () => {
-    // The absent managed-memory policy is the daily auto-accepting product
+    // The absent managed-memory policy is the daily, review-first product
     // default, so it remains compact on the wire.
     expect(memoryConfigForDraft(memorySettingsDraft({ provider: 'managed', autoDistill: true }))).toEqual({
       provider: 'managed',
@@ -91,13 +91,13 @@ describe('memory settings UX model', () => {
     ).toMatchObject({ provider: 'external', connectionId: CONNECTION_A })
   })
 
-  it('models daily dreaming and automatic acceptance as managed-memory defaults with durable opt-outs', () => {
+  it('models daily dreaming with review-first adoption and a durable opt-in', () => {
     const defaults = memorySettingsDraft({ provider: 'managed', autoDistill: false })
     expect(defaults.dreaming).toEqual({
       enabled: true,
       instructions: '',
       schedule: '0 4 * * *',
-      autoAdopt: true
+      autoAdopt: false
     })
     expect(memoryConfigForDraft(defaults)).toEqual({ provider: 'managed', autoDistill: false })
     expect(dreamingConfigForDraft(defaults.dreaming)).toBeUndefined()
@@ -117,7 +117,14 @@ describe('memory settings UX model', () => {
     expect(memoryConfigForDraft(disabled)).toEqual({
       provider: 'managed',
       autoDistill: false,
-      dreaming: { enabled: false, schedule: '0 4 * * *', autoAdopt: true }
+      dreaming: { enabled: false, schedule: '0 4 * * *', autoAdopt: false }
+    })
+
+    const automatic = { ...defaults, dreaming: { ...defaults.dreaming, autoAdopt: true } }
+    expect(memoryConfigForDraft(automatic)).toEqual({
+      provider: 'managed',
+      autoDistill: false,
+      dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: true }
     })
   })
 
