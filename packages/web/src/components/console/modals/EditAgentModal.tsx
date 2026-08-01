@@ -136,6 +136,8 @@ export default function EditAgentModal({
   const [sandboxSupported, setSandboxSupported] = useState(agent.sandboxSupported)
   const [sandboxRequired, setSandboxRequired] = useState(agent.sandboxRequired)
   const [repairPlacement, setRepairPlacement] = useState(false)
+  const [emergencyReassign, setEmergencyReassign] = useState(false)
+  const [emergencyConfirmed, setEmergencyConfirmed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const fetched = useRef(false)
@@ -300,6 +302,11 @@ export default function EditAgentModal({
   const moveReady = (d: (typeof daemons)[number] | undefined) =>
     !!d && d.status === 'online' && d.caps.features.includes('agent-move-v1')
   const daemonLabel = daemon?.name ?? (daemonId ? `Current daemon (${daemonId.slice(0, 8)})` : 'No daemon')
+  const sourceUnavailable = !!sourceDaemon && !moveReady(sourceDaemon)
+  const sourceOffline = sourceDaemon?.status === 'offline'
+  const emergencyEligible = daemonChanged && !initialPlacement && sourceOffline && moveReady(daemon)
+  const forceMove = emergencyReassign && emergencyEligible
+  const sourceBlocksSafeMove = daemonChanged && sourceUnavailable && !forceMove
 
   // Runtime options come from the SELECTED daemon's reported profiles (same source as
   // the Add-agent picker); fall back to the static runtime list when the daemon reports
@@ -434,8 +441,16 @@ export default function EditAgentModal({
       // A restricted current daemon may be intentionally absent from this
       // viewer's daemon list. Let the server perform the authoritative source
       // readiness check in that case; only reject a source we can actually see.
-      if (initialDaemonId.current && sourceDaemon && !moveReady(sourceDaemon)) {
-        setErr('The current daemon must be online and upgraded before this agent can move.')
+      if (initialDaemonId.current && sourceDaemon && !moveReady(sourceDaemon) && !forceMove) {
+        setErr(
+          sourceDaemon.status === 'offline'
+            ? `To move safely, bring ${sourceDaemon.name} online, then retry.`
+            : `Upgrade ${sourceDaemon.name} before moving this agent.`
+        )
+        return
+      }
+      if (forceMove && !emergencyConfirmed) {
+        setErr(`Confirm that ${sourceDaemon?.name ?? 'the source daemon'} is permanently stopped.`)
         return
       }
       if (!daemon || !moveReady(daemon)) {
@@ -487,7 +502,7 @@ export default function EditAgentModal({
       // CP will accept the daemon (a solo move/repair carries no spec diff at all
       // — the guard above rejected one).
       if (hasSpecChanges && !soloPlacement) await updateAgent(agent.id, patch)
-      if (placementRequested) await moveAgent(agent.id, daemonId)
+      if (placementRequested) await moveAgent(agent.id, daemonId, forceMove ? { force: true } : undefined)
       // Sharing and agent-call visibility ride their own endpoints. Sharing uses
       // canManageSharing; call policy is a normal agent edit and uses canEdit.
       // Only write when they actually changed, and never during a move.
@@ -582,6 +597,8 @@ export default function EditAgentModal({
                         className="font-sans text-[11.5px] font-medium leading-normal text-(--accent) hover:underline"
                         onClick={() => {
                           setRepairPlacement((value) => !value)
+                          setEmergencyReassign(false)
+                          setEmergencyConfirmed(false)
                           setErr(null)
                         }}
                       >
@@ -600,6 +617,8 @@ export default function EditAgentModal({
                       onChange={(e) => {
                         setDaemonId(e.target.value)
                         setRepairPlacement(false)
+                        setEmergencyReassign(false)
+                        setEmergencyConfirmed(false)
                         setErr(null)
                       }}
                       className="absolute inset-0 cursor-pointer opacity-0"
@@ -629,6 +648,70 @@ export default function EditAgentModal({
                       })}
                     </select>
                   </div>
+                  {sourceDaemon && sourceUnavailable && (
+                    <div className="mt-2 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
+                      <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                          Safe move unavailable
+                        </div>
+                        <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
+                          {sourceOffline ? (
+                            <>
+                              To move safely, bring{' '}
+                              <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> online,
+                              then retry. The existing copy must stop before this agent is activated elsewhere.
+                            </>
+                          ) : (
+                            <>
+                              Upgrade <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span>{' '}
+                              before moving this agent.
+                            </>
+                          )}
+                        </div>
+                        {sourceOffline && !daemonChanged && (
+                          <div className="mt-[5px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                            Select an online destination to see emergency recovery options.
+                          </div>
+                        )}
+                        {emergencyEligible && (
+                          <div className="mt-[9px] flex flex-col gap-2">
+                            <Button
+                              variant={emergencyReassign ? 'ghost' : 'secondary'}
+                              size="xs"
+                              onClick={() => {
+                                setEmergencyReassign((value) => !value)
+                                setEmergencyConfirmed(false)
+                                setErr(null)
+                              }}
+                            >
+                              <Icon name={emergencyReassign ? 'x' : 'triangle-alert'} size={13} />
+                              {emergencyReassign ? 'Cancel emergency reassign' : 'Emergency reassign'}
+                            </Button>
+                            {emergencyReassign && (
+                              <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px]">
+                                <input
+                                  type="checkbox"
+                                  className="mt-[2px] flex-none accent-(--brand)"
+                                  checked={emergencyConfirmed}
+                                  onChange={(e) => {
+                                    setEmergencyConfirmed(e.target.checked)
+                                    setErr(null)
+                                  }}
+                                />
+                                <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
+                                  I confirm that{' '}
+                                  <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> is
+                                  permanently stopped and cannot reconnect. If it is still running, both copies may
+                                  process messages.
+                                </span>
+                              </label>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="fld">
                   <span className="fldlbl">Runtime</span>
@@ -857,8 +940,18 @@ export default function EditAgentModal({
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                     This places the unassigned agent on{' '}
                     <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the selected daemon'}</span>{' '}
-                    from its saved control-plane definition. No workspace, memory, or session history is copied from
-                    another daemon.
+                    from its saved settings. No workspace, memory, or session history is copied from another daemon.
+                  </span>
+                ) : daemonChanged && forceMove ? (
+                  <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                    Emergency reassign activates this agent on{' '}
+                    <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the target daemon'}</span>{' '}
+                    without confirmation from{' '}
+                    <span className="font-semibold text-(--text-primary)">
+                      {sourceDaemon?.name ?? 'the current daemon'}
+                    </span>
+                    . Local workspace, memory, transcripts, and attachments are not copied. Continue only when the
+                    source machine is permanently stopped.
                   </span>
                 ) : daemonChanged ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
@@ -874,9 +967,8 @@ export default function EditAgentModal({
                   </span>
                 ) : (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Repair cold-reprovisions this agent on its current daemon from the saved control-plane definition.
-                    Use it to recover an interrupted move. Current turns are drained; local workspace and memory stay in
-                    place.
+                    Repair cold-reprovisions this agent on its current daemon from its saved settings. Use it to recover
+                    an interrupted move. Current turns are drained; local workspace and memory stay in place.
                   </span>
                 )}
               </div>
@@ -899,23 +991,31 @@ export default function EditAgentModal({
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={() => void save()} className={!saving && loaded ? undefined : 'cursor-default opacity-50'}>
-          <Icon name="check" size={15} />
+        <Button
+          variant={forceMove ? 'danger' : 'primary'}
+          disabled={saving || !loaded || sourceBlocksSafeMove || (forceMove && !emergencyConfirmed)}
+          onClick={() => void save()}
+        >
+          <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />
           {saving
             ? initialPlacement
               ? 'Placing…'
-              : daemonChanged
-                ? 'Moving…'
-                : repairPlacement
-                  ? 'Repairing…'
-                  : 'Saving…'
+              : forceMove
+                ? 'Reassigning…'
+                : daemonChanged
+                  ? 'Moving…'
+                  : repairPlacement
+                    ? 'Repairing…'
+                    : 'Saving…'
             : initialPlacement
               ? 'Place agent'
-              : daemonChanged
-                ? 'Move agent'
-                : repairPlacement
-                  ? 'Repair agent'
-                  : 'Save changes'}
+              : forceMove
+                ? 'Reassign agent'
+                : daemonChanged
+                  ? 'Move agent'
+                  : repairPlacement
+                    ? 'Repair agent'
+                    : 'Save changes'}
         </Button>
       </div>
     </>

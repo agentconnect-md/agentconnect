@@ -1,5 +1,5 @@
 /**
- * Safe cold agent movement between daemons.
+ * Cold agent movement between daemons.
  *
  * The source daemon first ACKs `agent/detach`, which drains the running turn and
  * archives the complete agent root out of the active tree. Only then does the CP
@@ -8,8 +8,11 @@
  * detaching the partial target, moving the DB placement back, and reactivating the
  * source archive.
  *
- * This is deliberately a cold reprovision, not state migration: workspace,
- * transcript, and memory bytes remain daemon-local.
+ * An explicit emergency reassign may continue without the source ACK only when
+ * the HTTP edge has proved the source unavailable and the operator accepted the
+ * split-brain risk. It still attempts the detach so a source that reconnects in
+ * the race can quiesce normally. This is deliberately a cold reprovision, not
+ * state migration: workspace, transcript, and memory bytes remain daemon-local.
  */
 import { randomUUID } from 'node:crypto'
 import {
@@ -106,6 +109,8 @@ interface ActivationSnapshot {
   fingerprint: string
 }
 
+type SourceDetachMode = 'required' | 'best-effort'
+
 const MAX_STABILITY_ATTEMPTS = 3
 
 function requireAck(action: string, ack: Ack): void {
@@ -161,7 +166,16 @@ export class AgentMoveService {
 
   async move(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
     return this.withMoveGate(agent.id, async () =>
-      this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor)
+      this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor, 'required')
+    )
+  }
+
+  /** Disaster recovery for a source daemon that cannot confirm detach. Target
+   * admission and activation remain fully acknowledged; only the source handoff
+   * becomes best-effort. */
+  async emergencyReassign(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
+    return this.withMoveGate(agent.id, async () =>
+      this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor, 'best-effort')
     )
   }
 
@@ -394,7 +408,12 @@ export class AgentMoveService {
     return converted
   }
 
-  private async moveLocked(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
+  private async moveLocked(
+    agent: AgentRecord,
+    targetDaemonId: DaemonId,
+    editor: string | undefined,
+    sourceDetachMode: SourceDetachMode
+  ): Promise<AgentRecord> {
     const sourceDaemonId = agent.daemonId
     // Retained only as compensation input if the source is detached but the
     // placement CAS never commits. The target always receives a fresh post-CAS
@@ -405,8 +424,14 @@ export class AgentMoveService {
       try {
         requireAck('source detach', await this.detach(sourceDaemonId, agent.id))
       } catch (err) {
-        if (err instanceof AgentMoveFailed) throw err
-        throw new AgentMoveFailed('source daemon detach failed', err)
+        if (sourceDetachMode === 'required') {
+          if (err instanceof AgentMoveFailed) throw err
+          throw new AgentMoveFailed('source daemon detach failed', err)
+        }
+        this.deps.log?.warn(
+          { err, agentId: agent.id, sourceDaemonId, targetDaemonId },
+          'agent emergency reassign: source detach unconfirmed; continuing by operator request'
+        )
       }
       try {
         const released = await this.deps.assignments.releaseForAgent(agent.id, sourceDaemonId, new Date())

@@ -802,6 +802,16 @@ const AgentActivate = z.object({
 
 The CP first receives an acknowledged source detach, releases the source session assignments, then compare-and-sets `Agent.daemonId`. It stages the target with `agent/detach` (an absent agent is valid), followed by one acknowledged authoritative `agent/activate` bundle. Both requests use the same fresh `moveId`; a daemon persists that fence and rejects a late activate from a superseded move. Activation exact-converges CP integrations and CP crons, validates capacity/runtime/model/MCP support, warms the ACP host, and only then opens the dispatch gate.
 
+An explicit emergency reassign is available only while the source is not READY. It
+still attempts `agent/detach`, but an unavailable or negative source response is logged
+and does not block the placement CAS. Session affinities are released before the CAS,
+and every target-side readiness, capacity, compatibility, staging, activation, and
+rollback fence above remains unchanged. The operator must separately confirm that the
+source machine is permanently stopped: while it is disconnected, the CP cannot fence a
+direct platform connection or erase its credential copies. If it reconnects after the
+CAS, the authoritative placement snapshot gives it an ownership-aware `drop.agents`
+detach for the stale local copy.
+
 If target activation fails, the CP must positively detach the target before rolling placement back and reactivating the source; without that ACK it fails closed on the target to avoid split brain. A same-target API retry replays the authoritative bundle as a repair operation. Daemons advertise this lifecycle with the `agent-move-v1` feature; single-agent mode does not advertise it.
 
 The workspace action reuses the same fence on the current daemon. Before detach, the daemon initializes a missing mode/repo/branch materialization marker without overwriting an existing one; the persisted spec may already be the target after a crash while the checkout still belongs to the recorded source. Activation with `reconcileWorkspace` preserves the current checkout when those fields are unchanged, so access and `agentDir` edits do not discard files. When mode, repository, or branch changes, a GitHub target is cloned and its `agentDir` validated in a sibling staging directory before the old workspace is removed; a scratch target is recreated empty. The ACP host starts only after reconciliation so its runtime and sandbox bind the new directory. A known activation NACK restores the DB definition and a valid empty base for the prior workspace, but intentionally cannot restore local files discarded by an acknowledged replacement; this is why the UI requires an irreversible warning. Clone/auth failure occurs before replacement and leaves the old workspace intact. An unknown response is never rolled back blindly, and the durable materialization marker makes a same-target retry preserve work created after a successful but unacknowledged activation. Memory, sessions, integrations, and other agent configuration are preserved. Supporting daemons advertise `workspace-edit-v2` and accept the workspace guard fields shown above.

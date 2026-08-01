@@ -33,6 +33,27 @@ an operator explicitly paused remains `paused`. Once the operation succeeds, fai
 expires, the console returns to the daemon's current connection status; a daemon that
 did not return then reads `offline`.
 
+## Moving an agent from an unavailable daemon
+
+A normal agent move is the safe default: the current daemon must confirm that it has
+stopped the existing copy before another daemon activates it. When the current daemon
+is offline, the agent Configuration page and placement editor must say that safe move
+is unavailable and name the daemon the operator needs to bring online. The target
+picker must not lead to a request that can only fail without explaining this first.
+
+An emergency reassign is disaster recovery, not another ordinary move mode. Offer it
+only after the operator chooses an online, compatible target while the current daemon
+is offline. It bypasses only confirmation from the source; target readiness, capacity,
+runtime, model, MCP, and managed-skill compatibility remain mandatory. Before enabling
+the destructive action, require the operator to confirm that the source machine is
+permanently stopped and cannot reconnect, and warn that two copies may process messages
+if that assertion is wrong.
+
+Both paths preserve the Agent identity and its centrally managed settings. Neither
+copies daemon-local workspace, memory, transcripts, or attachments. A source that later
+reconnects after an emergency reassign is told to detach the stale local copy during
+placement reconciliation.
+
 ## Where a streamed reply may be split
 
 A long reply may be delivered as more than one chat message, but a split must always fall
