@@ -13,9 +13,12 @@ const PAGE_SIZE = 200
 const TIMEOUT_MS = 5_000
 
 type Decision = 'allow' | 'deny' | 'unknown'
+type ConversationAudience = 'public' | 'members' | 'unknown'
+type WorkspaceAccess = 'allow' | 'membership' | 'deny' | 'unknown'
 type SlackPrincipal = { key: string; teamId: string; userId: string }
 
 type CachedDecision = { decision: Decision; expiresAt: number }
+type CachedWorkspaceAccess = { access: WorkspaceAccess; expiresAt: number }
 
 export interface SlackSessionAccessResult {
   allowedScopes: Array<{ id: string; aclRevision: bigint }>
@@ -49,10 +52,12 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
   return out
 }
 
-/** Slack v1 current-conversation membership resolver. The cache retains only a
- * bounded ACL verdict; linked identity remains request-local and provider-owned. */
+/** Slack v1 current-access resolver. Public channels follow workspace access;
+ * restricted conversations follow membership. Caches retain only bounded ACL
+ * verdicts; linked identity remains request-local and provider-owned. */
 export class SlackSessionAccessService implements SlackSessionAccessResolver {
   private readonly cache = new Map<string, CachedDecision>()
+  private readonly workspaceAccessCache = new Map<string, CachedWorkspaceAccess>()
 
   constructor(
     private readonly deps: {
@@ -116,7 +121,7 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
       const cached = this.cache.get(key)
       let decision = cached && cached.expiresAt > this.deps.clock.now() ? cached.decision : undefined
       if (!decision) {
-        decision = await this.checkMembership(scope, principal, bot.id, signal)
+        decision = await this.checkAccess(scope, principal, bot.id, bot.credentialRevision, signal)
         this.putCache(key, decision)
       }
       if (decision === 'allow') return 'allow'
@@ -125,59 +130,145 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
     return sawUnknown ? 'unknown' : 'deny'
   }
 
-  private async checkMembership(
+  private async checkAccess(
     scope: ExternalScopeRecord,
     principal: SlackPrincipal,
     botId: string,
+    credentialRevision: number,
     signal: AbortSignal
   ): Promise<Decision> {
     const secret = await this.deps.botSecrets.get(BotId(botId)).catch(() => null)
     if (!secret?.botToken) return 'unknown'
     try {
-      let cursor = ''
-      let found = false
-      for (let page = 0; page < MAX_MEMBER_PAGES; page++) {
-        const query = new URLSearchParams({ channel: scope.resourceKey, limit: String(PAGE_SIZE) })
-        if (cursor) query.set('cursor', cursor)
-        const body = await this.slackCall<{
-          ok?: boolean
-          error?: string
-          members?: unknown
-          response_metadata?: { next_cursor?: unknown }
-        }>(`conversations.members?${query}`, secret.botToken, signal)
-        if (!body.ok || !Array.isArray(body.members)) return 'unknown'
-        if (body.members.includes(principal.userId)) {
-          found = true
-          break
-        }
-        cursor = typeof body.response_metadata?.next_cursor === 'string' ? body.response_metadata.next_cursor : ''
-        if (!cursor) break
-        if (page === MAX_MEMBER_PAGES - 1) return 'unknown'
+      const audience = await this.conversationAudience(scope.resourceKey, secret.botToken, signal)
+      if (audience === 'unknown') return 'unknown'
+      if (audience === 'public') {
+        const access = await this.workspaceAccess(
+          scope.realmKey,
+          principal,
+          credentialRevision,
+          secret.botToken,
+          signal
+        )
+        if (access !== 'membership') return access
+        return this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
       }
-      if (!found) return 'deny'
-      if (principal.teamId === scope.realmKey) return 'allow'
+
+      const member = await this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
+      if (member !== 'allow' || principal.teamId === scope.realmKey) return member
 
       // Slack Connect can return a member from another workspace. Verify the
       // identity's home team instead of treating the installing team as proof.
-      const user = await this.slackCall<{
-        ok?: boolean
-        user?: {
-          team_id?: unknown
-          profile?: { team?: unknown }
-          enterprise_user?: { teams?: unknown }
-        }
-      }>(`users.info?user=${encodeURIComponent(principal.userId)}`, secret.botToken, signal)
-      if (!user.ok || !user.user) return 'unknown'
-      const teams = new Set<string>()
-      if (typeof user.user.team_id === 'string') teams.add(user.user.team_id)
-      if (typeof user.user.profile?.team === 'string') teams.add(user.user.profile.team)
-      if (Array.isArray(user.user.enterprise_user?.teams)) {
-        for (const team of user.user.enterprise_user.teams) if (typeof team === 'string') teams.add(team)
-      }
-      return teams.has(principal.teamId) ? 'allow' : 'deny'
+      const access = await this.workspaceAccess(scope.realmKey, principal, credentialRevision, secret.botToken, signal)
+      return access === 'unknown' || access === 'deny' ? access : 'allow'
     } catch {
       return 'unknown'
     }
+  }
+
+  private async conversationAudience(
+    channel: string,
+    token: string,
+    signal: AbortSignal
+  ): Promise<ConversationAudience> {
+    const body = await this.slackCall<{
+      ok?: boolean
+      channel?: { is_private?: unknown; is_im?: unknown; is_mpim?: unknown }
+    }>(`conversations.info?channel=${encodeURIComponent(channel)}`, token, signal)
+    if (!body.ok || !body.channel) return 'unknown'
+    if (body.channel.is_private === false && body.channel.is_im !== true && body.channel.is_mpim !== true) {
+      return 'public'
+    }
+    if (body.channel.is_private === true || body.channel.is_im === true || body.channel.is_mpim === true) {
+      return 'members'
+    }
+    return 'unknown'
+  }
+
+  private async workspaceAccess(
+    realmKey: string,
+    principal: SlackPrincipal,
+    credentialRevision: number,
+    token: string,
+    signal: AbortSignal
+  ): Promise<WorkspaceAccess> {
+    const key = [realmKey, credentialRevision, principal.key].join(':')
+    const cached = this.workspaceAccessCache.get(key)
+    if (cached && cached.expiresAt > this.deps.clock.now()) return cached.access
+
+    const body = await this.slackCall<{
+      ok?: boolean
+      user?: {
+        team_id?: unknown
+        profile?: { team?: unknown }
+        enterprise_user?: { teams?: unknown }
+        deleted?: unknown
+        suspended?: unknown
+        is_bot?: unknown
+        is_profile_only_user?: unknown
+        is_invited_user?: unknown
+        is_restricted?: unknown
+        is_ultra_restricted?: unknown
+        is_stranger?: unknown
+        is_external?: unknown
+      }
+    }>(`users.info?user=${encodeURIComponent(principal.userId)}`, token, signal)
+
+    let access: WorkspaceAccess = 'unknown'
+    if (body.ok && body.user) {
+      const teams = new Set<string>()
+      if (typeof body.user.team_id === 'string') teams.add(body.user.team_id)
+      if (typeof body.user.profile?.team === 'string') teams.add(body.user.profile.team)
+      if (Array.isArray(body.user.enterprise_user?.teams)) {
+        for (const team of body.user.enterprise_user.teams) if (typeof team === 'string') teams.add(team)
+      }
+      if (
+        !teams.has(principal.teamId) ||
+        body.user.deleted === true ||
+        body.user.suspended === true ||
+        body.user.is_bot === true ||
+        body.user.is_profile_only_user === true ||
+        body.user.is_invited_user === true
+      ) {
+        access = 'deny'
+      } else if (
+        !teams.has(realmKey) ||
+        body.user.is_restricted === true ||
+        body.user.is_ultra_restricted === true ||
+        body.user.is_stranger === true ||
+        body.user.is_external === true
+      ) {
+        access = 'membership'
+      } else {
+        access = 'allow'
+      }
+    }
+    this.putWorkspaceAccess(key, access)
+    return access
+  }
+
+  private async checkMembership(
+    channel: string,
+    userId: string,
+    token: string,
+    signal: AbortSignal
+  ): Promise<Decision> {
+    let cursor = ''
+    for (let page = 0; page < MAX_MEMBER_PAGES; page++) {
+      const query = new URLSearchParams({ channel, limit: String(PAGE_SIZE) })
+      if (cursor) query.set('cursor', cursor)
+      const body = await this.slackCall<{
+        ok?: boolean
+        members?: unknown
+        response_metadata?: { next_cursor?: unknown }
+      }>(`conversations.members?${query}`, token, signal)
+      if (!body.ok || !Array.isArray(body.members)) return 'unknown'
+      if (body.members.includes(userId)) return 'allow'
+      cursor = typeof body.response_metadata?.next_cursor === 'string' ? body.response_metadata.next_cursor : ''
+      if (!cursor) return 'deny'
+      if (page === MAX_MEMBER_PAGES - 1) return 'unknown'
+    }
+    return 'unknown'
   }
 
   private async slackCall<T>(path: string, token: string, signal: AbortSignal): Promise<T> {
@@ -197,5 +288,14 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
     }
     const ttl = decision === 'allow' ? ALLOW_TTL_MS : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
     this.cache.set(key, { decision, expiresAt: this.deps.clock.now() + ttl })
+  }
+
+  private putWorkspaceAccess(key: string, access: WorkspaceAccess): void {
+    if (this.workspaceAccessCache.size >= MAX_CACHE_ENTRIES) {
+      const oldest = this.workspaceAccessCache.keys().next().value as string | undefined
+      if (oldest) this.workspaceAccessCache.delete(oldest)
+    }
+    const ttl = access === 'allow' ? ALLOW_TTL_MS : access === 'unknown' ? UNKNOWN_TTL_MS : DENY_TTL_MS
+    this.workspaceAccessCache.set(key, { access, expiresAt: this.deps.clock.now() + ttl })
   }
 }

@@ -359,6 +359,13 @@ descendants; publishing one never does — widening a child stays that child's o
 A session the caller may not see is reported as missing, not as forbidden: the console must
 not reveal that it exists.
 
+When Slack session access sync is enabled, a public-channel session is visible to a user
+with a linked, active full-member identity in that Slack workspace even when the user has
+not joined the channel. Private channels and group DMs require current conversation
+membership. Guests and Slack Connect users also require current conversation membership,
+including for a channel that is public to full members of the installing workspace. The
+organization-owner role never bypasses these provider checks.
+
 Making a session private hides its transcript immediately, but agent memory is shared
 across the whole agent, so the guarantee about memory is narrower and must be stated
 plainly wherever the change is offered: capture into shared memory stops once the owning

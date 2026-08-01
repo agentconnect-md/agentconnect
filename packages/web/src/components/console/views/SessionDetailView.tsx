@@ -720,21 +720,21 @@ export default function SessionDetailView() {
   // Provider-rendered session links carry only caller-known source context. It
   // never changes authorization, so unknown and unauthorized 404s stay equivalent.
   const source = searchParams.get('source')
-  const recoveryProvider =
+  const profileLinkProvider =
     (source === 'slack' || source === 'github') && socialLoginProviders().some((provider) => provider.target === source)
       ? source
       : undefined
-  const recoveryCandidate =
+  const profileLinkCandidate =
     sessionDetailError instanceof ApiError &&
     sessionDetailError.status === 404 &&
     isAuthConfigured() &&
-    recoveryProvider !== undefined
+    profileLinkProvider !== undefined
   const {
-    data: recoveryIdentity,
-    error: recoveryIdentityError,
-    isValidating: recoveryIdentityLoading
+    data: profileIdentity,
+    error: profileIdentityError,
+    isValidating: profileIdentityLoading
   } = useSWR(
-    recoveryCandidate ? (['logto-session-identity', recoveryProvider] as const) : null,
+    profileLinkCandidate ? (['logto-session-identity', profileLinkProvider] as const) : null,
     ([, provider]) => fetchMySessionIdentity(provider),
     {
       revalidateOnFocus: false,
@@ -742,11 +742,11 @@ export default function SessionDetailView() {
       shouldRetryOnError: false
     }
   )
-  const showRecoveryLink =
-    recoveryCandidate &&
-    !recoveryIdentityLoading &&
-    recoveryIdentityError === undefined &&
-    recoveryIdentity?.linked === false
+  const showProfileLink =
+    profileLinkCandidate &&
+    !profileIdentityLoading &&
+    profileIdentityError === undefined &&
+    profileIdentity?.linked === false
   const detailSession = sessionDetail ? sessionFromDetailDto(sessionDetail) : null
   // The cursor-loaded list row can predate the final Dream usage report. Keep
   // its local/live fields, but let the independently refreshed detail snapshot
@@ -964,9 +964,9 @@ export default function SessionDetailView() {
             actionLabel="Back to sessions"
             actionHref={orgPath('/sessions')}
             secondaryAction={
-              showRecoveryLink && recoveryProvider
+              showProfileLink && profileLinkProvider
                 ? {
-                    label: `Link ${recoveryProvider === 'slack' ? 'Slack' : 'GitHub'} profile`,
+                    label: `Link ${profileLinkProvider === 'slack' ? 'Slack' : 'GitHub'} profile`,
                     href: orgPath('/profile#sign-in-methods'),
                     icon: 'link'
                   }
@@ -1458,7 +1458,7 @@ export default function SessionDetailView() {
 
       {sessionDetail?.accessSyncDegraded && (
         <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3">
-          External access could not be verified. Related sessions remain hidden until access checks recover.
+          External access could not be verified. Related sessions remain hidden until access checks succeed.
         </div>
       )}
 
