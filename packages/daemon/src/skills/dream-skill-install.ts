@@ -14,7 +14,7 @@
  * So every path here goes through `fs/contained-path.ts`: components are walked
  * with `lstat` and a symlink is REFUSED rather than followed, each step is
  * re-checked against the workspace boundary, and files publish through an
- * exclusive temp + rename. Delegating to the `npx skills` installer would NOT
+ * exclusive temp + rename. Delegating to the bundled `skills` installer would NOT
  * have helped — process indirection changes who writes, not the authority or
  * the pathname containment.
  *

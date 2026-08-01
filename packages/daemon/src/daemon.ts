@@ -14942,7 +14942,7 @@ export class Daemon {
               await this.flushReconcile()
               return { ok: false, reason: `agent/activate: ${capabilityError}` }
             }
-            let rollbackPreparedWorkspace: (() => void) | undefined
+            let rollbackPreparedWorkspace: (() => Promise<void>) | undefined
             if (activate.prepareWorkspace || activate.reconcileWorkspace) {
               try {
                 rollbackPreparedWorkspace = await prepareWorkspaceForActivation(agent, {
@@ -14965,7 +14965,7 @@ export class Daemon {
               this.moveStagedAgents.add(agentId)
               await this.stopHost(agentId).catch(() => {})
               try {
-                rollbackPreparedWorkspace?.()
+                await rollbackPreparedWorkspace?.()
               } catch (rollbackErr) {
                 this.log.error(
                   `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
@@ -14979,7 +14979,7 @@ export class Daemon {
             } catch (err) {
               await this.stopHost(agentId).catch(() => {})
               try {
-                rollbackPreparedWorkspace?.()
+                await rollbackPreparedWorkspace?.()
               } catch (rollbackErr) {
                 this.log.error(
                   `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
