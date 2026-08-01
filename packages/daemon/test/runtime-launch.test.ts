@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -15,7 +16,7 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'no
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
-import { composeRuntimeLaunch } from '../src/runtimes/launch-policy.js'
+import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/runtimes/launch-policy.js'
 import { runtimeMemoryCapabilities } from '../src/agents/runtime-memory.js'
 import { MemoryProviderUnavailableError } from '../src/agents/memory-provider.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
@@ -207,6 +208,31 @@ describe('prepareRuntimeLaunch', () => {
 const runtime = (command: string, args: string[] = ['acp']): RuntimeDef => ({ command, args, env: [] })
 
 describe('composeRuntimeLaunch', () => {
+  it('keeps a Claude launcher symlink under the host HOME readable', () => {
+    const testRoot = mkdtempSync(join(tmpdir(), 'ac-claude-launch-roots-'))
+    const hostHome = join(testRoot, 'home')
+    const bin = join(hostHome, '.local', 'bin')
+    const versions = join(hostHome, '.local', 'share', 'claude', 'versions')
+    const executable = join(versions, '2.1.220')
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(versions, { recursive: true })
+    writeFileSync(executable, '#!/bin/sh\n')
+    chmodSync(executable, 0o755)
+    symlinkSync(executable, join(bin, 'claude'))
+
+    try {
+      const sandboxAccess = runtimeSandboxReadRoots(runtime(process.execPath, ['claude-acp']), {
+        HOME: hostHome,
+        PATH: `${bin}${delimiter}${dirname(process.execPath)}`
+      })
+
+      expect(sandboxAccess.claudeExecutable).toBe(realpathSync(executable))
+      expect(coveredBy(sandboxAccess.readRoots, join(bin, 'claude'))).toBe(true)
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it('declares the reviewed memory capability matrix including managed-only Maki', () => {
     expect(runtimeMemoryCapabilities(runtime('hermes'), 'hermes-agent')).toEqual({
       managed: true,

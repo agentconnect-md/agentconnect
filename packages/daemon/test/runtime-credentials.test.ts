@@ -149,4 +149,109 @@ describe('Linux shared runtime login', () => {
     ).toThrow(/conflicting Codex credentials/)
     expect(lstatSync(join(privateCodex, 'auth.json')).isSymbolicLink()).toBe(false)
   })
+
+  it.each([
+    {
+      runtimeId: 'qoder-cli',
+      command: 'qodercli',
+      configName: '.qoder',
+      hostConfigName: '\u00e9-qoder',
+      hostConfigNameValue: 'e\u0301-qoder',
+      hostConfigNameEnv: 'QODER_CONFIG_DIR_NAME',
+      privateConfigEnv: 'QODER_CONFIG_DIR'
+    },
+    {
+      runtimeId: 'qoder-cli-cn',
+      command: 'qoderclicn',
+      configName: '.qoder-cn',
+      hostConfigName: 'custom-qoder-cn',
+      hostConfigNameValue: 'custom-qoder-cn',
+      hostConfigNameEnv: 'QODERCN_CONFIG_DIR_NAME',
+      privateConfigEnv: 'QODERCN_CONFIG_DIR'
+    }
+  ])(
+    'shares refreshable $runtimeId auth while keeping the rest of HOME private',
+    ({ runtimeId, command, configName, hostConfigName, hostConfigNameValue, hostConfigNameEnv, privateConfigEnv }) => {
+      const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+      const hostConfig = join(hostHome, hostConfigName)
+      const sharedAuth = join(hostConfig, '.auth')
+      mkdirSync(sharedAuth, { recursive: true })
+      writeFileSync(join(hostConfig, 'settings.json'), '{"theme":"dark"}')
+      writeFileSync(join(sharedAuth, 'machine_id'), 'host-machine')
+      writeFileSync(join(sharedAuth, 'user'), 'host-login')
+
+      const launch = prepareRuntimeLaunch({
+        runtimeId,
+        runtime: { command, args: ['--acp'], env: [] },
+        scopeDir,
+        cwd,
+        daemonRoot,
+        agentsRoot: join(daemonRoot, 'agents'),
+        runInSandbox: true,
+        sandboxMechanism: 'bwrap',
+        credentialPlatform: 'linux',
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin', [hostConfigNameEnv]: hostConfigNameValue }
+      })
+
+      const privateAuth = join(scopeDir, 'home', configName, '.auth')
+      expect(launch.env[privateConfigEnv]).toBe(join(scopeDir, 'home', configName))
+      expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)
+      expect(realpathSync(privateAuth)).toBe(realpathSync(sharedAuth))
+      expect(readFileSync(join(scopeDir, 'home', configName, 'settings.json'), 'utf8')).toContain('dark')
+      expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(realpathSync(sharedAuth))
+
+      writeFileSync(join(privateAuth, 'user'), 'refreshed-login')
+      expect(readFileSync(join(sharedAuth, 'user'), 'utf8')).toBe('refreshed-login')
+    }
+  )
+
+  it('migrates an existing private Qoder login when the host has none', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const privateAuth = join(scopeDir, 'home', '.qoder', '.auth')
+    mkdirSync(privateAuth, { recursive: true })
+    writeFileSync(join(privateAuth, 'machine_id'), 'private-machine')
+    writeFileSync(join(privateAuth, 'user'), 'private-login')
+
+    prepareRuntimeLaunch({
+      runtimeId: 'qoder-cli',
+      runtime: { command: 'qodercli', args: ['--acp'], env: [] },
+      scopeDir,
+      cwd,
+      daemonRoot,
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const sharedAuth = join(hostHome, '.qoder', '.auth')
+    expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)
+    expect(readFileSync(join(sharedAuth, 'user'), 'utf8')).toBe('private-login')
+    expect(readFileSync(join(sharedAuth, 'machine_id'), 'utf8')).toBe('private-machine')
+  })
+
+  it('refuses to replace a divergent host Qoder login with private credentials', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const sharedAuth = join(hostHome, '.qoder', '.auth')
+    const privateAuth = join(scopeDir, 'home', '.qoder', '.auth')
+    mkdirSync(sharedAuth, { recursive: true })
+    mkdirSync(privateAuth, { recursive: true })
+    writeFileSync(join(sharedAuth, 'user'), 'host-login')
+    writeFileSync(join(privateAuth, 'user'), 'private-login')
+
+    expect(() =>
+      prepareRuntimeLaunch({
+        runtimeId: 'qoder-cli',
+        runtime: { command: 'qodercli', args: ['--acp'], env: [] },
+        scopeDir,
+        cwd,
+        daemonRoot,
+        runInSandbox: true,
+        sandboxMechanism: 'bwrap',
+        credentialPlatform: 'linux',
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+      })
+    ).toThrow(/conflicting qoder credentials/)
+    expect(lstatSync(privateAuth).isDirectory()).toBe(true)
+  })
 })

@@ -1,13 +1,17 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import {
   chmodSync,
+  constants,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -17,7 +21,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 
-export type SharedCredentialProfile = 'claude' | 'codex'
+export type SharedCredentialProfile = 'claude' | 'codex' | 'qoder' | 'qoder-cn'
 
 export interface SharedRuntimeCredentialAccess {
   env: Record<string, string>
@@ -41,6 +45,12 @@ export function sharedCredentialProfile(runtimeId: string, runtime?: RuntimeDef)
   }
   if (runtimeId === 'codex-acp' || signature(runtime, /(?:^|[\\/])codex-acp(?:@[^\\/]*)?$/)) {
     return 'codex'
+  }
+  if (runtimeId === 'qoder-cli-cn' || signature(runtime, /(?:^|[\\/@])qoderclicn(?:@[^\\/]*)?$/)) {
+    return 'qoder-cn'
+  }
+  if (runtimeId === 'qoder-cli' || signature(runtime, /(?:^|[\\/@])qodercli(?:@[^\\/]*)?$/)) {
+    return 'qoder'
   }
   return undefined
 }
@@ -363,6 +373,128 @@ function prepareCodexCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentia
   }
 }
 
+function moveCredentialFile(source: string, destination: string): void {
+  try {
+    renameSync(source, destination)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
+    copyFileSync(source, destination, constants.COPYFILE_EXCL)
+    unlinkSync(source)
+  }
+  secureCredentialFile(destination)
+}
+
+function regularFileIfPresent(path: string, label: string): ReturnType<typeof lstatSync> | undefined {
+  const info = lstatIfPresent(path)
+  if (!info) return undefined
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error(`${label} is not a regular file: ${path}`)
+  return info
+}
+
+/** Fold a pre-shared-login private Qoder auth directory into the host directory.
+ * The opaque `user` credential is never chosen silently: a divergent host/private
+ * login fails closed. A private login may become authoritative only when the host
+ * has no login yet; its paired machine id follows it. */
+function migratePrivateQoderAuth(privateAuth: string, sharedAuth: string, label: string): void {
+  const privateUser = join(privateAuth, 'user')
+  const sharedUser = join(sharedAuth, 'user')
+  const privateHasUser = regularFileIfPresent(privateUser, `${label} private user credential`) !== undefined
+  const sharedHasUser = regularFileIfPresent(sharedUser, `${label} host user credential`) !== undefined
+
+  if (privateHasUser && sharedHasUser && !sameFileContents(privateUser, sharedUser)) {
+    throw new Error(
+      `conflicting ${label} credentials at ${privateUser} and ${sharedUser}; run host ${label} /login after resolving the conflict`
+    )
+  }
+
+  const privateLoginWins = privateHasUser && !sharedHasUser
+  if (privateLoginWins) {
+    moveCredentialFile(privateUser, sharedUser)
+    const privateMachine = join(privateAuth, 'machine_id')
+    const sharedMachine = join(sharedAuth, 'machine_id')
+    if (regularFileIfPresent(privateMachine, `${label} private machine id`)) {
+      if (regularFileIfPresent(sharedMachine, `${label} host machine id`)) unlinkSync(sharedMachine)
+      moveCredentialFile(privateMachine, sharedMachine)
+    }
+  }
+
+  for (const entry of readdirSync(privateAuth, { withFileTypes: true })) {
+    if (!entry.isFile() || entry.isSymbolicLink()) {
+      throw new Error(`${label} private auth contains an unsupported entry: ${join(privateAuth, entry.name)}`)
+    }
+    const source = join(privateAuth, entry.name)
+    const destination = join(sharedAuth, entry.name)
+    regularFileIfPresent(source, `${label} private auth file`)
+    const destinationInfo = regularFileIfPresent(destination, `${label} host auth file`)
+    if (!destinationInfo) {
+      moveCredentialFile(source, destination)
+    } else if (
+      sameFileContents(source, destination) ||
+      entry.name === 'machine_id' ||
+      entry.name === 'dynamic-error-codes.json' ||
+      entry.name === 'dynamic-texts.json'
+    ) {
+      // Host login state wins over a logged-out private machine id; the other
+      // two files are provider-owned caches, not credentials.
+      unlinkSync(source)
+    } else {
+      throw new Error(
+        `conflicting ${label} auth state at ${source} and ${destination}; run host ${label} /login after resolving the conflict`
+      )
+    }
+  }
+  rmdirSync(privateAuth)
+}
+
+function qoderConfigDirectory(profile: 'qoder' | 'qoder-cn', env: NodeJS.ProcessEnv): string {
+  const cn = profile === 'qoder-cn'
+  const configured = cn ? env.QODERCN_CONFIG_DIR : env.QODER_CONFIG_DIR
+  const base = (cn ? env.QODERCN_CLI_HOME : env.QODER_CLI_HOME) || env.GEMINI_CLI_HOME
+  const name = (
+    (cn ? env.QODERCN_CONFIG_DIR_NAME : env.QODER_CONFIG_DIR_NAME) || (cn ? '.qoder-cn' : '.qoder')
+  ).normalize('NFC')
+  return ensureOwnedDirectory(
+    absoluteConfiguredPath(
+      configured || (base ? join(base, name) : join(hostHome(env), name)),
+      env,
+      `${profile} config`
+    ),
+    `host ${profile} config directory`
+  )
+}
+
+function prepareQoderCredentials(profile: 'qoder' | 'qoder-cn', env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
+  const configName = profile === 'qoder-cn' ? '.qoder-cn' : '.qoder'
+  const sharedAuth = ensureOwnedDirectory(join(qoderConfigDirectory(profile, env), '.auth'), `host ${profile} auth`)
+  return {
+    env: {},
+    writablePaths: [sharedAuth],
+    seedExclusions: [join(configName, '.auth', 'user'), join(configName, '.auth', 'machine_id')],
+    preparePrivateHome: (runtimeHome) => {
+      const privateConfig = ensureOwnedDirectory(join(runtimeHome, configName), `private ${profile} config directory`)
+      const privateAuth = join(privateConfig, '.auth')
+      const privateInfo = lstatIfPresent(privateAuth)
+      if (privateInfo?.isSymbolicLink()) {
+        let linked: string
+        try {
+          linked = realpathSync(privateAuth)
+        } catch {
+          throw new Error(`private ${profile} auth link is dangling: ${privateAuth}`)
+        }
+        if (linked !== sharedAuth)
+          throw new Error(`private ${profile} auth link points outside host credentials: ${privateAuth}`)
+        return
+      }
+      if (privateInfo) {
+        if (!privateInfo.isDirectory())
+          throw new Error(`private ${profile} auth path is not a directory: ${privateAuth}`)
+        migratePrivateQoderAuth(privateAuth, sharedAuth, profile)
+      }
+      symlinkSync(sharedAuth, privateAuth)
+    }
+  }
+}
+
 export function prepareSharedRuntimeCredentials(opts: {
   runtimeId: string
   runtime?: RuntimeDef
@@ -373,5 +505,7 @@ export function prepareSharedRuntimeCredentials(opts: {
   const profile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   if (!profile) return undefined
   const env = opts.hostEnv ?? process.env
-  return profile === 'claude' ? prepareClaudeCredentials(env) : prepareCodexCredentials(env)
+  if (profile === 'claude') return prepareClaudeCredentials(env)
+  if (profile === 'codex') return prepareCodexCredentials(env)
+  return prepareQoderCredentials(profile, env)
 }
