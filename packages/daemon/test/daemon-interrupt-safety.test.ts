@@ -595,6 +595,12 @@ describe('Daemon interrupt safety gates', () => {
     }
     const daemon = new Daemon({ root, hostFactory: () => host as any })
     await daemon.start()
+    // Per-turn config rematerialization touches agents/**; on a slow runner the
+    // debounced file-watch reconcile can then land mid-loop and revert the
+    // in-memory integrations injected below (session source turns 'unavailable').
+    await (daemon as any).watcher.close()
+    ;(daemon as any).watcher = undefined
+    clearTimeout((daemon as any).debounceTimer)
     for (const [agentId, integrationId] of [
       [AGENT_ID, 'int-a'],
       ['bot-b', 'int-b']
