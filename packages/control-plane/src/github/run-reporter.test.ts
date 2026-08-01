@@ -878,7 +878,7 @@ describe('GithubRunReporter', () => {
       status: 'completed',
       conclusion: 'action_required',
       completed_at: new Date(NOW).toISOString(),
-      details_url: 'https://console.example.com/acme/sessions/session%2Fwith%20space',
+      details_url: 'https://console.example.com/acme/sessions/session%2Fwith%20space?source=github',
       output: { title: 'Review findings need attention' }
     })
     expect(body.output.summary).toContain(`Agent: [review-agent](https://console.example.com/acme/agents/${agentId})`)

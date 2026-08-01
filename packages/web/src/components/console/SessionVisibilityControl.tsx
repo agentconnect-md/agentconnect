@@ -80,18 +80,21 @@ export function SessionVisibilityControl({
   }
 
   if (effective === 'external') {
-    const provider = externalProvider === 'slack' ? 'Slack' : 'External'
+    const github = externalProvider === 'github'
+    const provider = externalProvider === 'slack' ? 'Slack' : github ? 'GitHub' : 'External'
     const title =
       externalResolution === 'settled'
-        ? `Visible to current members of the source ${provider} conversation`
-        : `${provider} membership could not be resolved; access is fail-closed`
+        ? github
+          ? "Visible according to the source GitHub repository's current visibility and access"
+          : `Visible to current members of the source ${provider} conversation`
+        : `${provider} access could not be verified; this session remains hidden`
     return (
       <span
         title={title}
         className="inline-flex items-center gap-[5px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name="users" size={13} color="var(--text-tertiary)" />
-        {provider} members
+        {github ? 'GitHub access' : `${provider} members`}
         {state === 'pending' && <Spinner size={10} />}
       </span>
     )

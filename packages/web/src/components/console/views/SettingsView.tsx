@@ -29,7 +29,7 @@ import {
   fetchGithubInstallations,
   fetchMembers,
   fetchOrgInviteLink,
-  fetchSlackSessionAccess,
+  fetchSessionExternalAccess,
   memberDisplayName,
   refreshSlackBot,
   getSlackPlatformInstall,
@@ -37,7 +37,7 @@ import {
   ROLE_LABELS,
   syncGithubInstallations,
   startSlackPlatformInstall,
-  putSlackSessionAccess,
+  putSessionExternalAccess,
   updateOrg,
   uploadOrgIcon,
   type BotDto,
@@ -46,6 +46,7 @@ import {
   type MemberDto,
   type MemberRole,
   type OrgInviteLinkDto,
+  type SessionAccessProvider,
   type SlackBotRefreshDto
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
@@ -68,6 +69,122 @@ function botSubline(b: BotDto): string {
 function feishuAppSettingsUrl(appId: string | null | undefined, region: 'feishu' | 'lark'): string {
   const host = region === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
   return appId ? `${host}/app/${encodeURIComponent(appId)}/baseinfo` : `${host}/app`
+}
+
+const SESSION_ACCESS_COPY: Record<
+  SessionAccessProvider,
+  {
+    title: string
+    unavailable: string
+    enabled: string
+    disabled: string
+    unresolved: (count: number) => string
+    degraded: string
+  }
+> = {
+  slack: {
+    title: 'Follow Slack conversation access',
+    unavailable:
+      'Requires OIDC and linked Slack identities. Until then, shared sessions remain visible to Everyone who can view the agent.',
+    enabled:
+      'Each shared session is visible only to current members of its Slack conversation. DMs remain private. Agent memory learned earlier is not erased.',
+    disabled:
+      'New shared sessions are visible to Everyone who can view the agent. Previously synced sessions keep following Slack. DMs remain private.',
+    unresolved: (count) =>
+      `${count} historical session${count === 1 ? '' : 's'} lack a trusted Slack scope and remain hidden.`,
+    degraded: 'Slack access is degraded; unresolved sessions remain hidden.'
+  },
+  github: {
+    title: 'Follow GitHub repository access',
+    unavailable:
+      'Requires OIDC and GitHub access checks. Until then, GitHub sessions remain visible to Everyone who can view the agent.',
+    enabled:
+      'Public repository sessions remain visible to members who can view the agent. Private repository sessions require a linked GitHub profile with current access. Agent memory learned earlier is not erased.',
+    disabled:
+      'New GitHub sessions are visible to Everyone who can view the agent. Previously synced sessions keep following GitHub.',
+    unresolved: (count) =>
+      `${count} historical session${count === 1 ? '' : 's'} lack a trusted GitHub repository scope and remain hidden.`,
+    degraded: 'GitHub access is degraded; unresolved sessions remain hidden.'
+  }
+}
+
+function SessionAccessRow({
+  provider,
+  orgId,
+  isOwner,
+  bordered = false
+}: {
+  provider: SessionAccessProvider
+  orgId?: string
+  isOwner: boolean
+  bordered?: boolean
+}) {
+  const copy = SESSION_ACCESS_COPY[provider]
+  const key = consoleKeys.sessionAccess(orgId, provider)
+  const {
+    data: access,
+    error: loadError,
+    mutate
+  } = useSWR(key, ([, scopedOrgId, , scopedProvider]) => fetchSessionExternalAccess(scopedProvider, scopedOrgId))
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState<{ scope: string; message: string } | null>(null)
+  const hiddenSessions = access?.hiddenSessions ?? 0
+  const scope = `${orgId ?? ''}:${provider}`
+  const currentActionError = actionError?.scope === scope ? actionError.message : null
+
+  const setEnabled = async (enabled: boolean) => {
+    if (!orgId || !isOwner || busy) return
+    setBusy(true)
+    setActionError(null)
+    try {
+      const next = await putSessionExternalAccess(provider, enabled, orgId)
+      await mutate(next, { revalidate: false })
+    } catch (error) {
+      setActionError({ scope, message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className={`flex items-center gap-3 px-4 py-[15px] ${bordered ? 'border-t border-(--border-subtle)' : ''}`}>
+      <span className="flex h-9 w-9 flex-none items-center justify-center rounded-[9px] bg-(--surface-active)">
+        {provider === 'slack' ? (
+          <PlatformMark platform="slack" fillPct={100} />
+        ) : (
+          <GithubMark color="var(--text-primary)" />
+        )}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-sans text-[13px] font-semibold leading-normal">{copy.title}</div>
+        <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+          {access?.available === false && !access.enabled
+            ? copy.unavailable
+            : access?.enabled
+              ? copy.enabled
+              : copy.disabled}
+        </div>
+        {(access?.state === 'degraded' || hiddenSessions > 0) && (
+          <div className="mt-1 font-sans text-[11.5px] font-medium leading-normal text-(--status-paused)">
+            {hiddenSessions > 0 ? copy.unresolved(hiddenSessions) : copy.degraded}
+          </div>
+        )}
+        {(currentActionError || loadError) && (
+          <div role="alert" className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
+            {currentActionError ?? `Could not load ${provider === 'slack' ? 'Slack' : 'GitHub'} session access.`}
+          </div>
+        )}
+      </div>
+      <span title={isOwner ? undefined : 'Only organization owners can change this setting'}>
+        <Toggle
+          checked={access?.enabled === true}
+          disabled={!isOwner || !access || busy || (access.available === false && access.enabled === false)}
+          ariaLabel={copy.title}
+          onChange={(next) => void setEnabled(next)}
+        />
+      </span>
+    </div>
+  )
 }
 
 // One rendered member row, precomputed from the wire DTO.
@@ -490,29 +607,6 @@ export default function SettingsView() {
   const [editing, setEditing] = useState<MemberTarget | null>(null)
   const [inviting, setInviting] = useState(false)
   const [deletingBot, setDeletingBot] = useState<BotDto | null>(null)
-  const slackAccessKey = consoleKeys.slackSessionAccess(activeOrg?.id)
-  const {
-    data: slackAccess,
-    error: slackAccessLoadError,
-    mutate: mutateSlackAccess
-  } = useSWR(slackAccessKey, ([, orgId]) => fetchSlackSessionAccess(orgId))
-  const [slackAccessBusy, setSlackAccessBusy] = useState(false)
-  const [slackAccessError, setSlackAccessError] = useState<string | null>(null)
-  const hiddenSlackSessions = slackAccess?.hiddenSessions ?? 0
-
-  const setSlackAccess = async (enabled: boolean) => {
-    if (!activeOrg || !isOwner || slackAccessBusy) return
-    setSlackAccessBusy(true)
-    setSlackAccessError(null)
-    try {
-      const next = await putSlackSessionAccess(enabled, activeOrg.id)
-      await mutateSlackAccess(next, { revalidate: false })
-    } catch (e) {
-      setSlackAccessError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSlackAccessBusy(false)
-    }
-  }
 
   // `?invite=1` auto-opens the invite-members dialog (the getting-started "Invite
   // teammates" CTA lands here with it). One-shot: the param is stripped immediately
@@ -608,49 +702,8 @@ export default function SettingsView() {
         <div className="cardhead">
           <span className="cardtitle">Session access</span>
         </div>
-        <div className="flex items-center gap-3 px-4 py-[15px]">
-          <span className="flex h-9 w-9 flex-none items-center justify-center rounded-[9px] bg-(--surface-active)">
-            <PlatformMark platform="slack" fillPct={100} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="font-sans text-[13px] font-semibold leading-normal">Follow Slack conversation access</div>
-            <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {slackAccess?.available === false && !slackAccess.enabled
-                ? 'Requires OIDC and Logto linked identities. Until then, shared sessions remain visible to Everyone who can view the agent.'
-                : slackAccess?.enabled
-                  ? 'Each shared session is visible only to current members of its Slack conversation. DMs remain private. Agent memory learned earlier is not erased.'
-                  : 'New shared sessions are visible to Everyone who can view the agent. Previously synced sessions keep following Slack. DMs remain private.'}
-            </div>
-            {(slackAccess?.state === 'degraded' || hiddenSlackSessions > 0) && (
-              <div className="mt-1 font-sans text-[11.5px] font-medium leading-normal text-(--status-paused)">
-                {hiddenSlackSessions > 0
-                  ? `${hiddenSlackSessions} historical session${hiddenSlackSessions === 1 ? '' : 's'} lack a trusted Slack scope and remain hidden.`
-                  : 'Slack access is degraded; unresolved sessions remain hidden.'}
-              </div>
-            )}
-            {(slackAccessError || slackAccessLoadError) && (
-              <div
-                role="alert"
-                className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)"
-              >
-                {slackAccessError ?? 'Could not load Slack session access.'}
-              </div>
-            )}
-          </div>
-          <span title={isOwner ? undefined : 'Only organization owners can change this setting'}>
-            <Toggle
-              checked={slackAccess?.enabled === true}
-              disabled={
-                !isOwner ||
-                !slackAccess ||
-                slackAccessBusy ||
-                (slackAccess.available === false && slackAccess.enabled === false)
-              }
-              ariaLabel="Follow Slack conversation access"
-              onChange={(next) => void setSlackAccess(next)}
-            />
-          </span>
-        </div>
+        <SessionAccessRow provider="slack" orgId={activeOrg?.id} isOwner={isOwner} />
+        <SessionAccessRow provider="github" orgId={activeOrg?.id} isOwner={isOwner} bordered />
       </div>
 
       <div className="card mt-[18px]">

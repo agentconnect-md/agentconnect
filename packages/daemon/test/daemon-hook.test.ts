@@ -123,7 +123,8 @@ describe('Daemon rd/msg hook fires', () => {
     expect((daemon as any).githubCommentAttribution(AGENT_ID, 'acp-hook-1')).toMatchObject({
       agentName: 'Review Bot',
       runtime: 'Claude Code',
-      model: 'claude-sonnet-4-5'
+      model: 'claude-sonnet-4-5',
+      sessionUrl: 'http://localhost:3000/sessions/acp-hook-1?source=github'
     })
 
     await daemon.stop()

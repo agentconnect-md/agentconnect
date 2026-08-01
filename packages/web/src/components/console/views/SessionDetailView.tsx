@@ -31,7 +31,7 @@ import {
 } from '@/lib/data'
 import {
   ApiError,
-  fetchMySlackIdentity,
+  fetchMySessionIdentity,
   fetchSessionMessages,
   fetchSessionDetail,
   fetchToolBody,
@@ -717,29 +717,36 @@ export default function SessionDetailView() {
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
     { refreshInterval: 30_000 }
   )
-  // A Slack-rendered View Session link carries source=slack. That caller-provided
-  // context is independent of whether the requested id exists, so the CP can keep
-  // unknown and unauthorized 404 payloads byte-for-byte equivalent.
-  const slackRecoveryCandidate =
+  // Provider-rendered session links carry only caller-known source context. It
+  // never changes authorization, so unknown and unauthorized 404s stay equivalent.
+  const source = searchParams.get('source')
+  const recoveryProvider =
+    (source === 'slack' || source === 'github') && socialLoginProviders().some((provider) => provider.target === source)
+      ? source
+      : undefined
+  const recoveryCandidate =
     sessionDetailError instanceof ApiError &&
     sessionDetailError.status === 404 &&
-    searchParams.get('source') === 'slack' &&
     isAuthConfigured() &&
-    socialLoginProviders().some((provider) => provider.target === 'slack')
+    recoveryProvider !== undefined
   const {
-    data: slackIdentity,
-    error: slackIdentityError,
-    isValidating: slackIdentityLoading
-  } = useSWR(slackRecoveryCandidate ? 'logto-slack-identity' : null, fetchMySlackIdentity, {
-    revalidateOnFocus: false,
-    revalidateOnReconnect: false,
-    shouldRetryOnError: false
-  })
-  const showSlackLink =
-    slackRecoveryCandidate &&
-    !slackIdentityLoading &&
-    slackIdentityError === undefined &&
-    slackIdentity?.linked === false
+    data: recoveryIdentity,
+    error: recoveryIdentityError,
+    isValidating: recoveryIdentityLoading
+  } = useSWR(
+    recoveryCandidate ? (['logto-session-identity', recoveryProvider] as const) : null,
+    ([, provider]) => fetchMySessionIdentity(provider),
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      shouldRetryOnError: false
+    }
+  )
+  const showRecoveryLink =
+    recoveryCandidate &&
+    !recoveryIdentityLoading &&
+    recoveryIdentityError === undefined &&
+    recoveryIdentity?.linked === false
   const detailSession = sessionDetail ? sessionFromDetailDto(sessionDetail) : null
   // The cursor-loaded list row can predate the final Dream usage report. Keep
   // its local/live fields, but let the independently refreshed detail snapshot
@@ -957,9 +964,9 @@ export default function SessionDetailView() {
             actionLabel="Back to sessions"
             actionHref={orgPath('/sessions')}
             secondaryAction={
-              showSlackLink
+              showRecoveryLink && recoveryProvider
                 ? {
-                    label: 'Link Slack profile',
+                    label: `Link ${recoveryProvider === 'slack' ? 'Slack' : 'GitHub'} profile`,
                     href: orgPath('/profile#sign-in-methods'),
                     icon: 'link'
                   }
@@ -1451,7 +1458,7 @@ export default function SessionDetailView() {
 
       {sessionDetail?.accessSyncDegraded && (
         <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3">
-          Slack membership could not be verified. Related sessions remain hidden until access checks recover.
+          External access could not be verified. Related sessions remain hidden until access checks recover.
         </div>
       )}
 
