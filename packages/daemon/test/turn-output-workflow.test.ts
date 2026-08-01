@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { FakeClock } from './cp/fake-clock.js'
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-turn-output-'))
@@ -108,6 +109,7 @@ describe('TurnOutputWorkflow', () => {
     })
     await daemon.start()
     const conn = connect(daemon)
+    const queueMemoryPostTurn = vi.spyOn(daemon as any, 'queueMemoryPostTurn')
 
     const firstMessage = msg('100.1', 'original request')
     const first = (daemon as any).dispatch('bot-a', firstMessage, 'int-a')
@@ -135,6 +137,8 @@ describe('TurnOutputWorkflow', () => {
       .map((row: any) => row.text)
     expect(replies).toEqual(['fresh replacement'])
     expect((daemon as any).serialQueue.has(key)).toBe(false)
+    expect(String(queueMemoryPostTurn.mock.calls[0]?.[3])).toContain('original request')
+    expect(String(queueMemoryPostTurn.mock.calls[0]?.[3])).toContain('important clarification')
 
     await daemon.stop()
   }, 15_000)
@@ -172,12 +176,20 @@ describe('TurnOutputWorkflow', () => {
 
     const firstMessage = msg('100.1', 'original request')
     const first = (daemon as any).dispatch('bot-a', firstMessage, 'int-a')
-    const clarification = (daemon as any).dispatch('bot-a', msg('100.2', 'pre-prompt clarification'), 'int-a')
+    const clarificationMessage = msg('100.2', 'pre-prompt clarification')
+    clarificationMessage.quoted = {
+      messageId: '99.9',
+      sender: 'U2',
+      text: 'the deployment failed with ECONNRESET'
+    }
+    const clarification = (daemon as any).dispatch('bot-a', clarificationMessage, 'int-a')
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a', firstMessage.transportScope)
 
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce())
     expect(prompts[0]).toContain('original request')
     expect(prompts[0]).toContain('pre-prompt clarification')
+    expect(prompts[0]).toContain('the message this reply quotes')
+    expect(prompts[0]).toContain('[U2] the deployment failed with ECONNRESET')
     expect((daemon as any).serialQueue.has(key)).toBe(false)
     await expect(clarification).resolves.toBe('acp-1')
 
@@ -186,6 +198,100 @@ describe('TurnOutputWorkflow', () => {
     expect(host.prompt).toHaveBeenCalledOnce()
     expect((daemon as any).store.listInboxBySessionKeyFifo()).toEqual([])
 
+    await daemon.stop()
+  }, 15_000)
+
+  it('starts the wall-clock retry budget with the first replacement, not the original generation', async () => {
+    const clock = new FakeClock()
+    const context = {} as { daemon: Daemon; firstMessage: NormalizedMessage }
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        const generation = host.prompt.mock.calls.length
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: generation === 1 ? 'stale candidate' : 'fresh replacement' }
+        })
+        if (generation === 1) {
+          clock.advance(120_001)
+          const clarification = msg('100.2', 'late clarification')
+          clarification.transportScope = context.firstMessage.transportScope
+          ;(context.daemon as any).recordObservedInbound(clarification, 'bot-a')
+        }
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold(),
+      clock,
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    context.daemon = daemon
+    await daemon.start()
+    const conn = connect(daemon)
+    const firstMessage = msg('100.1', 'original request')
+    context.firstMessage = firstMessage
+
+    await expect((daemon as any).dispatch('bot-a', firstMessage, 'int-a')).resolves.toBe('acp-1')
+
+    expect(host.prompt).toHaveBeenCalledTimes(2)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'fresh replacement', 'T1', expect.anything())
+    await daemon.stop()
+  }, 15_000)
+
+  it('delivers context-churn exhaustion as non-recording chrome', async () => {
+    const context = {} as { daemon: Daemon; firstMessage: NormalizedMessage }
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        const generation = host.prompt.mock.calls.length
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: `discarded candidate ${generation}` }
+        })
+        const change = msg(`100.${generation + 1}`, `change ${generation}`)
+        change.transportScope = context.firstMessage.transportScope
+        ;(context.daemon as any).recordObservedInbound(change, 'bot-a')
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    context.daemon = daemon
+    await daemon.start()
+    const conn = connect(daemon)
+    const firstMessage = msg('100.1', 'original request')
+    context.firstMessage = firstMessage
+
+    await expect((daemon as any).dispatch('bot-a', firstMessage, 'int-a')).resolves.toBeNull()
+
+    expect(host.prompt).toHaveBeenCalledTimes(4)
+    const churnNotice = conn.postMessage.mock.calls.find((call) =>
+      String(call[1]).includes('conversation kept changing')
+    )
+    expect(churnNotice?.[3]).toMatchObject({ chrome: true })
+    const replies = (daemon as any).store
+      .transcriptSince(transcriptChannelKey('C1', firstMessage.transportScope), 'T1', null)
+      .filter((row: any) => row.sender === 'bot-a')
+    expect(replies).toEqual([])
     await daemon.stop()
   }, 15_000)
 

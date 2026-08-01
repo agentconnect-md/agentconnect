@@ -31,7 +31,8 @@ import {
   SessionManager,
   transcriptCoords,
   isStandingContextTitleEcho,
-  slackTsForWallClock
+  slackTsForWallClock,
+  quotedSourceBlock
 } from './session/session-manager.js'
 import {
   ThreadContextCoordinator,
@@ -41,6 +42,7 @@ import {
   type ThreadContextSnapshot
 } from './session/thread-context.js'
 import { defaultTurnOutputMetrics } from './session/turn-output-metrics.js'
+import { recallQueryFromBlocks } from './agents/memory-recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
@@ -7796,6 +7798,16 @@ export class Daemon {
     return (this.serialQueue.get(key) ?? []).filter((entry) => eventTs.has(transcriptCoords(entry.msg).ts))
   }
 
+  private queuedQuotedContextBlocks(
+    entries: readonly QueueEntry[],
+    replayed: readonly { ts: string; text: string }[]
+  ): import('@agentclientprotocol/sdk').ContentBlock[] {
+    return entries.flatMap((entry) => {
+      const text = quotedSourceBlock(entry.msg, { replayed })
+      return text ? [{ type: 'text' as const, text }] : []
+    })
+  }
+
   /** Start/regeneration fence queue mutation. The caller has already decided that
    * these exact provider events are represented in a prompt that will be initiated
    * synchronously before yielding back to ingress. */
@@ -10109,6 +10121,7 @@ export class Daemon {
       const acpVersion = host.acpProtocolVersion?.()
 
       let promptBlocks = [...blocks]
+      let finalCaptureInput = handled.captureInput ?? msg.text
       let baseRevision =
         handled.contextRevision ?? this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
       let providerCheckpoint = handled.providerCheckpoint
@@ -10117,13 +10130,20 @@ export class Daemon {
         // runtime ready gates were awaiting. Queue entries remain untouched until
         // every gate above has succeeded.
         const initialRefresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, false)
-        if (initialRefresh.events.length > 0) {
-          promptBlocks.push({ type: 'text', text: initialContextDeltaText(initialRefresh.events) })
-        }
         const representedEventTs = new Set([
           ...(handled.contextEventTs ?? []),
           ...initialRefresh.events.map((event) => event.ts)
         ])
+        const queuedMatches = this.queuedEntriesMatchingContext(key, representedEventTs)
+        const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []
+        if (initialRefresh.events.length > 0) {
+          deltaBlocks.push({ type: 'text', text: initialContextDeltaText(initialRefresh.events) })
+        }
+        deltaBlocks.push(...this.queuedQuotedContextBlocks(queuedMatches, initialRefresh.events))
+        promptBlocks.push(...deltaBlocks)
+        if (deltaBlocks.length > 0) {
+          finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
+        }
         this.coalesceQueuedContext(key, sessionId, representedEventTs)
         baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
         providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
@@ -10137,7 +10157,7 @@ export class Daemon {
         platform: msg.platform,
         channel: msg.channel,
         data: {
-          input: handled.captureInput ?? msg.text,
+          input: finalCaptureInput,
           created,
           runtime: agent.runtime,
           ...(turnModel ? { model: turnModel } : {}),
@@ -10151,7 +10171,7 @@ export class Daemon {
       let usage: PromptResult['usage']
       let evaluationUsage: PromptResult['usage']
       let generation = 0
-      const regenerationStartedAt = this.clock.now()
+      let regenerationStartedAt: number | undefined
       const codexUsageIsPerPrompt = this.isCodexRuntime(agentId)
 
       while (true) {
@@ -10267,7 +10287,8 @@ export class Daemon {
         const queuedMatches = this.queuedEntriesMatchingContext(key, eventTs)
         const retryAvailable =
           generation < MAX_TURN_CONTEXT_REGENERATIONS &&
-          this.clock.now() - regenerationStartedAt < MAX_TURN_CONTEXT_REGENERATION_MS
+          (regenerationStartedAt === undefined ||
+            this.clock.now() - regenerationStartedAt < MAX_TURN_CONTEXT_REGENERATION_MS)
         if (!retryAvailable) {
           defaultTurnOutputMetrics.candidateDiscarded('context_churn')
           defaultTurnOutputMetrics.contextChurnExhausted(p.platform)
@@ -10278,12 +10299,7 @@ export class Daemon {
           if (queuedMatches.length === 0 && mode !== 'none') {
             const notice =
               'The conversation kept changing while I was answering, so I stopped this reply. Mention me again when the thread settles.'
-            this.enqueueApply(
-              p,
-              p.conv instanceof FeishuConverger
-                ? { kind: 'notice', text: notice }
-                : { kind: 'post', text: notice, attributed: false }
-            )
+            this.enqueueApply(p, { kind: 'notice', text: notice })
           }
           return null
         }
@@ -10294,7 +10310,14 @@ export class Daemon {
         this.coalesceQueuedContext(key, sessionId, eventTs)
         baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
         generation += 1
-        promptBlocks = [{ type: 'text', text: contextUpdateText(invalidatingEvents) }]
+        promptBlocks = [
+          { type: 'text', text: contextUpdateText(invalidatingEvents) },
+          ...this.queuedQuotedContextBlocks(queuedMatches, invalidatingEvents)
+        ]
+        finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
+        // The wall-clock budget covers replacement work only. A slow original
+        // generation (including approval waits) must never consume the first retry.
+        regenerationStartedAt ??= this.clock.now()
         defaultTurnOutputMetrics.regeneration(p.platform, 'started')
         this.emitEvaluation({
           type: 'turn.regeneration_started',
@@ -10379,7 +10402,7 @@ export class Daemon {
         agentId,
         sessionId,
         p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg),
-        handled.captureInput ?? msg.text,
+        finalCaptureInput,
         p.replyText,
         agent.memory,
         memoryCaptureTarget,
