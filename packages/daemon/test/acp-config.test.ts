@@ -249,6 +249,14 @@ describe('claudeSessionMeta', () => {
 
   it('enables the native Claude sandbox only behind an outer AgentConnect sandbox', () => {
     const credentialRoot = '/host/.claude/agentconnect-auth'
+    const protectedSettings = {
+      modelOverrides: { sonnet: 'bedrock/sonnet' },
+      availableModels: ['sonnet'],
+      env: {
+        ANTHROPIC_CONFIG_DIR: '/agent/.agentconnect/runtime-policy/claude-profile-disabled',
+        ANTHROPIC_PROFILE: 'agentconnect-disabled'
+      }
+    }
     const sandbox = {
       enabled: true,
       failIfUnavailable: true,
@@ -291,21 +299,22 @@ describe('claudeSessionMeta', () => {
       }
     }
 
-    expect(claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot])).toEqual(
-      cc({ thinking: THINKING, sandbox })
+    expect(claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], protectedSettings)).toEqual(
+      cc({ thinking: THINKING, sandbox, settings: protectedSettings })
     )
-    expect(claudeSessionMeta('ultracode', true, undefined, undefined, [credentialRoot])).toEqual(
+    expect(claudeSessionMeta('ultracode', true, undefined, undefined, [credentialRoot], protectedSettings)).toEqual(
       cc({
         thinking: THINKING,
         sandbox,
-        settings: { ultracode: true, enableWorkflows: true }
+        settings: { ...protectedSettings, ultracode: true, enableWorkflows: true }
       })
     )
     // An empty array still means an outer sandbox is active; undefined means it
     // is not, and must preserve the existing unsandboxed Claude behavior.
-    expect(claudeSessionMeta(undefined, true, undefined, undefined, [])).toEqual(
+    expect(claudeSessionMeta(undefined, true, undefined, undefined, [], protectedSettings)).toEqual(
       cc({
         thinking: THINKING,
+        settings: protectedSettings,
         sandbox: {
           ...sandbox,
           filesystem: { ...sandbox.filesystem, denyRead: [], denyWrite: [] },
@@ -313,6 +322,15 @@ describe('claudeSessionMeta', () => {
         }
       })
     )
+    const projectEnv = {
+      ANTHROPIC_CONFIG_DIR: '/workspace/.profiles',
+      ANTHROPIC_PROFILE: '../../host-secret',
+      PROJECT_VALUE: 'kept'
+    }
+    expect({ ...projectEnv, ...protectedSettings.env }).toEqual({
+      ...protectedSettings.env,
+      PROJECT_VALUE: 'kept'
+    })
     expect(claudeSessionMeta(undefined, true)).toEqual(cc({ thinking: THINKING }))
   })
 

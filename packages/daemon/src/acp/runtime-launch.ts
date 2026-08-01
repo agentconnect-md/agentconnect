@@ -7,7 +7,13 @@ import { compactReadRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment, runtimeHomePath } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
-import { CLAUDE_PROFILE_ENV, claudeProviderCredentialFiles, isClaudeRuntimeDef } from './claude-runtime.js'
+import {
+  CLAUDE_PROFILE_ENV,
+  claudeProtectedSettings,
+  claudeProviderCredentialFiles,
+  isClaudeRuntimeDef,
+  type ClaudeProtectedSettings
+} from './claude-runtime.js'
 
 function disabledClaudeProfileRoot(scopeDir: string): string {
   const root = realpathSync(resolve(scopeDir))
@@ -46,6 +52,9 @@ export interface PreparedRuntimeLaunch {
     /** Credential paths deliberately exposed to the trusted runtime parent but
      * denied again inside a runtime-native tool sandbox. */
     protectedCredentialRoots: string[]
+    /** Highest-precedence Claude settings that keep project/local settings from
+     * redirecting the trusted parent to an attacker-selected credential profile. */
+    claudeProtectedSettings?: ClaudeProtectedSettings
   }
 }
 
@@ -221,6 +230,7 @@ export function prepareRuntimeLaunch(opts: {
     for (const name of CLAUDE_PROFILE_ENV) delete env[name]
     env.ANTHROPIC_CONFIG_DIR = disabledClaudeProfileRoot(opts.scopeDir)
   }
+  const protectedClaudeSettings = claudeRuntime ? claudeProtectedSettings(env) : undefined
   const providerCredentialFiles = claudeRuntime ? claudeProviderCredentialFiles(env, opts.cwd) : []
   const providerCredentialReadRoots = compactReadRoots(
     providerCredentialFiles.map(({ envName, path }) => {
@@ -284,7 +294,8 @@ export function prepareRuntimeLaunch(opts: {
         ...credentialWritableRoots,
         ...providerCredentialReadRoots,
         ...privateClaudeStateRoots
-      ])
+      ]),
+      ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {})
     }
   }
 }

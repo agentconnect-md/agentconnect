@@ -141,7 +141,15 @@ describe('prepareRuntimeLaunch', () => {
       runInSandbox: true,
       daemonRoot: dirname(scopeDir),
       sandboxMechanism: 'bwrap',
-      explicitEnv: { ANTHROPIC_CONFIG_DIR: profileRoot, ANTHROPIC_PROFILE: 'corp' },
+      explicitEnv: {
+        ANTHROPIC_CONFIG_DIR: profileRoot,
+        ANTHROPIC_PROFILE: 'corp',
+        CLAUDE_MODEL_CONFIG: JSON.stringify({
+          modelOverrides: { sonnet: 'bedrock/sonnet' },
+          availableModels: ['sonnet'],
+          ignored: 'not an adapter model setting'
+        })
+      },
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
 
@@ -150,6 +158,14 @@ describe('prepareRuntimeLaunch', () => {
     )
     expect(launch.env.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
     expect(launch.env.ANTHROPIC_PROFILE).toBeUndefined()
+    expect(launch.sandbox?.claudeProtectedSettings).toEqual({
+      modelOverrides: { sonnet: 'bedrock/sonnet' },
+      availableModels: ['sonnet'],
+      env: {
+        ANTHROPIC_CONFIG_DIR: disabledProfileRoot,
+        ANTHROPIC_PROFILE: 'agentconnect-disabled'
+      }
+    })
     expect(readdirSync(disabledProfileRoot)).toEqual([])
     expect(coveredBy(launch.sandbox!.allowReadRoots, disabledProfileRoot)).toBe(true)
     expect(launch.sandbox?.writable).not.toContain(disabledProfileRoot)
@@ -183,6 +199,10 @@ describe('prepareRuntimeLaunch', () => {
     expect(discoveredProfileRoot).toBe(
       realpathSync(join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled'))
     )
+    expect(launch.sandbox?.claudeProtectedSettings?.env).toEqual({
+      ANTHROPIC_CONFIG_DIR: discoveredProfileRoot,
+      ANTHROPIC_PROFILE: 'agentconnect-disabled'
+    })
     expect(readdirSync(discoveredProfileRoot)).toEqual([])
     expect(discoveredProfileRoot).not.toBe(join(scopeDir, 'home', '.config', 'anthropic'))
     expect(launch.sandbox?.writable).not.toContain('/etc')
@@ -310,6 +330,10 @@ describe('composeRuntimeLaunch', () => {
     )
     expect(childEnv.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
     expect(childEnv.ANTHROPIC_PROFILE).toBeUndefined()
+    expect(composed.launch.sandbox?.claudeProtectedSettings?.env).toEqual({
+      ANTHROPIC_CONFIG_DIR: disabledProfileRoot,
+      ANTHROPIC_PROFILE: 'agentconnect-disabled'
+    })
     expect(readdirSync(disabledProfileRoot)).toEqual([])
     expect(childEnv.SAFE_VALUE).toBe('kept')
   })

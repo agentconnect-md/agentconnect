@@ -19,9 +19,45 @@ const CLAUDE_PROVIDER_CREDENTIAL_FILE_ENV = [
 ] as const
 
 /** Anthropic profile selectors from operator/agent input are unsupported for
- * sandboxed Claude launches. The config root is replaced with a daemon-owned
- * empty directory, while the profile name is removed. */
+ * sandboxed Claude launches. The spawn environment drops both before the config
+ * root is replaced with a daemon-owned empty directory; per-session flag settings
+ * then reassert that root and a fixed profile after user/project settings merge. */
 export const CLAUDE_PROFILE_ENV = ['ANTHROPIC_CONFIG_DIR', 'ANTHROPIC_PROFILE'] as const
+export const CLAUDE_DISABLED_PROFILE = 'agentconnect-disabled'
+
+export interface ClaudeProtectedSettings {
+  env: Record<(typeof CLAUDE_PROFILE_ENV)[number], string>
+  modelOverrides?: unknown
+  availableModels?: unknown
+}
+
+/** Build the highest-precedence SDK flag settings that pin Anthropic profile
+ * discovery after Claude has merged user/project/local settings. Supplying any
+ * `options.settings` makes claude-agent-acp skip its CLAUDE_MODEL_CONFIG fallback,
+ * so preserve the two fields that fallback would otherwise contribute. */
+export function claudeProtectedSettings(env: NodeJS.ProcessEnv): ClaudeProtectedSettings {
+  const configDir = env.ANTHROPIC_CONFIG_DIR
+  if (!configDir) throw new Error('sandboxed Claude launch is missing its protected Anthropic config root')
+
+  const modelConfig: Pick<ClaudeProtectedSettings, 'modelOverrides' | 'availableModels'> = {}
+  if (env.CLAUDE_MODEL_CONFIG) {
+    const parsed = JSON.parse(env.CLAUDE_MODEL_CONFIG) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('CLAUDE_MODEL_CONFIG must be a JSON object')
+    }
+    const value = parsed as Record<string, unknown>
+    if (value.modelOverrides !== undefined) modelConfig.modelOverrides = value.modelOverrides
+    if (value.availableModels !== undefined) modelConfig.availableModels = value.availableModels
+  }
+
+  return {
+    ...modelConfig,
+    env: {
+      ANTHROPIC_CONFIG_DIR: configDir,
+      ANTHROPIC_PROFILE: CLAUDE_DISABLED_PROFILE
+    }
+  }
+}
 
 /** Claude provider credentials the parent runtime may consume but the native
  * sandbox removes from sandboxed Bash commands. Shared-login credentials normally
@@ -85,11 +121,9 @@ export interface ClaudeInnerSandboxSettings {
 }
 
 /** Build the SDK-native policy passed through claude-agent-acp's
- * `_meta.claudeCode.options.sandbox`. Using the dedicated option preserves the
- * adapter's CLAUDE_MODEL_CONFIG fallback (which `options.settings` would replace).
- * The outer AgentConnect SRT remains the host boundary; this nested sandbox
- * confines model-authored Bash and its descendants, while the parent Claude
- * process retains shared-login access. */
+ * `_meta.claudeCode.options.sandbox`. The outer AgentConnect SRT remains the host
+ * boundary; this nested sandbox confines model-authored Bash and its descendants,
+ * while the parent Claude process retains shared-login access. */
 export function claudeInnerSandboxSettings(protectedCredentialRoots: readonly string[]): ClaudeInnerSandboxSettings {
   const roots = [...new Set(protectedCredentialRoots)]
   return {
