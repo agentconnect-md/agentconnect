@@ -3886,7 +3886,13 @@ export class Daemon {
     // transport): the capability bit alone proves descriptor transport, not that
     // the runtime keeps the Authorization bearer out of model-visible context (§13).
     const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.entries()].some(
-      ([runtimeId, caps]) => caps.http && isValidatedRemoteMcpRuntime(runtimeId, this.runtimeCatalog.entries[runtimeId])
+      ([runtimeId, caps]) =>
+        caps.http &&
+        isValidatedRemoteMcpRuntime(
+          runtimeId,
+          this.runtimeCatalog.entries[runtimeId],
+          this.runtimeProbedVersions.get(runtimeId)
+        )
     )
     // Static sibling of the probe path: a synced builtin (preset) agent on a
     // validated launch advertises the feature without waiting for a probe round.
@@ -3895,7 +3901,13 @@ export class Daemon {
     // establishment stays safe because the turn-time gate (webchat dispatch)
     // still requires the probed HTTP transport before any descriptor attaches.
     const hasBuiltinRemoteMcpAgent = [...this.agents.values()].some(
-      (agent) => agent.builtin && isValidatedRemoteMcpRuntime(agent.runtime, this.runtimeCatalog.entries[agent.runtime])
+      (agent) =>
+        agent.builtin &&
+        isValidatedRemoteMcpRuntime(
+          agent.runtime,
+          this.runtimeCatalog.entries[agent.runtime],
+          this.runtimeProbedVersions.get(agent.runtime)
+        )
     )
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -9472,7 +9484,11 @@ export class Daemon {
         webchat?.remoteMcp &&
         this.remoteWebchatGrants &&
         remoteCaps?.http &&
-        isValidatedRemoteMcpRuntime(agent.runtime, this.runtimeCatalog.entries[agent.runtime])
+        isValidatedRemoteMcpRuntime(
+          agent.runtime,
+          this.runtimeCatalog.entries[agent.runtime],
+          this.runtimeProbedVersions.get(agent.runtime)
+        )
       ) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(

@@ -80,6 +80,28 @@ const updates = (t: FakeTransport): any[] =>
   t.sent.map((s) => JSON.parse(s)).filter((f) => f.type === 'capabilities/update')
 
 describe('CpClient.updateCapabilities', () => {
+  it('rechecks after entering READY when reconcile changed capabilities during registration', async () => {
+    const caps: RegisterReq['capabilities'] = { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
+    const t = new FakeTransport()
+    const client = new CpClient(
+      makeDeps(t, {
+        capabilities: () => ({ ...caps, features: [...caps.features] }),
+        configApply: {
+          ...makeDeps(t).configApply,
+          applyReconcileSnapshot() {
+            caps.features = ['webchat_remote_mcp_v1']
+          }
+        }
+      })
+    )
+
+    await reachReady(t, client)
+
+    const sent = updates(t)
+    expect(sent).toHaveLength(1)
+    expect(sent[0].payload.capabilities.features).toEqual(['webchat_remote_mcp_v1'])
+  })
+
   it('emits only when the computed set changed since register, then dedups', async () => {
     const caps: RegisterReq['capabilities'] = { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
     const t = new FakeTransport()

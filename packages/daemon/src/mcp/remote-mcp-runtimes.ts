@@ -6,7 +6,8 @@ import type { ResolvedRuntimeEntry } from '../runtimes/registry.js'
  * descriptor.
  *
  * Admission is an EXACT allowlist of complete launch identities — catalog
- * version, command, full argument vector, and empty env — each entry being one
+ * version, command, full argument vector, empty env, and (where a binary command
+ * does not pin the artifact) probed `agentInfo.version` — each entry being one
  * artifact the §13 behavioral harness
  * (`test/remote-mcp-adapter-behavior.it.test.ts`) was run
  * against on a real install. Nothing is extrapolated: a later release, a
@@ -65,11 +66,11 @@ import type { ResolvedRuntimeEntry } from '../runtimes/registry.js'
  * transport receipt be scoped to its access grant.
  */
 const VALIDATED_REMOTE_MCP_LAUNCHES: Readonly<
-  Record<string, ReadonlyArray<{ version: string; command: string; args: readonly string[] }>>
+  Record<string, ReadonlyArray<{ version: string; command: string; args: readonly string[]; probedVersion?: string }>>
 > = {
   'claude-acp': [{ version: '0.64.0', command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'] }],
   'codex-acp': [{ version: '1.1.7', command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.1.7'] }],
-  opencode: [{ version: '1.18.10', command: './opencode', args: ['acp'] }],
+  opencode: [{ version: '1.18.10', command: './opencode', args: ['acp'], probedVersion: '1.18.10' }],
   'grok-build': [{ version: '0.2.118', command: 'npx', args: ['-y', '@xai-official/grok@0.2.118', 'agent', 'stdio'] }]
 }
 
@@ -77,7 +78,8 @@ const VALIDATED_REMOTE_MCP_LAUNCHES: Readonly<
  *  in order, and no environment injection. Any deviation is unvalidated. */
 function sameLaunch(
   entry: ResolvedRuntimeEntry,
-  validated: { version: string; command: string; args: readonly string[] }
+  validated: { version: string; command: string; args: readonly string[]; probedVersion?: string },
+  probedVersion: string | undefined
 ): boolean {
   const def: RuntimeDef = entry.runtime
   return (
@@ -85,7 +87,8 @@ function sameLaunch(
     def.command === validated.command &&
     def.args.length === validated.args.length &&
     def.args.every((arg, index) => arg === validated.args[index]) &&
-    def.env.length === 0
+    def.env.length === 0 &&
+    (validated.probedVersion === undefined || probedVersion === validated.probedVersion)
   )
 }
 
@@ -100,16 +103,22 @@ function sameLaunch(
  *     — a user-configured runtime, including one shadowing a validated id, is
  *     never admitted; and
  *  3. the resolved launch matches a validated launch EXACTLY (catalog version,
- *     command, args, no env), so a newer/older/prerelease version, an added
- *     adapter flag, or a different package all fail closed.
+ *     command, args, no env), and binary launches whose command does not pin an
+ *     artifact additionally match the actual `agentInfo.version` observed by
+ *     the live ACP probe. A newer/older/prerelease version, an added adapter
+ *     flag, or a different package all fail closed.
  *
  * Callers additionally require the daemon's own ACP probe of this id to have
  * succeeded and advertised HTTP MCP transport (`runtimeMcpCaps`), so a
  * validated launch that is not actually installed and behaving stays out.
  */
-export function isValidatedRemoteMcpRuntime(runtimeId: string, entry: ResolvedRuntimeEntry | undefined): boolean {
+export function isValidatedRemoteMcpRuntime(
+  runtimeId: string,
+  entry: ResolvedRuntimeEntry | undefined,
+  probedVersion?: string
+): boolean {
   const validated = VALIDATED_REMOTE_MCP_LAUNCHES[runtimeId]
   if (!validated || !entry) return false
   if (entry.source !== 'curated' && entry.source !== 'registry') return false
-  return validated.some((launch) => sameLaunch(entry, launch))
+  return validated.some((launch) => sameLaunch(entry, launch, probedVersion))
 }

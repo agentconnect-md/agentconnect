@@ -319,6 +319,11 @@ export class CpClient {
     this.deps.configApply.applyReconcileSnapshot(snap)
 
     this.state = 'READY'
+    // Reconcile runs synchronously while REGISTERING and may change the daemon's
+    // computed capability set (for example by installing the builtin preset
+    // agent). updateCapabilities() deliberately cannot send before READY, so
+    // recheck once after the state transition to avoid dropping that mutation.
+    this.updateCapabilities()
     this.heartbeatMs = ok.heartbeatSec > 0 ? ok.heartbeatSec * 1000 : this.deps.heartbeatDefaultMs
     this.armHeartbeat()
     this.deps.log.info(`cp: READY (epoch=${this.sessionEpoch}, routingEpoch=${this.routingEpoch})`)

@@ -24,7 +24,9 @@ describe('isValidatedRemoteMcpRuntime', () => {
   it('admits exactly the validated launch shapes', () => {
     expect(isValidatedRemoteMcpRuntime('claude-acp', entry('registry', 'npx', CLAUDE, [], '0.64.0'))).toBe(true)
     expect(isValidatedRemoteMcpRuntime('codex-acp', entry('registry', 'npx', CODEX, [], '1.1.7'))).toBe(true)
-    expect(isValidatedRemoteMcpRuntime('opencode', entry('registry', './opencode', OPENCODE, [], '1.18.10'))).toBe(true)
+    expect(
+      isValidatedRemoteMcpRuntime('opencode', entry('registry', './opencode', OPENCODE, [], '1.18.10'), '1.18.10')
+    ).toBe(true)
     expect(isValidatedRemoteMcpRuntime('grok-build', entry('registry', 'npx', GROK, [], '0.2.118'))).toBe(true)
     expect(isValidatedRemoteMcpRuntime('claude-acp', entry('curated', 'npx', CLAUDE, [], '0.64.0'))).toBe(true)
   })
@@ -53,6 +55,14 @@ describe('isValidatedRemoteMcpRuntime', () => {
     expect(isValidatedRemoteMcpRuntime('opencode', entry('registry', './opencode', OPENCODE))).toBe(false)
     expect(isValidatedRemoteMcpRuntime('opencode', entry('registry', './opencode', OPENCODE, [], '1.18.9'))).toBe(false)
     expect(isValidatedRemoteMcpRuntime('grok-build', entry('registry', 'npx', GROK, [], '0.2.119'))).toBe(false)
+  })
+
+  it('rejects OpenCode when the executed ACP agent version is missing or differs from the validated binary', () => {
+    const opencode = entry('registry', './opencode', OPENCODE, [], '1.18.10')
+    expect(isValidatedRemoteMcpRuntime('opencode', opencode)).toBe(false)
+    expect(isValidatedRemoteMcpRuntime('opencode', opencode, '1.17.18')).toBe(false)
+    expect(isValidatedRemoteMcpRuntime('opencode', opencode, '1.18.10-rc.1')).toBe(false)
+    expect(isValidatedRemoteMcpRuntime('opencode', opencode, '1.18.10')).toBe(true)
   })
 
   it('admits no added adapter argument or injected env var', () => {

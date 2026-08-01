@@ -643,7 +643,8 @@ applied, probe completed) is re-announced via the `capabilities/update` frame
 (daemon-cp-ws-protocol.md §3.3a). Advertisement is only an establishment
 prerequisite: the turn-time attachment gate still independently requires the
 probed HTTP transport and exact launch validation before any descriptor
-attaches.
+attaches. Binary launches whose command does not pin an artifact also require
+the probe's actual ACP `agentInfo.version` to match the validated release.
 
 There is no CP-side rollout flag: the feature is on by default, and enablement
 is gated entirely on the daemon advertising `webchat_remote_mcp_v1` (the
