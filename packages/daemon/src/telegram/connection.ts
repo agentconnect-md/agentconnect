@@ -142,6 +142,7 @@ export interface TelegramApi {
   getChatMember(chatId: number | string, userId: number): Promise<{ user: TgUser }>
   getChatAdministrators(chatId: number | string): Promise<{ user: TgUser }[]>
   getFile(fileId: string): Promise<{ file_path?: string; file_size?: number }>
+  leaveChat(chatId: number | string): Promise<unknown>
 }
 
 /** The slice of grammY's `Bot` the connection drives. */
@@ -520,6 +521,19 @@ export class TelegramConnection {
   /** A bot cannot enumerate the chats it belongs to — always []. */
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
     return []
+  }
+
+  /**
+   * Leave a group, supergroup or channel (`leaveChat`). Needs no extra rights, and
+   * throws Telegram's own refusal for the caller to relay.
+   *
+   * Telegram tells nobody the bot left — there is no self-event, and `listChannels`
+   * above can never enumerate what remains — so unlike Slack the caller MUST retract
+   * the row explicitly afterwards; nothing else will.
+   */
+  async leaveChannel(channel: string): Promise<void> {
+    await this.bot.api.leaveChat(channel)
+    this.deps.log?.debug(`telegram: left chat ${channel}`)
   }
 
   /**

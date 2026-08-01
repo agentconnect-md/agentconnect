@@ -663,6 +663,22 @@ export class DiscordConnection {
     return []
   }
 
+  /**
+   * Leave a GUILD. Discord gives a bot no per-channel membership to withdraw from —
+   * it joins a server and sees that server's channels through permissions — so the
+   * smallest thing it can leave is the whole server, and every channel of that guild
+   * goes with it. Callers must not offer this as "leave this channel".
+   *
+   * Throws Discord's own refusal, and an unknown guild id is an error rather than a
+   * silent success: reporting "left" for a server we never resolved would retire
+   * console rows for a bot that is still in it.
+   */
+  async leaveSpace(spaceId: string): Promise<void> {
+    const guild = this.client.guilds.cache.get(spaceId) ?? (await this.client.guilds.fetch(spaceId))
+    await guild.leave()
+    this.deps.log?.debug(`discord: left guild ${spaceId}`)
+  }
+
   /** Text channels the bot can see across its guilds (from the ready cache). */
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
     try {

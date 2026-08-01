@@ -275,6 +275,8 @@ type AppLike = {
         }
       }>
       members: (a: unknown) => Promise<{ members?: string[] }>
+      // The one WRITE call this adapter makes against a conversation — see leaveChannel.
+      leave: (a: unknown) => Promise<unknown>
       list: (a: unknown) => Promise<{ channels?: { id?: string; name?: string; is_private?: boolean }[] }>
       replies: (a: unknown) => Promise<{
         messages?: {
@@ -1143,6 +1145,22 @@ export class SlackConnection {
     const channels = await this.listBotChannels()
     if (!channels) throw new Error('failed to list Slack channels for bot membership')
     return channels
+  }
+
+  /**
+   * Leave one channel (`conversations.leave`). THROWS the platform's own refusal —
+   * a missing scope, `last_member`, an archived channel — because the caller relays
+   * it to the operator verbatim; swallowing it here would report a silent success
+   * for a bot that is demonstrably still in the channel.
+   *
+   * Needs a WRITE scope (`channels:manage` / `groups:write`), unlike everything else
+   * this adapter does. Slack emits `channel_left` / `group_left` afterwards, which
+   * re-lists membership and retires the row on its own — so this method deliberately
+   * reports nothing about the channel set.
+   */
+  async leaveChannel(channel: string): Promise<void> {
+    await this.app.client.conversations.leave({ channel })
+    this.deps.log?.debug(`slack: left channel ${channel}`)
   }
 
   async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {

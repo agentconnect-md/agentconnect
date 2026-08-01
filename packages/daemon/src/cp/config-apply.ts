@@ -18,6 +18,8 @@ import type {
   AgentDetach,
   AgentActivate,
   IntegrationSpec,
+  IntegrationLeave,
+  IntegrationLeaveOk,
   McpServerSpec,
   MemoryConnectionSpec,
   Ack,
@@ -55,6 +57,10 @@ export interface ConfigApply {
   applyIntegrationUpsert(spec: IntegrationSpec): void
   /** Drop a CP-owned integration (integration/remove EVT). */
   applyIntegrationRemove(integrationId: string): void
+  /** Withdraw the bot from a conversation/space at the PLATFORM (integration/leave
+   *  REQ). Resolves with the platform's verdict — a refusal is `ok:false`, not a
+   *  rejection — and reconciles the channel set as a side effect. */
+  applyIntegrationLeave(leave: IntegrationLeave): Promise<IntegrationLeaveOk>
   /** Add or replace a CP-pushed MCP server def in memory (mcpserver/upsert EVT). */
   applyMcpServerUpsert(spec: McpServerSpec): void
   /** Drop a CP-pushed MCP server def by name (mcpserver/remove EVT). */

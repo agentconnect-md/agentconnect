@@ -257,6 +257,8 @@ import type {
   McpTransportCapabilities,
   RuntimeModelCatalog,
   IntegrationChannel,
+  IntegrationLeave,
+  IntegrationLeaveOk,
   Drain,
   DrainProgress,
   DrainDone,
@@ -3328,6 +3330,85 @@ export class Daemon {
         }
       }
     }
+  }
+
+  /**
+   * Withdraw the bot from a conversation (or, on Discord, a whole server) at the
+   * PLATFORM, then reconcile the console's channel set.
+   *
+   * The platforms disagree about what can be left and about what they tell us
+   * afterwards, and both differences are load-bearing:
+   *
+   *  - **Slack** leaves one channel and then EMITS `channel_left`, which re-lists
+   *    membership authoritatively and retires the row on its own. Re-listing here
+   *    too only makes the console update immediately instead of on the event.
+   *  - **Telegram** leaves one chat and tells nobody — no self-event, and its bot
+   *    API cannot enumerate chats — so the row survives unless we retract it by id.
+   *  - **Discord** has no per-channel membership for a bot at all; leaving means
+   *    leaving the guild, which retires every row of that guild at once.
+   *
+   * Never throws: a platform refusal is the operator's answer, not a daemon fault.
+   */
+  private async leaveConversation(leave: IntegrationLeave): Promise<IntegrationLeaveOk> {
+    const integration = this.integrationConfigById(leave.integrationId)
+    if (!integration) return { ok: false, error: 'integration not found on this daemon' }
+    const conn = this.connForIntegration(leave.integrationId)
+    if (!conn) return { ok: false, error: 'integration is not connected' }
+    const { target } = leave
+    try {
+      if (conn instanceof DiscordConnection) {
+        if (target.kind !== 'space') {
+          return { ok: false, error: 'Discord bots join servers, not channels — leave the server instead' }
+        }
+        await conn.leaveSpace(target.spaceId)
+        // Every channel of that guild went with it. The snapshot is the only record
+        // of which those were: Discord rows are observed, never enumerated.
+        const gone = (this.channelSnapshots.get(leave.integrationId)?.channels ?? [])
+          .filter((c) => c.spaceId === target.spaceId)
+          .map((c) => c.id)
+        this.retractChannels(leave.integrationId, gone)
+        return { ok: true }
+      }
+      if (target.kind !== 'conversation') {
+        return { ok: false, error: 'this platform has no server to leave — leave the channel instead' }
+      }
+      if (conn instanceof SlackConnection) {
+        await conn.leaveChannel(target.channel)
+        // Authoritative re-list; also arrives via channel_left, and both converge.
+        await this.refreshChannels(conn)
+        return { ok: true }
+      }
+      if (conn instanceof TelegramConnection) {
+        await conn.leaveChannel(target.channel)
+        this.retractChannels(leave.integrationId, [target.channel])
+        return { ok: true }
+      }
+      return { ok: false, error: 'leaving a conversation is not supported on this platform' }
+    } catch (err) {
+      // The platform's own words — a missing scope, `last_member`, a lost right.
+      const error = (err as Error).message
+      this.log.warn(`integration/leave failed (${integration.platform}): ${error}`)
+      return { ok: false, error }
+    }
+  }
+
+  /**
+   * Retract conversations from this integration's reported set — the counterpart to
+   * discovery, for platforms whose snapshots can only ever grow. Absence from a
+   * non-authoritative report means nothing, so the ids ride an explicit `removed`.
+   */
+  private retractChannels(integrationId: string, channelIds: readonly string[]): void {
+    if (channelIds.length === 0) return
+    const gone = new Set(channelIds)
+    const cached = this.channelSnapshots.get(integrationId)
+    const channels = (cached?.channels ?? []).filter((c) => !gone.has(c.id))
+    this.channelSnapshots.set(integrationId, { channels, authoritative: cached?.authoritative ?? false })
+    this.cpClient?.emitIntegrationChannels({
+      integrationId,
+      channels,
+      authoritative: false,
+      removed: [...gone]
+    })
   }
 
   /**
@@ -14913,6 +14994,7 @@ export class Daemon {
         if (!this.moveStagedAgents.has(spec.agentId)) this.cpIntegrations?.upsert(spec)
       },
       applyIntegrationRemove: (integrationId) => this.cpIntegrations?.remove(integrationId),
+      applyIntegrationLeave: (leave) => this.leaveConversation(leave),
       applyMcpServerUpsert: (spec) => {
         if (spec.name === RESERVED_MCP_SERVER_NAME) {
           this.log.warn(`mcp: ignoring CP push for reserved server name "${spec.name}"`)
