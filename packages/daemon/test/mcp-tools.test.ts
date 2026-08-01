@@ -19,7 +19,7 @@ describe('toolsForIntegrations', () => {
   type ObjectSchema = {
     type?: string
     description?: string
-    properties: Record<string, { enum?: string[]; description?: string }>
+    properties: Record<string, { enum?: string[]; description?: string; oneOf?: Record<string, unknown>[] }>
     required?: string[]
     additionalProperties?: boolean
     oneOf?: ObjectSchema[]
@@ -121,6 +121,10 @@ describe('toolsForIntegrations', () => {
     expect(user.description).toContain('dm')
     expect(user.description).toContain('channel root')
     expect(user.description).toContain('in thread')
+    expect(user.properties.toUser!.oneOf).toMatchObject([
+      { type: 'string', minLength: 1 },
+      { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', minLength: 1 } }
+    ])
 
     const channel = sendTargetBranch([slackInt], 'channel')
     expect(channel.required).toEqual(['channel', 'message'])
@@ -133,11 +137,13 @@ describe('toolsForIntegrations', () => {
     expect(session.additionalProperties).toBe(false)
     expect(Object.keys(session.properties)).toEqual(['sessionId', 'correlationId', 'message'])
 
-    expect(tool.description).toMatch(/^Send one message to exactly one target:/)
+    expect(tool.description).toMatch(/^Send one message using exactly one target mode:/)
     expect(tool.description).toContain('{"toAgent":"<agent id>","message":"..."}')
     expect(tool.description).toContain('{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}')
     expect(tool.description).toContain('{"toUser":"<Slack user id>","message":"..."}')
-    expect(tool.description).toContain('{"toUser":"<Slack user id>","channel":"<channel id>","message":"..."}')
+    expect(tool.description).toContain(
+      '{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}'
+    )
     expect(tool.description).toContain('{"channel":"<channel id>","message":"..."}')
     expect(tool.description).toContain('{"sessionId":"<Parent session>","message":"..."}')
   })
@@ -165,10 +171,10 @@ describe('toolsForIntegrations', () => {
     for (const text of [description, sendTargetBranch([slackInt], 'channel').description!])
       expect(text).toMatch(/(at )?channel root/i)
 
-    // …and the toUser mode is not DM-only: its channel-root and in-thread forms post a visible
-    // @-mention, which is a legitimate reason to send into a conversation the agent is in.
-    expect(description).toContain('@-mentions the user')
-    expect(sendTargetBranch([slackInt], 'toUser').description).toContain('@-mentions the user')
+    // …and the toUser mode is not DM-only: its channel-root and in-thread forms post visible
+    // @-mentions, which is a legitimate reason to send into a conversation the agent is in.
+    expect(description).toContain('@-mentions every listed user')
+    expect(sendTargetBranch([slackInt], 'toUser').description).toContain('@-mentions every listed user')
 
     // Collaboration off leaves only the visible platform targets, so the channel-root cost must
     // still be stated there (spawnChannelRootSession runs either way).

@@ -84,7 +84,7 @@ platform delivery path.
 
 Whether the hand-off is _visible_ is the caller's choice, set by the `sendMessage`
 target it uses. The tool has two addressing modes — `toAgent` (wake a peer) and
-`toUser` (reach a human) — each with three delivery forms: dm / channel root /
+`toUser` (reach one or more humans) — each with three delivery forms: dm / channel root /
 in thread; plus a bare `channel` post with no recipient:
 
 - `toAgent` **dm form** (`{"toAgent":"<agent id>","message":"..."}`, no `channel`) —
@@ -98,9 +98,12 @@ in thread; plus a bare `channel` post with no recipient:
   is carried into the wake (across the relay for a cross-daemon target) so the
   visible message and the direct delivery collapse to a single transcript row
   (never a duplicate hand-off).
-- `toUser` — reach one human (Slack only for now): dm (`{"toUser":"<id>","message":"..."}`
-  without `channel`, a direct message), channel root (`toUser` + `channel`, a visible
-  post that @-mentions the user), or in thread (`toUser` + `channel` + `thread`).
+- `toUser` — reach humans (Slack only for now): dm (`{"toUser":"<id>","message":"..."}`
+  without `channel`, a direct message to exactly one person), channel root (`toUser` +
+  `channel`, one visible post that @-mentions every listed person), or in thread
+  (`toUser` + `channel` + `thread`). The channel forms accept either one id or a
+  non-empty array of unique ids such as `"toUser":["U1","U2"]`; an array never
+  means group DM.
 - `channel` **bare post** (`{"channel":"<channel id>","message":"..."}`, optionally
   `thread`/`platform`) — publishes a visible message without waking an agent or
   addressing a human, as in case 2a / case 3.

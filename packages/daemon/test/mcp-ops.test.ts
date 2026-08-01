@@ -946,6 +946,58 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(res.post).toMatchObject({ channel: 'C1', thread: null })
   })
 
+  it('toUser array plus channel posts one message mentioning every listed user', async () => {
+    const { deps: d, gw, recorded } = wakeDeps()
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      {
+        toUser: ['U1', '<@U2>'],
+        channel: 'C1',
+        message: 'please review'
+      },
+      d
+    )) as { post?: { channel: string; thread: string | null } }
+    expect(gw.postMessage).toHaveBeenCalledWith('C1', '<@U1> <@U2> please review', undefined, authorIdentity)
+    expect(recorded.at(-1)).toMatchObject({ channel: 'C1', text: '<@U1> <@U2> please review' })
+    expect(res.post).toMatchObject({ channel: 'C1', thread: null })
+  })
+
+  it('toUser array plus channel and thread mentions everyone inside that thread', async () => {
+    const { deps: d, gw } = wakeDeps()
+    await executeTool(
+      ctx,
+      'sendMessage',
+      {
+        toUser: ['U1', 'U2'],
+        channel: 'C1',
+        thread: '222.2',
+        message: 'please review'
+      },
+      d
+    )
+    expect(gw.postMessage).toHaveBeenCalledWith('C1', '<@U1> <@U2> please review', '222.2', authorIdentity)
+  })
+
+  it('rejects a toUser array without channel instead of treating it as a group DM', async () => {
+    const { deps: d, gw } = wakeDeps()
+    await expect(executeTool(ctx, 'sendMessage', { toUser: ['U1', 'U2'], message: 'x' }, d)).rejects.toThrow(
+      /array requires `channel`/
+    )
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { toUser: [], label: 'empty array' },
+    { toUser: ['U1', ''], label: 'empty member id' },
+    { toUser: ['U1', 42], label: 'non-string member id' },
+    { toUser: ['U1', '<@U1>'], label: 'duplicate member id' }
+  ])('rejects an invalid toUser $label before posting', async ({ toUser }) => {
+    const { deps: d, gw } = wakeDeps()
+    await expect(executeTool(ctx, 'sendMessage', { toUser, channel: 'C1', message: 'x' }, d)).rejects.toThrow(/toUser/)
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
   it('rejects `thread` on a toUser DM — a DM has no thread to post into', async () => {
     const { deps: d } = wakeDeps()
     await expect(executeTool(ctx, 'sendMessage', { toUser: 'U1', thread: '222.2', message: 'x' }, d)).rejects.toThrow(

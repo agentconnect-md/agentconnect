@@ -651,7 +651,7 @@ export class SessionManager {
     ].join('\n')
 
     // Standing guidance for agent↔agent collaboration. `sendMessage` has two modes — `toAgent`
-    // (wake a peer) and `toUser` (reach a human) — each with three forms: dm / channel root /
+    // (wake a peer) and `toUser` (reach humans) — each with three forms: dm / channel root /
     // in thread. `toAgent` without a `channel` (dm form) is the postless, channel-invisible wake.
     const collabAppend =
       this.deps.collaborationEnabled === false
@@ -663,9 +663,11 @@ export class SessionManager {
           `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
           `to ALSO post a visible message there and thread that agent's reply under it; add ` +
           `\`"thread":"<thread id>"\` (in-thread form) to post into a specific thread instead. Use these when the ` +
-          `hand-off should be visible to people in the channel. To reach a human, use the \`toUser\` mode: ` +
-          `\`{"toUser":"<Slack user id>","message":"..."}\` DMs them, and adding \`channel\` (and optionally ` +
-          `\`thread\`) posts an @-mention at the channel root (or inside that thread). If you were woken by another ` +
+          `hand-off should be visible to people in the channel. To reach humans, use the \`toUser\` mode: ` +
+          `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` (and optionally ` +
+          `\`thread\`) posts an @-mention at the channel root (or inside that thread). In those channel forms, pass ` +
+          `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
+          `message; arrays are never DMs. If you were woken by another ` +
           `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
           `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`.\n` +
           `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
