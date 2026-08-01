@@ -247,9 +247,79 @@ describe('claudeSessionMeta', () => {
     )
   })
 
+  it('enables the native Claude sandbox only behind an outer AgentConnect sandbox', () => {
+    const credentialRoot = '/host/.claude/agentconnect-auth'
+    const sandbox = {
+      enabled: true,
+      failIfUnavailable: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      filesystem: {
+        denyRead: [credentialRoot],
+        denyWrite: [credentialRoot]
+      },
+      credentials: {
+        files: [{ path: credentialRoot, mode: 'deny' }],
+        envVars: [
+          { name: 'ANTHROPIC_API_KEY', mode: 'deny' },
+          { name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' },
+          { name: 'ANTHROPIC_IDENTITY_TOKEN', mode: 'deny' },
+          { name: 'ANTHROPIC_IDENTITY_TOKEN_FILE', mode: 'deny' },
+          { name: 'ANTHROPIC_CONFIG_DIR', mode: 'deny' },
+          { name: 'ANTHROPIC_PROFILE', mode: 'deny' },
+          { name: 'ANTHROPIC_CUSTOM_HEADERS', mode: 'deny' },
+          { name: 'ANTHROPIC_AWS_API_KEY', mode: 'deny' },
+          { name: 'ANTHROPIC_FOUNDRY_API_KEY', mode: 'deny' },
+          { name: 'ANTHROPIC_FOUNDRY_AUTH_TOKEN', mode: 'deny' },
+          { name: 'CLAUDE_CODE_OAUTH_TOKEN', mode: 'deny' },
+          { name: 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', mode: 'deny' },
+          { name: 'AWS_ACCESS_KEY_ID', mode: 'deny' },
+          { name: 'AWS_SECRET_ACCESS_KEY', mode: 'deny' },
+          { name: 'AWS_SESSION_TOKEN', mode: 'deny' },
+          { name: 'AWS_BEARER_TOKEN_BEDROCK', mode: 'deny' },
+          { name: 'AWS_CONTAINER_AUTHORIZATION_TOKEN', mode: 'deny' },
+          { name: 'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', mode: 'deny' },
+          { name: 'AWS_CONTAINER_CREDENTIALS_FULL_URI', mode: 'deny' },
+          { name: 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', mode: 'deny' },
+          { name: 'AWS_EC2_METADATA_SERVICE_ENDPOINT', mode: 'deny' },
+          { name: 'AWS_CONFIG_FILE', mode: 'deny' },
+          { name: 'AWS_SHARED_CREDENTIALS_FILE', mode: 'deny' },
+          { name: 'AWS_WEB_IDENTITY_TOKEN_FILE', mode: 'deny' },
+          { name: 'CLOUDSDK_AUTH_ACCESS_TOKEN', mode: 'deny' },
+          { name: 'GOOGLE_APPLICATION_CREDENTIALS', mode: 'deny' }
+        ]
+      }
+    }
+
+    expect(claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot])).toEqual(
+      cc({ thinking: THINKING, sandbox })
+    )
+    expect(claudeSessionMeta('ultracode', true, undefined, undefined, [credentialRoot])).toEqual(
+      cc({
+        thinking: THINKING,
+        sandbox,
+        settings: { ultracode: true, enableWorkflows: true }
+      })
+    )
+    // An empty array still means an outer sandbox is active; undefined means it
+    // is not, and must preserve the existing unsandboxed Claude behavior.
+    expect(claudeSessionMeta(undefined, true, undefined, undefined, [])).toEqual(
+      cc({
+        thinking: THINKING,
+        sandbox: {
+          ...sandbox,
+          filesystem: { ...sandbox.filesystem, denyRead: [], denyWrite: [] },
+          credentials: { ...sandbox.credentials, files: [] }
+        }
+      })
+    )
+    expect(claudeSessionMeta(undefined, true)).toEqual(cc({ thinking: THINKING }))
+  })
+
   it('returns undefined off a Claude runtime (the _meta is claude-acp-specific)', () => {
     expect(claudeSessionMeta(undefined, false)).toBeUndefined()
     expect(claudeSessionMeta('ultracode', false)).toBeUndefined()
+    expect(claudeSessionMeta(undefined, false, undefined, undefined, ['/credential'])).toBeUndefined()
   })
 
   it('appends the system prompt (sibling of claudeCode) when one is set', () => {
