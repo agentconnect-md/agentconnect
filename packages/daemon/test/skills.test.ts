@@ -325,6 +325,43 @@ describe('installSkills reconcile and containment', () => {
     expect(readFileSync(manual, 'utf8')).toBe('keep')
   })
 
+  it('does not reuse deletion ownership after a nested ACP cwd is replaced', async () => {
+    const nested = join(cwd, 'service')
+    mkdirSync(nested)
+    const desired = {
+      id: 'a1',
+      runtime: 'claude',
+      skills: [{ name: 'source', source: 'acme/skills', skills: [] }]
+    }
+    await installSkills(desired, nested, {
+      stateDir,
+      execFile: async () => {
+        mkdirSync(join(nested, '.claude', 'skills', 'same-name'), { recursive: true })
+      }
+    })
+
+    const replacement = join(cwd, 'replacement')
+    mkdirSync(replacement)
+    rmSync(nested, { recursive: true, force: true })
+    renameSync(replacement, nested)
+    const manual = join(nested, '.claude', 'skills', 'same-name', 'MANUAL')
+    mkdirSync(dirname(manual), { recursive: true })
+    writeFileSync(manual, 'keep')
+    let installs = 0
+
+    const reconciled = await installSkills(desired, nested, {
+      stateDir,
+      execFile: async () => {
+        installs += 1
+      }
+    })
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, nested, { stateDir })
+
+    expect(reconciled.skipped).toBeNull()
+    expect(installs).toBe(1)
+    expect(readFileSync(manual, 'utf8')).toBe('keep')
+  })
+
   it('uses an intact private fingerprint as the unchanged fast path', async () => {
     const first = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
     expect(first.skipped).toBeNull()

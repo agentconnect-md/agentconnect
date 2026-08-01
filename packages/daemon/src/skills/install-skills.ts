@@ -54,6 +54,8 @@ interface WorkspaceRecord {
   fingerprint?: string
   /** Canonical cwd used to confirm that this directory instance still exists. */
   workspacePath?: string
+  /** Kernel replacement witness for the actual ACP cwd, including agentDir. */
+  workspaceWitness?: string
   /** cwd-relative skill dirs this daemon created (for reconcile removal). */
   installed: string[]
 }
@@ -93,19 +95,36 @@ function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[
 interface WorkspaceIdentity {
   id: string
   path: string
+  witness: string
 }
 
 function workspaceId(generation: string, path: string): string {
   return createHash('sha256').update(JSON.stringify({ generation, path })).digest('hex')
 }
 
+async function directoryWitness(path: string): Promise<string | null> {
+  let stat: import('node:fs').BigIntStats
+  try {
+    stat = await fsp.lstat(path, { bigint: true })
+  } catch (err) {
+    if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) return null
+    throw err
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return null
+  // birthtime is stable across writes but changes when a directory is replaced.
+  // Some filesystems expose no birthtime; ctime is a conservative fail-closed
+  // fallback there (ordinary top-level edits may invalidate ownership early).
+  const born = stat.birthtimeNs > 0n ? ['birth', stat.birthtimeNs] : ['ctime', stat.ctimeNs]
+  return createHash('sha256')
+    .update(JSON.stringify({ dev: String(stat.dev), ino: String(stat.ino), born: born.map(String) }))
+    .digest('hex')
+}
+
 async function workspaceIdentity(cwd: string, generation: string): Promise<WorkspaceIdentity> {
   const canonical = await fsp.realpath(cwd)
-  const stat = await fsp.lstat(canonical)
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw new ContainedPathError('skills workspace is not a real directory')
-  }
-  return { id: workspaceId(generation, canonical), path: canonical }
+  const witness = await directoryWitness(canonical)
+  if (!witness) throw new ContainedPathError('skills workspace is not a real directory')
+  return { id: workspaceId(generation, canonical), path: canonical, witness }
 }
 
 function markerPath(stateDir: string): string {
@@ -163,13 +182,21 @@ async function readMarker(stateDir: string): Promise<Marker> {
   const workspaces: Record<string, WorkspaceRecord> = {}
   for (const [workspaceId, value] of Object.entries(raw.workspaces)) {
     if (!WORKSPACE_ID.test(workspaceId) || !value || typeof value !== 'object' || Array.isArray(value)) continue
-    const record = value as { fingerprint?: unknown; workspacePath?: unknown; installed?: unknown }
+    const record = value as {
+      fingerprint?: unknown
+      workspacePath?: unknown
+      workspaceWitness?: unknown
+      installed?: unknown
+    }
     workspaces[workspaceId] = {
       ...(typeof record.fingerprint === 'string' ? { fingerprint: record.fingerprint } : {}),
       ...(typeof record.workspacePath === 'string' &&
       isAbsolute(record.workspacePath) &&
       !record.workspacePath.includes('\0')
         ? { workspacePath: record.workspacePath }
+        : {}),
+      ...(typeof record.workspaceWitness === 'string' && WORKSPACE_ID.test(record.workspaceWitness)
+        ? { workspaceWitness: record.workspaceWitness }
         : {}),
       installed: Array.isArray(record.installed)
         ? record.installed.filter((path): path is string => typeof path === 'string')
@@ -213,12 +240,8 @@ async function ensureWorkspaceCapacity(marker: Marker, workspace: WorkspaceIdent
       if (record.workspacePath === workspace.path) {
         reclaimable = true
       } else {
-        try {
-          const stat = await fsp.lstat(record.workspacePath)
-          reclaimable = !stat.isDirectory() || stat.isSymbolicLink()
-        } catch (err) {
-          if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) reclaimable = true
-        }
+        const witness = await directoryWitness(record.workspacePath)
+        reclaimable = !witness || witness !== record.workspaceWitness
       }
     }
     if (!reclaimable) continue
@@ -444,7 +467,8 @@ export async function installSkills(
       label: 'skills marker'
     })
     const prior = marker.workspaces[workspace.id] ?? { installed: [] }
-    const priorTracked = prior.installed.filter(isTrackedSkillDir)
+    const priorMatchesWorkspace = prior.workspaceWitness === workspace.witness
+    const priorTracked = priorMatchesWorkspace ? prior.installed.filter(isTrackedSkillDir) : []
 
     // Validate existing roots before any reconcile operation. This rejects a
     // planted root symlink even when it is unrelated to the first tracked path.
@@ -453,7 +477,7 @@ export async function installSkills(
     const intact = await Promise.all(priorTracked.map((rel) => trackedTargetIntact(cwd, rel)))
     const targetsIntact = priorTracked.length === prior.installed.length && intact.every(Boolean)
     const cacheCoversDesired = entries.length === 0 || priorTracked.length > 0
-    if (prior.fingerprint === fp && targetsIntact && cacheCoversDesired) {
+    if (priorMatchesWorkspace && prior.fingerprint === fp && targetsIntact && cacheCoversDesired) {
       if (prior.workspacePath !== workspace.path) {
         await writeMarker(
           opts.stateDir,
@@ -487,6 +511,7 @@ export async function installSkills(
         withWorkspaceRecord(marker, workspace.id, {
           ...(retained.length === 0 ? { fingerprint: fp } : {}),
           workspacePath: workspace.path,
+          workspaceWitness: (await workspaceIdentity(cwd, generation)).witness,
           installed: retained
         })
       )
@@ -542,6 +567,7 @@ export async function installSkills(
       withWorkspaceRecord(marker, workspace.id, {
         ...(effective ? { fingerprint: fp } : {}),
         workspacePath: workspace.path,
+        workspaceWitness: (await workspaceIdentity(cwd, generation)).witness,
         installed: [...new Set([...retained, ...created])]
       })
     )
