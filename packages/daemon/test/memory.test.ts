@@ -71,7 +71,16 @@ describe('agents/memory (directory model)', () => {
     const dir = newDir()
     await writeMemoryFile(dir, MEMORY_INDEX, 'x'.repeat(MAX_INDEX_INJECT_BYTES + 5000))
     const injected = await readIndex(dir)
-    expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES + 60) // + the truncation notice
+    expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES)
+    expect(injected).toContain('truncated')
+  })
+
+  it('readIndex truncates before a complete UTF-8 code point', async () => {
+    const dir = newDir()
+    await writeMemoryFile(dir, MEMORY_INDEX, '🚀'.repeat(MAX_INDEX_INJECT_BYTES))
+    const injected = await readIndex(dir)
+    expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES)
+    expect(injected).not.toContain('\uFFFD')
     expect(injected).toContain('truncated')
   })
 
@@ -771,7 +780,7 @@ describe('agents/memory-provider (ManagedMemoryProvider)', () => {
     await p.write(scope, MEMORY_INDEX, 'x'.repeat(MAX_INDEX_INJECT_BYTES + 5000))
     const injected = await p.injectAtSessionStart(scope)
     expect(injected).toBe(await readIndex(dir)) // byte-identical to the primitive
-    expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES + 60)
+    expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES)
     expect(injected).toContain('truncated')
   })
 

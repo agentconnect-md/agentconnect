@@ -205,7 +205,12 @@ export function SuggestionCard({
         </div>
         {suggestion.state === 'pending' && (
           <div className="flex flex-none items-center gap-2">
-            <Button variant="secondary" size="xs" disabled={!!busy} onClick={() => void review('reject')}>
+            <Button
+              variant="secondary"
+              size="xs"
+              disabled={!!busy || !suggestion.contentAvailable}
+              onClick={() => void review('reject')}
+            >
               <Icon name="x" size={13} />
               {busy === 'reject' ? 'Rejecting…' : 'Reject'}
             </Button>
@@ -232,8 +237,8 @@ export function SuggestionCard({
         ) : !suggestion.contentAvailable ? (
           <div className="flex items-center gap-2 rounded-md bg-(--status-paused-soft) px-3 py-3 font-sans text-[12px] text-(--text-secondary)">
             <Icon name="server-off" size={15} />
-            The staged body is unavailable because its source daemon is offline, upgrading, or no longer owns the source
-            agent. It can be inspected when that source is ready again.
+            Review is unavailable because the source daemon is offline, upgrading, paused for safety, or no longer owns
+            the source agent. The staged body remains there until that source is ready again.
           </div>
         ) : !inspect ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-3">

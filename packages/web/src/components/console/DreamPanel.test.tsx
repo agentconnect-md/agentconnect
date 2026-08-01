@@ -268,11 +268,27 @@ describe('DreamPanel', () => {
   })
 
   it('explains a 409 from a racing trigger in plain language', async () => {
-    api.startDream.mockRejectedValue(new FakeApiError(409))
+    const conflict = new FakeApiError(409)
+    conflict.message = 'a dream is already in flight for this agent'
+    api.startDream.mockRejectedValue(conflict)
     const host = await render()
     await act(async () => button(host, 'Dream now')?.click())
     await act(async () => button(document.body, 'Start dream')?.click())
     expect(host.textContent).toContain('already running')
+  })
+
+  it('preserves the actionable security-hold reason from a start conflict', async () => {
+    const held = new FakeApiError(409)
+    held.message =
+      'memory Dream execution is blocked because provider authentication cannot be isolated from model-readable paths (model_readable_credentials)'
+    api.startDream.mockRejectedValue(held)
+
+    const host = await render()
+    await act(async () => button(host, 'Dream now')?.click())
+    await act(async () => button(document.body, 'Start dream')?.click())
+
+    expect(host.textContent).toContain('provider authentication cannot be isolated')
+    expect(host.textContent).not.toContain('already running')
   })
 
   it('surfaces files the dream DELETES, which exist live but not in the staged tree', async () => {

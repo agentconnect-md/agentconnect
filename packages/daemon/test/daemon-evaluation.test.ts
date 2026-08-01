@@ -1,13 +1,14 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { ORGANIZATION_SUGGESTION_REVIEW_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
 const AGENT_ID = 'evaluation-agent'
 
-function scaffold(opts: { runtimeCommand?: string; model?: string } = {}): string {
+function scaffold(opts: { runtimeCommand?: string; model?: string; autoAdopt?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-evaluation-daemon-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -29,6 +30,9 @@ function scaffold(opts: { runtimeCommand?: string; model?: string } = {}): strin
       workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
       integrations: [],
       output: { mode: 'medium' },
+      ...(opts.autoAdopt !== undefined
+        ? { memory: { provider: 'managed', dreaming: { enabled: true, autoAdopt: opts.autoAdopt } } }
+        : {}),
       ...(opts.model ? { runtimeOverrides: { model: opts.model } } : {})
     })
   )
@@ -187,11 +191,12 @@ describe('Daemon evaluation surface', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
-      root: scaffold(),
+      root: scaffold({ autoAdopt: true }),
       hostFactory: (_agent, update) => {
         onUpdate = update
         return host as any
       },
+      dreamOperationPolicy: 'test-only',
       evaluation: { observer: collector, runId: 'eval-run-dream' }
     })
     await daemon.start()
@@ -346,11 +351,12 @@ describe('Daemon evaluation surface', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
-      root: scaffold({ runtimeCommand: 'codex-acp', model: 'gpt-5.6' }),
+      root: scaffold({ runtimeCommand: 'codex-acp', model: 'gpt-5.6', autoAdopt: true }),
       hostFactory: (_agent, update) => {
         onUpdate = update
         return host as any
       },
+      dreamOperationPolicy: 'test-only',
       evaluation: { observer: collector, runId: 'eval-run-dream-default-model' }
     })
     await daemon.start()
@@ -404,6 +410,7 @@ describe('Daemon evaluation surface', () => {
         onUpdate = update
         return host as any
       },
+      dreamOperationPolicy: 'test-only',
       evaluation: { observer: collector, runId: 'eval-run-dream-ignored-cancel' }
     })
     await daemon.start()
@@ -458,6 +465,97 @@ describe('Daemon evaluation surface', () => {
         })
     ).toThrow('evaluation capability profile requires an evaluation observer')
   })
+
+  it('publishes held organization-suggestion metadata without applying destructive CP decisions', async () => {
+    const root = scaffold()
+    const { factory } = scriptedHost()
+    const seeder = new Daemon({ root, hostFactory: factory })
+    await seeder.start()
+
+    const dreamId = 'drm-held-organization-sync'
+    const candidateId = '11111111-1111-4111-8111-111111111111'
+    const dreamDir = join(root, 'agents', AGENT_ID, 'memory-dreams', dreamId)
+    const bodyPath = join(dreamDir, 'organization', `${candidateId}.json`)
+    const outputPath = join(dreamDir, 'output', 'MEMORY.md')
+    const privateBody = '{"kind":"knowledge","content":"PRIVATE HELD BODY"}'
+    mkdirSync(join(dreamDir, 'organization'), { recursive: true })
+    mkdirSync(join(dreamDir, 'output'), { recursive: true })
+    writeFileSync(bodyPath, privateBody)
+    writeFileSync(outputPath, '# Held staging\n')
+    ;(seeder as any).store.insertDream({
+      dreamId,
+      agentId: AGENT_ID,
+      status: 'superseded',
+      trigger: 'manual',
+      sessionIds: ['session-1'],
+      snapshotDigest: `sha256:${'b'.repeat(64)}`,
+      organizationSuggestions: [
+        {
+          candidateId,
+          kind: 'knowledge',
+          operation: 'create',
+          title: 'Safe metadata only',
+          digest: `sha256:${'a'.repeat(64)}`,
+          contentBytes: Buffer.byteLength(privateBody),
+          state: 'proposed',
+          sessionIds: ['session-1'],
+          createdAt: '2026-08-01T00:00:00.000Z'
+        }
+      ],
+      createdAt: '2026-08-01T00:00:00.000Z',
+      endedAt: '2026-08-01T00:01:00.000Z'
+    })
+    await seeder.stop()
+
+    const daemon = new Daemon({ root, hostFactory: factory })
+    await daemon.start()
+    expect((daemon as any).registrationFeatures()).not.toContain(ORGANIZATION_SUGGESTION_REVIEW_FEATURE)
+    expect((daemon as any).dreamRunnerInstance).toBeUndefined()
+
+    const decision = { sourceAgentId: AGENT_ID, dreamId, candidateId, state: 'accepted' as const }
+    const syncOrganizationSuggestions = vi.fn(async ({ suggestions }: { suggestions: unknown[] }) => ({
+      decisions: suggestions.length > 0 ? [decision] : []
+    }))
+    ;(daemon as any).cpClient = {
+      supportsServerFeature: vi.fn(() => true),
+      syncOrganizationSuggestions,
+      stop: vi.fn(async () => {})
+    }
+
+    await (daemon as any).syncOrganizationSuggestions()
+
+    const runner = (daemon as any).dreamRunnerInstance
+    expect(runner).toBeDefined()
+    const inventory = runner.organizationSuggestionInventory()
+    expect(syncOrganizationSuggestions).toHaveBeenCalledOnce()
+    expect(syncOrganizationSuggestions).toHaveBeenCalledWith({ suggestions: inventory })
+    expect(JSON.stringify(syncOrganizationSuggestions.mock.calls[0]![0])).not.toContain('PRIVATE HELD BODY')
+    expect((daemon as any).store.getDream(AGENT_ID, dreamId).organizationSuggestions[0].state).toBe('proposed')
+    expect(readFileSync(bodyPath, 'utf8')).toBe(privateBody)
+    expect(readFileSync(outputPath, 'utf8')).toBe('# Held staging\n')
+
+    await daemon.stop()
+
+    const allowed = new Daemon({ root, hostFactory: factory, dreamOperationPolicy: 'test-only' })
+    await allowed.start()
+    expect((allowed as any).registrationFeatures()).toContain(ORGANIZATION_SUGGESTION_REVIEW_FEATURE)
+    const allowedRunner = (allowed as any).dreamRunner()
+    const allowedReview = vi.spyOn(allowedRunner, 'organizationSuggestionReview')
+    ;(allowed as any).cpClient = {
+      supportsServerFeature: vi.fn(() => true),
+      syncOrganizationSuggestions,
+      stop: vi.fn(async () => {})
+    }
+
+    await (allowed as any).syncOrganizationSuggestions()
+    await vi.waitFor(() => expect(syncOrganizationSuggestions).toHaveBeenCalledTimes(3))
+
+    expect(allowedReview).toHaveBeenCalledOnce()
+    expect(allowedReview).toHaveBeenCalledWith(decision)
+    expect((allowed as any).store.getDream(AGENT_ID, dreamId).organizationSuggestions[0].state).toBe('accepted')
+    expect(() => readFileSync(bodyPath, 'utf8')).toThrow()
+    await allowed.stop()
+  }, 15_000)
 
   it('omits memory recall and capture evidence when the treatment is off', async () => {
     const collector = new EvaluationEventCollector()

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   organizationSuggestionCanonical,
   type OrganizationSuggestionContentBody
 } from '@agentconnect.md/protocol'
@@ -158,11 +159,11 @@ function unavailable(reply: FastifyReply) {
   return reply.code(503).send({
     error: 'Service Unavailable',
     statusCode: 503,
-    message: 'the source daemon is offline or does not support organization suggestions; content remains staged there'
+    message: 'the source daemon is offline or has paused organization-suggestion review; content remains staged there'
   })
 }
 
-async function suggestionSourceAvailable(
+async function suggestionReviewAvailable(
   deps: HttpDeps,
   sourceDaemonId: string | null,
   sourceAgentId: string
@@ -176,7 +177,8 @@ async function suggestionSourceAvailable(
   ])
   return (
     agent?.daemonId === sourceDaemonId &&
-    daemon?.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE) === true
+    daemon?.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE) === true &&
+    daemon.capabilities.features.includes(ORGANIZATION_SUGGESTION_REVIEW_FEATURE)
   )
 }
 
@@ -483,7 +485,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
               )
             ).entries()
           ].map(async ([key, row]) => {
-            availability.set(key, await suggestionSourceAvailable(deps, row.sourceDaemonId, row.sourceAgentId))
+            availability.set(key, await suggestionReviewAvailable(deps, row.sourceDaemonId, row.sourceAgentId))
           })
         )
         return rows.map((row) =>
@@ -525,7 +527,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'suggestion is already reviewed' })
         }
         if (!suggestion.sourceDaemonId) return unavailable(reply)
-        if (!(await suggestionSourceAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
+        if (!(await suggestionReviewAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
           return unavailable(reply)
         }
         try {
@@ -597,6 +599,10 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         }
 
         if (req.body.decision === 'reject') {
+          if (!suggestion.sourceDaemonId) return unavailable(reply)
+          if (!(await suggestionReviewAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
+            return unavailable(reply)
+          }
           const rejected = await repo.rejectSuggestion(suggestion.id, ctxOf(req).userId, req.body.reason)
           if (rejected.state !== 'rejected') {
             return reply.code(409).send({
@@ -605,19 +611,19 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
               message: 'suggestion was reviewed concurrently; refresh before retrying'
             })
           }
-          if (
-            suggestion.sourceDaemonId &&
-            (await suggestionSourceAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))
-          ) {
-            void deps.control
-              .organizationSuggestionReview(suggestion.sourceDaemonId, {
-                sourceAgentId: suggestion.sourceAgentId,
-                dreamId: suggestion.dreamId,
-                candidateId: suggestion.candidateId,
-                state: 'rejected'
-              })
-              .catch(() => undefined)
-          }
+          void deps.control
+            .organizationSuggestionReview(suggestion.sourceDaemonId, {
+              sourceAgentId: suggestion.sourceAgentId,
+              dreamId: suggestion.dreamId,
+              candidateId: suggestion.candidateId,
+              state: 'rejected'
+            })
+            .catch((err) =>
+              app.log.warn(
+                { err, suggestionId: suggestion.id, decision: 'rejected' },
+                'organization suggestion decision convergence deferred'
+              )
+            )
           const agent = await deps.repos.agent.get(AgentId(suggestion.sourceAgentId))
           return suggestionDto(rejected, agent?.displayName ?? agent?.name ?? null, false)
         }
@@ -631,7 +637,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         }
 
         if (!suggestion.sourceDaemonId) return unavailable(reply)
-        if (!(await suggestionSourceAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
+        if (!(await suggestionReviewAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
           return unavailable(reply)
         }
         let content
@@ -714,7 +720,12 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
             candidateId: suggestion.candidateId,
             state: 'accepted'
           })
-          .catch(() => undefined)
+          .catch((err) =>
+            app.log.warn(
+              { err, suggestionId: suggestion.id, decision: 'accepted' },
+              'organization suggestion decision convergence deferred'
+            )
+          )
         const agent = await deps.repos.agent.get(AgentId(suggestion.sourceAgentId))
         return suggestionDto(result.suggestion, agent?.displayName ?? agent?.name ?? null, false)
       }

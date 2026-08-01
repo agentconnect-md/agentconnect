@@ -12,6 +12,18 @@
 > Keywords: dreaming, memory consolidation, distillation, staged output,
 > transcript mining, skill mining, managed provider, harness-agnostic
 
+> **Production security hold (2026-08-01):** current Dream isolation cannot
+> guarantee that provider authentication is outside every path readable by the
+> model's nominally read-only tools. Production daemons therefore reject Dream execution before lookup, snapshot,
+> corpus construction, or job persistence and register no Dream schedules.
+> Historical job metadata remains listable/gettable and in-flight jobs remain
+> cancelable, but staged memory/skill/organization content cannot be read,
+> adopted, reviewed, dismissed, discarded, or swept. Re-enable these operations
+> only after credentials are outside every model-readable path and newly staged
+> bytes are cryptographically bound to the reviewed/adopted content. Injected
+> deterministic hosts remain available to tests; they are not a production
+> admission mechanism.
+
 ---
 
 ## 1. Background and Problem
@@ -125,8 +137,8 @@ export const MemoryDreamingPolicy = z
     /** Also mine reusable procedures into candidate skills (§7). Default false. */
     mineSkills: z.boolean().optional(),
     /** Adopt the memory store automatically on completion without content
-     *  review. Default true. Live-memory fence conflicts remain reviewable.
-     *  Never applies to skills (§7). */
+     *  review. Default false; true is an explicit opt-in. Live-memory fence
+     *  conflicts remain reviewable. Never applies to skills (§7). */
     autoAdopt: z.boolean().optional()
   })
   .strict()
@@ -142,10 +154,10 @@ export const BuiltInMemoryBinding = z
 ```
 
 With managed memory, an absent `dreaming` policy resolves to `{ enabled: true,
-schedule: '0 4 * * *', autoAdopt: true }`. The cron uses daemon-local time when
+schedule: '0 4 * * *', autoAdopt: false }`. The cron uses daemon-local time when
 no timezone is set. An explicit policy preserves an absent schedule as
-manual-only, while `autoAdopt: false` is the durable opt-out from automatic
-acceptance.
+manual-only, while absent `autoAdopt` also normalizes to `false`; `autoAdopt:
+true` is the durable opt-in to automatic acceptance.
 
 `memory-settings.ts` (console) grows a **Background memory** section rendered
 only when the Managed provider is selected, presenting the two mechanisms as

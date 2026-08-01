@@ -420,11 +420,19 @@ boundary. Prompt guidance must state that only text inside that boundary is memo
 content; agent/session metadata, workspace or git status, user messages, recalled
 context, and all other surrounding text are ordinary session context.
 
-For targeted `writeMemory` edits, `oldString` must come verbatim from that bounded file
-content or a current `readMemory` result. The injected index is only a start-of-session
-snapshot, so instructions and replace-failure feedback must direct the agent to
-`readMemory` after another write, when provenance is uncertain, or before retrying a
-failed replacement.
+The boundary body must encode one layer of XML character references: `&` as `&amp;`, `<`
+as `&lt;`, and `>` as `&gt;`. That reversible serialization keeps memory text readable
+while preventing an embedded boundary-like string from closing or opening the structural
+boundary. Prompt guidance must name the encoding and tell the agent to decode exactly one
+layer to reconstruct file text; all other characters and line breaks remain unchanged.
+The serialized boundary body, including any truncation notice, must remain within the
+standing index's byte budget and may not split an XML entity or UTF-8 code point.
+
+For targeted `writeMemory` edits, `oldString` must come from the decoded bounded file
+content or verbatim from a current `readMemory` result. The injected index is only a
+start-of-session snapshot, so instructions and replace-failure feedback must direct the
+agent to `readMemory` after another write, when provenance is uncertain, or before
+retrying a failed replacement.
 
 ## Memory backend selection
 
@@ -460,13 +468,14 @@ daemon admission remain fail-closed even when the console validates the draft fi
 ## Managed-memory dreaming defaults
 
 Managed memory defaults to dreaming once per day at 04:00 in the owning daemon's
-timezone and automatically accepting the completed store proposal. Users can turn
-dreaming off, remove its schedule to keep only manual runs, or turn automatic acceptance
-off independently.
+timezone and leaving every completed store proposal for review. Users can turn dreaming
+off, remove its schedule to keep only manual runs, or explicitly opt in to automatic
+acceptance independently.
 
-Automatic acceptance applies to every successfully completed proposal, regardless of
-whether the runtime carries the dream policy through a dedicated system-prompt channel.
-The console must warn that these results replace live memory without content review.
+When explicitly enabled, automatic acceptance applies to every successfully completed
+proposal, regardless of whether the runtime carries the dream policy through a dedicated
+system-prompt channel. The console must warn that these results replace live memory
+without content review.
 An adoption fence conflict or failed swap still leaves the completed result available
 for manual review instead of replacing newer live-memory changes.
 
