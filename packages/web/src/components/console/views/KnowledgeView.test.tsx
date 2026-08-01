@@ -6,9 +6,11 @@ import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setApiOrgId, type OrganizationKnowledgeDto, type OrganizationSuggestionDto } from '@/lib/api'
 
+const navigation = vi.hoisted(() => ({ search: '' }))
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn() }),
-  useSearchParams: () => new URLSearchParams()
+  useSearchParams: () => new URLSearchParams(navigation.search)
 }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
@@ -81,6 +83,7 @@ async function settleUntil(done: () => boolean): Promise<void> {
 }
 
 beforeEach(() => {
+  navigation.search = ''
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   host = document.createElement('div')
   document.body.append(host)
@@ -225,6 +228,31 @@ describe('organization knowledge surface', () => {
       expect.stringContaining('/knowledge?includeArchived=false')
     ])
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/managed-skills'))).toBe(false)
+  })
+
+  it('hosts external memory under the Memory tab without loading the knowledge library', async () => {
+    navigation.search = 'tab=memory'
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <KnowledgeView />
+        </SWRConfig>
+      )
+    })
+    await settleUntil(() => host.textContent?.includes('No external-memory connections yet') === true)
+
+    expect(host.textContent).toContain('External memory')
+    expect(host.textContent).not.toContain('Knowledge library')
+    const urls = fetchMock.mock.calls.map(([input]) => String(input))
+    expect(urls.some((url) => url.includes('/memory-plugin-installations'))).toBe(true)
+    expect(urls.some((url) => url.includes('/external-memory-connections'))).toBe(true)
+    expect(urls.some((url) => url.includes('/knowledge?'))).toBe(false)
   })
 
   it('loads and selects historical knowledge content, then refreshes an open entry for a new revision', async () => {
