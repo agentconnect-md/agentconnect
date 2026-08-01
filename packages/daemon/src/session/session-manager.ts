@@ -1,5 +1,5 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
-import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptRow } from '../store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
@@ -261,7 +261,7 @@ export class SessionManager {
       collaborationEnabled?: boolean
       /** Daemon-observed reply-source sidecar for context rows. Standalone/test
        * callers omit it and preserve the historical transcript-only behavior. */
-      quoteForContextEvent?: (event: TranscriptRow, replayed: readonly TranscriptRow[]) => string | undefined
+      quoteForContextEvent?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined
       /** Whether this runtime needs AgentConnect's model-authored title fallback.
        *  Native-title runtimes (for example Claude) leave this false. */
       usesSessionTitleTool?: (agent: Agent) => boolean

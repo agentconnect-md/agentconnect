@@ -19,6 +19,7 @@ import {
   type OrchestrationRow,
   type SessionRecord,
   type SubtaskRow,
+  type TranscriptEntry,
   type TranscriptMutation,
   type TranscriptRow,
   type StoredUsage
@@ -7824,7 +7825,7 @@ export class Daemon {
     return JSON.stringify([transcriptChannel, thread, ts])
   }
 
-  private observedQuoteBlock(event: TranscriptRow, replayed: readonly TranscriptRow[]): string | undefined {
+  private observedQuoteBlock(event: TranscriptEntry, replayed: readonly TranscriptEntry[]): string | undefined {
     const quoted = this.observedQuoteSidecars.get(this.observedQuoteKey(event.channel, event.thread, event.ts))
     return quoted ? quotedSourceBlock({ quoted }, { replayed }) : undefined
   }
