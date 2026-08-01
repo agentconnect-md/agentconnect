@@ -15,13 +15,13 @@
  * The owning agent MUST already be placed on a daemon (409 otherwise): the wire
  * delivery is daemon-scoped and there is no post-create placement hook to backfill.
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
-import type { AgentRecord, IntegrationRecord, IntegrationChannelRecord } from '../../persistence/ports.js'
+import type { AgentRecord, BotRecord, IntegrationRecord, IntegrationChannelRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
@@ -37,6 +37,7 @@ import {
   TelegramBotCheckBody,
   TelegramBotCheckDto,
   UpdateIntegrationChannelBody,
+  LeaveIntegrationConversationBody,
   IntegrationDto,
   IntegrationChannelDto,
   IntegrationListDto,
@@ -741,6 +742,52 @@ export function integrationRoutes(deps: HttpDeps) {
       }
     )
 
+    /**
+     * Shared admission for the per-channel routes: the integration must be in this
+     * org, its owning agent visible AND editable, and the row must exist. Replies on
+     * the failure paths and returns null, so a caller that gets a value is cleared.
+     *
+     * Derived visibility: a restricted agent the caller cannot see 404s (hiding the
+     * integration too); one they can see but not edit 403s. `channelId` is optional
+     * so a space-scoped action can share the same gate.
+     */
+    const admitChannelAction = async (
+      req: { params: { id: string; channelId?: string } },
+      reply: FastifyReply
+    ): Promise<{ integration: IntegrationRecord; agent: AgentRecord; bot: BotRecord } | null> => {
+      const integration = await deps.repos.integration.get(IntegrationId(req.params.id))
+      if (!integration || integration.orgId !== orgIdOf(req as never)) {
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
+        return null
+      }
+      const agent = await deps.repos.agent.get(integration.agentId)
+      if (!agent || !canView(agent, ctxOf(req as never))) {
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
+        return null
+      }
+      if (!canEdit(agent, ctxOf(req as never))) {
+        reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        return null
+      }
+      const bot = await deps.repos.bot.get(integration.botId)
+      if (!bot) {
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
+        return null
+      }
+      return { integration, agent, bot }
+    }
+
+    /** Re-derive routing after a channel row appears or disappears: an HTTP bot's
+     *  table lives on the relay, a classic bot's bindRules on its daemon. */
+    const republishChannels = async (
+      integration: IntegrationRecord,
+      bot: BotRecord,
+      agent: AgentRecord
+    ): Promise<void> => {
+      if (bot.transport === 'http') await deps.httpBot.syncRoutes(bot.id)
+      else if (agent.daemonId) await replicateUpsert(integration, agent.daemonId)
+    }
+
     // Per-channel trigger choice (@-mention vs any message). Persist, then push the
     // integration's recomputed bindRules to the owning daemon (integration/upsert,
     // best-effort — the reconcile roster converges an offline daemon later).
@@ -903,6 +950,151 @@ export function integrationRoutes(deps: HttpDeps) {
         } finally {
           release()
         }
+      }
+    )
+
+    /**
+     * Forget one conversation row. This is CLEANUP, not a platform action: it says
+     * "AgentConnect should stop listing this", which is the only thing an operator
+     * can do about a conversation the bot already left on a platform that cannot
+     * report its own departure (Telegram, Discord, Feishu — their reports can only
+     * ever grow). Sessions and transcripts are untouched.
+     *
+     * On an enumerating platform the row simply comes back on the next authoritative
+     * listing if the bot is in fact still there — which is the correct answer to
+     * "why did it reappear": it never left, and leaving is `…/leave` or a platform
+     * action, not this.
+     */
+    r.delete(
+      '/integrations/:id/channels/:channelId',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Forget a channel',
+          description:
+            'Remove a conversation row from AgentConnect without touching the platform. Intended for a conversation the bot has already left where the platform cannot report its own departure. The row returns on the next authoritative listing if the bot is still a member.',
+          operationId: 'deleteIntegrationChannel',
+          params: IdParam.extend({ channelId: z.string().min(1) }),
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const admitted = await admitChannelAction(req, reply)
+        if (!admitted) return
+        const { integration, agent, bot } = admitted
+        const release = deps.agentMutations.tryBeginMutation(agent.id)
+        if (!release) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'agent move is in progress; retry the removal' })
+        }
+        try {
+          // A shared bot's channel state is bot-scoped — ownership and trigger are
+          // replicated across every install — so forgetting it on one install alone
+          // would leave siblings listing it and let the compiler resurrect the row.
+          const installs = bot.transport === 'http' ? await deps.repos.integration.listForBot(bot.id) : [integration]
+          let removed = false
+          for (const install of installs) {
+            if (await deps.repos.integrationChannel.deleteChannel(install.id, req.params.channelId)) removed = true
+          }
+          if (!removed) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
+          }
+          await republishChannels(integration, bot, agent)
+          return reply.code(204).send(null)
+        } finally {
+          release()
+        }
+      }
+    )
+
+    /**
+     * Leave at the PLATFORM — the only route here that changes the outside world.
+     *
+     * `target` is explicit because the platforms do not agree on what a bot can
+     * withdraw from: Slack and Telegram leave one conversation, while a Discord bot
+     * has no per-channel membership at all and can only leave an entire server. The
+     * caller states which it means; the daemon refuses a mismatch rather than
+     * quietly doing the larger thing.
+     *
+     * A platform refusal — a missing scope, `last_member`, a lost right — comes back
+     * as 502 carrying the platform's own words, because the operator can usually act
+     * on them and a generic failure would hide that.
+     */
+    r.post(
+      '/integrations/:id/leave',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Leave a conversation',
+          description:
+            "Ask the owning daemon to withdraw the bot from a conversation (Slack, Telegram) or an entire server (Discord) at the platform, then forget the affected rows. Returns 502 with the platform's own message when the platform refuses.",
+          operationId: 'leaveIntegrationConversation',
+          params: IdParam,
+          body: LeaveIntegrationConversationBody,
+          response: { 204: z.null(), 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const admitted = await admitChannelAction(req, reply)
+        if (!admitted) return
+        const { integration, agent, bot } = admitted
+        const target = req.body.target
+        if (target.kind === 'space' && integration.platform !== 'discord') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'only Discord has a server to leave; leave the conversation instead'
+          })
+        }
+        if (target.kind === 'conversation' && integration.platform === 'discord') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'a Discord bot joins servers, not channels; leave the server instead'
+          })
+        }
+        // The daemon holding this integration owns provider egress for it in BOTH
+        // transports — a relay-managed bot still keeps send credentials — so the
+        // platform call belongs to the agent's own daemon either way.
+        if (!agent.daemonId) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'the agent is not placed on a daemon; it cannot reach the platform'
+          })
+        }
+        let verdict
+        try {
+          verdict = await deps.control.integrationLeave(agent.daemonId, { integrationId: integration.id, target })
+        } catch (err) {
+          return reply.code(502).send({
+            error: 'Bad Gateway',
+            statusCode: 502,
+            message: err instanceof NoConnection ? 'the daemon is offline' : (err as Error).message
+          })
+        }
+        if (!verdict.ok) {
+          return reply
+            .code(502)
+            .send({ error: 'Bad Gateway', statusCode: 502, message: verdict.error ?? 'the platform refused' })
+        }
+        // The daemon retires the affected rows itself (an authoritative re-list on
+        // Slack, an explicit retraction elsewhere). Forgetting them here too makes
+        // the console consistent the moment this returns, and is idempotent.
+        const installs = bot.transport === 'http' ? await deps.repos.integration.listForBot(bot.id) : [integration]
+        const rows = await deps.repos.integrationChannel.listForIntegration(integration.id)
+        const gone =
+          target.kind === 'space'
+            ? rows.filter((row) => row.spaceId === target.spaceId).map((row) => row.channelId)
+            : [target.channel]
+        for (const install of installs) {
+          for (const channelId of gone) await deps.repos.integrationChannel.deleteChannel(install.id, channelId)
+        }
+        await republishChannels(integration, bot, agent)
+        return reply.code(204).send(null)
       }
     )
 
