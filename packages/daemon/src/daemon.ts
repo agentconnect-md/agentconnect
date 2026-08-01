@@ -3271,11 +3271,17 @@ export class Daemon {
         const integrations = agent.integrations.filter((i) => i.platform === platform)
         if (integrations.length === 0) continue
         for (const integ of integrations) {
+          // A conversation the bot left is still all over session history, so the
+          // retracted set is subtracted from BOTH sources — the fresh observations and
+          // the cached rows carried forward — or the rebuild would resurrect it.
+          const retracted = this.store.retractedConversations(integ.id)
           const observed = this.collapseObserved(
-            this.store.observedChannels(agent.id, platform, this.transportScopeForIntegration(integ)),
+            this.store
+              .observedChannels(agent.id, platform, this.transportScopeForIntegration(integ))
+              .filter((c) => !retracted.has(c.id)),
             platform
           )
-          const prior = this.channelSnapshots.get(integ.id)?.channels ?? []
+          const prior = (this.channelSnapshots.get(integ.id)?.channels ?? []).filter((c) => !retracted.has(c.id))
           if (observed.length === 0 && prior.length === 0) continue
           const priorById = new Map(prior.map((c) => [c.id, c]))
           const observedIds = new Set(observed.map((c) => c.id))
@@ -3393,6 +3399,28 @@ export class Daemon {
   }
 
   /**
+   * A retracted conversation that is talking to us again has plainly been re-joined —
+   * a platform only delivers messages for a conversation the bot is actually in — so
+   * traffic lifts the suppression and the row comes back on the next refresh.
+   *
+   * Without this, "leave" would be permanent in the console even after someone
+   * re-invited the bot, and the operator would have no way to undo it from here.
+   */
+  private clearRetractionOnTraffic(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
+    if (msg.source !== 'user' || !srcIntegrationIds?.length) return
+    for (const integrationId of srcIntegrationIds) {
+      const retracted = this.store.retractedConversations(integrationId)
+      if (retracted.size === 0) continue
+      for (const channel of [msg.channel, msg.parentChannel]) {
+        if (channel && retracted.has(channel)) {
+          this.store.clearRetractedConversation(integrationId, channel)
+          this.log.debug(`channels: ${channel} is active again — retraction cleared for ${integrationId}`)
+        }
+      }
+    }
+  }
+
+  /**
    * Retract conversations from this integration's reported set — the counterpart to
    * discovery, for platforms whose snapshots can only ever grow. Absence from a
    * non-authoritative report means nothing, so the ids ride an explicit `removed`.
@@ -3400,6 +3428,11 @@ export class Daemon {
   private retractChannels(integrationId: string, channelIds: readonly string[]): void {
     if (channelIds.length === 0) return
     const gone = new Set(channelIds)
+    // Durably, before touching the snapshot. The observed set of a non-enumerating
+    // platform is rebuilt from SESSION HISTORY, which knows nothing about leaving, so
+    // without this marker the very next refresh restores the row and undoes the
+    // departure. `refreshObservedChannels` reads it back.
+    this.store.markRetractedConversations(integrationId, [...gone], this.clock.now())
     const cached = this.channelSnapshots.get(integrationId)
     const channels = (cached?.channels ?? []).filter((c) => !gone.has(c.id))
     this.channelSnapshots.set(integrationId, { channels, authoritative: cached?.authoritative ?? false })
@@ -4735,6 +4768,7 @@ export class Daemon {
       this.log.debug(`routing: dropping AgentConnect bot message ${msg.msgId}`)
       return
     }
+    this.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
     // A mention in a watched Slack channel can arrive via both `message.*` and
     // `app_mention`; both share channel:ts, so dedup the double-fire from ONE bot
@@ -14995,6 +15029,7 @@ export class Daemon {
       },
       applyIntegrationRemove: (integrationId) => this.cpIntegrations?.remove(integrationId),
       applyIntegrationLeave: (leave) => this.leaveConversation(leave),
+      applyIntegrationForget: (forget) => this.retractChannels(forget.integrationId, forget.channels),
       applyMcpServerUpsert: (spec) => {
         if (spec.name === RESERVED_MCP_SERVER_NAME) {
           this.log.warn(`mcp: ignoring CP push for reserved server name "${spec.name}"`)

@@ -18,6 +18,7 @@ import type {
   AgentDetach,
   AgentActivate,
   IntegrationSpec,
+  IntegrationForget,
   IntegrationLeave,
   IntegrationLeaveOk,
   McpServerSpec,
@@ -61,6 +62,9 @@ export interface ConfigApply {
    *  REQ). Resolves with the platform's verdict — a refusal is `ok:false`, not a
    *  rejection — and reconciles the channel set as a side effect. */
   applyIntegrationLeave(leave: IntegrationLeave): Promise<IntegrationLeaveOk>
+  /** Stop reporting conversations an operator forgot (integration/forget EVT). The
+   *  platform is untouched; this only suppresses them in the console's channel list. */
+  applyIntegrationForget(forget: IntegrationForget): void
   /** Add or replace a CP-pushed MCP server def in memory (mcpserver/upsert EVT). */
   applyMcpServerUpsert(spec: McpServerSpec): void
   /** Drop a CP-pushed MCP server def by name (mcpserver/remove EVT). */

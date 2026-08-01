@@ -32,6 +32,7 @@ import {
   IntegrationUpsert,
   IntegrationRemove,
   IntegrationChannels,
+  IntegrationForget,
   IntegrationLeave,
   IntegrationLeaveOk
 } from './frames/integration.js'
@@ -206,6 +207,7 @@ export const FRAME_SCHEMAS = {
   'integration/upsert': IntegrationUpsert,
   'integration/remove': IntegrationRemove,
   'integration/channels': IntegrationChannels,
+  'integration/forget': IntegrationForget,
   'integration/leave': IntegrationLeave,
   'integration/leave/ok': IntegrationLeaveOk,
   // ── MCP provider registry (CP-owned defs pushed to daemons; grant-key-bearing — never log) ──
@@ -416,6 +418,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('integration/upsert', FRAME_SCHEMAS['integration/upsert']),
   frame('integration/remove', FRAME_SCHEMAS['integration/remove']),
   frame('integration/channels', FRAME_SCHEMAS['integration/channels']),
+  frame('integration/forget', FRAME_SCHEMAS['integration/forget']),
   frame('integration/leave', FRAME_SCHEMAS['integration/leave']),
   frame('integration/leave/ok', FRAME_SCHEMAS['integration/leave/ok']),
   frame('mcpserver/upsert', FRAME_SCHEMAS['mcpserver/upsert']),

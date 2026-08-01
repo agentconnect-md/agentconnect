@@ -47,6 +47,7 @@ class SpyControl {
   readonly upserts: Array<{ daemonId: string; u: IntegrationUpsert }> = []
   readonly collaboration: Array<{ daemonId: string; snapshot: CollabRoutesSnapshot }> = []
   readonly leaves: Array<{ daemonId: string; l: unknown }> = []
+  readonly forgets: Array<{ daemonId: string; f: { integrationId: string; channels: string[] } }> = []
   /** What the fake daemon answers the next leave with — a platform refusal by default
    *  would be surprising, so it succeeds unless a test says otherwise. */
   leaveVerdict: { ok: boolean; error?: string } = { ok: true }
@@ -56,6 +57,9 @@ class SpyControl {
   async integrationLeave(daemonId: string, l: unknown): Promise<{ ok: boolean; error?: string }> {
     this.leaves.push({ daemonId, l })
     return this.leaveVerdict
+  }
+  async integrationForget(daemonId: string, f: { integrationId: string; channels: string[] }): Promise<void> {
+    this.forgets.push({ daemonId, f })
   }
   async integrationRemove(): Promise<void> {}
   async collaborationRoutes(daemonId: string, snapshot: CollabRoutesSnapshot): Promise<void> {
@@ -1020,7 +1024,10 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     expect(res.statusCode).toBe(204)
     expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C2'])
     expect(spy.leaves).toEqual([]) // the bot was never touched on Slack
-    // The daemon still gets the recomputed spec, or its routing would keep the row.
+    // …but the daemon IS told to stop reporting it. Without that its next observed
+    // refresh rebuilds the row from session history and undoes this silently.
+    expect(spy.forgets).toEqual([{ daemonId: DAEMON, f: { integrationId: id, channels: ['C1'] } }])
+    // It also gets the recomputed spec, or its routing would keep the row.
     expect(spy.upserts.at(-1)!.daemonId).toBe(DAEMON)
   })
 
@@ -1075,6 +1082,44 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     expect((res.json() as { message: string }).message).toBe('missing_scope')
     // Still a member as far as anyone knows, so the row stays.
     expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C1'])
+  })
+
+  // A cold move re-places the agent and rebuilds its channel state on the new daemon.
+  // Dispatching the platform call to the pre-move daemon and then deleting rows the
+  // move has already rewritten would leave the new daemon believing it is still in a
+  // channel the bot has actually left.
+  it('refuses to leave while an agent move holds the lease, and never reaches the platform', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    const mutations = new AgentMutationGate()
+    running = buildHttpApp(
+      prisma,
+      undefined,
+      undefined,
+      spy as unknown as ControlSender,
+      {
+        agentMutations: mutations
+      } as never
+    )
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    const stored = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    const releaseMove = mutations.tryBeginMove(stored.agentId)!
+    try {
+      const res = await running.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations/${id}/leave`,
+        payload: { target: { kind: 'conversation', channel: 'C1' } }
+      })
+      expect(res.statusCode).toBe(409)
+      expect(spy.leaves).toEqual([]) // the platform was never told anything
+      // …and the row is untouched, so the two sides cannot disagree.
+      expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C1'])
+    } finally {
+      releaseMove()
+    }
   })
 
   it('refuses a server-scoped leave on a platform that has no server', async () => {

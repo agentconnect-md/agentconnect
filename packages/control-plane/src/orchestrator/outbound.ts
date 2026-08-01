@@ -22,6 +22,7 @@ import type {
   CronRunNow,
   IntegrationUpsert,
   IntegrationRemove,
+  IntegrationForget,
   IntegrationLeave,
   IntegrationLeaveOk,
   McpServerSpec,
@@ -354,6 +355,14 @@ export class ControlSender {
   async integrationRemove(daemonId: string, r: IntegrationRemove): Promise<void> {
     const c = this.must(daemonId)
     c.conn.send('integration/remove', r, { epoch: c.sessionEpoch })
+  }
+
+  /** Tell a daemon to stop REPORTING conversations an operator forgot (EVT). Without
+   *  it the daemon's next observed refresh pushes them straight back: that set is
+   *  derived from session history, which knows nothing about a row being removed. */
+  async integrationForget(daemonId: string, f: IntegrationForget): Promise<void> {
+    const c = this.must(daemonId)
+    c.conn.send('integration/forget', f, { epoch: c.sessionEpoch })
   }
 
   /** Ask a daemon to withdraw the bot from a conversation/space at the PLATFORM

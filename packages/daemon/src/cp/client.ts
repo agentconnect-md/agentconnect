@@ -864,6 +864,11 @@ export class CpClient {
       case 'integration/remove':
         this.deps.configApply.applyIntegrationRemove((frame.payload as { integrationId: string }).integrationId)
         return // EVT — no reply
+      case 'integration/forget':
+        this.deps.configApply.applyIntegrationForget(
+          frame.payload as Parameters<ConfigApply['applyIntegrationForget']>[0]
+        )
+        return // EVT — a miss re-reports the conversation; the operator can forget again
       case 'integration/leave': {
         // REQ → reply: this one changes the OUTSIDE world, so the operator is told
         // what the platform said rather than what we hoped. A refusal is a normal

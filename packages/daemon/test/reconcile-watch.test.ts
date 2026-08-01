@@ -960,6 +960,58 @@ describe('Daemon.leaveConversation', () => {
     await daemon.stop()
   })
 
+  // The bug this suppression exists for: sessions outlive the departure, and the
+  // observed set is rebuilt FROM them, so without a durable marker the next refresh
+  // silently puts the conversation back and undoes the leave.
+  it('survives the next observed refresh — session history must not resurrect it', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    telegramAgent(daemon)
+    ;(daemon as any).channelSnapshots.set('tg-int', {
+      channels: [{ id: '-100123', name: 'Team Chat' }],
+      authoritative: false
+    })
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(TelegramConnection.prototype), { leaveChannel: vi.fn().mockResolvedValue(undefined) })
+
+    await (daemon as any).leaveConversation({
+      integrationId: 'tg-int',
+      target: { kind: 'conversation', channel: '-100123' }
+    })
+    // The chat is still all over session history — nothing deletes sessions on leave.
+    vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([{ id: '-100123', name: 'Team Chat' }])
+    emit.mockClear()
+    ;(daemon as any).refreshObservedChannels()
+
+    expect((daemon as any).channelSnapshots.get('tg-int').channels).toEqual([])
+    expect(emit.mock.calls.flatMap((c: unknown[]) => (c[0] as { channels: unknown[] }).channels)).toEqual([])
+  })
+
+  it('lets a re-invited conversation come back once it actually talks to us again', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) }
+    telegramAgent(daemon)
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(TelegramConnection.prototype), { leaveChannel: vi.fn().mockResolvedValue(undefined) })
+    await (daemon as any).leaveConversation({
+      integrationId: 'tg-int',
+      target: { kind: 'conversation', channel: '-100123' }
+    })
+    expect((daemon as any).store.retractedConversations('tg-int').has('-100123')).toBe(true)
+
+    // A platform only delivers messages for a conversation the bot is IN, so traffic
+    // is proof it was re-invited — otherwise "leave" would be irreversible from here.
+    ;(daemon as any).clearRetractionOnTraffic(
+      { source: 'user', channel: '-100123', sender: { id: 'U1', isBot: false } },
+      ['tg-int']
+    )
+
+    expect((daemon as any).store.retractedConversations('tg-int').has('-100123')).toBe(false)
+  })
+
   it('refuses a conversation-scoped leave on Discord, where a bot can only leave a server', async () => {
     const { daemon } = makeStubDaemon(root1())
     await daemon.start()

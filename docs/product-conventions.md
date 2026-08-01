@@ -159,6 +159,15 @@ authoritative listing if the bot is in fact still a member — which is the corr
 answer to "why did it come back", not a bug: it never left, and Forget never claimed
 to make it.
 
+Ending a listing must OUTLAST the reporting that produced it. On a platform that cannot
+enumerate, the conversation list is derived from session history, and leaving a
+conversation does not erase the sessions held in it — so both Leave and Forget are
+remembered durably at the edge, or the next refresh would rebuild the row from that
+history and quietly undo the operator. The suppression lifts when the conversation
+sends a message again: a platform only delivers those for a conversation the bot is
+actually in, so traffic is proof it was re-invited, and that is how re-inviting undoes
+a Leave without anyone having to find a button for it.
+
 What Leave can mean differs by platform, and the difference is real rather than
 cosmetic. Slack and Telegram can withdraw from one conversation. A Discord bot has no
 per-channel membership at all — it joins a server and sees that server's channels
