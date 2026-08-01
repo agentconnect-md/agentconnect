@@ -33,15 +33,15 @@ export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
  *  (`mpim:*`) and agent-initiated DMs (`im:write`) alongside the channel and thread
  *  surfaces the adapter reads today.
  *
- *  `channels:manage` / `groups:write` are the only WRITE scopes here: they exist so
- *  `conversations.leave` can withdraw the bot from a channel on the operator's
- *  instruction, which is otherwise impossible outside Slack itself. Keep in lock-step
- *  with the control plane's copy. */
+ *  Deliberately NO channel-write scope: `conversations.leave` would need
+ *  `channels:manage`, which also grants create/archive/kick/rename and would force
+ *  every installed workspace to re-authorize. Slack re-lists membership
+ *  authoritatively, so removing the bot in Slack clears the console row by itself.
+ *  Keep in lock-step with the control plane's copy. */
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
   'channels:history',
-  'channels:manage',
   'channels:read',
   'commands',
   'chat:write',
@@ -49,7 +49,6 @@ export const SLACK_BOT_SCOPES = [
   'files:write',
   'groups:history',
   'groups:read',
-  'groups:write',
   'im:history',
   'im:write',
   'mpim:history',

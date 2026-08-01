@@ -169,12 +169,19 @@ actually in, so traffic is proof it was re-invited, and that is how re-inviting 
 a Leave without anyone having to find a button for it.
 
 What Leave can mean differs by platform, and the difference is real rather than
-cosmetic. Slack and Telegram can withdraw from one conversation. A Discord bot has no
+cosmetic. Telegram can withdraw from one conversation. A Discord bot has no
 per-channel membership at all — it joins a server and sees that server's channels
 through permissions — so the smallest thing it can leave is the whole server, taking
 every channel of it along. That action therefore belongs to the server, is confirmed
 as such, and is never offered on a channel row as though it were smaller than it is.
 Where a platform cannot leave at all, the Console offers only Off and Forget.
+
+Slack is deliberately in that last group even though its API could leave a channel.
+Doing so requires a scope that also grants creating, archiving, renaming and kicking,
+and adding it would force every installed workspace to re-authorize — a steep price on
+the one platform where leaving from the Console buys least, since Slack reports its own
+membership authoritatively and removing the bot there clears the row unaided. The
+Console says where to do it instead of offering a button it had to buy that way.
 
 A platform's refusal is shown as the platform worded it. A missing scope, a
 last-member channel, or a lost right is usually something the operator can act on, and

@@ -1067,9 +1067,9 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
-    const id = await install(running)
+    const id = await installTelegram(running)
     const channels = new PgIntegrationChannelRepo(prisma)
-    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }], undefined, undefined, false)
 
     const res = await running.app.inject({
       method: 'POST',

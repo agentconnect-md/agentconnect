@@ -185,15 +185,23 @@ function groupHeader(label: string, padX: number, action?: ReactNode) {
 type MemberAgent = { id: string; label: string; runtime: string; icon?: AgentIcon | null }
 
 /**
- * Can this platform withdraw a bot from a single conversation?
+ * Can this platform withdraw a bot from a single conversation, here?
  *
- * Slack (`conversations.leave`) and Telegram (`leaveChat`) can. Discord cannot at
- * all — a bot joins a SERVER and sees its channels through permissions, so the
- * smallest thing it can leave is the whole server, offered per-server instead.
- * Feishu has no bot self-leave in the SDK, so it gets the same treatment as
- * Discord: nothing here, and Off remains the way to silence it.
+ * Only Telegram (`leaveChat`), which needs no extra permission.
+ *
+ * Slack CAN do it technically, but `conversations.leave` requires `channels:manage`
+ * — a scope that also grants create, archive, kick and rename, and whose addition
+ * would force every installed workspace to re-authorize. That is a steep price for
+ * the one platform where it buys least: Slack reports its membership
+ * authoritatively, so removing the bot in Slack makes the row disappear on its own,
+ * and Off already covers "stop responding here". A deployment that grants the scope
+ * on its own app can still call the leave API directly.
+ *
+ * Discord cannot at all — a bot joins a SERVER and sees its channels through
+ * permissions, so the smallest thing it can leave is the whole server, offered
+ * per-server instead. Feishu has no bot self-leave in the SDK.
  */
-const canLeaveConversation = (platform?: string): boolean => platform === 'slack' || platform === 'telegram'
+const canLeaveConversation = (platform?: string): boolean => platform === 'telegram'
 
 /** What "leave" is called where — the console should use the platform's own word for
  *  the room, not a generic one the operator has to translate. */
@@ -319,7 +327,7 @@ function RowActions({
                 item(
                   `Leave ${noun}`,
                   'log-out',
-                  `Removes the bot from this ${noun} in ${platform === 'telegram' ? 'Telegram' : 'Slack'}. Invite it again to undo.`,
+                  `Removes the bot from this ${noun} on the platform. Add it again to undo.`,
                   () =>
                     run(async () => {
                       if (
@@ -714,13 +722,14 @@ export function IntegrationChannelList({
             : gated
               ? 'Channels appear here when the bot is invited; direct messages appear when someone writes to the bot.'
               : 'Channels appear here when the bot is invited to them. Trigger is set per channel.'}{' '}
-          {/* Off silences without leaving; the row menu covers the other two things an
-              operator wants here, which used to be possible only on the platform. What
-              the menu can offer differs by platform, so promise only what is there —
-              a Discord bot has no channel to leave, just the server. */}
+          {/* Off silences without leaving; the row menu covers the rest. What the menu
+              can offer differs by platform, so promise only what is there — and where
+              leaving is not offered, say where it IS done rather than leaving the
+              operator to wonder. */}
           Set a channel to off to silence the agent there, or use a row&rsquo;s menu to{' '}
           {canLeaveConversation(platform) ? 'leave it or stop listing it' : 'stop listing it'}.
           {platform === 'discord' && ' A Discord bot joins servers, not channels, so it can only leave a whole server.'}
+          {platform === 'slack' && ' To remove the bot from a channel, do it in Slack — this list updates by itself.'}
         </span>
       </div>
     </>

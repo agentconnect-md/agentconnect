@@ -23,20 +23,20 @@ import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
  * DMs (`mpim:*`) and agent-initiated DMs (`im:write`) alongside the channel and
  * thread surfaces the adapter reads today.
  *
- * `channels:manage` and `groups:write` are the exception to "everything here is a
- * read": they exist solely so `conversations.leave` can withdraw the bot from a
- * channel on the operator's instruction. They were added deliberately, knowing the
- * cost above — leaving a channel had otherwise been impossible from the console at
- * all, only from Slack. They grant no ability to post or read anything new; a
- * deployment that would rather not hold them can drop both, and the console's
- * Leave action then fails with Slack's own `missing_scope`, which it surfaces
- * verbatim.
+ * Deliberately NO channel-write scope. `conversations.leave` would need
+ * `channels:manage` (or `groups:write` for private channels), and Slack offers no
+ * leave-only scope — `channels:manage` also grants create, archive, kick, rename and
+ * unarchive, none of which this app uses. Taking four unused powers AND forcing every
+ * installed workspace to re-authorize buys very little here: Slack reports its own
+ * membership authoritatively, so removing the bot in Slack makes the console row
+ * disappear by itself. The console offers Off and Forget for Slack instead, and
+ * leaving is done in Slack. A deployment that grants these scopes on its own app can
+ * still call the leave API; only the manifest and the console affordance omit it.
  */
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
   'channels:history',
-  'channels:manage',
   'channels:read',
   'commands',
   'chat:write',
@@ -44,7 +44,6 @@ export const SLACK_BOT_SCOPES = [
   'files:write',
   'groups:history',
   'groups:read',
-  'groups:write',
   'im:history',
   'im:write',
   'mpim:history',
