@@ -296,7 +296,7 @@ The daemon adds a remote MCP server only to the entitled ACP session:
 ```json
 {
   "name": "agentconnect-admin",
-  "url": "https://control.example.com/api/v1/mcp",
+  "url": "https://control.example.com/v1/mcp",
   "headers": {
     "Authorization": "Bearer acmcp_REDACTED"
   }
@@ -306,6 +306,11 @@ The daemon adds a remote MCP server only to the entitled ACP session:
 Requirements:
 
 - The descriptor is structured ACP/runtime configuration, not prompt text.
+- `url` is the CP's **canonical public MCP resource URL** — the same one the endpoint
+  advertises as RFC 9728 `resource` (a dedicated MCP origin where one is deployed,
+  else `<public base>/v1/mcp`). The adapter dials it directly, with no discovery step
+  and no fallback, so an internal-only mount path is a silent total failure of the
+  administration surface.
 - The runtime must handle transport headers as standard MCP configuration rather
   than model input or tool arguments. AgentConnect does not add a private ACP
   extension to attest this behavior.
@@ -347,6 +352,14 @@ After constant-time token verification, the CP:
 10. only after authenticated browser approval atomically claims that operation,
     re-authorizes it, and calls the existing REST/service surface in process through
     `InternalInvocationAuth`.
+
+Steps 4-10 govern `tools/list` and `tools/call`. The mandatory MCP transport
+handshake — `initialize`, `notifications/initialized`, and `ping` — is admitted after
+steps 1-3 and answered inside the MCP handler: it carries no tool, no organization
+binding, and no nested REST call. Admitting it is load-bearing, not a relaxation: a
+client cannot issue any tool request before initializing, so denying the handshake
+denies the whole server, and the session loses `agentconnect-admin` entirely. Every
+other JSON-RPC method stays denied.
 
 Nested REST calls receive an already resolved internal principal. The raw grant is
 not replayed as REST Bearer authentication and cannot authenticate an external REST

@@ -246,7 +246,7 @@ describe('delegated webchat MCP operations', () => {
           : undefined
     })
     opened.push(app)
-    const remoteRpc = (id: number, name: string, args: Record<string, unknown>) =>
+    const remoteMethod = (payload: Record<string, unknown>) =>
       app.app.inject({
         method: 'POST',
         url: MCP_URL,
@@ -255,10 +255,12 @@ describe('delegated webchat MCP operations', () => {
           accept: 'application/json, text/event-stream',
           'content-type': 'application/json'
         },
-        payload: { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }
+        payload: { jsonrpc: '2.0', ...payload }
       })
+    const remoteRpc = (id: number, name: string, args: Record<string, unknown>) =>
+      remoteMethod({ id, method: 'tools/call', params: { name, arguments: args } })
     const decisionPath = `/api/v1/orgs/${DEFAULT_ORG_ID}/agents/${hostAgentId}/webchat/${conversationId}/mcp-operations`
-    return { app, daemonId, hostAgentId, conversationId, remoteRpc, decisionPath }
+    return { app, daemonId, hostAgentId, conversationId, remoteRpc, remoteMethod, decisionPath, credential }
   }
 
   /** Submit a delegated write and return its pending operationId. */
@@ -277,6 +279,54 @@ describe('delegated webchat MCP operations', () => {
     expect(pending.status).toBe('awaiting_confirmation')
     return pending.operationId
   }
+
+  it('completes the mandatory MCP handshake before any tool is reachable', async () => {
+    const { remoteMethod } = await delegatedFixture()
+
+    // An MCP client CANNOT reach tools/* without initializing first. Denying the
+    // handshake denies the whole server: the adapter drops `agentconnect-admin` and
+    // the session shows no administration tools at all.
+    const init = await remoteMethod({
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'adapter', version: '0.0.0' } }
+    })
+    expect(init.statusCode).toBe(200)
+    const initialized = mcpMessage(init).result as {
+      serverInfo?: { name?: string }
+      capabilities?: { tools?: unknown }
+    }
+    expect(initialized.serverInfo?.name).toBe('agentconnect')
+    expect(initialized.capabilities?.tools).toBeDefined()
+
+    // The notification and keepalive complete the transport contract…
+    expect((await remoteMethod({ method: 'notifications/initialized' })).statusCode).toBeLessThan(300)
+    expect((await remoteMethod({ id: 2, method: 'ping' })).statusCode).toBe(200)
+
+    // …and the handshake grants nothing beyond it: the catalog still comes from the
+    // authorized invocation path, and an off-catalog method is still refused.
+    const listed = await remoteMethod({ id: 3, method: 'tools/list' })
+    expect(listed.statusCode).toBe(200)
+    expect((mcpMessage(listed).result as { tools: Array<{ name: string }> }).tools.length).toBeGreaterThan(0)
+
+    const off = await remoteMethod({ id: 4, method: 'resources/list' })
+    expect(off.statusCode).toBe(401)
+    expect(off.headers['www-authenticate']).toBeUndefined()
+  })
+
+  it('refuses the handshake once the grant is revoked — no anonymous transport', async () => {
+    const { remoteMethod, credential } = await delegatedFixture()
+    await prisma.webchatMcpAccessGrant.updateMany({
+      where: { tokenHash: credential.tokenHash },
+      data: { revokedAt: new Date(), status: 'revoked' }
+    })
+    const init = await remoteMethod({
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'adapter', version: '0.0.0' } }
+    })
+    expect(init.statusCode).toBe(401)
+  })
 
   it('executes reads directly but holds writes until the conversation owner approves', async () => {
     const fixture = await delegatedFixture()

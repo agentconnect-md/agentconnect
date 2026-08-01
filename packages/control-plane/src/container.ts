@@ -150,6 +150,7 @@ import { createReadiness, type Readiness } from './http/readiness.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
+import { webchatMcpDescriptorUrl } from './http/oauth/base.js'
 import { defaultWebchatMcpMetrics } from './observability/webchat-mcp.js'
 import { pingDb } from './persistence/prisma.js'
 import { runWithSharedTx, withSharedTxRouting } from './persistence/ambient-tx.js'
@@ -423,7 +424,9 @@ export function buildContainer(
     daemons: connReg,
     authorities: repos.webchatMcpDelegation,
     grants: repos.webchatMcpAccessGrant,
-    mcpUrl: new URL('/api/v1/mcp', config.PUBLIC_CP_URL ?? 'http://localhost:8080').toString()
+    // The daemon installs this verbatim into the adapter's `agentconnect-admin`
+    // descriptor: the canonical PUBLIC resource URL, never the internal `/api/v1` mount.
+    mcpUrl: webchatMcpDescriptorUrl(config)
   })
   const remoteGrantAuth = new RemoteGrantAuthenticator({
     clock,

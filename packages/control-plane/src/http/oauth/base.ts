@@ -53,6 +53,16 @@ export function mcpResourceUrl(base: string, config: McpUrlConfig): string {
   return dedicated ? dedicated : `${base}${MCP_PUBLIC_PATH}`
 }
 
+/** The MCP endpoint URL handed to a daemon for a session-scoped `agentconnect-admin`
+ *  descriptor. The adapter dials it straight from the edge with no discovery step, so
+ *  it must be the same canonical public resource `mcpResourceUrl` advertises — the
+ *  internal `/api/v1/mcp` mount is not necessarily exposed (a two-origin deploy 404s
+ *  it), and a descriptor pointing there costs the session its whole administration
+ *  server with no user-visible error. */
+export function webchatMcpDescriptorUrl(config: Pick<HttpServerConfig, 'PUBLIC_CP_URL' | 'PUBLIC_MCP_URL'>): string {
+  return mcpResourceUrl((config.PUBLIC_CP_URL ?? 'http://localhost:8080').replace(/\/+$/, ''), config)
+}
+
 /** The origin the embedded AS lives on. The AS exists solely for MCP browser login
  *  (§7), so it rides the dedicated MCP origin when one is configured — the CP's own
  *  public origin (the api host) then serves NO OAuth at all. Falls back to the CP

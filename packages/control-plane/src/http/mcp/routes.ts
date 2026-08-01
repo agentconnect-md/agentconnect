@@ -210,6 +210,9 @@ export function mcpRoutes(deps: HttpDeps) {
       const authorization = authorizationValues[0]
       const remoteGrant = isRemoteGrant(authorization) ? bearerToken(authorization) : null
       let invocationContext: InvocationContext | undefined
+      // A grant-authenticated transport handshake: authorized, but bound to no org and
+      // reaching no tool (see HANDSHAKE_METHODS).
+      let handshakeOnly = false
 
       if (remoteGrant) {
         const claim = await deps.remoteGrantAuth.authenticate({
@@ -218,14 +221,15 @@ export function mcpRoutes(deps: HttpDeps) {
           parseMetadata: () => invocationMetadata(rawBody)
         })
         if (claim.kind === 'denied') return sendRemoteGrantDenied(reply)
-        invocationContext = claim.context
+        if (claim.kind === 'handshake') handshakeOnly = true
+        else invocationContext = claim.context
       }
 
       // Credential = a personal API key or an OAuth access token. `humanAuth` resolved it
       // (req.apiKeyOrgId set) or admitted the caller some other way (devAuth / OIDC ⇒ no
       // key org) — only the key path may proceed: the key's org binding pins this MCP
       // connection to ONE org.
-      if (!invocationContext && !req.apiKeyOrgId) {
+      if (!invocationContext && !handshakeOnly && !req.apiKeyOrgId) {
         return reply
           .header('www-authenticate', mcpAuthenticateChallenge(publicBaseUrl(req, deps.config), deps.config))
           .code(401)
@@ -245,6 +249,62 @@ export function mcpRoutes(deps: HttpDeps) {
           error: { code: -32600, message: 'JSON-RPC batch requests are not supported' },
           id: null
         })
+      }
+
+      // v2 web-standard handler: build a Fetch Request from the raw body + headers,
+      // let the SDK dispatch it, and write the Fetch Response back to Fastify. No
+      // hijack / Express — just this local adapter, so app.inject still works.
+      const headers = new Headers()
+      for (const [k, v] of Object.entries(req.headers)) {
+        // A grant is a daemon-held credential the MCP layer already consumed; it never
+        // travels further, on the handshake path either.
+        if (remoteGrant && k === 'authorization') continue
+        if (typeof v === 'string') headers.set(k, v)
+        else if (Array.isArray(v)) headers.set(k, v.join(', '))
+      }
+      const host = typeof req.headers.host === 'string' ? req.headers.host : 'localhost'
+      const request = new Request(`http://${host}${req.url}`, {
+        method: 'POST',
+        headers,
+        body: rawBody.byteLength > 0 ? rawBody : undefined
+      })
+
+      const runHandler = async (server: Server): Promise<McpWireResponse> => {
+        try {
+          const res = await createMcpHandler(() => server).fetch(request, {})
+          return {
+            statusCode: res.status,
+            headers: res.headers,
+            bytes: res.body ? Buffer.from(await res.arrayBuffer()) : Buffer.alloc(0)
+          }
+        } catch (err) {
+          req.log.error({ err }, 'mcp: transport error')
+          return {
+            statusCode: 500,
+            headers: new Headers({ 'content-type': 'application/json; charset=utf-8' }),
+            bytes: Buffer.from(
+              JSON.stringify({ jsonrpc: '2.0', error: { code: -32603, message: 'internal server error' }, id: null })
+            )
+          }
+        }
+      }
+
+      const sendWireResponse = (wire: McpWireResponse) => {
+        reply.code(wire.statusCode)
+        wire.headers.forEach((value, key) => {
+          if (key !== 'content-length') void reply.header(key, value)
+        })
+        return reply.send(wire.bytes)
+      }
+
+      // The handshake is answered by the SDK itself, off a server carrying no tool
+      // handlers and no org context — it advertises the same identity and tool
+      // capability, so the client proceeds to `tools/list`, which then runs the full
+      // invocation path below.
+      if (handshakeOnly) {
+        return sendWireResponse(
+          await runHandler(new Server(serverInfo(deps.config.PUBLIC_WEB_URL), { capabilities: { tools: {} } }))
+        )
       }
 
       const orgId = invocationContext?.orgId ?? req.apiKeyOrgId!
@@ -487,51 +547,7 @@ export function mcpRoutes(deps: HttpDeps) {
         return { content: [{ type: 'text' as const, text: result.body || `OK (HTTP ${result.statusCode})` }] }
       })
 
-      // v2 web-standard handler: build a Fetch Request from the raw body + headers,
-      // let the SDK dispatch it, and write the Fetch Response back to Fastify. No
-      // hijack / Express — just this local adapter, so app.inject still works.
-      const handler = createMcpHandler(() => server)
-      const headers = new Headers()
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (invocationContext && k === 'authorization') continue
-        if (typeof v === 'string') headers.set(k, v)
-        else if (Array.isArray(v)) headers.set(k, v.join(', '))
-      }
-      const host = typeof req.headers.host === 'string' ? req.headers.host : 'localhost'
-      const request = new Request(`http://${host}${req.url}`, {
-        method: 'POST',
-        headers,
-        body: rawBody.byteLength > 0 ? rawBody : undefined
-      })
-
-      const dispatch = async (): Promise<McpWireResponse> => {
-        try {
-          const res = await handler.fetch(request, {})
-          return {
-            statusCode: res.status,
-            headers: res.headers,
-            bytes: res.body ? Buffer.from(await res.arrayBuffer()) : Buffer.alloc(0)
-          }
-        } catch (err) {
-          req.log.error({ err }, 'mcp: transport error')
-          return {
-            statusCode: 500,
-            headers: new Headers({ 'content-type': 'application/json; charset=utf-8' }),
-            bytes: Buffer.from(
-              JSON.stringify({ jsonrpc: '2.0', error: { code: -32603, message: 'internal server error' }, id: null })
-            )
-          }
-        }
-      }
-
-      const sendWireResponse = (wire: McpWireResponse) => {
-        reply.code(wire.statusCode)
-        wire.headers.forEach((value, key) => {
-          if (key !== 'content-length') void reply.header(key, value)
-        })
-        return reply.send(wire.bytes)
-      }
-
+      const dispatch = () => runHandler(server)
       if (!invocationContext) return sendWireResponse(await dispatch())
       const invocationExecution = deps.internalInvocationAuth.start(invocationContext, dispatch)
       try {
