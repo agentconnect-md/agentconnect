@@ -7,8 +7,10 @@ import { redactGitUrlSecrets, type AgentMemoryBinding } from '@agentconnect.md/p
 import type { PrismaLike } from '../prisma.js'
 import type {
   AgentCallPolicy,
+  AgentCreateOpts,
   AgentRepo,
   AgentRecord,
+  AgentSkillSourceFence,
   AgentUpdateOpts,
   AgentWorkspace,
   CreateAgentInput,
@@ -26,8 +28,61 @@ import {
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
+import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
+import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
-import { AgentWorkspaceIntegrationConflict } from '../errors.js'
+import { AgentWorkspaceIntegrationConflict, MemoryConnectionBusy, MemoryConnectionMissing } from '../errors.js'
+
+/**
+ * Enter an agent write's skill-source fence: take the (orgId, name) advisory
+ * scope of every submitted ref's source (sorted), then read the source names
+ * the fence's viewer can see — the set `fence.authorize` later decides against.
+ * Both happen inside the write's transaction, so a source delete, same-name
+ * recreate, or sharing flip serializes with the enable-list write it would
+ * otherwise race (they hold the same scopes).
+ */
+async function enterSkillSourceFence(
+  tx: Prisma.TransactionClient,
+  fence: AgentSkillSourceFence
+): Promise<ReadonlySet<string>> {
+  await lockSkillSourceNameScopes(tx, fence.orgId, fence.names)
+  const rows = await tx.skillSource.findMany({
+    where: { orgId: fence.orgId, ...visibilityWhere(fence.viewer) },
+    select: { name: true }
+  })
+  return new Set(rows.map((row) => row.name))
+}
+
+/**
+ * Fence an agent write against external-memory mutations: try-lock the
+ * advisory mutation scope of every touched connection (the committed binding
+ * plus the one being bound), and re-verify a newly bound connection still
+ * exists in this org — inside the same transaction as the agent-row write, so
+ * a connection DELETE's "no agent bound" scan can never interleave with a bind
+ * committing under it. Try-locks never wait, so this cannot deadlock with the
+ * row locks the caller already holds.
+ */
+async function fenceMemoryConnections(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  touchedConnectionIds: readonly string[],
+  bindConnectionId?: string
+): Promise<void> {
+  const ids = [...new Set(touchedConnectionIds)]
+  if (ids.length === 0) return
+  if (!(await tryLockMemoryConnectionScopes(tx, ids))) throw new MemoryConnectionBusy()
+  if (!bindConnectionId) return
+  const connection = await tx.externalMemoryConnection.findUnique({
+    where: { id: bindConnectionId },
+    select: { orgId: true }
+  })
+  if (!connection || connection.orgId !== orgId) throw new MemoryConnectionMissing()
+}
+
+/** The external connection id a memory binding references, if any. */
+function externalConnectionIdOf(memory: { provider?: string; connectionId?: string } | null | undefined): string[] {
+  return memory?.provider === 'external' && memory.connectionId ? [memory.connectionId] : []
+}
 
 // The agent row plus its joined creator + last-modifier users, and the preset
 // rows referencing it (⇒ `builtin`). Reads pull all three so `toRecord` can
@@ -211,13 +266,21 @@ export class PgAgentRepo implements AgentRepo {
     return fn(this.db as Prisma.TransactionClient)
   }
 
-  async create(input: CreateAgentInput): Promise<AgentRecord> {
+  async create(input: CreateAgentInput, opts?: AgentCreateOpts): Promise<AgentRecord> {
     const ws = input.workspace ?? { mode: 'scratch' }
     const ownerUserId = input.ownerUserId ?? input.createdByUserId
     return this.transaction(async (tx) => {
       // Close organization deletion's no-agent-row enumeration window without
       // taking a parent-row lock in the reverse order of Hook CRUD.
       await lockHookReviewOrgProducerScope(tx, input.orgId)
+      if (opts?.skillSources) {
+        const visible = await enterSkillSourceFence(tx, opts.skillSources)
+        // A not-yet-created agent holds nothing, and the fence scopes keep the
+        // named sources' lifecycle still until this transaction commits.
+        opts.skillSources.authorize([], visible)
+      }
+      const bindId = externalConnectionIdOf(input.memory)[0]
+      await fenceMemoryConnections(tx, input.orgId, externalConnectionIdOf(input.memory), bindId)
       const orgDefault =
         input.callPolicy === undefined || input.outboundPolicy === undefined
           ? await tx.org.findUnique({
@@ -332,6 +395,11 @@ export class PgAgentRepo implements AgentRepo {
     patch: UpdateAgentInput,
     opts?: AgentUpdateOpts
   ): Promise<AgentRecord> {
+    // The skill-source fence opens BEFORE the agent row lock (its blocking name
+    // scopes are the outermost app fence, mirroring how the old per-name chains
+    // wrapped this whole transaction); the visibility set it returns feeds the
+    // authorize call below, after the committed bag read.
+    const visibleSourceNames = opts?.skillSources ? await enterSkillSourceFence(tx, opts.skillSources) : undefined
     // model/reasoningEffort/env live in the runtimeOverrides JSON — merge key by
     // key so patching one never clobbers the others (null deletes its key).
     let overrides: RuntimeOverrides | typeof undefined
@@ -357,16 +425,31 @@ export class PgAgentRepo implements AgentRepo {
       // resurrecting a reference the provider-delete guard already checked
       // (routes/mcp-providers.ts). FOR UPDATE holds the row until this
       // transaction commits, so concurrent bag writers fully serialize.
-      const rows = await tx.$queryRaw<Array<{ runtimeOverrides: unknown }>>(
-        Prisma.sql`SELECT "runtimeOverrides" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+      const rows = await tx.$queryRaw<Array<{ runtimeOverrides: unknown; orgId: string }>>(
+        Prisma.sql`SELECT "runtimeOverrides", "orgId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
       )
       const cur = (rows[0]?.runtimeOverrides ?? null) as RuntimeOverrides | null
+      // External-memory fence: the committed binding plus the one this patch
+      // binds share their connections' advisory mutation scopes with the
+      // connection/grant mutations (and their delete's no-agent-bound scan).
+      // Taken AFTER the row lock — try-locks never wait, so no deadlock.
+      if (rows[0]) {
+        await fenceMemoryConnections(
+          tx,
+          rows[0].orgId,
+          [
+            ...externalConnectionIdOf(cur?.memory),
+            ...(patch.memory !== undefined ? externalConnectionIdOf(patch.memory) : [])
+          ],
+          patch.memory !== undefined ? externalConnectionIdOf(patch.memory)[0] : undefined
+        )
+      }
       // The enable-list authorization decisions happen HERE, against the row-locked
       // committed lists — a removal-only write (which joins no registry-name chain)
       // can no longer land between the hold check and the write it authorized. A
       // throw aborts the transaction before any merge is computed.
       opts?.authorizeMcpServers?.(cur?.mcpServers ?? [])
-      opts?.authorizeSkills?.(cur?.skills ?? [])
+      opts?.skillSources?.authorize(cur?.skills ?? [], visibleSourceNames!)
       const next: RuntimeOverrides = { ...(cur ?? {}) }
       if (patch.model !== undefined) {
         if (patch.model === null) delete next.model
@@ -699,6 +782,18 @@ export class PgAgentRepo implements AgentRepo {
       // Agent → hook/preset → cascade. A missing row still reaches the Prisma
       // delete below and preserves its existing not-found error semantics.
       await lockAgentPlacement(tx, agentId)
+      // A delete removes the agent's external-memory binding, so it shares the
+      // connection's advisory mutation scope with connection/grant mutations —
+      // an in-flight one fail-fasts this delete to 409 rather than tearing down
+      // an agent whose connection state is mid-change.
+      const row = await tx.agent.findUnique({
+        where: { id: agentId },
+        select: { orgId: true, runtimeOverrides: true }
+      })
+      if (row) {
+        const memory = (row.runtimeOverrides as RuntimeOverrides | null)?.memory
+        await fenceMemoryConnections(tx, row.orgId, externalConnectionIdOf(memory))
+      }
       const hooks = new PgHookRepo(tx)
       const removedHooks = await hooks.listForAgent(agentId)
       await hooks.tombstoneReviewProjections(

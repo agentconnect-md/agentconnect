@@ -41,6 +41,7 @@ import {
   PgBotCredentialWriter,
   PgAgentSecretStore,
   PgAgentConfigWriter,
+  PgMemoryConnectionWriter,
   PgMcpProviderRepo,
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
@@ -77,7 +78,6 @@ import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
-import { ExclusiveMutationGate } from '../../src/orchestrator/exclusiveMutationGate.js'
 import { ConnectionRegistry } from '../../src/ws/registry.js'
 import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
@@ -229,6 +229,7 @@ export function buildHttpApp(
       externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
       externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
       externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
+      memoryConnectionWriter: new PgMemoryConnectionWriter(prisma, cipher),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       feishuAppRegistration: feishuAppRegistrationStore,
@@ -259,7 +260,6 @@ export function buildHttpApp(
     ),
     collabRoutes: new CollabRoutesService(daemonRepo, integrationRepo, agentRepo, relayControl, sender),
     agentMutations: new AgentMutationGate(),
-    memoryConnectionMutations: new ExclusiveMutationGate(),
     sessionOwners: connReg,
     // The installations repo feeds the github-kind compile — same graph as prod.
     hooks: new HookService(

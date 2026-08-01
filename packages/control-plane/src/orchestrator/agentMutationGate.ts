@@ -7,8 +7,33 @@
  * return 409 and let the operator retry against fresh state. Reconnect recovery
  * may queue one of the same exclusive moves behind the interrupted request.
  *
- * This matches the current single-control-plane deployment. A future multi-CP
- * topology must replace it with a distributed lock or transactional lease.
+ * ROLLING-UPDATE EXPOSURE (known, accepted for now): the control plane deploys
+ * via rolling update, so for a bounded window (SIGTERM → drain → close, ≤ ~10s;
+ * see index.ts) two CP processes serve writes and this gate does not span them —
+ * an exclusive section admitted on the draining pod and a shared/exclusive
+ * section admitted on the new pod can overlap. Placement AUTHORITY stays
+ * consistent regardless: it is guarded by durable fences below this gate — the
+ * agent-row placement CAS (`movePlacement` FOR UPDATE + expectedDaemonId), the
+ * daemon-side moveId/detach fencing, the activation fingerprint stability loop,
+ * and fail-closed handling of unknown outcomes (orchestrator/agentMove.ts).
+ * What the window costs is the gate's fail-fast UX and section tidiness: an
+ * overlap surfaces as an AgentMoveConflict/AgentMoveFailed retry, or as a
+ * transient stale definition push that the reconcile/reconnect roster converges.
+ *
+ * Unlike the fences that used to live beside this one (skill-source name scopes,
+ * external-memory mutation scopes — both now pg advisory xact locks inside their
+ * write transactions), this gate cannot ride a transaction: an exclusive section
+ * spans multi-step orchestration with daemon RPCs between transactions, and its
+ * exclusive hold legitimately lasts as long as a drain (unbounded — a running
+ * turn is drained first). The Postgres shape that fits is a LEASE ROW (cf.
+ * DaemonLifecycleOp's pending row + partial unique index): `tryBeginMove` ⇒
+ * insert (unique violation ⇒ 409), release ⇒ settle. But a faithful port also
+ * needs holder heartbeats + a reaper for leases orphaned by a CP crash (a fixed
+ * TTL either kills legitimate long drains or blocks all CRUD for the TTL), a
+ * shared-holder representation for the high-frequency tryBeginMutation call
+ * sites (HTTP routes and WS handlers), and beginMoveWhenIdle's reserved-next-
+ * exclusive-slot queueing — a substantial redesign, tracked in issue #376
+ * rather than bolted on here.
  */
 export class AgentMutationGate {
   private readonly states = new Map<

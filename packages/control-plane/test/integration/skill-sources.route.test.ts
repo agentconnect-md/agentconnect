@@ -7,9 +7,15 @@
  * (same rule as MCP-provider delete), create must refuse a referenced name
  * (name-capture guard), and agent enable-list writes serialize with both.
  *
+ * The fence is the (orgId, name) ADVISORY LOCK SCOPE
+ * (persistence/skill-source-lock.ts), taken inside each participant's
+ * transaction — so it holds across control-plane instances, and these tests
+ * simulate "the other instance" by holding the scope from an independent
+ * transaction on the shared pool ({@link holdSkillSourceScope}).
+ *
  * One skills-specific difference from the MCP-provider fence: a skill-ref has no
- * daemon-local fallback — the in-fence visibility check refuses a NEW ref whose
- * source is unknown, so an agent write queued behind a delete is refused (403)
+ * daemon-local fallback — the in-scope visibility check refuses a NEW ref whose
+ * source is unknown, so an agent write serialized after a delete is refused (403)
  * rather than committing a dangling ref. Dangling refs can therefore only predate
  * the fence (or bypass the routes); the capture guard still protects those.
  */
@@ -17,7 +23,9 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { Prisma } from '../../src/generated/prisma/client.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { lockSkillSourceNameScope } from '../../src/persistence/skill-source-lock.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -43,7 +51,8 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
 }
 
 /** An app whose devAuth principal is `userId` — i.e. "act as this user". The
- *  source-name chains are module-global, so they serialize across app instances. */
+ *  source-name fence is a database advisory scope, so it serializes across app
+ *  instances (and across control-plane processes) by construction. */
 function appAs(userId: string): HttpApp {
   const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
   opened.push(app)
@@ -153,59 +162,83 @@ describe('DELETE /skill-sources/:id — referenced-guard', () => {
 })
 
 /**
- * Park the DELETE inside its serialized reference check by intercepting the FIRST
- * `agent.list` call (that check is the first caller during the delete; later calls
- * pass through). Returns a release() that lets the delete proceed, plus a promise
- * that resolves once the delete is parked.
+ * Hold the (orgId, name) advisory scope from an INDEPENDENT transaction — the
+ * exact shape of a concurrent holder on another control-plane instance (e.g.
+ * the rolling-update overlap window). Every fence participant (source
+ * delete/create/sharing, agent enable-list writes) queues behind it until
+ * release() lets this holder's transaction commit; Postgres then grants the
+ * scope to the queued waiters in FIFO order, which is what makes the staged
+ * multi-waiter tests below deterministic.
  */
-function parkDeleteAtReferenceCheck(app: HttpApp) {
-  const repo = app.deps.repos.agent
-  const realList = repo.list.bind(repo)
-  let release!: () => void
-  const gate = new Promise<void>((r) => (release = r))
-  let notifyParked!: () => void
-  const parked = new Promise<void>((r) => (notifyParked = r))
-  let intercepted = false
-  repo.list = async (orgId) => {
-    if (!intercepted) {
-      intercepted = true
-      notifyParked()
+function holdSkillSourceScope(name: string) {
+  let open!: () => void
+  const gate = new Promise<void>((resolve) => (open = resolve))
+  let notifyHeld!: () => void
+  const held = new Promise<void>((resolve) => (notifyHeld = resolve))
+  const settled = prisma.$transaction(
+    async (tx) => {
+      await lockSkillSourceNameScope(tx, DEFAULT_ORG_ID, name)
+      notifyHeld()
       await gate
+    },
+    { timeout: 20_000 }
+  )
+  return {
+    held,
+    release: async () => {
+      open()
+      await settled
     }
-    return realList(orgId)
   }
-  return { release, parked }
+}
+
+/** Poll pg_locks until at least `count` sessions are queued on an advisory lock
+ *  in this pool's database — the deterministic "it is blocked" probe. */
+async function waitForAdvisoryWaiters(count: number): Promise<void> {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const [row] = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+      SELECT COUNT(*)::int AS "count"
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND granted = false
+        AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+    `)
+    if ((row?.count ?? 0) >= count) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`never observed ${count} queued advisory-lock waiter(s)`)
 }
 
 const settleTick = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 describe('DELETE /skill-sources/:id — serialized against agent enable-list writes', () => {
-  it('an agent CREATE adding a ref waits out the delete; it is refused rather than committing a dangling ref', async () => {
+  it('an agent CREATE adding a ref serializes behind the delete; it is refused rather than committing a dangling ref', async () => {
     const app = makeApp()
     const sourceId = await createSource(app, 'kit')
-    const { release, parked } = parkDeleteAtReferenceCheck(app)
+    // "The other instance" holds the (orgId, 'kit') scope; the DELETE queues
+    // first, the ref-adding CREATE queues second — FIFO then replays exactly
+    // the delete-wins interleaving the fence exists for.
+    const hold = holdSkillSourceScope('kit')
+    await hold.held
 
     const del = app.app.inject({ method: 'DELETE', url: `${ORG}/skill-sources/${sourceId}` })
-    await parked
+    await waitForAdvisoryWaiters(1)
 
-    // Regression (the pre-fix bug): with the check outside the chain, this create
-    // completed DURING the parked window and the delete still returned 204, leaving
-    // the dangling selector. Now the write joins the source's chain and must block.
+    // Regression (the pre-fix bug): with the check outside the fence, this create
+    // completed DURING the held window and the delete still returned 204, leaving
+    // the dangling selector. Now the write's transaction takes the same scope and
+    // must queue.
     const create = app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
       payload: { name: 'racer', runtime: 'claude', skills: ['kit/helper'] }
     })
-    const winner = await Promise.race([
-      create.then(() => 'created' as const),
-      settleTick(300).then(() => 'blocked' as const)
-    ])
-    expect(winner).toBe('blocked')
+    await waitForAdvisoryWaiters(2)
 
-    release()
+    await hold.release()
     // The delete saw no reference (the write was queued behind it) — it completes;
-    // the queued create then re-checks visibility INSIDE the fence, finds the
-    // source gone, and is refused: no dangling ref is ever committed.
+    // the queued create then reads visibility INSIDE its fenced transaction, finds
+    // the source gone, and is refused: no dangling ref is ever committed.
     expect((await del).statusCode).toBe(204)
     expect((await create).statusCode).toBe(403)
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/${sourceId}` })).statusCode).toBe(404)
@@ -219,27 +252,24 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     expect(recreate.statusCode).toBe(201)
   })
 
-  it('an agent PATCH adding a ref waits out the delete the same way', async () => {
+  it('an agent PATCH adding a ref serializes behind the delete the same way', async () => {
     const app = makeApp()
     const sourceId = await createSource(app, 'kit')
     const agentId = await createAgent(app, 'patch-racer', [])
-    const { release, parked } = parkDeleteAtReferenceCheck(app)
+    const hold = holdSkillSourceScope('kit')
+    await hold.held
 
     const del = app.app.inject({ method: 'DELETE', url: `${ORG}/skill-sources/${sourceId}` })
-    await parked
+    await waitForAdvisoryWaiters(1)
 
     const patch = app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
       payload: { skills: ['kit/helper'] }
     })
-    const winner = await Promise.race([
-      patch.then(() => 'patched' as const),
-      settleTick(300).then(() => 'blocked' as const)
-    ])
-    expect(winner).toBe('blocked')
+    await waitForAdvisoryWaiters(2)
 
-    release()
+    await hold.release()
     expect((await del).statusCode).toBe(204)
     expect((await patch).statusCode).toBe(403) // the source is gone — the ref is refused, never dangling
     const agent = (await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).json()
@@ -248,39 +278,26 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
 
   it('a stale full-replace PATCH re-asserting a ref still fences the delete (no diff-based bypass)', async () => {
     // Ordinary PATCHes overlap: PATCH-A submits ['kit/helper'] (unchanged from ITS
-    // snapshot), parks before persisting; PATCH-B removes the ref; DELETE then runs.
-    // With an added-vs-before diff the parked PATCH-A computed added=[] and skipped
-    // the chain, so DELETE saw B's empty list, returned 204, and A restored the ref
-    // onto a deleted source. Keyed off the SUBMITTED list, A holds the chain while
-    // parked — the DELETE queues behind it and 409s once A's restore commits.
+    // snapshot) and queues on the scope; PATCH-B removes the ref (no submitted refs
+    // ⇒ no fence ⇒ commits immediately); DELETE then queues. With an added-vs-before
+    // diff, A would have computed added=[] and skipped the fence, so DELETE saw B's
+    // empty list, returned 204, and A restored the ref onto a deleted source. Keyed
+    // off the SUBMITTED list, A holds a queue slot AHEAD of the delete: its restore
+    // commits first (authorized — the source still exists and is org-visible), and
+    // the delete then sees the reference and 409s.
     const app = makeApp()
     const sourceId = await createSource(app, 'kit')
     const agentId = await createAgent(app, 'stale-patcher', ['kit/helper'])
 
-    // Park the FIRST agent-row write (PATCH-A's persist step) inside whatever fences
-    // the route takes; later writes (PATCH-B) pass through.
-    const writer = app.deps.repos.agentConfig
-    const realUpdate = writer.update.bind(writer)
-    let releaseA!: () => void
-    const gateA = new Promise<void>((r) => (releaseA = r))
-    let notifyParkedA!: () => void
-    const parkedA = new Promise<void>((r) => (notifyParkedA = r))
-    let intercepted = false
-    writer.update = async (...args: Parameters<typeof realUpdate>) => {
-      if (!intercepted) {
-        intercepted = true
-        notifyParkedA()
-        await gateA
-      }
-      return realUpdate(...args)
-    }
+    const hold = holdSkillSourceScope('kit')
+    await hold.held
 
     const patchA = app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
       payload: { skills: ['kit/helper'] } // full replace, "unchanged" from A's stale view
     })
-    await parkedA
+    await waitForAdvisoryWaiters(1) // A queued on the scope — the no-bypass fact itself
 
     const patchB = await app.app.inject({
       method: 'PATCH',
@@ -294,9 +311,9 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
       del.then(() => 'deleted' as const),
       settleTick(300).then(() => 'blocked' as const)
     ])
-    expect(winner).toBe('blocked') // the delete waits behind the parked PATCH-A's chain hold
+    expect(winner).toBe('blocked') // the delete queues behind the held scope (and behind A)
 
-    releaseA()
+    await hold.release()
     expect((await patchA).statusCode).toBe(200)
     expect((await del).statusCode).toBe(409) // A's restore committed first — the reference is seen
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/${sourceId}` })).statusCode).toBe(200)
@@ -304,11 +321,13 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
 
   it('a restricted same-name replacement is not grandfathered by a stale full-replace PATCH', async () => {
     // The keep-exemption must attach to what the agent actually HOLDS, not the
-    // name: org-visible A is enabled; A's delete parks; a RESTRICTED replacement B
-    // and a stale full-replace PATCH queue behind it; a concurrent removal frees the
-    // delete. B then commits — and the stale PATCH must NOT ride its old "kept ref"
-    // exemption onto B (a source the collaborator cannot even see): the in-fence
-    // check sees nothing held and refuses with 403.
+    // name: org-visible A is enabled; A's delete, a RESTRICTED replacement B, and
+    // a stale full-replace PATCH queue on the held scope in that order; a
+    // concurrent removal (no submitted refs ⇒ no fence) commits meanwhile and
+    // lets the delete pass its reference scan. B then commits — and the stale
+    // PATCH must NOT ride its old "kept ref" exemption onto B (a source the
+    // collaborator cannot even see): its fenced check sees nothing held and
+    // refuses with 403.
     const owner = await makeUser('skls-owner', 'owner')
     const collab = await makeUser('skls-collab', 'collaborator')
     const ownerApp = appAs(owner)
@@ -317,23 +336,25 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     const sourceA = await createSource(ownerApp, 'kit')
     const agentId = await createAgent(collabApp, 'identity-racer', ['kit/helper'])
 
-    const { release, parked } = parkDeleteAtReferenceCheck(ownerApp)
+    const hold = holdSkillSourceScope('kit')
+    await hold.held
     const del = ownerApp.app.inject({ method: 'DELETE', url: `${ORG}/skill-sources/${sourceA}` })
-    await parked
+    await waitForAdvisoryWaiters(1)
 
     const bCreate = ownerApp.app.inject({
       method: 'POST',
       url: `${ORG}/skill-sources`,
       payload: { name: 'kit', source: 'example-org/example-kit', visibility: 'restricted', sharedWith: [] }
     })
-    await settleTick(150)
+    await waitForAdvisoryWaiters(2)
     const stalePatch = collabApp.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
       payload: { skills: ['kit/helper'] } // full replace — "unchanged" from its stale view of A
     })
-    await settleTick(150)
-    // A concurrent removal (submits no refs → joins no chain) frees the delete.
+    await waitForAdvisoryWaiters(3)
+    // A concurrent removal (submits no refs → takes no scope) commits while the
+    // queue is still parked, releasing the agent's hold on 'kit'.
     const removal = await collabApp.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
@@ -341,7 +362,7 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     })
     expect(removal.statusCode).toBe(200)
 
-    release()
+    await hold.release()
     expect((await del).statusCode).toBe(204)
     expect((await bCreate).statusCode).toBe(201) // replacement B exists, restricted
     expect((await stalePatch).statusCode).toBe(403) // the exemption died with the hold; B is invisible
@@ -458,36 +479,24 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     expect(agent.skills).toEqual([])
   })
 
-  it('a sharing flip queues behind an in-flight enable (no check-to-commit visibility race)', async () => {
-    // PUT /skill-sources/:id/sharing joins the name chain: an agent write authorizes
-    // visibility INSIDE that chain, so a restrict must not land between its check
-    // and its commit. Park the enable at its persist step (in-fence, post-check) and
-    // assert the sharing flip waits for it.
+  it('a sharing flip serializes with an in-flight enable (no check-to-commit visibility race)', async () => {
+    // PUT /skill-sources/:id/sharing takes the (orgId, name) scope: an agent write
+    // authorizes visibility inside its own transaction under the same scope, so a
+    // restrict can never land between that check and its commit. Queue the enable
+    // FIRST and the flip behind it: the enable commits under the visibility it was
+    // checked against, then the flip lands — the agent keeps the ref it was granted.
     const app = makeApp()
     const sourceId = await createSource(app, 'kit')
     const agentId = await createAgent(app, 'share-racer', [])
 
-    const writer = app.deps.repos.agentConfig
-    const realUpdate = writer.update.bind(writer)
-    let releaseWriter!: () => void
-    const gate = new Promise<void>((r) => (releaseWriter = r))
-    let notifyParked!: () => void
-    const parked = new Promise<void>((r) => (notifyParked = r))
-    let intercepted = false
-    writer.update = async (...args: Parameters<typeof realUpdate>) => {
-      if (!intercepted) {
-        intercepted = true
-        notifyParked()
-        await gate
-      }
-      return realUpdate(...args)
-    }
+    const hold = holdSkillSourceScope('kit')
+    await hold.held
     const enable = app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
       payload: { skills: ['kit/helper'] }
     })
-    await parked
+    await waitForAdvisoryWaiters(1)
 
     const share = app.app.inject({
       method: 'PUT',
@@ -498,11 +507,47 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
       share.then(() => 'shared' as const),
       settleTick(300).then(() => 'blocked' as const)
     ])
-    expect(winner).toBe('blocked') // the flip waits behind the in-flight enable
+    expect(winner).toBe('blocked') // the flip queues behind the held scope (and the enable)
 
-    releaseWriter()
+    await hold.release()
     expect((await enable).statusCode).toBe(200)
     expect((await share).statusCode).toBe(200)
+    const agent = (await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).json()
+    expect(agent.skills).toEqual(['kit/helper'])
+  })
+
+  it('an enable serialized after a restrict is refused (the flip side of the same fence)', async () => {
+    // Same scope, opposite order: the flip queues first, the enable behind it.
+    // The enable's fenced visibility read then already sees the restricted row,
+    // so the collaborator's fresh ref is refused — never a torn "checked open,
+    // committed restricted" state in either order.
+    const owner = await makeUser('sklf-owner', 'owner')
+    const collab = await makeUser('sklf-collab', 'collaborator')
+    const ownerApp = appAs(owner)
+    const collabApp = appAs(collab)
+    const sourceId = await createSource(ownerApp, 'kit', { visibility: 'restricted', sharedWith: [collab] })
+    const agentId = await createAgent(collabApp, 'flip-racer', [])
+
+    const hold = holdSkillSourceScope('kit')
+    await hold.held
+    const share = ownerApp.app.inject({
+      method: 'PUT',
+      url: `${ORG}/skill-sources/${sourceId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    await waitForAdvisoryWaiters(1)
+    const enable = collabApp.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { skills: ['kit/helper'] }
+    })
+    await waitForAdvisoryWaiters(2)
+
+    await hold.release()
+    expect((await share).statusCode).toBe(200)
+    expect((await enable).statusCode).toBe(403)
+    const agent = (await collabApp.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })).json()
+    expect(agent.skills).toEqual([])
   })
 
   it('a sibling-field PATCH omitting skills cannot restore a concurrently-removed ref (atomic bag merge)', async () => {

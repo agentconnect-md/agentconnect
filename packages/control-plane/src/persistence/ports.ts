@@ -653,20 +653,53 @@ export interface AgentRecord {
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
 }
 
+/**
+ * The skill-source fence an agent write carries when its submitted enable-list
+ * references shared-skills sources. Inside the write's transaction the repo
+ * takes the (orgId, name) advisory scope of every named source (sorted — see
+ * persistence/skill-source-lock.ts), reads the viewer-visible source names
+ * under those scopes, and calls `authorize` with the agent's committed
+ * enable-list — so the visibility decision, the reference it authorizes, and
+ * the row write cannot be separated by a concurrent source delete, same-name
+ * create, or sharing flip, across control-plane instances. A throw aborts the
+ * transaction.
+ */
+export interface AgentSkillSourceFence {
+  orgId: OrgId
+  /** Source names the submitted refs point at (deduplication is the repo's job). */
+  names: readonly string[]
+  /** Visibility principal for the in-scope source read; undefined ⇒ unfiltered. */
+  viewer?: ViewCtx
+  authorize: (committedHeld: readonly string[], visibleSourceNames: ReadonlySet<string>) => void
+}
+
 export interface AgentUpdateOpts {
   authorizeMcpServers?: (currentlyHeld: readonly string[]) => void
-  authorizeSkills?: (currentlyHeld: readonly string[]) => void
+  skillSources?: AgentSkillSourceFence
+}
+
+export interface AgentCreateOpts {
+  skillSources?: AgentSkillSourceFence
 }
 
 export interface AgentRepo {
-  create(input: CreateAgentInput): Promise<AgentRecord>
+  /** `opts.skillSources` fences the initial enable-list inside the create
+   *  transaction (see {@link AgentSkillSourceFence}). A create binding external
+   *  memory also try-locks that connection's advisory mutation scope and
+   *  re-verifies the connection inside the transaction — MemoryConnectionBusy /
+   *  MemoryConnectionMissing abort it. */
+  create(input: CreateAgentInput, opts?: AgentCreateOpts): Promise<AgentRecord>
   get(agentId: AgentId): Promise<AgentRecord | null>
-  /** `opts.authorizeMcpServers` / `opts.authorizeSkills` (only meaningful when
-   *  the patch includes `mcpServers` / `skills`) run INSIDE the row-locked
-   *  transaction, right after the committed runtimeOverrides read, with the
-   *  agent's currently-held MCP list / skill-ref list — the one atomic point
-   *  where an enable-list authorization decision and the write it guards cannot
-   *  be separated by a concurrent removal. A throw aborts the transaction. */
+  /** `opts.authorizeMcpServers` / `opts.skillSources.authorize` (only
+   *  meaningful when the patch includes `mcpServers` / `skills`) run INSIDE the
+   *  row-locked transaction, right after the committed runtimeOverrides read,
+   *  with the agent's currently-held MCP list / skill-ref list — the one atomic
+   *  point where an enable-list authorization decision and the write it guards
+   *  cannot be separated by a concurrent removal. A throw aborts the
+   *  transaction. A patch touching the external-memory binding additionally
+   *  try-locks the old+new connections' advisory mutation scopes and
+   *  re-verifies a newly bound connection inside the transaction
+   *  (MemoryConnectionBusy / MemoryConnectionMissing). */
   update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
   /** Compare-and-set a workspace edit. The caller has already drained/proved
    *  an owning daemon when one exists. */
@@ -2552,10 +2585,11 @@ export interface AgentSecretStore {
  * ciphertext under an encrypting provider.
  */
 export interface AgentConfigWriter {
-  /** Create the agent row + its initial secret rows in one transaction. */
-  create(input: CreateAgentInput, secrets?: Record<string, string>): Promise<AgentRecord>
+  /** Create the agent row + its initial secret rows in one transaction
+   *  (fenced per {@link AgentRepo.create}). */
+  create(input: CreateAgentInput, secrets?: Record<string, string>, opts?: AgentCreateOpts): Promise<AgentRecord>
   /** Apply a PATCH: secret merge (see {@link AgentSecretStore.merge} semantics)
-   *  + row update in one transaction. */
+   *  + row update in one transaction (fenced per {@link AgentRepo.update}). */
   update(
     agentId: AgentId,
     patch: UpdateAgentInput,
@@ -3672,20 +3706,28 @@ export interface UpdateSkillSourceInput {
 }
 
 export interface SkillSourceRepo {
-  create(input: CreateSkillSourceInput): Promise<SkillSourceRecord>
+  /** Register a source under the name-capture guard. The (orgId, name) advisory
+   *  scope, the agent-reference scan, and the insert share one transaction;
+   *  null ⇒ an agent still enables skills under this name (caller answers 409). */
+  create(input: CreateSkillSourceInput): Promise<SkillSourceRecord | null>
   get(id: string): Promise<SkillSourceRecord | null>
   /** The org's sources, filtered by the OSS resource-visibility policy for a
    *  supplied human principal; undefined is reserved for internal reads. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]>
   /** Look up a source by its org-unique name (used to resolve an agent's enable-list). */
   getByName(orgId: OrgId, name: string): Promise<SkillSourceRecord | null>
+  /** Holds the (orgId, name) advisory scope for the write: agent enable-list
+   *  writes authorize visibility under the same scope, so a flip cannot land
+   *  between their check and their commit. */
   setSharing(
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<SkillSourceRecord>
   update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
-  delete(id: string): Promise<void>
+  /** Delete under the referenced-guard, in one transaction with the reference
+   *  scan ('referenced' ⇒ caller answers 409; missing row ⇒ 'deleted'). */
+  delete(id: string): Promise<'deleted' | 'referenced'>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -4002,6 +4044,81 @@ export interface ExternalMemoryGrantRepo {
   mintFor(connectionId: string): Promise<ExternalMemoryGrantRecord>
   activeForConnection(connectionId: string): Promise<ExternalMemoryGrantRecord[]>
   revoke(grantId: string): Promise<void>
+}
+
+/**
+ * Transactional unit-of-work for external-memory definition/grant mutations.
+ *
+ * Each method runs its check-then-write pair in ONE transaction that
+ * try-acquires the advisory mutation scope(s) of the resources it touches
+ * (persistence/memory-connection-lock.ts) — the cross-instance replacement for
+ * the process-local ExclusiveMutationGate. `busy` means another mutation holds
+ * a scope; callers answer 409 and let the operator retry (fail-fast, never
+ * queued). Agent writes that bind/unbind a connection take the same scopes
+ * inside their own transactions (see {@link AgentRepo}), which closes the
+ * check-then-delete race around the FK-less JSON agent binding.
+ *
+ * Secret and grant-key values pass through the configured SecretCipher BEFORE
+ * a transaction opens (an encrypting provider may make network calls; a
+ * transaction must never wait on one). Daemon/relay pushes stay OUTSIDE,
+ * post-commit — best-effort, with reconnect snapshots as the convergence
+ * backstop (docs/designs/agent-memory.md).
+ */
+export interface MemoryConnectionWriter {
+  /** Installation existence check + connection row + sealed secret row
+   *  (+ minted grant when `mintGrant`) in one transaction under the
+   *  installation's scope, so it cannot interleave with the installation
+   *  DELETE's reference scan. The minted grant key rides back exactly once. */
+  createConnection(
+    input: {
+      id: string
+      orgId: OrgId
+      installationId: string
+      config: Record<string, unknown>
+      createdByUserId?: string
+    },
+    secrets: Record<string, string>,
+    mintGrant: boolean
+  ): Promise<
+    | { outcome: 'created'; connection: ExternalMemoryConnectionRecord; grantKey?: string }
+    | { outcome: 'installation_missing' }
+    | { outcome: 'busy' }
+  >
+  /** Full secret replacement (when supplied) + config/revision update in one
+   *  transaction under the connection's scope — a failure can no longer leave
+   *  new secrets beside an old definition, so there is no compensation pair. */
+  updateConnection(
+    id: string,
+    orgId: OrgId,
+    patch: { config?: Record<string, unknown>; secrets?: Record<string, string> }
+  ): Promise<
+    { outcome: 'updated'; connection: ExternalMemoryConnectionRecord } | { outcome: 'not_found' } | { outcome: 'busy' }
+  >
+  /** The rotation's durable half: revision bump + fresh-grant mint (or newest
+   *  reuse after a failed earlier rotation) under the connection's scope. The
+   *  active-grant set is re-read in the transaction and compared against the
+   *  caller-observed snapshot — concurrent grant churn resolves to `busy`. The
+   *  overlap-before-revoke push and the retire of `retiring` stay at the route. */
+  prepareGrantRotation(
+    id: string,
+    orgId: OrgId
+  ): Promise<
+    | {
+        outcome: 'prepared'
+        connection: ExternalMemoryConnectionRecord
+        fresh: ExternalMemoryGrantRecord
+        retiring: ExternalMemoryGrantRecord[]
+      }
+    | { outcome: 'not_found' }
+    | { outcome: 'busy' }
+  >
+  /** Agent-binding scan + row drop (secret/grant rows cascade) in one
+   *  transaction under the connection's scope, so a concurrent agent bind
+   *  either commits first (⇒ 'bound') or re-verifies after and is refused. */
+  deleteConnection(id: string, orgId: OrgId): Promise<'deleted' | 'bound' | 'not_found' | 'busy'>
+  /** Connection-reference scan + row drop under the installation's scope (the
+   *  FK is Restrict, so this converts a constraint failure into a clean 409). */
+  deleteInstallation(id: string, orgId: OrgId): Promise<'deleted' | 'referenced' | 'not_found' | 'busy'>
 }
 
 export interface OrgInviteLinkRepo {

@@ -12,7 +12,14 @@
  */
 import type { PrismaClient } from '../../generated/prisma/client.js'
 import { withTx } from '../prisma.js'
-import type { AgentConfigWriter, AgentRecord, AgentUpdateOpts, CreateAgentInput, UpdateAgentInput } from '../ports.js'
+import type {
+  AgentConfigWriter,
+  AgentCreateOpts,
+  AgentRecord,
+  AgentUpdateOpts,
+  CreateAgentInput,
+  UpdateAgentInput
+} from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import type { AgentId } from '../../domain/ids.js'
 import { PgAgentRepo } from './agent.repo.js'
@@ -26,10 +33,14 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
     private readonly cipher: SecretCipher
   ) {}
 
-  async create(input: CreateAgentInput, secrets?: Record<string, string>): Promise<AgentRecord> {
+  async create(
+    input: CreateAgentInput,
+    secrets?: Record<string, string>,
+    opts?: AgentCreateOpts
+  ): Promise<AgentRecord> {
     const sealed = secrets && Object.keys(secrets).length > 0 ? await sealSecretPatch(this.cipher, secrets) : undefined
     return withTx(this.prisma, async (tx) => {
-      const agent = await new PgAgentRepo(tx).create(input)
+      const agent = await new PgAgentRepo(tx).create(input, opts)
       if (sealed) await applySealedSecretPatch(tx, agent.id, sealed)
       return agent
     })
