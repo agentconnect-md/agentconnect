@@ -9,26 +9,64 @@ const entry = (source: ResolvedRuntimeEntry['source'], command: string, args: st
   version: ''
 })
 
+const validClaude = entry('registry', 'npx', ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'])
+const validCodex = entry('registry', 'npx', ['-y', '@agentclientprotocol/codex-acp@1.1.7'])
+
 describe('isValidatedRemoteMcpRuntime', () => {
-  it('admits the validated adapters only under daemon-owned catalog provenance', () => {
-    expect(isValidatedRemoteMcpRuntime('claude-acp', entry('registry', 'claude-agent-acp'))).toBe(true)
-    expect(isValidatedRemoteMcpRuntime('codex-acp', entry('registry', 'codex-acp'))).toBe(true)
-    expect(isValidatedRemoteMcpRuntime('claude-acp', entry('curated', 'claude-agent-acp'))).toBe(true)
+  it('admits only the validated artifact at or above the validated version', () => {
+    expect(isValidatedRemoteMcpRuntime('claude-acp', validClaude)).toBe(true)
+    expect(isValidatedRemoteMcpRuntime('codex-acp', validCodex)).toBe(true)
+    expect(
+      isValidatedRemoteMcpRuntime(
+        'claude-acp',
+        entry('registry', 'npx', ['-y', '@agentclientprotocol/claude-agent-acp@0.65.2'])
+      )
+    ).toBe(true)
+    // Older than the release the §13 evidence covers fails closed.
+    expect(
+      isValidatedRemoteMcpRuntime(
+        'claude-acp',
+        entry('registry', 'npx', ['-y', '@agentclientprotocol/claude-agent-acp@0.63.9'])
+      )
+    ).toBe(false)
+    // Unpinned or unparseable versions prove nothing about the artifact.
+    expect(
+      isValidatedRemoteMcpRuntime(
+        'claude-acp',
+        entry('registry', 'npx', ['-y', '@agentclientprotocol/claude-agent-acp'])
+      )
+    ).toBe(false)
   })
 
-  it('never admits a user-configured runtime, even one shadowing a validated id', () => {
-    // Shadowing the canonical id with an arbitrary executable is source 'user'.
-    expect(isValidatedRemoteMcpRuntime('claude-acp', entry('user', '/opt/leaky-acp'))).toBe(false)
+  it('rejects a registry definition that drifts to a different command or package', () => {
+    // The reviewer's exact scenario: registry-sourced claude-acp pointing at an
+    // arbitrary executable must not be admitted.
+    expect(isValidatedRemoteMcpRuntime('claude-acp', entry('registry', '/opt/leaky-acp'))).toBe(false)
+    expect(isValidatedRemoteMcpRuntime('claude-acp', entry('registry', 'npx', ['-y', 'leaky-agent-acp@0.64.0']))).toBe(
+      false
+    )
+    expect(isValidatedRemoteMcpRuntime('codex-acp', entry('registry', 'npx', ['-y', '@evil/codex-acp@1.1.7']))).toBe(
+      false
+    )
+    // The specifier must be the npx artifact argument, not a trailing flag.
+    expect(
+      isValidatedRemoteMcpRuntime(
+        'claude-acp',
+        entry('registry', 'npx', ['-y', 'leaky', '@agentclientprotocol/claude-agent-acp@0.64.0'])
+      )
+    ).toBe(false)
+  })
+
+  it('never admits a user-configured runtime, even one shadowing a validated id and artifact', () => {
+    expect(isValidatedRemoteMcpRuntime('claude-acp', { ...validClaude, source: 'user' })).toBe(false)
     expect(isValidatedRemoteMcpRuntime('codex-acp', entry('user', '/opt/leaky-acp'))).toBe(false)
   })
 
   it('never infers admission from claude/codex-looking launch lines (§13)', () => {
-    // The exact shapes launch-string inference used to admit:
     expect(isValidatedRemoteMcpRuntime('custom', entry('user', '/opt/leaky-acp', ['codex-acp']))).toBe(false)
     expect(isValidatedRemoteMcpRuntime('custom', entry('user', '/opt/leaky-acp', ['--profile=claude']))).toBe(false)
-    // Even registry provenance does not admit a non-validated adapter id.
-    expect(isValidatedRemoteMcpRuntime('gemini', entry('registry', 'gemini', ['--experimental-acp']))).toBe(false)
-    expect(isValidatedRemoteMcpRuntime('opencode', entry('registry', 'opencode', ['acp']))).toBe(false)
+    // A non-validated adapter id stays out even with registry provenance.
+    expect(isValidatedRemoteMcpRuntime('gemini', entry('registry', 'npx', ['-y', 'gemini-acp@1.0.0']))).toBe(false)
   })
 
   it('rejects a runtime with no resolved catalog entry', () => {

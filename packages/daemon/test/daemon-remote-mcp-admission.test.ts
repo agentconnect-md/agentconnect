@@ -93,8 +93,17 @@ async function runTurn(source: 'user' | 'registry') {
   const anyDaemon = daemon as never as Record<string, any>
   anyDaemon.remoteWebchatGrants = new RemoteWebchatGrantManager(client as never)
   anyDaemon.runtimeMcpCaps.set('claude-acp', { http: true, sse: false })
-  // The gate must read daemon-owned catalog provenance, not the launch line.
-  anyDaemon.runtimeCatalog.entries['claude-acp'].source = source
+  // Inject the resolved catalog state deterministically: installed-runtime
+  // discovery on a clean host may drop the config-defined entry entirely, and
+  // the gate must be exercised against an explicit registry-shaped definition
+  // (the validated npx artifact), not whatever this host happens to have.
+  const runtime =
+    source === 'registry'
+      ? { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'], env: [] }
+      : { command: 'node', args: ['unused'], env: [] }
+  anyDaemon.runtimeCatalog.entries['claude-acp'] = { runtime, source, name: 'Claude Agent', version: '0.64.0' }
+  anyDaemon.runtimeCatalog.runtimes['claude-acp'] = runtime
+  anyDaemon.runtimes['claude-acp'] = runtime
 
   const outputs: WebchatOutput[] = []
   const dones: WebchatDone[] = []
