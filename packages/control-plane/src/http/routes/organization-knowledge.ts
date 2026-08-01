@@ -41,7 +41,7 @@ import {
   UpdateOrganizationKnowledgeBody
 } from '../dto/index.js'
 
-const IncludeArchivedQuery = z.object({ includeArchived: z.coerce.boolean().default(false) })
+const IncludeArchivedQuery = z.object({ includeArchived: z.stringbool().default(false) })
 
 function knowledgeDto(row: OrganizationKnowledgeRecord, canManage: boolean) {
   return {
