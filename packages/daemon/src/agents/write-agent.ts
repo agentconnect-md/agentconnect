@@ -441,12 +441,13 @@ function applySpecFields(
   if (spec.memory !== undefined) raw.memory = spec.memory
 
   // Output settings preserve sibling/future keys while applying CP-owned values.
-  if (spec.outputMode !== undefined || spec.showFooter !== undefined) {
+  if (spec.outputMode !== undefined || spec.showFooter !== undefined || spec.showStatusBar !== undefined) {
     const out = (
       typeof raw.output === 'object' && raw.output !== null ? (raw.output as Record<string, unknown>) : {}
     ) as Record<string, unknown>
     if (spec.outputMode !== undefined) out.mode = spec.outputMode
     if (spec.showFooter !== undefined) out.showFooter = spec.showFooter
+    if (spec.showStatusBar !== undefined) out.showStatusBar = spec.showStatusBar
     raw.output = out
   }
 

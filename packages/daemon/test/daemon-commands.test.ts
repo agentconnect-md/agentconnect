@@ -1253,6 +1253,35 @@ describe('Slack interactive status bar', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('removes the persisted session status line after the Agent disables it', async () => {
+    // Exercise the hidden branch without starting the daemon's unrelated file watchers.
+    // Config/default replication is covered separately; this proves the Slack cleanup
+    // action deletes the remembered row and dedupes later usage/turn-end refreshes.
+    const daemon = new Daemon({ root: scaffold() })
+    const conn = { deleteMessage: vi.fn(async () => true) }
+    const clearStatusBarTs = vi.fn()
+    ;(daemon as any).store = { clearStatusBarTs }
+    const pending: any = {
+      platform: 'slack',
+      showStatusBar: false,
+      statusBarTs: 'sb1',
+      sessionKey: SESSION_KEY,
+      channel: 'C1',
+      conn,
+      applyChain: Promise.resolve()
+    }
+
+    ;(daemon as any).emitStatusBar(pending)
+    await pending.applyChain
+    expect(conn.deleteMessage).toHaveBeenCalledWith('C1', 'sb1')
+    expect(pending.statusBarTs).toBeUndefined()
+    expect(clearStatusBarTs).toHaveBeenCalledWith(SESSION_KEY)
+
+    ;(daemon as any).emitStatusBar(pending)
+    await pending.applyChain
+    expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
+  }, 15_000)
+
   it('keeps the session status bar pinned above cards that need human input', async () => {
     const { host, release } = modelHost()
     const daemon = new Daemon({ root: scaffold(AGENT_IDENTITY), hostFactory: () => host as any })

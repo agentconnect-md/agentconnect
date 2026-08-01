@@ -997,6 +997,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         runtime: 'claude',
         outputMode: 'high',
         showFooter: false,
+        showStatusBar: false,
         fastMode: true,
         allowRuntimeChangesInChat: true
       }
@@ -1006,16 +1007,19 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       id: string
       outputMode: string | null
       showFooter: boolean
+      showStatusBar: boolean
       fastMode: boolean | null
       allowRuntimeChangesInChat: boolean
     }
     expect(created.outputMode).toBe('high')
     expect(created.showFooter).toBe(false)
+    expect(created.showStatusBar).toBe(false)
     expect(created.fastMode).toBe(true)
     expect(created.allowRuntimeChangesInChat).toBe(true)
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       outputMode: 'high',
       showFooter: false,
+      showStatusBar: false,
       fastMode: true,
       allowRuntimeChangesInChat: true
     })
@@ -1027,6 +1031,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: {
         outputMode: 'low',
         showFooter: true,
+        showStatusBar: true,
         fastMode: false,
         allowRuntimeChangesInChat: false
       }
@@ -1035,11 +1040,13 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const patched = patch.json() as {
       outputMode: string | null
       showFooter: boolean
+      showStatusBar: boolean
       fastMode: boolean | null
       allowRuntimeChangesInChat: boolean
     }
     expect(patched.outputMode).toBe('low')
     expect(patched.showFooter).toBe(true)
+    expect(patched.showStatusBar).toBe(true)
     expect(patched.fastMode).toBe(false)
     expect(patched.allowRuntimeChangesInChat).toBe(false)
 
@@ -1052,6 +1059,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect((cleared.json() as { fastMode: boolean | null }).fastMode).toBeNull()
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       showFooter: true,
+      showStatusBar: true,
       allowRuntimeChangesInChat: false
     })
 

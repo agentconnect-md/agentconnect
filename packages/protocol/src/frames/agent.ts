@@ -202,6 +202,7 @@ export const AgentSpec = z.object({
   executionMode: z.string().optional(), // e.g. "byoc"
   outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(), // platform output verbosity → agent.json output.mode ('none' = session-only, nothing to the IM)
   showFooter: z.boolean().optional(), // render platform attribution/session footers; absent ⇒ leave agent.json unchanged
+  showStatusBar: z.boolean().optional(), // render Slack's persistent session status row; absent ⇒ leave agent.json unchanged
   fastMode: z.boolean().optional(), // runtime fast mode (ACP `model_config` toggle); absent ⇒ leave runtime default
   permissionMode: z.string().nullable().optional(), // runtime permission/approval mode (ACP `mode` selector); absent ⇒ leave alone, null ⇒ clear
   // Explicit opt-in: when false, conversation participants cannot change runtime

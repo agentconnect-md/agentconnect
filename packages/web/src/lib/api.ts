@@ -215,6 +215,7 @@ export interface AgentDto {
   reasoningEffort: string | null
   outputMode: string | null // platform output verbosity: low | medium | high; null when unset
   showFooter: boolean // render attribution/session footer; defaults true
+  showStatusBar: boolean // render Slack's persistent session status row; defaults true
   fastMode: boolean | null // runtime fast mode; null when never set (runtime default)
   permissionMode: string | null // runtime permission/approval mode; null when never set
   allowRuntimeChangesInChat: boolean // explicit opt-in; defaults false
@@ -744,6 +745,7 @@ export interface UpdateAgentInput {
   reasoningEffort?: string | null
   outputMode?: string | null
   showFooter?: boolean
+  showStatusBar?: boolean
   fastMode?: boolean | null
   permissionMode?: string | null
   allowRuntimeChangesInChat?: boolean
@@ -901,6 +903,7 @@ export interface CreateAgentInput {
   reasoningEffort?: string
   outputMode?: string // platform output verbosity: low | medium | high
   showFooter?: boolean
+  showStatusBar?: boolean
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
   allowRuntimeChangesInChat?: boolean
@@ -1508,6 +1511,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // the fetched `/sessions` list, so it's not a field here.
     outputMode: d.outputMode ?? PLACEHOLDER,
     showFooter: d.showFooter ?? true,
+    showStatusBar: d.showStatusBar ?? true,
     reasoning: d.reasoningEffort ?? '',
     // Unset (null) reads as "Off" — the runtime default.
     fastMode: d.fastMode ?? false,

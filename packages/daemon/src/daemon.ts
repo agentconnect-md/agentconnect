@@ -1094,6 +1094,9 @@ interface Pending {
   /** ts of the session's interactive status-bar message, once known. Persisted in the
    *  session row so later turns update the first line instead of posting duplicates. */
   statusBarTs?: string
+  /** Agent-level Slack status-row preference, snapshotted for this turn alongside output
+   *  mode/footer settings so a hot config edit takes effect cleanly on the next turn. */
+  showStatusBar: boolean
   /** Whether the status bar's first post was attempted (see progressAttempted). */
   statusBarAttempted?: boolean
   /** Dedup key for the last status snapshot + cancel availability emitted this turn, so
@@ -9527,6 +9530,7 @@ export class Daemon {
       runtimeCostReported: false,
       usageReportSent: false,
       evaluationTurnId,
+      showStatusBar: agent.output.showStatusBar,
       statusCancellable: true,
       applyChain: Promise.resolve(),
       done,
@@ -10577,6 +10581,21 @@ export class Daemon {
         }
         return
       }
+      case 'clear-status-bar': {
+        let ts = p.statusBarTs ?? this.store.getStatusBarTs(p.sessionKey)
+        if (!ts && !p.statusBarAttempted) ts = await this.findExistingSlackStatusBarTs(conn, p)
+        p.statusBarAttempted = true
+        if (!ts) return
+        p.statusBarTs = ts
+        const deleted = await conn.deleteMessage(p.channel, ts)
+        // Duck-typed test connections historically return void; only an explicit false
+        // means Slack rejected the cleanup and the persisted ts should be retried later.
+        if (deleted !== false) {
+          p.statusBarTs = undefined
+          this.store.clearStatusBarTs(p.sessionKey)
+        }
+        return
+      }
       case 'status-bar': {
         // Session-scoped interactive status line: the first post's ts is stored on the
         // session, and every later turn updates that topmost line in place. Serialized by
@@ -11223,6 +11242,13 @@ export class Daemon {
    *  applyAction (no connection), which is fine. */
   private emitStatusBar(p: Pending, allowWhenSuppressed = false): void {
     if (p.outputSuppressed && !allowWhenSuppressed) return
+    if (p.platform === 'slack' && !p.showStatusBar) {
+      const key = 'status-bar:hidden'
+      if (key === p.lastStatusBar) return
+      p.lastStatusBar = key
+      this.enqueueApply(p, { kind: 'clear-status-bar' }, { allowWhenSuppressed })
+      return
+    }
     const info = this.buildStatusInfo(p)
     const key = JSON.stringify([info, p.platform === 'slack' ? p.statusCancellable : null])
     if (key === p.lastStatusBar) return // unchanged since the last emit — no-op

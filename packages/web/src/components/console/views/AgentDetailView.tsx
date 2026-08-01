@@ -949,6 +949,20 @@ export default function AgentDetailView() {
                     {da.showFooter ? 'On' : 'Off'}
                   </span>
                 </div>
+                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                  <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                    Show status bar
+                  </span>
+                  <span
+                    className={
+                      da.showStatusBar
+                        ? 'badge bg-(--brand-soft) text-(--brand-soft-text) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
+                        : 'badge bg-(--surface-active) text-(--text-tertiary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]'
+                    }
+                  >
+                    {da.showStatusBar ? 'On' : 'Off'}
+                  </span>
+                </div>
                 <div className="flex items-center justify-between gap-4 px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                     Introduce on join

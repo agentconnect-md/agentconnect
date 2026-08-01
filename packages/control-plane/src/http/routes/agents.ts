@@ -204,6 +204,7 @@ function toDto(
     reasoningEffort: a.reasoningEffort,
     outputMode: a.outputMode,
     showFooter: a.showFooter,
+    showStatusBar: a.showStatusBar,
     fastMode: a.fastMode,
     permissionMode: a.permissionMode,
     allowRuntimeChangesInChat: a.allowRuntimeChangesInChat,
@@ -1044,6 +1045,7 @@ export function agentRoutes(deps: HttpDeps) {
                     ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
                     ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
                     ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
+                    ...(req.body.showStatusBar !== undefined ? { showStatusBar: req.body.showStatusBar } : {}),
                     ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
                     ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
                     ...(req.body.allowRuntimeChangesInChat !== undefined

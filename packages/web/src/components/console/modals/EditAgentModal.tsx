@@ -101,6 +101,8 @@ export default function EditAgentModal({
   const initialOutputMode = useRef<OutputMode | ''>('')
   const [showFooter, setShowFooter] = useState(agent.showFooter)
   const initialShowFooter = useRef(agent.showFooter)
+  const [showStatusBar, setShowStatusBar] = useState(agent.showStatusBar)
+  const initialShowStatusBar = useRef(agent.showStatusBar)
   const [effort, setEffort] = useState('')
   const initialEffort = useRef('')
   const [fastMode, setFastMode] = useState(agent.fastMode)
@@ -171,6 +173,8 @@ export default function EditAgentModal({
         initialOutputMode.current = nextOutputMode
         setShowFooter(dto.showFooter ?? true)
         initialShowFooter.current = dto.showFooter ?? true
+        setShowStatusBar(dto.showStatusBar ?? true)
+        initialShowStatusBar.current = dto.showStatusBar ?? true
         setFastMode(dto.fastMode ?? false)
         initialFastMode.current = dto.fastMode ?? false
         setPermissionMode(dto.permissionMode ?? permissionModeDefault(dto.runtime ?? ''))
@@ -403,6 +407,7 @@ export default function EditAgentModal({
     ...(effort !== initialEffort.current ? { reasoningEffort: effort || null } : {}),
     ...(outputMode !== initialOutputMode.current ? { outputMode: outputMode || null } : {}),
     ...(showFooter !== initialShowFooter.current ? { showFooter } : {}),
+    ...(showStatusBar !== initialShowStatusBar.current ? { showStatusBar } : {}),
     ...(fastMode !== initialFastMode.current ? { fastMode } : {}),
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
     ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
@@ -764,6 +769,8 @@ export default function EditAgentModal({
                   onChange={(mode) => setOutputMode(mode)}
                   showFooter={showFooter}
                   onShowFooterChange={setShowFooter}
+                  showStatusBar={showStatusBar}
+                  onShowStatusBarChange={setShowStatusBar}
                 />
                 <div className="fld desktop:col-span-2">
                   <span className="fldlbl">Introduce on channel join</span>
