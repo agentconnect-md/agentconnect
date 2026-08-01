@@ -22,7 +22,8 @@ const AGENT_IDENTITY = {
 const STATUS_BAR_POST_OPTIONS = {
   username: AGENT_IDENTITY.displayName,
   icon_url: AGENT_IDENTITY.iconUrl,
-  chrome: true
+  chrome: true,
+  chromeOwnerAgentId: 'bot-a'
 }
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 const SESSION_KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', TRANSPORT_SCOPE)
@@ -1319,7 +1320,9 @@ describe('Slack interactive status bar', () => {
       'sb1',
       expect.any(Array),
       expect.stringContaining('opus-4.8'),
-      true
+      true,
+      undefined,
+      'bot-a'
     )
     // The in-thread message is one section row: status + View Session + overflow.
     const blocks = conn.postBlocks.mock.calls[0]![1] as { type: string; text?: { text: string }; accessory?: any }[]
@@ -1391,7 +1394,15 @@ describe('Slack interactive status bar', () => {
     p.lastStatusBar = undefined // mimic a usage update that changes the visible header
     ;(daemon as any).emitStatusBar(p)
     await vi.waitFor(() =>
-      expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'sb1', expect.any(Array), expect.any(String), true)
+      expect(conn.updateBlocks).toHaveBeenCalledWith(
+        'C1',
+        'sb1',
+        expect.any(Array),
+        expect.any(String),
+        true,
+        undefined,
+        'bot-a'
+      )
     )
     expect(p.statusBarTs).toBe('sb1')
     expect((daemon as any).store.getStatusBarTs(p.sessionKey)).toBe('sb1')
@@ -1727,8 +1738,24 @@ describe('Slack interactive status bar', () => {
     ;(conn as any).botId = 'B1'
     ;(conn as any).getThreadReplies = vi.fn(async () => [
       { sender: 'U1', ts: 'T1', text: 'hi', isBot: false, attachments: [] },
-      { sender: 'B1', ts: '111.1', text: ':bar_chart: *old* - ctx 1.0k', isBot: true, attachments: [] },
-      { sender: 'B1', ts: '222.2', text: ':bar_chart: *newer*', isBot: true, attachments: [] }
+      {
+        sender: 'B1',
+        ts: '111.1',
+        text: ':bar_chart: *old* - ctx 1.0k',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-a',
+        attachments: []
+      },
+      {
+        sender: 'B1',
+        ts: '222.2',
+        text: ':bar_chart: *newer*',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-a',
+        attachments: []
+      }
     ])
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
@@ -1738,7 +1765,9 @@ describe('Slack interactive status bar', () => {
         '111.1',
         expect.any(Array),
         expect.stringContaining('opus-4.8'),
-        true
+        true,
+        undefined,
+        'bot-a'
       )
     )
     expect(conn.postBlocks).not.toHaveBeenCalled()
@@ -1760,12 +1789,52 @@ describe('Slack interactive status bar', () => {
     ;(conn as any).botId = 'B-MINE'
     ;(conn as any).getThreadReplies = vi.fn(async () => [
       { sender: 'U1', ts: 'T1', text: 'hi', isBot: false, attachments: [] },
-      { sender: 'B-OTHER', ts: '111.1', text: ':bar_chart: *sibling* - ctx 9k', isBot: true, attachments: [] }
+      {
+        sender: 'B-OTHER',
+        ts: '111.1',
+        text: ':bar_chart: *sibling* - ctx 9k',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-a',
+        attachments: []
+      }
     ])
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
     await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled())
-    expect(conn.updateBlocks).not.toHaveBeenCalledWith('C1', '111.1', expect.anything(), expect.anything(), true)
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === '111.1')).toBe(false)
+    expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
+
+    release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('never adopts a sibling Agent status line when both share one Slack app', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+    ;(conn as any).botId = 'B-SHARED'
+    ;(conn as any).getThreadReplies = vi.fn(async () => [
+      {
+        sender: 'B-SHARED',
+        ts: '111.1',
+        text: ':bar_chart: *sibling* - ctx 9k',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-b',
+        attachments: []
+      }
+    ])
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled())
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === '111.1')).toBe(false)
+    expect(conn.postBlocks.mock.calls[0]?.[4]).toMatchObject({
+      chrome: true,
+      chromeOwnerAgentId: 'bot-a'
+    })
     expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
 
     release()
@@ -1796,7 +1865,15 @@ describe('Slack interactive status bar', () => {
     ;(daemon as any).opts.hostFactory = () => second.host as any
     const turn2 = (daemon as any).dispatch('bot-a', dm('101', 'hi again'), 'int-a')
     await vi.waitFor(() =>
-      expect(conn.updateBlocks).toHaveBeenCalledWith('C1', posted, expect.anything(), expect.anything(), true)
+      expect(conn.updateBlocks).toHaveBeenCalledWith(
+        'C1',
+        posted,
+        expect.anything(),
+        expect.anything(),
+        true,
+        undefined,
+        'bot-a'
+      )
     )
     // The dead ts is dropped and a later emit in the same turn posts a fresh bar.
     await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(2))

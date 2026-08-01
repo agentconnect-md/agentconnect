@@ -11250,7 +11250,7 @@ export class Daemon {
         }
         if (ts) {
           p.statusBarTs = ts
-          const updated = await conn.updateBlocks(p.channel, ts, action.blocks, action.text, true)
+          const updated = await conn.updateBlocks(p.channel, ts, action.blocks, action.text, true, undefined, p.agentId)
           // Duck-typed test connections historically return void; only an explicit
           // false means Slack rejected the edit — typically cant_update_message on a
           // bar another Slack app authored (a foreign ts persisted by the
@@ -11268,7 +11268,8 @@ export class Daemon {
           // identity aligned with the native loading state and the eventual reply.
           const posted = await conn.postBlocks(p.channel, action.blocks, action.text, p.thread, {
             ...(statusBarPostOptions ?? {}),
-            chrome: true
+            chrome: true,
+            chromeOwnerAgentId: p.agentId
           })
           if (posted) {
             p.statusBarTs = posted
@@ -11282,20 +11283,22 @@ export class Daemon {
 
   /** Best-effort adoption path for sessions that already have an older status bar in
    *  Slack before `statusBarTs` was persisted locally. We scan in Slack's thread order
-   *  and pick the first status line THIS connection's own Slack app authored, so future
-   *  turns update the topmost existing line instead of adding one more duplicate.
-   *  Author provenance is mandatory: the bar is edited in place via chat.update, and
-   *  Slack only lets a bot edit its own messages — a sibling agent's bar in a shared
-   *  multi-agent thread (a different app) is neither editable (cant_update_message on
-   *  every usage tick) nor semantically ours (its numbers describe the other agent's
-   *  session). Reply rows keep `sender` = bot_id ?? user, so match either identity. */
+   *  and pick the first status line both this connection's Slack app AND this Agent
+   *  authored, so future turns update the topmost existing line instead of adding one
+   *  more duplicate. Both provenance dimensions are mandatory: another app's bar is not
+   *  editable, while another Agent behind the same shared Slack app is editable but its
+   *  numbers and controls belong to a different session. Reply rows keep `sender` =
+   *  bot_id ?? user, so match either Slack identity plus the AgentConnect chrome owner. */
   private async findExistingSlackStatusBarTs(conn: SlackConnection, p: Pending): Promise<string | undefined> {
     const getThreadReplies = (conn as { getThreadReplies?: SlackConnection['getThreadReplies'] }).getThreadReplies
     if (!getThreadReplies) return undefined
     const own = new Set([conn.botId, conn.botUserId].filter(Boolean))
     if (own.size === 0) return undefined
     const replies = await getThreadReplies.call(conn, p.channel, p.statusThread)
-    return replies.find((m) => m.isBot && own.has(m.sender) && isSlackStatusBarText(m.text))?.ts
+    return replies.find(
+      (m) =>
+        m.isBot && own.has(m.sender) && m.chrome && m.chromeOwnerAgentId === p.agentId && isSlackStatusBarText(m.text)
+    )?.ts
   }
 
   /**
