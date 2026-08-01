@@ -15,10 +15,13 @@ import type { AgentIcon } from '@/lib/agent-icon'
  *  hover copy. */
 function TriggerToggle({
   channel,
+  platform,
   disabled,
   onChange
 }: {
   channel: IntegrationChannelRow
+  /** Names the room the way its platform does — one noun per card. */
+  platform?: string
   /** Demo rows (no live integration id) render the control inert. */
   disabled: boolean
   onChange: (trigger: IntegrationChannelRow['trigger']) => void
@@ -54,7 +57,7 @@ function TriggerToggle({
   // who wants the bot silent here but still in the channel on the platform has nowhere
   // else to say so. A GROUP DM takes the channel's choice, not the DM's: several people
   // share it, so "every message" must stay opt-in.
-  const here = channel.kind === 'mpim' ? 'this group DM' : 'this channel'
+  const here = `this ${rowNoun(channel.kind, platform)}`
   const segs: [IntegrationChannelRow['trigger'], string, string][] =
     channel.kind === 'im'
       ? [
@@ -203,9 +206,24 @@ type MemberAgent = { id: string; label: string; runtime: string; icon?: AgentIco
  */
 const canLeaveConversation = (platform?: string): boolean => platform === 'telegram'
 
-/** What "leave" is called where — the console should use the platform's own word for
- *  the room, not a generic one the operator has to translate. */
-const conversationNoun = (platform?: string): string => (platform === 'telegram' ? 'group' : 'channel')
+/**
+ * What this platform calls the room, and what to call a row of it.
+ *
+ * ONE noun per card. Telegram and Lark have groups; Slack and Discord have channels.
+ * Mixing them — a "#" row, a "channel" footer and a "Leave group" menu item, all
+ * describing the same Telegram row — makes an operator wonder whether they are three
+ * different things. A direct conversation is neither, so it keeps its own word.
+ */
+const roomNoun = (platform?: string): string => (platform === 'telegram' || platform === 'feishu' ? 'group' : 'channel')
+
+/** The noun for ONE row: a DM is never a channel or a group, whatever the platform. */
+const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
+  kind === 'im' ? 'conversation' : kind === 'mpim' ? 'group chat' : roomNoun(platform)
+
+/** The list marker. "#" is the channel convention Slack and Discord share; a Telegram
+ *  or Lark group has no such sigil, so it gets none rather than a borrowed one. */
+const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
+  kind === 'im' ? '@' : kind === 'mpim' ? '@@' : roomNoun(platform) === 'group' ? '' : '#'
 
 /** Fixed-position placement of the portalled popover, measured off its button. */
 type PopoverBox = { style: { left?: number; right?: number; top?: number; bottom?: number } }
@@ -282,7 +300,7 @@ function RowActions({
     setBusy(true)
     void action().finally(() => setBusy(false))
   }
-  const noun = conversationNoun(platform)
+  const noun = rowNoun(channel.kind, platform)
   const item = (label: string, icon: string, hint: string, onClick: () => void) => (
     <button
       onClick={onClick}
@@ -341,14 +359,14 @@ function RowActions({
                     })
                 )}
               {item(
-                'Forget this conversation',
+                `Forget this ${noun}`,
                 'trash-2',
                 'Removes the row here only. Use it when the bot has already left.',
                 () =>
                   run(async () => {
                     if (
                       !window.confirm(
-                        `Stop listing ${channel.name}? The bot is not touched — if it is still in the conversation, the row comes back.`
+                        `Stop listing ${channel.name}? The bot is not touched — if it is still in the ${noun}, the row comes back.`
                       )
                     ) {
                       return
@@ -627,7 +645,7 @@ export function IntegrationChannelList({
         style={{ padding: `10px ${padX}px` }}
       >
         <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
-          {c.kind === 'im' ? '@' : c.kind === 'mpim' ? '@@' : '#'}
+          {roomGlyph(c.kind, platform)}
         </span>
         {/* DM labels are stored as "@Alice" (name resolvers); the glyph column already
             renders the marker, so strip a leading @ to avoid "@@Alice". */}
@@ -656,6 +674,7 @@ export function IntegrationChannelList({
           )}
           <TriggerToggle
             channel={c}
+            platform={platform}
             disabled={!integrationId}
             onChange={(trigger) => setChannelTrigger(integrationId!, c.channelId, trigger)}
           />
@@ -688,8 +707,7 @@ export function IntegrationChannelList({
         >
           <Icon name="lock" size={13} className="mt-[2px] flex-none" />
           <span>
-            This agent is private: conversations start off. Enable each channel or direct message below before the agent
-            responds there.
+            {`This agent is private: conversations start off. Enable each ${roomNoun(platform)} or direct message below before the agent responds there.`}
           </span>
         </div>
       )}
@@ -717,17 +735,13 @@ export function IntegrationChannelList({
       >
         <Icon name="info" size={14} className="mt-[3px] flex-none" />
         <span>
-          {shareable
-            ? 'Channels appear here when the bot is invited to them. Trigger is set per channel; default dispatch is the agent who handles unmatched messages.'
-            : gated
-              ? 'Channels appear here when the bot is invited; direct messages appear when someone writes to the bot.'
-              : 'Channels appear here when the bot is invited to them. Trigger is set per channel.'}{' '}
-          {/* Off silences without leaving; the row menu covers the rest. What the menu
-              can offer differs by platform, so promise only what is there — and where
-              leaving is not offered, say where it IS done rather than leaving the
-              operator to wonder. */}
-          Set a channel to off to silence the agent there, or use a row&rsquo;s menu to{' '}
-          {canLeaveConversation(platform) ? 'leave it or stop listing it' : 'stop listing it'}.
+          {/* Says where rows COME FROM, and — only where the row menu cannot do it —
+              where leaving is done instead. It deliberately no longer narrates the
+              menu's own items: those explain themselves on screen, and repeating them
+              here in different words was most of what made this card read oddly. */}
+          {`A ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per ${roomNoun(platform)}.`}
+          {gated && ' Direct messages appear when someone writes to the bot.'}
+          {shareable && ' Default dispatch is the agent who handles unmatched messages.'}
           {platform === 'discord' && ' A Discord bot joins servers, not channels, so it can only leave a whole server.'}
           {platform === 'slack' && ' To remove the bot from a channel, do it in Slack — this list updates by itself.'}
         </span>
