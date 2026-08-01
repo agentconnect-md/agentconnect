@@ -189,12 +189,15 @@ export function DreamPanel({
       await fn()
       await refresh()
     } catch (e) {
-      // 409 means different things per action: a racing START hit the
-      // one-in-flight rule, while a refused ADOPT means the snapshot fence saw
-      // live memory change. Only the start case gets our wording — everything
-      // else keeps the server's specific message, which says what to do.
+      // 409 means different things even within START: a racing trigger can hit
+      // the one-in-flight rule, while a daemon security hold also returns a 409
+      // with an actionable reason. Rewrite only the known race; every other
+      // conflict keeps the server's specific message.
       setActionError(
-        e instanceof ApiError && e.status === 409 && action === 'start'
+        e instanceof ApiError &&
+          e.status === 409 &&
+          action === 'start' &&
+          e.message.includes('a dream is already in flight')
           ? 'A dream is already running for this agent — wait for it to finish, or cancel it.'
           : e instanceof ApiError && e.status === 503
             ? 'This agent’s daemon is offline.'

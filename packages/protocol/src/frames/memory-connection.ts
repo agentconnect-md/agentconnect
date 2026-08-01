@@ -64,7 +64,7 @@ export const MemoryDreamingPolicy = z
     mineSkills: z.boolean().optional(),
     /** Adopt the staged store automatically on completion without content
      *  review. Live-memory fence conflicts remain reviewable. Absent defaults
-     *  to true for effective managed-memory policies. */
+     *  to false for effective managed-memory policies; true is an explicit opt-in. */
     autoAdopt: z.boolean().optional()
   })
   .strict()
@@ -79,7 +79,7 @@ export type MemoryDreamingPolicy = z.infer<typeof MemoryDreamingPolicy>
 export const DEFAULT_MEMORY_DREAMING_POLICY = {
   enabled: true,
   schedule: '0 4 * * *',
-  autoAdopt: true
+  autoAdopt: false
 } as const satisfies MemoryDreamingPolicy
 
 const BuiltInMemoryBinding = z
@@ -118,9 +118,9 @@ export type AgentMemoryBinding = z.infer<typeof AgentMemoryBinding>
 /** Resolve the managed-memory dreaming policy used by the daemon.
  *
  * No memory binding means the managed provider, and no explicit dreaming policy
- * means the daily auto-adopting product default. Once a policy exists its absent
- * schedule remains meaningful (manual-only), while absent `autoAdopt` follows
- * the new default; an explicit false is the opt-out.
+ * means the daily, review-first product default. Once a policy exists its absent
+ * schedule remains meaningful (manual-only), while absent `autoAdopt` normalizes
+ * false; an explicit true is the opt-in.
  */
 export function effectiveMemoryDreamingPolicy(
   binding: AgentMemoryBinding | undefined
@@ -128,7 +128,7 @@ export function effectiveMemoryDreamingPolicy(
   if (binding && binding.provider !== 'managed') return undefined
   const policy = binding?.dreaming
   if (!policy) return { ...DEFAULT_MEMORY_DREAMING_POLICY }
-  return policy.autoAdopt === undefined ? { ...policy, autoAdopt: true } : policy
+  return policy.autoAdopt === undefined ? { ...policy, autoAdopt: false } : policy
 }
 
 /** Reviewed mapping from a logical secret field to the header the relay injects. */

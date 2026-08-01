@@ -3,6 +3,7 @@ import { LocalStore, sessionKey, transcriptChannelKey } from '../store/local-sto
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
+import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { planConfigFiles } from '../agents/config-file-env.js'
 import { recalledMemoryBlock, recallQueryFromBlocks, sanitizeRecallRecords } from '../agents/memory-recall.js'
@@ -86,6 +87,37 @@ const COMPACTION_DROP_RATIO = 0.5
 // starts with them; isStandingContextTitleEcho must recognize exactly what handle()
 // builds, so both sides share these literals.
 const AGENT_META_OPENING = ['# Agent', '- Name:'] as const
+
+const MEMORY_BOUNDARY_TRUNCATION_NOTICE = '\n\n[…memory index truncated — trim MEMORY.md]'
+
+/** Serialize untrusted persistent-memory text inside the prompt's XML-shaped
+ * boundary. Escaping all XML markup characters makes it impossible for file
+ * content to spell an opening or closing structural tag; decoding exactly one
+ * entity layer reconstructs untruncated text byte-for-byte. The serialized body
+ * retains the standing-context byte cap without splitting an entity or UTF-8
+ * code point. */
+function encodeMemoryBoundaryBody(content: string): string {
+  const encode = (character: string): string => {
+    if (character === '&') return '&amp;'
+    if (character === '<') return '&lt;'
+    if (character === '>') return '&gt;'
+    return character
+  }
+  const fullyEncoded = content.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  if (Buffer.byteLength(fullyEncoded) <= MAX_INDEX_INJECT_BYTES) return fullyEncoded
+
+  const bodyBudget = MAX_INDEX_INJECT_BYTES - Buffer.byteLength(MEMORY_BOUNDARY_TRUNCATION_NOTICE)
+  let used = 0
+  let truncated = ''
+  for (const character of content) {
+    const encoded = encode(character)
+    const width = Buffer.byteLength(encoded)
+    if (used + width > bodyBudget) break
+    truncated += encoded
+    used += width
+  }
+  return truncated + MEMORY_BOUNDARY_TRUNCATION_NOTICE
+}
 
 /**
  * True when a runtime-pushed session title is actually an echo of the inlined
@@ -520,8 +552,11 @@ export class SessionManager {
         `\`readMemory\` when it is relevant. Keep the index short — a scannable list that links to topic files.\n\n` +
         `Only text inside the memory-file boundary below belongs to \`MEMORY.md\`; everything outside it is ` +
         `session context and not a valid source for \`oldString\`. This injected index is a start-of-session ` +
-        `snapshot; after a memory write, or when uncertain, call \`readMemory\` before editing.\n\n` +
-        `<agentconnect-memory-file path="MEMORY.md">\n${memoryIndex}\n</agentconnect-memory-file>`
+        `snapshot. Its body uses one layer of XML character-reference encoding: \`&amp;\`, \`&lt;\`, and \`&gt;\` ` +
+        `represent literal ampersand, less-than, and greater-than characters. Decode exactly one layer when ` +
+        `deriving \`oldString\`; all other characters and line breaks are unchanged. A \`readMemory\` result is ` +
+        `raw and needs no decoding. After a memory write, or when uncertain, call \`readMemory\` before editing.\n\n` +
+        `<agentconnect-memory-file path="MEMORY.md">\n${encodeMemoryBoundaryBody(memoryIndex)}\n</agentconnect-memory-file>`
       : ''
 
     // The agent meta object: the agent's identity (name, id) and description, plus the

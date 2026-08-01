@@ -96,25 +96,15 @@ afterEach(async () => {
 })
 
 describe('organization suggestion review card', () => {
-  it('allows an owner to reject unavailable metadata while keeping acceptance gated on the body', async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, init?: RequestInit) =>
-        new Response(JSON.stringify({ ...BASE, state: 'rejected' }), {
-          status: init?.method === 'POST' ? 200 : 500,
-          headers: { 'content-type': 'application/json' }
-        })
-    )
+  it('keeps both review decisions disabled while the source review surface is unavailable', async () => {
+    const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const onReviewed = await render({ ...BASE, contentAvailable: false })
+    await render({ ...BASE, contentAvailable: false })
 
-    expect(button('Reject').disabled).toBe(false)
+    expect(button('Reject').disabled).toBe(true)
     expect(button('Accept').disabled).toBe(true)
-    expect(host.textContent).toContain('offline, upgrading, or no longer owns')
-
-    await act(async () => button('Reject').click())
-    await settleUntil(() => onReviewed.mock.calls.length === 1)
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ decision: 'reject' })
-    expect(onReviewed).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('paused for safety')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('renders the full knowledge Markdown body before enabling acceptance', async () => {

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ORGANIZATION_KNOWLEDGE_FEATURE, type AnyFrame } from '@agentconnect.md/protocol'
+import {
+  ORGANIZATION_KNOWLEDGE_FEATURE,
+  ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
+  type AnyFrame
+} from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import {
@@ -36,7 +40,11 @@ function conn() {
 }
 
 const featureRegistry = {
-  get: async () => ({ id: DAEMON, orgId: ORG, capabilities: { features: [ORGANIZATION_KNOWLEDGE_FEATURE] } })
+  get: async () => ({
+    id: DAEMON,
+    orgId: ORG,
+    capabilities: { features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE] }
+  })
 }
 
 describe('handleKnowledgeSearch', () => {
@@ -155,6 +163,47 @@ describe('handleOrganizationSuggestionsSync', () => {
     expect(connection.replyTo.mock.calls[0]![2]).toEqual({
       decisions: [{ sourceAgentId: AGENT, dreamId: 'dream-1', candidateId: acceptedCandidate, state: 'accepted' }]
     })
+  })
+
+  it('keeps metadata convergent but withholds terminal decisions while staged review is held', async () => {
+    const candidateId = '22222222-2222-4222-8222-222222222222'
+    const syncSuggestions = vi.fn(async (_orgId, _daemonId, suggestions) => [
+      { ...suggestions[0], id: 'suggestion-id', state: 'rejected' }
+    ])
+    const deps = {
+      registry: {
+        get: async () => ({
+          id: DAEMON,
+          orgId: ORG,
+          capabilities: { features: [ORGANIZATION_KNOWLEDGE_FEATURE] }
+        })
+      },
+      agent: { list: async () => [{ id: AGENT, daemonId: DAEMON }] },
+      organizationKnowledge: { syncSuggestions }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+    const suggestion = {
+      sourceAgentId: AGENT,
+      dreamId: 'dream-held',
+      candidateId,
+      kind: 'knowledge',
+      operation: 'create',
+      title: 'Held candidate',
+      digest: `sha256:${'a'.repeat(64)}`,
+      contentBytes: 10,
+      state: 'proposed',
+      sessionIds: ['session-1'],
+      createdAt: '2026-08-01T00:00:00.000Z'
+    }
+
+    await handleOrganizationSuggestionsSync(
+      frame('knowledge/suggestions/sync', { suggestions: [suggestion] }),
+      connection,
+      deps
+    )
+
+    expect(syncSuggestions).toHaveBeenCalledWith(ORG, DAEMON, [suggestion])
+    expect(connection.replyTo.mock.calls[0]![2]).toEqual({ decisions: [] })
   })
 })
 

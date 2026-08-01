@@ -87,7 +87,7 @@ const SESSION_ACCESS_COPY: Record<
     unavailable:
       'Requires OIDC and linked Slack identities. Until then, shared sessions remain visible to Everyone who can view the agent.',
     enabled:
-      'Each shared session is visible only to current members of its Slack conversation. DMs remain private. Agent memory learned earlier is not erased.',
+      'Public-channel sessions follow Slack workspace access. Private channels, group DMs, guests, and Slack Connect users require current conversation membership. DMs remain private. Agent memory learned earlier is not erased.',
     disabled:
       'New shared sessions are visible to Everyone who can view the agent. Previously synced sessions keep following Slack. DMs remain private.',
     unresolved: (count) =>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { channelOwners, groupBySpace, placePopover } from './IntegrationChannelList'
+import { channelOwners, groupBySpace, placePopover, rowLabel, rowMenuAction } from './IntegrationChannelList'
 import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
 
 // A shared bot fans its membership snapshot out to one integration per member
@@ -153,5 +153,65 @@ describe('groupBySpace', () => {
   it('takes the label from whichever row of the server carries one', () => {
     const rows = [chan('C1', 'G1'), chan('C2', 'G1', 'Acme HQ')]
     expect(groupBySpace(rows)).toEqual([{ key: 'G1', label: 'Acme HQ', rows }])
+  })
+})
+
+// A row offers exactly ONE way out, and the copy has to carry whatever that one action
+// leaves undone — which differs by platform AND by what kind of place the row is.
+describe('rowMenuAction', () => {
+  const row = (kind: IntegrationChannelRow['kind'], name = 'acme docs'): IntegrationChannelRow => ({
+    channelId: 'C1',
+    name,
+    kind,
+    trigger: 'mention'
+  })
+
+  it('offers leaving, and only leaving, where the platform can leave one conversation', () => {
+    const action = rowMenuAction(row('channel'), 'telegram')
+    expect(action).toMatchObject({ leave: true, label: 'Leave group' })
+    expect(action.hint).toContain('leaves this group in Telegram')
+  })
+
+  it('offers removing the row, and says where to remove the bot, where it cannot', () => {
+    const action = rowMenuAction(row('channel'), 'slack')
+    expect(action).toMatchObject({ leave: false, label: 'Remove from this list' })
+    expect(action.hint).toContain('remove it in Slack')
+    expect(action.confirm).toContain('the row will come back')
+  })
+
+  // A Discord bot joins a SERVER, so naming Discord would send the operator hunting for
+  // a per-channel control that does not exist; the way out is the band above the row.
+  it('points a Discord row at its server, not at Discord', () => {
+    const action = rowMenuAction(row('channel'), 'discord')
+    expect(action.leave).toBe(false)
+    expect(action.hint).toContain('Leave on the server heading above')
+    expect(action.hint).not.toContain('remove it in Discord')
+  })
+
+  // Nobody is ADDED to a direct conversation, so telling the operator to remove the bot
+  // there describes something that cannot be done — on Discord it would also point at a
+  // server heading a DM row does not sit under.
+  it.each(['telegram', 'slack', 'discord'])('describes a %s direct conversation as a listing only', (platform) => {
+    for (const kind of ['im', 'mpim'] as const) {
+      const action = rowMenuAction(row(kind), platform)
+      expect(action.leave).toBe(false)
+      expect(action.hint).toContain('Nobody adds or removes a bot')
+      expect(action.hint).toContain('the row comes back on the next message')
+      expect(action.hint).not.toContain('server heading')
+      expect(action.hint).not.toMatch(/remove it in/)
+    }
+  })
+
+  // The stored DM label already carries the "@" the glyph column renders.
+  it('names a DM in a confirm without doubling its @', () => {
+    expect(rowMenuAction(row('im', '@Alice'), 'slack').confirm).toContain('Remove Alice from this list?')
+  })
+})
+
+describe('rowLabel', () => {
+  it('strips the stored @ from a direct conversation and leaves a channel alone', () => {
+    expect(rowLabel({ kind: 'im', name: '@Alice' })).toBe('Alice')
+    expect(rowLabel({ kind: 'mpim', name: '@Alice, Bob' })).toBe('Alice, Bob')
+    expect(rowLabel({ kind: 'channel', name: 'deploys' })).toBe('deploys')
   })
 })

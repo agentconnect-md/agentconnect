@@ -58,7 +58,13 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
-import { DreamRunner, DreamStateError, type DreamLifecycleEvent } from './agents/dream-runner.js'
+import {
+  DREAM_MODEL_READABLE_CREDENTIALS_REASON,
+  DreamRunner,
+  DreamStateError,
+  type DreamLifecycleEvent,
+  type DreamOperationPolicy
+} from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
@@ -173,6 +179,7 @@ import {
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   effectiveMemoryDreamingPolicy,
@@ -309,6 +316,23 @@ function formatErr(err: unknown): string {
     return `${e.name ?? 'Error'}: ${e.message ?? ''} (code=${e.code})${data}`
   }
   return e?.stack ?? String(err)
+}
+
+/**
+ * Does this Telegram failure just mean the bot is ALREADY out of the chat?
+ *
+ * Telegram offers no "am I in this chat" query, so the only way to learn it is to try
+ * to leave and read the refusal. These are the `description`s the Bot API returns from
+ * `leaveChat` for a chat the bot cannot be in — removed, kicked, or the chat is gone.
+ * Anything else is a genuine failure and must still reach the operator.
+ *
+ * Matching on message text is a heuristic, and deliberately a safe one: a mis-read
+ * error only retires a row that is still live, which is the already-documented
+ * behaviour of a removed row — it returns on that conversation's next message.
+ */
+function isAlreadyOutOfChat(err: unknown): boolean {
+  const message = ((err as { message?: string })?.message ?? '').toLowerCase()
+  return message.includes('chat not found') || message.includes('bot was kicked') || message.includes('not a member')
 }
 
 // ACP runtime identities for THIS daemon's own MCP tools. ALL_TOOL_NAMES is the
@@ -465,8 +489,8 @@ function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
 
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
-/** An agent's effective dreaming policy. Managed memory defaults to a daily
- *  auto-adopting dream; an explicit disabled policy or non-managed provider is
+/** An agent's effective dreaming policy. Managed memory defaults to a daily,
+ *  review-first dream; an explicit disabled policy or non-managed provider is
  *  preserved by the shared resolver. */
 function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): MemoryDreamingPolicy | undefined {
   if (!agent) return undefined
@@ -1635,6 +1659,9 @@ export class Daemon {
       overrides?: FlatOverrides
       agentName?: string
       hostFactory?: (agent: Agent, onUpdate: (sid: string, u: any) => void) => AcpHost
+      /** Explicit test/evaluation-only Dream bypass. It is honored only with an
+       * injected hostFactory, never by the production CLI/config surface. */
+      dreamOperationPolicy?: DreamOperationPolicy
       /** Time seam for the idle sweep + cancel backstop (FakeClock in tests). */
       clock?: Clock
       /** How the daemon exits for daemon/restart + daemon/upgrade (spied in tests). */
@@ -2389,7 +2416,7 @@ export class Daemon {
 
     // register crons (sync per agent — the same converge reconcile re-runs on change)
     for (const a of agents) this.scheduler.sync(a.id, a.crons)
-    for (const a of agents) this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
+    for (const a of agents) this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
 
@@ -2554,7 +2581,7 @@ export class Daemon {
       // crons live in the whole-agent signature, so any change re-syncs the agent's
       // job set (design §5.2: crons change → Scheduler upsert/remove). Idempotent.
       this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
+      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
@@ -2605,7 +2632,7 @@ export class Daemon {
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
       this.scheduler.sync(a.id, a.crons)
-      this.dreamScheduler.sync(a.id, dreamingPolicyOf(a))
+      this.dreamScheduler.sync(a.id, this.dreamSchedulePolicyFor(a))
     }
     // Reconcile exactly once from the final live roster. The close phase is strict:
     // detach ACKs only after last-reference connections have actually stopped.
@@ -3341,7 +3368,19 @@ export class Daemon {
         return { ok: true }
       }
       if (conn instanceof TelegramConnection) {
-        await conn.leaveChannel(target.channel)
+        try {
+          await conn.leaveChannel(target.channel)
+        } catch (err) {
+          // Already out — someone removed the bot in Telegram and the row simply
+          // outlived it, which is the whole reason these rows accumulate. Leaving is
+          // the ONLY action offered on a Telegram row, so it has to finish the job in
+          // both states: refusing here would strand the operator with a row they can
+          // see, cannot leave, and have no other control over. Any other failure is
+          // still reported. Worst case of a mis-read error is the documented
+          // behaviour of a removed row — it returns on the conversation's next message.
+          if (!isAlreadyOutOfChat(err)) throw err
+          this.log.debug(`telegram: already out of ${target.channel} — retracting the row`)
+        }
         this.retractChannels(leave.integrationId, [target.channel])
         return { ok: true }
       }
@@ -3866,6 +3905,7 @@ export class Daemon {
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       ORGANIZATION_KNOWLEDGE_FEATURE,
+      ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,
       ...(this.remoteWebchatGrants && (hasRemoteMcpRuntime || hasBuiltinRemoteMcpAgent)
@@ -4094,6 +4134,10 @@ export class Daemon {
     stopReason: string
     usage?: StoredUsage
   }> {
+    // Defense in depth: DreamRunner is the intended caller and already checks
+    // admission before creating a job. Keep the extraction seam independently
+    // fail-closed so a future caller cannot bypass that gate accidentally.
+    if (!this.dreamOperationsAllowed()) throw new DreamStateError(DREAM_MODEL_READABLE_CREDENTIALS_REASON)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const host = await this.ensureHostAsync(agentId)
@@ -4387,9 +4431,14 @@ export class Daemon {
    *  must exist for the boot-time crash-recovery sweep). */
   private async syncOrganizationSuggestions(): Promise<void> {
     const client = this.cpClient
-    const runner = this.dreamRunnerInstance
-    if (!client || !runner || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
+    if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
+    const runner = this.dreamRunner()
     const reply = await client.syncOrganizationSuggestions({ suggestions: runner.organizationSuggestionInventory() })
+    // The inventory is metadata-only and remains safe to converge during the
+    // production hold. Returned decisions are different: applying one changes
+    // local review state and can delete/sweep historical staged bytes, so the
+    // held path is intentionally publish-only.
+    if (!this.dreamOperationsAllowed()) return
     for (const decision of reply.decisions) await runner.organizationSuggestionReview(decision)
   }
 
@@ -4397,6 +4446,7 @@ export class Daemon {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
+      operationPolicy: this.dreamOperationsAllowed() ? 'test-only' : 'blocked',
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
@@ -4421,6 +4471,17 @@ export class Daemon {
       log: this.log
     })
     return this.dreamRunnerInstance
+  }
+
+  /** Credential-backed production Dream hosts are held closed until their
+   * provider authentication can be kept outside every model-readable path.
+   * Injected hosts are deterministic test/evaluation seams and remain enabled. */
+  private dreamOperationsAllowed(): boolean {
+    return this.opts.hostFactory !== undefined && this.opts.dreamOperationPolicy === 'test-only'
+  }
+
+  private dreamSchedulePolicyFor(agent: { memory?: Agent['memory'] }): MemoryDreamingPolicy | undefined {
+    return this.dreamOperationsAllowed() ? dreamingPolicyOf(agent) : undefined
   }
 
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
@@ -11081,7 +11142,7 @@ export class Daemon {
    *  the explicit local `webAppUrl`, else the CP-provided origin, else the local default
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
    *  known; without it the link falls back to `<base>/sessions/<id>`. Slack/GitHub links
-   *  carry a presentation-only source hint for the generic 404 recovery action. */
+   *  carry a presentation-only source hint for the generic 404 profile-linking action. */
   private sessionLink(acpSessionId: string, source?: 'slack' | 'github'): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
     const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
@@ -15190,6 +15251,13 @@ export class Daemon {
     }
     if (this.draining || this.drainingAgents.has(agentId)) {
       this.log.info(`scheduled dream skipped for agent "${agentId}": draining`)
+      return
+    }
+    // A stale Cron callback can already be queued while reconcile removes the
+    // production schedule. Repeat the admission gate here so it cannot create
+    // Dream metadata, snapshot memory, or materialize staged content.
+    if (!this.dreamOperationsAllowed()) {
+      this.log.info(`scheduled dream skipped for agent "${agentId}": ${DREAM_MODEL_READABLE_CREDENTIALS_REASON}`)
       return
     }
     void this.dreamRunner()

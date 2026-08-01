@@ -178,7 +178,14 @@ export default function SessionsView() {
     return next.toString()
   }, [params])
   const sessionHref = useCallback(
-    (id: string) => orgPath(filterQuery ? `/sessions/${id}?${filterQuery}` : `/sessions/${id}`),
+    (session: Session) => {
+      const id = session.realSessionId ?? session.id
+      const query = new URLSearchParams(filterQuery)
+      const provider = sessionPlatform(session)
+      if (provider === 'slack' || provider === 'github') query.set('source', provider)
+      const suffix = query.size ? `?${query.toString()}` : ''
+      return orgPath(`/sessions/${id}${suffix}`)
+    },
     [filterQuery, orgPath]
   )
 
@@ -559,7 +566,7 @@ export default function SessionsView() {
           return (
             <Link
               key={s.id}
-              href={sessionHref(s.realSessionId ?? s.id)}
+              href={sessionHref(s)}
               className={`row click ${cols} items-center text-left no-underline max-desktop:grid max-desktop:min-h-18 max-desktop:w-full max-desktop:grid-cols-[minmax(0,1fr)_auto] max-desktop:gap-x-3 max-desktop:gap-y-[5px] max-desktop:border-b-0 max-desktop:bg-(--surface-card) ${
                 i > 0 ? 'max-desktop:border-t max-desktop:border-(--border-subtle)' : ''
               }`}

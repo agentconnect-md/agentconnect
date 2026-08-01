@@ -243,9 +243,10 @@ describe('toolsForIntegrations', () => {
 
   it('tells replace edits to source oldString only from actual memory-file content', () => {
     const writeMemory = toolsForIntegrations([]).find((t) => t.name === 'writeMemory')!
-    expect(writeMemory.description).toContain('never from surrounding session context')
+    expect(writeMemory.description).toContain('Never source it from surrounding session context')
     expect(writeMemory.description).toContain('workspace or git status')
     expect(writeMemory.description).toContain('fresh `readMemory`')
+    expect(writeMemory.description).toContain("decode exactly one layer of the injected boundary's documented XML")
 
     const properties = writeMemory.inputSchema.properties as Record<string, { description?: string }>
     expect(properties.oldString?.description).toBe(

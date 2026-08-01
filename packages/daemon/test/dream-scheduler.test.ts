@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { MemoryDreamingPolicy } from '@agentconnect.md/protocol'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DreamScheduler } from '../src/scheduler/dream-scheduler.js'
@@ -111,6 +111,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
         id: 'bot-a',
         name: 'bot-a',
         runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
         memory: { provider: 'managed', dreaming: { enabled: true, schedule: '0 4 * * *' } }
       })
     )
@@ -138,7 +139,11 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
   }
 
   it('skips a tick while the agent is paused or the daemon is draining, without deregistering', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => ({}) as any,
+      dreamOperationPolicy: 'test-only'
+    })
     const inner = daemon as unknown as {
       agents: Map<string, { pause?: boolean }>
       draining: boolean
@@ -172,9 +177,45 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
   })
 
   it('reaches the runner once the gates clear', async () => {
-    const daemon = new Daemon({ root: scaffold() })
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => ({}) as any,
+      dreamOperationPolicy: 'test-only'
+    })
     const inner = daemon as unknown as { agents: Map<string, { pause?: boolean }> }
     inner.agents.set('bot-a', { pause: false })
     expect(await fire(daemon, 'bot-a')).toBe(true)
   })
+
+  it('suppresses schedules without the explicit test-only policy and rejects a stale tick before state', async () => {
+    const root = scaffold()
+    const hostFactory = vi.fn(() => ({}) as any)
+    const daemon = new Daemon({ root, hostFactory, probeRuntimes: async () => [] })
+    await daemon.start()
+    try {
+      const inner = daemon as any
+      expect(inner.dreamScheduler.count('bot-a')).toBe(0)
+
+      await expect(inner.dreamRunner().start('bot-a', { trigger: 'manual' })).rejects.toThrow(
+        'model_readable_credentials'
+      )
+      await expect(
+        inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
+          dreamId: 'drm-direct',
+          trigger: 'manual',
+          sessionIds: []
+        })
+      ).rejects.toThrow('model_readable_credentials')
+      expect(inner.store.listDreams('bot-a', 10)).toEqual([])
+      expect(existsSync(join(root, 'agents', 'bot-a', 'memory-dreams'))).toBe(false)
+
+      const info = vi.spyOn(inner.log, 'info')
+      inner.onDreamScheduleFire('bot-a')
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('model_readable_credentials'))
+      expect(inner.store.listDreams('bot-a', 10)).toEqual([])
+      expect(hostFactory).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  }, 15_000)
 })

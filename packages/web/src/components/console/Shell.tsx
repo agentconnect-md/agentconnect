@@ -13,7 +13,8 @@ import { useParams, usePathname, useRouter } from 'next/navigation'
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
 import { ApiError, getMyAccess, type OrgDto } from '@/lib/api'
-import { agentLabel } from '@/lib/data'
+import { agentLabel, status } from '@/lib/data'
+import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import ConnectAiModal from './ConnectAiModal'
@@ -152,6 +153,12 @@ const MobileFilterContext = createContext<{
 }>({ filter: null, register: () => {} })
 export const useMobileFilterSlot = () => useContext(MobileFilterContext)
 
+// The same slot idea for the detail crumb: the view that hydrates its own row publishes
+// title + status here while mounted, and the shell's crumb prefers it over the list
+// lookup. See lib/crumb.ts for why the lists can't carry this on their own.
+const CrumbContext = createContext<{ register: (s: CrumbSlot | null) => void }>({ register: () => {} })
+export const useCrumbSlot = () => useContext(CrumbContext)
+
 export default function ConsoleShell({ children }: { children: ReactNode }) {
   return (
     <OrgProvider>
@@ -268,6 +275,8 @@ function ShellChrome({ children }: { children: ReactNode }) {
   }, [isMobile])
   // Filter slot the current view (Sessions) registers so the app bar can trigger it.
   const [mobileFilter, setMobileFilter] = useState<MobileFilterSlot | null>(null)
+  // Status slot the session detail view registers so the crumb can badge it.
+  const [crumbSlot, setCrumbSlot] = useState<CrumbSlot | null>(null)
   // Active/crumb matching runs on the console path WITHOUT the org segment
   // (`/acme/agents` → `/agents`); hrefs go the other way via orgPath().
   const barePath = subPath(pathname, typeof params.slug === 'string' ? decodeURIComponent(params.slug) : '-')
@@ -458,23 +467,31 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // the design), falling back to the section crumb for top-level push pages
   // (Profile / Analytics / Tools & Skills / Settings) or before the entity has loaded.
   const seg = barePath.split('/').filter(Boolean)
-  const pushTitle = (() => {
-    if (seg.length < 2) return crumb
+  const listTitle = (() => {
+    if (seg.length < 2) return undefined
     const [section, id] = seg
-    if (section === 'agents')
-      return agents.find((a) => a.id === id) ? agentLabel(agents.find((a) => a.id === id)!) : crumb
-    if (section === 'daemons') return daemons.find((d) => d.daemonId === id)?.name ?? crumb
-    if (section === 'sessions') return allSessions.find((s) => s.id === id)?.title ?? crumb
-    if (section === 'crons') return crons.find((c) => c.id === id)?.name ?? crumb
-    return crumb
+    if (section === 'agents') {
+      const agent = agents.find((a) => a.id === id)
+      return agent ? agentLabel(agent) : undefined
+    }
+    if (section === 'daemons') return daemons.find((d) => d.daemonId === id)?.name
+    if (section === 'sessions') return allSessions.find((s) => s.id === id)?.title
+    if (section === 'crons') return crons.find((c) => c.id === id)?.name
+    return undefined
   })()
+  // The slot beats the list lookup, but only on the route it describes — see lib/crumb.ts.
+  const {
+    title: pushTitle,
+    show: titleResolved,
+    badge: crumbBadge
+  } = detailCrumb(crumb, seg[1], listTitle ?? undefined, crumbSlot)
 
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
   // hard refresh — no history) route to the parent list so "back" never leaves the app.
   const hasParentList = LIST_ROUTES.includes(`/${seg[0] ?? ''}`)
   const parentList = hasParentList ? `/${seg[0]}` : '/home'
   const parentListHref = orgPath(parentList + (seg[0] === 'sessions' ? sessionFilterSearch(locationSearch) : ''))
-  const showDetailCrumb = hasParentList && seg.length >= 2 && crumb !== '' && pushTitle !== crumb
+  const showDetailCrumb = hasParentList && seg.length >= 2 && crumb !== '' && titleResolved
   const goBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) router.back()
     else router.push(parentListHref)
@@ -496,279 +513,308 @@ function ShellChrome({ children }: { children: ReactNode }) {
 
   return (
     <MobileFilterContext.Provider value={{ filter: mobileFilter, register: setMobileFilter }}>
-      <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
-        {/* ===== RAIL =====
+      <CrumbContext.Provider value={{ register: setCrumbSlot }}>
+        <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
+          {/* ===== RAIL =====
           No tooltips in here. The `title`s below exist as the collapsed rail's
           fallback labels, not as hints — surfacing them would just repeat the
           label already sitting next to the icon. */}
-        <aside data-no-tooltip className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
-          <div className="railbrand">
-            <Link href={orgPath('/home')} className="railbrand-logo cursor-pointer select-none" aria-label="Go to Home">
-              <LogoMark />
-              <span className="brandword font-sans text-[17px] font-semibold leading-normal tracking-[-.02em] text-white">
-                Agent<span className="text-(--magenta-300)">Connect</span>
-              </span>
-            </Link>
-            <button
-              type="button"
-              onClick={toggleRail}
-              className="railtoggle"
-              title={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            >
-              <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={17} />
-            </button>
-          </div>
-          {/* Org picker + "Organization" section label — only in auth mode; the
-            no-auth default org needs neither (there's a single implicit org). A
-            small spacer keeps the nav off the brand divider when both are gone. */}
-          {authOn ? (
-            <>
-              <OrgSwitcher collapsed={railCollapsed} canCreateOrg={canCreateOrg} />
-              <div className="navlbl">Organization</div>
-            </>
-          ) : (
-            <div className="h-3" />
-          )}
-          {NAV_ITEMS.map((item) => {
-            const on = isActive(barePath, item.href)
-            return (
+          <aside data-no-tooltip className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
+            <div className="railbrand">
               <Link
-                key={item.href}
-                href={orgPath(item.href)}
-                title={item.label}
-                className={on ? 'navitem on' : 'navitem'}
+                href={orgPath('/home')}
+                className="railbrand-logo cursor-pointer select-none"
+                aria-label="Go to Home"
               >
-                <Icon name={item.icon} size={18} color={on ? '#fff' : undefined} />
-                <span>{item.label}</span>
+                <LogoMark />
+                <span className="brandword font-sans text-[17px] font-semibold leading-normal tracking-[-.02em] text-white">
+                  Agent<span className="text-(--magenta-300)">Connect</span>
+                </span>
               </Link>
-            )
-          })}
-          {/* Rail footer: Settings (auth mode only, theme toggle lives by the search)
-            + a Help & resources menu that opens UPWARD. The help menu shows in every
-            mode — the docs/MCP links are useful with or without sign-in. */}
-          <div
-            className={`mt-auto border-t border-(--border-inverse) ${railCollapsed ? 'flex flex-col items-stretch gap-1 px-2 py-[10px]' : 'flex items-center gap-[6px] px-4 py-[14px]'}`}
-          >
-            {authOn && (
-              <Link
-                href={orgPath('/settings')}
-                title="Settings"
-                className={`${isActive(barePath, '/settings') ? 'navitem on' : 'navitem'} my-0 rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full justify-center px-0' : 'flex-1 px-3'}`}
-              >
-                <Icon name="settings" size={18} color={isActive(barePath, '/settings') ? 'var(--brand)' : undefined} />
-                <span>Settings</span>
-              </Link>
-            )}
-            <div className={`relative ${railCollapsed ? 'w-full' : 'flex-none'}`}>
               <button
                 type="button"
-                onClick={() => setHelpMenu((v) => !v)}
-                className={`navitem justify-center rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full px-0' : 'w-auto flex-none px-[11px]'}`}
-                title="Help & resources"
-                aria-label="Help & resources"
+                onClick={toggleRail}
+                className="railtoggle"
+                title={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
-                <Icon name="circle-question-mark" size={18} color={helpMenu ? 'var(--brand)' : undefined} />
+                <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={17} />
               </button>
-              {helpMenu && (
-                <>
-                  <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
-                  <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
-                    <button
-                      className="dmi"
-                      onClick={() => {
-                        setHelpMenu(false)
-                        setConnectAiOpen(true)
-                      }}
-                    >
-                      <SiModelcontextprotocol className="text-(--text-tertiary)" aria-hidden />
-                      Connect your AI
-                    </button>
-                    <a
-                      className="dmi no-underline"
-                      href={help.docs}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => setHelpMenu(false)}
-                    >
-                      <Icon name="book-open" size={15} color="var(--text-tertiary)" />
-                      Documentation
-                    </a>
-                    <div className="dmsep" />
-                    <button
-                      className="dmi"
-                      onClick={() => {
-                        setHelpMenu(false)
-                        setShortcutsOpen(true)
-                      }}
-                    >
-                      <Icon name="command" size={15} color="var(--text-tertiary)" />
-                      Keyboard shortcuts
-                    </button>
-                    <a
-                      className="dmi no-underline"
-                      href={help.releases}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => setHelpMenu(false)}
-                    >
-                      <Icon name="gift" size={15} color="var(--text-tertiary)" />
-                      What&rsquo;s new
-                    </a>
-                    <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
-                      <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
-                      Help &amp; support
-                    </a>
-                  </div>
-                </>
-              )}
             </div>
-          </div>
-        </aside>
-
-        {/* ===== MAIN ===== */}
-        <div className="main">
-          <header className="top">
-            <div className="crumb min-w-0">
-              {showDetailCrumb ? (
-                <>
-                  <Link
-                    href={parentListHref}
-                    className="flex-none text-(--text-tertiary) no-underline hover:text-(--text-secondary)"
-                  >
-                    {crumb}
-                  </Link>
-                  <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="flex-none" />
-                  <b className="min-w-0 truncate">{pushTitle}</b>
-                </>
-              ) : (
-                crumb
-              )}
-            </div>
-            <div className="topspacer flex-1" />
-            <GlobalSearch />
-            <ThemeToggle theme={theme} onToggle={toggleTheme} />
-            {authOn && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
-          </header>
-
-          {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
-          <header className="mtop">
-            {isListRoute ? (
+            {/* Org picker + "Organization" section label — only in auth mode; the
+            no-auth default org needs neither (there's a single implicit org). A
+            small spacer keeps the nav off the brand divider when both are gone. */}
+            {authOn ? (
               <>
-                <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label="Go to Home">
-                  <LogoMark />
-                </Link>
-                <span className="mtop-title">{crumb}</span>
-                {addKind && (
-                  <button className="mappbtn" aria-label="Add" onClick={() => openModal(addKind)}>
-                    <Icon name="circle-plus" size={22} />
-                  </button>
-                )}
-                {/* Sessions registers a filter slot; surface it as an app-bar button
-                  with a dot when any filter is active (design's Sessions tab). */}
-                {barePath === '/sessions' && mobileFilter && (
-                  <button className="mappbtn relative" aria-label="Filter sessions" onClick={mobileFilter.open}>
-                    <Icon name="sliders-horizontal" size={20} />
-                    {mobileFilter.active && (
-                      <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
-                    )}
-                  </button>
-                )}
-                <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
-                  <Icon name="search" size={20} />
-                </button>
-                <button
-                  className="mappbtn"
-                  aria-label="Toggle theme"
-                  title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                  onClick={toggleTheme}
-                >
-                  <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
-                </button>
-                {authOn && (
-                  <Link
-                    href={orgPath('/profile')}
-                    aria-label="Profile"
-                    title="Profile"
-                    className="ml-[2px] flex-none leading-[0]"
-                  >
-                    <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
-                  </Link>
-                )}
+                <OrgSwitcher collapsed={railCollapsed} canCreateOrg={canCreateOrg} />
+                <div className="navlbl">Organization</div>
               </>
             ) : (
-              <>
-                <button className="mappbtn" aria-label="Back" onClick={goBack}>
-                  <Icon name="arrow-left" size={20} />
-                </button>
-                <span className="mtop-title">{pushTitle}</span>
-                {isSessionDetail && (
-                  <button className="mappbtn" aria-label={linkCopied ? 'Link copied' : 'Copy link'} onClick={copyLink}>
-                    <Icon
-                      name={linkCopied ? 'check' : 'link'}
-                      size={20}
-                      color={linkCopied ? 'var(--brand)' : undefined}
-                    />
-                  </button>
-                )}
-              </>
+              <div className="h-3" />
             )}
-          </header>
+            {NAV_ITEMS.map((item) => {
+              const on = isActive(barePath, item.href)
+              return (
+                <Link
+                  key={item.href}
+                  href={orgPath(item.href)}
+                  title={item.label}
+                  className={on ? 'navitem on' : 'navitem'}
+                >
+                  <Icon name={item.icon} size={18} color={on ? '#fff' : undefined} />
+                  <span>{item.label}</span>
+                </Link>
+              )
+            })}
+            {/* Rail footer: Settings (auth mode only, theme toggle lives by the search)
+            + a Help & resources menu that opens UPWARD. The help menu shows in every
+            mode — the docs/MCP links are useful with or without sign-in. */}
+            <div
+              className={`mt-auto border-t border-(--border-inverse) ${railCollapsed ? 'flex flex-col items-stretch gap-1 px-2 py-[10px]' : 'flex items-center gap-[6px] px-4 py-[14px]'}`}
+            >
+              {authOn && (
+                <Link
+                  href={orgPath('/settings')}
+                  title="Settings"
+                  className={`${isActive(barePath, '/settings') ? 'navitem on' : 'navitem'} my-0 rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full justify-center px-0' : 'flex-1 px-3'}`}
+                >
+                  <Icon
+                    name="settings"
+                    size={18}
+                    color={isActive(barePath, '/settings') ? 'var(--brand)' : undefined}
+                  />
+                  <span>Settings</span>
+                </Link>
+              )}
+              <div className={`relative ${railCollapsed ? 'w-full' : 'flex-none'}`}>
+                <button
+                  type="button"
+                  onClick={() => setHelpMenu((v) => !v)}
+                  className={`navitem justify-center rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full px-0' : 'w-auto flex-none px-[11px]'}`}
+                  title="Help & resources"
+                  aria-label="Help & resources"
+                >
+                  <Icon name="circle-question-mark" size={18} color={helpMenu ? 'var(--brand)' : undefined} />
+                </button>
+                {helpMenu && (
+                  <>
+                    <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
+                    <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                      <button
+                        className="dmi"
+                        onClick={() => {
+                          setHelpMenu(false)
+                          setConnectAiOpen(true)
+                        }}
+                      >
+                        <SiModelcontextprotocol className="text-(--text-tertiary)" aria-hidden />
+                        Connect your AI
+                      </button>
+                      <a
+                        className="dmi no-underline"
+                        href={help.docs}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setHelpMenu(false)}
+                      >
+                        <Icon name="book-open" size={15} color="var(--text-tertiary)" />
+                        Documentation
+                      </a>
+                      <div className="dmsep" />
+                      <button
+                        className="dmi"
+                        onClick={() => {
+                          setHelpMenu(false)
+                          setShortcutsOpen(true)
+                        }}
+                      >
+                        <Icon name="command" size={15} color="var(--text-tertiary)" />
+                        Keyboard shortcuts
+                      </button>
+                      <a
+                        className="dmi no-underline"
+                        href={help.releases}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setHelpMenu(false)}
+                      >
+                        <Icon name="gift" size={15} color="var(--text-tertiary)" />
+                        What&rsquo;s new
+                      </a>
+                      <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
+                        <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
+                        Help &amp; support
+                      </a>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </aside>
 
-          <div className="content">
-            <SearchOpenContext.Provider value={openSearch}>{children}</SearchOpenContext.Provider>
+          {/* ===== MAIN ===== */}
+          <div className="main">
+            <header className="top">
+              <div className="crumb min-w-0">
+                {showDetailCrumb ? (
+                  <>
+                    <Link
+                      href={parentListHref}
+                      className="flex-none text-(--text-tertiary) no-underline hover:text-(--text-secondary)"
+                    >
+                      {crumb}
+                    </Link>
+                    <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="flex-none" />
+                    <b className="min-w-0 truncate">{pushTitle}</b>
+                    {crumbBadge && (
+                      <span
+                        className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-full px-2 py-[1px] font-sans text-[12px] font-semibold leading-normal"
+                        style={{
+                          background: status(crumbBadge.status).bg,
+                          color: status(crumbBadge.status).text
+                        }}
+                      >
+                        <span
+                          className="h-[6px] w-[6px] flex-none rounded-full"
+                          style={{ background: status(crumbBadge.status).dot }}
+                        />
+                        {crumbBadge.statusLabel}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  crumb
+                )}
+              </div>
+              <div className="topspacer flex-1" />
+              <GlobalSearch />
+              <ThemeToggle theme={theme} onToggle={toggleTheme} />
+              {authOn && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
+            </header>
+
+            {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
+            <header className="mtop">
+              {isListRoute ? (
+                <>
+                  <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label="Go to Home">
+                    <LogoMark />
+                  </Link>
+                  <span className="mtop-title">{crumb}</span>
+                  {addKind && (
+                    <button className="mappbtn" aria-label="Add" onClick={() => openModal(addKind)}>
+                      <Icon name="circle-plus" size={22} />
+                    </button>
+                  )}
+                  {/* Sessions registers a filter slot; surface it as an app-bar button
+                  with a dot when any filter is active (design's Sessions tab). */}
+                  {barePath === '/sessions' && mobileFilter && (
+                    <button className="mappbtn relative" aria-label="Filter sessions" onClick={mobileFilter.open}>
+                      <Icon name="sliders-horizontal" size={20} />
+                      {mobileFilter.active && (
+                        <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
+                      )}
+                    </button>
+                  )}
+                  <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
+                    <Icon name="search" size={20} />
+                  </button>
+                  <button
+                    className="mappbtn"
+                    aria-label="Toggle theme"
+                    title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                    onClick={toggleTheme}
+                  >
+                    <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
+                  </button>
+                  {authOn && (
+                    <Link
+                      href={orgPath('/profile')}
+                      aria-label="Profile"
+                      title="Profile"
+                      className="ml-[2px] flex-none leading-[0]"
+                    >
+                      <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
+                    </Link>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button className="mappbtn" aria-label="Back" onClick={goBack}>
+                    <Icon name="arrow-left" size={20} />
+                  </button>
+                  <span className="mtop-title">{pushTitle}</span>
+                  {isSessionDetail && (
+                    <button
+                      className="mappbtn"
+                      aria-label={linkCopied ? 'Link copied' : 'Copy link'}
+                      onClick={copyLink}
+                    >
+                      <Icon
+                        name={linkCopied ? 'check' : 'link'}
+                        size={20}
+                        color={linkCopied ? 'var(--brand)' : undefined}
+                      />
+                    </button>
+                  )}
+                </>
+              )}
+            </header>
+
+            <div className="content">
+              <SearchOpenContext.Provider value={openSearch}>{children}</SearchOpenContext.Provider>
+            </div>
+
+            {/* ===== MOBILE BOTTOM NAV — 4 tabs + More, hidden on push screens ===== */}
+            {isListRoute && (
+              <nav className="mnav">
+                <div className="mnav-tabs">
+                  {MOBILE_NAV.map((item) => {
+                    const on = isActive(barePath, item.href)
+                    return (
+                      <Link key={item.href} href={orgPath(item.href)} className={on ? 'mnavitem on' : 'mnavitem'}>
+                        <Icon name={item.icon} size={20} color={on ? 'var(--magenta-300)' : undefined} />
+                        <span>{item.label}</span>
+                      </Link>
+                    )
+                  })}
+                  <button type="button" className="mnavitem" onClick={() => setMobileSheet('more')}>
+                    <Icon name="ellipsis" size={20} />
+                    <span>More</span>
+                  </button>
+                </div>
+                <div className="mnav-home">
+                  <span className="home-pill" />
+                </div>
+              </nav>
+            )}
           </div>
 
-          {/* ===== MOBILE BOTTOM NAV — 4 tabs + More, hidden on push screens ===== */}
-          {isListRoute && (
-            <nav className="mnav">
-              <div className="mnav-tabs">
-                {MOBILE_NAV.map((item) => {
-                  const on = isActive(barePath, item.href)
-                  return (
-                    <Link key={item.href} href={orgPath(item.href)} className={on ? 'mnavitem on' : 'mnavitem'}>
-                      <Icon name={item.icon} size={20} color={on ? 'var(--magenta-300)' : undefined} />
-                      <span>{item.label}</span>
-                    </Link>
-                  )
-                })}
-                <button type="button" className="mnavitem" onClick={() => setMobileSheet('more')}>
-                  <Icon name="ellipsis" size={20} />
-                  <span>More</span>
-                </button>
-              </div>
-              <div className="mnav-home">
-                <span className="home-pill" />
-              </div>
-            </nav>
+          {/* ===== MOBILE SHEETS + full-screen search (mobile-only; opened from the nav) ===== */}
+          {mobileSheet && (
+            <MobileSheets
+              which={mobileSheet}
+              authOn={authOn}
+              orgPath={orgPath}
+              orgs={orgs}
+              activeOrg={activeOrg}
+              setActiveOrg={setActiveOrg}
+              openModal={openModal}
+              canCreateOrg={canCreateOrg}
+              onOpenOrg={() => setMobileSheet('org')}
+              onClose={closeSheets}
+            />
           )}
-        </div>
-
-        {/* ===== MOBILE SHEETS + full-screen search (mobile-only; opened from the nav) ===== */}
-        {mobileSheet && (
-          <MobileSheets
-            which={mobileSheet}
-            authOn={authOn}
-            orgPath={orgPath}
-            orgs={orgs}
-            activeOrg={activeOrg}
-            setActiveOrg={setActiveOrg}
-            openModal={openModal}
-            canCreateOrg={canCreateOrg}
-            onOpenOrg={() => setMobileSheet('org')}
-            onClose={closeSheets}
-          />
-        )}
-        {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
-        {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-        {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
-        {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
+          {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
+          {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+          {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
+          {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
           live state, self-gated (desktop, setup-started, incomplete). */}
-        <GettingStarted />
-        {/* Renders every `title` in the console on the design system's timing
+          <GettingStarted />
+          {/* Renders every `title` in the console on the design system's timing
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
-        <TooltipLayer />
-      </div>
+          <TooltipLayer />
+        </div>
+      </CrumbContext.Provider>
     </MobileFilterContext.Provider>
   )
 }

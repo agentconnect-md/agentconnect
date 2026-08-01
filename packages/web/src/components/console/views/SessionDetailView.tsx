@@ -65,6 +65,7 @@ import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { WORK_LANES, toggleWorkPanel, workCounts, workPanelOpen, workSummary } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
+import { useCrumbSlot } from '@/components/console/Shell'
 import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import {
   sessionEffortAfterModelChange,
@@ -717,24 +718,33 @@ export default function SessionDetailView() {
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
     { refreshInterval: 30_000 }
   )
-  // Provider-rendered session links carry only caller-known source context. It
-  // never changes authorization, so unknown and unauthorized 404s stay equivalent.
+  // Provider-rendered links use `source`; links opened from the Sessions list
+  // can also retain its `integration` filter. Both are caller-known hints only:
+  // neither changes authorization, so unknown and unauthorized 404s stay
+  // equivalent.
   const source = searchParams.get('source')
-  const recoveryProvider =
-    (source === 'slack' || source === 'github') && socialLoginProviders().some((provider) => provider.target === source)
+  const integration = searchParams.get('integration')
+  const hintedProvider =
+    source === 'slack' || source === 'github'
       ? source
+      : integration === 'slack' || integration === 'github'
+        ? integration
+        : undefined
+  const profileLinkProvider =
+    hintedProvider && socialLoginProviders().some((provider) => provider.target === hintedProvider)
+      ? hintedProvider
       : undefined
-  const recoveryCandidate =
+  const profileLinkCandidate =
     sessionDetailError instanceof ApiError &&
     sessionDetailError.status === 404 &&
     isAuthConfigured() &&
-    recoveryProvider !== undefined
+    profileLinkProvider !== undefined
   const {
-    data: recoveryIdentity,
-    error: recoveryIdentityError,
-    isValidating: recoveryIdentityLoading
+    data: profileIdentity,
+    error: profileIdentityError,
+    isValidating: profileIdentityLoading
   } = useSWR(
-    recoveryCandidate ? (['logto-session-identity', recoveryProvider] as const) : null,
+    profileLinkCandidate ? (['logto-session-identity', profileLinkProvider] as const) : null,
     ([, provider]) => fetchMySessionIdentity(provider),
     {
       revalidateOnFocus: false,
@@ -742,11 +752,11 @@ export default function SessionDetailView() {
       shouldRetryOnError: false
     }
   )
-  const showRecoveryLink =
-    recoveryCandidate &&
-    !recoveryIdentityLoading &&
-    recoveryIdentityError === undefined &&
-    recoveryIdentity?.linked === false
+  const showProfileLink =
+    profileLinkCandidate &&
+    !profileIdentityLoading &&
+    profileIdentityError === undefined &&
+    profileIdentity?.linked === false
   const detailSession = sessionDetail ? sessionFromDetailDto(sessionDetail) : null
   // The cursor-loaded list row can predate the final Dream usage report. Keep
   // its local/live fields, but let the independently refreshed detail snapshot
@@ -945,6 +955,24 @@ export default function SessionDetailView() {
     return () => window.clearInterval(timer)
   }, [session?.id, session?.platform, sessionBusy])
 
+  // Publish title + status to the shell's crumb. Both have to come from here, not from
+  // `allSessions`: a deep link (or a parent/child link) to a session outside the loaded
+  // cursor pages only exists as the `fetchSessionDetail`-backed row above. Without the
+  // title the crumb collapses to the bare "Sessions" label — taking the status badge
+  // nested inside it down with it — and the Details popover no longer carries a status
+  // the desktop could fall back to.
+  // The slot carries the route id it describes: the shell renders the next route before
+  // this effect's cleanup runs, so without it session A's crumb paints on session B.
+  const { register: registerCrumb } = useCrumbSlot()
+  const crumbTitle = session?.title ?? ''
+  const crumbStatusKey = session?.status ?? ''
+  const crumbStatusLabel = session?.statusLabel || (crumbStatusKey ? status(crumbStatusKey).label : '')
+  useEffect(() => {
+    if (!crumbTitle) return
+    registerCrumb({ id, title: crumbTitle, status: crumbStatusKey, statusLabel: crumbStatusLabel })
+    return () => registerCrumb(null)
+  }, [registerCrumb, id, crumbTitle, crumbStatusKey, crumbStatusLabel])
+
   if (!session) {
     // Shell owns detail navigation at both breakpoints; this branch only renders the
     // loading or not-found body.
@@ -964,9 +992,9 @@ export default function SessionDetailView() {
             actionLabel="Back to sessions"
             actionHref={orgPath('/sessions')}
             secondaryAction={
-              showRecoveryLink && recoveryProvider
+              showProfileLink && profileLinkProvider
                 ? {
-                    label: `Link ${recoveryProvider === 'slack' ? 'Slack' : 'GitHub'} profile`,
+                    label: `Link ${profileLinkProvider === 'slack' ? 'Slack' : 'GitHub'} profile`,
                     href: orgPath('/profile#sign-in-methods'),
                     icon: 'link'
                   }
@@ -979,7 +1007,6 @@ export default function SessionDetailView() {
     )
   }
 
-  const ss = status(session.status)
   // Session visibility (session-visibility.md §4.3/§6). Rendered in the desktop
   // header and the mobile meta strip; null when there is nothing to show (an org
   // session the caller cannot re-classify, or a mock/legacy row).
@@ -1302,9 +1329,9 @@ export default function SessionDetailView() {
     (pgModel === session.model ? session.fastModeAvailable : undefined) ??
     fastModeAvailableFor(agentRuntime, selectedModelCapability)
   // Run facts for the desktop header's "Details" popover — the stats that used to
-  // live in the header cards (status, duration, usage) plus the run's identity rows.
+  // live in the header cards (duration, usage) plus the run's identity rows. Status
+  // is not here: it rides the top-bar crumb as a pill next to the session name.
   const headerFacts: { icon: string; label: string; value: string }[] = [
-    { icon: 'activity', label: 'Status', value: session.statusLabel || ss.label },
     { icon: 'clock', label: 'Duration', value: displayDuration },
     { icon: 'coins', label: 'Tokens', value: session.tokens },
     { icon: 'circle-dollar-sign', label: 'Cost', value: session.cost },
@@ -1391,8 +1418,11 @@ export default function SessionDetailView() {
           </span>
         )}
         {visibilityControl}
+        {/* `flex` on the wrapper: an inline-flex button in a block div sits on a text
+            baseline, and the descender gap under it pushed the button off the row's
+            centre line. */}
         <div
-          className="relative ml-[-3px] flex-none"
+          className="relative ml-[-3px] flex flex-none items-center"
           onKeyDown={(event) => {
             if (event.key !== 'Escape' || !detailOpen) return
             event.stopPropagation()
@@ -1458,7 +1488,7 @@ export default function SessionDetailView() {
 
       {sessionDetail?.accessSyncDegraded && (
         <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3">
-          External access could not be verified. Related sessions remain hidden until access checks recover.
+          External access could not be verified. Related sessions remain hidden until access checks succeed.
         </div>
       )}
 

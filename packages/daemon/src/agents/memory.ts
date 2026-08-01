@@ -33,6 +33,8 @@ export { MEMORY_INDEX }
  *  memory from swelling the context (mirrors Claude Code's 25 KB entrypoint cap). */
 export const MAX_INDEX_INJECT_BYTES = 25_000
 
+const INDEX_TRUNCATION_NOTICE = '\n\n[…memory index truncated — trim MEMORY.md]'
+
 /** Hard cap on a single memory file. Injected/read every session, so an unbounded
  *  file would swell the prompt and the wire; writes over this are rejected. */
 export const MAX_MEMORY_FILE_BYTES = 256_000
@@ -378,9 +380,12 @@ export async function readIndex(agentDir: string): Promise<string> {
     throw err
   }
   if (Buffer.byteLength(text) <= MAX_INDEX_INJECT_BYTES) return text
-  // Cut on a UTF-8 boundary near the cap and flag the truncation.
-  const buf = Buffer.from(text, 'utf8').subarray(0, MAX_INDEX_INJECT_BYTES)
-  return buf.toString('utf8') + '\n\n[…memory index truncated — trim MEMORY.md]'
+  // Reserve the notice inside the budget and cut before a complete UTF-8 code
+  // point. The serialized session boundary applies the same cap after escaping.
+  const buf = Buffer.from(text, 'utf8')
+  let end = MAX_INDEX_INJECT_BYTES - Buffer.byteLength(INDEX_TRUNCATION_NOTICE)
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end -= 1
+  return buf.subarray(0, end).toString('utf8') + INDEX_TRUNCATION_NOTICE
 }
 
 /** Read a memory file's text; '' when it does not exist (never throws on ENOENT). */
