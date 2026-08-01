@@ -3076,7 +3076,7 @@ export type MySlackIdentityDto =
       teamDomain?: string
     }
 
-/** Narrow linked/not-linked status for a supported session source. */
+/** Narrow linked/not-linked status used by supported provider profile-linking hints. */
 export async function fetchMySessionIdentity(provider: SessionAccessProvider): Promise<{ linked: boolean }> {
   if (provider === 'slack') return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
   const account = await fetchMySocialAccount()

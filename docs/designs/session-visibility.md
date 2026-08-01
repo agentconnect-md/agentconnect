@@ -2,7 +2,7 @@
 
 > **Status:** Implemented for direct `private` / `org` visibility, Slack
 > conversation audiences, GitHub repository audiences, and their Console
-> settings/recovery surfaces. Share-by-link and additional providers remain
+> settings/profile-linking surfaces. Share-by-link and additional providers remain
 > future work.
 >
 > **Scope:** protocol + control-plane + daemon + web. Console authorization is
@@ -29,12 +29,14 @@ This design gives every session its own visibility:
 - **`org`** — visible to every org member who can view the owning agent.
   Default for automation-originated sessions and shared IM sessions when the
   corresponding external-audience policy is disabled.
-- **`external`** — visible only when the viewer currently belongs to the
-  immutable external source scope recorded when the session was created.
-  Slack stores `(workspace, conversation)` and resolves current conversation
-  membership. GitHub hook sessions store the rename-proof numeric repository
-  id: public repositories require no linked identity; private repositories
-  require the viewer's currently linked GitHub account to retain read access.
+- **`external`** — visible only when the viewer currently has provider access
+  to the immutable external source scope recorded when the session was created.
+  Slack stores `(workspace, conversation)`: public channels admit linked,
+  active full members of that workspace; private channels, group DMs, guests,
+  and Slack Connect users require current conversation membership. GitHub hook
+  sessions store the rename-proof numeric repository id: public repositories
+  require no linked identity; private repositories require the viewer's
+  currently linked GitHub account to retain read access.
 - **Share-by-link ("public")** — future work; a session with an active share
   link is readable by anyone holding the link. Deliberately **not** a member of
   the visibility enum; see §8.
@@ -151,7 +153,7 @@ enum VisibilitySource {
   share-by-link (§8) covers the near-term "share this session" ask.
 - `ExternalScope` stores only the stable provider resource identity and the
   credential locator needed to ask the provider. It never stores provider ACLs.
-  Slack membership and GitHub repository-access decisions are bounded,
+  Slack channel-access and GitHub repository-access decisions are bounded,
   short-lived in-process cache entries. Linked Slack and GitHub identities
   remain provider-owned and are resolved from Logto rather than copied into the
   AgentConnect database.
@@ -266,8 +268,10 @@ Notes:
   visibility default: for `org` sessions it is provenance and the anchor for
   §4.3 reclassification rights, not an access gate.
 - A provider-bound conversation or repository never uses one initiator as its
-  access owner. With provider sync enabled, the current external audience is
-  authoritative; with sync disabled, new provider sessions remain `org`.
+  access owner. With Slack sync enabled, public-channel access follows active
+  full workspace membership while restricted conversations and restricted
+  users follow current conversation membership. With provider sync disabled,
+  new provider sessions remain `org`.
 - A cron or daemon-owned continuation delivered into an attributable Slack
   conversation is provider-bound at creation just like a human-started thread.
   Automation without a trusted external destination remains `org` with no owner.
@@ -386,9 +390,11 @@ canViewSession(s, ctx, identitySet) =
 
 `currentExternalAudienceAllows` requires a settled scope and matching durable
 policy/scope revisions. Slack additionally requires a linked identity and
-current conversation membership. GitHub permits a currently public repository
-without a linked identity; a private repository requires the linked GitHub user
-to retain read permission. Provider errors, timeouts, unresolved history, and
+current Slack access: active full workspace membership for a public channel,
+or current conversation membership for private channels, group DMs, guests,
+and Slack Connect users. GitHub permits a currently public repository without
+a linked identity; a private repository requires the linked GitHub user to
+retain read permission. Provider errors, timeouts, unresolved history, and
 stale revisions deny access. Organization roles, including owner, never bypass
 this predicate.
 
@@ -518,7 +524,8 @@ learned from it"); silence is not an option.
   for `external`, and the §4.3 visibility control only for direct-session
   owners allowed to use it.
 - Settings exposes owner-only provider access-sync switches, disabled by
-  default. Slack follows current conversation membership; GitHub follows
+  default. Slack follows current channel access (workspace access for public
+  channels; conversation membership for restricted audiences); GitHub follows
   current repository visibility and user access. Provider-bound visibility is
   read-only; unresolved history and transient provider failures are surfaced
   without widening access.
@@ -602,7 +609,8 @@ link ends public access without touching the session row.
   and retrying with an equal revision yields a fresh ACK without
   reapplying state.
 - **Slack external audience:** disabled baseline and owner-only enablement;
-  linked-identity and current-membership allow/deny/error behavior; Slack
+  linked full-workspace access for public channels; current-membership checks
+  for restricted audiences; allow/deny/error behavior; Slack
   Connect home-team validation; unresolved-history hiding; list, detail,
   relationships, transcript/tool-body reauthorization, SSE, and usage parity;
   immutable direct source binding; A2A lineage across local and relay paths;

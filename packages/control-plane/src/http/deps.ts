@@ -327,7 +327,7 @@ export interface HttpDeps {
   /** Server-side Logto identity management for the signed-in user's Profile.
    *  Absent ⇒ LOGTO_MGMT_* or real OIDC auth is not configured. */
   logtoIdentity?: LogtoIdentityService
-  /** Current Slack conversation membership for external Session reads. */
+  /** Current Slack channel access for external Session reads. */
   slackSessionAccess?: SlackSessionAccessResolver
   /** Current GitHub repository visibility for external Session reads. */
   githubSessionAccess?: GithubSessionAccessResolver
