@@ -148,8 +148,8 @@ export function ExternalMemoryBindingFields({
       {!isLoading && connections.length === 0 && (
         <div className="text-[12px] leading-[1.5] text-(--text-secondary)">
           No external-memory connection is configured. An organization owner can add one in{' '}
-          <a className="lnk" href={orgPath('/knowledge?tab=memory')}>
-            Knowledge → Memory
+          <a className="lnk" href={orgPath('/knowledge#external-memory')}>
+            Knowledge → External memory
           </a>
           .
         </div>
