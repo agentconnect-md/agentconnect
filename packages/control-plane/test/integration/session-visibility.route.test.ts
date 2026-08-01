@@ -221,7 +221,51 @@ describe('session visibility — Slack conversation audience', () => {
       payload: { enabled: true }
     })
     expect(ownerResponse.statusCode).toBe(200)
-    expect(ownerResponse.json()).toMatchObject({ enabled: true, state: 'degraded', hiddenSessions: 1 })
+    // The pre-existing candidate stays hidden and is reported, but enabling
+    // adopts it as the legacy mark: unrecoverable history is not a fault state.
+    expect(ownerResponse.json()).toMatchObject({ enabled: true, state: 'enabled', hiddenSessions: 1 })
+    expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.legacyUnresolved).toBe(1)
+
+    const stillHidden = (
+      await appAs(owner, {
+        logtoIdentity: {} as never,
+        slackSessionAccess: { resolve: async () => ({ allowedScopes: [], degraded: false }) }
+      }).app.inject({ method: 'GET', url: `${ORG}/session-access/slack` })
+    ).json()
+    expect(stillHidden).toMatchObject({ state: 'enabled', hiddenSessions: 1 })
+  })
+
+  it('degrades only when a candidate goes unresolved after enablement', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    await repo.recordMilestone({
+      sessionId: SessionId(`s-slack-legacy-${randomUUID()}`),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_LEGACY',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: { provider: 'slack', resolution: 'pending' }
+    })
+
+    const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    expect(enabled).toMatchObject({ hiddenSessions: 1 })
+    expect(enabled.policy).toMatchObject({ state: 'enabled', legacyUnresolved: 1 })
+
+    // A second unresolved candidate exceeds the mark — that one IS actionable.
+    await repo.recordMilestone({
+      sessionId: SessionId(`s-slack-new-${randomUUID()}`),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_NEW',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: { provider: 'slack', resolution: 'pending' }
+    })
+    expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('degraded')
   })
 
   it('keeps the creation-time scope fixed and applies current membership only after enable', async () => {

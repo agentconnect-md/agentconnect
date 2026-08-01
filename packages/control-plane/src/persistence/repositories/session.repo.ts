@@ -109,6 +109,7 @@ function toExternalPolicyRecord(policy: SessionExternalAccessPolicy): SessionExt
     state: policy.state as ExternalAccessPolicyState,
     currentRev: policy.currentRev,
     readFenceRev: policy.readFenceRev,
+    legacyUnresolved: policy.legacyUnresolved,
     migrationCursor: policy.migrationCursor
   }
 }
@@ -768,17 +769,33 @@ export class PgSessionRepo implements SessionRepo {
       cls.visibility === 'external' &&
       (cls.externalResolution !== 'settled' || rebound)
     ) {
+      // Same predicate as `countExternalUnresolved`, so the mark below and the
+      // owner-facing `hiddenSessions` diagnostic always count the same rows.
       const unresolved = await tx.sessionMeta.count({
         where: {
           orgId,
           externalProvider: cls.externalProvider,
+          visibility: 'external',
           externalResolution: { in: ['pending', 'invalid'] }
         }
       })
-      await tx.sessionExternalAccessPolicy.updateMany({
-        where: { orgId, provider: cls.externalProvider, state: { not: 'disabled' } },
-        data: { state: unresolved > 0 ? 'degraded' : 'enabled' }
-      })
+      // Degradation is measured against the enablement-time backlog, not zero:
+      // history the migration could not bind never settles, so counting it as a
+      // fault would pin the policy to 'degraded' forever (and drown the signal
+      // that a NEW candidate failed to resolve). Both assignments read the old
+      // row, and the mark only ever ratchets down as legacy rows settle.
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "session_external_access_policy"
+        SET "state" = CASE
+              WHEN ${unresolved} > "legacyUnresolved" THEN 'degraded'::"ExternalAccessPolicyState"
+              ELSE 'enabled'::"ExternalAccessPolicyState"
+            END,
+            "legacyUnresolved" = LEAST("legacyUnresolved", ${unresolved}),
+            "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "orgId" = ${orgId}
+          AND "provider" = ${cls.externalProvider}
+          AND "state" <> 'disabled'::"ExternalAccessPolicyState"
+      `)
     }
     return { recorded: true, session, settled }
   }
@@ -1060,12 +1077,17 @@ export class PgSessionRepo implements SessionRepo {
         where: {
           orgId,
           externalProvider: provider,
+          visibility: 'external',
           externalResolution: { in: ['pending', 'invalid'] }
         }
       })
+      // Whatever is unresolved at this instant is history the migration could
+      // not bind — expected, permanent, and hidden, but not a fault. Adopt it as
+      // the mark so only a candidate that fails to resolve LATER degrades the
+      // policy; the count itself stays reportable as `hiddenSessions`.
       const policy = await tx.sessionExternalAccessPolicy.update({
         where: { orgId_provider: { orgId, provider } },
-        data: { state: hiddenSessions > 0 ? 'degraded' : 'enabled' }
+        data: { state: 'enabled', legacyUnresolved: hiddenSessions }
       })
       return {
         policy: toExternalPolicyRecord(policy),

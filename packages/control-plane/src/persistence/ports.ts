@@ -923,6 +923,10 @@ export interface SessionExternalAccessPolicyRecord {
   state: ExternalAccessPolicyState
   currentRev: bigint
   readFenceRev: bigint | null
+  /** Low-water mark of the unresolved count since enablement. History whose
+   *  scope the migration could not reconstruct is permanent and expected, so it
+   *  never means `degraded` — only a count ABOVE this mark does. */
+  legacyUnresolved: number
   migrationCursor: string | null
 }
 
@@ -1066,8 +1070,9 @@ export interface SessionRepo {
   getExternalAccessPolicy(orgId: OrgId, provider: string): Promise<SessionExternalAccessPolicyRecord | null>
   countExternalUnresolved(orgId: OrgId, provider: string): Promise<number>
   /** Owner-only HTTP route calls this transactional transition. Enabling places
-   *  the read fence before classifying legacy candidates; unresolved history is
-   *  retained as degraded and hidden. Disabling never widens historical rows. */
+   *  the read fence before classifying legacy candidates; unresolved history stays
+   *  hidden and is adopted as `legacyUnresolved` rather than reported as a fault.
+   *  Disabling never widens historical rows. */
   setExternalAccessEnabled(
     orgId: OrgId,
     provider: string,

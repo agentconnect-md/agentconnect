@@ -955,14 +955,20 @@ model ExternalScope {
 // Organization/provider policy. Missing is never interpreted as disabled: the
 // ingest transaction ensures this row before creating a supported candidate.
 model SessionExternalAccessPolicy {
-  orgId           String
-  provider        String
-  state           ExternalAccessPolicyState @default(disabled)
-  currentRev      BigInt                    @default(0) @db.BigInt
-  readFenceRev    BigInt?                   @db.BigInt
-  migrationCursor String?
-  createdAt       DateTime                  @default(now()) @db.Timestamptz(6)
-  updatedAt       DateTime                  @updatedAt @db.Timestamptz(6)
+  orgId            String
+  provider         String
+  state            ExternalAccessPolicyState @default(disabled)
+  currentRev       BigInt                    @default(0) @db.BigInt
+  readFenceRev     BigInt?                   @db.BigInt
+  // Low-water mark of the unresolved candidate count since enablement. History
+  // the migration could not bind is expected and permanent (its scope cannot be
+  // reconstructed), so it must NOT read as a fault: `state` is only 'degraded'
+  // while the live count exceeds this mark, i.e. a candidate went unresolved
+  // AFTER enabling. Recomputed at enable and clamped down as legacy rows settle.
+  legacyUnresolved Int                       @default(0)
+  migrationCursor  String?
+  createdAt        DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime                  @updatedAt @db.Timestamptz(6)
 
   org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
 

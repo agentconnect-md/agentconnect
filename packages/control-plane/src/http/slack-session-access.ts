@@ -13,7 +13,7 @@ const PAGE_SIZE = 200
 const TIMEOUT_MS = 5_000
 
 type Decision = 'allow' | 'deny' | 'unknown'
-type ConversationAudience = 'public' | 'members' | 'unknown'
+type ConversationAudience = 'public' | 'members' | 'gone' | 'unknown'
 type WorkspaceAccess = 'allow' | 'membership' | 'deny' | 'unknown'
 type SlackPrincipal = { key: string; teamId: string; userId: string }
 
@@ -27,6 +27,26 @@ export interface SlackSessionAccessResult {
 
 export interface SlackSessionAccessResolver {
   resolve(scopes: readonly ExternalScopeRecord[], identitySet: ReadonlySet<string>): Promise<SlackSessionAccessResult>
+}
+
+// `ok: false` covers two very different answers, and conflating them is what
+// made an ordinary event — a private channel deleted, or the bot removed from
+// it — report as a degraded access check. These codes are Slack ANSWERING: this
+// credential cannot see that conversation / that user is not in the workspace.
+// Nothing about a later retry changes them, so they are a plain deny (cached for
+// DENY_TTL rather than re-asked every UNKNOWN_TTL). Everything else — auth,
+// scope, rate limiting, outages, unrecognized codes, transport failures — is the
+// CHECK failing, stays 'unknown', and is what `degraded` is for.
+const DEFINITIVE_DENIALS = new Set([
+  'channel_not_found',
+  'not_in_channel',
+  'user_not_found',
+  'users_not_found',
+  'user_not_visible'
+])
+
+function failureDecision(error: unknown): Decision {
+  return typeof error === 'string' && DEFINITIVE_DENIALS.has(error) ? 'deny' : 'unknown'
 }
 
 function slackPrincipals(identitySet: ReadonlySet<string>): SlackPrincipal[] {
@@ -141,6 +161,9 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
     if (!secret?.botToken) return 'unknown'
     try {
       const audience = await this.conversationAudience(scope.resourceKey, secret.botToken, signal)
+      // The conversation is gone (or the bot is no longer in it): a settled fact
+      // about the audience, not an unavailable check.
+      if (audience === 'gone') return 'deny'
       if (audience === 'unknown') return 'unknown'
       if (audience === 'public') {
         const access = await this.workspaceAccess(
@@ -173,9 +196,11 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
   ): Promise<ConversationAudience> {
     const body = await this.slackCall<{
       ok?: boolean
+      error?: unknown
       channel?: { is_private?: unknown; is_im?: unknown; is_mpim?: unknown }
     }>(`conversations.info?channel=${encodeURIComponent(channel)}`, token, signal)
-    if (!body.ok || !body.channel) return 'unknown'
+    if (!body.ok) return failureDecision(body.error) === 'deny' ? 'gone' : 'unknown'
+    if (!body.channel) return 'unknown'
     if (body.channel.is_private === false && body.channel.is_im !== true && body.channel.is_mpim !== true) {
       return 'public'
     }
@@ -198,6 +223,7 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
 
     const body = await this.slackCall<{
       ok?: boolean
+      error?: unknown
       user?: {
         team_id?: unknown
         profile?: { team?: unknown }
@@ -214,7 +240,8 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
       }
     }>(`users.info?user=${encodeURIComponent(principal.userId)}`, token, signal)
 
-    let access: WorkspaceAccess = 'unknown'
+    // A user Slack does not know in this workspace is a verdict, not an outage.
+    let access: WorkspaceAccess = body.ok ? 'unknown' : failureDecision(body.error) === 'deny' ? 'deny' : 'unknown'
     if (body.ok && body.user) {
       const teams = new Set<string>()
       if (typeof body.user.team_id === 'string') teams.add(body.user.team_id)
@@ -259,10 +286,12 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
       if (cursor) query.set('cursor', cursor)
       const body = await this.slackCall<{
         ok?: boolean
+        error?: unknown
         members?: unknown
         response_metadata?: { next_cursor?: unknown }
       }>(`conversations.members?${query}`, token, signal)
-      if (!body.ok || !Array.isArray(body.members)) return 'unknown'
+      if (!body.ok) return failureDecision(body.error)
+      if (!Array.isArray(body.members)) return 'unknown'
       if (body.members.includes(userId)) return 'allow'
       cursor = typeof body.response_metadata?.next_cursor === 'string' ? body.response_metadata.next_cursor : ''
       if (!cursor) return 'deny'
