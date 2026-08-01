@@ -12,8 +12,13 @@ import {
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { composeSource, installSkills, SKILLS_CLI_VERSION } from '../src/skills/install-skills.js'
+import { dirname, join } from 'node:path'
+import {
+  composeSource,
+  installSkills,
+  rotateSkillsWorkspaceGeneration,
+  SKILLS_CLI_VERSION
+} from '../src/skills/install-skills.js'
 import { skillsAgentId } from '../src/skills/runtime-agent-map.js'
 
 describe('skillsAgentId', () => {
@@ -267,6 +272,7 @@ describe('installSkills reconcile and containment', () => {
 
     for (let replacement = 0; replacement <= 16; replacement += 1) {
       if (replacement > 0) {
+        await rotateSkillsWorkspaceGeneration(stateDir)
         rmSync(cwd, { recursive: true, force: true })
         renameSync(replacements[replacement - 1]!, cwd)
       }
@@ -280,7 +286,43 @@ describe('installSkills reconcile and containment', () => {
       expect(result.errors).toEqual([])
     }
 
-    expect(Object.keys(readMarker().workspaces)).toHaveLength(16)
+    expect(Object.keys(readMarker().workspaces)).toHaveLength(1)
+  })
+
+  it('does not reuse deletion ownership after the workspace generation rotates', async () => {
+    const desired = {
+      id: 'a1',
+      runtime: 'claude',
+      skills: [{ name: 'source', source: 'acme/skills', skills: [] }]
+    }
+    await installSkills(desired, cwd, {
+      stateDir,
+      execFile: async () => {
+        mkdirSync(join(cwd, '.claude', 'skills', 'same-name'), { recursive: true })
+      }
+    })
+
+    const replacement = join(root, 'replacement')
+    mkdirSync(replacement)
+    await rotateSkillsWorkspaceGeneration(stateDir)
+    rmSync(cwd, { recursive: true, force: true })
+    renameSync(replacement, cwd)
+    const manual = join(cwd, '.claude', 'skills', 'same-name', 'MANUAL')
+    mkdirSync(dirname(manual), { recursive: true })
+    writeFileSync(manual, 'keep')
+    let installs = 0
+
+    const reconciled = await installSkills(desired, cwd, {
+      stateDir,
+      execFile: async () => {
+        installs += 1
+      }
+    })
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
+
+    expect(reconciled.skipped).toBeNull()
+    expect(installs).toBe(1)
+    expect(readFileSync(manual, 'utf8')).toBe('keep')
   })
 
   it('uses an intact private fingerprint as the unchanged fast path', async () => {

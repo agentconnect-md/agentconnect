@@ -305,10 +305,15 @@ describe('prepareWorkspaceForActivation', () => {
     expect(cloneTarget).not.toBe(path)
     expect(existsSync(join(path, '.git'))).toBe(true)
     expect(existsSync(cloneTarget)).toBe(false)
+    const skillsMarker = join(dirname(path), '.agentconnect', 'skills-install.json')
+    const activatedGeneration = (JSON.parse(readFileSync(skillsMarker, 'utf8')) as { generation: string }).generation
 
-    rollback()
+    await rollback()
     expect(existsSync(path)).toBe(true)
     expect(readdirSync(path)).toEqual([])
+    expect((JSON.parse(readFileSync(skillsMarker, 'utf8')) as { generation: string }).generation).not.toBe(
+      activatedGeneration
+    )
   })
 
   it('refuses a non-empty scratch directory without starting a clone', async () => {
@@ -389,7 +394,7 @@ describe('prepareWorkspaceForActivation', () => {
 
     expect(cloneImpl).not.toHaveBeenCalled()
     expect(existsSync(join(path, 'local.txt'))).toBe(true)
-    rollback()
+    await rollback()
     expect(existsSync(join(path, 'local.txt'))).toBe(true)
   })
 
@@ -422,7 +427,7 @@ describe('prepareWorkspaceForActivation', () => {
     ])
     expect(existsSync(join(path, 'untrusted.txt'))).toBe(false)
     expect(readFileSync(join(path, 'README.md'), 'utf8')).toBe('authorized GitHub content')
-    rollback()
+    await rollback()
   })
 
   it('retries a failed rename convergence without replacing local files on a later agentDir-only edit', async () => {
@@ -461,7 +466,7 @@ describe('prepareWorkspaceForActivation', () => {
     ).toHaveLength(2)
     expect(cloneImpl).not.toHaveBeenCalled()
     expect(readFileSync(join(path, 'local.txt'), 'utf8')).toBe('keep me')
-    rollback()
+    await rollback()
     expect(readFileSync(join(path, 'local.txt'), 'utf8')).toBe('keep me')
   })
 
@@ -487,7 +492,7 @@ describe('prepareWorkspaceForActivation', () => {
 
     expect(existsSync(join(path, 'local.txt'))).toBe(false)
     expect(readFileSync(join(path, 'README.md'), 'utf8')).toBe('replacement')
-    rollback()
+    await rollback()
     expect(readdirSync(path)).toEqual([])
   })
 })

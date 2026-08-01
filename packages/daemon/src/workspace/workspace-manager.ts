@@ -20,7 +20,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
-import { installSkills } from '../skills/install-skills.js'
+import { installSkills, rotateSkillsWorkspaceGeneration } from '../skills/install-skills.js'
 import {
   materializeAcceptedDreamSkills,
   type ManagedSkillMaterializationSource
@@ -55,10 +55,19 @@ export interface PrepareWorkspaceOptions {
   managedSkills?: (agent: Agent) => Promise<ManagedSkillMaterializationSource[]>
 }
 
+function trustedAgentRoot(agent: Agent): string | undefined {
+  return (agent as { dir?: string }).dir
+}
+
+async function rotateWorkspaceSkillsGeneration(agent: Agent): Promise<void> {
+  const agentRoot = trustedAgentRoot(agent)
+  if (agentRoot) await rotateSkillsWorkspaceGeneration(agentRoot)
+}
+
 async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
   // `dir` is present on every discovered agent (LoadedAgent). Never fall back to
   // cwd for installer state: cwd remains agent-writable across sandboxed runs.
-  const agentRoot = (agent as { dir?: string }).dir
+  const agentRoot = trustedAgentRoot(agent)
   if (agentRoot) {
     await installSkills(agent, acpCwd, {
       stateDir: agentRoot,
@@ -383,7 +392,7 @@ export async function prepareWorkspaceForActivation(
     allowExistingCheckout = true,
     reconcileMaterialization = false
   }: { allowExistingCheckout?: boolean; reconcileMaterialization?: boolean } = {}
-): Promise<() => void> {
+): Promise<() => Promise<void>> {
   const cwd = agent.workspace.path
   mkdirSync(cwd, { recursive: true })
   const previousMaterialization = reconcileMaterialization ? readMaterialization(agent) : undefined
@@ -395,12 +404,14 @@ export async function prepareWorkspaceForActivation(
 
   if (agent.workspace.mode === 'from-scratch') {
     if (replace) {
+      await rotateWorkspaceSkillsGeneration(agent)
       rmSync(cwd, { recursive: true, force: true })
       mkdirSync(cwd, { recursive: true })
     }
     if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
-    return () => {
+    return async () => {
       if (replace) {
+        await rotateWorkspaceSkillsGeneration(agent)
         rmSync(cwd, { recursive: true, force: true })
         mkdirSync(cwd, { recursive: true })
       }
@@ -424,7 +435,9 @@ export async function prepareWorkspaceForActivation(
       if (!replace) {
         resolveAcpCwd(cwd, normalizeRepoSubdir(agent.workspace.agentDir))
         if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
-        return restoreMarker
+        return async () => {
+          restoreMarker()
+        }
       }
     }
     // A different repo/branch is cloned below before the old checkout is
@@ -440,6 +453,7 @@ export async function prepareWorkspaceForActivation(
     await cloneRepoAt(agent, staged)
     resolveAcpCwd(staged, normalizeRepoSubdir(agent.workspace.agentDir))
     if (replace) {
+      await rotateWorkspaceSkillsGeneration(agent)
       rmSync(cwd, { recursive: true, force: true })
       renameSync(staged, cwd)
       try {
@@ -450,7 +464,8 @@ export async function prepareWorkspaceForActivation(
         restoreMarker()
         throw err
       }
-      return () => {
+      return async () => {
+        await rotateWorkspaceSkillsGeneration(agent)
         rmSync(cwd, { recursive: true, force: true })
         mkdirSync(cwd, { recursive: true })
         restoreMarker()
@@ -461,6 +476,7 @@ export async function prepareWorkspaceForActivation(
     if (!isWorkspaceEmpty(agent)) {
       throw new Error('workspace changed while conversion was cloning; retry after making it empty')
     }
+    await rotateWorkspaceSkillsGeneration(agent)
     try {
       // POSIX directory replacement is atomic when the destination is still
       // empty. If an operator writes into cwd after the check above, rename
@@ -481,7 +497,8 @@ export async function prepareWorkspaceForActivation(
 
   if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
 
-  return () => {
+  return async () => {
+    await rotateWorkspaceSkillsGeneration(agent)
     rmSync(cwd, { recursive: true, force: true })
     mkdirSync(cwd, { recursive: true })
     restoreMarker()

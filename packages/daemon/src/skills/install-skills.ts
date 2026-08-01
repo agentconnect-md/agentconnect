@@ -47,6 +47,7 @@ const LOCAL_LOCK_FILE = 'skills-lock.json'
 const MAX_LOCAL_LOCK_BYTES = 1024 * 1024
 const MAX_WORKSPACE_RECORDS = 16
 const WORKSPACE_ID = /^[0-9a-f]{64}$/
+const WORKSPACE_GENERATION = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const SKILL_ROOTS = ['.claude/skills', '.agents/skills'] as const
 
 interface WorkspaceRecord {
@@ -58,6 +59,8 @@ interface WorkspaceRecord {
 }
 
 interface Marker {
+  /** Daemon-issued identity for the currently materialized workspace tree. */
+  generation?: string
   /** Ownership records keyed by daemon-computed workspace directory identity. */
   workspaces: Record<string, WorkspaceRecord>
 }
@@ -85,27 +88,24 @@ function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[
     .digest('hex')
 }
 
-/** Bind private ownership state to one concrete workspace directory instance.
- * The canonical path catches cwd switches; dev+ino catches a materialization
- * replaced at the same path. The agent cannot forge this private marker. */
+/** Bind private ownership state to one cwd within a daemon-issued workspace
+ * generation. The agent cannot forge the generation in this private marker. */
 interface WorkspaceIdentity {
   id: string
   path: string
 }
 
-function workspaceId(path: string, stat: import('node:fs').Stats): string {
-  return createHash('sha256')
-    .update(JSON.stringify({ path, dev: String(stat.dev), ino: String(stat.ino) }))
-    .digest('hex')
+function workspaceId(generation: string, path: string): string {
+  return createHash('sha256').update(JSON.stringify({ generation, path })).digest('hex')
 }
 
-async function workspaceIdentity(cwd: string): Promise<WorkspaceIdentity> {
+async function workspaceIdentity(cwd: string, generation: string): Promise<WorkspaceIdentity> {
   const canonical = await fsp.realpath(cwd)
   const stat = await fsp.lstat(canonical)
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new ContainedPathError('skills workspace is not a real directory')
   }
-  return { id: workspaceId(canonical, stat), path: canonical }
+  return { id: workspaceId(generation, canonical), path: canonical }
 }
 
 function markerPath(stateDir: string): string {
@@ -154,9 +154,11 @@ async function readMarker(stateDir: string): Promise<Marker> {
     throw new ContainedPathError('skills marker is not a regular file')
   }
   if (stat.size > MAX_MARKER_BYTES) throw new ContainedPathError('skills marker exceeds its size cap')
-  const raw = JSON.parse(await fsp.readFile(target, 'utf8')) as { workspaces?: unknown }
+  const raw = JSON.parse(await fsp.readFile(target, 'utf8')) as { generation?: unknown; workspaces?: unknown }
+  const generation =
+    typeof raw.generation === 'string' && WORKSPACE_GENERATION.test(raw.generation) ? raw.generation : undefined
   if (!raw.workspaces || typeof raw.workspaces !== 'object' || Array.isArray(raw.workspaces)) {
-    return { workspaces: {} }
+    return { ...(generation ? { generation } : {}), workspaces: {} }
   }
   const workspaces: Record<string, WorkspaceRecord> = {}
   for (const [workspaceId, value] of Object.entries(raw.workspaces)) {
@@ -177,7 +179,7 @@ async function readMarker(stateDir: string): Promise<Marker> {
       throw new ContainedPathError('skills marker has too many workspace records')
     }
   }
-  return { workspaces }
+  return { ...(generation ? { generation } : {}), workspaces }
 }
 
 async function writeMarker(stateDir: string, marker: Marker): Promise<void> {
@@ -188,6 +190,13 @@ async function writeMarker(stateDir: string, marker: Marker): Promise<void> {
     JSON.stringify(marker) + '\n',
     'skills marker'
   )
+}
+
+/** Invalidate every deletion grant before the daemon replaces a workspace
+ * tree. A random generation cannot alias a later directory through inode reuse. */
+export async function rotateSkillsWorkspaceGeneration(stateDir: string): Promise<void> {
+  await readMarker(stateDir)
+  await writeMarker(stateDir, { generation: randomUUID(), workspaces: {} })
 }
 
 /** Reserve one bounded private-state slot before invoking the CLI. A record is
@@ -206,7 +215,7 @@ async function ensureWorkspaceCapacity(marker: Marker, workspace: WorkspaceIdent
       } else {
         try {
           const stat = await fsp.lstat(record.workspacePath)
-          reclaimable = !stat.isDirectory() || stat.isSymbolicLink() || workspaceId(record.workspacePath, stat) !== id
+          reclaimable = !stat.isDirectory() || stat.isSymbolicLink()
         } catch (err) {
           if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) reclaimable = true
         }
@@ -219,11 +228,11 @@ async function ensureWorkspaceCapacity(marker: Marker, workspace: WorkspaceIdent
   if (size >= MAX_WORKSPACE_RECORDS) {
     throw new ContainedPathError('skills ownership state is full')
   }
-  return { workspaces }
+  return { ...marker, workspaces }
 }
 
 function withWorkspaceRecord(marker: Marker, workspaceId: string, record: WorkspaceRecord): Marker {
-  return { workspaces: { ...marker.workspaces, [workspaceId]: record } }
+  return { ...marker, workspaces: { ...marker.workspaces, [workspaceId]: record } }
 }
 
 /** Only a direct child of a known project skill root can be daemon-owned. */
@@ -419,9 +428,16 @@ export async function installSkills(
   const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env, DISABLE_TELEMETRY: '1' }
 
   try {
-    const workspace = await workspaceIdentity(cwd)
+    const loadedMarker = await readMarker(opts.stateDir)
+    const generation = loadedMarker.generation ?? randomUUID()
+    // Pre-generation records used reusable filesystem identities. Forget their
+    // deletion grants rather than risk applying one to a fresh materialization.
+    const generatedMarker = loadedMarker.generation
+      ? loadedMarker
+      : { generation, workspaces: {} as Record<string, WorkspaceRecord> }
+    const workspace = await workspaceIdentity(cwd, generation)
     const fp = fingerprint(agent.runtime, agentId ?? '', entries, workspace.id)
-    const marker = await ensureWorkspaceCapacity(await readMarker(opts.stateDir), workspace)
+    const marker = await ensureWorkspaceCapacity(generatedMarker, workspace)
     // Create/validate the private marker parent before mutating the workspace.
     await containedTarget(opts.stateDir, join(opts.stateDir, MARKER_DIR), markerPath(opts.stateDir), {
       create: true,
