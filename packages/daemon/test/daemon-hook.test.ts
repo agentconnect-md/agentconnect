@@ -194,7 +194,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
     expect((daemon as any).store.getSessionByAcpId('acp-hook-1')).toMatchObject({
-      title: 'PR agentconnect-md/agentconnect#144: perf(github): speed up review delivery',
+      title: 'PR #144: perf(github): speed up review delivery',
       transportScope: 'github:123'
     })
     expect(cp.sessionEvents.at(-1)?.externalOrigin).toEqual({
@@ -1720,7 +1720,7 @@ describe('buildHookMessage', () => {
         ),
         'trace-pr'
       )
-      expect(pullRequest.initialSessionTitle).toBe('PR acme/infra#144: db down')
+      expect(pullRequest.initialSessionTitle).toBe('PR #144: db down')
 
       const long = buildHookMessage(ghFire({ title: 'x'.repeat(100) }), 'trace-long').initialSessionTitle!
       expect([...long]).toHaveLength(80)

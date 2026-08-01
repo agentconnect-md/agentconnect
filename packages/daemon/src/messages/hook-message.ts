@@ -66,9 +66,9 @@ function githubSessionTitle(msg: RdMsgHook): string | undefined {
     msg.github?.subjectKind ??
     (context.event?.startsWith('pull_request') ? 'pull_request' : context.event === 'issues' ? 'issue' : undefined)
   const label = subjectKind === 'pull_request' ? 'PR' : subjectKind === 'issue' ? 'Issue' : 'GitHub'
-  const repo = msg.github?.repoFullName ?? context.repo
   const number = subjectKind === 'pull_request' ? (msg.github?.pullNumber ?? context.number) : context.number
-  const target = `${repo ?? ''}${number !== undefined ? `#${number}` : ''}`
+  const repo = subjectKind === 'pull_request' ? '' : (msg.github?.repoFullName ?? context.repo ?? '')
+  const target = `${repo}${number !== undefined ? `#${number}` : ''}`
   const prefix = target ? `${label} ${target}` : label
   const detail = context.title?.replace(/\s+/g, ' ').trim()
   return clampSessionTitle(detail ? `${prefix}: ${detail}` : prefix)
