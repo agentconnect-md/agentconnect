@@ -757,9 +757,10 @@ export class SessionManager {
         state: 'idle',
         lastDeliveredTs: null,
         updatedAt: Date.now(),
-        // The sender whose message created the session (first-wins in the store;
-        // read back as `session/list`'s triggeredBy).
-        triggeredBy: msg.sender.id,
+        // The source that created the session (first-wins in the store; read back
+        // as `session/list`'s triggeredBy). Hook routing identity remains separate
+        // from the GitHub actor credited on the transcript row above.
+        triggeredBy: msg.sessionTriggerId ?? msg.sender.id,
         memoryProvider: currentMemoryProvider,
         // Durable parent link, set once at spawn (first-wins in the store).
         ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {}),

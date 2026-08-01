@@ -24,6 +24,7 @@ import type {
   Platform
 } from '@agentconnect.md/protocol'
 import { transcriptChannelKey, type LocalStore, type TranscriptEventCursor } from '../store/local-store.js'
+import { legacyGithubEventActor } from '../messages/hook-message.js'
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 import { slackThreadUrl } from '../slack/permalink.js'
 
@@ -265,16 +266,28 @@ export function createSessionReader(
       const { rows, hasMore } = page
       // rows are newest-first; the page itself is oldest→newest.
       const ordered = tailing ? rows : rows.slice().reverse()
+      const trustedGithubSession =
+        rec.externalProvider === 'github' ||
+        (rec.platform === 'hook' && rec.transportScope?.startsWith('github:') === true)
+      const projected = ordered.map((row) => ({
+        row,
+        sender:
+          trustedGithubSession && row.sender.startsWith('hook:') && (!rec.triggeredBy || row.sender === rec.triggeredBy)
+            ? (legacyGithubEventActor(row.text) ?? row.sender)
+            : row.sender
+      }))
       // Display names (cached in the store) for both senders AND `<@U…>` mentions in
       // message bodies; agent-id senders and unresolved ids have no entry, so
       // `senderName` is omitted (UI falls back) and mentions stay as the raw token.
-      const names = store.getDisplayNames(ordered.flatMap((r) => [r.sender, ...mentionedUserIds(r.text)]))
-      const built = ordered.map<SessionMessage>((r) => {
-        const senderName = names.get(r.sender)
+      const names = store.getDisplayNames(
+        projected.flatMap(({ row, sender }) => [sender, ...mentionedUserIds(row.text)])
+      )
+      const built = projected.map<SessionMessage>(({ row: r, sender }) => {
+        const senderName = names.get(sender)
         const attachments = transcriptAttachments(r.attachmentsJson)
         const base: SessionMessage = {
           seq: r.seq,
-          sender: r.sender,
+          sender,
           ...(senderName ? { senderName } : {}),
           ...(r.trustedAgentBot ? { trustedAgentBot: true } : {}),
           ts: r.ts,
