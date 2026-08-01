@@ -223,7 +223,7 @@ export class PgAgentRepo implements AgentRepo {
               select: { defaultAgentVisibility: true }
             })
           : null
-      const defaultAgentVisibility = (orgDefault?.defaultAgentVisibility as AgentCallPolicy | undefined) ?? 'selected'
+      const defaultAgentVisibility = (orgDefault?.defaultAgentVisibility as AgentCallPolicy | undefined) ?? 'all'
       const callPolicy = input.callPolicy ?? defaultAgentVisibility
       const outboundPolicy = input.outboundPolicy ?? defaultAgentVisibility
       const memberships = await lockResourceWriteMemberships(tx, {
@@ -300,8 +300,8 @@ export class PgAgentRepo implements AgentRepo {
           ...(input.visibility ? { visibility: input.visibility } : {}),
           ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
           // Both directions inherit the organization's creation default unless
-          // explicitly chosen. The database's own selected default remains the
-          // fail-closed fallback for writes outside this repository seam.
+          // explicitly chosen. The database default matches the open product default
+          // for writes outside this repository seam.
           callPolicy,
           allowedCallerAgentIds: callPolicy === 'selected' ? (input.allowedCallerAgentIds ?? []) : [],
           outboundPolicy,

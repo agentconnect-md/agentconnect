@@ -42,7 +42,7 @@ model Org {
   icon                   Json?           @db.JsonB
   // Applied to both call directions when a new agent does not explicitly choose
   // a policy. Existing agents keep their persisted directional policies.
-  defaultAgentVisibility AgentCallPolicy @default(selected)
+  defaultAgentVisibility AgentCallPolicy @default(all)
   createdAt              DateTime        @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime        @updatedAt @db.Timestamptz(6)
 
@@ -629,10 +629,10 @@ model Agent {
   visibility            ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
   sharedWith            String[]           @default([]) // app_user.id set granted view when visibility='restricted'
   // ── inbound agent-call policy (UI: Agent visibility) ──
-  callPolicy            AgentCallPolicy    @default(selected) // selected + [] = no org peer may call by default
+  callPolicy            AgentCallPolicy    @default(all) // 'all' = any org peer agent may call this as a sub-agent
   allowedCallerAgentIds String[]           @default([]) // agent.id set used when callPolicy='selected'
   // ── outbound agent-call policy (UI: Agent visibility) ──
-  outboundPolicy        AgentCallPolicy    @default(selected) // selected + [] = no peer discovery/calls by default
+  outboundPolicy        AgentCallPolicy    @default(all) // 'all' = this agent may discover/call any otherwise-callable org peer
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
   restrictFileAccess    Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on

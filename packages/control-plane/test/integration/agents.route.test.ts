@@ -107,9 +107,9 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(Number.isNaN(Date.parse(created.createdAt))).toBe(false)
     expect(created.lastModifiedBy).toBe(created.createdBy)
     expect(created.lastModifiedAt).toBe(created.createdAt)
-    expect(created.callPolicy).toBe('selected')
+    expect(created.callPolicy).toBe('all')
     expect(created.allowedCallerAgentIds).toEqual([])
-    expect(created.outboundPolicy).toBe('selected')
+    expect(created.outboundPolicy).toBe('all')
     expect(created.allowedTargetAgentIds).toEqual([])
 
     // Persisted in the real DB — the FK points at the seeded owner user.
@@ -140,9 +140,9 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(fetched.capabilities).toEqual(['fs.read', 'fs.write'])
     expect(fetched.lastModifiedBy).toBe(created.lastModifiedBy)
     expect(fetched.lastModifiedAt).toBe(created.lastModifiedAt)
-    expect(fetched.callPolicy).toBe('selected')
+    expect(fetched.callPolicy).toBe('all')
     expect(fetched.allowedCallerAgentIds).toEqual([])
-    expect(fetched.outboundPolicy).toBe('selected')
+    expect(fetched.outboundPolicy).toBe('all')
     expect(fetched.allowedTargetAgentIds).toEqual([])
   })
 
@@ -334,7 +334,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(selectedRow?.allowedTargetAgentIds).toEqual([callerId])
 
     // The halves are independent: restricting only the outbound side leaves the
-    // inbound side at the DB default.
+    // inbound side at the organization default.
     const outboundOnly = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
@@ -347,7 +347,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     })
     expect(outboundOnly.statusCode).toBe(201)
     expect(outboundOnly.json()).toMatchObject({
-      callPolicy: 'selected',
+      callPolicy: 'all',
       allowedCallerAgentIds: [],
       outboundPolicy: 'selected',
       allowedTargetAgentIds: [callerId]
@@ -358,7 +358,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(outboundOnlyRow?.outboundPolicy).toBe('selected')
     expect(outboundOnlyRow?.allowedTargetAgentIds).toEqual([callerId])
 
-    // Omitting the policy keeps the DB default in both directions.
+    // Omitting the policy uses the organization default in both directions.
     const dflt = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
@@ -366,9 +366,9 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     })
     expect(dflt.statusCode).toBe(201)
     expect(dflt.json()).toMatchObject({
-      callPolicy: 'selected',
+      callPolicy: 'all',
       allowedCallerAgentIds: [],
-      outboundPolicy: 'selected',
+      outboundPolicy: 'all',
       allowedTargetAgentIds: []
     })
   })

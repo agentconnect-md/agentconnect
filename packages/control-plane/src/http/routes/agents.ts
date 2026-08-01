@@ -1005,7 +1005,7 @@ export function agentRoutes(deps: HttpDeps) {
           // with visible same-org peers (same rule as PUT /call-policy). The new
           // agent isn't a peer yet, so `agentId` self-exclusion is a harmless no-op.
           const agentId = AgentId(randomUUID())
-          const defaultAgentVisibility = (await deps.repos.org.defaultAgentVisibility(orgOf(req))) ?? 'selected'
+          const defaultAgentVisibility = (await deps.repos.org.defaultAgentVisibility(orgOf(req))) ?? 'all'
           const callPolicy = req.body.callPolicy ?? defaultAgentVisibility
           const outboundPolicy = req.body.outboundPolicy ?? defaultAgentVisibility
           const initialAllowedCallers =
