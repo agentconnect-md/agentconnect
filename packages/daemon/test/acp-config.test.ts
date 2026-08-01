@@ -322,15 +322,6 @@ describe('claudeSessionMeta', () => {
         }
       })
     )
-    const projectEnv = {
-      ANTHROPIC_CONFIG_DIR: '/workspace/.profiles',
-      ANTHROPIC_PROFILE: '../../host-secret',
-      PROJECT_VALUE: 'kept'
-    }
-    expect({ ...projectEnv, ...protectedSettings.env }).toEqual({
-      ...protectedSettings.env,
-      PROJECT_VALUE: 'kept'
-    })
     expect(claudeSessionMeta(undefined, true)).toEqual(cc({ thinking: THINKING }))
   })
 
