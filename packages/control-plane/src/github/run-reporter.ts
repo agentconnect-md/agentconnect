@@ -635,7 +635,9 @@ export class GithubRunReporter {
       if (!orgSlug) return fallback
       const base = `${this.deps.webAppUrl.replace(/\/+$/, '')}/${encodeURIComponent(orgSlug)}`
       const agentUrl = hasLiveAgent ? `${base}/agents/${encodeURIComponent(projection.agentId)}` : undefined
-      const detailsUrl = run?.sessionId ? `${base}/sessions/${encodeURIComponent(run.sessionId)}` : undefined
+      const detailsUrl = run?.sessionId
+        ? `${base}/sessions/${encodeURIComponent(run.sessionId)}?source=github`
+        : undefined
       return {
         ...(detailsUrl ? { detailsUrl } : {}),
         ...(agentUrl ? { agentUrl } : {}),

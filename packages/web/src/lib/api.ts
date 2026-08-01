@@ -1872,8 +1872,10 @@ export async function putSessionVisibility(
   })
 }
 
-export interface SlackSessionAccessDto {
-  provider: 'slack'
+export type SessionAccessProvider = 'slack' | 'github'
+
+export interface SessionExternalAccessDto {
+  provider: SessionAccessProvider
   available: boolean
   enabled: boolean
   state: 'disabled' | 'enabling' | 'enabled' | 'degraded'
@@ -1883,12 +1885,19 @@ export interface SlackSessionAccessDto {
   hiddenSessions?: number
 }
 
-export function fetchSlackSessionAccess(orgId?: string): Promise<SlackSessionAccessDto> {
-  return apiGet<SlackSessionAccessDto>(`${orgBase(orgId)}/session-access/slack`)
+export function fetchSessionExternalAccess(
+  provider: SessionAccessProvider,
+  orgId?: string
+): Promise<SessionExternalAccessDto> {
+  return apiGet<SessionExternalAccessDto>(`${orgBase(orgId)}/session-access/${provider}`)
 }
 
-export function putSlackSessionAccess(enabled: boolean, orgId?: string): Promise<SlackSessionAccessDto> {
-  return apiPut<SlackSessionAccessDto>(`${orgBase(orgId)}/session-access/slack`, { enabled })
+export function putSessionExternalAccess(
+  provider: SessionAccessProvider,
+  enabled: boolean,
+  orgId?: string
+): Promise<SessionExternalAccessDto> {
+  return apiPut<SessionExternalAccessDto>(`${orgBase(orgId)}/session-access/${provider}`, { enabled })
 }
 
 // One page of a session's transcript, proxied live from the owning daemon. The
@@ -3067,9 +3076,11 @@ export type MySlackIdentityDto =
       teamDomain?: string
     }
 
-/** The narrow linked/not-linked read used by Slack session recovery. */
-export function fetchMySlackIdentity(): Promise<MySlackIdentityDto> {
-  return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
+/** Narrow linked/not-linked status for a supported session source. */
+export async function fetchMySessionIdentity(provider: SessionAccessProvider): Promise<{ linked: boolean }> {
+  if (provider === 'slack') return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
+  const account = await fetchMySocialAccount()
+  return { linked: account.identities.some((identity) => identity.target === provider) }
 }
 
 // Linking runs browser→provider, so the CP never sees that write and its cached

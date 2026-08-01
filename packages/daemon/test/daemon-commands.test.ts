@@ -1753,6 +1753,8 @@ describe('Slack interactive status bar', () => {
     const daemon = new Daemon({ root: scaffold() })
     ;(daemon as any).cfg = {}
     expect((daemon as any).sessionLink('acp-1')).toBe('http://localhost:3000/sessions/acp-1')
+    expect((daemon as any).sessionLink('acp-1', 'slack')).toBe('http://localhost:3000/sessions/acp-1?source=slack')
+    expect((daemon as any).sessionLink('acp-1', 'github')).toBe('http://localhost:3000/sessions/acp-1?source=github')
     expect((daemon as any).agentLink('bot-a')).toBe('http://localhost:3000/agents/bot-a')
   })
 

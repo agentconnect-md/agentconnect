@@ -1,9 +1,9 @@
 # Session Visibility
 
 > **Status:** Implemented for direct `private` / `org` visibility, Slack
-> conversation audiences, and GitHub repository audiences. The GitHub Settings
-> and inaccessible-session recovery UI land separately. Share-by-link and
-> additional providers remain future work.
+> conversation audiences, GitHub repository audiences, and their Console
+> settings/recovery surfaces. Share-by-link and additional providers remain
+> future work.
 >
 > **Scope:** protocol + control-plane + daemon + web. Console authorization is
 > enforced on CP/BFF read paths. The daemon reports immutable source metadata,
@@ -519,10 +519,16 @@ learned from it"); silence is not an option.
   owners allowed to use it.
 - Settings exposes owner-only provider access-sync switches, disabled by
   default. Slack follows current conversation membership; GitHub follows
-  current repository visibility and user access. The GitHub switch and
-  inaccessible-session link action are a separate console change from the core
-  daemon/CP implementation. Provider-bound visibility is read-only; unresolved
-  history and transient provider failures are surfaced without widening access.
+  current repository visibility and user access. Provider-bound visibility is
+  read-only; unresolved history and transient provider failures are surfaced
+  without widening access.
+- Session links emitted into Slack and GitHub carry a non-authoritative provider
+  hint. When such a deep link still resolves to the generic 404 page, the Console
+  offers `Link Slack profile` or `Link GitHub profile` only if that provider is
+  configured and the viewer has not linked it already. Unsupported providers,
+  ordinary/handwritten URLs, and linked viewers get no extra action. The hint is
+  intentionally forgeable and never consulted for authorization, so it cannot
+  confirm whether the session exists; the protected session route remains 404.
 - The existing client-side "mine" heuristic
   (`packages/web/src/lib/session-trigger.ts` email/userId matching) stays as a
   display concern (the "you" label) but is no longer doing authorization work.

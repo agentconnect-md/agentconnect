@@ -7864,9 +7864,7 @@ export class Daemon {
       }
       const info = this.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
       const link = acpSessionId
-        ? msg.platform === 'slack'
-          ? this.slackSessionLink(acpSessionId)
-          : this.sessionLink(acpSessionId)
+        ? this.sessionLink(acpSessionId, msg.platform === 'slack' ? 'slack' : undefined)
         : undefined
       if (msg.platform === 'telegram') {
         // HTML chrome (not recorded) — renders the compact line + a tappable View link.
@@ -9679,7 +9677,7 @@ export class Daemon {
       botUrl: this.agentLink(agentId),
       runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
       model: this.buildStatusInfo(p).model ?? turnModel ?? 'default',
-      sessionUrl: msg.platform === 'slack' ? this.slackSessionLink(sessionId) : this.sessionLink(sessionId)
+      sessionUrl: this.sessionLink(sessionId, msg.platform === 'slack' ? 'slack' : undefined)
     })
     try {
       if (!p.selectedHost) {
@@ -11066,16 +11064,12 @@ export class Daemon {
   /** The Web App console URL for a session: `<base>/<orgSlug>/sessions/<id>`, where base is
    *  the explicit local `webAppUrl`, else the CP-provided origin, else the local default
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
-   *  known; without it the link falls back to `<base>/sessions/<id>`. */
-  private sessionLink(acpSessionId: string): string {
+   *  known; without it the link falls back to `<base>/sessions/<id>`. Slack/GitHub links
+   *  carry a presentation-only source hint for the generic 404 recovery action. */
+  private sessionLink(acpSessionId: string, source?: 'slack' | 'github'): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
-    return `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
-  }
-
-  /** A Slack-originated session link carries only the source context the 404 UI
-   *  already knows from the click. It never changes session authorization. */
-  private slackSessionLink(acpSessionId: string): string {
-    return `${this.sessionLink(acpSessionId)}?source=slack`
+    const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
+    return source ? `${link}?source=${source}` : link
   }
 
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same
@@ -11347,7 +11341,7 @@ export class Daemon {
       ...(iconUrl ? { iconUrl } : {}),
       ...(sessionTitle ? { sessionTitle } : {})
     }
-    const link = rec.acpSessionId ? this.slackSessionLink(rec.acpSessionId) : undefined
+    const link = rec.acpSessionId ? this.sessionLink(rec.acpSessionId, 'slack') : undefined
     const pending = [...this.pending.values()].find((turn) => turn.sessionKey === sessionKey)
     const cancellable = pending?.statusCancellable ?? this.inflight.has(sessionKey)
     return { info, identity, ...(link ? { link } : {}), cancellable }
@@ -11403,7 +11397,7 @@ export class Daemon {
       // runtimes only advertise the model after the first prompt). It fills in via edits
       // as usage_update / turn-end land.
       p.lastStatusBar = key
-      const link = this.slackSessionLink(p.acpSessionId)
+      const link = this.sessionLink(p.acpSessionId, 'slack')
       const sessionTarget = this.httpSlackSessionTarget(p)
       const shared =
         sessionTarget && p.integrationId
@@ -15148,7 +15142,7 @@ export class Daemon {
       agentUrl: this.agentLink(agentId),
       runtime: runtime ? (this.runtimeNames[runtime] ?? runtime) : 'unknown',
       model: this.hosts.get(agentId)?.modelOptions?.(sessionId)?.current ?? agent?.runtimeOverrides?.model ?? 'default',
-      sessionUrl: this.sessionLink(sessionId),
+      sessionUrl: this.sessionLink(sessionId, 'github'),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.
       ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
