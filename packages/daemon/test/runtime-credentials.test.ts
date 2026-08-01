@@ -122,6 +122,7 @@ describe('Linux shared runtime login', () => {
     })
     expect(readFileSync(join(hostClaude, '.credentials.json'), 'utf8')).toContain('default-login')
     expect(readFileSync(join(secureDir, '.credentials.json'), 'utf8')).toContain('isolated-login')
+    expect(existsSync(join(scopeDir, 'home', '.claude', 'settings.json'))).toBe(false)
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(canonicalSecureDir)
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).not.toContain(realpathSync(hostClaude))
     expect(launch.sandbox?.protectedCredentialRoots).toEqual([canonicalSecureDir])
