@@ -315,9 +315,9 @@ function formatErr(err: unknown): string {
  * Does this Telegram failure just mean the bot is ALREADY out of the chat?
  *
  * Telegram offers no "am I in this chat" query, so the only way to learn it is to try
- * to leave and read the refusal. These are the shapes it uses for a chat the bot
- * cannot be in — removed, kicked, or the chat is gone. Anything else is a genuine
- * failure and must still reach the operator.
+ * to leave and read the refusal. These are the `description`s the Bot API returns from
+ * `leaveChat` for a chat the bot cannot be in — removed, kicked, or the chat is gone.
+ * Anything else is a genuine failure and must still reach the operator.
  *
  * Matching on message text is a heuristic, and deliberately a safe one: a mis-read
  * error only retires a row that is still live, which is the already-documented
@@ -325,14 +325,7 @@ function formatErr(err: unknown): string {
  */
 function isAlreadyOutOfChat(err: unknown): boolean {
   const message = ((err as { message?: string })?.message ?? '').toLowerCase()
-  return (
-    message.includes('chat not found') ||
-    message.includes('not a member') ||
-    message.includes('bot was kicked') ||
-    message.includes('bot is not a member') ||
-    message.includes('user_not_participant') ||
-    message.includes('peer_id_invalid')
-  )
+  return message.includes('chat not found') || message.includes('bot was kicked') || message.includes('not a member')
 }
 
 // ACP runtime identities for THIS daemon's own MCP tools. ALL_TOOL_NAMES is the

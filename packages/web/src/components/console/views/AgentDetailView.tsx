@@ -44,7 +44,7 @@ import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
-import { IntegrationChannelList, roomGlyph } from '@/components/console/IntegrationChannelList'
+import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
@@ -1142,7 +1142,7 @@ export default function AgentDetailView() {
                             {g.channels[0] && (
                               <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
                                 {roomGlyph(g.channels[0].kind, g.platform)}
-                                {g.channels[0].name}
+                                {rowLabel(g.channels[0])}
                               </span>
                             )}
                           </span>

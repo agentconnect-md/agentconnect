@@ -161,6 +161,10 @@ taxonomy. Where the bot cannot be made to leave, removing the row is the only ch
 and its own wording carries the rest of the answer — that the bot is still in there and
 has to be shown out in the chat app.
 
+A direct conversation is the exception on both counts. Nobody is invited to one, so
+there is no membership to end and nothing to point the operator at; removing the row
+there is only ever removing a listing, and it says exactly that.
+
 That collapse puts a requirement on Leave. On a leave-capable platform a row has no
 second escape hatch, so Leave must also succeed when the bot is ALREADY out — the stale
 row left behind by someone removing the bot in the chat app is the very case these
