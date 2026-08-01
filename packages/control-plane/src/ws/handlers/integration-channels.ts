@@ -8,6 +8,11 @@
  * are control metadata — never message content (§1/§12). Every accepted report
  * also hot-pushes the derived collaboration routes without waiting for reconnect.
  *
+ * `removed` is the one way a non-authoritative reporter can DELETE: its omissions
+ * carry no meaning, so a conversation it has genuinely left has to be named. It
+ * applies alongside the upsert, so one report can both refresh what remains and
+ * retire what is gone.
+ *
  * Scope check: the integration's owning agent must be placed on the REPORTING
  * daemon (the same daemon-scoped join as `register/ok.integrations[]`) — a daemon
  * can never write channel rows for another daemon's integration.
@@ -42,10 +47,11 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
-      defaultTrigger || p.authoritative === false
+      defaultTrigger || p.authoritative === false || p.removed?.length
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
-            ...(p.authoritative === false ? { authoritative: false } : {})
+            ...(p.authoritative === false ? { authoritative: false } : {}),
+            ...(p.removed?.length ? { removed: p.removed } : {})
           }
         : undefined
     )

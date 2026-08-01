@@ -237,6 +237,8 @@ import type {
   McpTransportCapabilities,
   RuntimeModelCatalog,
   IntegrationChannel,
+  IntegrationLeave,
+  IntegrationLeaveOk,
   Drain,
   DrainProgress,
   DrainDone,
@@ -3218,11 +3220,20 @@ export class Daemon {
         const integrations = agent.integrations.filter((i) => i.platform === platform)
         if (integrations.length === 0) continue
         for (const integ of integrations) {
+          // A conversation the bot left is still all over session history, so the
+          // retracted set is subtracted from BOTH sources — the fresh observations and
+          // the cached rows carried forward — or the rebuild would resurrect it.
+          //
+          // Subtracted AFTER the collapse, never before: a Discord observation is a
+          // THREAD id, and only the collapse turns it into the channel the tombstone
+          // names. Filtering the raw ids would match nothing and let the thread fold
+          // straight back onto the channel that was just left.
+          const retracted = this.store.retractedConversations(integ.id)
           const observed = this.collapseObserved(
             this.store.observedChannels(agent.id, platform, this.transportScopeForIntegration(integ)),
             platform
-          )
-          const prior = this.channelSnapshots.get(integ.id)?.channels ?? []
+          ).filter((c) => !retracted.has(c.id))
+          const prior = (this.channelSnapshots.get(integ.id)?.channels ?? []).filter((c) => !retracted.has(c.id))
           if (observed.length === 0 && prior.length === 0) continue
           const priorById = new Map(prior.map((c) => [c.id, c]))
           const observedIds = new Set(observed.map((c) => c.id))
@@ -3277,6 +3288,112 @@ export class Daemon {
         }
       }
     }
+  }
+
+  /**
+   * Withdraw the bot from a conversation (or, on Discord, a whole server) at the
+   * PLATFORM, then reconcile the console's channel set.
+   *
+   * The platforms disagree about what can be left and about what they tell us
+   * afterwards, and both differences are load-bearing:
+   *
+   *  - **Slack** leaves one channel and then EMITS `channel_left`, which re-lists
+   *    membership authoritatively and retires the row on its own. Re-listing here
+   *    too only makes the console update immediately instead of on the event.
+   *  - **Telegram** leaves one chat and tells nobody — no self-event, and its bot
+   *    API cannot enumerate chats — so the row survives unless we retract it by id.
+   *  - **Discord** has no per-channel membership for a bot at all; leaving means
+   *    leaving the guild, which retires every row of that guild at once.
+   *
+   * Never throws: a platform refusal is the operator's answer, not a daemon fault.
+   */
+  private async leaveConversation(leave: IntegrationLeave): Promise<IntegrationLeaveOk> {
+    const integration = this.integrationConfigById(leave.integrationId)
+    if (!integration) return { ok: false, error: 'integration not found on this daemon' }
+    const conn = this.connForIntegration(leave.integrationId)
+    if (!conn) return { ok: false, error: 'integration is not connected' }
+    const { target } = leave
+    try {
+      if (conn instanceof DiscordConnection) {
+        if (target.kind !== 'space') {
+          return { ok: false, error: 'Discord bots join servers, not channels — leave the server instead' }
+        }
+        await conn.leaveSpace(target.spaceId)
+        // Every channel of that guild went with it. The snapshot is the only record
+        // of which those were: Discord rows are observed, never enumerated.
+        const gone = (this.channelSnapshots.get(leave.integrationId)?.channels ?? [])
+          .filter((c) => c.spaceId === target.spaceId)
+          .map((c) => c.id)
+        this.retractChannels(leave.integrationId, gone)
+        return { ok: true }
+      }
+      if (target.kind !== 'conversation') {
+        return { ok: false, error: 'this platform has no server to leave — leave the channel instead' }
+      }
+      if (conn instanceof SlackConnection) {
+        await conn.leaveChannel(target.channel)
+        // Authoritative re-list; also arrives via channel_left, and both converge.
+        await this.refreshChannels(conn)
+        return { ok: true }
+      }
+      if (conn instanceof TelegramConnection) {
+        await conn.leaveChannel(target.channel)
+        this.retractChannels(leave.integrationId, [target.channel])
+        return { ok: true }
+      }
+      return { ok: false, error: 'leaving a conversation is not supported on this platform' }
+    } catch (err) {
+      // The platform's own words — a missing scope, `last_member`, a lost right.
+      const error = (err as Error).message
+      this.log.warn(`integration/leave failed (${integration.platform}): ${error}`)
+      return { ok: false, error }
+    }
+  }
+
+  /**
+   * A retracted conversation that is talking to us again has plainly been re-joined —
+   * a platform only delivers messages for a conversation the bot is actually in — so
+   * traffic lifts the suppression and the row comes back on the next refresh.
+   *
+   * Without this, "leave" would be permanent in the console even after someone
+   * re-invited the bot, and the operator would have no way to undo it from here.
+   */
+  private clearRetractionOnTraffic(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
+    if (msg.source !== 'user' || !srcIntegrationIds?.length) return
+    for (const integrationId of srcIntegrationIds) {
+      const retracted = this.store.retractedConversations(integrationId)
+      if (retracted.size === 0) continue
+      for (const channel of [msg.channel, msg.parentChannel]) {
+        if (channel && retracted.has(channel)) {
+          this.store.clearRetractedConversation(integrationId, channel)
+          this.log.debug(`channels: ${channel} is active again — retraction cleared for ${integrationId}`)
+        }
+      }
+    }
+  }
+
+  /**
+   * Retract conversations from this integration's reported set — the counterpart to
+   * discovery, for platforms whose snapshots can only ever grow. Absence from a
+   * non-authoritative report means nothing, so the ids ride an explicit `removed`.
+   */
+  private retractChannels(integrationId: string, channelIds: readonly string[]): void {
+    if (channelIds.length === 0) return
+    const gone = new Set(channelIds)
+    // Durably, before touching the snapshot. The observed set of a non-enumerating
+    // platform is rebuilt from SESSION HISTORY, which knows nothing about leaving, so
+    // without this marker the very next refresh restores the row and undoes the
+    // departure. `refreshObservedChannels` reads it back.
+    this.store.markRetractedConversations(integrationId, [...gone], this.clock.now())
+    const cached = this.channelSnapshots.get(integrationId)
+    const channels = (cached?.channels ?? []).filter((c) => !gone.has(c.id))
+    this.channelSnapshots.set(integrationId, { channels, authoritative: cached?.authoritative ?? false })
+    this.cpClient?.emitIntegrationChannels({
+      integrationId,
+      channels,
+      authoritative: false,
+      removed: [...gone]
+    })
   }
 
   /**
@@ -4402,6 +4519,7 @@ export class Daemon {
       this.log.debug(`routing: dropping AgentConnect bot message ${msg.msgId}`)
       return
     }
+    this.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
     // A mention in a watched Slack channel can arrive via both `message.*` and
     // `app_mention`; both share channel:ts, so dedup the double-fire from ONE bot
@@ -13259,11 +13377,25 @@ export class Daemon {
   /** Re-assert cached reports after a CP reconnect without upgrading a partial
    *  observation (including Slack gated-conversation discovery) to a full snapshot. */
   private replayChannelSnapshots(): void {
-    for (const [integrationId, snapshot] of this.channelSnapshots) {
+    // Keyed by BOTH sources. The snapshots are in memory and the tombstones are on
+    // disk, so a restart before the first reconnect leaves an integration with a
+    // durable retraction and no cached snapshot — and keying on the map alone would
+    // replay nothing for it, stranding the CP row exactly when the original
+    // fire-and-forget retraction was the one thing that got lost.
+    const integrationIds = new Set([...this.channelSnapshots.keys(), ...this.store.retractedIntegrations()])
+    for (const integrationId of integrationIds) {
+      const snapshot = this.channelSnapshots.get(integrationId)
+      // Replay the tombstones too: a retraction emitted while the CP was unreachable
+      // is simply lost, so without carrying it here the reconnect would re-assert what
+      // remains and leave the departed conversation listed forever — the exact failure
+      // this whole mechanism exists to end.
+      const removed = [...this.store.retractedConversations(integrationId)]
+      if (!snapshot && removed.length === 0) continue
       this.cpClient?.emitIntegrationChannels({
         integrationId,
-        channels: snapshot.channels,
-        ...(snapshot.authoritative ? {} : { authoritative: false })
+        channels: snapshot?.channels ?? [],
+        ...(snapshot?.authoritative ? {} : { authoritative: false }),
+        ...(removed.length > 0 ? { removed } : {})
       })
     }
   }
@@ -14800,6 +14932,8 @@ export class Daemon {
         if (!this.moveStagedAgents.has(spec.agentId)) this.cpIntegrations?.upsert(spec)
       },
       applyIntegrationRemove: (integrationId) => this.cpIntegrations?.remove(integrationId),
+      applyIntegrationLeave: (leave) => this.leaveConversation(leave),
+      applyIntegrationForget: (forget) => this.retractChannels(forget.integrationId, forget.channels),
       applyMcpServerUpsert: (spec) => {
         if (spec.name === RESERVED_MCP_SERVER_NAME) {
           this.log.warn(`mcp: ignoring CP push for reserved server name "${spec.name}"`)

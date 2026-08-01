@@ -861,6 +861,30 @@ export class CpClient {
       case 'integration/remove':
         this.deps.configApply.applyIntegrationRemove((frame.payload as { integrationId: string }).integrationId)
         return // EVT — no reply
+      case 'integration/forget':
+        // REQ → ack: an undelivered suppression means the conversation comes back, so
+        // the CP must be able to tell the operator instead of reporting success.
+        try {
+          this.deps.configApply.applyIntegrationForget(
+            frame.payload as Parameters<ConfigApply['applyIntegrationForget']>[0]
+          )
+          this.reply(frame, 'ack', { ok: true })
+        } catch (err) {
+          this.reply(frame, 'ack', { ok: false, reason: (err as Error).message })
+        }
+        return
+      case 'integration/leave': {
+        // REQ → reply: this one changes the OUTSIDE world, so the operator is told
+        // what the platform said rather than what we hoped. A refusal is a normal
+        // reply (`ok:false`), not a protocol error — a missing scope or a
+        // `last_member` channel is the operator's problem to see, not a daemon fault.
+        const leave = frame.payload as Parameters<ConfigApply['applyIntegrationLeave']>[0]
+        this.deps.configApply
+          .applyIntegrationLeave(leave)
+          .then((result) => this.reply(frame, 'integration/leave/ok', result))
+          .catch((err) => this.reply(frame, 'integration/leave/ok', { ok: false, error: (err as Error).message }))
+        return
+      }
       case 'mcpserver/upsert':
         // Grant-key-bearing payload — NEVER log the frame body.
         this.deps.configApply.applyMcpServerUpsert(frame.payload as Parameters<ConfigApply['applyMcpServerUpsert']>[0])

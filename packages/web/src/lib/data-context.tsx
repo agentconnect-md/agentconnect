@@ -33,6 +33,8 @@ import {
   finalizeSlackInstall as apiFinalizeSlackInstall,
   deleteIntegration as apiDeleteIntegration,
   updateIntegrationChannel as apiUpdateIntegrationChannel,
+  forgetIntegrationChannel as apiForgetIntegrationChannel,
+  leaveIntegrationConversation as apiLeaveIntegrationConversation,
   updateBot as apiUpdateBot,
   fetchIntegrations,
   createHook as apiCreateHook,
@@ -203,6 +205,13 @@ interface ConsoleData {
   setChannelTrigger: (integrationId: string, channelId: string, trigger: ChannelTrigger) => Promise<void>
   /** Per-channel default agent for a shared bot (PATCH), applied locally. */
   setChannelAgent: (integrationId: string, channelId: string, agentId: string) => Promise<void>
+  /** Forget a conversation row without touching the platform. */
+  forgetChannel: (integrationId: string, channelId: string) => Promise<void>
+  /** Withdraw the bot at the platform; rejects with the platform's own refusal. */
+  leaveConversation: (
+    integrationId: string,
+    target: { kind: 'conversation'; channel: string } | { kind: 'space'; spaceId: string }
+  ) => Promise<void>
   /** Flip a bot's shared-bot opt-in (PATCH /bots/:id), then re-pull. */
   setBotShareable: (botId: string, shareable: boolean) => Promise<void>
   /** Create-or-update a cron (PUT upsert; null id ⇒ mint a fresh UUID), then re-pull. */
@@ -1122,6 +1131,60 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateIntegrations, realBots]
   )
 
+  /**
+   * Drop a conversation from the cache. Both channel actions end the same way — the
+   * row is gone — so they share one projection, applied bot-wide for a channel of a
+   * shared bot because the server forgets it on every install.
+   */
+  const dropChannelsFromCache = useCallback(
+    (integrationId: string, channelIds: readonly string[]) => {
+      const gone = new Set(channelIds)
+      settleInBackground(
+        mutateIntegrations(
+          (rows) => {
+            const source = rows?.find((row) => row.id === integrationId)
+            if (!rows || !source) return rows
+            const botWide = realBots.some((bot) => bot.id === source.botId && bot.shareable)
+            return rows.map((row) =>
+              (botWide ? row.botId === source.botId : row.id === integrationId)
+                ? { ...row, channels: row.channels.filter((channel) => !gone.has(channel.channelId)) }
+                : row
+            )
+          },
+          { revalidate: false }
+        )
+      )
+    },
+    [mutateIntegrations, realBots]
+  )
+
+  const forgetChannel = useCallback(
+    async (integrationId: string, channelId: string) => {
+      await apiForgetIntegrationChannel(integrationId, channelId)
+      dropChannelsFromCache(integrationId, [channelId])
+    },
+    [dropChannelsFromCache]
+  )
+
+  /** Leave at the platform. Rejects with the platform's own refusal for the caller to
+   *  show; on success every affected row goes — a whole Discord server takes its
+   *  channels with it. */
+  const leaveConversation = useCallback(
+    async (
+      integrationId: string,
+      target: { kind: 'conversation'; channel: string } | { kind: 'space'; spaceId: string }
+    ) => {
+      await apiLeaveIntegrationConversation(integrationId, target)
+      const rows = integrations.find((row) => row.id === integrationId)?.channels ?? []
+      const gone =
+        target.kind === 'space'
+          ? rows.filter((channel) => channel.spaceId === target.spaceId).map((channel) => channel.channelId)
+          : [target.channel]
+      dropChannelsFromCache(integrationId, gone)
+    },
+    [dropChannelsFromCache, integrations]
+  )
+
   // Set a shared channel's sole owner. The API projects the effective bot-level
   // state onto every integration copy, so keep those cached copies in sync.
   const setChannelAgent = useCallback(
@@ -1301,6 +1364,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       deleteHook,
       deleteBot,
       setChannelTrigger,
+      forgetChannel,
+      leaveConversation,
       setChannelAgent,
       setBotShareable,
       saveCron,

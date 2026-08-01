@@ -520,6 +520,16 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS channel_scopes (
         id TEXT PRIMARY KEY, parentId TEXT, spaceId TEXT, isIm INTEGER, updatedAt INTEGER
       );
+      -- Conversations this daemon must stop REPORTING: the bot left, or an operator
+      -- forgot the row. Needed because the observed set of a platform that cannot
+      -- enumerate is derived from SESSION HISTORY, which knows nothing about leaving —
+      -- so without a durable marker the next refresh rebuilds the row from old
+      -- sessions and silently undoes the departure. Survives restart for the same
+      -- reason: the history it is suppressing is itself durable.
+      CREATE TABLE IF NOT EXISTS retracted_conversations (
+        integrationId TEXT NOT NULL, channelId TEXT NOT NULL, retractedAt INTEGER NOT NULL,
+        PRIMARY KEY (integrationId, channelId)
+      );
       CREATE TABLE IF NOT EXISTS permission_requests (
         id TEXT PRIMARY KEY,
         agentId TEXT NOT NULL,
@@ -1236,6 +1246,56 @@ export class LocalStore {
     return this.db
       .prepare('SELECT * FROM sessions WHERE acpSessionId IS NOT NULL ORDER BY updatedAt DESC')
       .all() as unknown as SessionListRow[]
+  }
+
+  /**
+   * Stop reporting these conversations for this integration — the bot left, or an
+   * operator forgot the row.
+   *
+   * This has to be durable, not in-memory, because the thing it suppresses is: the
+   * observed set of a non-enumerating platform is rebuilt from session history, so a
+   * restart (or merely the next refresh) would otherwise resurrect a conversation the
+   * bot demonstrably left. Sessions and transcripts are untouched — this hides the
+   * conversation from the console's channel list, it does not erase what happened.
+   */
+  markRetractedConversations(integrationId: string, channelIds: readonly string[], now: number): void {
+    const stmt = this.db.prepare(
+      `INSERT INTO retracted_conversations (integrationId, channelId, retractedAt) VALUES (?, ?, ?)
+       ON CONFLICT (integrationId, channelId) DO UPDATE SET retractedAt = excluded.retractedAt`
+    )
+    for (const channelId of channelIds) stmt.run(integrationId, channelId, now)
+  }
+
+  /** Integrations holding any suppression. The reconnect replay keys on this as well
+   *  as its in-memory snapshots: a restart before the first reconnect leaves the
+   *  tombstone on disk with no cached snapshot to replay it alongside. */
+  retractedIntegrations(): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT integrationId FROM retracted_conversations').all() as {
+      integrationId: string
+    }[]
+    return rows.map((r) => r.integrationId)
+  }
+
+  /** The conversations currently suppressed for one integration. */
+  retractedConversations(integrationId: string): Set<string> {
+    const rows = this.db
+      .prepare('SELECT channelId FROM retracted_conversations WHERE integrationId = ?')
+      .all(integrationId) as { channelId: string }[]
+    return new Set(rows.map((r) => r.channelId))
+  }
+
+  /**
+   * Forget the suppression for one conversation — it is back.
+   *
+   * The trigger is a real inbound message: a platform only delivers those for a
+   * conversation the bot is actually in, so traffic is proof the departure has been
+   * undone (someone re-invited it). Self-healing, and it keeps a stale marker from
+   * hiding a conversation forever.
+   */
+  clearRetractedConversation(integrationId: string, channelId: string): void {
+    this.db
+      .prepare('DELETE FROM retracted_conversations WHERE integrationId = ? AND channelId = ?')
+      .run(integrationId, channelId)
   }
 
   /** Distinct conversation targets this agent has been triggered in through one

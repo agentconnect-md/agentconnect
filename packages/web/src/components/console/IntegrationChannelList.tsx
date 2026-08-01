@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -166,21 +166,46 @@ export function groupBySpace(rows: IntegrationChannelRow[]): SpaceGroup[] {
     .sort((a, b) => (!a.key ? -1 : !b.key ? 1 : (a.label ?? '').localeCompare(b.label ?? '')))
 }
 
-/** The band that names a run of rows — a Discord server, or the DM section. */
-function groupHeader(label: string, padX: number) {
+/** The band that names a run of rows — a Discord server, or the DM section. `action`
+ *  is the band-level control (leaving a Discord server, which no single row can do). */
+function groupHeader(label: string, padX: number, action?: ReactNode) {
   return (
     <div
-      className="border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase"
+      className="flex items-center gap-2 border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase"
       style={{ padding: `6px ${padX}px` }}
       title={label}
     >
-      <span className="block truncate">{label}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {action}
     </div>
   )
 }
 
 /** One agent that shares the bot — the shape the default-dispatch popover renders. */
 type MemberAgent = { id: string; label: string; runtime: string; icon?: AgentIcon | null }
+
+/**
+ * Can this platform withdraw a bot from a single conversation, here?
+ *
+ * Only Telegram (`leaveChat`), which needs no extra permission.
+ *
+ * Slack CAN do it technically, but `conversations.leave` requires `channels:manage`
+ * — a scope that also grants create, archive, kick and rename, and whose addition
+ * would force every installed workspace to re-authorize. That is a steep price for
+ * the one platform where it buys least: Slack reports its membership
+ * authoritatively, so removing the bot in Slack makes the row disappear on its own,
+ * and Off already covers "stop responding here". A deployment that grants the scope
+ * on its own app can still call the leave API directly.
+ *
+ * Discord cannot at all — a bot joins a SERVER and sees its channels through
+ * permissions, so the smallest thing it can leave is the whole server, offered
+ * per-server instead. Feishu has no bot self-leave in the SDK.
+ */
+const canLeaveConversation = (platform?: string): boolean => platform === 'telegram'
+
+/** What "leave" is called where — the console should use the platform's own word for
+ *  the room, not a generic one the operator has to translate. */
+const conversationNoun = (platform?: string): string => (platform === 'telegram' ? 'group' : 'channel')
 
 /** Fixed-position placement of the portalled popover, measured off its button. */
 type PopoverBox = { style: { left?: number; right?: number; top?: number; bottom?: number } }
@@ -204,6 +229,139 @@ export function placePopover(
   if (btn.bottom + POPOVER_H > vh - 8 && btn.top > POPOVER_H) style.bottom = vh - btn.top + 6
   else style.top = btn.bottom + 6
   return { style }
+}
+
+/**
+ * The per-row overflow menu: forget the row, and — where the platform allows it —
+ * actually leave the conversation.
+ *
+ * The two are deliberately worded apart, because confusing them is the whole trap
+ * this list used to set. Forgetting only stops AgentConnect listing a conversation
+ * and is the sole remedy for one the bot already left on a platform that cannot
+ * report its own departure; leaving changes the outside world and needs the bot to
+ * still be there. Both confirm, since neither is undoable from here.
+ */
+function RowActions({
+  channel,
+  platform,
+  onForget,
+  onLeave
+}: {
+  channel: IntegrationChannelRow
+  platform?: string
+  onForget: () => Promise<void>
+  onLeave?: () => Promise<void>
+}) {
+  const [box, setBox] = useState<PopoverBox | null>(null)
+  const [busy, setBusy] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const open = box !== null
+  const close = useCallback(() => setBox(null), [])
+  // Same portal + dismissal contract as the default-dispatch popover: the host cards
+  // clip their rows, so an in-flow menu is cut off on the last one.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
+    document.addEventListener('keydown', onKey, true)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [open, close])
+  const toggle = () => {
+    const el = btnRef.current
+    if (open || !el) return close()
+    setBox(placePopover(el.getBoundingClientRect(), window.innerWidth, window.innerHeight))
+  }
+  const run = (action: () => Promise<void>) => {
+    close()
+    if (busy) return
+    setBusy(true)
+    void action().finally(() => setBusy(false))
+  }
+  const noun = conversationNoun(platform)
+  const item = (label: string, icon: string, hint: string, onClick: () => void) => (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      title={hint}
+      className={`flex w-full items-start gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[7px] text-left hover:bg-(--surface-hover) ${
+        busy ? 'cursor-default opacity-60' : 'cursor-pointer'
+      }`}
+    >
+      <Icon name={icon} size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+      <span className="min-w-0">
+        <span className="block font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+          {label}
+        </span>
+        <span className="block font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">{hint}</span>
+      </span>
+    </button>
+  )
+  return (
+    // The row's controls stack on mobile, where a left-aligned lone button reads as
+    // stray; pinning it to the row's end keeps it looking like the row's own control.
+    <span className="flex-none max-desktop:self-end">
+      <button
+        ref={btnRef}
+        onClick={toggle}
+        title={`More actions for ${channel.name}`}
+        aria-label={`More actions for ${channel.name}`}
+        aria-expanded={open}
+        className={`iconbtn h-7 w-7 ${busy ? 'opacity-60' : ''}`}
+      >
+        <Icon name="ellipsis" size={15} color="var(--text-tertiary)" />
+      </button>
+      {box &&
+        createPortal(
+          <>
+            <span className="fixed inset-0 z-[1090]" onClick={close} />
+            <div
+              className="fixed z-[1100] w-[264px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+              style={box.style}
+            >
+              {onLeave &&
+                item(
+                  `Leave ${noun}`,
+                  'log-out',
+                  `Removes the bot from this ${noun} on the platform. Add it again to undo.`,
+                  () =>
+                    run(async () => {
+                      if (
+                        !window.confirm(
+                          `Remove the bot from ${channel.name}? It leaves the ${noun} on the platform and stops receiving anything there. Re-invite it to undo.`
+                        )
+                      ) {
+                        return
+                      }
+                      await onLeave()
+                    })
+                )}
+              {item(
+                'Forget this conversation',
+                'trash-2',
+                'Removes the row here only. Use it when the bot has already left.',
+                () =>
+                  run(async () => {
+                    if (
+                      !window.confirm(
+                        `Stop listing ${channel.name}? The bot is not touched — if it is still in the conversation, the row comes back.`
+                      )
+                    ) {
+                      return
+                    }
+                    await onForget()
+                  })
+              )}
+            </div>
+          </>,
+          document.body
+        )}
+    </span>
+  )
 }
 
 /**
@@ -369,6 +527,7 @@ export function IntegrationChannelList({
   channels,
   botId,
   agentId,
+  platform,
   shareable = false,
   gated = false,
   padX = 18
@@ -377,6 +536,9 @@ export function IntegrationChannelList({
   channels: IntegrationChannelRow[]
   /** The backing bot id — resolves the member agents offered as per-channel defaults. */
   botId?: string
+  /** Which platform this integration talks to. Decides what "leave" can even mean:
+   *  one conversation (Slack, Telegram), a whole server (Discord), or nothing. */
+  platform?: string
   /** The agent whose page this is — the "Make … default" target of the default-dispatch popover. */
   agentId?: string
   /** When true (shared bot), show the per-channel default-agent picker. */
@@ -387,7 +549,20 @@ export function IntegrationChannelList({
   /** Horizontal row padding, to line up with the host card (18 list / 14 detail). */
   padX?: number
 }) {
-  const { setChannelTrigger, setChannelAgent, bots, agents, integrations } = useConsoleData()
+  const { setChannelTrigger, setChannelAgent, forgetChannel, leaveConversation, bots, agents, integrations } =
+    useConsoleData()
+  // A platform refusal is the useful half of a failed Leave — a missing scope or a
+  // last-member channel tells the operator what to do — so it is shown verbatim
+  // rather than collapsed into "something went wrong".
+  const [error, setError] = useState<string | null>(null)
+  const act = useCallback(async (action: () => Promise<void>) => {
+    setError(null)
+    try {
+      await action()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [])
   // The agents that share this bot — the candidate per-channel defaults.
   const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
   const member = (id: string): MemberAgent => {
@@ -413,6 +588,36 @@ export function IntegrationChannelList({
   // previously mistaken for a channel converts), so hide them here, not at the source.
   const dmRows = gated ? channels.filter((c) => isDirectConversation(c.kind)) : []
   const grouped = groupBySpace(channelRows)
+  /**
+   * Leaving, for a platform that has no per-conversation membership to leave. A
+   * Discord bot is in a SERVER, so the action belongs to the band that names one —
+   * putting it on a row would promise something far smaller than it does. Bands
+   * without a server id (the flat lead group of every other platform) get nothing.
+   */
+  const spaceAction = (g: SpaceGroup): ReactNode => {
+    if (!integrationId || platform !== 'discord' || !g.key) return undefined
+    return (
+      <button
+        className="iconbtn h-6 w-6 flex-none"
+        title={`Leave ${g.label ?? 'this server'} — the bot leaves the whole server, with every channel in it`}
+        aria-label={`Leave the server ${g.label ?? g.key}`}
+        onClick={() =>
+          void act(async () => {
+            if (
+              !window.confirm(
+                `Leave ${g.label ?? 'this server'}? A Discord bot cannot leave one channel — it leaves the whole server, and every channel of it disappears from this list. Re-invite it to undo.`
+              )
+            ) {
+              return
+            }
+            await leaveConversation(integrationId, { kind: 'space', spaceId: g.key })
+          })
+        }
+      >
+        <Icon name="log-out" size={13} color="var(--text-tertiary)" />
+      </button>
+    )
+  }
   const row = (c: IntegrationChannelRow) => {
     const def = !isDirectConversation(c.kind) && shareable ? defaultAgent(c) : undefined
     return (
@@ -454,6 +659,21 @@ export function IntegrationChannelList({
             disabled={!integrationId}
             onChange={(trigger) => setChannelTrigger(integrationId!, c.channelId, trigger)}
           />
+          {/* Demo rows have no integration to act on, so they carry no menu at all
+              rather than an inert one. */}
+          {integrationId && (
+            <RowActions
+              channel={c}
+              platform={platform}
+              onForget={() => act(() => forgetChannel(integrationId, c.channelId))}
+              {...(canLeaveConversation(platform) && !isDirectConversation(c.kind)
+                ? {
+                    onLeave: () =>
+                      act(() => leaveConversation(integrationId, { kind: 'conversation', channel: c.channelId }))
+                  }
+                : {})}
+            />
+          )}
         </div>
       </div>
     )
@@ -473,9 +693,19 @@ export function IntegrationChannelList({
           </span>
         </div>
       )}
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
+          style={{ padding: `9px ${padX}px` }}
+        >
+          <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
+          <span>{error}</span>
+        </div>
+      )}
       {grouped.map((g) => (
         <Fragment key={g.key || '(unscoped)'}>
-          {g.label && groupHeader(g.label, padX)}
+          {g.label && groupHeader(g.label, padX, spaceAction(g))}
           {g.rows.map(row)}
         </Fragment>
       ))}
@@ -492,10 +722,14 @@ export function IntegrationChannelList({
             : gated
               ? 'Channels appear here when the bot is invited; direct messages appear when someone writes to the bot.'
               : 'Channels appear here when the bot is invited to them. Trigger is set per channel.'}{' '}
-          {/* Answers the question the list otherwise raises — there is no "leave" here,
-              because leaving is a platform action. Off is the console's equivalent. */}
-          Set a channel to off to silence the agent there; removing the bot from the channel itself is done on the
-          platform.
+          {/* Off silences without leaving; the row menu covers the rest. What the menu
+              can offer differs by platform, so promise only what is there — and where
+              leaving is not offered, say where it IS done rather than leaving the
+              operator to wonder. */}
+          Set a channel to off to silence the agent there, or use a row&rsquo;s menu to{' '}
+          {canLeaveConversation(platform) ? 'leave it or stop listing it' : 'stop listing it'}.
+          {platform === 'discord' && ' A Discord bot joins servers, not channels, so it can only leave a whole server.'}
+          {platform === 'slack' && ' To remove the bot from a channel, do it in Slack — this list updates by itself.'}
         </span>
       </div>
     </>

@@ -31,7 +31,13 @@ export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 /** Bot token scopes the Slack app requests. Widening this list later forces every
  *  workspace that already installed the app to re-authorize, so it covers group DMs
  *  (`mpim:*`) and agent-initiated DMs (`im:write`) alongside the channel and thread
- *  surfaces the adapter reads today. */
+ *  surfaces the adapter reads today.
+ *
+ *  Deliberately NO channel-write scope: `conversations.leave` would need
+ *  `channels:manage`, which also grants create/archive/kick/rename and would force
+ *  every installed workspace to re-authorize. Slack re-lists membership
+ *  authoritatively, so removing the bot in Slack clears the console row by itself.
+ *  Keep in lock-step with the control plane's copy. */
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',

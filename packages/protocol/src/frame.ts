@@ -28,7 +28,14 @@ import {
   HookStart,
   HookStartOk
 } from './frames/hook.js'
-import { IntegrationUpsert, IntegrationRemove, IntegrationChannels } from './frames/integration.js'
+import {
+  IntegrationUpsert,
+  IntegrationRemove,
+  IntegrationChannels,
+  IntegrationForget,
+  IntegrationLeave,
+  IntegrationLeaveOk
+} from './frames/integration.js'
 import { McpServerUpsert, McpServerRemove } from './frames/mcpserver.js'
 import { MemoryConnectionUpsert, MemoryConnectionRemove, MemoryConnectionFacts } from './frames/memory-connection.js'
 import { GitCredRequest, GitCredGrant } from './frames/gitcred.js'
@@ -202,6 +209,9 @@ export const FRAME_SCHEMAS = {
   'integration/upsert': IntegrationUpsert,
   'integration/remove': IntegrationRemove,
   'integration/channels': IntegrationChannels,
+  'integration/forget': IntegrationForget,
+  'integration/leave': IntegrationLeave,
+  'integration/leave/ok': IntegrationLeaveOk,
   // ── MCP provider registry (CP-owned defs pushed to daemons; grant-key-bearing — never log) ──
   'mcpserver/upsert': McpServerUpsert,
   'mcpserver/remove': McpServerRemove,
@@ -412,6 +422,9 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('integration/upsert', FRAME_SCHEMAS['integration/upsert']),
   frame('integration/remove', FRAME_SCHEMAS['integration/remove']),
   frame('integration/channels', FRAME_SCHEMAS['integration/channels']),
+  frame('integration/forget', FRAME_SCHEMAS['integration/forget']),
+  frame('integration/leave', FRAME_SCHEMAS['integration/leave']),
+  frame('integration/leave/ok', FRAME_SCHEMAS['integration/leave/ok']),
   frame('mcpserver/upsert', FRAME_SCHEMAS['mcpserver/upsert']),
   frame('mcpserver/remove', FRAME_SCHEMAS['mcpserver/remove']),
   frame('memoryconnection/upsert', FRAME_SCHEMAS['memoryconnection/upsert']),

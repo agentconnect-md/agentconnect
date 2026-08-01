@@ -3015,12 +3015,22 @@ export interface IntegrationChannelRepo {
    * DM (kind='im') rows are always retained. `defaultTrigger` seeds NEW rows only
    * ('off' for a gated integration, 'mention' otherwise); existing rows keep
    * their trigger.
+   *
+   * `removed` names conversations to DELETE outright, whatever the report's kind.
+   * It is how a non-authoritative reporter retires a row at all — its omissions
+   * mean nothing — and it deletes DM rows too, since it states a fact about the
+   * conversation rather than inferring one from an incomplete listing. Applied
+   * after the upsert, so a conversation in both lists ends up deleted.
    */
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean }
+    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean; removed?: string[] }
   ): Promise<void>
+  /** Forget one conversation row. Console-driven cleanup for a conversation the bot
+   *  is no longer in on a platform that cannot say so itself; returns whether a row
+   *  was actually removed. Metadata only — sessions and transcripts are untouched. */
+  deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
   /** Incremental conversation upsert (§14.3, DM rows): create the row (kind, name,
    *  `agentId`, `defaultTrigger`) when absent; when it exists refresh only the name

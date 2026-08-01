@@ -22,6 +22,16 @@ import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
  * workspace that already installed the app to re-authorize, so it covers group
  * DMs (`mpim:*`) and agent-initiated DMs (`im:write`) alongside the channel and
  * thread surfaces the adapter reads today.
+ *
+ * Deliberately NO channel-write scope. `conversations.leave` would need
+ * `channels:manage` (or `groups:write` for private channels), and Slack offers no
+ * leave-only scope — `channels:manage` also grants create, archive, kick, rename and
+ * unarchive, none of which this app uses. Taking four unused powers AND forcing every
+ * installed workspace to re-authorize buys very little here: Slack reports its own
+ * membership authoritatively, so removing the bot in Slack makes the console row
+ * disappear by itself. The console offers Off and Forget for Slack instead, and
+ * leaving is done in Slack. A deployment that grants these scopes on its own app can
+ * still call the leave API; only the manifest and the console affordance omit it.
  */
 export const SLACK_BOT_SCOPES = [
   'files:read',

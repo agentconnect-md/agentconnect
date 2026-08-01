@@ -236,10 +236,85 @@ export type IntegrationChannel = z.infer<typeof IntegrationChannel>
  * so the CP upserts what was observed without deleting older rows that are
  * absent from this report. An absent flag means authoritative for wire
  * compatibility. Channel names are control metadata, never message content.
+ *
+ * `removed` is how a NON-enumerating platform retracts one conversation. Absence
+ * from `channels` cannot mean "gone" there — the reported set is incomplete by
+ * construction, so a non-authoritative report never deletes — which left a bot
+ * that had actually left a group visible in the console forever. Naming the
+ * conversation explicitly is the only way to say it. An authoritative reporter
+ * needs none of this (its omissions already delete) but may still send it, and
+ * a removal is applied even for a conversation absent from `channels`.
  */
 export const IntegrationChannels = z.object({
   integrationId: z.string().uuid(),
   channels: z.array(IntegrationChannel),
-  authoritative: z.boolean().optional()
+  authoritative: z.boolean().optional(),
+  // Optional rather than defaulted: nearly every report has nothing to retract, and
+  // an absent field reads the same as an empty one to the CP.
+  removed: z.array(z.string()).optional()
 })
 export type IntegrationChannels = z.infer<typeof IntegrationChannels>
+
+/**
+ * What a leave targets. Platforms disagree about what a bot can withdraw from, and
+ * the difference is not cosmetic — so the caller has to say which it means rather
+ * than the daemon guessing from an id:
+ *
+ *  - `conversation` — one channel/group the bot is a member of (Slack
+ *    `conversations.leave`, Telegram `leaveChat`).
+ *  - `space` — the whole container. Discord has no per-channel membership for a
+ *    bot at all: it is in a GUILD and sees that guild's channels through
+ *    permissions, so the only thing it can leave is the entire server. That is a
+ *    much larger action than leaving one channel and must be requested as such.
+ */
+export const IntegrationLeaveTarget = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('conversation'), channel: z.string().min(1) }),
+  z.object({ kind: z.literal('space'), spaceId: z.string().min(1) })
+])
+export type IntegrationLeaveTarget = z.infer<typeof IntegrationLeaveTarget>
+
+/**
+ * C→D REQ → `integration/leave/ok` — withdraw the bot from a conversation or space
+ * at the PLATFORM. Unlike every other channel control this leaves AgentConnect's own
+ * state alone and changes the outside world, so it is a request with a reply: the
+ * console reports what the platform actually said rather than assuming.
+ *
+ * The daemon owns provider egress for both transports (a relay-managed bot still
+ * holds send credentials), so this is a daemon call in every topology.
+ */
+export const IntegrationLeave = z.object({
+  integrationId: z.string().uuid(),
+  target: IntegrationLeaveTarget
+})
+export type IntegrationLeave = z.infer<typeof IntegrationLeave>
+
+/**
+ * C→D REQ → `ack` — stop REPORTING these conversations; the platform is not touched.
+ *
+ * The console's Forget needs this for the same reason a leave does. A non-enumerating
+ * platform's observed set is rebuilt from session history, so deleting the row in the
+ * CP alone lasts only until the daemon's next refresh pushes it back. The daemon holds
+ * the suppression durably and lifts it when the conversation talks to it again.
+ *
+ * Acknowledged rather than fire-and-forget: the suppression is what makes the removal
+ * stick, so a daemon that never received it WILL list the conversation again. Reporting
+ * that as success would be a lie the operator only discovers later.
+ */
+export const IntegrationForget = z.object({
+  integrationId: z.string().uuid(),
+  channels: z.array(z.string()).min(1)
+})
+export type IntegrationForget = z.infer<typeof IntegrationForget>
+
+/**
+ * D→C REP (corr = `integration/leave` id). `ok:false` carries the platform's own
+ * refusal so the console can show it verbatim — "last_member", a missing scope, a
+ * bot that lacks the right — instead of a generic failure. The daemon reconciles
+ * the channel set separately over `integration/channels`; this reply is only the
+ * verdict on the platform call.
+ */
+export const IntegrationLeaveOk = z.object({
+  ok: z.boolean(),
+  error: z.string().optional()
+})
+export type IntegrationLeaveOk = z.infer<typeof IntegrationLeaveOk>

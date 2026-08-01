@@ -22,6 +22,9 @@ import type {
   CronRunNow,
   IntegrationUpsert,
   IntegrationRemove,
+  IntegrationForget,
+  IntegrationLeave,
+  IntegrationLeaveOk,
   McpServerSpec,
   MemoryConnectionSpec,
   Drain,
@@ -352,6 +355,24 @@ export class ControlSender {
   async integrationRemove(daemonId: string, r: IntegrationRemove): Promise<void> {
     const c = this.must(daemonId)
     c.conn.send('integration/remove', r, { epoch: c.sessionEpoch })
+  }
+
+  /** Tell a daemon to stop REPORTING conversations an operator forgot (REQ → ack).
+   *  Without it the daemon's next observed refresh pushes them straight back: that set
+   *  is derived from session history, which knows nothing about a row being removed —
+   *  so this is awaited, and an undeliverable suppression is the caller's problem to
+   *  surface rather than a silent future resurrection. */
+  async integrationForget(daemonId: string, f: IntegrationForget): Promise<Ack> {
+    const c = this.must(daemonId)
+    return c.conn.request<Ack>('integration/forget', f, { epoch: c.sessionEpoch })
+  }
+
+  /** Ask a daemon to withdraw the bot from a conversation/space at the PLATFORM
+   *  (REQ → verdict). Unlike its EVT siblings this one is awaited: it changes the
+   *  outside world, and the operator is shown what the platform actually said. */
+  async integrationLeave(daemonId: string, l: IntegrationLeave): Promise<IntegrationLeaveOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<IntegrationLeaveOk>('integration/leave', l, { epoch: c.sessionEpoch })
   }
 
   /**

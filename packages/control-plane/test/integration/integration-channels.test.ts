@@ -24,6 +24,7 @@ import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
+import { NoConnection } from '../../src/orchestrator/outbound.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import type { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import type { AnyFrame, CollabRoutesSnapshot, IntegrationUpsert, IntegrationChannel } from '@agentconnect.md/protocol'
@@ -46,8 +47,27 @@ const SLACK = { botToken: 'xoxb-abc-123', appToken: 'xapp-1-def-456' }
 class SpyControl {
   readonly upserts: Array<{ daemonId: string; u: IntegrationUpsert }> = []
   readonly collaboration: Array<{ daemonId: string; snapshot: CollabRoutesSnapshot }> = []
+  readonly leaves: Array<{ daemonId: string; l: unknown }> = []
+  readonly forgets: Array<{ daemonId: string; f: { integrationId: string; channels: string[] } }> = []
+  /** What the fake daemon answers the next leave with — a platform refusal by default
+   *  would be surprising, so it succeeds unless a test says otherwise. */
+  leaveVerdict: { ok: boolean; error?: string } = { ok: true }
   async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
     this.upserts.push({ daemonId, u })
+  }
+  async integrationLeave(daemonId: string, l: unknown): Promise<{ ok: boolean; error?: string }> {
+    this.leaves.push({ daemonId, l })
+    return this.leaveVerdict
+  }
+  /** Set to simulate an unreachable daemon — the suppression then cannot be made durable. */
+  forgetThrows: Error | null = null
+  async integrationForget(
+    daemonId: string,
+    f: { integrationId: string; channels: string[] }
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (this.forgetThrows) throw this.forgetThrows
+    this.forgets.push({ daemonId, f })
+    return { ok: true }
   }
   async integrationRemove(): Promise<void> {}
   async collaborationRoutes(daemonId: string, snapshot: CollabRoutesSnapshot): Promise<void> {
@@ -68,6 +88,20 @@ async function install(app: HttpApp): Promise<string> {
   return (res.json() as { id: string }).id
 }
 
+/** Install a TELEGRAM integration — the platform whose rows are session-derived, so
+ *  the only one where a durable suppression is what makes a removal stick. */
+async function installTelegram(app: HttpApp): Promise<string> {
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+  const res = await app.app.inject({
+    method: 'POST',
+    url: `${ORG}/integrations`,
+    payload: { name: 'acme-tg', platform: 'telegram', agentId, telegram: { botToken: '123456:AAE-xyz' } }
+  })
+  expect(res.statusCode).toBe(201)
+  return (res.json() as { id: string }).id
+}
+
 /** Dispatch a hand-built `integration/channels` EVT through the real handler. */
 async function report(
   daemonId: string,
@@ -75,14 +109,20 @@ async function report(
   channels: IntegrationChannel[],
   agentMutations = new AgentMutationGate(),
   collabRoutes = { broadcast: async () => undefined } as unknown as CollabRoutesService,
-  authoritative?: boolean
+  authoritative?: boolean,
+  removed?: string[]
 ): Promise<void> {
   const frame = {
     v: 1,
     id: randomUUID(),
     ts: new Date().toISOString(),
     type: 'integration/channels',
-    payload: { integrationId, channels, ...(authoritative === undefined ? {} : { authoritative }) }
+    payload: {
+      integrationId,
+      channels,
+      ...(authoritative === undefined ? {} : { authoritative }),
+      ...(removed === undefined ? {} : { removed })
+    }
   } as AnyFrame
   const deps = {
     integration: new PgIntegrationRepo(prisma),
@@ -517,6 +557,64 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(rows.find((c) => c.channelId === '-1001')?.name).toBe('First group')
   })
 
+  // A non-authoritative reporter's omissions carry no meaning — which is why these
+  // rows accumulated — so leaving a chat has to be stated by naming it.
+  it('a non-authoritative report DELETES the conversations it names as removed', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: '-1001', name: 'First group' },
+        { id: '-1002', name: 'Second group' }
+      ],
+      undefined,
+      undefined,
+      false
+    )
+    // The bot left the first group; the report both retracts it and refreshes the rest.
+    await report(DAEMON, id, [{ id: '-1002', name: 'Second group' }], undefined, undefined, false, ['-1001'])
+
+    const rows = await channels.listForIntegration(IntegrationId(id))
+    expect(rows.map((c) => c.channelId)).toEqual(['-1002'])
+  })
+
+  it('a retraction wins over the same conversation still listed in the report', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    await report(DAEMON, id, [{ id: '-1001', name: 'First group' }], undefined, undefined, false)
+    // A stale snapshot may still carry the chat it is simultaneously retracting; the
+    // more specific statement has to win, or the row would be resurrected each time.
+    await report(DAEMON, id, [{ id: '-1001', name: 'First group' }], undefined, undefined, false, ['-1001'])
+
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  // §14.3 DM rows are exempt from authoritative deletion (no snapshot can list them),
+  // so an explicit retraction is the ONLY way one ever goes.
+  it('retracts a DM row, which no authoritative snapshot could delete', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
+    expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['D1'])
+
+    await report(DAEMON, id, [], undefined, undefined, false, ['D1'])
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
   it('hot-pushes collaboration routes after both channel joins and removals', async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
@@ -923,5 +1021,201 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       payload: { trigger: 'any' }
     })
     expect(missIntegration.statusCode).toBe(404)
+  })
+})
+
+/**
+ * The two console actions that end a conversation's listing. They are deliberately
+ * different things: forgetting touches only AgentConnect, leaving touches the
+ * platform — so they are tested for what each does NOT do as much as what it does.
+ */
+describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)', () => {
+  it('forgets a row without asking the daemon to touch the platform', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    await report(DAEMON, id, [
+      { id: 'C1', name: 'deploys' },
+      { id: 'C2', name: 'releases' }
+    ])
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/C1` })
+
+    expect(res.statusCode).toBe(204)
+    expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C2'])
+    expect(spy.leaves).toEqual([]) // the bot was never touched on Slack
+    // Slack re-lists its membership authoritatively, so that listing governs the row
+    // and a tombstone would add nothing — demanding one would only make Forget fail
+    // whenever a Slack daemon is offline.
+    expect(spy.forgets).toEqual([])
+    // It still gets the recomputed spec, or its routing would keep the row.
+    expect(spy.upserts.at(-1)!.daemonId).toBe(DAEMON)
+  })
+
+  it('404s a row that is not there, so a double-click cannot read as success', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/nope` })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('asks the owning daemon to leave, then forgets the row', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await installTelegram(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }], undefined, undefined, false)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/${id}/leave`,
+      payload: { target: { kind: 'conversation', channel: 'C1' } }
+    })
+
+    expect(res.statusCode).toBe(204)
+    expect(spy.leaves).toEqual([
+      { daemonId: DAEMON, l: { integrationId: id, target: { kind: 'conversation', channel: 'C1' } } }
+    ])
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  // The useful half of a failure: a missing scope or a last-member channel is
+  // something the operator can act on, so it must survive to the response.
+  it("relays the platform's own refusal as 502 and keeps the row", async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    spy.leaveVerdict = { ok: false, error: 'missing_scope' }
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/${id}/leave`,
+      payload: { target: { kind: 'conversation', channel: 'C1' } }
+    })
+
+    expect(res.statusCode).toBe(502)
+    expect((res.json() as { message: string }).message).toBe('missing_scope')
+    // Still a member as far as anyone knows, so the row stays.
+    expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C1'])
+  })
+
+  // A cold move re-places the agent and rebuilds its channel state on the new daemon.
+  // Dispatching the platform call to the pre-move daemon and then deleting rows the
+  // move has already rewritten would leave the new daemon believing it is still in a
+  // channel the bot has actually left.
+  it('refuses to leave while an agent move holds the lease, and never reaches the platform', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    const mutations = new AgentMutationGate()
+    running = buildHttpApp(
+      prisma,
+      undefined,
+      undefined,
+      spy as unknown as ControlSender,
+      {
+        agentMutations: mutations
+      } as never
+    )
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    const stored = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    const releaseMove = mutations.tryBeginMove(stored.agentId)!
+    try {
+      const res = await running.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations/${id}/leave`,
+        payload: { target: { kind: 'conversation', channel: 'C1' } }
+      })
+      expect(res.statusCode).toBe(409)
+      expect(spy.leaves).toEqual([]) // the platform was never told anything
+      // …and the row is untouched, so the two sides cannot disagree.
+      expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C1'])
+    } finally {
+      releaseMove()
+    }
+  })
+
+  // §14.3 gives each gated install its OWN DM row, so fanning a forget across the bot
+  // would let an editor of one agent silently drop another agent's direct message.
+  it('forgets a DM row on this install only, never across the bot', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/D1` })
+
+    expect(res.statusCode).toBe(204)
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  // The suppression is what makes the removal stick, so a daemon that never got it
+  // WILL list the conversation again — reporting 204 would be a lie found out later.
+  it('refuses to forget when the suppression cannot reach the daemon', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    spy.forgetThrows = new NoConnection(DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await installTelegram(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/C1` })
+
+    expect(res.statusCode).toBe(502)
+    expect((res.json() as { message: string }).message).toContain('offline')
+    // The row must SURVIVE. Deleting it and then reporting failure would leave the
+    // console empty while telling the operator it failed — and the advised retry would
+    // 404 on the already-deleted row instead of re-attempting the suppression.
+    const channels = new PgIntegrationChannelRepo(prisma)
+    expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C1'])
+
+    // …so the retry the message advises actually works once the daemon is back.
+    spy.forgetThrows = null
+    const retried = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/C1` })
+    expect(retried.statusCode).toBe(204)
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  // The rule the two cases above encode, stated once: suppression exists only for the
+  // platforms whose rows are rebuilt from session history.
+  it('pushes the suppression for a session-derived platform', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await installTelegram(running)
+    await report(DAEMON, id, [{ id: '-100123', name: 'Team' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/-100123` })
+
+    expect(res.statusCode).toBe(204)
+    expect(spy.forgets).toEqual([{ daemonId: DAEMON, f: { integrationId: id, channels: ['-100123'] } }])
+  })
+
+  it('refuses a server-scoped leave on a platform that has no server', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running) // Slack
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/${id}/leave`,
+      payload: { target: { kind: 'space', spaceId: 'G1' } }
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(spy.leaves).toEqual([]) // never reached the daemon
   })
 })

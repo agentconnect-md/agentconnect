@@ -562,15 +562,19 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean }
+    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean; removed?: string[] }
   ): Promise<void> {
     if (opts?.authoritative !== false) {
       await this.db.integrationChannel.deleteMany({
         where: { integrationId, kind: 'channel', channelId: { notIn: channels.map((c) => c.id) } }
       })
     }
+    // A conversation named as removed is not re-created by the same report, so the
+    // retraction wins over a stale entry the reporter also happened to list.
+    const removed = new Set(opts?.removed ?? [])
     const authoritative = opts?.authoritative !== false
     for (const c of channels) {
+      if (removed.has(c.id)) continue
       // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
       // authoritative-only (a partial report must not blank them); an absent space keeps
       // the known server (it resolves lazily at the edge); an absent kind must never
@@ -629,6 +633,18 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
           "updatedAt" = NOW()
       `
     }
+    // Retractions last: a conversation the reporter says it left is gone whatever
+    // its kind, including a DM row that no authoritative snapshot could ever delete.
+    if (removed.size > 0) {
+      await this.db.integrationChannel.deleteMany({
+        where: { integrationId, channelId: { in: [...removed] } }
+      })
+    }
+  }
+
+  async deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean> {
+    const { count } = await this.db.integrationChannel.deleteMany({ where: { integrationId, channelId } })
+    return count > 0
   }
 
   async upsertConversation(

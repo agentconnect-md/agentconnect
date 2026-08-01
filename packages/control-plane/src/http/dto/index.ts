@@ -1464,6 +1464,22 @@ export const UpdateIntegrationChannelBody = z
     message: 'provide trigger and/or agentId'
   })
 
+/**
+ * `POST /integrations/:id/leave` — what to withdraw from at the platform.
+ *
+ * Discriminated rather than a bare id because the platforms mean different things
+ * by "leave": Slack and Telegram leave one conversation, while a Discord bot has no
+ * per-channel membership and can only leave a whole server (taking every channel of
+ * it along). Making the caller say which keeps the larger action from being reached
+ * by accident.
+ */
+export const LeaveIntegrationConversationBody = z.object({
+  target: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('conversation'), channel: z.string().min(1) }),
+    z.object({ kind: z.literal('space'), spaceId: z.string().min(1) })
+  ])
+})
+
 /** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1). */
 export const UpdateBotBody = z.object({
   shareable: z.boolean()
