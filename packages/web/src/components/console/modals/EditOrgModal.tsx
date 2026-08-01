@@ -20,7 +20,7 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
   const [slug, setSlug] = useState(activeOrg?.slug ?? '')
   const [name, setName] = useState(activeOrg?.name ?? '')
   const [defaultAgentVisibility, setDefaultAgentVisibility] = useState<AgentCallPolicy>(
-    activeOrg?.defaultAgentVisibility ?? 'selected'
+    activeOrg?.defaultAgentVisibility ?? 'all'
   )
   const [busy, setBusy] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -35,7 +35,7 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
     if (
       slug === activeOrg.slug &&
       (nextName || null) === (activeOrg.name ?? null) &&
-      defaultAgentVisibility === (activeOrg.defaultAgentVisibility ?? 'selected')
+      defaultAgentVisibility === (activeOrg.defaultAgentVisibility ?? 'all')
     )
       return onClose()
     setBusy(true)
@@ -117,8 +117,8 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
           <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Default agent visibility">
             {(
               [
-                { key: 'selected', label: 'Isolated', sub: 'No peer access until agents are selected.' },
-                { key: 'all', label: 'All agents', sub: 'Open in both directions to the organization.' }
+                { key: 'all', label: 'All agents', sub: 'Open in both directions to the organization.' },
+                { key: 'selected', label: 'Isolated', sub: 'No peer access until agents are selected.' }
               ] as const
             ).map((option) => (
               <button

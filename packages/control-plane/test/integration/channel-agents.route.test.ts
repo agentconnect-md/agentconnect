@@ -61,8 +61,7 @@ class SpyControl {
   async collaborationRoutes(): Promise<void> {}
 }
 
-/** Create an explicitly open agent + install its Slack integration. Directory-policy
- * tests opt in to edges; the create-default contract is covered in agents.route.test. */
+/** Create an agent (via REST, with displayName/description) + install its slack integration. */
 async function installAgent(
   app: HttpApp,
   daemonId: string,
@@ -71,7 +70,7 @@ async function installAgent(
   const created = await app.app.inject({
     method: 'POST',
     url: `${ORG}/agents`,
-    payload: { ...agent, runtime: 'claude', daemonId, callPolicy: 'all', outboundPolicy: 'all' }
+    payload: { ...agent, runtime: 'claude', daemonId }
   })
   expect(created.statusCode).toBe(201)
   const agentId = (created.json() as { id: string }).id
@@ -84,8 +83,8 @@ async function installAgent(
   return { agentId, integrationId: (res.json() as { id: string }).id }
 }
 
-/** Create an explicitly open agent with NO integration — it exists only in the org peer
- * directory and can appear in no channel-keyed structure at all. */
+/** Create an agent with NO integration — it exists only in the org peer directory and
+ *  can appear in no channel-keyed structure at all (webchat / hook / memory-only agents). */
 async function createAgent(
   app: HttpApp,
   daemonId: string,
@@ -94,7 +93,7 @@ async function createAgent(
   const created = await app.app.inject({
     method: 'POST',
     url: `${ORG}/agents`,
-    payload: { ...agent, runtime: 'claude', daemonId, callPolicy: 'all', outboundPolicy: 'all' }
+    payload: { ...agent, runtime: 'claude', daemonId }
   })
   expect(created.statusCode).toBe(201)
   return (created.json() as { id: string }).id
@@ -232,7 +231,7 @@ describe('channel/agents (agent collaboration directory)', () => {
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
 
     const caller = await installAgent(running, DAEMON, { name: 'caller' })
-    const openPeer = await installAgent(running, DAEMON, { name: 'open-peer' }) // helper explicitly opts into all
+    const openPeer = await installAgent(running, DAEMON, { name: 'open-peer' }) // callPolicy=all (default)
     const privatePeer = await installAgent(running, DAEMON, { name: 'private-peer' })
     for (const p of [caller, openPeer, privatePeer]) {
       await reportChannels(DAEMON, p.integrationId, [{ id: 'C1', name: 'deploys' }])

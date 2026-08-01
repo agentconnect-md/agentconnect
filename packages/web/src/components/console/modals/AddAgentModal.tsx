@@ -183,7 +183,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const { createAgent, daemons, agents } = useConsoleData()
   const { me } = useProfile()
   const { activeOrg } = useOrgs()
-  const defaultAgentVisibility = activeOrg?.defaultAgentVisibility ?? 'selected'
+  const defaultAgentVisibility = activeOrg?.defaultAgentVisibility ?? 'all'
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   // New agents default to a random glyph+color (product default — not runtime-branded).
@@ -801,8 +801,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ...(sharing.visibility === 'restricted'
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
           : {}),
-        // Send both modes explicitly: omission now means isolated, while `all` is
-        // an intentional opt-in. The CP intersects selected lists with visible peers.
+        // Preserve the choices shown in this form even if the organization default
+        // changes concurrently. The CP intersects selected lists with visible peers.
         callPolicy,
         allowedCallerAgentIds: callPolicy === 'selected' ? allowedCallers : [],
         outboundPolicy,

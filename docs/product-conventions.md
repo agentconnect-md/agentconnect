@@ -247,13 +247,13 @@ name it (a self-_wake_ is still refused separately).
 The agent-directory tool must hide peers that fail any part of this check. Message
 delivery must repeat the same authorization instead of trusting discovery: a remembered,
 guessed, or stale agent id must not bypass either policy. Rejection does not wake the
-target and uses the same `not_allowed` result as an inbound-policy denial. An organization
-defaults new agents to `selected` with an empty list in both directions: they discover no
-peers and accept no peer calls. An owner may explicitly set the organization's creation
-default to `all`, and an individual create may still override either direction. Changing
-the organization default affects only future agents and never rewrites an existing agent's
-persisted policy. A local or otherwise unconfigured agent remains fail-closed at
-`selected + []`.
+target and uses the same `not_allowed` result as an inbound-policy denial. Both directions
+default to all peers, preserving the existing collaboration experience. An organization
+owner may instead set the creation default to `selected` with an empty list in both
+directions, so future agents discover no peers and accept no peer calls until configured.
+An individual create may still override either direction. Changing the organization
+default affects only future agents and never rewrites an existing agent's persisted policy.
+A local or otherwise unconfigured agent also defaults to `all` for compatibility.
 
 **Two unrelated settings are both called "visibility".** The `callPolicy` /
 `outboundPolicy` pair above is what the console labels "Agent visibility", and it is the

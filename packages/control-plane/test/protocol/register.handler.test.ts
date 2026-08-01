@@ -216,9 +216,9 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       skills: [], // resolved skill entries; always shipped (disabling the last skill must replicate)
       managedSkills: [], // managed organization skill bindings; likewise always shipped
       // Agent→agent call policy (§2.5), always shipped so a policy/allow-list change replicates.
-      callPolicy: 'selected',
+      callPolicy: 'all',
       allowedCallerAgentIds: [],
-      outboundPolicy: 'selected',
+      outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
       introduceOnJoin: false,
@@ -445,9 +445,9 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
             agentId: AGENT,
             daemonId: DAEMON,
             integrationId: INTEG,
-            callPolicy: 'selected',
+            callPolicy: 'all',
             allowedCallerAgentIds: [],
-            outboundPolicy: 'selected',
+            outboundPolicy: 'all',
             allowedTargetAgentIds: [],
             // Carried so a peer daemon can label this agent by name in a visible agent-call post.
             name: 'agent-1'

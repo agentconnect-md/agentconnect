@@ -35,7 +35,7 @@ describe('GET /orgs', () => {
       expect(body[0]!.id).toBe(DEFAULT_ORG_ID)
       expect(body[0]!.role).toBe('owner')
       expect(body[0]!.memberCount).toBe(1)
-      expect(body[0]!.defaultAgentVisibility).toBe('selected')
+      expect(body[0]!.defaultAgentVisibility).toBe('all')
     } finally {
       await close()
     }
@@ -55,7 +55,7 @@ describe('POST /orgs', () => {
       const org = res.json() as OrgBody
       expect(org.role).toBe('owner')
       expect(org.memberCount).toBe(1)
-      expect(org.defaultAgentVisibility).toBe('selected')
+      expect(org.defaultAgentVisibility).toBe('all')
 
       const list = (await (await app.inject({ method: 'GET', url: '/api/v1/orgs' })).json()) as OrgBody[]
       expect(list.map((o) => o.slug)).toContain('acme')
@@ -147,15 +147,15 @@ describe('PATCH /orgs/:id', () => {
         payload: { name: 'before-policy-change', runtime: 'claude' }
       })
       expect(before.statusCode).toBe(201)
-      expect(before.json()).toMatchObject({ callPolicy: 'selected', outboundPolicy: 'selected' })
+      expect(before.json()).toMatchObject({ callPolicy: 'all', outboundPolicy: 'all' })
 
       const updated = await app.inject({
         method: 'PATCH',
         url: ORG,
-        payload: { defaultAgentVisibility: 'all' }
+        payload: { defaultAgentVisibility: 'selected' }
       })
       expect(updated.statusCode).toBe(200)
-      expect((updated.json() as OrgBody).defaultAgentVisibility).toBe('all')
+      expect((updated.json() as OrgBody).defaultAgentVisibility).toBe('selected')
 
       const after = await app.inject({
         method: 'POST',
@@ -164,9 +164,9 @@ describe('PATCH /orgs/:id', () => {
       })
       expect(after.statusCode).toBe(201)
       expect(after.json()).toMatchObject({
-        callPolicy: 'all',
+        callPolicy: 'selected',
         allowedCallerAgentIds: [],
-        outboundPolicy: 'all',
+        outboundPolicy: 'selected',
         allowedTargetAgentIds: []
       })
 
@@ -174,7 +174,7 @@ describe('PATCH /orgs/:id', () => {
         method: 'GET',
         url: `${ORG}/agents/${(before.json() as { id: string }).id}`
       })
-      expect(unchanged.json()).toMatchObject({ callPolicy: 'selected', outboundPolicy: 'selected' })
+      expect(unchanged.json()).toMatchObject({ callPolicy: 'all', outboundPolicy: 'all' })
     } finally {
       await close()
     }

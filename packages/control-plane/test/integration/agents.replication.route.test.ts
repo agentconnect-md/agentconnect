@@ -176,9 +176,9 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         // Managed organization skills are a distinct explicit enable-list.
         managedSkills: [],
         // Agent→agent call policy (§2.5) — always shipped so a policy/allow-list change replicates.
-        callPolicy: 'selected',
+        callPolicy: 'all',
         allowedCallerAgentIds: [],
-        outboundPolicy: 'selected',
+        outboundPolicy: 'all',
         allowedTargetAgentIds: [],
         // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
         introduceOnJoin: false,

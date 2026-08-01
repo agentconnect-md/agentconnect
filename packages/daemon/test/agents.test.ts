@@ -172,9 +172,9 @@ describe('AgentSchema defaults', () => {
     expect(parsed.output.showFooter).toBe(true)
     expect(parsed.allowRuntimeChangesInChat).toBe(false)
     expect(parsed.restrictFileAccess).toBe(false)
-    expect(parsed.callPolicy).toBe('selected')
+    expect(parsed.callPolicy).toBe('all')
     expect(parsed.allowedCallerAgentIds).toEqual([])
-    expect(parsed.outboundPolicy).toBe('selected')
+    expect(parsed.outboundPolicy).toBe('all')
     expect(parsed.allowedTargetAgentIds).toEqual([])
   })
 

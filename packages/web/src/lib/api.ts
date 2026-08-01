@@ -1500,9 +1500,9 @@ export function agentFromDto(d: AgentDto): Agent {
     ownerUserId: d.ownerUserId,
     canEdit: d.canEdit,
     canManageSharing: d.canManageSharing,
-    callPolicy: d.callPolicy ?? 'selected',
+    callPolicy: d.callPolicy ?? 'all',
     allowedCallerAgentIds: d.allowedCallerAgentIds ?? [],
-    outboundPolicy: d.outboundPolicy ?? 'selected',
+    outboundPolicy: d.outboundPolicy ?? 'all',
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
