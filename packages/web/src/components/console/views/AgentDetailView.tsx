@@ -38,7 +38,6 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useModal } from '@/components/console/ModalProvider'
 import { AgentEnvCard } from '@/components/console/AgentEnvCard'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
-import { AgentApiPanel } from '@/components/console/AgentApiPanel'
 import { AgentSecretsCard } from '@/components/console/AgentSecretsCard'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
@@ -91,7 +90,7 @@ import {
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
 
-type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'api' | 'tools'
+type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
 const HOOK_REFRESH_MS = 30_000
 
 // One-liners for the empty-integrations tiles. The tile SET is derived from the
@@ -329,9 +328,7 @@ export default function AgentDetailView() {
   // Integrations is the default landing tab (first, no `?tab=`); everything else
   // is `?tab=<id>`.
   const tab: DetailTab =
-    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'api' || rawTab === 'tools'
-      ? rawTab
-      : 'integrations'
+    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' ? rawTab : 'integrations'
 
   // Effective agent-call reachability over the whole roster: an A→B edge exists
   // only when A's outbound AND B's inbound both permit it. The read-only Access
@@ -674,7 +671,6 @@ export default function AgentDetailView() {
             ['config', 'Configuration'],
             ['workspace', 'Workspace'],
             ['memory', 'Memory'],
-            ['api', 'API'],
             ['tools', 'Tools & Skills']
           ] as [DetailTab, string][]
         ).map(([t, label]) => {
@@ -1600,9 +1596,6 @@ export default function AgentDetailView() {
           sessionBasePath={orgPath('/sessions')}
         />
       )}
-
-      {/* API tab */}
-      {tab === 'api' && <AgentApiPanel agentId={da.id} agentName={da.name} />}
 
       {/* Tools & Skills tab — leads with the daemon runtime's MCP servers (Tools),
           then the workspace-indexed knowledge below it. */}
