@@ -462,6 +462,7 @@ export const CreateAgentBody = z.object({
   reasoningEffort: z.string().min(1).optional(),
   outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(), // platform output verbosity ('none' = session-only)
   showFooter: z.boolean().optional(), // attribution/session footer (absent ⇒ default true)
+  showStatusBar: z.boolean().optional(), // persistent Slack session status row (absent ⇒ default true)
   fastMode: z.boolean().optional(), // runtime fast mode toggle
   permissionMode: z.string().min(1).optional(), // runtime permission/approval mode
   allowRuntimeChangesInChat: z.boolean().optional(), // explicit opt-in; absent ⇒ false
@@ -509,6 +510,7 @@ export const UpdateAgentBody = z
     reasoningEffort: z.string().min(1).nullable().optional(),
     outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).nullable().optional(),
     showFooter: z.boolean().optional(),
+    showStatusBar: z.boolean().optional(),
     fastMode: z.boolean().nullable().optional(),
     permissionMode: z.string().min(1).nullable().optional(),
     allowRuntimeChangesInChat: z.boolean().optional(),
@@ -571,6 +573,7 @@ export const AgentDto = z.object({
   reasoningEffort: z.string().nullable(),
   outputMode: z.string().nullable(),
   showFooter: z.boolean(),
+  showStatusBar: z.boolean(),
   fastMode: z.boolean().nullable(), // null ⇒ never set (runtime default)
   permissionMode: z.string().nullable(), // null ⇒ never set (runtime default)
   allowRuntimeChangesInChat: z.boolean(),

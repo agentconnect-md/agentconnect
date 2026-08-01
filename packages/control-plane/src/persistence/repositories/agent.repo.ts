@@ -72,6 +72,7 @@ type RuntimeOverrides = {
   reasoningEffort?: string
   outputMode?: string
   showFooter?: boolean
+  showStatusBar?: boolean
   fastMode?: boolean
   permissionMode?: string
   allowRuntimeChangesInChat?: boolean
@@ -166,6 +167,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     reasoningEffort: ov.reasoningEffort ?? null,
     outputMode: ov.outputMode ?? null,
     showFooter: ov.showFooter ?? true,
+    showStatusBar: ov.showStatusBar ?? true,
     fastMode: ov.fastMode ?? null,
     permissionMode: ov.permissionMode ?? null,
     allowRuntimeChangesInChat: ov.allowRuntimeChangesInChat ?? false,
@@ -250,6 +252,7 @@ export class PgAgentRepo implements AgentRepo {
           input.reasoningEffort ||
           input.outputMode ||
           input.showFooter !== undefined ||
+          input.showStatusBar !== undefined ||
           input.fastMode !== undefined ||
           input.permissionMode ||
           input.allowRuntimeChangesInChat !== undefined ||
@@ -264,6 +267,7 @@ export class PgAgentRepo implements AgentRepo {
                   ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
                   ...(input.outputMode ? { outputMode: input.outputMode } : {}),
                   ...(input.showFooter !== undefined ? { showFooter: input.showFooter } : {}),
+                  ...(input.showStatusBar !== undefined ? { showStatusBar: input.showStatusBar } : {}),
                   ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
                   ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
                   ...(input.allowRuntimeChangesInChat !== undefined
@@ -336,6 +340,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.reasoningEffort !== undefined ||
       patch.outputMode !== undefined ||
       patch.showFooter !== undefined ||
+      patch.showStatusBar !== undefined ||
       patch.fastMode !== undefined ||
       patch.permissionMode !== undefined ||
       patch.allowRuntimeChangesInChat !== undefined ||
@@ -376,6 +381,7 @@ export class PgAgentRepo implements AgentRepo {
         else next.outputMode = patch.outputMode
       }
       if (patch.showFooter !== undefined) next.showFooter = patch.showFooter
+      if (patch.showStatusBar !== undefined) next.showStatusBar = patch.showStatusBar
       if (patch.fastMode !== undefined) {
         if (patch.fastMode === null) delete next.fastMode
         else next.fastMode = patch.fastMode

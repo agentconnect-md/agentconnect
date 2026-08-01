@@ -7,20 +7,24 @@ export function OutputModeField({
   onChange,
   showFooter,
   onShowFooterChange,
+  showStatusBar,
+  onShowStatusBarChange,
   className
 }: {
   value: OutputMode | ''
   onChange: (mode: OutputMode) => void
   showFooter: boolean
   onShowFooterChange: (show: boolean) => void
+  showStatusBar: boolean
+  onShowStatusBarChange: (show: boolean) => void
   className?: string
 }) {
   return (
     <div
       className={
         className
-          ? `grid grid-cols-1 gap-[14px] desktop:grid-cols-[minmax(0,1fr)_auto] desktop:items-end ${className}`
-          : 'grid grid-cols-1 gap-[14px] desktop:grid-cols-[minmax(0,1fr)_auto] desktop:items-end'
+          ? `grid grid-cols-1 gap-[14px] desktop:grid-cols-[minmax(0,1fr)_auto_auto] desktop:items-end ${className}`
+          : 'grid grid-cols-1 gap-[14px] desktop:grid-cols-[minmax(0,1fr)_auto_auto] desktop:items-end'
       }
     >
       <div className="fld min-w-0">
@@ -64,6 +68,35 @@ export function OutputModeField({
             className={showFooter ? 'pill px-[10px] py-1 text-[12px]' : 'pill on px-[10px] py-1 text-[12px]'}
             onClick={() => onShowFooterChange(false)}
             aria-pressed={!showFooter}
+          >
+            Off
+          </button>
+        </div>
+      </div>
+      <div className="fld min-w-0 desktop:items-end">
+        <CompactFieldLabel
+          label="Show status bar"
+          tooltipAlign="right"
+          detail={
+            showStatusBar
+              ? 'Slack threads show model, context, usage, and session controls.'
+              : 'Slack session status rows are hidden.'
+          }
+        />
+        <div className="pillbar self-start desktop:self-end">
+          <button
+            type="button"
+            className={showStatusBar ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'}
+            onClick={() => onShowStatusBarChange(true)}
+            aria-pressed={showStatusBar}
+          >
+            On
+          </button>
+          <button
+            type="button"
+            className={showStatusBar ? 'pill px-[10px] py-1 text-[12px]' : 'pill on px-[10px] py-1 text-[12px]'}
+            onClick={() => onShowStatusBarChange(false)}
+            aria-pressed={!showStatusBar}
           >
             Off
           </button>

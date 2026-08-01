@@ -190,6 +190,7 @@ export function agentRecordToSpec(
     reasoningEffort: a.reasoningEffort,
     permissionMode: a.permissionMode,
     showFooter: a.showFooter,
+    showStatusBar: a.showStatusBar,
     allowRuntimeChangesInChat: a.allowRuntimeChangesInChat,
     // Guarded (not just non-null): the wire field is an enum, and outputMode is a
     // plain string in the runtimeOverrides JSON — never let a stray value kill the frame.

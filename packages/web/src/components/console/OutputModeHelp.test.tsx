@@ -29,18 +29,21 @@ describe('OutputModeHelp', () => {
         onChange={() => undefined}
         showFooter
         onShowFooterChange={() => undefined}
+        showStatusBar
+        onShowStatusBarChange={() => undefined}
       />
     )
     expect(html).toContain('Low</button>')
     expect(html).toContain('aria-pressed="true"')
     expect(html).toContain('aria-label="About Show footer"')
+    expect(html).toContain('aria-label="About Show status bar"')
     expect(html).toContain('aria-describedby=')
     expect(html).toContain('group-hover:visible')
     expect(html).toContain('group-focus-within:visible')
     expect(html).toContain('On</button>')
     expect(html).toContain('Off</button>')
     expect(html).toContain('pill on px-[10px] py-1 text-[12px]" aria-pressed="true">On')
-    expect(html).toContain('desktop:grid-cols-[minmax(0,1fr)_auto]')
+    expect(html).toContain('desktop:grid-cols-[minmax(0,1fr)_auto_auto]')
     expect(html).toContain('fld min-w-0 desktop:items-end')
     expect(html).toContain('pillbar self-start desktop:self-end')
     expect(html).toContain('data-align="right"')

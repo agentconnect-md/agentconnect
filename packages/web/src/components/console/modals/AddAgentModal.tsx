@@ -194,6 +194,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [fastMode, setFastMode] = useState(false)
   const [outputMode, setOutputMode] = useState<OutputMode>(DEFAULT_AGENT_OUTPUT_MODE)
   const [showFooter, setShowFooter] = useState(true)
+  const [showStatusBar, setShowStatusBar] = useState(true)
   const [memoryProvider, setMemoryProvider] = useState<MemoryProviderChoice>('managed')
   const [externalMemory, setExternalMemory] = useState<ExternalMemoryBindingDraft>(DEFAULT_EXTERNAL_MEMORY_BINDING)
   const [permissionMode, setPermissionMode] = useState(permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!))
@@ -777,6 +778,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         daemonId: daemon.daemonId,
         outputMode,
         showFooter,
+        showStatusBar,
         ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
         fastMode: fastModeAvailable ? fastMode : false,
         ...(memoryProvider === 'external'
@@ -1108,6 +1110,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                 onChange={setOutputMode}
                 showFooter={showFooter}
                 onShowFooterChange={setShowFooter}
+                showStatusBar={showStatusBar}
+                onShowStatusBarChange={setShowStatusBar}
               />
             </div>
           </section>

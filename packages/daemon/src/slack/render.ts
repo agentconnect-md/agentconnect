@@ -72,8 +72,13 @@ export type SlackAction =
   // rendered as an interactive Block Kit row. Posted once for the Slack session (after
   // the ACP session is up, before the reply), then chat.update-ed in place as later
   // turns progress. `text` is the notification/accessibility fallback; `blocks` is the
-  // Block Kit payload. Shown in all output modes. NOT recorded into the transcript.
+  // Block Kit payload. Shown when the Agent's status-bar setting is enabled. NOT
+  // recorded into the transcript.
   | { kind: 'status-bar'; text: string; blocks: unknown[] }
+  // Remove a status row left by an earlier turn after the Agent disables it. The daemon
+  // clears the persisted ts only after Slack accepts the delete, so a transient failure
+  // can retry on the next turn.
+  | { kind: 'clear-status-bar' }
   // `attribution` closes the footer lifecycle after the latest reply section was first
   // posted with it. The daemon uses this boundary to retry stale-footer cleanup or refresh
   // final metadata that changed during the prompt. Not transcript content.

@@ -244,6 +244,8 @@ export interface Agent {
   outputMode: string
   /** Whether platform replies include attribution/session footer chrome. */
   showFooter: boolean
+  /** Whether Slack threads include the persistent model/context/session status row. */
+  showStatusBar: boolean
   /** Reasoning-effort level (runtime-specific vocabulary, see effortField); '' when unset. */
   reasoning: string
   /** Runtime fast mode toggle; unset reads as false (runtime default). */
@@ -896,6 +898,7 @@ export const AGENTS: Agent[] = (
       desc: 'A general-purpose development agent for this organization: code review, coding tasks, and everyday questions.',
       outputMode: '—',
       showFooter: true,
+      showStatusBar: true,
       reasoning: '',
       fastMode: false,
       pause: false,
@@ -945,6 +948,7 @@ export const AGENTS: Agent[] = (
       desc: 'Ships and rolls back deploys from chat.',
       outputMode: 'high',
       showFooter: true,
+      showStatusBar: true,
       reasoning: 'high',
       fastMode: false,
       pause: false,
@@ -1038,6 +1042,7 @@ export const AGENTS: Agent[] = (
       desc: 'Reviews open pull requests and leaves inline comments.',
       outputMode: 'medium',
       showFooter: true,
+      showStatusBar: true,
       reasoning: 'medium',
       fastMode: true,
       pause: false,
@@ -1114,6 +1119,7 @@ export const AGENTS: Agent[] = (
       desc: 'Triages incidents from on-call alerts.',
       outputMode: 'high',
       showFooter: true,
+      showStatusBar: true,
       reasoning: 'high',
       fastMode: false,
       pause: false,
@@ -1179,6 +1185,7 @@ export const AGENTS: Agent[] = (
       desc: 'Answers product questions and drafts docs.',
       outputMode: 'low',
       showFooter: true,
+      showStatusBar: true,
       reasoning: 'off',
       fastMode: false,
       pause: false,

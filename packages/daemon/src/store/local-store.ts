@@ -1847,6 +1847,11 @@ export class LocalStore {
     this.db.prepare('UPDATE sessions SET statusBarTs = ? WHERE key = ?').run(ts, key)
   }
 
+  /** Forget a removed Slack status-bar message so a later enabled turn posts a fresh one. */
+  clearStatusBarTs(key: string): void {
+    this.db.prepare('UPDATE sessions SET statusBarTs = NULL WHERE key = ?').run(key)
+  }
+
   isSessionMuted(key: string): boolean {
     const row = this.db
       .prepare(

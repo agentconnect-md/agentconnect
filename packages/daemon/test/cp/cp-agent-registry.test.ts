@@ -81,7 +81,7 @@ describe('CpAgentRegistry (filesystem-backed)', () => {
         name: 'local',
         runtime: 'claude',
         workspace: { mode: 'from-scratch', path: './ws' },
-        output: { mode: 'high', showFooter: true },
+        output: { mode: 'high', showFooter: true, showStatusBar: true },
         fastMode: true,
         allowRuntimeChangesInChat: true
       })
@@ -90,7 +90,7 @@ describe('CpAgentRegistry (filesystem-backed)', () => {
     // spec without the fields: hand-authored values survive the merge
     reg.upsert(A1, spec({ model: 'opus' }))
     let a = readAgent(dir, A1)
-    expect(a.output).toEqual({ mode: 'high', showFooter: true })
+    expect(a.output).toEqual({ mode: 'high', showFooter: true, showStatusBar: true })
     expect(a.fastMode).toBe(true)
     expect(a.allowRuntimeChangesInChat).toBe(true)
     // spec with the fields: CP-owned now, overwritten
@@ -99,12 +99,13 @@ describe('CpAgentRegistry (filesystem-backed)', () => {
       spec({
         outputMode: 'medium',
         showFooter: false,
+        showStatusBar: false,
         fastMode: false,
         allowRuntimeChangesInChat: false
       })
     )
     a = readAgent(dir, A1)
-    expect(a.output).toEqual({ mode: 'medium', showFooter: false })
+    expect(a.output).toEqual({ mode: 'medium', showFooter: false, showStatusBar: false })
     expect(a.fastMode).toBe(false)
     expect(a.allowRuntimeChangesInChat).toBe(false)
   })
