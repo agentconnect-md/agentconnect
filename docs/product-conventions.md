@@ -85,7 +85,7 @@ platform delivery path.
 Whether the hand-off is _visible_ is the caller's choice, set by the `sendMessage`
 target it uses. The tool has two addressing modes — `toAgent` (wake a peer) and
 `toUser` (reach a human) — each with three delivery forms: dm / channel root /
-in thread:
+in thread; plus a bare `channel` post with no recipient:
 
 - `toAgent` **dm form** (`{"toAgent":"<agent id>","message":"..."}`, no `channel`) —
   a postless wake: nothing is posted to the channel/thread and nothing is recorded
@@ -101,6 +101,9 @@ in thread:
 - `toUser` — reach one human (Slack only for now): dm (`{"toUser":"<id>","message":"..."}`
   without `channel`, a direct message), channel root (`toUser` + `channel`, a visible
   post that @-mentions the user), or in thread (`toUser` + `channel` + `thread`).
+- `channel` **bare post** (`{"channel":"<channel id>","message":"..."}`, optionally
+  `thread`/`platform`) — publishes a visible message without waking an agent or
+  addressing a human, as in case 2a / case 3.
 
 The visible post is suppressed when the wake would be refused for a locally-decidable
 reason (capability disabled, invalid target id, self, hop limit, or a local target that
@@ -112,10 +115,10 @@ target's daemon after the post is made.
 ## Self-authored channel roots
 
 When an agent uses `sendMessage` to publish a new channel-root message without waking
-another agent (the `toUser` channel-root form — the only post that does not wake a peer),
-the returned platform message creates the agent's session for that new thread but does not
-run a model turn. The root is already the agent's own output, not a new request: treating
-it as an activation can make the agent post it again recursively.
+another agent (a bare `channel` post — the only post that does not wake a peer), the
+returned platform message creates the agent's session for that new thread but does not run
+a model turn. The root is already the agent's own output, not a new request: treating it
+as an activation can make the agent post it again recursively.
 
 The session starts idle, retains its parent-session lineage, and records the root for
 transcript display. The first real reply in that thread receives the root as preceding

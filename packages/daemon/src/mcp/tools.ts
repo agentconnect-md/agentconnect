@@ -93,8 +93,8 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     type: 'string',
     ...(platforms.length > 0 ? { enum: platforms } : {}),
     description:
-      'Target platform for a user-targeted send. Defaults to Slack for a DM (`toUser` without `channel`); defaults ' +
-      'to the current conversation’s platform for channel-root / in-thread forms.'
+      'Target platform for a visible send. Defaults to the current conversation’s platform; a `toUser` DM (`toUser` ' +
+      'without `channel`) defaults to Slack.'
   }
   const integrationId = {
     type: 'string',
@@ -206,6 +206,25 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     )
   }
 
+  // Bare channel post: publish a visible message without waking an agent or addressing a human.
+  const channelTarget = {
+    title: 'Channel post (no recipient)',
+    description:
+      'Publish one visible message to a platform channel without waking an agent or @-mentioning a human. A post at ' +
+      'channel root opens a NEW session of your own on that post; only an explicit `thread` continues an existing ' +
+      'conversation.',
+    ...obj(
+      {
+        channel,
+        thread,
+        platform,
+        integrationId,
+        message
+      },
+      ['channel', 'message']
+    )
+  }
+
   // Separate reply branch: inject directly into the parent/origin session (session-concept §5.2).
   const sessionTarget = {
     title: 'Parent session reply',
@@ -234,10 +253,10 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
   return {
     name: 'sendMessage',
     description: collaboration
-      ? 'Send one message in ONE of two modes — `toAgent` (wake an AgentConnect agent) or `toUser` (reach a platform ' +
-        'user) — each with three forms: dm / channel root / in thread. Your own turn reply already reaches the ' +
-        'conversation you are in, so use this tool only for what that reply cannot do: a different conversation, a ' +
-        'human, a peer agent, or a parent-session reply.\n' +
+      ? 'Send one message to exactly one target: a peer agent (`toAgent`), a human (`toUser`), a channel with no ' +
+        'recipient, or the parent-session reply. The two recipient modes each have three forms: dm / channel root / ' +
+        'in thread. Your own turn reply already reaches the conversation you are in, so use this tool only for what ' +
+        'that reply cannot do: a different conversation, a human, a peer agent, or a parent-session reply.\n' +
         '- toAgent — wake exactly one peer agent (id from listAgents; never a platform member id):\n' +
         '  • dm: `{"toAgent":"<agent id>","message":"..."}` — direct, postless wake: nothing is posted anywhere.\n' +
         '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
@@ -252,19 +271,24 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'channel root and @-mentions the user.\n' +
         '  • in thread: `{"toUser":"<Slack user id>","channel":"<channel id>","thread":"<thread id>","message":"..."}` — ' +
         'posts into that thread and @-mentions the user there.\n' +
+        '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts to the channel ' +
+        'without waking anyone or @-mentioning anyone; add `platform`, `thread`, or `integrationId` only when needed.\n' +
         '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
         'asked this way, never by posting it at their channel root.\n' +
         'A channel-root post (no `thread`) opens a NEW session of your own on that post; an explicit `thread` ' +
         'continues the existing conversation. Write `message` as CommonMark/GFM. The daemon supplies your identity; ' +
         'you cannot impersonate anyone or wake yourself.'
-      : 'Post one visible message to exactly one human in `toUser` mode, with three forms: dm / channel root / in ' +
-        'thread. Your own turn reply already reaches the conversation you are in, so use this tool only for what that ' +
-        'reply cannot do: a different conversation or a human. Use `{"toUser":"<Slack user id>","message":"..."}` for ' +
-        'a DM, `{"toUser":"<Slack user id>","channel":"<channel id>","message":"..."}` for a channel-root post that ' +
-        '@-mentions the user, or add `"thread":"<thread id>"` to post into that thread instead. A channel-root post ' +
-        'opens a NEW session of your own on that post. Peer-agent and parent-session delivery are disabled for this ' +
-        'run. Write `message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone.',
-    inputSchema: unionOf(collaboration ? [agentTarget, userTarget, sessionTarget] : [userTarget])
+      : 'Post one visible message to exactly one channel or human. Your own turn reply already reaches the ' +
+        'conversation you are in, so use this tool only for what that reply cannot do: a different conversation or a ' +
+        'human. Use `{"channel":"<channel id>","message":"..."}` for a bare channel post, ' +
+        '`{"toUser":"<Slack user id>","message":"..."}` for a DM, or `{"toUser":"<Slack user id>","channel":"<channel ' +
+        'id>","message":"..."}` for a channel-root post that @-mentions the user; add `"thread":"<thread id>"` to ' +
+        'post into that thread instead. A channel-root post opens a NEW session of your own on that post. Peer-agent ' +
+        'and parent-session delivery are disabled for this run. Write `message` as CommonMark/GFM. The daemon ' +
+        'supplies your identity; you cannot impersonate anyone.',
+    inputSchema: unionOf(
+      collaboration ? [agentTarget, userTarget, channelTarget, sessionTarget] : [userTarget, channelTarget]
+    )
   }
 }
 

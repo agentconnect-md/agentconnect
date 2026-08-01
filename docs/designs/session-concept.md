@@ -175,13 +175,13 @@ SessionTarget, and the daemon still authorizes the write.
 After consolidation:
 
 ```ts
-sendMessage(target: AgentTarget | UserTarget | SessionTarget, message: string): void
+sendMessage(target: AgentTarget | UserTarget | ChannelTarget | SessionTarget, message: string): void
 ```
 
 The arguments are a top-level union of **two addressing modes** — `toAgent` (wake
 a peer agent) and `toUser` (reach a human) — each with **three delivery forms**
-selected by the coordinates (dm / channel root / in thread) — plus the separate
-`sessionId` reply branch.
+selected by the coordinates (dm / channel root / in thread) — plus a bare
+`channel`-only post (no recipient) and the separate `sessionId` reply branch.
 
 ### 3.1 AgentTarget / UserTarget: who to reach, and in which form
 
@@ -201,21 +201,29 @@ type UserTarget = {
   thread?: string            // in-thread form only (requires `channel`)
   integrationId?: string     // pick a specific bot when the agent has several on the platform
 }
+
+// Bare post — publish a visible message without waking an agent or addressing a human.
+type ChannelTarget = {
+  channel: string            // channel root (no thread) / in thread (with thread)
+  thread?: string
+  platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // defaults to current session
+  integrationId?: string
+}
 ```
 
-Exactly one mode key (`toAgent` or `toUser`) is required; the form is decided by
-the coordinates:
+Exactly one target key is required: `toAgent`, `toUser`, or `channel`. For the two
+recipient modes the form is decided by the coordinates:
 
-| Mode      | dm                                                              | channel root                                                                                  | in thread                                                                                                    |
-| --------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `toAgent` | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post + wake, peer anchored to it | `{"toAgent":"A","channel":"C","thread":"T","message":"…"}` — visible thread post + wake, peer in that thread |
-| `toUser`  | `{"toUser":"U","message":"…"}` — Slack DM                       | `{"toUser":"U","channel":"C","message":"…"}` — root post @-mentioning the user                | `{"toUser":"U","channel":"C","thread":"T","message":"…"}` — thread post @-mentioning the user                |
+| Mode             | dm                                                              | channel root                                                                                  | in thread                                                                                                    |
+| ---------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `toAgent`        | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post + wake, peer anchored to it | `{"toAgent":"A","channel":"C","thread":"T","message":"…"}` — visible thread post + wake, peer in that thread |
+| `toUser`         | `{"toUser":"U","message":"…"}` — Slack DM                       | `{"toUser":"U","channel":"C","message":"…"}` — root post @-mentioning the user                | `{"toUser":"U","channel":"C","thread":"T","message":"…"}` — thread post @-mentioning the user                |
+| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient                                     | `{"channel":"C","thread":"T","message":"…"}` — thread post, no recipient                                     |
 
-- The target must name exactly one recipient: `toAgent` or `toUser`. The daemon
-  rejects an empty action and rejects mixing both modes in one call. There is no
-  bare `channel`-only mode: every send addresses an agent or a human (a visible
-  channel post without a mention is expressed as a `toUser` channel-root or
-  in-thread form).
+- The target must identify an action: `toAgent`, `toUser`, or `channel`. The
+  daemon rejects an empty action and rejects mixing `toAgent` with `toUser` in
+  one call. A bare `channel` post is the "no recipient" form — it publishes a
+  visible message without waking an agent or @-mentioning anyone.
 - Separate `toUser` and `toAgent` make human delivery and agent wake-up
   explicit in the type system. The daemon no longer guesses whether an ID is a
   platform user or an AgentConnect agent. `toAgent` comes from `listAgents`
@@ -552,19 +560,19 @@ A system prompt starts the session, followed by a human mention:
 Both messages are inbound to agent A. Session 1 is a root, so it has no
 `Parent session` and nowhere to reply through SessionTarget.
 
-### 7.2 Case 2a: post to a channel, mentioning a human
+### 7.2 Case 2a: post to a channel without mentioning another agent
 
-Agent A calls `sendMessage` in the `toUser` channel-root form (`toUser` +
-`channel`, no `toAgent`). It initializes a new idle session owned by A, keyed by
-the returned platform message id, but does **not** run a model turn. The post is
-A's own output rather than a new request, so activating on it would allow
-`sendMessage` to recursively create more roots.
+Agent A calls `sendMessage` with only `channel`, no `toUser` or `toAgent`.
+This is a plain channel post. It initializes a new idle session owned by A,
+keyed by the returned platform message id, but does **not** run a model turn.
+The post is A's own output rather than a new request, so activating on it would
+allow `sendMessage` to recursively create more roots.
 
 ```text
 --- session 1 ---                    (owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       {toUser: "<human id>", channel: "#channel"},
+                                       {channel: "#channel"},
                                        msg="Please review this.")
 
 --- session 2 initialized ---        (owner: agentA; origin: session 1; idle)
@@ -647,7 +655,7 @@ posts A's message before waking B.
 There is no double-trigger risk because no platform mention exists. B replies
 through `sendMessage({sessionId: S1})` exactly as in case 2b.
 
-### 7.4 Case 3: send from Telegram to a Slack channel, mentioning a human
+### 7.4 Case 3: send from Telegram to a Slack channel without mentioning another agent
 
 A's session lives on Telegram, but `sendMessage` targets Slack:
 
@@ -655,7 +663,7 @@ A's session lives on Telegram, but `sendMessage` targets Slack:
 --- session 1 ---                    (platform: telegram, owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       {toUser: "<human id>", platform: slack, channel: "#channel"},
+                                       {platform: slack, channel: "#channel"},
                                        msg="Please review this.")
 
 --- session 2 initialized ---        (platform: slack, owner: agentA; origin: session 1; idle)

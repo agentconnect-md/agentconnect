@@ -631,7 +631,8 @@ export class SessionManager {
           `hand-off should be visible to people in the channel. To reach a human, use the \`toUser\` mode: ` +
           `\`{"toUser":"<Slack user id>","message":"..."}\` DMs them, and adding \`channel\` (and optionally ` +
           `\`thread\`) posts an @-mention at the channel root (or inside that thread). If you were woken by another ` +
-          `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`.\n` +
+          `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
+          `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`.\n` +
           `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
           `agents unless a human explicitly tells you to.\n` +
           `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +

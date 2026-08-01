@@ -481,6 +481,7 @@ const MULTI_INTEGRATION_NOTE =
 const SEND_MESSAGE_TARGET_HELP =
   'Valid targets: agent {"toAgent":"<agent-id>","message":"..."}; ' +
   'user {"toUser":"<Slack-user-id>","message":"..."}; ' +
+  'channel {"channel":"<channel-id>","message":"..."}; ' +
   'session {"sessionId":"<Parent session>","message":"..."}'
 
 function resolveGatewayForPlatform(
@@ -749,24 +750,31 @@ export async function executeTool(
       })
     }
 
-    // MessageTarget — exactly ONE of the two modes: `toAgent` wakes a peer agent, `toUser`
-    // reaches a platform user. The delivery form is selected by the coords: no `channel` ⇒ dm,
-    // `channel` without `thread` ⇒ channel root, `channel` + `thread` ⇒ in thread.
-    // Branch-specific validation below keeps ignored/mixed fields out even when a caller
-    // bypasses the advertised JSON Schema (as unit tests and older clients can).
+    // MessageTarget — exactly ONE target: `toAgent` wakes a peer agent, `toUser` reaches a
+    // platform user, and `channel` alone posts a bare visible message without addressing
+    // anyone. For the two recipient modes the delivery form is selected by the coords: no
+    // `channel` ⇒ dm, `channel` without `thread` ⇒ channel root, `channel` + `thread` ⇒ in
+    // thread. Branch-specific validation below keeps ignored/mixed fields out even when a
+    // caller bypasses the advertised JSON Schema (as unit tests and older clients can).
     const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
     const toUser = optionalString(args, 'toUser')
-    if (toAgent === undefined && toUser === undefined) {
-      throw new Error(`sendMessage: \`toAgent\` or \`toUser\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`)
+    const channel = optionalString(args, 'channel')
+    if (toAgent === undefined && toUser === undefined && channel === undefined) {
+      throw new Error(
+        `sendMessage: \`toAgent\`, \`toUser\`, or \`channel\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`
+      )
     }
     if (toAgent !== undefined && toUser !== undefined) {
       throw new Error(
         `sendMessage: \`toAgent\` and \`toUser\` are mutually exclusive — pick one mode. ${SEND_MESSAGE_TARGET_HELP}`
       )
     }
-    const channel = optionalString(args, 'channel')
     if (toAgent !== undefined) assertOnlyKeys(args, ['toAgent', 'channel', 'thread', 'message'], 'agent target')
-    else assertOnlyKeys(args, ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'message'], 'user target')
+    else if (toUser !== undefined) {
+      assertOnlyKeys(args, ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'message'], 'user target')
+    } else {
+      assertOnlyKeys(args, ['channel', 'thread', 'platform', 'integrationId', 'message'], 'channel target')
+    }
     if (toUser !== undefined && channel === undefined && optionalString(args, 'thread') !== undefined) {
       throw new Error('sendMessage: `thread` needs a `channel` — a DM has no thread to post into')
     }

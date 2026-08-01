@@ -97,7 +97,7 @@ describe('toolsForIntegrations', () => {
     expect(tool.name).toBe('sendMessage')
     const schema = sendSchema([slackInt])
     expect(schema.type).toBe('object')
-    expect(schema.oneOf).toHaveLength(3)
+    expect(schema.oneOf).toHaveLength(4)
 
     const agent = sendTargetBranch([slackInt], 'toAgent')
     expect(agent.required).toEqual(['toAgent', 'message'])
@@ -122,16 +122,23 @@ describe('toolsForIntegrations', () => {
     expect(user.description).toContain('channel root')
     expect(user.description).toContain('in thread')
 
+    const channel = sendTargetBranch([slackInt], 'channel')
+    expect(channel.required).toEqual(['channel', 'message'])
+    expect(channel.additionalProperties).toBe(false)
+    expect(Object.keys(channel.properties)).toEqual(['channel', 'thread', 'platform', 'integrationId', 'message'])
+    expect(channel.description).toContain('without waking an agent or @-mentioning a human')
+
     const session = sendTargetBranch([slackInt], 'sessionId')
     expect(session.required).toEqual(['sessionId', 'message'])
     expect(session.additionalProperties).toBe(false)
     expect(Object.keys(session.properties)).toEqual(['sessionId', 'correlationId', 'message'])
 
-    expect(tool.description).toMatch(/^Send one message in ONE of two modes/)
+    expect(tool.description).toMatch(/^Send one message to exactly one target:/)
     expect(tool.description).toContain('{"toAgent":"<agent id>","message":"..."}')
     expect(tool.description).toContain('{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}')
     expect(tool.description).toContain('{"toUser":"<Slack user id>","message":"..."}')
     expect(tool.description).toContain('{"toUser":"<Slack user id>","channel":"<channel id>","message":"..."}')
+    expect(tool.description).toContain('{"channel":"<channel id>","message":"..."}')
     expect(tool.description).toContain('{"sessionId":"<Parent session>","message":"..."}')
   })
 
@@ -146,7 +153,7 @@ describe('toolsForIntegrations', () => {
     expect(description).toContain('opens a NEW session')
     expect(description).toContain('never by posting it at their channel root')
 
-    expect(sendTargetBranch([slackInt], 'toUser').properties.thread!.description).toContain('opens a new session')
+    expect(sendTargetBranch([slackInt], 'channel').properties.thread!.description).toContain('opens a new session')
     expect(sendTargetBranch([slackInt], 'toAgent').properties.thread!.description).toContain('opens a new session')
     expect(sendTargetBranch([slackInt], 'sessionId').description).toContain(
       'channel ROOT instead would start a new one'
@@ -155,7 +162,7 @@ describe('toolsForIntegrations', () => {
     // The cost is ROOT-only: an explicit thread joins a conversation rather than forking one, so
     // the guidance says "a different conversation", never "a different channel".
     expect(description).not.toContain('DIFFERENT channel,')
-    for (const text of [description, sendTargetBranch([slackInt], 'toUser').description!])
+    for (const text of [description, sendTargetBranch([slackInt], 'channel').description!])
       expect(text).toMatch(/(at )?channel root/i)
 
     // …and the toUser mode is not DM-only: its channel-root and in-thread forms post a visible
@@ -232,8 +239,9 @@ describe('toolsForIntegrations', () => {
     expect(names).toContain('sendMessage')
     const send = tools.find((tool) => tool.name === 'sendMessage')!
     const schema = send.inputSchema as unknown as ObjectSchema
-    expect(schema.oneOf).toHaveLength(1)
+    expect(schema.oneOf).toHaveLength(2)
     expect(schema.oneOf?.[0]?.required).toEqual(['toUser', 'message'])
+    expect(schema.oneOf?.[1]?.required).toEqual(['channel', 'message'])
     expect(send.description).toContain('Peer-agent and parent-session delivery are disabled')
   })
 
