@@ -50,10 +50,17 @@ export function authoritativeHookProjectionState(run: HookRunRecord): Projection
 }
 
 /** Product-facing label for a skipped Check. Internal topology details stay in
- * HookRun.reason and never leak into the GitHub Checks surface. */
-export function hookSkippedCheckLabel(reason?: string | null): string | null {
+ * HookRun.reason and never leak into the GitHub Checks surface.
+ *
+ * `output.title` is the only field of ours that GitHub renders in the
+ * Conversation tab's check list, so the awaiting-a-maintainer title states the
+ * one reachable entry point instead of only the requirement. The Checks tab
+ * carries the rest (see `hookSkippedCheckGuidance`). Without a configured App
+ * slug there is no handle to name, so the title falls back to the requirement. */
+export function hookSkippedCheckLabel(reason?: string | null, appSlug?: string): string | null {
   if (reason === HOOK_DELIVERY_REASON_DAEMON_OFFLINE) return 'Agent unavailable'
-  if (reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED) return 'Review requires a maintainer request'
+  if (reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)
+    return appSlug ? `Comment @${appSlug} to start the review` : 'Review requires a maintainer request'
   if (
     !reason ||
     reason === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED ||
@@ -61,4 +68,21 @@ export function hookSkippedCheckLabel(reason?: string | null): string | null {
   )
     return null
   return 'Review could not be completed'
+}
+
+/** Markdown section appended to a skipped Check's summary, explaining how a
+ * maintainer starts a review GitHub deliberately withheld from an external
+ * author. GitHub renders `output.summary` only on the Checks tab — the same
+ * surface that renders the `Request review` action — so this is where the why
+ * and the second entry point belong. Naming the mention handle depends on a
+ * configured App slug; the button is always available. */
+export function hookSkippedCheckGuidance(reason?: string | null, appSlug?: string): string | null {
+  if (reason !== HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED) return null
+  const mention = appSlug ? `comment \`@${appSlug}\` on this pull request, or ` : ''
+  return [
+    '### How to start this review',
+    "This pull request was opened from outside the repository's write boundary, so no agent ran. " +
+      `To review it, ${mention}use the **Request review** button above. ` +
+      'Either way needs write or admin access to this repository.'
+  ].join('\n\n')
 }

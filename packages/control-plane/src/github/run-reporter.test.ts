@@ -525,7 +525,8 @@ describe('GithubRunReporter', () => {
     p: HookReviewProjectionRecord,
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
     overrides: Partial<HookRepo> = {},
-    currentAgent: AgentRecord | null = agent()
+    currentAgent: AgentRecord | null = agent(),
+    appSlug?: string
   ) {
     const hooks = {
       claimDueReviewProjections: vi.fn(async () => [p]),
@@ -587,6 +588,7 @@ describe('GithubRunReporter', () => {
       agents: { get: vi.fn(async () => currentAgent) },
       orgs: { slugById: vi.fn(async () => 'acme') },
       webAppUrl: 'https://console.example.com/',
+      ...(appSlug ? { appSlug } : {}),
       github: github as unknown as Pick<
         GithubService,
         | 'mintChecksForAgent'
@@ -999,7 +1001,7 @@ describe('GithubRunReporter', () => {
     const body = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as {
       conclusion: string
       actions: Array<{ label: string; description: string; identifier: string }>
-      output: { title: string }
+      output: { title: string; summary: string }
     }
     expect(body).toMatchObject({
       conclusion: 'skipped',
@@ -1012,7 +1014,61 @@ describe('GithubRunReporter', () => {
       ],
       output: { title: 'Review requires a maintainer request' }
     })
+    // No configured App slug ⇒ no handle to mention, so the copy points at the
+    // button alone. The write marker stays last for recovery matching.
+    expect(body.output.summary).toContain('How to start this review')
+    expect(body.output.summary).toContain('**Request review** button')
+    expect(body.output.summary).not.toContain('comment `@')
+    expect(body.output.summary.trimEnd().endsWith('-->')).toBe(true)
     expect(JSON.stringify(body)).not.toContain(HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)
+  })
+
+  it('names the mention handle in the title and summary when the App slug is configured', async () => {
+    const p = projection({
+      desiredState: 'skipped',
+      observedState: null,
+      checkRunId: '90071992547409932'
+    })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
+      return Response.json({
+        id: p.checkRunId,
+        external_id: p.externalId,
+        status: 'completed',
+        conclusion: 'skipped',
+        output: { summary: JSON.parse(String(init?.body)).output.summary }
+      })
+    })
+    const { reporter } = worker(
+      p,
+      fetchImpl,
+      {
+        getRunById: vi.fn(async () =>
+          run({
+            status: 'failed',
+            completedAt: new Date(NOW),
+            reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED
+          })
+        )
+      },
+      agent(),
+      'example-app'
+    )
+
+    await reporter.tick()
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as {
+      actions: Array<{ identifier: string }>
+      output: { title: string; summary: string }
+    }
+    // The Conversation tab renders only the title, so the reachable entry point
+    // has to live there; the Checks tab keeps the why and the second path.
+    expect(body.output.title).toBe('Comment @example-app to start the review')
+    expect(body.output.summary).toContain('comment `@example-app` on this pull request')
+    expect(body.output.summary).toContain('**Request review** button')
+    expect(body.actions).toEqual([
+      { label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }
+    ])
   })
 
   it('retries before writing when skipped presentation metadata is temporarily unavailable', async () => {

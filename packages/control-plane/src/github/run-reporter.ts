@@ -27,6 +27,7 @@ import { githubRequest, GithubApiError, type FetchLike } from './api.js'
 import {
   authoritativeHookProjectionState,
   hookRuntimeProjectionState,
+  hookSkippedCheckGuidance,
   hookSkippedCheckLabel,
   type ProjectionDesiredState
 } from './projection-state.js'
@@ -92,6 +93,8 @@ interface CheckPresentation {
   detailsUrl?: string
   agentUrl?: string
   skippedLabel?: string
+  /** Markdown appended to the summary; Checks-tab only, unlike the title. */
+  skippedGuidance?: string
   requestReviewAction?: boolean
 }
 
@@ -282,6 +285,9 @@ export interface GithubRunReporterDeps {
   orgs?: Pick<OrgRepo, 'slugById'>
   /** Console origin used for Check Run links; unset keeps GitHub's default App link. */
   webAppUrl?: string
+  /** GITHUB_APP_SLUG — the `@<slug>` handle a maintainer mentions to summon a
+   * review. Unset keeps the Check copy handle-free. */
+  appSlug?: string
   github: Pick<
     GithubService,
     | 'mintChecksForAgent'
@@ -623,10 +629,12 @@ export class GithubRunReporter {
       )
         run = candidate
     }
-    const skippedLabel = hookSkippedCheckLabel(run?.reason) ?? undefined
+    const skippedLabel = hookSkippedCheckLabel(run?.reason, this.deps.appSlug) ?? undefined
+    const skippedGuidance = hookSkippedCheckGuidance(run?.reason, this.deps.appSlug) ?? undefined
     const requestReviewAction = run?.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED || undefined
     const fallback = {
       ...(skippedLabel ? { skippedLabel } : {}),
+      ...(skippedGuidance ? { skippedGuidance } : {}),
       ...(requestReviewAction ? { requestReviewAction } : {})
     }
     if (!this.deps.webAppUrl || !this.deps.orgs) return fallback
@@ -998,6 +1006,10 @@ function checkPayload(
     projection.agentName && presentation.agentUrl
       ? `[${projection.agentName}](${presentation.agentUrl})`
       : projection.agentName
+  // Same gate as the call-to-action title: the how-to belongs on the Check only
+  // while it is actually parked waiting for a maintainer. The write marker stays
+  // last so recovery keeps matching on it.
+  const guidance = state === 'skipped' && !associationError ? presentation.skippedGuidance : undefined
   const normalizedSummary = [
     `Phase: ${state}`,
     ...(agentLabel ? [`Agent: ${agentLabel}`] : []),
@@ -1006,6 +1018,7 @@ function checkPayload(
       ? [`Pull requests: ${openSubjects.map((subject) => `#${subject.pullNumber}`).join(', ')}`]
       : []),
     ...(associationError ? [`Association: ${associationError}`] : []),
+    ...(guidance ? ['', guidance, ''] : []),
     `<!-- agentconnect-write:${marker} -->`
   ].join('\n')
   const output = {

@@ -28,6 +28,9 @@ describe('hookRuntimeProjectionState', () => {
     expect(hookSkippedCheckLabel(HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)).toBe(
       'Review requires a maintainer request'
     )
+    expect(hookSkippedCheckLabel(HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED, 'example-app')).toBe(
+      'Comment @example-app to start the review'
+    )
     expect(hookSkippedCheckLabel('session_start_failed')).toBe('Review could not be completed')
     expect(hookSkippedCheckLabel(HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED)).toBeNull()
     expect(hookRuntimeProjectionState({ status: 'failed', reason: 'dispatch_timeout' })).toBe('skipped')
