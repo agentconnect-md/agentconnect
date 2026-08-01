@@ -187,6 +187,9 @@ describe('organization knowledge REST lifecycle', () => {
       ).statusCode
     ).toBe(200)
     expect((await owner.app.inject({ method: 'GET', url: `${ORG}/knowledge` })).json()).toEqual([])
+    expect((await owner.app.inject({ method: 'GET', url: `${ORG}/knowledge?includeArchived=false` })).json()).toEqual(
+      []
+    )
     expect(await repo.searchKnowledge(DEF_ORG, { query: 'incident commander', limit: 5 })).toEqual([])
     expect(
       (await owner.app.inject({ method: 'GET', url: `${ORG}/knowledge?includeArchived=true` })).json()
@@ -866,6 +869,9 @@ describe('managed organization skills', () => {
       ).statusCode
     ).toBe(400)
     expect((await owner.app.inject({ method: 'GET', url: `${ORG}/managed-skills` })).json()).toEqual([])
+    expect(
+      (await owner.app.inject({ method: 'GET', url: `${ORG}/managed-skills?includeArchived=false` })).json()
+    ).toEqual([])
     expect(
       (await owner.app.inject({ method: 'GET', url: `${ORG}/managed-skills?includeArchived=true` })).json()
     ).toHaveLength(1)
