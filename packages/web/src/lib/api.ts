@@ -77,6 +77,52 @@ export interface WebchatTokenDto {
   conversationId: string
 }
 
+export interface WebchatMcpOperationDto {
+  operationId: string
+  toolName: string
+  arguments: unknown
+  status: 'awaiting_confirmation' | 'executing' | 'completed' | 'failed' | 'ambiguous' | 'stale'
+  createdAt: string
+  confirmationExpiresAt: string
+  completedAt: string | null
+  result?: unknown
+}
+
+const webchatMcpOperationPath = (orgId: string, agentId: string, conversationId: string) =>
+  `/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/webchat/${encodeURIComponent(conversationId)}/mcp-operations`
+
+export function listWebchatMcpOperations(
+  orgId: string,
+  agentId: string,
+  conversationId: string
+): Promise<WebchatMcpOperationDto[]> {
+  return apiGet<WebchatMcpOperationDto[]>(webchatMcpOperationPath(orgId, agentId, conversationId))
+}
+
+export function getWebchatMcpOperation(
+  orgId: string,
+  agentId: string,
+  conversationId: string,
+  operationId: string
+): Promise<WebchatMcpOperationDto> {
+  return apiGet<WebchatMcpOperationDto>(
+    `${webchatMcpOperationPath(orgId, agentId, conversationId)}/${encodeURIComponent(operationId)}`
+  )
+}
+
+export function decideWebchatMcpOperation(
+  orgId: string,
+  agentId: string,
+  conversationId: string,
+  operationId: string,
+  decision: 'approve' | 'deny'
+): Promise<WebchatMcpOperationDto> {
+  return apiPost<WebchatMcpOperationDto>(
+    `${webchatMcpOperationPath(orgId, agentId, conversationId)}/${encodeURIComponent(operationId)}/decision`,
+    { decision }
+  )
+}
+
 /**
  * Mint a short-lived webchat token for an agent (POST …/agents/:id/webchat/token).
  * The browser presents it to the relay pool to open a playground session; the relay

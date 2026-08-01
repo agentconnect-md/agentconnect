@@ -47,7 +47,8 @@ import {
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
-  PgMcpInvocationRepo,
+  PgWebchatMcpAccessGrantRepo,
+  PgWebchatMcpOperationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
   PgIntegrationRepo,
@@ -96,7 +97,7 @@ import { CronRunReaper } from './orchestrator/cronRunReaper.js'
 import { SlackInstallReaper } from './orchestrator/slackInstallReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
-import { McpInvocationReaper } from './orchestrator/mcpInvocationReaper.js'
+import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
@@ -108,8 +109,8 @@ import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { createWebchatTokenVerifier } from './registry/webchatVerification.js'
-import { InvocationAssertionCodec } from './registry/invocationAssertion.js'
-import { WebchatMcpDelegationService } from './registry/webchatMcpDelegationService.js'
+import { WebchatRemoteMcpService } from './registry/webchatRemoteMcpService.js'
+import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { WaitlistService } from './registry/waitlistService.js'
@@ -147,10 +148,11 @@ import { buildHttpServer } from './http/server.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
 import { McpRateLimiter } from './http/mcp/rate-limit.js'
-import { InvocationAssertionAuthenticator } from './http/mcp/invocation-authenticator.js'
+import { RemoteGrantAuthenticator } from './http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
 import { defaultWebchatMcpMetrics } from './observability/webchat-mcp.js'
 import { pingDb } from './persistence/prisma.js'
+import { runWithSharedTx, withSharedTxRouting } from './persistence/ambient-tx.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
 import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
@@ -178,9 +180,9 @@ export interface Container {
   readonly readiness: Readiness
   /** Live webchat preset entitlement + one-time assertion minting. Transport
    *  handlers consume this seam without reconstructing authority checks. */
-  readonly webchatMcpDelegation: WebchatMcpDelegationService
-  /** Route-only assertion claim seam for the standard MCP route. */
-  readonly invocationAssertions: InvocationAssertionAuthenticator
+  readonly webchatRemoteMcp: WebchatRemoteMcpService
+  /** Route-only remote-grant claim seam for the standard MCP route. */
+  readonly remoteGrantAuth: RemoteGrantAuthenticator
   /** One-time async-local nonce seam for nested MCP REST requests. */
   readonly internalInvocationAuth: InternalInvocationAuth
   /** Arm the Clock-driven background loops (the cron-run reaper). Prod calls this
@@ -224,6 +226,13 @@ export function buildContainer(
   // config flips at-rest encryption for all of them together.
   const secretCipher = opts.secretCipher ?? makeSecretCipher(config)
 
+  // Repositories see the shared-transaction router: outside `runWithSharedTx`
+  // it is the root client verbatim; inside it (CP-db-only delegated MCP
+  // operations, §8) every repo call joins one transaction. Transaction OPENING
+  // (and ping/disconnect) stays on the root client.
+  const rootPrisma = prisma
+  prisma = withSharedTxRouting(prisma)
+
   // ── C6 repositories (the ONLY @prisma/client importers) ───────────────────
   const repos = {
     daemon: new PgDaemonRepo(prisma),
@@ -237,7 +246,8 @@ export function buildContainer(
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
     webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
-    mcpInvocation: new PgMcpInvocationRepo(prisma, clock),
+    webchatMcpAccessGrant: new PgWebchatMcpAccessGrantRepo(prisma),
+    webchatMcpOperation: new PgWebchatMcpOperationRepo(prisma),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
@@ -400,30 +410,34 @@ export function buildContainer(
   // The derived in-memory connection index every hot lookup hits.
   const connReg = new ConnectionRegistry()
 
-  // Built-in general-preset webchat entitlement. Assertions use a dedicated
-  // prefix and hash domain even though the deployment pepper is shared.
-  const invocationAssertionCodec = new InvocationAssertionCodec(config.API_KEY_PEPPER)
-  const webchatMcpDelegation = new WebchatMcpDelegationService({
+  // Built-in general-preset webchat entitlement and short-lived access grants.
+  const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
+  const webchatRemoteMcp = new WebchatRemoteMcpService({
     clock,
-    assertionCodec: invocationAssertionCodec,
+    featureEnabled: () => config.WEBCHAT_PRESET_MCP_ENABLED,
+    tokenCodec: webchatMcpGrantToken,
     conversations: repos.webchatConversation,
     orgs: repos.org,
     agents: repos.agent,
     presets: repos.presetAgent,
     daemons: connReg,
-    delegations: repos.webchatMcpDelegation,
-    invocations: repos.mcpInvocation,
-    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
-    metrics: defaultWebchatMcpMetrics
+    authorities: repos.webchatMcpDelegation,
+    grants: repos.webchatMcpAccessGrant,
+    mcpUrl: new URL('/api/v1/mcp', config.PUBLIC_CP_URL ?? 'http://localhost:8080').toString()
   })
-  const invocationAssertions = new InvocationAssertionAuthenticator({
+  const remoteGrantAuth = new RemoteGrantAuthenticator({
     clock,
-    assertionCodec: invocationAssertionCodec,
+    featureEnabled: () => config.WEBCHAT_PRESET_MCP_ENABLED,
+    tokenCodec: webchatMcpGrantToken,
+    conversations: repos.webchatConversation,
+    orgs: repos.org,
+    agents: repos.agent,
+    presets: repos.presetAgent,
     daemons: connReg,
-    delegations: repos.webchatMcpDelegation,
-    invocations: repos.mcpInvocation,
-    isCuratedTool: (toolName) => findTool(toolName) !== undefined,
-    metrics: defaultWebchatMcpMetrics
+    grants: repos.webchatMcpAccessGrant,
+    authorities: repos.webchatMcpDelegation,
+    sessions: repos.session,
+    isCuratedTool: (toolName) => findTool(toolName) !== undefined
   })
   const internalInvocationAuth = new InternalInvocationAuth()
 
@@ -560,7 +574,7 @@ export function buildContainer(
   // ── C2 HTTP edge ──────────────────────────────────────────────────────────
   // Readiness gate: `/readyz` pings the DB and reports 503 once shutdown begins
   // (issue #240). Owned here (has `prisma` for the ping); the bootstrap flips it.
-  const readiness = createReadiness(() => pingDb(prisma))
+  const readiness = createReadiness(() => pingDb(rootPrisma))
   // Best-effort, but never detached: shutdown must not disconnect Prisma while
   // these projection wakeups are still running.
   const wakeGithubReviewProjections = async (installationId: bigint, orgId: OrgId): Promise<void> => {
@@ -726,7 +740,7 @@ export function buildContainer(
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
       audit: repos.audit,
-      mcpInvocation: repos.mcpInvocation,
+      webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
     },
     registry,
@@ -753,8 +767,12 @@ export function buildContainer(
     waitlist,
     events,
     mcpRateLimit: new McpRateLimiter(clock),
-    invocationAssertions,
+    remoteGrantAuth,
     internalInvocationAuth,
+    // §8 CP-db-only operation atomicity: run `fn` with every repository call —
+    // including those made by nested app.inject routes — joined to ONE
+    // transaction (see persistence/ambient-tx.ts). Opened on the root client.
+    sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
     verifySlackBot,
@@ -808,8 +826,8 @@ export function buildContainer(
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
   // invocation state still depends on it.
-  const mcpInvocationReaper = new McpInvocationReaper(
-    repos.mcpInvocation,
+  const webchatMcpOperationReaper = new WebchatMcpOperationReaper(
+    repos.webchatMcpOperation,
     repos.webchatMcpDelegation,
     clock,
     http.log,
@@ -925,8 +943,7 @@ export function buildContainer(
     connReg,
     session: repos.session,
     webchatConversation: repos.webchatConversation,
-    webchatMcpDelegation,
-    webchatMcpDelegations: repos.webchatMcpDelegation,
+    webchatRemoteMcp,
     launch: repos.launch,
     visibilityPush,
     events,
@@ -981,7 +998,7 @@ export function buildContainer(
       tokens: webchatTokens,
       agents: repos.agent,
       daemons: connReg,
-      delegations: webchatMcpDelegation
+      remoteMcp: webchatRemoteMcp
     }),
     // Current-permission fallback for GitHub comment webhooks whose
     // author_association snapshot is stale or inconsistent across event types.
@@ -1231,13 +1248,13 @@ export function buildContainer(
     relayGateway: (app: FastifyInstance) => createRelayWsServer(app, relayWsDeps),
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
     readiness,
-    webchatMcpDelegation,
-    invocationAssertions,
+    webchatRemoteMcp,
+    remoteGrantAuth,
     internalInvocationAuth,
     startBackground() {
       cronRunReaper.start()
       hookRunReaper.start()
-      mcpInvocationReaper.start()
+      webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       slackInstallReaper.start()
@@ -1252,7 +1269,7 @@ export function buildContainer(
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
-      const mcpInvocationSettled = mcpInvocationReaper.stopAndSettle()
+      const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
@@ -1263,12 +1280,12 @@ export function buildContainer(
       slackBotIdentityReconciler.stop()
       visibilityPush.stop()
       await Promise.allSettled([
-        mcpInvocationSettled,
+        webchatMcpOperationSettled,
         ...relayRegistrationTasks,
         visibilityPush.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
-      await prisma.$disconnect()
+      await rootPrisma.$disconnect()
     }
   }
 }

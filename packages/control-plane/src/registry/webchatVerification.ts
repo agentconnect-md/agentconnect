@@ -1,6 +1,6 @@
-import { DELEGATED_MCP_ASSERTION_FEATURE, type RcVerifyResult, type RegisterReq } from '@agentconnect.md/protocol'
+import { WEBCHAT_REMOTE_MCP_FEATURE, type RcVerifyResult, type RegisterReq } from '@agentconnect.md/protocol'
 import { AgentId } from '../domain/ids.js'
-import type { WebchatMcpDelegationService } from './webchatMcpDelegationService.js'
+import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenService } from './webchatToken.js'
 
 interface VerificationDaemon {
@@ -13,7 +13,7 @@ export interface WebchatVerificationDeps {
   tokens: Pick<WebchatTokenService, 'verify'>
   agents: { get(agentId: AgentId): Promise<{ orgId: string; daemonId: string | null } | null> }
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
-  delegations: Pick<WebchatMcpDelegationService, 'establish'>
+  remoteMcp: Pick<WebchatRemoteMcpService, 'establish'>
 }
 
 /**
@@ -41,17 +41,17 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       orgId: claims.orgId,
       conversationId: claims.conversationId
     }
-    if (!deps.enabled || !daemon.capabilities?.features.includes(DELEGATED_MCP_ASSERTION_FEATURE)) {
+    if (!deps.enabled || !daemon.capabilities?.features.includes(WEBCHAT_REMOTE_MCP_FEATURE)) {
       return verified
     }
 
-    const delegation = await deps.delegations.establish({
+    const entitlement = await deps.remoteMcp.establish({
       conversationId: claims.conversationId,
       verifiedUserId: claims.userId,
       orgId: claims.orgId,
       agentId: claims.agentId,
       daemonId: agent.daemonId
     })
-    return delegation ? { ...verified, delegation } : verified
+    return entitlement ? { ...verified, remoteMcp: entitlement } : verified
   }
 }

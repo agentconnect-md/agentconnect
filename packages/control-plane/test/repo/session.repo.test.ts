@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { DEF_ORG, seedAgent, seedDaemon, seedLaunch } from '../fixtures/seed.js'
+import { DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { AgentId, BotId, DaemonId, LaunchId, SessionId } from '../../src/domain/ids.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -41,6 +42,89 @@ function ev(phase: 'start' | 'plan' | 'problem' | 'end', extra: Record<string, u
 }
 
 describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () => {
+  const CONVERSATION = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+
+  async function webchatFixture(): Promise<void> {
+    await fixtures()
+    await prisma.webchatConversation.create({
+      data: { id: CONVERSATION, orgId: DEF_ORG, agentId: AGENT, userId: DEFAULT_OWNER_ID }
+    })
+  }
+
+  function webchatEv(sessionId: string, phase: 'start' | 'end', at: Date) {
+    return {
+      sessionId: SessionId(sessionId),
+      agentId: AgentId(AGENT),
+      phase,
+      platform: 'webchat' as const,
+      channel: CONVERSATION,
+      thread: '',
+      at,
+      classification: {
+        visibility: 'private' as const,
+        ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
+        source: 'default' as const
+      }
+    }
+  }
+
+  it('authorizes the current webchat session even after per-turn end milestones stamp endedAt', async () => {
+    await webchatFixture()
+    const repo = new PgSessionRepo(prisma)
+    await repo.recordMilestone(webchatEv('acp-current', 'start', new Date('2026-07-05T10:00:00.000Z')))
+    // The daemon emits phase 'end' after EVERY turn; an idle-between-turns
+    // session (endedAt set) is still the currently installed one.
+    await repo.recordMilestone(webchatEv('acp-current', 'end', new Date('2026-07-05T10:05:00.000Z')))
+
+    const row = await prisma.sessionMeta.findUnique({ where: { id: 'acp-current' } })
+    expect(row?.endedAt).not.toBeNull()
+    expect(row?.visibility).toBe('private')
+    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(true)
+  })
+
+  it('never lets an old private row authorize once the pointer moved to a widened replacement', async () => {
+    await webchatFixture()
+    const repo = new PgSessionRepo(prisma)
+    await repo.recordMilestone(webchatEv('acp-old-private', 'start', new Date('2026-07-05T10:00:00.000Z')))
+    await repo.recordMilestone(webchatEv('acp-old-private', 'end', new Date('2026-07-05T10:05:00.000Z')))
+    // Session rebuild: a replacement session becomes current and is widened.
+    await repo.recordMilestone(webchatEv('acp-replacement', 'start', new Date('2026-07-05T11:00:00.000Z')))
+    await prisma.sessionMeta.update({ where: { id: 'acp-replacement' }, data: { visibility: 'org' } })
+
+    const conversation = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
+    expect(conversation?.currentSessionId).toBe('acp-replacement')
+    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(false)
+
+    // A late re-emit from the OLD session must not steal the pointer back.
+    await repo.recordMilestone(webchatEv('acp-old-private', 'end', new Date('2026-07-05T11:30:00.000Z')))
+    const after = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
+    expect(after?.currentSessionId).toBe('acp-replacement')
+    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(false)
+  })
+
+  it('fails closed when the conversation has no current-session pointer', async () => {
+    await webchatFixture()
+    const repo = new PgSessionRepo(prisma)
+    // Historical rows exist, but nothing maintained the pointer (e.g. the
+    // session row was deleted → FK SetNull).
+    await prisma.sessionMeta.create({
+      data: {
+        id: 'orphan-private',
+        agentId: AGENT,
+        platform: 'webchat',
+        channel: CONVERSATION,
+        phase: 'start',
+        orgId: DEF_ORG,
+        ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
+        visibility: 'private',
+        visibilitySource: 'default',
+        lastActivityAt: new Date(),
+        startedAt: new Date()
+      }
+    })
+    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(false)
+  })
+
   it('creates a session row on the first milestone with the launch tie', async () => {
     await fixtures()
     const repo = new PgSessionRepo(prisma)

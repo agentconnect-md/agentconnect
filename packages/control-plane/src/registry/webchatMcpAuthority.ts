@@ -1,4 +1,4 @@
-import { DELEGATED_MCP_ASSERTION_FEATURE } from '@agentconnect.md/protocol'
+import { WEBCHAT_REMOTE_MCP_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { canView } from '../authorization/policy.js'
 import type { AgentRepo, OrgRepo, PresetAgentStore, WebchatConversationRepo } from '../persistence/ports.js'
@@ -29,7 +29,7 @@ export interface LiveWebchatMcpAuthorityDeps {
 export type LiveWebchatMcpAuthorityResult =
   { ok: true; userId: string } | { ok: false; reason: WebchatMcpAuthorityDenialReason }
 
-/** Shared live-fact policy used both when minting and when consuming an assertion. */
+/** Shared live-fact policy used both when issuing and when consuming a remote-MCP grant. */
 export async function resolveLiveWebchatMcpAuthority(
   deps: LiveWebchatMcpAuthorityDeps,
   input: {
@@ -72,7 +72,7 @@ export async function resolveLiveWebchatMcpAuthority(
   if (!daemon?.reachable || daemon.state !== 'READY') {
     return { ok: false, reason: 'daemon_unavailable' }
   }
-  if (!daemon.capabilities?.features?.includes(DELEGATED_MCP_ASSERTION_FEATURE)) {
+  if (!daemon.capabilities?.features?.includes(WEBCHAT_REMOTE_MCP_FEATURE)) {
     return { ok: false, reason: 'daemon_feature_missing' }
   }
   return { ok: true, userId: owner }

@@ -25,6 +25,9 @@ export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
  */
 export const SESSION_VISIBILITY_FEATURE = 'session-visibility-v1'
 
+/** Daemon/runtime support private, session-scoped remote MCP headers and stable invocation ids. */
+export const WEBCHAT_REMOTE_MCP_FEATURE = 'webchat_remote_mcp_v1'
+
 /** Daemon and Control Plane support Organization Knowledge, Dream suggestions,
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'
@@ -32,9 +35,6 @@ export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'
 /** Daemon understands externally-bound Slack session audiences, including the
  * `external` visibility value and the stricter shared-memory exclusion bit. */
 export const SLACK_SESSION_AUDIENCE_FEATURE = 'slack-session-audience-v1'
-
-/** Daemon supports one-time MCP assertions scoped to entitled webchat sessions. */
-export const DELEGATED_MCP_ASSERTION_FEATURE = 'delegated_mcp_assertion_v1'
 
 /**
  * Exit code a daemon uses for a PLANNED lifecycle exit (drain-then-exit on a

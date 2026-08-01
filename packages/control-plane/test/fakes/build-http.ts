@@ -20,7 +20,8 @@ import {
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
-  PgMcpInvocationRepo,
+  PgWebchatMcpAccessGrantRepo,
+  PgWebchatMcpOperationRepo,
   PgDaemonRepo,
   PgDaemonLifecycleOpRepo,
   PgApiKeyRepo,
@@ -58,6 +59,7 @@ import {
   PgIntegrationChannelRepo
 } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
+import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { DaemonRegistryService } from '../../src/registry/registryService.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
@@ -65,7 +67,7 @@ import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { OAuthService } from '../../src/registry/oauthService.js'
 import { WebchatTokenService } from '../../src/registry/webchatToken.js'
-import { InvocationAssertionCodec } from '../../src/registry/invocationAssertion.js'
+import { WebchatMcpGrantTokenCodec } from '../../src/registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from '../../src/registry/orgInviteLink.js'
 import { OrgInviteLinkService } from '../../src/registry/orgInviteLinkService.js'
 import { WaitlistService } from '../../src/registry/waitlistService.js'
@@ -84,7 +86,7 @@ import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { createReadiness } from '../../src/http/readiness.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
-import { InvocationAssertionAuthenticator } from '../../src/http/mcp/invocation-authenticator.js'
+import { RemoteGrantAuthenticator } from '../../src/http/mcp/remote-grant-authenticator.js'
 import { InternalInvocationAuth } from '../../src/http/mcp/internal-invocation-auth.js'
 import { findTool } from '../../src/http/mcp/tools.js'
 import { pingDb } from '../../src/persistence/prisma.js'
@@ -123,6 +125,11 @@ export function buildHttpApp(
   // the admission checks (waitlist-and-login.md §6/§8). Read from the test's overrides.
   const waitlistMode = configOverrides?.WAITLIST_MODE ?? false
 
+  // Mirror the composition root's shared-transaction seam (§8): repos see the
+  // router; transaction OPENING stays on the root client.
+  const rootPrisma = prisma
+  prisma = withSharedTxRouting(prisma)
+
   const daemonRepo = new PgDaemonRepo(prisma)
   const daemonLifecycleOpRepo = new PgDaemonLifecycleOpRepo(prisma)
   const apiKeyRepo = new PgApiKeyRepo(prisma)
@@ -159,7 +166,9 @@ export function buildHttpApp(
   const orgRepo = new PgOrgRepo(prisma)
   const webchatConversationRepo = new PgWebchatConversationRepo(prisma)
   const webchatMcpDelegationRepo = new PgWebchatMcpDelegationRepo(prisma)
-  const mcpInvocationRepo = new PgMcpInvocationRepo(prisma, clock)
+  const webchatMcpAccessGrantRepo = new PgWebchatMcpAccessGrantRepo(prisma)
+  const webchatMcpOperationRepo = new PgWebchatMcpOperationRepo(prisma)
+  const sessionRepo = new PgSessionRepo(prisma)
   const skillSourceRepo = new PgSkillSourceRepo(prisma)
   const organizationKnowledgeRepo = new PgOrganizationKnowledgeRepo(prisma)
   const presetAgentRepo = new PgPresetAgentStore(prisma)
@@ -170,14 +179,20 @@ export function buildHttpApp(
   // no-ops — exactly the prod graph with no relay dialed in, unless a test wires one up.
   const relayReg = new RelayRegistry()
   const relayControl = new RelayControlSender(relayReg)
-  const invocationAssertions =
-    depsOverrides?.invocationAssertions ??
-    new InvocationAssertionAuthenticator({
+  const remoteGrantAuth =
+    depsOverrides?.remoteGrantAuth ??
+    new RemoteGrantAuthenticator({
       clock,
-      assertionCodec: new InvocationAssertionCodec(TEST_API_KEY_PEPPER),
+      featureEnabled: () => true,
+      tokenCodec: new WebchatMcpGrantTokenCodec(TEST_API_KEY_PEPPER),
+      conversations: webchatConversationRepo,
+      orgs: orgRepo,
+      agents: agentRepo,
+      presets: presetAgentRepo,
       daemons: liveness,
-      delegations: webchatMcpDelegationRepo,
-      invocations: mcpInvocationRepo,
+      grants: webchatMcpAccessGrantRepo,
+      authorities: webchatMcpDelegationRepo,
+      sessions: sessionRepo,
       isCuratedTool: (toolName) => findTool(toolName) !== undefined
     })
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
@@ -192,7 +207,7 @@ export function buildHttpApp(
       hook: hookRepo,
       hookSecret: hookSecretStore,
       relay: new PgRelayRepo(prisma),
-      session: new PgSessionRepo(prisma),
+      session: sessionRepo,
       sessionUsage: new PgSessionUsageRepo(prisma),
       webchatConversation: webchatConversationRepo,
       user: new PgUserRepo(prisma, !waitlistMode),
@@ -222,7 +237,7 @@ export function buildHttpApp(
       presetAgent: presetAgentRepo,
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
-      mcpInvocation: mcpInvocationRepo,
+      webchatMcpOperation: webchatMcpOperationRepo,
       oauth: oauthRepo
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
@@ -264,6 +279,7 @@ export function buildHttpApp(
     waitlist,
     events,
     mcpRateLimit: new McpRateLimiter(clock),
+    sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     readiness: createReadiness(() => pingDb(prisma)),
     verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
     ensureDiscordMessageContentIntent: async () => 'ready',
@@ -271,7 +287,7 @@ export function buildHttpApp(
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
     ...depsOverrides,
-    invocationAssertions,
+    remoteGrantAuth,
     internalInvocationAuth
   }
 

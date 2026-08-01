@@ -93,7 +93,7 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
           chatId: conversationId,
           agentId,
           user,
-          ...(result.delegation ? { delegation: result.delegation } : {}),
+          ...(result.remoteMcp ? { remoteMcp: result.remoteMcp } : {}),
           daemonConn: () => deps.daemons.get(daemonId),
           register: (c, sink) => deps.router.register(c, sink),
           unregister: (c, sink) => deps.router.unregister(c, sink),

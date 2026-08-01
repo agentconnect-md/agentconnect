@@ -23,13 +23,20 @@ const modelList = (process.env.AC_MODELS ?? '')
 const sessionModels = new Map()
 
 // Optional MCP transport capabilities advertised at initialize. `AC_MCP_CAPS`
-// (comma list of http/sse) turns them on; unset ⇒ no mcpCapabilities key at all.
+// (comma list) turns them on; unset ⇒ no mcpCapabilities key at all.
 const mcpCaps = (process.env.AC_MCP_CAPS ?? '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
 const agentCapabilities = () => ({
-  ...(mcpCaps.length ? { mcpCapabilities: { http: mcpCaps.includes('http'), sse: mcpCaps.includes('sse') } } : {}),
+  ...(mcpCaps.length
+    ? {
+        mcpCapabilities: {
+          http: mcpCaps.includes('http'),
+          sse: mcpCaps.includes('sse')
+        }
+      }
+    : {}),
   ...(process.env.AC_LOAD_UPDATES ? { loadSession: true } : {})
 })
 const configOptions = (sessionId) =>

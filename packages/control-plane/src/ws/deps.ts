@@ -20,7 +20,6 @@ import type {
   AgentRepo,
   ExternalMemoryConnectionRepo,
   WebchatConversationRepo,
-  WebchatMcpDelegationRepo,
   LaunchRepo,
   OrganizationKnowledgeRepo,
   BotRepo
@@ -37,7 +36,7 @@ import type { SessionEventSink } from '../events/sink.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
-import type { WebchatMcpDelegationService } from '../registry/webchatMcpDelegationService.js'
+import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 
 /** Config slice the WS edge reads. */
 export interface WsConfig {
@@ -60,10 +59,8 @@ export interface DaemonWsDeps {
    *  (session-visibility.md §4.2); absent ⇒ webchat sessions record no owner
    *  (null — visible to no one until a repair/backfill). */
   webchatConversation?: WebchatConversationRepo
-  /** Live authority boundary for daemon-originated one-time MCP assertion minting. */
-  webchatMcpDelegation?: Pick<WebchatMcpDelegationService, 'mintInvocation'>
-  /** Durable generation-fenced revocation seam for logical webchat lifecycle signals. */
-  webchatMcpDelegations?: Pick<WebchatMcpDelegationRepo, 'get' | 'revoke'>
+  /** Confidential two-phase grant lifecycle for session-scoped remote MCP. */
+  webchatRemoteMcp?: Pick<WebchatRemoteMcpService, 'issue' | 'accept' | 'revoke'>
   /** Resolves Web API launch provenance for the same classification (§4.4). */
   launch?: LaunchRepo
   /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒

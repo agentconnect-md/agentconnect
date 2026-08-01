@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import type { FastifyRequest } from 'fastify'
-import type { InvocationContext } from './invocation-authenticator.js'
+import type { InvocationContext } from './remote-grant-authenticator.js'
 
 export const INTERNAL_INVOCATION_AUTH_HEADER = 'x-agentconnect-internal-invocation'
 
@@ -26,7 +26,7 @@ declare module 'fastify' {
   interface FastifyRequest {
     delegatedInvocation?: {
       invocationId: string
-      delegationId: string
+      grantId: string
       agentId: string
       conversationId: string
     }
@@ -88,7 +88,7 @@ export class InternalInvocationAuth {
     req.apiKeyScopes = ['mcp:read', 'mcp:write']
     req.delegatedInvocation = {
       invocationId: context.invocationId,
-      delegationId: context.delegationId,
+      grantId: context.grantId,
       agentId: context.agentId,
       conversationId: context.conversationId
     }

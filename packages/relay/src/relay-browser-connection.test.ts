@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { RdAck, RdMsgWebchat, WebchatMcpDelegationReference } from '@agentconnect.md/protocol'
+import type { RdAck, RdMsgWebchat, WebchatRemoteMcpEntitlement } from '@agentconnect.md/protocol'
 import { WireError, type ServerTransport } from '@agentconnect.md/connection'
 import { RelayBrowserConnection, parseBrowserFrame } from './relay-browser-connection.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -8,9 +8,9 @@ import type { Logger } from './log.js'
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const USER = 'ada@example.com'
-const DELEGATION: WebchatMcpDelegationReference = {
-  id: '33333333-3333-4333-8333-333333333333',
-  generation: 7,
+const ENTITLEMENT: WebchatRemoteMcpEntitlement = {
+  authorityId: '33333333-3333-4333-8333-333333333333',
+  authorityGeneration: 7,
   expiresAt: '2026-07-31T12:00:00.000Z'
 }
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
@@ -46,7 +46,7 @@ function build(
   over: {
     daemon?: RelayDaemonConnection | undefined
     ack?: RdAck
-    delegation?: WebchatMcpDelegationReference
+    remoteMcp?: WebchatRemoteMcpEntitlement
     log?: Logger
   } = {}
 ) {
@@ -63,7 +63,7 @@ function build(
     chatId: CHAT,
     agentId: AGENT,
     user: USER,
-    ...(over.delegation ? { delegation: over.delegation } : {}),
+    ...(over.remoteMcp ? { remoteMcp: over.remoteMcp } : {}),
     daemonConn: () => daemon,
     register,
     unregister,
@@ -166,8 +166,8 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true } })
   })
 
-  it('copies the verified delegation reference to every webchat operation', async () => {
-    const { transport, sent } = build({ delegation: DELEGATION })
+  it('copies the verified remote-MCP entitlement to every webchat operation', async () => {
+    const { transport, sent } = build({ remoteMcp: ENTITLEMENT })
     const operations = [
       { text: 'hello there' },
       { type: 'resume', turnId: AGENT, generation: 4, afterIndex: 7 },
@@ -183,43 +183,43 @@ describe('RelayBrowserConnection', () => {
     await tick()
 
     expect(sent).toHaveLength(operations.length + 1)
-    expect(sent.map(({ delegation }) => delegation)).toEqual(
-      Array.from({ length: operations.length + 1 }, () => DELEGATION)
+    expect(sent.map(({ remoteMcp }) => remoteMcp)).toEqual(
+      Array.from({ length: operations.length + 1 }, () => ENTITLEMENT)
     )
     expect(sent.at(-1)?.payload).toEqual({ op: 'close' })
   })
 
-  it('keeps legacy browser connections delegation-free', async () => {
+  it('keeps ordinary browser connections entitlement-free', async () => {
     const { transport, sent } = build()
     transport.feed({ text: 'ordinary webchat' })
     transport.fireClose()
     await tick()
 
     expect(sent).toHaveLength(2)
-    expect(sent.every((message) => message.delegation === undefined)).toBe(true)
+    expect(sent.every((message) => message.remoteMcp === undefined)).toBe(true)
   })
 
-  it('does not parse browser delegation fields at any nesting depth', () => {
+  it('does not parse browser entitlement fields at any nesting depth', () => {
     const forged = {
-      id: '44444444-4444-4444-8444-444444444444',
-      generation: 999,
+      authorityId: '44444444-4444-4444-8444-444444444444',
+      authorityGeneration: 999,
       expiresAt: '2099-01-01T00:00:00.000Z'
     }
     const parsed = parseBrowserFrame(
       {
         type: 'message',
         text: 'try to escape',
-        delegation: forged,
-        payload: { delegation: forged },
-        runtime: { model: 'claude', delegation: forged }
+        remoteMcp: forged,
+        payload: { remoteMcp: forged },
+        runtime: { model: 'claude', remoteMcp: forged }
       },
       USER
     )
 
     expect(parsed).toEqual({ op: 'turn', text: 'try to escape', user: USER, runtime: { model: 'claude' } })
-    expect(parsed).not.toHaveProperty('delegation')
+    expect(parsed).not.toHaveProperty('remoteMcp')
     expect(parsed).not.toHaveProperty('payload')
-    expect(parsed).not.toHaveProperty('runtime.delegation')
+    expect(parsed).not.toHaveProperty('runtime.remoteMcp')
   })
 
   it('bridges an image-only turn without putting the bytes on any control-plane path', async () => {
@@ -310,11 +310,11 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('error')).toEqual({ type: 'error', message: 'delivery failed' })
   })
 
-  it('logs safe delivery-failure categories without raw messages, details, payload, or delegation fields', async () => {
-    const sensitivePayload = `browser said secret; delegation=${JSON.stringify(DELEGATION)}`
+  it('logs safe delivery-failure categories without raw messages, details, payload, or entitlement fields', async () => {
+    const sensitivePayload = `browser said secret; remoteMcp=${JSON.stringify(ENTITLEMENT)}`
     const cases: Array<{ error: unknown; diagnostic: string }> = [
       {
-        error: new WireError('INTERNAL', `no ack after 5 tries for ${DELEGATION.id}`, true),
+        error: new WireError('INTERNAL', `no ack after 5 tries for ${ENTITLEMENT.authorityId}`, true),
         diagnostic: 'kind=ack_timeout code=INTERNAL retryable=true'
       },
       {
@@ -323,13 +323,13 @@ describe('RelayBrowserConnection', () => {
       },
       {
         error: new WireError('BAD_PAYLOAD', `invalid correlated reply: ${sensitivePayload}`, false, {
-          delegation: DELEGATION,
+          remoteMcp: ENTITLEMENT,
           payload: sensitivePayload
         }),
         diagnostic: 'kind=remote_protocol code=BAD_PAYLOAD retryable=false'
       },
       {
-        error: new WireError(`secret-${DELEGATION.generation}`, sensitivePayload, false),
+        error: new WireError(`secret-${ENTITLEMENT.authorityGeneration}`, sensitivePayload, false),
         diagnostic: 'kind=unknown_wire_error'
       },
       {
@@ -351,7 +351,7 @@ describe('RelayBrowserConnection', () => {
       })
       const { transport } = build({
         daemon: { sendMsg } as unknown as RelayDaemonConnection,
-        delegation: DELEGATION,
+        remoteMcp: ENTITLEMENT,
         log
       })
 
@@ -360,9 +360,9 @@ describe('RelayBrowserConnection', () => {
 
       expect(warnings).toEqual([`relay: webchat op delivery failed ${diagnostic}`])
       const observable = JSON.stringify({ warnings, browserError: transport.last('error') })
-      expect(observable).not.toContain(DELEGATION.id)
-      expect(observable).not.toContain(String(DELEGATION.generation))
-      expect(observable).not.toContain(DELEGATION.expiresAt)
+      expect(observable).not.toContain(ENTITLEMENT.authorityId)
+      expect(observable).not.toContain(String(ENTITLEMENT.authorityGeneration))
+      expect(observable).not.toContain(ENTITLEMENT.expiresAt)
       expect(observable).not.toContain(sensitivePayload)
     }
   })
@@ -380,7 +380,7 @@ describe('RelayBrowserConnection', () => {
     })
     const { transport } = build({
       daemon: { sendMsg } as unknown as RelayDaemonConnection,
-      delegation: DELEGATION
+      remoteMcp: ENTITLEMENT
     })
 
     transport.feed({ text: 'long turn' })
@@ -391,8 +391,8 @@ describe('RelayBrowserConnection', () => {
     await tick()
 
     expect(delivered.map(({ payload }) => payload.op)).toEqual(['turn', 'close'])
-    expect(delivered[0]?.delegation).toEqual(DELEGATION)
-    expect(delivered[1]?.delegation).toEqual(DELEGATION)
+    expect(delivered[0]?.remoteMcp).toEqual(ENTITLEMENT)
+    expect(delivered[1]?.remoteMcp).toEqual(ENTITLEMENT)
     expect(transport.last('ack')).toBeUndefined()
   })
 

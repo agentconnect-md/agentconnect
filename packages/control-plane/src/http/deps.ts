@@ -43,7 +43,7 @@ import type {
   AgentRepoAuthorizationRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
-  McpInvocationRepo
+  WebchatMcpOperationRepo
 } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
@@ -79,7 +79,7 @@ import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
-import type { InvocationAssertionAuthenticator } from './mcp/invocation-authenticator.js'
+import type { RemoteGrantAuthenticator } from './mcp/remote-grant-authenticator.js'
 import type { InternalInvocationAuth } from './mcp/internal-invocation-auth.js'
 import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 import type { SessionKey } from '../domain/sessionKey.js'
@@ -205,8 +205,8 @@ export interface HttpDeps {
     agentRepoAuth: AgentRepoAuthorizationRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
-    /** Durable one-time delegated MCP execution ledger. */
-    mcpInvocation: McpInvocationRepo
+    /** Durable browser-confirmed delegated MCP operation ledger. */
+    webchatMcpOperation: WebchatMcpOperationRepo
     /** Embedded OAuth AS protocol state (agent-assistant.md §7): clients, codes, grants. */
     oauth: OAuthRepo
   }
@@ -262,10 +262,15 @@ export interface HttpDeps {
    *  §6.5). ONE instance per composition root — the MCP plugin is mounted twice
    *  (`/api/v1/mcp` + `/v1` alias) and both mounts must share a budget. */
   mcpRateLimit: McpRateLimiter
-  /** Route-only one-time assertion verifier; mounted by the MCP route in Task 6. */
-  invocationAssertions: InvocationAssertionAuthenticator
+  /** Route-only remote-grant verifier and idempotency claimant. */
+  remoteGrantAuth: RemoteGrantAuthenticator
   /** In-process principal propagation for MCP's nested REST injections. */
   internalInvocationAuth: InternalInvocationAuth
+  /** §8 CP-db-only operation atomicity: run `fn` with every repository call
+   *  (including nested app.inject routes) joined to one shared transaction, so
+   *  a CP-database mutation and its operation's terminal transition commit
+   *  together. A thrown error rolls the whole unit back. */
+  sharedTx<T>(fn: () => Promise<T>): Promise<T>
   /** Low-cardinality delegated MCP observations. Optional for focused route tests. */
   webchatMcpMetrics?: Pick<WebchatMcpMetrics, 'invocation' | 'requestDuration'>
   /** Process readiness gate for `/readyz` (rolling-update drain, issue #240). */

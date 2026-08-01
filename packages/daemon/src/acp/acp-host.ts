@@ -25,14 +25,7 @@ import {
 import type { RuntimeDef } from '../config/config-schema.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { augmentClaudeEfforts, isClaudeRuntimeDef, ULTRACODE_EFFORT } from './claude-runtime.js'
-import {
-  delegatedCellSandboxWrap,
-  sandboxWrap,
-  SandboxError,
-  type DelegatedCellMount,
-  type DelegatedRuntimeHomeMount,
-  type SandboxMechanism
-} from './sandbox.js'
+import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 
@@ -145,21 +138,15 @@ export interface SessionConfigPrefs {
 export interface AcpSandboxLaunch {
   mechanism: SandboxMechanism
   writable: string[]
-  /** Common filesystem policy. Ordinary hosts consume it through SRT settings;
-   * delegated cells apply the same roots around their one remapped mount. */
+  /** Common filesystem policy, consumed through SRT settings. */
   denyReadRoots?: string[]
   allowReadRoots?: string[]
-  /** Trusted SRT policy for ordinary ACP hosts. Delegated bwrap cells retain
-   * their existing source-to-target mount launch and do not consume it. */
+  /** Trusted SRT policy for ordinary ACP hosts. */
   settingsPath?: string
   /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
   cwd?: string
-  /** Daemon-owned private broker roots hidden from every untrusted bwrap host. */
+  /** Optional daemon-owned roots hidden from untrusted bwrap hosts. */
   maskedReadRoots?: string[]
-  /** Present only for an entitled host and already tied to its broker cell. */
-  delegatedCellMount?: DelegatedCellMount
-  /** Present only with delegatedCellMount; binds back this host's own private HOME. */
-  delegatedRuntimeHomeMount?: DelegatedRuntimeHomeMount
 }
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
@@ -599,24 +586,8 @@ export class AcpHost {
     // Linux SRT sandbox (issue #312). Fail-open — ensureHost only sets
     // opts.sandbox after a live probe, so no mechanism means the adapter runs
     // unconfined unless daemon policy required sandboxing and refused startup.
-    const delegatedCell = this.opts.sandbox?.delegatedCellMount
-    const delegatedHome = this.opts.sandbox?.delegatedRuntimeHomeMount
-    if ((delegatedCell && !delegatedHome) || (!delegatedCell && delegatedHome)) {
-      throw new SandboxError('invalid delegated cell mount')
-    }
     const launch = this.opts.sandbox
-      ? delegatedCell && delegatedHome
-        ? delegatedCellSandboxWrap(
-            resolved,
-            spawnArgs,
-            this.opts.sandbox.writable,
-            delegatedCell,
-            delegatedHome,
-            this.opts.sandbox.maskedReadRoots,
-            this.opts.sandbox.denyReadRoots,
-            this.opts.sandbox.allowReadRoots
-          )
-        : sandboxWrap(resolved, spawnArgs, this.opts.sandbox)
+      ? sandboxWrap(resolved, spawnArgs, this.opts.sandbox)
       : { cmd: resolved, args: spawnArgs }
     const child = spawn(launch.cmd, launch.args, {
       stdio: ['pipe', 'pipe', this.opts.suppressChildStderr ? 'ignore' : 'inherit'],
@@ -755,7 +726,10 @@ export class AcpHost {
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     const mcp = init.agentCapabilities?.mcpCapabilities
-    this.mcpCaps = { http: mcp?.http ?? false, sse: mcp?.sse ?? false }
+    this.mcpCaps = {
+      http: mcp?.http ?? false,
+      sse: mcp?.sse ?? false
+    }
     // agentInfo is optional per the ACP spec; keep only the fields we surface.
     this.agentInfo = init.agentInfo
       ? {
@@ -980,6 +954,14 @@ export class AcpHost {
   /** True iff THIS agent process created or loaded `sessionId` in its current lifetime. */
   hasSession(sessionId: string): boolean {
     return this.live.has(sessionId)
+  }
+
+  /** Force the next exact-session turn through session/load/new so a rotated
+   * session-scoped MCP descriptor is installed before another prompt. */
+  forgetSession(sessionId: string): void {
+    this.live.delete(sessionId)
+    this.loadingSessions.delete(sessionId)
+    this.sessionConfigs.delete(sessionId)
   }
 
   /** Whether the agent advertised the `loadSession` capability (session/load is usable). */

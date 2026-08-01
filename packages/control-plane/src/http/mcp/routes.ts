@@ -16,8 +16,8 @@
  * re-implemented here (§6.2).
  *
  * Auth: a personal API key or OAuth access token resolves through `humanAuth`. This
- * route alone also recognizes one-time webchat invocation assertions; after a durable
- * claim, nested REST requests receive fresh method/path-bound in-process nonces. Any
+ * route also recognizes short-lived webchat grants; after an idempotent durable claim,
+ * nested REST requests receive fresh method/path-bound in-process nonces. Any
  * other caller gets a 401 whose `WWW-Authenticate` points at Protected Resource
  * Metadata — the OAuth browser-login discovery entrance (§7).
  *
@@ -26,6 +26,7 @@
  * reach them; every tools/call is admitted through the shared per-credential rate
  * limiter (`deps.mcpRateLimit`) BEFORE any downstream work.
  */
+import { createHash } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { Server, createMcpHandler } from '@modelcontextprotocol/server'
 import type { HttpDeps } from '../deps.js'
@@ -34,31 +35,16 @@ import { OrgId } from '../../domain/ids.js'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
 import { publicBaseUrl, mcpAuthenticateChallenge } from '../oauth/base.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from './internal-invocation-auth.js'
-import type { InvocationContext, ParsedInvocationMetadata } from './invocation-authenticator.js'
-import { MCP_INVOCATION_MAX_RESPONSE_BYTES } from '../../persistence/repositories/mcp-invocation.repo.js'
-import { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
-import { INVOCATION_ASSERTION_PREFIX } from '../../registry/invocationAssertion.js'
+import type { InvocationContext, ParsedInvocationMetadata } from './remote-grant-authenticator.js'
+import { WEBCHAT_MCP_OPERATION_MAX_PAYLOAD_BYTES } from '../../persistence/ports.js'
+import { WEBCHAT_MCP_GRANT_PREFIX } from '../../registry/webchatMcpGrantToken.js'
 import { defaultWebchatMcpMetrics, type WebchatMcpMetrics } from '../../observability/webchat-mcp.js'
-
-export { MCP_INVOCATION_EXECUTION_TIMEOUT_MS } from '../../domain/mcp-invocation.js'
 
 export const MCP_PATH = '/mcp'
 
 const SERVER_INFO = { name: 'agentconnect', version: '1.0.0' }
-const INVOCATION_ID_HEADER = 'x-agentconnect-invocation-id'
-
-const ASSERTION_DENIED_BODY = Buffer.from(
-  JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'invocation assertion denied' })
-)
-const IN_PROGRESS_BODY = Buffer.from(
-  JSON.stringify({ error: 'Conflict', statusCode: 409, message: 'invocation is already in progress' })
-)
-const AMBIGUOUS_BODY = Buffer.from(
-  JSON.stringify({
-    error: 'Conflict',
-    statusCode: 409,
-    message: 'the operation may have taken effect; inspect current state before retrying'
-  })
+const REMOTE_GRANT_DENIED_BODY = Buffer.from(
+  JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'remote MCP grant denied' })
 )
 
 interface McpWireResponse {
@@ -81,33 +67,16 @@ function bearerToken(authorization: string | undefined): string | null {
   return matched?.[1] ?? null
 }
 
-function isInvocationAssertion(authorization: string | undefined): boolean {
-  return bearerToken(authorization)?.startsWith(INVOCATION_ASSERTION_PREFIX) === true
+function isRemoteGrant(authorization: string | undefined): boolean {
+  return bearerToken(authorization)?.startsWith(WEBCHAT_MCP_GRANT_PREFIX) === true
 }
 
-function sendAssertionDenied(reply: FastifyReply) {
+function sendRemoteGrantDenied(reply: FastifyReply) {
   return reply
     .header('cache-control', 'no-store')
     .header('content-type', 'application/json; charset=utf-8')
     .code(401)
-    .send(ASSERTION_DENIED_BODY)
-}
-
-function sendInProgress(reply: FastifyReply, retryAfterMs: number) {
-  return reply
-    .header('cache-control', 'no-store')
-    .header('retry-after', String(Math.max(1, Math.ceil(retryAfterMs / 1_000))))
-    .header('content-type', 'application/json; charset=utf-8')
-    .code(409)
-    .send(IN_PROGRESS_BODY)
-}
-
-function sendAmbiguous(reply: FastifyReply) {
-  return reply
-    .header('cache-control', 'no-store')
-    .header('content-type', 'application/json; charset=utf-8')
-    .code(409)
-    .send(AMBIGUOUS_BODY)
+    .send(REMOTE_GRANT_DENIED_BODY)
 }
 
 function observeMetric(observe: () => void): void {
@@ -120,17 +89,25 @@ function observeMetric(observe: () => void): void {
 
 function invocationMetadata(bytes: Uint8Array): ParsedInvocationMetadata {
   const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as {
+    id?: unknown
     method?: unknown
     params?: { name?: unknown }
   }
-  if (parsed.method === 'tools/list') return { method: 'tools/list' }
+  const requestId =
+    typeof parsed.id === 'string' && parsed.id.length > 0 && parsed.id.length <= 256
+      ? `s:${parsed.id}`
+      : typeof parsed.id === 'number' && Number.isSafeInteger(parsed.id)
+        ? `n:${parsed.id}`
+        : null
+  if (parsed.method === 'tools/list') return { method: 'tools/list', ...(requestId ? { requestId } : {}) }
   if (parsed.method === 'tools/call') {
     return {
       method: 'tools/call',
+      ...(requestId ? { requestId } : {}),
       ...(typeof parsed.params?.name === 'string' ? { toolName: parsed.params.name } : {})
     }
   }
-  return { method: parsed.method as 'tools/list' | 'tools/call' }
+  return { method: parsed.method as 'tools/list' | 'tools/call', ...(requestId ? { requestId } : {}) }
 }
 
 function serverInfo(publicWebUrl?: string) {
@@ -163,11 +140,13 @@ function auditArgs(validated: Record<string, unknown> | undefined, raw: unknown)
   return { _truncated: true, preview: json.slice(0, AUDIT_ARGS_MAX) }
 }
 
-function replayContentType(bytes: Uint8Array): string {
-  const prefix = Buffer.from(bytes).subarray(0, 32).toString('utf8').trimStart()
-  if (prefix.startsWith('event:')) return 'text/event-stream'
-  if (prefix.startsWith('{') || prefix.startsWith('[')) return 'application/json; charset=utf-8'
-  return 'application/octet-stream'
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
+    .join(',')}}`
 }
 
 /** Pull the human-readable `message` out of a REST error body (falls back to raw). */
@@ -192,12 +171,12 @@ export function mcpRoutes(deps: HttpDeps) {
     app.removeAllContentTypeParsers()
     app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => done(null, body))
 
-    // Human/API-key failures carry the OAuth discovery challenge. Invocation assertions
-    // are a narrow daemon credential, not OAuth, and deliberately get only the generic
-    // denial body so clients cannot confuse an assertion rejection with re-auth.
+    // Human/API-key failures carry the OAuth discovery challenge. Remote grants are
+    // narrow daemon credentials, not OAuth, and deliberately get only the generic
+    // denial body so clients cannot confuse a grant rejection with re-auth.
     app.addHook('onSend', async (req, reply, payload) => {
-      const assertionRequest = isInvocationAssertion(rawHeaderValues(req, 'authorization')[0])
-      if (reply.statusCode === 401 && !assertionRequest && !reply.getHeader('www-authenticate')) {
+      const grantRequest = isRemoteGrant(rawHeaderValues(req, 'authorization')[0])
+      if (reply.statusCode === 401 && !grantRequest && !reply.getHeader('www-authenticate')) {
         void reply.header('www-authenticate', mcpAuthenticateChallenge(publicBaseUrl(req, deps.config), deps.config))
       }
       return payload
@@ -207,17 +186,16 @@ export function mcpRoutes(deps: HttpDeps) {
     // other bearer still traverses the ordinary human/API-key authentication plane.
     const authenticateMcp = async (req: FastifyRequest, reply: FastifyReply) => {
       const authorizations = rawHeaderValues(req, 'authorization')
-      const invocationIds = rawHeaderValues(req, INVOCATION_ID_HEADER)
-      if (authorizations.length > 1 || invocationIds.length > 1) {
-        return isInvocationAssertion(authorizations[0])
-          ? sendAssertionDenied(reply)
+      if (authorizations.length > 1) {
+        return isRemoteGrant(authorizations[0])
+          ? sendRemoteGrantDenied(reply)
           : reply.code(400).send({
               error: 'Bad Request',
               statusCode: 400,
               message: 'duplicate authentication headers'
             })
       }
-      if (isInvocationAssertion(authorizations[0])) return
+      if (isRemoteGrant(authorizations[0])) return
       const humanAuthenticate = app.humanAuth as unknown as (
         request: FastifyRequest,
         response: FastifyReply
@@ -230,27 +208,16 @@ export function mcpRoutes(deps: HttpDeps) {
       const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
       const authorizationValues = rawHeaderValues(req, 'authorization')
       const authorization = authorizationValues[0]
-      const assertion = isInvocationAssertion(authorization) ? bearerToken(authorization) : null
+      const remoteGrant = isRemoteGrant(authorization) ? bearerToken(authorization) : null
       let invocationContext: InvocationContext | undefined
 
-      if (assertion) {
-        const invocationIds = rawHeaderValues(req, INVOCATION_ID_HEADER)
-        if (invocationIds.length !== 1) return sendAssertionDenied(reply)
-        const claim = await deps.invocationAssertions.claim({
-          bearer: assertion,
-          invocationId: invocationIds[0]!,
+      if (remoteGrant) {
+        const claim = await deps.remoteGrantAuth.authenticate({
+          bearer: remoteGrant,
           requestBytes: rawBody,
           parseMetadata: () => invocationMetadata(rawBody)
         })
-        if (claim.kind === 'denied') return sendAssertionDenied(reply)
-        if (claim.kind === 'completed') {
-          return reply
-            .header('content-type', replayContentType(claim.responseBytes))
-            .code(claim.responseStatus)
-            .send(Buffer.from(claim.responseBytes))
-        }
-        if (claim.kind === 'in_progress') return sendInProgress(reply, claim.retryAfterMs)
-        if (claim.kind === 'ambiguous') return sendAmbiguous(reply)
+        if (claim.kind === 'denied') return sendRemoteGrantDenied(reply)
         invocationContext = claim.context
       }
 
@@ -366,7 +333,7 @@ export function mcpRoutes(deps: HttpDeps) {
         // Rate limits (§6.5) run FIRST: a refused call does no downstream work at
         // all — including the audit append, so a hammering client cannot flood the
         // org's audit trail past the admitted budget.
-        const rateKey = invocationContext ? `${userId}:${invocationContext.delegationId}` : (apiKeyId ?? userId)
+        const rateKey = invocationContext ? `${userId}:${invocationContext.grantId}` : (apiKeyId ?? userId)
         const retryAfterSec = deps.mcpRateLimit.check(rateKey, tool.write === true)
         if (retryAfterSec !== null) {
           definiteFailure = true
@@ -396,6 +363,62 @@ export function mcpRoutes(deps: HttpDeps) {
                   'this token is limited to read-only access (missing the mcp:write scope) — reconnect and grant write access to use write tools'
               })
             }
+          } else if (tool.write && invocationContext && !invocationContext.requestId) {
+            result = {
+              statusCode: 400,
+              body: JSON.stringify({ message: 'side-effecting delegated MCP requests require a bounded JSON-RPC id' })
+            }
+          } else if (tool.write && invocationContext) {
+            const canonical = canonicalJson(parsed.data)
+            if (Buffer.byteLength(canonical) > WEBCHAT_MCP_OPERATION_MAX_PAYLOAD_BYTES) {
+              result = {
+                statusCode: 413,
+                body: JSON.stringify({ message: 'validated operation payload exceeds the delegated MCP limit' })
+              }
+            } else {
+              const intentHash = createHash('sha256')
+                .update('agentconnect:webchat-mcp-intent:v1\0')
+                .update(tool.name)
+                .update('\0')
+                .update(canonical)
+                .digest('hex')
+              const now = new Date(deps.clock.now())
+              const pending = await deps.repos.webchatMcpOperation.createOrReplay({
+                conversationId: invocationContext.conversationId,
+                grantId: invocationContext.grantId,
+                authorityGeneration: invocationContext.authorityGeneration,
+                userId: invocationContext.userId,
+                jsonRpcRequestId: invocationContext.requestId!,
+                requestHash: invocationContext.requestHash,
+                toolName: tool.name,
+                canonicalArguments: parsed.data,
+                intentHash,
+                confirmationExpiresAt: new Date(now.getTime() + 10 * 60_000),
+                now
+              })
+              result =
+                pending.kind === 'created' || pending.kind === 'replayed' || pending.kind === 'coalesced'
+                  ? {
+                      statusCode: 202,
+                      body: JSON.stringify({
+                        status: pending.operation.status,
+                        operationId: pending.operation.id,
+                        ...(pending.operation.boundedResponse
+                          ? {
+                              result: JSON.parse(Buffer.from(pending.operation.boundedResponse).toString('utf8'))
+                            }
+                          : {}),
+                        message:
+                          pending.operation.status === 'awaiting_confirmation'
+                            ? 'Waiting for approval from the authenticated webchat owner.'
+                            : 'This request resolves to an existing delegated MCP operation.'
+                      })
+                    }
+                  : {
+                      statusCode: pending.kind === 'conflict' ? 409 : 403,
+                      body: JSON.stringify({ message: `delegated operation ${pending.kind}` })
+                    }
+            }
           } else {
             try {
               result = await tool.call(ctx, parsed.data)
@@ -415,9 +438,12 @@ export function mcpRoutes(deps: HttpDeps) {
             message: params.name,
             details: invocationContext
               ? {
-                  principalType: 'webchat_assertion',
-                  invocationId: invocationContext.invocationId,
-                  delegationId: invocationContext.delegationId,
+                  principalType: 'webchat_remote_grant',
+                  operationId:
+                    result?.statusCode === 202
+                      ? (JSON.parse(result.body) as { operationId?: string }).operationId
+                      : undefined,
+                  grantId: invocationContext.grantId,
                   agentId: invocationContext.agentId,
                   conversationId: invocationContext.conversationId,
                   tool: params.name,
@@ -467,7 +493,7 @@ export function mcpRoutes(deps: HttpDeps) {
       const handler = createMcpHandler(() => server)
       const headers = new Headers()
       for (const [k, v] of Object.entries(req.headers)) {
-        if (invocationContext && (k === 'authorization' || k === INVOCATION_ID_HEADER)) continue
+        if (invocationContext && k === 'authorization') continue
         if (typeof v === 'string') headers.set(k, v)
         else if (Array.isArray(v)) headers.set(k, v.join(', '))
       }
@@ -507,108 +533,12 @@ export function mcpRoutes(deps: HttpDeps) {
       }
 
       if (!invocationContext) return sendWireResponse(await dispatch())
-
-      const context = invocationContext
-      const deadlineMs = context.startedAt.getTime() + MCP_INVOCATION_EXECUTION_TIMEOUT_MS
-      const entryNowMs = deps.clock.now()
-      if (!Number.isFinite(entryNowMs) || !Number.isFinite(deadlineMs) || entryNowMs >= deadlineMs) {
-        try {
-          const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, new Date(entryNowMs))
-          if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
-        } catch (err) {
-          req.log.error({ err, invocationId: context.invocationId }, 'mcp: expired invocation mark failed')
-        }
-        return sendAmbiguous(reply)
+      const invocationExecution = deps.internalInvocationAuth.start(invocationContext, dispatch)
+      try {
+        return sendWireResponse(await invocationExecution.result)
+      } finally {
+        invocationExecution.revoke()
       }
-
-      let executionFinished = false
-      let deadlineTriggered = false
-      const invocationExecution = deps.internalInvocationAuth.start(context, dispatch)
-      const execution = invocationExecution.result
-        .then(async (wire) => {
-          const completedAtMs = deps.clock.now()
-          const completedAt = new Date(completedAtMs)
-          try {
-            if (!Number.isFinite(completedAtMs) || completedAtMs >= deadlineMs) {
-              invocationExecution.revoke()
-              if (!deadlineTriggered) {
-                const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
-                if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
-              }
-              return { kind: 'ambiguous' as const }
-            }
-            if (wire.bytes.byteLength > MCP_INVOCATION_MAX_RESPONSE_BYTES) {
-              const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
-              if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
-              return { kind: 'ambiguous' as const }
-            }
-            const completed = await deps.repos.mcpInvocation.complete({
-              invocationId: context.invocationId,
-              status: wire.statusCode >= 200 && wire.statusCode < 400 && !definiteFailure ? 'succeeded' : 'failed',
-              responseStatus: wire.statusCode,
-              responseBytes: wire.bytes,
-              completedAt
-            })
-            if (completed) {
-              observeMetric(() =>
-                webchatMetrics.invocation(
-                  wire.statusCode >= 200 && wire.statusCode < 400 && !definiteFailure ? 'succeeded' : 'failed'
-                )
-              )
-              return { kind: 'response' as const, wire }
-            }
-            const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
-            if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
-            return { kind: 'ambiguous' as const }
-          } catch (err) {
-            req.log.error({ err, invocationId: context.invocationId }, 'mcp: invocation completion failed')
-            try {
-              const marked = await deps.repos.mcpInvocation.markAmbiguous(context.invocationId, completedAt)
-              if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
-            } catch (markErr) {
-              req.log.error(
-                { err: markErr, invocationId: context.invocationId },
-                'mcp: invocation ambiguity mark failed'
-              )
-            }
-            return { kind: 'ambiguous' as const }
-          }
-        })
-        .finally(() => {
-          executionFinished = true
-        })
-
-      let timer: ReturnType<HttpDeps['clock']['setTimeout']> | undefined
-      const timedOut = new Promise<{ kind: 'ambiguous' } | { kind: 'response'; wire: McpWireResponse }>((resolve) => {
-        timer = deps.clock.setTimeout(
-          () => {
-            deadlineTriggered = true
-            // Revoke synchronously, before the ambiguity CAS awaits database I/O.
-            // Already-authorized subrequests may settle; no later stage can mint.
-            invocationExecution.revoke()
-            void (async () => {
-              try {
-                const marked = await deps.repos.mcpInvocation.markAmbiguous(
-                  context.invocationId,
-                  new Date(deps.clock.now())
-                )
-                if (marked) observeMetric(() => webchatMetrics.invocation('ambiguous'))
-                // The reaper or a concurrent completion may have won the terminal CAS.
-                // At this request's durable deadline the conservative wire answer is
-                // still ambiguous; never await a potentially hung execution here.
-                resolve({ kind: 'ambiguous' })
-              } catch (err) {
-                req.log.error({ err, invocationId: context.invocationId }, 'mcp: invocation timeout mark failed')
-                resolve({ kind: 'ambiguous' })
-              }
-            })()
-          },
-          Math.max(0, deadlineMs - entryNowMs)
-        )
-      })
-      const outcome = await Promise.race([execution, timedOut])
-      if (timer !== undefined && executionFinished) deps.clock.clearTimeout(timer)
-      return outcome.kind === 'response' ? sendWireResponse(outcome.wire) : sendAmbiguous(reply)
     })
 
     // Stateless server: no SSE stream to open (GET) and no session to end (DELETE) —

@@ -129,14 +129,16 @@ import {
 } from './frames/telemetry.js'
 import { ErrorFrame } from './frames/error.js'
 import {
-  McpInvocationMint,
-  McpInvocationMinted,
-  WebchatMcpDelegationRevoke,
-  WebchatMcpDelegationRevoked
-} from './frames/delegated-mcp.js'
+  WebchatMcpGrantAccept,
+  WebchatMcpGrantActivate,
+  WebchatMcpGrantIssue,
+  WebchatMcpGrantIssued,
+  WebchatMcpGrantRevoke,
+  WebchatMcpGrantRevoked
+} from './frames/remote-mcp.js'
 // webchat CONTENT frames were retired in milestone A4 — content rides the relay's rd/*
 // wire now, not the daemon↔CP control WS. The reply-payload schemas live on in
-// frames/webchat.ts (reused by rd/chat); metadata-only delegation lifecycle frames
+// frames/webchat.ts (reused by rd/chat); remote-MCP grant lifecycle frames
 // remain valid on the control WebSocket.
 
 /**
@@ -215,11 +217,13 @@ export const FRAME_SCHEMAS = {
   'secrets/renew': SecretsRenew,
   'secrets/revoke': SecretsRevoke,
   'scope-attestation': ScopeAttestation,
-  // ── webchat-scoped AgentConnect MCP assertions ──
-  'mcp/invocation/mint': McpInvocationMint,
-  'mcp/invocation/minted': McpInvocationMinted,
-  'webchat/mcp-delegation/revoke': WebchatMcpDelegationRevoke,
-  'webchat/mcp-delegation/revoked': WebchatMcpDelegationRevoked,
+  // ── webchat-scoped remote AgentConnect MCP grants ──
+  'webchat/mcp-grant/issue': WebchatMcpGrantIssue,
+  'webchat/mcp-grant/issued': WebchatMcpGrantIssued,
+  'webchat/mcp-grant/accept': WebchatMcpGrantAccept,
+  'webchat/mcp-grant/activate': WebchatMcpGrantActivate,
+  'webchat/mcp-grant/revoke': WebchatMcpGrantRevoke,
+  'webchat/mcp-grant/revoked': WebchatMcpGrantRevoked,
   // ── dashboard / facts ──
   'event/session': EventSession,
   'event/session-activity': SessionActivity,
@@ -419,10 +423,12 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('secrets/renew', FRAME_SCHEMAS['secrets/renew']),
   frame('secrets/revoke', FRAME_SCHEMAS['secrets/revoke']),
   frame('scope-attestation', FRAME_SCHEMAS['scope-attestation']),
-  frame('mcp/invocation/mint', FRAME_SCHEMAS['mcp/invocation/mint']),
-  frame('mcp/invocation/minted', FRAME_SCHEMAS['mcp/invocation/minted']),
-  frame('webchat/mcp-delegation/revoke', FRAME_SCHEMAS['webchat/mcp-delegation/revoke']),
-  frame('webchat/mcp-delegation/revoked', FRAME_SCHEMAS['webchat/mcp-delegation/revoked']),
+  frame('webchat/mcp-grant/issue', FRAME_SCHEMAS['webchat/mcp-grant/issue']),
+  frame('webchat/mcp-grant/issued', FRAME_SCHEMAS['webchat/mcp-grant/issued']),
+  frame('webchat/mcp-grant/accept', FRAME_SCHEMAS['webchat/mcp-grant/accept']),
+  frame('webchat/mcp-grant/activate', FRAME_SCHEMAS['webchat/mcp-grant/activate']),
+  frame('webchat/mcp-grant/revoke', FRAME_SCHEMAS['webchat/mcp-grant/revoke']),
+  frame('webchat/mcp-grant/revoked', FRAME_SCHEMAS['webchat/mcp-grant/revoked']),
   frame('event/session', FRAME_SCHEMAS['event/session']),
   frame('event/session-activity', FRAME_SCHEMAS['event/session-activity']),
   frame('usage/report', FRAME_SCHEMAS['usage/report']),

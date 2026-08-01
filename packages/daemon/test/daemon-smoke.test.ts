@@ -1,10 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
-import { delegatedMcpBrokerRoot, delegatedMcpRuntimeHomeRoot } from '../src/paths.js'
 
 function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', iconUrl?: string): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-'))
@@ -37,37 +36,6 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
 }
 
 describe('Daemon (no Slack, injected ACP host)', () => {
-  it('masks the private broker root in normal sandboxed ACP host construction', async () => {
-    const root = scaffold()
-    const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
-    expect(realpathSync(root).startsWith(repoRoot + sep)).toBe(false)
-    writeFileSync(
-      join(root, 'config.json'),
-      JSON.stringify({
-        version: 1,
-        controlPlane: { enabled: false },
-        security: { requireSandbox: true },
-        runtimes: { claude: { command: 'node', args: ['unused'] } }
-      })
-    )
-    const daemon = new Daemon({
-      root,
-      sandboxMechanism: 'bwrap',
-      probeRuntimes: async () => []
-    })
-    try {
-      await daemon.start()
-      const host = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
-      const privateRoot = delegatedMcpBrokerRoot(root)
-      const privateHomes = delegatedMcpRuntimeHomeRoot(root)
-      expect((host as any).opts.sandbox.maskedReadRoots).toEqual([privateRoot, privateHomes])
-      expect(statSync(privateRoot).mode & 0o777).toBe(0o700)
-    } finally {
-      await daemon.stop().catch(() => undefined)
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
   it('keeps an optional unsandboxed host working on a sandbox-capable host without advertising a mask', async () => {
     const root = scaffold()
     const daemon = new Daemon({

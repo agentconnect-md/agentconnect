@@ -175,7 +175,7 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
 
   async reapExpired(expiredBefore: Date): Promise<ReapWebchatMcpDelegationsResult> {
     return this.inTransaction(async (tx) => {
-      // Delegation → Invocation is the shared mint/reap lock order. Locking
+      // Delegation → operation is the shared create/reap lock order. Locking
       // candidates first makes the following `none` check a fresh, post-wait
       // statement instead of a stale snapshot that could erase a winning mint.
       // Retained candidates consume a slot in this deterministic batch and are
@@ -195,8 +195,9 @@ export class PgWebchatMcpDelegationRepo implements WebchatMcpDelegationRepo {
           AND delegation."expiresAt" <= ${expiredBefore}
           AND NOT EXISTS (
             SELECT 1
-            FROM "mcp_invocation" AS invocation
-            WHERE invocation."delegationId" = delegation."id"
+            FROM "webchat_mcp_access_grant" AS access_grant
+            JOIN "webchat_mcp_operation" AS operation ON operation."sourceGrantId" = access_grant."id"
+            WHERE access_grant."authorityId" = delegation."id"
           )
         RETURNING delegation."revokedAt", delegation."revokedReason"
       `)

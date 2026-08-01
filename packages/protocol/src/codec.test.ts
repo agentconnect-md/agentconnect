@@ -879,9 +879,17 @@ describe('session read-back frames (console history pull)', () => {
 
 describe('milestone A4 gate — the CP is off the webchat hot path', () => {
   it('the daemon↔CP frame registry carries NO webchat content frame type', () => {
-    // Webchat content rides the relay `rd/*` wire. Metadata-only delegation lifecycle
-    // frames are the only allowlisted webchat namespace on the control WebSocket.
-    const allowedWebchatControlTypes = ['webchat/mcp-delegation/revoke', 'webchat/mcp-delegation/revoked'] as const
+    // Webchat content rides the relay `rd/*` wire. Metadata and secret grant
+    // lifecycle frames are the only allowlisted webchat namespace on the control
+    // WebSocket; no message body or ACP stream may appear here.
+    const allowedWebchatControlTypes = [
+      'webchat/mcp-grant/issue',
+      'webchat/mcp-grant/issued',
+      'webchat/mcp-grant/accept',
+      'webchat/mcp-grant/activate',
+      'webchat/mcp-grant/revoke',
+      'webchat/mcp-grant/revoked'
+    ] as const
     const unexpectedWebchatTypes = (types: readonly string[]) =>
       types.filter(
         (type) => type.startsWith('webchat/') && !allowedWebchatControlTypes.some((allowed) => type === allowed)
