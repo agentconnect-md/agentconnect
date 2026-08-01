@@ -41,7 +41,7 @@ is offline, the agent Configuration page and placement editor must say that safe
 is unavailable and name the daemon the operator needs to bring online. The target
 picker must not lead to a request that can only fail without explaining this first.
 
-An emergency reassign is disaster recovery, not another ordinary move mode. Offer it
+A force reassign is disaster recovery, not another ordinary move mode. Offer it
 only after the operator chooses an online, compatible target while the current daemon
 is offline. It bypasses only confirmation from the source; target readiness, capacity,
 runtime, model, MCP, and managed-skill compatibility remain mandatory. Before enabling
@@ -51,7 +51,7 @@ if that assertion is wrong.
 
 Both paths preserve the Agent identity and its centrally managed settings. Neither
 copies daemon-local workspace, memory, transcripts, or attachments. A source that later
-reconnects after an emergency reassign is told to detach the stale local copy during
+reconnects after a force reassign is told to detach the stale local copy during
 placement reconciliation.
 
 ## Where a streamed reply may be split

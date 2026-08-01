@@ -802,7 +802,7 @@ const AgentActivate = z.object({
 
 The CP first receives an acknowledged source detach, releases the source session assignments, then compare-and-sets `Agent.daemonId`. It stages the target with `agent/detach` (an absent agent is valid), followed by one acknowledged authoritative `agent/activate` bundle. Both requests use the same fresh `moveId`; a daemon persists that fence and rejects a late activate from a superseded move. Activation exact-converges CP integrations and CP crons, validates capacity/runtime/model/MCP support, warms the ACP host, and only then opens the dispatch gate.
 
-An explicit emergency reassign is available only while the source is not READY. It
+An explicit force reassign is available only while the source is not READY. It
 still attempts `agent/detach`, but an unavailable or negative source response is logged
 and does not block the placement CAS. Session affinities are released before the CAS,
 and every target-side readiness, capacity, compatibility, staging, activation, and

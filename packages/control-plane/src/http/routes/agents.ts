@@ -1715,7 +1715,7 @@ export function agentRoutes(deps: HttpDeps) {
 
     // Cold-reprovision an agent on another daemon. The explicit action keeps
     // destructive/local-state semantics out of generic spec PATCH. A safe move
-    // requires both source and target READY; an explicit emergency reassign may
+    // requires both source and target READY; an explicit force reassign may
     // bypass only the unavailable source ACK. The target always receives the
     // complete CP-owned definition and activates last.
     r.put(
@@ -1746,7 +1746,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
 
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
-        const emergency = req.body.force === true
+        const force = req.body.force === true
         // Deferred exec config (preset-agents.md §3.2): placement is where a
         // runtime becomes mandatory — an unplaced preset carries none until the
         // user (or M1 auto-placement) chooses one.
@@ -1813,7 +1813,7 @@ export function agentRoutes(deps: HttpDeps) {
             const source = await deps.registry.get(existing.daemonId)
             const sourceLive = source ? deps.liveness.get(source.daemonId) : undefined
             const sourceReady = sourceLive?.reachable === true && sourceLive.state === 'READY'
-            if (emergency) {
+            if (force) {
               if (sourceReady) return conflict('source daemon is ready; use a safe move')
               if (sourceLive?.reachable === true) {
                 return conflict('source daemon is reconnecting; wait until it is ready')
@@ -1824,8 +1824,8 @@ export function agentRoutes(deps: HttpDeps) {
                 return conflict('source daemon does not support agent moves')
               }
             }
-          } else if (emergency) {
-            return conflict('emergency reassign requires an unavailable source daemon')
+          } else if (force) {
+            return conflict('force reassign requires an unavailable source daemon')
           }
         }
 
@@ -1886,7 +1886,7 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
 
-          if (emergency) {
+          if (force) {
             req.log.warn(
               {
                 agentId: existing.id,
@@ -1894,11 +1894,11 @@ export function agentRoutes(deps: HttpDeps) {
                 targetDaemonId: target.daemonId,
                 userId: req.principal?.userId
               },
-              'agent emergency reassign requested while source daemon is unavailable'
+              'agent force reassign requested while source daemon is unavailable'
             )
           }
-          const moved = emergency
-            ? await agentMoves.emergencyReassign(existing, target.daemonId, req.principal?.userId)
+          const moved = force
+            ? await agentMoves.forceReassign(existing, target.daemonId, req.principal?.userId)
             : await agentMoves.move(existing, target.daemonId, req.principal?.userId)
           // The pre-activation probe fact can arrive before the placement CAS and
           // is correctly rejected by the daemon-ownership check. Re-send the

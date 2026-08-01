@@ -305,7 +305,7 @@ describe('PUT /agents/:id/daemon', () => {
     expect(control.calls).toEqual([])
   })
 
-  it('requires an explicit emergency reassign before continuing without a source detach ACK', async () => {
+  it('requires an explicit force reassign before continuing without a source detach ACK', async () => {
     await seedMoveDaemons()
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: SOURCE })

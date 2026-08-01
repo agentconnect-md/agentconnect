@@ -8,7 +8,7 @@
  * detaching the partial target, moving the DB placement back, and reactivating the
  * source archive.
  *
- * An explicit emergency reassign may continue without the source ACK only when
+ * An explicit force reassign may continue without the source ACK only when
  * the HTTP edge has proved the source unavailable and the operator accepted the
  * split-brain risk. It still attempts the detach so a source that reconnects in
  * the race can quiesce normally. This is deliberately a cold reprovision, not
@@ -173,7 +173,7 @@ export class AgentMoveService {
   /** Disaster recovery for a source daemon that cannot confirm detach. Target
    * admission and activation remain fully acknowledged; only the source handoff
    * becomes best-effort. */
-  async emergencyReassign(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
+  async forceReassign(agent: AgentRecord, targetDaemonId: DaemonId, editor?: string): Promise<AgentRecord> {
     return this.withMoveGate(agent.id, async () =>
       this.moveLocked(await this.reloadAfterGate(agent), targetDaemonId, editor, 'best-effort')
     )
@@ -430,7 +430,7 @@ export class AgentMoveService {
         }
         this.deps.log?.warn(
           { err, agentId: agent.id, sourceDaemonId, targetDaemonId },
-          'agent emergency reassign: source detach unconfirmed; continuing by operator request'
+          'agent force reassign: source detach unconfirmed; continuing by operator request'
         )
       }
       try {

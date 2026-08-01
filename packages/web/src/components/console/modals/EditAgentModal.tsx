@@ -136,8 +136,8 @@ export default function EditAgentModal({
   const [sandboxSupported, setSandboxSupported] = useState(agent.sandboxSupported)
   const [sandboxRequired, setSandboxRequired] = useState(agent.sandboxRequired)
   const [repairPlacement, setRepairPlacement] = useState(false)
-  const [emergencyReassign, setEmergencyReassign] = useState(false)
-  const [emergencyConfirmed, setEmergencyConfirmed] = useState(false)
+  const [forceReassign, setForceReassign] = useState(false)
+  const [forceConfirmed, setForceConfirmed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const fetched = useRef(false)
@@ -304,8 +304,8 @@ export default function EditAgentModal({
   const daemonLabel = daemon?.name ?? (daemonId ? `Current daemon (${daemonId.slice(0, 8)})` : 'No daemon')
   const sourceUnavailable = !!sourceDaemon && !moveReady(sourceDaemon)
   const sourceOffline = sourceDaemon?.status === 'offline'
-  const emergencyEligible = daemonChanged && !initialPlacement && sourceOffline && moveReady(daemon)
-  const forceMove = emergencyReassign && emergencyEligible
+  const forceEligible = daemonChanged && !initialPlacement && sourceOffline && moveReady(daemon)
+  const forceMove = forceReassign && forceEligible
   const sourceBlocksSafeMove = daemonChanged && sourceUnavailable && !forceMove
 
   // Runtime options come from the SELECTED daemon's reported profiles (same source as
@@ -449,7 +449,7 @@ export default function EditAgentModal({
         )
         return
       }
-      if (forceMove && !emergencyConfirmed) {
+      if (forceMove && !forceConfirmed) {
         setErr(`Confirm that ${sourceDaemon?.name ?? 'the source daemon'} is permanently stopped.`)
         return
       }
@@ -597,8 +597,8 @@ export default function EditAgentModal({
                         className="font-sans text-[11.5px] font-medium leading-normal text-(--accent) hover:underline"
                         onClick={() => {
                           setRepairPlacement((value) => !value)
-                          setEmergencyReassign(false)
-                          setEmergencyConfirmed(false)
+                          setForceReassign(false)
+                          setForceConfirmed(false)
                           setErr(null)
                         }}
                       >
@@ -617,8 +617,8 @@ export default function EditAgentModal({
                       onChange={(e) => {
                         setDaemonId(e.target.value)
                         setRepairPlacement(false)
-                        setEmergencyReassign(false)
-                        setEmergencyConfirmed(false)
+                        setForceReassign(false)
+                        setForceConfirmed(false)
                         setErr(null)
                       }}
                       className="absolute inset-0 cursor-pointer opacity-0"
@@ -671,31 +671,31 @@ export default function EditAgentModal({
                         </div>
                         {sourceOffline && !daemonChanged && (
                           <div className="mt-[5px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                            Select an online destination to see emergency recovery options.
+                            Select an online destination to see the force reassign option.
                           </div>
                         )}
-                        {emergencyEligible && (
+                        {forceEligible && (
                           <div className="mt-[9px] flex flex-col gap-2">
                             <Button
-                              variant={emergencyReassign ? 'ghost' : 'secondary'}
+                              variant={forceReassign ? 'ghost' : 'secondary'}
                               size="xs"
                               onClick={() => {
-                                setEmergencyReassign((value) => !value)
-                                setEmergencyConfirmed(false)
+                                setForceReassign((value) => !value)
+                                setForceConfirmed(false)
                                 setErr(null)
                               }}
                             >
-                              <Icon name={emergencyReassign ? 'x' : 'triangle-alert'} size={13} />
-                              {emergencyReassign ? 'Cancel emergency reassign' : 'Emergency reassign'}
+                              <Icon name={forceReassign ? 'x' : 'triangle-alert'} size={13} />
+                              {forceReassign ? 'Cancel force reassign' : 'Force reassign'}
                             </Button>
-                            {emergencyReassign && (
+                            {forceReassign && (
                               <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px]">
                                 <input
                                   type="checkbox"
                                   className="mt-[2px] flex-none accent-(--brand)"
-                                  checked={emergencyConfirmed}
+                                  checked={forceConfirmed}
                                   onChange={(e) => {
-                                    setEmergencyConfirmed(e.target.checked)
+                                    setForceConfirmed(e.target.checked)
                                     setErr(null)
                                   }}
                                 />
@@ -944,7 +944,7 @@ export default function EditAgentModal({
                   </span>
                 ) : daemonChanged && forceMove ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Emergency reassign activates this agent on{' '}
+                    Force reassign activates this agent on{' '}
                     <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the target daemon'}</span>{' '}
                     without confirmation from{' '}
                     <span className="font-semibold text-(--text-primary)">
@@ -993,7 +993,7 @@ export default function EditAgentModal({
         </Button>
         <Button
           variant={forceMove ? 'danger' : 'primary'}
-          disabled={saving || !loaded || sourceBlocksSafeMove || (forceMove && !emergencyConfirmed)}
+          disabled={saving || !loaded || sourceBlocksSafeMove || (forceMove && !forceConfirmed)}
           onClick={() => void save()}
         >
           <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />
@@ -1010,7 +1010,7 @@ export default function EditAgentModal({
             : initialPlacement
               ? 'Place agent'
               : forceMove
-                ? 'Reassign agent'
+                ? 'Force reassign'
                 : daemonChanged
                   ? 'Move agent'
                   : repairPlacement

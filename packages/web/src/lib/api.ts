@@ -2607,7 +2607,7 @@ export async function moveAgent(agentId: string, daemonId: string, options: { fo
     org_id: apiOrgId,
     agent_id: moved.id,
     to_daemon_id: daemonId,
-    emergency: options.force === true
+    force: options.force === true
   })
   return moved
 }
