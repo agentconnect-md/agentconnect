@@ -322,8 +322,10 @@ performs a live probe rather than treating installed binaries as sufficient.
 An enabled sandbox gives the runtime a private HOME, hides daemon-owned agent
 metadata and the host source from which that runtime state was seeded, and
 re-allows reads only for the workspace, private HOME, managed memory,
-`run/config-files`, and `.agentconnect/runtime-policy`. Writes are limited to the
-workspace, private HOME, managed memory, and SRT temporary storage. Outbound
+`run/config-files`, `.agentconnect/runtime-policy`, trusted runtime installation
+roots, and the runtime's selected host credential path. Writes are limited to
+the workspace, private HOME, managed memory, SRT temporary storage, and that
+credential path. Outbound
 domains are approved by a provider callback and Unix sockets remain
 compatibility-open during this rollout. Proxy-aware HTTP(S) clients retain web
 egress, but SRT's isolated Linux network namespace means host access to an
@@ -331,6 +333,25 @@ agent-started local server and clients that ignore the proxy environment are not
 yet compatibility guarantees; issue #312 tracks those boundaries. SRT's
 temporary directory is redirected below the private HOME and its shared
 `/tmp/claude` fallback is hidden.
+
+The Claude ACP parent is trusted to manage the host Claude login. By default,
+AgentConnect resolves the host config directory from `CLAUDE_CONFIG_DIR`, falling
+back to `$HOME/.claude`, and passes that directory to the private-HOME runtime as
+`CLAUDE_SECURESTORAGE_CONFIG_DIR`. This preserves the host CLI's default
+`.credentials.json` in place and permits Claude's temporary-file-plus-rename
+refresh behavior. AgentConnect does not rewrite host Claude settings or relocate
+the host credential between secure-storage directories. Claude's nested sandbox
+denies this parent-only path to model-authored Bash and its descendants.
+
+Operators who do not want the trusted ACP parent to see the rest of the host
+Claude config directory can create a dedicated absolute directory and set
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` in the host Claude `settings.json` environment,
+then run host `claude /login`. AgentConnect follows that setting and re-opens only
+the selected directory. A daemon process environment value takes precedence over
+the settings value; to keep host `/login` on the same path, set the value in the
+environment used by both processes or prefer Claude settings. If neither is set,
+the Claude config directory is the intentional trusted default. Installations
+whose settings already select an `agentconnect-auth` directory continue using it.
 
 Read access outside the explicitly denied agent/runtime-state roots remains
 unchanged in this rollout. This is not yet a whole-host read allowlist: unrelated

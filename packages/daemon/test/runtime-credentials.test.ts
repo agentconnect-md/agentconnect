@@ -36,7 +36,7 @@ function settings(path: string): { filesystem: { allowWrite: string[] } } {
 }
 
 describe('Linux shared runtime login', () => {
-  it('keeps Claude state private while host and agents share one refreshable credential directory', () => {
+  it('trusts the host Claude config directory by default without rewriting its settings', () => {
     const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
     const hostClaude = join(hostHome, '.claude')
     const privateClaude = join(scopeDir, 'home', '.claude')
@@ -61,16 +61,12 @@ describe('Linux shared runtime login', () => {
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
 
-    const sharedDir = realpathSync(join(hostClaude, 'agentconnect-auth'))
+    const sharedDir = realpathSync(hostClaude)
     expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
     expect(launch.env.CLAUDE_CONFIG_DIR).toBe(join(scopeDir, 'home', '.claude'))
     expect(launch.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(sharedDir)
-    expect(JSON.parse(readFileSync(join(hostClaude, 'settings.json'), 'utf8'))).toMatchObject({
-      theme: 'dark',
-      env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: sharedDir }
-    })
+    expect(JSON.parse(readFileSync(join(hostClaude, 'settings.json'), 'utf8'))).toEqual({ theme: 'dark' })
     expect(readFileSync(join(sharedDir, '.credentials.json'), 'utf8')).toContain('agent-new')
-    expect(existsSync(join(hostClaude, '.credentials.json'))).toBe(false)
     expect(existsSync(join(privateClaude, '.credentials.json'))).toBe(false)
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(sharedDir)
     expect(launch.sandbox?.protectedCredentialRoots).toEqual([sharedDir])
@@ -92,6 +88,96 @@ describe('Linux shared runtime login', () => {
     })
     expect(second.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(sharedDir)
     expect(readFileSync(join(sharedDir, '.credentials.json'), 'utf8')).toContain('refreshed')
+  })
+
+  it('follows a Claude settings secure-storage directory without moving the default credential', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostClaude = join(hostHome, '.claude')
+    const secureDir = join(hostClaude, 'agentconnect-auth')
+    mkdirSync(secureDir, { recursive: true })
+    writeFileSync(
+      join(hostClaude, 'settings.json'),
+      JSON.stringify({ theme: 'dark', env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: secureDir } })
+    )
+    writeFileSync(join(hostClaude, '.credentials.json'), '{"accessToken":"default-login"}')
+    writeFileSync(join(secureDir, '.credentials.json'), '{"accessToken":"isolated-login"}')
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      scopeDir,
+      cwd,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const canonicalSecureDir = realpathSync(secureDir)
+    expect(launch.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(canonicalSecureDir)
+    expect(JSON.parse(readFileSync(join(hostClaude, 'settings.json'), 'utf8'))).toEqual({
+      theme: 'dark',
+      env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: secureDir }
+    })
+    expect(readFileSync(join(hostClaude, '.credentials.json'), 'utf8')).toContain('default-login')
+    expect(readFileSync(join(secureDir, '.credentials.json'), 'utf8')).toContain('isolated-login')
+    expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(canonicalSecureDir)
+    expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).not.toContain(realpathSync(hostClaude))
+    expect(launch.sandbox?.protectedCredentialRoots).toEqual([canonicalSecureDir])
+  })
+
+  it('prefers the daemon environment secure-storage directory over Claude settings', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostClaude = join(hostHome, '.claude')
+    const settingsDir = join(hostClaude, 'settings-auth')
+    const environmentDir = join(hostClaude, 'environment-auth')
+    mkdirSync(settingsDir, { recursive: true })
+    mkdirSync(environmentDir)
+    writeFileSync(
+      join(hostClaude, 'settings.json'),
+      JSON.stringify({ env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: settingsDir } })
+    )
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      scopeDir,
+      cwd,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: {
+        HOME: hostHome,
+        PATH: '/usr/bin',
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: environmentDir
+      }
+    })
+
+    expect(launch.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(realpathSync(environmentDir))
+  })
+
+  it('refuses a secure-storage override that would reopen the entire host HOME', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+
+    expect(() =>
+      prepareRuntimeLaunch({
+        runtimeId: 'claude-acp',
+        scopeDir,
+        cwd,
+        daemonRoot,
+        agentsRoot: join(daemonRoot, 'agents'),
+        runInSandbox: true,
+        sandboxMechanism: 'bwrap',
+        credentialPlatform: 'linux',
+        hostEnv: {
+          HOME: hostHome,
+          PATH: '/usr/bin',
+          CLAUDE_SECURESTORAGE_CONFIG_DIR: hostHome
+        }
+      })
+    ).toThrow(/would reopen protected path/)
   })
 
   it('links private Codex homes to the newest shared auth file and preserves the link across refresh', () => {

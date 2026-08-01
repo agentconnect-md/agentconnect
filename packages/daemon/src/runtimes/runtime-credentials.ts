@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { timingSafeEqual } from 'node:crypto'
 import {
   chmodSync,
   constants,
@@ -14,8 +14,7 @@ import {
   rmdirSync,
   statSync,
   symlinkSync,
-  unlinkSync,
-  writeFileSync
+  unlinkSync
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -25,7 +24,7 @@ export type SharedCredentialProfile = 'claude' | 'codex' | 'qoder' | 'qoder-cn'
 
 export interface SharedRuntimeCredentialAccess {
   env: Record<string, string>
-  /** Existing, credential-only host paths that the sandbox may update. */
+  /** Host paths that the trusted ACP runtime may update for login refresh. */
   writablePaths: string[]
   /** Private-HOME destinations that must no longer receive copy-once auth. */
   seedExclusions: string[]
@@ -112,25 +111,6 @@ function jsonObject(path: string): Record<string, unknown> {
   return parsed as Record<string, unknown>
 }
 
-function atomicJsonWrite(path: string, value: Record<string, unknown>): void {
-  const destination = existsSync(path) ? existingFileTarget(path) : path
-  mkdirSync(dirname(destination), { recursive: true, mode: 0o700 })
-  const mode = existsSync(destination) ? statSync(destination).mode & 0o777 : 0o600
-  const temporary = join(dirname(destination), `.${randomUUID()}.tmp`)
-  try {
-    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: mode || 0o600 })
-    renameSync(temporary, destination)
-    secureCredentialFile(destination)
-  } catch (error) {
-    try {
-      unlinkSync(temporary)
-    } catch {
-      // The temporary file may not exist or may already have been renamed.
-    }
-    throw error
-  }
-}
-
 function sameFileContents(a: string, b: string): boolean {
   const left = readFileSync(a)
   const right = readFileSync(b)
@@ -162,79 +142,36 @@ function prepareClaudeCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredenti
     absoluteConfiguredPath(configured, env, 'host CLAUDE_CONFIG_DIR'),
     'host Claude config directory'
   )
-  const settingsPath = join(configDir, 'settings.json')
-  const settings = existsSync(settingsPath) ? jsonObject(settingsPath) : {}
-  const rawSettingsEnv = settings.env
-  if (
-    rawSettingsEnv !== undefined &&
-    (!rawSettingsEnv || typeof rawSettingsEnv !== 'object' || Array.isArray(rawSettingsEnv))
-  ) {
-    throw new Error(`Claude settings.env must contain a JSON object: ${settingsPath}`)
+  let configuredSecureDir = env.CLAUDE_SECURESTORAGE_CONFIG_DIR
+  if (!configuredSecureDir) {
+    const settingsPath = join(configDir, 'settings.json')
+    const settings = existsSync(settingsPath) ? jsonObject(settingsPath) : {}
+    const rawSettingsEnv = settings.env
+    if (
+      rawSettingsEnv !== undefined &&
+      (!rawSettingsEnv || typeof rawSettingsEnv !== 'object' || Array.isArray(rawSettingsEnv))
+    ) {
+      throw new Error(`Claude settings.env must contain a JSON object: ${settingsPath}`)
+    }
+    const settingsEnv = (rawSettingsEnv ?? {}) as Record<string, unknown>
+    const setting = settingsEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR
+    if (setting !== undefined && typeof setting !== 'string') {
+      throw new Error(`Claude settings env.CLAUDE_SECURESTORAGE_CONFIG_DIR must be a string: ${settingsPath}`)
+    }
+    configuredSecureDir = setting
   }
-  const settingsEnv = (rawSettingsEnv ?? {}) as Record<string, unknown>
-  const configuredSecureDir = settingsEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR
-  if (configuredSecureDir !== undefined && typeof configuredSecureDir !== 'string') {
-    throw new Error(`Claude settings env.CLAUDE_SECURESTORAGE_CONFIG_DIR must be a string: ${settingsPath}`)
-  }
-  const sharedDir = ensureOwnedDirectory(
-    absoluteConfiguredPath(
-      configuredSecureDir || join(configDir, 'agentconnect-auth'),
-      env,
-      'Claude secure credential directory'
-    ),
+  const credentialDir = ensureOwnedDirectory(
+    absoluteConfiguredPath(configuredSecureDir || configDir, env, 'Claude secure credential directory'),
     'Claude secure credential directory'
   )
-  if (sharedDir === configDir || configDir.startsWith(sharedDir + sep)) {
-    throw new Error(
-      'Claude shared credential storage must be a dedicated directory, not the config directory or its parent'
-    )
-  }
-
-  const source = join(configDir, '.credentials.json')
-  const destination = join(sharedDir, '.credentials.json')
-  let moved = false
-  let removeLegacyAfterSettings = false
-  if (existsSync(source)) {
-    const sourceInfo = lstatSync(source)
-    const sourceTarget = existingFileTarget(source)
-    if (sourceInfo.isSymbolicLink() && (!existsSync(destination) || existingFileTarget(destination) !== sourceTarget)) {
-      throw new Error(`Claude credential symlink must already target the selected shared credential: ${source}`)
-    }
-    if (existsSync(destination)) {
-      const destinationTarget = existingFileTarget(destination)
-      if (sourceTarget === destinationTarget || sameFileContents(sourceTarget, destinationTarget)) {
-        removeLegacyAfterSettings = source !== destination
-      } else if (!configuredSecureDir) {
-        throw new Error(
-          `conflicting Claude credentials at ${source} and ${destination}; run host claude /login after resolving the conflict`
-        )
-      }
-      // If the host already selected this secure-storage directory, its file is
-      // authoritative and a leftover default-path file is deliberately ignored.
-    } else {
-      renameSync(sourceTarget, destination)
-      secureCredentialFile(destination)
-      moved = true
-    }
-  }
-
-  try {
-    if (configuredSecureDir !== sharedDir) {
-      atomicJsonWrite(settingsPath, {
-        ...settings,
-        env: { ...settingsEnv, CLAUDE_SECURESTORAGE_CONFIG_DIR: sharedDir }
-      })
-    }
-  } catch (error) {
-    if (moved && existsSync(destination) && !existsSync(source)) renameSync(destination, source)
-    throw error
-  }
-  if (removeLegacyAfterSettings && existsSync(source)) unlinkSync(source)
+  const destination = join(credentialDir, '.credentials.json')
   if (existsSync(destination)) secureCredentialFile(existingFileTarget(destination))
 
   return {
-    env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: sharedDir },
-    writablePaths: [sharedDir],
+    // The ACP runtime has a private HOME, so pass the resolved host directory
+    // explicitly even when Claude's default secure-storage location is used.
+    env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: credentialDir },
+    writablePaths: [credentialDir],
     seedExclusions: [join('.claude', '.credentials.json')],
     preparePrivateHome: (runtimeHome) => {
       const privateCredential = join(runtimeHome, '.claude', '.credentials.json')

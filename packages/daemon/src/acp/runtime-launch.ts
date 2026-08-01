@@ -136,6 +136,8 @@ export function prepareRuntimeLaunch(opts: {
   // host credentials. A bad daemon root or escaping workspace must fail without
   // partially migrating login state.
   let protectedRoots: string[] = []
+  let protectedBoundaryRoots: string[] = []
+  let protectedRuntimeStateRoots: string[] = []
   let denyReadRoots: string[] = []
   if (opts.runInSandbox) {
     sandboxBoundary({ agentDir: opts.scopeDir, cwd: opts.cwd, runtimeHome: runtimeHomePath(opts.scopeDir) })
@@ -149,17 +151,17 @@ export function prepareRuntimeLaunch(opts: {
     const sharedTempRoots = ['/tmp', '/var/tmp', stateSourceEnv.TMPDIR, stateSourceEnv.TMP, stateSourceEnv.TEMP]
       .filter((path): path is string => Boolean(path))
       .map((path) => safeRoot(path, 'shared temp root'))
-    const allRuntimeStateRoots = Object.keys(RUNTIME_STATE_LOCATIONS).flatMap((id) =>
+    protectedRuntimeStateRoots = Object.keys(RUNTIME_STATE_LOCATIONS).flatMap((id) =>
       runtimeStateLocations(id, stateSourceEnv).map((location) => safeRoot(location.source, `${id} host state root`))
     )
-    protectedRoots = [
+    protectedBoundaryRoots = [
       daemonRoot,
       agentRoot,
       ...(opts.agentsRoot ? [safeRoot(opts.agentsRoot, 'agents root')] : []),
       ...hostHomeRoots,
-      ...sharedTempRoots,
-      ...allRuntimeStateRoots
+      ...sharedTempRoots
     ]
+    protectedRoots = [...protectedBoundaryRoots, ...protectedRuntimeStateRoots]
     denyReadRoots = compactReadRoots(protectedRoots)
   }
 
@@ -218,7 +220,19 @@ export function prepareRuntimeLaunch(opts: {
       .join(delimiter)
   }
   const credentialWritableRoots = compactReadRoots(
-    (credentials?.writablePaths ?? []).map((path) => validateException(path, 'shared credential write root'))
+    (credentials?.writablePaths ?? []).map((path) => {
+      const trusted = safeRoot(path, 'shared credential write root')
+      // A credential capability may equal one hidden runtime-state root (the
+      // default Claude layout), but it must not contain another protected root
+      // or reopen HOME, daemon state, an agent root, or shared temp wholesale.
+      const broadened =
+        protectedBoundaryRoots.find((denied) => inside(trusted, denied)) ??
+        protectedRuntimeStateRoots.find((denied) => trusted !== denied && inside(trusted, denied))
+      if (broadened) {
+        throw new Error(`shared credential write root "${trusted}" would reopen protected path "${broadened}"`)
+      }
+      return trusted
+    })
   )
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   if (claudeRuntime) {
