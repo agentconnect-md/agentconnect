@@ -3038,6 +3038,21 @@ export async function fetchMySocialAccount(): Promise<MySocialAccountDto> {
   return apiGet<MySocialAccountDto>('/me/social-identities')
 }
 
+export type MySlackIdentityDto =
+  | { linked: false }
+  | {
+      linked: true
+      teamId: string
+      userId: string
+      teamName?: string
+      teamDomain?: string
+    }
+
+/** The narrow linked/not-linked read used by Slack session recovery. */
+export function fetchMySlackIdentity(): Promise<MySlackIdentityDto> {
+  return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
+}
+
 // Linking runs browser→provider, so the CP never sees that write and its cached
 // copy would hide the new identity. Say so once, right after a link lands.
 export async function refreshMySocialIdentities(): Promise<void> {

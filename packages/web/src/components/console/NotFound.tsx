@@ -9,8 +9,9 @@ import { useSearchOpen } from './search-open'
 // (agent / session / schedule / daemon) and for an unknown route: a brand-soft
 // icon well badged with `search-x`, a mono `404 · KIND` eyebrow, a title, a calm
 // one-line explanation with the id/path in a mono chip, then a primary "back to
-// the list" action and a "Search" affordance (⌘K on desktop). Rendered inside the
-// detail views' `.card`, so it inherits the surrounding `wrap`/loading gate.
+// the list" action, an optional recovery action, and a "Search" affordance (⌘K
+// on desktop). Rendered inside the detail views' `.card`, so it inherits the
+// surrounding `wrap`/loading gate.
 //
 // Design: "Not Found Pages.dc.html" (claude.ai/design) — a single pattern applied
 // across resources, calm tone, states a plausible reason.
@@ -23,6 +24,7 @@ export function NotFound({
   post,
   actionLabel,
   actionHref,
+  secondaryAction,
   searchLabel = 'Search',
   showSearch = true
 }: {
@@ -42,6 +44,8 @@ export function NotFound({
   actionLabel: string
   /** Resolved href for the primary action (caller applies `orgPath`). */
   actionHref: string
+  /** Optional recovery action shown beside/below the primary action. */
+  secondaryAction?: { label: string; href: string; icon?: string }
   /** Mobile secondary button label (e.g. "Search agents"); desktop reads "Search". */
   searchLabel?: string
   /** Show the Search affordance. Off for the bare root 404, which renders outside
@@ -75,11 +79,17 @@ export function NotFound({
         {post}
       </div>
 
-      {/* Desktop actions: inline primary + ghost "Search ⌘K" */}
+      {/* Desktop actions: inline primary, optional recovery, and ghost "Search ⌘K" */}
       <div className="mt-5 hidden items-center gap-2 desktop:flex">
         <Button size="sm" onClick={() => router.push(actionHref)}>
           {actionLabel}
         </Button>
+        {secondaryAction ? (
+          <Button variant="secondary" size="sm" onClick={() => router.push(secondaryAction.href)}>
+            {secondaryAction.icon ? <Icon name={secondaryAction.icon} size={14} /> : null}
+            {secondaryAction.label}
+          </Button>
+        ) : null}
         {showSearch && (
           <Button variant="ghost" size="sm" onClick={openSearch}>
             <span className="inline-flex items-center gap-[7px]">
@@ -98,6 +108,17 @@ export function NotFound({
           <Icon name="arrow-left" size={15} />
           {actionLabel}
         </Button>
+        {secondaryAction ? (
+          <Button
+            variant="secondary"
+            size="md"
+            className="h-11 w-full text-[14px]"
+            onClick={() => router.push(secondaryAction.href)}
+          >
+            {secondaryAction.icon ? <Icon name={secondaryAction.icon} size={15} /> : null}
+            {secondaryAction.label}
+          </Button>
+        ) : null}
         {showSearch && (
           <Button variant="secondary" size="md" className="h-11 w-full text-[14px]" onClick={openSearch}>
             <Icon name="search" size={15} />
