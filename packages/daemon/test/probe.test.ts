@@ -198,8 +198,8 @@ describe('isRuntimeAvailable / custom probes', () => {
     expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: cleanHome, GEMINI_CLI_HOME: cliHome }))).toBe(true)
 
     const namedHome = mkdtempSync(join(tmpdir(), 'ac-qoder-named-home-'))
-    mkdirSync(join(namedHome, 'custom-qoder'))
-    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: namedHome, QODER_CONFIG_DIR_NAME: 'custom-qoder' }))).toBe(
+    mkdirSync(join(namedHome, '\u00e9-qoder'))
+    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: namedHome, QODER_CONFIG_DIR_NAME: 'e\u0301-qoder' }))).toBe(
       true
     )
   })

@@ -267,7 +267,7 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // together decrypt in the private HOME); sessions/workflows stay private.
   'qoder-cli': (env) => {
     const base = env.QODER_CLI_HOME || env.GEMINI_CLI_HOME
-    const name = env.QODER_CONFIG_DIR_NAME || '.qoder'
+    const name = (env.QODER_CONFIG_DIR_NAME || '.qoder').normalize('NFC')
     return [
       ...state(env.QODER_CONFIG_DIR, '.qoder', QODER_SEED('qoder-cli')),
       ...state(base ? join(base, name) : undefined, '.qoder', QODER_SEED('qoder-cli')),
@@ -279,7 +279,7 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // $QODERCN_CONFIG_DIR / $QODERCN_CLI_HOME (or the shared $GEMINI_CLI_HOME).
   'qoder-cli-cn': (env) => {
     const base = env.QODERCN_CLI_HOME || env.GEMINI_CLI_HOME
-    const name = env.QODERCN_CONFIG_DIR_NAME || '.qoder-cn'
+    const name = (env.QODERCN_CONFIG_DIR_NAME || '.qoder-cn').normalize('NFC')
     return [
       ...state(env.QODERCN_CONFIG_DIR, '.qoder-cn', QODER_SEED('qoder-cli-cn')),
       ...state(base ? join(base, name) : undefined, '.qoder-cn', QODER_SEED('qoder-cli-cn')),

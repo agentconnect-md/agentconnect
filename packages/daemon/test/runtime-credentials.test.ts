@@ -155,7 +155,8 @@ describe('Linux shared runtime login', () => {
       runtimeId: 'qoder-cli',
       command: 'qodercli',
       configName: '.qoder',
-      hostConfigName: 'custom-qoder',
+      hostConfigName: '\u00e9-qoder',
+      hostConfigNameValue: 'e\u0301-qoder',
       hostConfigNameEnv: 'QODER_CONFIG_DIR_NAME',
       privateConfigEnv: 'QODER_CONFIG_DIR'
     },
@@ -164,12 +165,13 @@ describe('Linux shared runtime login', () => {
       command: 'qoderclicn',
       configName: '.qoder-cn',
       hostConfigName: 'custom-qoder-cn',
+      hostConfigNameValue: 'custom-qoder-cn',
       hostConfigNameEnv: 'QODERCN_CONFIG_DIR_NAME',
       privateConfigEnv: 'QODERCN_CONFIG_DIR'
     }
   ])(
     'shares refreshable $runtimeId auth while keeping the rest of HOME private',
-    ({ runtimeId, command, configName, hostConfigName, hostConfigNameEnv, privateConfigEnv }) => {
+    ({ runtimeId, command, configName, hostConfigName, hostConfigNameValue, hostConfigNameEnv, privateConfigEnv }) => {
       const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
       const hostConfig = join(hostHome, hostConfigName)
       const sharedAuth = join(hostConfig, '.auth')
@@ -188,7 +190,7 @@ describe('Linux shared runtime login', () => {
         runInSandbox: true,
         sandboxMechanism: 'bwrap',
         credentialPlatform: 'linux',
-        hostEnv: { HOME: hostHome, PATH: '/usr/bin', [hostConfigNameEnv]: hostConfigName }
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin', [hostConfigNameEnv]: hostConfigNameValue }
       })
 
       const privateAuth = join(scopeDir, 'home', configName, '.auth')

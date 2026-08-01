@@ -450,7 +450,9 @@ function qoderConfigDirectory(profile: 'qoder' | 'qoder-cn', env: NodeJS.Process
   const cn = profile === 'qoder-cn'
   const configured = cn ? env.QODERCN_CONFIG_DIR : env.QODER_CONFIG_DIR
   const base = (cn ? env.QODERCN_CLI_HOME : env.QODER_CLI_HOME) || env.GEMINI_CLI_HOME
-  const name = (cn ? env.QODERCN_CONFIG_DIR_NAME : env.QODER_CONFIG_DIR_NAME) || (cn ? '.qoder-cn' : '.qoder')
+  const name = (
+    (cn ? env.QODERCN_CONFIG_DIR_NAME : env.QODER_CONFIG_DIR_NAME) || (cn ? '.qoder-cn' : '.qoder')
+  ).normalize('NFC')
   return ensureOwnedDirectory(
     absoluteConfiguredPath(
       configured || (base ? join(base, name) : join(hostHome(env), name)),
