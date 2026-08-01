@@ -99,7 +99,8 @@ export function RecentSessionsCard({
   className?: string
   /** Agent detail already scopes to one agent — hide the redundant icon+name there. */
   showAgent?: boolean
-  /** Card height is set externally (Home: match the right column) — round the fitted row count UP and let the body scroll. */
+  /** Card height is set externally (Home: match the right column) — fit only WHOLE rows,
+   * so the card never ends on a row sliced in half. */
   fillHeight?: boolean
 }) {
   const { orgPath } = useOrgs()
@@ -119,7 +120,7 @@ export function RecentSessionsCard({
     const measure = () => {
       const row = body.querySelector<HTMLElement>('a.row')
       if (!row || row.offsetHeight === 0) return
-      setFit(Math.max(1, Math.ceil(body.clientHeight / row.offsetHeight)))
+      setFit(Math.max(1, Math.floor(body.clientHeight / row.offsetHeight)))
     }
     measure()
     const ro = new ResizeObserver(measure)

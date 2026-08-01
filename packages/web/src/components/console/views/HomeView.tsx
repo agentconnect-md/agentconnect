@@ -17,7 +17,8 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { Card, CardLink, EmptyRow, RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { Icon } from '@/components/ui'
-import { AgentIconView, ModelMark, LoadingState } from '@/components/marks'
+import { AgentIconView, ModelMark, LoadingState, LogoMark } from '@/components/marks'
+import { useProfile } from '@/lib/profile'
 import {
   agentLabel,
   modelLabel,
@@ -57,8 +58,15 @@ function fmtAgo(iso: string | null): string {
   return `${Math.round(h / 24)}d ago`
 }
 
+function greeting(): string {
+  const h = new Date().getHours()
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
+}
+
 export default function HomeView() {
   const router = useRouter()
+  const { user } = useProfile()
+  const firstName = user.name.trim().split(/\s+/)[0] ?? ''
   const { orgPath } = useOrgs()
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading } = useConsoleData()
   const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionMode } = usePlayground()
@@ -217,13 +225,28 @@ export default function HomeView() {
   if (holdForOnboarding) return <LoadingState fill />
 
   return (
-    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-24">
-      <h1 className="ptitle mb-4">Ask an agent</h1>
+    // Desktop: `h-full` pins the page to the viewport so a roomy window shows no page
+    // scrollbar, and `min-h-fit` is the floor — the wrap never shrinks below what the
+    // cards actually need, so .content scrolls instead of squashing a card into a
+    // half-drawn row. The floor is the content's own height, which is row-aligned by
+    // construction (no magic px to keep in sync with row metrics).
+    // Mobile keeps normal flow + the bottom-nav padding.
+    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-24 desktop:flex desktop:h-full desktop:min-h-fit desktop:flex-col">
+      {/* Centered greeting above the composer (design: 32px mark, 27px title). */}
+      <div className="mt-[22px] mb-[22px] flex flex-none items-center justify-center gap-[13px]">
+        <LogoMark size={32} />
+        {/* Server and client can sit in different timezones, and the display name
+            only resolves after mount — both settle on the client. */}
+        <h1 className="ptitle text-[27px]" suppressHydrationWarning>
+          {greeting()}
+          {firstName ? `, ${firstName}` : ''}
+        </h1>
+      </div>
 
       {/* Composer — hands off to a live session on send. The footer selectors mirror
           the design: agent + model as pills (leading mark), effort + permission as
           chips. Each picks the run's runtime; the choice is applied on send. */}
-      <div className="card mb-3 overflow-visible">
+      <div className="card mb-3 flex-none overflow-visible">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -235,9 +258,9 @@ export default function HomeView() {
               send()
             }
           }}
-          rows={2}
+          rows={5}
           placeholder="Ask agentconnect to connect a workspace, deploy an agent, or check on a run"
-          className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-4 pt-[14px] pb-2 font-sans text-[14px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+          className="block max-h-[280px] min-h-[140px] w-full resize-none border-0 bg-transparent px-[15px] pt-[14px] pb-1 font-sans text-[14px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
         />
         {/* items-start + a wrapping selector group so the controls reflow onto a second
             row at phone widths instead of overflowing (mobile .content clips overflow-x);
@@ -338,7 +361,7 @@ export default function HomeView() {
           offline ⇒ its daemon isn't serving; auth ⇒ online but the daemon's runtime
           reported "sign-in required" (no active AI subscription/login). */}
       {!loading && blocked && (
-        <div className="mb-3 flex items-center gap-3 rounded-lg border border-(--status-paused-soft) bg-(--status-paused-soft) px-4 py-[10px]">
+        <div className="mb-3 flex flex-none items-center gap-3 rounded-lg border border-(--status-paused-soft) bg-(--status-paused-soft) px-4 py-[10px]">
           <Icon name="triangle-alert" size={16} color="var(--status-paused)" />
           <span className="min-w-0 flex-1 font-sans text-[13px] leading-normal text-(--text-secondary)">
             {blocked === 'offline' ? (
@@ -372,8 +395,10 @@ export default function HomeView() {
       )}
 
       {/* Dashboard grid. */}
+      {/* Desktop: the row is sized by the right column (the left card is absolute, so
+          it contributes no height), which keeps both bottoms aligned. */}
       <div className="grid grid-cols-1 gap-4 desktop:grid-cols-[1.5fr_1fr]">
-        {/* On desktop the right column dictates the row height: the card is
+        {/* On desktop the grid row height is the leftover viewport space: the card is
             absolutely positioned (so it never stretches the row itself) and
             fillHeight fits as many whole session rows as that height allows. */}
         <div className="desktop:relative">
