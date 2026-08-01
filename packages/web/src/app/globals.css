@@ -351,14 +351,16 @@
     background: var(--surface-app);
   }
   .rail {
-    width: 240px;
+    /* 224px, not the roomier 240 it started at: the design tried 210 and the
+       hover-reveal collapse toggle crowded the rail's right edge. */
+    width: 224px;
     flex: none;
     background: var(--surface-inverse);
     display: flex;
     flex-direction: column;
   }
   /* Width animation is opt-in via `.rail-anim`, added one frame after mount so a
-     reload into the collapsed state snaps (no 240→64 sweep); user toggles animate. */
+     reload into the collapsed state snaps (no 224→64 sweep); user toggles animate. */
   .rail.rail-anim {
     transition: width var(--duration-normal) var(--ease-standard);
   }
@@ -2431,7 +2433,7 @@
   /* ============================================================================
    Mobile / responsive layer
    ----------------------------------------------------------------------------
-   The console is a fixed desktop shell (240px rail + fluid main). Below the
+   The console is a fixed desktop shell (224px rail + fluid main). Below the
    tablet breakpoint we swap the rail for a bottom tab bar, turn the top bar into
    a compact app bar (logo + section), tighten gutters, and float modals up as
    bottom sheets. Driven purely by CSS media queries so SSR markup is identical
