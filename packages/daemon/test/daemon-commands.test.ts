@@ -1248,7 +1248,7 @@ describe('Slack interactive status bar', () => {
     const section = blocks.find((b) => b.type === 'section')!
     expect(blocks).toHaveLength(1)
     expect(section.text!.text).toContain('opus-4.8')
-    expect(section.text!.text).toContain('View Session')
+    expect(section.text!.text).toContain('<http://localhost:3000/sessions/acp-1?source=slack|View Session>')
     expect(section.accessory.action_id).toBe('ac_more')
     await daemon.stop()
   }, 15_000)
@@ -1691,7 +1691,7 @@ describe('Slack interactive status bar', () => {
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
     // The connection queries statusInfoForKey to build the modal; it resolves the deep link.
     const data = (daemon as any).statusInfoForKey(SESSION_KEY)
-    expect(data.link).toBe('https://console.example.com/sessions/acp-1')
+    expect(data.link).toBe('https://console.example.com/sessions/acp-1?source=slack')
     expect(data.info.models).toEqual(['opus-4.8', 'sonnet-5'])
     expect(data.identity).toMatchObject({
       name: AGENT_IDENTITY.displayName,

@@ -7743,7 +7743,11 @@ export class Daemon {
         return true
       }
       const info = this.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
-      const link = acpSessionId ? this.sessionLink(acpSessionId) : undefined
+      const link = acpSessionId
+        ? msg.platform === 'slack'
+          ? this.slackSessionLink(acpSessionId)
+          : this.sessionLink(acpSessionId)
+        : undefined
       if (msg.platform === 'telegram') {
         // HTML chrome (not recorded) — renders the compact line + a tappable View link.
         void (conn as TelegramConnection | undefined)?.postChrome(msg.channel, renderStatusReply(info, link), {
@@ -9554,7 +9558,7 @@ export class Daemon {
       botUrl: this.agentLink(agentId),
       runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
       model: this.buildStatusInfo(p).model ?? turnModel ?? 'default',
-      sessionUrl: this.sessionLink(sessionId)
+      sessionUrl: msg.platform === 'slack' ? this.slackSessionLink(sessionId) : this.sessionLink(sessionId)
     })
     try {
       if (!p.selectedHost) {
@@ -10934,6 +10938,12 @@ export class Daemon {
     return `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
   }
 
+  /** A Slack-originated session link carries only the source context the 404 UI
+   *  already knows from the click. It never changes session authorization. */
+  private slackSessionLink(acpSessionId: string): string {
+    return `${this.sessionLink(acpSessionId)}?source=slack`
+  }
+
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same
    *  org-segment rule as {@link sessionLink}. */
   private agentLink(agentId: string): string {
@@ -11200,7 +11210,7 @@ export class Daemon {
       ...(iconUrl ? { iconUrl } : {}),
       ...(sessionTitle ? { sessionTitle } : {})
     }
-    const link = rec.acpSessionId ? this.sessionLink(rec.acpSessionId) : undefined
+    const link = rec.acpSessionId ? this.slackSessionLink(rec.acpSessionId) : undefined
     const pending = [...this.pending.values()].find((turn) => turn.sessionKey === sessionKey)
     const cancellable = pending?.statusCancellable ?? this.inflight.has(sessionKey)
     return { info, identity, ...(link ? { link } : {}), cancellable }
@@ -11249,7 +11259,7 @@ export class Daemon {
       // runtimes only advertise the model after the first prompt). It fills in via edits
       // as usage_update / turn-end land.
       p.lastStatusBar = key
-      const link = this.sessionLink(p.acpSessionId)
+      const link = this.slackSessionLink(p.acpSessionId)
       const sessionTarget = this.httpSlackSessionTarget(p)
       const shared =
         sessionTarget && p.integrationId

@@ -131,7 +131,7 @@ function classicFooter(botName = 'bot-a', runtime = 'claude', model = 'default')
     elements: [
       {
         type: 'mrkdwn',
-        text: `sent by <https://app.example.com/agents/bot-a|${botName}> (${runtime} · ${model}) · <https://app.example.com/sessions/acp-1|open in session>`
+        text: `sent by <https://app.example.com/agents/bot-a|${botName}> (${runtime} · ${model}) · <https://app.example.com/sessions/acp-1?source=slack|open in session>`
       }
     ]
   }

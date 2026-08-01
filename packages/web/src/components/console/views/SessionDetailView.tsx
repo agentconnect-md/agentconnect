@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
   agentLabel,
@@ -30,6 +30,8 @@ import {
   type SessionStep
 } from '@/lib/data'
 import {
+  ApiError,
+  fetchMySlackIdentity,
   fetchSessionMessages,
   fetchSessionDetail,
   fetchToolBody,
@@ -55,6 +57,8 @@ import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
 import { mergeSessionMessages } from '@/lib/session-transcript'
+import { socialLoginProviders } from '@/lib/social-login-providers'
+import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -634,6 +638,7 @@ export default function SessionDetailView() {
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath } = useOrgs()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { id } = useParams<{ id: string }>()
   const {
     agents,
@@ -704,6 +709,7 @@ export default function SessionDetailView() {
       : null
   const {
     data: sessionDetail,
+    error: sessionDetailError,
     isLoading: sessionDetailLoading,
     mutate: mutateSessionDetail
   } = useSWR<SessionDetailDto>(
@@ -711,6 +717,29 @@ export default function SessionDetailView() {
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
     { refreshInterval: 30_000 }
   )
+  // A Slack-rendered View Session link carries source=slack. That caller-provided
+  // context is independent of whether the requested id exists, so the CP can keep
+  // unknown and unauthorized 404 payloads byte-for-byte equivalent.
+  const slackRecoveryCandidate =
+    sessionDetailError instanceof ApiError &&
+    sessionDetailError.status === 404 &&
+    searchParams.get('source') === 'slack' &&
+    isAuthConfigured() &&
+    socialLoginProviders().some((provider) => provider.target === 'slack')
+  const {
+    data: slackIdentity,
+    error: slackIdentityError,
+    isValidating: slackIdentityLoading
+  } = useSWR(slackRecoveryCandidate ? 'logto-slack-identity' : null, fetchMySlackIdentity, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    shouldRetryOnError: false
+  })
+  const showSlackLink =
+    slackRecoveryCandidate &&
+    !slackIdentityLoading &&
+    slackIdentityError === undefined &&
+    slackIdentity?.linked === false
   const detailSession = sessionDetail ? sessionFromDetailDto(sessionDetail) : null
   // The cursor-loaded list row can predate the final Dream usage report. Keep
   // its local/live fields, but let the independently refreshed detail snapshot
@@ -927,7 +956,16 @@ export default function SessionDetailView() {
             post=" in this organization. It may have expired or been deleted."
             actionLabel="Back to sessions"
             actionHref={orgPath('/sessions')}
-            searchLabel="Search sessions"
+            secondaryAction={
+              showSlackLink
+                ? {
+                    label: 'Link Slack profile',
+                    href: orgPath('/profile#sign-in-methods'),
+                    icon: 'link'
+                  }
+                : undefined
+            }
+            showSearch={false}
           />
         )}
       </div>

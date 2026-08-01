@@ -362,7 +362,7 @@ export default function SocialSignInCard({
 
   return (
     <>
-      <section className={shell} aria-label="Sign-in methods">
+      <section id="sign-in-methods" className={shell} aria-label="Sign-in methods">
         <div className={header}>
           <div className={mobile ? '' : 'flex flex-col gap-0.5'}>
             <div className={mobile ? 'font-sans text-[14px] font-semibold leading-normal' : 'cardtitle'}>
