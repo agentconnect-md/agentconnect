@@ -12,6 +12,9 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // This suite pins pre-staging flush semantics (verbatim terminal-error
+      // delivery); staged delivery is covered by turn-output-workflow.
+      features: { turnFinalContextRefresh: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )

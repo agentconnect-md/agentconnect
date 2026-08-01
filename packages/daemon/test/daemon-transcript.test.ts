@@ -20,6 +20,9 @@ function scaffold(mode: 'minimal' | 'low' | 'medium' | 'high', agentExtra: Recor
       // Set so onFinal emits the done-footer (gated on a Web App URL) — lets the
       // footer test assert it's posted to Slack but never recorded in the transcript.
       webAppUrl: 'https://app.example.com',
+      // This suite pins incremental-flush renderer behavior; staged delivery is
+      // covered by turn-output-workflow.
+      features: { turnFinalContextRefresh: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )

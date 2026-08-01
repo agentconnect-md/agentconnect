@@ -290,10 +290,10 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
 
   // ---------- Staged feature rollout ----------
   "features": {
-    // Default false during rollout. When enabled, interactive IM answer text is
-    // staged until a turn-final thread refresh accepts it; changed context causes
-    // bounded regeneration in the same ACP session.
-    "turnFinalContextRefresh": false
+    // Default true. When enabled, interactive IM answer text is staged until a
+    // turn-final thread refresh accepts it; changed context causes bounded
+    // regeneration in the same ACP session. Set false to opt out (kill switch).
+    "turnFinalContextRefresh": true
   },
 
   // ---------- Local capacity/limits ----------

@@ -161,9 +161,9 @@ export const ConfigSchema = z.object({
    * never negotiated through the control plane or placed on the message hot path. */
   features: z
     .object({
-      turnFinalContextRefresh: z.boolean().default(false)
+      turnFinalContextRefresh: z.boolean().default(true)
     })
-    .default({ turnFinalContextRefresh: false }),
+    .default({ turnFinalContextRefresh: true }),
   limits: z
     .object({
       maxAgents: z.number().int().default(32),
