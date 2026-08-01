@@ -169,7 +169,7 @@ describe('POST /api/v1/mcp — auth', () => {
 })
 
 describe('delegated webchat MCP operations', () => {
-  async function delegatedFixture() {
+  async function delegatedFixture(opts: { registerSession?: boolean } = {}) {
     const daemonId = randomUUID()
     const hostAgentId = randomUUID()
     const conversationId = randomUUID()
@@ -211,28 +211,33 @@ describe('delegated webchat MCP operations', () => {
     await prisma.presetAgent.create({
       data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: hostAgentId, status: 'created' }
     })
-    await prisma.sessionMeta.create({
-      data: {
-        id: `webchat-${conversationId}`,
-        agentId: hostAgentId,
-        platform: 'webchat',
-        channel: conversationId,
-        phase: 'end',
-        orgId: DEFAULT_ORG_ID,
-        ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
-        visibility: 'private',
-        visibilitySource: 'default',
-        lastActivityAt: new Date(),
-        startedAt: new Date(),
-        // The daemon stamps `endedAt` after EVERY turn; authorization must key
-        // off the conversation's current-session pointer, not this timestamp.
-        endedAt: new Date()
-      }
-    })
-    await prisma.webchatConversation.update({
-      where: { id: conversationId },
-      data: { currentSessionId: `webchat-${conversationId}`, currentSessionRev: 1 }
-    })
+    // `registerSession: false` models the `session/new` window: the descriptor is
+    // already installed and the adapter is connecting, but the daemon has not yet
+    // reported the session, so no current-session pointer exists.
+    if (opts.registerSession !== false) {
+      await prisma.sessionMeta.create({
+        data: {
+          id: `webchat-${conversationId}`,
+          agentId: hostAgentId,
+          platform: 'webchat',
+          channel: conversationId,
+          phase: 'end',
+          orgId: DEFAULT_ORG_ID,
+          ownerIdentity: `user:${DEFAULT_OWNER_ID}`,
+          visibility: 'private',
+          visibilitySource: 'default',
+          lastActivityAt: new Date(),
+          startedAt: new Date(),
+          // The daemon stamps `endedAt` after EVERY turn; authorization must key
+          // off the conversation's current-session pointer, not this timestamp.
+          endedAt: new Date()
+        }
+      })
+      await prisma.webchatConversation.update({
+        where: { id: conversationId },
+        data: { currentSessionId: `webchat-${conversationId}`, currentSessionRev: 1 }
+      })
+    }
 
     const app = buildHttpApp(prisma, undefined, {
       get: (id) =>
@@ -312,6 +317,49 @@ describe('delegated webchat MCP operations', () => {
     const off = await remoteMethod({ id: 4, method: 'resources/list' })
     expect(off.statusCode).toBe(401)
     expect(off.headers['www-authenticate']).toBeUndefined()
+  })
+
+  it('admits handshake and catalog before the daemon registers the session, but holds tools/call', async () => {
+    // The adapter connects DURING session/new; the daemon can register the session
+    // (currentSessionId → session_meta) only after that call returns. initialize and
+    // the immediate tools/list must not lose that race — adapters do not retry a
+    // failed connect, so a denial here kills `agentconnect-admin` for the whole
+    // session lifetime.
+    const { remoteMethod, remoteRpc } = await delegatedFixture({ registerSession: false })
+
+    const init = await remoteMethod({
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'adapter', version: '0.0.0' } }
+    })
+    expect(init.statusCode).toBe(200)
+    expect((await remoteMethod({ method: 'notifications/initialized' })).statusCode).toBeLessThan(300)
+
+    const listed = await remoteMethod({ id: 2, method: 'tools/list' })
+    expect(listed.statusCode).toBe(200)
+    expect((mcpMessage(listed).result as { tools: Array<{ name: string }> }).tools.length).toBeGreaterThan(0)
+
+    // The authority-wielding step still fails closed until a private current
+    // session exists.
+    const call = await remoteRpc(3, 'listAgents', {})
+    expect(call.statusCode).toBe(401)
+    expect(call.headers['www-authenticate']).toBeUndefined()
+  })
+
+  it('keeps denying tools/call while the current session is not private', async () => {
+    const { conversationId, remoteMethod, remoteRpc } = await delegatedFixture()
+    await prisma.sessionMeta.update({
+      where: { id: `webchat-${conversationId}` },
+      data: { visibility: 'org' }
+    })
+
+    // The static catalog stays listable — it carries no org-scoped data…
+    const listed = await remoteMethod({ id: 1, method: 'tools/list' })
+    expect(listed.statusCode).toBe(200)
+
+    // …but no tool executes against a widened session.
+    const call = await remoteRpc(2, 'listAgents', {})
+    expect(call.statusCode).toBe(401)
   })
 
   it('refuses the handshake once the grant is revoked — no anonymous transport', async () => {

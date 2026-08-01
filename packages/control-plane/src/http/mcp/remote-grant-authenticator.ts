@@ -77,9 +77,6 @@ export class RemoteGrantAuthenticator {
       daemonId: authority.daemonId
     })
     if (!live.ok) return { kind: 'denied', reason: live.reason }
-    if (!(await this.deps.sessions.hasPrivateWebchatSession(authority.conversationId, authority.agentId as AgentId))) {
-      return { kind: 'denied', reason: 'session_not_private' }
-    }
 
     let metadata: ParsedInvocationMetadata
     try {
@@ -95,6 +92,22 @@ export class RemoteGrantAuthenticator {
       (method === 'tools/call' && (!metadata.toolName || !this.deps.isCuratedTool(metadata.toolName)))
     ) {
       return { kind: 'denied', reason: 'tool' }
+    }
+    // The private-current-session predicate gates only `tools/call`. The descriptor
+    // is installed during `session/new`, and the daemon can register the session row
+    // (`webchat_conversation.currentSessionId` → `session_meta`) only after that call
+    // returns — so the adapter's `initialize` and immediate `tools/list` always race
+    // the registration and would lose deterministically, killing the server for the
+    // session's whole lifetime (adapters do not retry a failed connect). Both are
+    // safe without the predicate: the handshake reaches no tool, and `tools/list`
+    // returns the static curated catalog with no org-scoped data. `tools/call` is
+    // the authority-wielding step; it is issued mid-turn, after registration, and
+    // must stop the moment the conversation's current session is not private.
+    if (
+      method === 'tools/call' &&
+      !(await this.deps.sessions.hasPrivateWebchatSession(authority.conversationId, authority.agentId as AgentId))
+    ) {
+      return { kind: 'denied', reason: 'session_not_private' }
     }
     return {
       kind: 'execute',
