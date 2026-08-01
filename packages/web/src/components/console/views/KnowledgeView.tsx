@@ -8,17 +8,12 @@ import {
   ApiError,
   createOrganizationKnowledge,
   fetchOrganizationSuggestionContent,
-  listManagedSkillRevisions,
-  listManagedSkills,
   listOrganizationKnowledge,
   listOrganizationKnowledgeRevisions,
   listOrganizationSuggestions,
   reviewOrganizationSuggestion,
-  setManagedSkillArchived,
   setOrganizationKnowledgeArchived,
   updateOrganizationKnowledge,
-  type ManagedSkillDto,
-  type ManagedSkillRevisionDto,
   type OrganizationKnowledgeDto,
   type OrganizationKnowledgeRevisionDto,
   type OrganizationSuggestionContentDto,
@@ -268,7 +263,7 @@ export function SuggestionCard({
 }
 
 type RevisionProvenance = Pick<
-  OrganizationKnowledgeRevisionDto | ManagedSkillRevisionDto,
+  OrganizationKnowledgeRevisionDto,
   | 'source'
   | 'sourceAgentId'
   | 'sourceDreamId'
@@ -421,106 +416,6 @@ export function KnowledgeEntry({
   )
 }
 
-export function ManagedSkillEntry({
-  skill,
-  canManage,
-  onArchive
-}: {
-  skill: ManagedSkillDto
-  canManage: boolean
-  onArchive: () => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [selectedRevision, setSelectedRevision] = useState(skill.currentRevision)
-  useEffect(() => setSelectedRevision(skill.currentRevision), [skill.currentRevision])
-  const history = useSWR(open ? ['managed-skill-revisions', skill.id, skill.currentRevision] : null, () =>
-    listManagedSkillRevisions(skill.id)
-  )
-  const selected = history.data?.find((revision) => revision.revision === selectedRevision)
-
-  return (
-    <details
-      className={`border-(--border-subtle) desktop:border-b desktop:odd:border-r ${skill.archivedAt ? 'opacity-60' : ''}`}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 marker:hidden">
-        <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--brand-soft)">
-          <Icon name="sparkles" size={15} color="var(--brand)" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[12px] font-semibold text-(--text-primary)">{skill.name}</span>
-            <span className="badge bg-(--surface-sunken) text-[9.5px] text-(--text-tertiary)">
-              rev {skill.currentRevision}
-            </span>
-            {skill.archivedAt && <span className="badge text-[9.5px]">archived</span>}
-          </div>
-          <p className="mt-1 font-sans text-[11.5px] leading-[1.45] text-(--text-secondary)">{skill.description}</p>
-          <div className="mono mt-2 text-[10px] text-(--text-disabled)">
-            {skill.fileCount} files · {bytes(skill.expandedBytes)} expanded · {bytes(skill.compressedBytes)} archive
-          </div>
-        </div>
-        {canManage && (
-          <button
-            className="iconbtn"
-            title={skill.archivedAt ? 'Restore' : 'Archive'}
-            onClick={(event) => {
-              event.preventDefault()
-              onArchive()
-            }}
-          >
-            <Icon name={skill.archivedAt ? 'archive-restore' : 'archive'} size={13} />
-          </button>
-        )}
-      </summary>
-      <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-3">
-        {history.isLoading ? (
-          <LoadingState size={18} padding={12} />
-        ) : history.error ? (
-          <div className="font-sans text-[12px] text-(--status-error)">{history.error.message}</div>
-        ) : !selected ? (
-          <div className="font-sans text-[12px] text-(--text-tertiary)">Revision history is unavailable.</div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-2 font-sans text-[11px] text-(--text-tertiary)">
-                Revision
-                <select
-                  className="inp h-7 min-w-20 py-0 text-[11px]"
-                  aria-label={`Revision for ${skill.name}`}
-                  value={selectedRevision}
-                  onChange={(event) => setSelectedRevision(Number(event.target.value))}
-                >
-                  {history.data?.map((revision) => (
-                    <option key={revision.revision} value={revision.revision}>
-                      {revision.revision}
-                      {revision.revision === skill.currentRevision ? ' (current)' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <span className="font-mono text-[10px] text-(--text-disabled)">
-                {selected.fileCount} files · {bytes(selected.expandedBytes)} expanded ·{' '}
-                {bytes(selected.compressedBytes)} archive
-              </span>
-            </div>
-            <Provenance value={selected} />
-            <div>
-              {(selected.manifest.files ?? []).map((file) => (
-                <div key={file.path} className="flex gap-2 py-[3px] font-mono text-[10.5px] text-(--text-tertiary)">
-                  <Icon name="file" size={12} />
-                  <span className="min-w-0 flex-1 truncate">{file.path}</span>
-                  <span>{bytes(file.bytes)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </details>
-  )
-}
-
 function KnowledgeEditor({
   record,
   onClose,
@@ -634,17 +529,16 @@ export default function KnowledgeView() {
   const canManage = myRole === 'owner'
 
   const knowledgeKey = activeOrg ? ['organization-knowledge', activeOrg.id, includeArchived] : null
-  const skillsKey = activeOrg ? ['managed-skills', activeOrg.id, includeArchived] : null
-  const suggestionsKey = activeOrg && canManage ? ['organization-suggestions', activeOrg.id, suggestionState] : null
+  const suggestionsKey =
+    activeOrg && canManage && tab === 'suggestions' ? ['organization-suggestions', activeOrg.id, suggestionState] : null
   const knowledge = useSWR(knowledgeKey, () => listOrganizationKnowledge(includeArchived))
-  const managedSkills = useSWR(skillsKey, () => listManagedSkills(includeArchived))
   const suggestions = useSWR(suggestionsKey, () => listOrganizationSuggestions({ state: suggestionState }))
 
   const refreshOrganization = async () => {
-    await Promise.all([knowledge.mutate(), managedSkills.mutate()])
+    await knowledge.mutate()
   }
   const reviewed = async () => {
-    await Promise.all([suggestions.mutate(), knowledge.mutate(), managedSkills.mutate()])
+    await Promise.all([suggestions.mutate(), knowledge.mutate()])
   }
   const changeTab = (next: 'organization' | 'suggestions') => {
     router.replace(orgPath(`/knowledge${next === 'suggestions' ? '?tab=suggestions' : ''}`))
@@ -658,16 +552,6 @@ export default function KnowledgeView() {
       setActionError(cause instanceof Error ? cause.message : String(cause))
     }
   }
-  const archiveSkill = async (skill: ManagedSkillDto) => {
-    setActionError(null)
-    try {
-      await setManagedSkillArchived(skill.id, !skill.archivedAt)
-      await managedSkills.mutate()
-    } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : String(cause))
-    }
-  }
-
   const suggestionCounts = useMemo(() => {
     const rows = suggestions.data ?? []
     return { total: rows.length, available: rows.filter((row) => row.contentAvailable).length }
@@ -711,61 +595,31 @@ export default function KnowledgeView() {
       )}
 
       {tab === 'organization' ? (
-        <div className="flex flex-col gap-4">
-          <section className="card overflow-hidden">
-            <div className="cardhead justify-between">
-              <span className="cardtitle">Knowledge library</span>
-              <span className="mono text-[11px] text-(--text-tertiary)">{knowledge.data?.length ?? 0} entries</span>
+        <section className="card overflow-hidden">
+          <div className="cardhead justify-between">
+            <span className="cardtitle">Knowledge library</span>
+            <span className="mono text-[11px] text-(--text-tertiary)">{knowledge.data?.length ?? 0} entries</span>
+          </div>
+          {knowledge.isLoading ? (
+            <LoadingState size={22} padding={24} />
+          ) : knowledge.error ? (
+            <Empty icon="triangle-alert">{knowledge.error.message}</Empty>
+          ) : !knowledge.data?.length ? (
+            <Empty icon="book-open">No organization knowledge has been published yet.</Empty>
+          ) : (
+            <div className="divide-y divide-(--border-subtle)">
+              {knowledge.data.map((record) => (
+                <KnowledgeEntry
+                  key={record.id}
+                  record={record}
+                  canManage={canManage}
+                  onEdit={() => setEditor(record)}
+                  onArchive={() => void archiveKnowledge(record)}
+                />
+              ))}
             </div>
-            {knowledge.isLoading ? (
-              <LoadingState size={22} padding={24} />
-            ) : knowledge.error ? (
-              <Empty icon="triangle-alert">{knowledge.error.message}</Empty>
-            ) : !knowledge.data?.length ? (
-              <Empty icon="book-open">No organization knowledge has been published yet.</Empty>
-            ) : (
-              <div className="divide-y divide-(--border-subtle)">
-                {knowledge.data.map((record) => (
-                  <KnowledgeEntry
-                    key={record.id}
-                    record={record}
-                    canManage={canManage}
-                    onEdit={() => setEditor(record)}
-                    onArchive={() => void archiveKnowledge(record)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="card overflow-hidden">
-            <div className="cardhead justify-between">
-              <span>
-                <span className="cardtitle">Managed skills</span>
-                <span className="mono ml-2 text-[10.5px] text-(--text-tertiary)">approved .skill bundles</span>
-              </span>
-              <span className="mono text-[11px] text-(--text-tertiary)">{managedSkills.data?.length ?? 0} skills</span>
-            </div>
-            {managedSkills.isLoading ? (
-              <LoadingState size={22} padding={24} />
-            ) : managedSkills.error ? (
-              <Empty icon="triangle-alert">{managedSkills.error.message}</Empty>
-            ) : !managedSkills.data?.length ? (
-              <Empty icon="sparkles">Accepted skill suggestions will appear here.</Empty>
-            ) : (
-              <div className="grid grid-cols-1 divide-y divide-(--border-subtle) desktop:grid-cols-2 desktop:divide-y-0">
-                {managedSkills.data.map((skill) => (
-                  <ManagedSkillEntry
-                    key={skill.id}
-                    skill={skill}
-                    canManage={canManage}
-                    onArchive={() => void archiveSkill(skill)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
+          )}
+        </section>
       ) : !canManage ? (
         <section className="card">
           <Empty icon="shield">Only organization owners can review Dream suggestions.</Empty>

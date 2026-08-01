@@ -4108,8 +4108,10 @@ export function setOrganizationKnowledgeArchived(id: string, archived: boolean):
   return apiPost<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/archive`, { archived })
 }
 
-export function listManagedSkills(includeArchived = false): Promise<ManagedSkillDto[]> {
-  return apiGet<ManagedSkillDto[]>(`${orgBase()}/managed-skills?includeArchived=${includeArchived ? 'true' : 'false'}`)
+export function listManagedSkills(includeArchived = false, orgId?: string): Promise<ManagedSkillDto[]> {
+  return apiGet<ManagedSkillDto[]>(
+    `${orgBase(orgId)}/managed-skills?includeArchived=${includeArchived ? 'true' : 'false'}`
+  )
 }
 
 export function listManagedSkillRevisions(id: string): Promise<ManagedSkillRevisionDto[]> {

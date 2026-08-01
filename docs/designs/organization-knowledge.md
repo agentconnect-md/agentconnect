@@ -43,10 +43,11 @@ The console gains a separate top-level **Knowledge** destination at
    state. Owners may accept or reject a pending item. Rejected items remain in
    history.
 
-Managed organization skills appear below the knowledge library on the
-Knowledge/Organization tab, while Git-backed sources remain in Tools & Skills.
-Opening one loads the immutable revision history and shows the selected bundle's
-manifest, sizes, digest, and provenance.
+Managed organization skills appear in the existing **Skills library** card on
+Tools & Skills, alongside Git-backed sources. A managed tile is labeled as an
+immutable managed bundle; opening it loads the revision history and shows the
+selected bundle's manifest, sizes, digest, and provenance. Knowledge/Organization
+contains organization knowledge only.
 Pending skill candidates remain reviewable from Knowledge/Suggestions;
 accepted bundles are never enabled automatically. An agent editor must select
 each managed skill explicitly.
@@ -488,7 +489,7 @@ daemon converges without waiting for an unrelated agent edit or restart.
 - **Web:** separate route/nav, both tabs, Markdown safety, loading/empty/error and
   offline states, role-gated controls, accept/reject refresh, responsive layout,
   knowledge and managed-skill revision selectors/provenance, managed skills in
-  library and agent picker.
+  the Tools & Skills library card alongside Git sources, and the agent picker.
 - **Repository:** migration from empty and existing PostgreSQL, protocol/daemon/
   control-plane/web tests, typecheck, lint, formatting, production build, and
   desktop/mobile browser smoke.
