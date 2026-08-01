@@ -33,6 +33,8 @@ import {
   PreviewSkillSourceBody,
   SkillSourcePreviewDto,
   SkillSourceSkillsDto,
+  SkillRegistrySearchQuery,
+  SkillRegistrySearchDto,
   SkillSourceDto,
   SkillSourceListDto,
   SetSharingBody,
@@ -218,6 +220,39 @@ export function skillSourceRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const rows = await deps.repos.skillSource.listForOrg(orgOf(req), ctx)
         return rows.map((s) => toDto(s, ctx))
+      }
+    )
+
+    // Search the public skills.sh index (the same index `npx skills find` reads) so
+    // the console can install a skill BY NAME instead of hand-typing a repo. Pure
+    // discovery: nothing is persisted here and the picked hit still goes through
+    // POST /skill-sources. Declared before `/:id` for reading order only — the
+    // static `registry` segment already outranks the parametric one in the router,
+    // and no source id is ever the literal "registry".
+    r.get(
+      '/skill-sources/registry/search',
+      {
+        schema: {
+          tags: [Tag.Skills],
+          summary: 'Search the skills.sh registry',
+          description:
+            'Look up installable skills by name in the public skills.sh index. Each hit carries the `owner/repo` source plus the skill directory name, ready to be registered with POST /skill-sources. Discovery only — nothing is persisted, and `reachable:false` (empty list) means the index could not be read rather than that nothing matched.',
+          operationId: 'searchSkillRegistry',
+          querystring: SkillRegistrySearchQuery,
+          response: { 200: SkillRegistrySearchDto, 403: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        // Registering a source is a write, so the discovery that feeds it follows the
+        // same gate as the GitHub import preview: viewers don't get the search.
+        if (denyViewerWrite(req, reply)) return
+        const search = deps.searchSkillRegistry
+        if (!search) return { reachable: false, skills: [] }
+        const result = await search(req.query.q, {
+          ...(req.query.owner ? { owner: req.query.owner } : {}),
+          limit: req.query.limit
+        })
+        return result.status === 'ok' ? { reachable: true, skills: result.skills } : { reachable: false, skills: [] }
       }
     )
 

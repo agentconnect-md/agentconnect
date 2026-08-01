@@ -555,3 +555,66 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/skill-sources/${sourceId}` })).statusCode).toBe(204)
   })
 })
+
+/**
+ * `GET /skill-sources/registry/search` — the "Install from skills.sh" discovery
+ * read. The index itself is stubbed (no network in tests); what matters here is
+ * that the route sits behind the same write gate as the rest of the install flow,
+ * that an unavailable index degrades instead of failing the request, and that the
+ * static `registry` segment is not swallowed by the sibling `/:id` route.
+ */
+describe('GET /skill-sources/registry/search', () => {
+  const hit = { id: 'anthropics/skills/pdf', name: 'pdf', source: 'anthropics/skills', installs: 42 }
+
+  function appWithRegistry(overrides: Partial<HttpApp['deps']> = {}): HttpApp {
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, overrides)
+    opened.push(app)
+    return app
+  }
+
+  it('returns normalized hits and forwards the query, owner, and limit', async () => {
+    const calls: Array<[string, unknown]> = []
+    const app = appWithRegistry({
+      searchSkillRegistry: async (query, opts) => {
+        calls.push([query, opts])
+        return { status: 'ok', skills: [hit] }
+      }
+    })
+
+    const res = await app.app.inject({
+      method: 'GET',
+      url: `${ORG}/skill-sources/registry/search?q=pdf&owner=anthropics&limit=3`
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ reachable: true, skills: [hit] })
+    expect(calls).toEqual([['pdf', { owner: 'anthropics', limit: 3 }]])
+  })
+
+  it('reports the index unreachable instead of failing the request', async () => {
+    const app = appWithRegistry({ searchSkillRegistry: async () => ({ status: 'unreachable' }) })
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/registry/search?q=pdf` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ reachable: false, skills: [] })
+  })
+
+  it('reports unreachable when the deployment wires no registry client at all', async () => {
+    const res = await makeApp().app.inject({ method: 'GET', url: `${ORG}/skill-sources/registry/search?q=pdf` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ reachable: false, skills: [] })
+  })
+
+  it('rejects a blank query and refuses a viewer', async () => {
+    const app = appWithRegistry({ searchSkillRegistry: async () => ({ status: 'ok', skills: [hit] }) })
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/registry/search?q=` })).statusCode).toBe(
+      400
+    )
+
+    const viewerId = await makeUser(`viewer-${randomUUID()}`, 'viewer')
+    const viewer = buildHttpApp(prisma, { DEFAULT_OWNER_ID: viewerId })
+    opened.push(viewer)
+    expect(
+      (await viewer.app.inject({ method: 'GET', url: `${ORG}/skill-sources/registry/search?q=pdf` })).statusCode
+    ).toBe(403)
+  })
+})

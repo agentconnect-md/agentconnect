@@ -156,6 +156,7 @@ import { pingDb } from './persistence/prisma.js'
 import { runWithSharedTx, withSharedTxRouting } from './persistence/ambient-tx.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
+import { searchSkillRegistry } from './http/skills-registry.js'
 import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
 import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/discord-identity.js'
 import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
@@ -789,6 +790,7 @@ export function buildContainer(
     verifySlackBot,
     verifySlackAppToken,
     slackConfigApi,
+    searchSkillRegistry,
     verifyTelegramBot,
     syncTelegramBotIcon: createTelegramBotIconSyncer(iconStore),
     verifyDiscordBot,

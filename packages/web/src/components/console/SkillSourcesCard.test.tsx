@@ -8,14 +8,16 @@ import { listManagedSkills, setApiOrgId, type ManagedSkillDto, type SkillSourceD
 import { consoleKeys } from '@/lib/swr-keys'
 
 const mocks = vi.hoisted(() => ({
-  skillSources: [] as SkillSourceDto[]
+  skillSources: [] as SkillSourceDto[],
+  createSkillSource: vi.fn(async (_input: unknown) => undefined)
 }))
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     skillSources: mocks.skillSources,
     skillSourcesLoading: false,
-    members: []
+    members: [],
+    createSkillSource: mocks.createSkillSource
   })
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-test' } }) }))
@@ -32,18 +34,37 @@ function ActiveManagedSkillCount() {
 let host: HTMLDivElement
 let root: Root
 
-async function settleUntil(done: () => boolean): Promise<void> {
+// `stepMs` > 0 lets a case out-wait a real debounce (the skills.sh search) instead
+// of only flushing microtasks.
+async function settleUntil(done: () => boolean, stepMs = 0): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, stepMs))
     })
     if (done()) return
   }
   throw new Error('skills library did not settle')
 }
 
+async function typeInto(element: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(element, value)
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+// `scope` matters once a dialog is open: the card's own header keeps rendering
+// behind the scrim, so "Install" is ambiguous unless the lookup is scoped.
+function buttonWithText(text: string, scope = ''): HTMLButtonElement {
+  const root = scope ? host.querySelector(scope) : host
+  const found = [...(root?.querySelectorAll('button') ?? [])].find((b) => b.textContent?.includes(text))
+  if (!found) throw new Error(`no button labeled "${text}"${scope ? ` under ${scope}` : ''}`)
+  return found
+}
+
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  mocks.createSkillSource.mockClear()
   mocks.skillSources = [
     {
       id: 'source-1',
@@ -120,6 +141,70 @@ describe('organization Skills library', () => {
     expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
       expect.stringContaining('/orgs/org-test/managed-skills?includeArchived=false')
     ])
+  })
+
+  it('installs a searched skills.sh hit as a one-skill source, and marks what the library already has', async () => {
+    // A same-repo source scoped to a subdirectory covers only that directory, so a
+    // skill elsewhere in the repo must stay installable.
+    mocks.skillSources.push({
+      ...mocks.skillSources[0]!,
+      id: 'source-2',
+      name: 'docs-kit',
+      source: 'openai/skills',
+      subDir: 'docs',
+      skills: []
+    })
+    const hits = [
+      { id: 'anthropics/skills/pdf', name: 'pdf', source: 'anthropics/skills', installs: 169905 },
+      // Covered by the seeded acme/platform-skills source (install-all), so it must
+      // render as "added" rather than as an installable choice.
+      { id: 'acme/platform-skills/review-pr', name: 'review-pr', source: 'acme/platform-skills', installs: 12 },
+      { id: 'openai/skills/xlsx', name: 'xlsx', source: 'openai/skills', installs: 7 }
+    ]
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const body = url.includes('/skill-sources/registry/search') ? { reachable: true, skills: hits } : []
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <SkillSourcesCard canWrite={true} canManage={true} />
+        </SWRConfig>
+      )
+    })
+    await act(async () => buttonWithText('Install from skills.sh').click())
+
+    await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'pdf')
+    await settleUntil(() => host.textContent?.includes('169.9K installs') === true, 40)
+
+    const searchUrl = fetchMock.mock.calls.map(([input]) => String(input)).find((u) => u.includes('/registry/search'))
+    expect(searchUrl).toContain('/orgs/org-test/skill-sources/registry/search?q=pdf')
+    // The already-covered hit is offered as disabled, naming the source that has it.
+    const covered = buttonWithText('review-pr', '.modalbody')
+    expect(covered.disabled).toBe(true)
+    expect(covered.textContent).toContain('already in your library as platform-skills')
+
+    expect(buttonWithText('xlsx', '.modalbody').disabled).toBe(false)
+
+    // Editing the query retires the previous hits for the whole debounce window —
+    // a row from a search the input no longer shows must not stay clickable.
+    await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'xlsx')
+    expect(host.querySelector('.modalbody')?.textContent).toContain('Searching…')
+    expect(host.querySelector('.modalbody')?.textContent).not.toContain('169.9K installs')
+    await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'pdf')
+    await settleUntil(() => host.textContent?.includes('169.9K installs') === true, 40)
+
+    await act(async () => buttonWithText('anthropics/skills', '.modalbody').click())
+    await act(async () => buttonWithText('Install', '.modalfoot').click())
+
+    expect(mocks.createSkillSource).toHaveBeenCalledWith({
+      name: 'pdf',
+      source: 'anthropics/skills',
+      skills: ['pdf']
+    })
   })
 
   it('revalidates the active-only library count when archiving from the include-archived view', async () => {
