@@ -897,6 +897,14 @@ model SessionMeta {
   externalScopeId     String?             @db.Uuid
   externalResolution  ExternalResolution?
   classifiedPolicyRev BigInt?             @db.BigInt
+  // Provenance for the unresolved set: true when this row was ALREADY unresolved
+  // when its policy was enabled. Such a scope only comes back if new trusted
+  // activity rebinds the session, so it is expected rather than a fault, and
+  // `state` degrades only while an unresolved row WITHOUT this mark exists (a
+  // mere COUNT cannot tell the two apart: settling one legacy row would silently
+  // absolve a live post-enable failure). Stamped at enable; A2A descendants
+  // inherit it with the audience they inherit.
+  legacyUnresolved    Boolean             @default(false)
   // Cursor tokens pass through JavaScript Date (millisecond precision), so the
   // complete keyset tuple must use the same precision in Postgres.
   lastActivityAt      DateTime            @db.Timestamptz(3)

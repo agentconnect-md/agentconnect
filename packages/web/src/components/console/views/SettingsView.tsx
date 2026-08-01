@@ -71,10 +71,14 @@ function feishuAppSettingsUrl(appId: string | null | undefined, region: 'feishu'
   return appId ? `${host}/app/${encodeURIComponent(appId)}/baseinfo` : `${host}/app`
 }
 
+// One short sub-line per state — the full access policy (who keeps seeing what,
+// and what turning the toggle off does NOT undo) lives in `details`, shown by the
+// row's info hint so the card stays two readable lines per provider.
 const SESSION_ACCESS_COPY: Record<
   SessionAccessProvider,
   {
     title: string
+    details: string
     unavailable: string
     enabled: string
     disabled: string
@@ -83,28 +87,32 @@ const SESSION_ACCESS_COPY: Record<
   }
 > = {
   slack: {
-    title: 'Follow Slack conversation access',
-    unavailable:
-      'Requires OIDC and linked Slack identities. Until then, shared sessions remain visible to Everyone who can view the agent.',
-    enabled:
-      'Public-channel sessions follow Slack workspace access. Private channels, group DMs, guests, and Slack Connect users require current conversation membership. DMs remain private. Agent memory learned earlier is not erased.',
-    disabled:
-      'New shared sessions are visible to Everyone who can view the agent. Previously synced sessions keep following Slack. DMs remain private.',
-    unresolved: (count) =>
-      `${count} historical session${count === 1 ? '' : 's'} lack a trusted Slack scope and remain hidden.`,
-    degraded: 'Slack access is degraded; unresolved sessions remain hidden.'
+    title: 'Follow Slack access',
+    details: [
+      'Public channels follow Slack workspace access; private channels, group DMs, guests and Slack Connect users need current membership.',
+      'DMs stay private, and agent memory learned earlier is not erased.',
+      'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
+      'Turning this off leaves already-synced sessions following Slack.'
+    ].join('\n'),
+    unavailable: 'Needs OIDC sign-in and linked Slack identities.',
+    enabled: 'Session visibility follows Slack conversation access.',
+    disabled: 'New sessions are visible to everyone who can view the agent.',
+    unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted Slack scope.`,
+    degraded: 'Slack scopes stopped resolving — new sessions are being hidden.'
   },
   github: {
-    title: 'Follow GitHub repository access',
-    unavailable:
-      'Requires OIDC and GitHub access checks. Until then, GitHub sessions remain visible to Everyone who can view the agent.',
-    enabled:
-      'Public repository sessions remain visible to members who can view the agent. Private repository sessions require a linked GitHub profile with current access. Agent memory learned earlier is not erased.',
-    disabled:
-      'New GitHub sessions are visible to Everyone who can view the agent. Previously synced sessions keep following GitHub.',
-    unresolved: (count) =>
-      `${count} historical session${count === 1 ? '' : 's'} lack a trusted GitHub repository scope and remain hidden.`,
-    degraded: 'GitHub access is degraded; unresolved sessions remain hidden.'
+    title: 'Follow GitHub access',
+    details: [
+      'Public-repository sessions stay visible to members who can view the agent; private-repository sessions need a linked GitHub profile with current access.',
+      'Agent memory learned earlier is not erased.',
+      'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
+      'Turning this off leaves already-synced sessions following GitHub.'
+    ].join('\n'),
+    unavailable: 'Needs OIDC sign-in and GitHub access checks.',
+    enabled: 'Session visibility follows GitHub repository access.',
+    disabled: 'New sessions are visible to everyone who can view the agent.',
+    unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted repository scope.`,
+    degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
   }
 }
 
@@ -148,15 +156,25 @@ function SessionAccessRow({
 
   return (
     <div className={`flex items-center gap-3 px-4 py-[15px] ${bordered ? 'border-t border-(--border-subtle)' : ''}`}>
-      <span className="flex h-9 w-9 flex-none items-center justify-center rounded-[9px] bg-(--surface-active)">
-        {provider === 'slack' ? (
-          <PlatformMark platform="slack" fillPct={100} />
-        ) : (
-          <GithubMark color="var(--text-primary)" />
-        )}
+      {/* Same platform tile as the Bots / GitHub rows above — a 14px mark on the
+          bordered plate, so both providers read at one weight. */}
+      <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card) text-(--text-primary)">
+        <span className="flex h-[14px] w-[14px] items-center justify-center">
+          <PlatformMark platform={provider} fillPct={100} />
+        </span>
       </span>
       <div className="min-w-0 flex-1">
-        <div className="font-sans text-[13px] font-semibold leading-normal">{copy.title}</div>
+        <div className="flex items-center gap-[5px]">
+          <span className="font-sans text-[13px] font-semibold leading-normal">{copy.title}</span>
+          <button
+            type="button"
+            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+            aria-label={`${copy.title} — what this covers`}
+            title={copy.details}
+          >
+            <Icon name="info" size={13} />
+          </button>
+        </div>
         <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
           {access?.available === false && !access.enabled
             ? copy.unavailable
@@ -164,9 +182,18 @@ function SessionAccessRow({
               ? copy.enabled
               : copy.disabled}
         </div>
-        {(access?.state === 'degraded' || hiddenSessions > 0) && (
+        {/* Amber is reserved for the actionable case — a scope that stopped
+            resolving AFTER enablement. The hidden-session backlog is expected
+            and permanent (the CP freezes it as the policy's legacy mark), so it
+            reads as a muted fact, not a fault the owner is failing to clear. */}
+        {access?.state === 'degraded' && (
           <div className="mt-1 font-sans text-[11.5px] font-medium leading-normal text-(--status-paused)">
-            {hiddenSessions > 0 ? copy.unresolved(hiddenSessions) : copy.degraded}
+            {copy.degraded}
+          </div>
+        )}
+        {hiddenSessions > 0 && (
+          <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            {copy.unresolved(hiddenSessions)}
           </div>
         )}
         {(currentActionError || loadError) && (

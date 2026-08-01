@@ -970,6 +970,9 @@ export interface SessionMetaRecord {
   externalProvider: string | null
   externalScopeId: string | null
   externalResolution: ExternalResolution | null
+  /** Already unresolved when the policy was enabled — expected history rather
+   *  than a live failure, and inherited with the audience by A2A descendants. */
+  legacyUnresolved: boolean
   classifiedPolicyRev: bigint | null
   startedAt: Date
   endedAt: Date | null
@@ -1066,8 +1069,9 @@ export interface SessionRepo {
   getExternalAccessPolicy(orgId: OrgId, provider: string): Promise<SessionExternalAccessPolicyRecord | null>
   countExternalUnresolved(orgId: OrgId, provider: string): Promise<number>
   /** Owner-only HTTP route calls this transactional transition. Enabling places
-   *  the read fence before classifying legacy candidates; unresolved history is
-   *  retained as degraded and hidden. Disabling never widens historical rows. */
+   *  the read fence before classifying legacy candidates; unresolved history stays
+   *  hidden and is adopted as `legacyUnresolved` rather than reported as a fault.
+   *  Disabling never widens historical rows. */
   setExternalAccessEnabled(
     orgId: OrgId,
     provider: string,

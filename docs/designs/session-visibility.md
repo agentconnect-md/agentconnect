@@ -159,6 +159,17 @@ enum VisibilitySource {
   AgentConnect database.
 - `SessionExternalAccessPolicy` is per organization and provider. Its revision
   and read fence make enablement fail closed while historical rows converge.
+  History whose scope cannot be reconstructed only settles if new trusted
+  activity rebinds the same session, so treating it as degradation would pin any
+  organization with pre-existing history to a permanent fault state and bury the
+  one signal that matters. Enablement therefore stamps
+  `SessionMeta.legacyUnresolved` on the rows that are already unresolved
+  at that instant, and `degraded` means an unresolved row exists **without** that
+  mark — a candidate that failed to resolve after the policy was turned on. The
+  provenance is per row on purpose: a mere count of the backlog is fungible, so
+  settling one legacy row would offset a live post-enable failure and silently
+  clear the fault. A2A descendants inherit the mark with the audience they
+  inherit; the backlog stays reportable to owners as `hiddenSessions`.
 
 **Migration / backfill:** the original visibility migration populated `orgId`
 and kept legacy rows `org`; it did not guess DM ownership. The Slack-audience
@@ -397,6 +408,17 @@ a linked identity; a private repository requires the linked GitHub user to
 retain read permission. Provider errors, timeouts, unresolved history, and
 stale revisions deny access. Organization roles, including owner, never bypass
 this predicate.
+
+Denial and degradation are separate outcomes. A provider that **answers** —
+Slack `channel_not_found` / `not_in_channel` (the conversation is deleted, or
+the bot is no longer in it) or `user_not_found`, GitHub returning no repository
+for the id — is a verdict: deny, cached for the deny TTL, `degraded` stays
+false. Losing access to a conversation is an ordinary event and must not be
+reported as a broken deployment. Only a check that could not be completed —
+auth, missing scope, rate limiting, an outage, an unrecognized error code, a
+transport failure — is `unknown`: deny plus `degraded`, which is what raises
+"external access checks are unavailable" and is re-asked on the short unknown
+TTL.
 
 All of these already gate on agent visibility; each additionally applies the
 session predicate:

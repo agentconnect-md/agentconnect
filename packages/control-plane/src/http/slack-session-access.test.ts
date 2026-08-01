@@ -166,4 +166,56 @@ describe('SlackSessionAccessService', () => {
       degraded: true
     })
   })
+
+  // A deleted private channel — and a bot removed from one, which is the same
+  // answer over the wire — is an everyday event. It denies, but it must not be
+  // reported as "access checks unavailable": nothing is broken and no retry
+  // changes the verdict.
+  it.each(['channel_not_found', 'not_in_channel'] as const)(
+    'denies without degrading when the conversation is gone (%s)',
+    async (error) => {
+      const resolver = service(async () => json({ ok: false, error }))
+      await expect(resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))).resolves.toEqual({
+        allowedScopes: [],
+        degraded: false
+      })
+    }
+  )
+
+  it('denies without degrading when the member list no longer contains the workspace user', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        return json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+      }
+      return json({ ok: false, error: 'user_not_found' })
+    })
+    await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_INSTALL:U_GONE']))).resolves.toEqual({
+      allowedScopes: [],
+      degraded: false
+    })
+  })
+
+  // The definitive verdict earns the deny TTL, so a dead conversation is not
+  // re-asked on every page of every list.
+  it('caches the gone verdict instead of re-asking Slack per request', async () => {
+    const fetchImpl = vi.fn(async () => json({ ok: false, error: 'channel_not_found' }))
+    const resolver = service(fetchImpl)
+    await resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))
+    const afterFirst = fetchImpl.mock.calls.length
+    await resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))
+    expect(fetchImpl.mock.calls.length).toBe(afterFirst)
+  })
+
+  it('still degrades when the check itself fails', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        return json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+      }
+      return json({ ok: false, error: 'missing_scope' })
+    })
+    await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))).resolves.toEqual({
+      allowedScopes: [],
+      degraded: true
+    })
+  })
 })

@@ -81,6 +81,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     externalProvider: s.externalProvider,
     externalScopeId: s.externalScopeId,
     externalResolution: (s.externalResolution as ExternalResolution | null) ?? null,
+    legacyUnresolved: s.legacyUnresolved,
     classifiedPolicyRev: s.classifiedPolicyRev,
     startedAt: s.startedAt,
     endedAt: s.endedAt
@@ -295,6 +296,9 @@ type ResolvedSessionClassification = {
   externalProvider: string | null
   externalScopeId: string | null
   externalResolution: ExternalResolution | null
+  // A freshly classified candidate is never legacy: enablement is what stamps
+  // the mark, and an A2A child copies it from the parent whose audience it takes.
+  legacyUnresolved: boolean
   classifiedPolicyRev: bigint | null
 }
 
@@ -346,6 +350,7 @@ export class PgSessionRepo implements SessionRepo {
             externalProvider: null,
             externalScopeId: null,
             externalResolution: null,
+            legacyUnresolved: false,
             classifiedPolicyRev: null
           }
     if (ev.externalCandidate) {
@@ -404,6 +409,7 @@ export class PgSessionRepo implements SessionRepo {
         externalProvider: candidate.provider,
         externalScopeId: scopeId,
         externalResolution: resolution,
+        legacyUnresolved: false,
         classifiedPolicyRev: policy.currentRev
       }
     }
@@ -416,6 +422,7 @@ export class PgSessionRepo implements SessionRepo {
         externalProvider: null,
         externalScopeId: null,
         externalResolution: null,
+        legacyUnresolved: false,
         classifiedPolicyRev: null
       }
     }
@@ -428,13 +435,14 @@ export class PgSessionRepo implements SessionRepo {
             externalProvider: string | null
             externalScopeId: string | null
             externalResolution: string | null
+            legacyUnresolved: boolean
             classifiedPolicyRev: bigint | null
           }>
         >(
           Prisma.sql`
             SELECT "visibility", "ownerIdentity", "visibilitySource",
                    "externalProvider", "externalScopeId", "externalResolution",
-                   "classifiedPolicyRev"
+                   "legacyUnresolved", "classifiedPolicyRev"
             FROM "session_meta" WHERE "id" = ${ev.parentSessionId} FOR SHARE
           `
         )
@@ -456,6 +464,7 @@ export class PgSessionRepo implements SessionRepo {
         externalProvider: null,
         externalScopeId: null,
         externalResolution: null,
+        legacyUnresolved: false,
         classifiedPolicyRev: null
       }
     }
@@ -466,6 +475,9 @@ export class PgSessionRepo implements SessionRepo {
       externalProvider: parent[0]!.externalProvider,
       externalScopeId: parent[0]!.externalScopeId,
       externalResolution: parent[0]!.externalResolution as ExternalResolution | null,
+      // Inherit the parent's provenance too: a child of a legacy-unresolvable
+      // parent can never resolve either, and must not read as a new failure.
+      legacyUnresolved: parent[0]!.legacyUnresolved,
       classifiedPolicyRev: parent[0]!.classifiedPolicyRev
     }
   }
@@ -493,6 +505,7 @@ export class PgSessionRepo implements SessionRepo {
           "externalProvider" = ${parent.externalProvider},
           "externalScopeId" = ${parent.externalScopeId}::uuid,
           "externalResolution" = ${parent.externalResolution}::"ExternalResolution",
+          "legacyUnresolved" = ${parent.legacyUnresolved},
           "classifiedPolicyRev" = ${parent.classifiedPolicyRev},
           "visibilitySource" = 'inherited'::"VisibilitySource",
           "visibilityRev" = "visibilityRev" + 1,
@@ -560,7 +573,7 @@ export class PgSessionRepo implements SessionRepo {
         Prisma.sql`
           SELECT "visibility", "ownerIdentity", "visibilitySource",
                  "externalProvider", "externalScopeId", "externalResolution",
-                 "classifiedPolicyRev"
+                 "legacyUnresolved", "classifiedPolicyRev"
           FROM "session_meta" WHERE "id" = ${parentSessionId} FOR SHARE
         `
       )
@@ -573,6 +586,10 @@ export class PgSessionRepo implements SessionRepo {
           "externalProvider" = ${parent[0]!.externalProvider},
           "externalScopeId" = ${parent[0]!.externalScopeId}::uuid,
           "externalResolution" = ${parent[0]!.externalResolution}::"ExternalResolution",
+          -- Provenance travels with the audience on BOTH inheritance paths, or a
+          -- child that settles here after its parent was stamped legacy would
+          -- look like a post-enable failure and degrade the policy for good.
+          "legacyUnresolved" = ${parent[0]!.legacyUnresolved},
           "classifiedPolicyRev" = ${parent[0]!.classifiedPolicyRev},
           "visibilitySource" = 'inherited'::"VisibilitySource",
           "visibilityRev" = "visibilityRev" + 1,
@@ -668,8 +685,8 @@ export class PgSessionRepo implements SessionRepo {
         "threadUrl", "runtime", "model", "effort", "fastMode",
         "permissionMode", "outputMode", "daemonId", "orgId", "visibility",
         "ownerIdentity", "visibilitySource", "externalProvider",
-        "externalScopeId", "externalResolution", "classifiedPolicyRev",
-        "startedAt", "endedAt", "updatedAt"
+        "externalScopeId", "externalResolution", "legacyUnresolved",
+        "classifiedPolicyRev", "startedAt", "endedAt", "updatedAt"
       ) VALUES (
         ${ev.sessionId}, ${ev.parentSessionId ?? null}, ${ev.agentId},
         ${ev.launchId ?? null}, ${ev.platform ?? null}, ${ev.channel ?? null},
@@ -684,7 +701,8 @@ export class PgSessionRepo implements SessionRepo {
         ${cls.visibility}::"SessionVisibility", ${cls.ownerIdentity},
         ${cls.source}::"VisibilitySource", ${cls.externalProvider},
         ${cls.externalScopeId}::uuid, ${cls.externalResolution}::"ExternalResolution",
-        ${cls.classifiedPolicyRev}, ${ev.at}, ${endedAt ?? null}, CURRENT_TIMESTAMP
+        ${cls.legacyUnresolved}, ${cls.classifiedPolicyRev}, ${ev.at},
+        ${endedAt ?? null}, CURRENT_TIMESTAMP
       )
       -- Visibility remains first-wins here. The narrow legacy pending → trusted
       -- external transition, when applicable, happened in the guarded UPDATE
@@ -768,17 +786,34 @@ export class PgSessionRepo implements SessionRepo {
       cls.visibility === 'external' &&
       (cls.externalResolution !== 'settled' || rebound)
     ) {
-      const unresolved = await tx.sessionMeta.count({
-        where: {
-          orgId,
-          externalProvider: cls.externalProvider,
-          externalResolution: { in: ['pending', 'invalid'] }
-        }
-      })
-      await tx.sessionExternalAccessPolicy.updateMany({
-        where: { orgId, provider: cls.externalProvider, state: { not: 'disabled' } },
-        data: { state: unresolved > 0 ? 'degraded' : 'enabled' }
-      })
+      // Degradation is per row, not a count: history the migration could not bind
+      // never settles, so counting it as a fault would pin the policy to
+      // 'degraded' forever — and a count also lets a legacy row settling cancel
+      // out a live post-enable failure, silently clearing the fault while it is
+      // still there. Only an unresolved row that is NOT marked legacy degrades.
+      // Same row predicate as `countExternalUnresolved`, so the state signal and
+      // the owner-facing `hiddenSessions` diagnostic never disagree about which
+      // rows are hidden.
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "session_external_access_policy" p
+        SET "state" = CASE
+              WHEN EXISTS (
+                SELECT 1 FROM "session_meta" s
+                WHERE s."orgId" = p."orgId"
+                  AND s."externalProvider" = p."provider"
+                  AND s."visibility" = 'external'::"SessionVisibility"
+                  AND s."externalResolution" IN (
+                    'pending'::"ExternalResolution", 'invalid'::"ExternalResolution"
+                  )
+                  AND NOT s."legacyUnresolved"
+              ) THEN 'degraded'::"ExternalAccessPolicyState"
+              ELSE 'enabled'::"ExternalAccessPolicyState"
+            END,
+            "updatedAt" = CURRENT_TIMESTAMP
+        WHERE p."orgId" = ${orgId}
+          AND p."provider" = ${cls.externalProvider}
+          AND p."state" <> 'disabled'::"ExternalAccessPolicyState"
+      `)
     }
     return { recorded: true, session, settled }
   }
@@ -1060,12 +1095,28 @@ export class PgSessionRepo implements SessionRepo {
         where: {
           orgId,
           externalProvider: provider,
+          visibility: 'external',
           externalResolution: { in: ['pending', 'invalid'] }
         }
       })
+      // Whatever is unresolved at this instant is history the migration could not
+      // bind — expected and hidden, but not a fault. Mark those rows so only a
+      // candidate that fails to resolve LATER degrades the policy. Marking the
+      // rows (rather than remembering how many there were) is what keeps a live
+      // failure visible after a legacy row settles. The count itself stays
+      // reportable as `hiddenSessions`. Re-enabling re-stamps from scratch: a row
+      // that settled in between is cleared by the same statement.
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "session_meta"
+        SET "legacyUnresolved" = "externalResolution" IN (
+              'pending'::"ExternalResolution", 'invalid'::"ExternalResolution"
+            )
+        WHERE "orgId" = ${orgId}
+          AND "externalProvider" = ${provider}
+      `)
       const policy = await tx.sessionExternalAccessPolicy.update({
         where: { orgId_provider: { orgId, provider } },
-        data: { state: hiddenSessions > 0 ? 'degraded' : 'enabled' }
+        data: { state: 'enabled' }
       })
       return {
         policy: toExternalPolicyRecord(policy),
