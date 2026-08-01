@@ -195,17 +195,48 @@ Other platforms must use foreground `agentconnect run`.
 The generated service executes:
 
 ```text
-<node> <root>/current/dist/index.js run
+<node> <cli dist entry> run
 ```
 
-It sets `AGENTCONNECT_SUPERVISOR=service`. A custom root is also passed through
-`AGENTCONNECT_ROOT`. Because the unit follows `current`, changing daemon
-versions does not require rewriting the service definition.
+That is the CLI's own run shell (§4.1) — the unit supervises the CLI, and the
+CLI supervises the daemon. This indirection exists for the environment: service
+managers give user units a minimal `PATH` and never source shell profiles, so
+in service mode the run shell launches the daemon **through the user's
+interactive login shell** (`$SHELL -l -i -c 'exec "$0" "$@"' <node> <entry>
+run`, with a fish variant; the shell `exec`s the daemon in place, preserving
+the pid). The daemon is therefore born with a fresh terminal-equivalent
+environment — version-managed node/npx, `~/.local/bin`, profile `export`s —
+and tracks profile edits at every service restart.
+
+Readiness is watched via the daemon's `<root>/daemon.lock` (lock content ==
+child pid, valid because `exec` preserves the pid). If the login shell never
+reaches the daemon before the deadline — a hanging or `exec`-hijacking profile
+(`tmux`), or a profile error — the run shell SIGKILLs the attempt's **whole
+process group** (the launch is `detached`, so a profile blocking in a child
+command is reaped too, not just the shell pid) and falls back to plain direct
+spawns for the rest of the process's life, so a broken profile degrades the
+environment rather than the service. On systemd the unit sets `KillMode=mixed`
+so a stop delivers `SIGTERM` to the run shell only — which forwards exactly one
+`TERM` to the daemon, preserving graceful drain — while the final `KILL`
+escalation still sweeps the whole cgroup. Hosts whose login shell has no safe
+exec template (tcsh &c.) use the direct spawn from the start. The unit also
+bakes in an install-time `PATH` snapshot as a floor for the CLI itself and the
+direct-spawn fallback, and the daemon prepends its own Node bin dir on startup
+as a last-resort backstop (covers legacy direct-ExecStart units).
+
+It sets `AGENTCONNECT_SUPERVISOR=service` for the CLI; the daemon child runs
+with `AGENTCONNECT_SUPERVISOR=cli` because the CLI run shell is its supervisor
+and handles `RESERVED_RESTART_CODE` itself. A custom root is also passed
+through `AGENTCONNECT_ROOT`. The run shell re-resolves `current` at every
+(re)spawn, so changing daemon versions does not require rewriting the service
+definition. Legacy units that execute `<root>/current/dist/index.js run`
+directly keep working and migrate to the CLI form on the next `install-service`.
 
 `install-service` writes the service definition but does not start it;
 `agentconnect up` starts it. `uninstall-service` stops and removes it. The
-service definition retains the Node executable used during installation, so a
-Node runtime change requires reinstalling the service.
+service definition retains the Node executable and the CLI entry path used
+during installation, so a Node runtime change — or a CLI reinstall that moves
+its entry — requires reinstalling the service.
 
 Interactive `agentconnect login` ensures an active daemon version exists before
 installing and starting the service, so first-time onboarding does not require a

@@ -38,6 +38,43 @@ describe('buildPlist', () => {
     expect(plist).not.toContain('AGENTCONNECT_ROOT')
   })
 
+  it('runs the CLI run shell when a cliEntry is pinned', () => {
+    const plist = buildPlist({
+      label: 'md.agentconnect.daemon',
+      execPath: '/usr/bin/node',
+      logPath: '/home/u/.agentconnect/logs/daemon.log',
+      root: '/home/u/.agentconnect',
+      includeRootEnv: false,
+      cliEntry: '/opt/homebrew/lib/node_modules/agentconnect/dist/index.js'
+    })
+    expect(plist).toContain('<string>/opt/homebrew/lib/node_modules/agentconnect/dist/index.js</string>')
+    expect(plist).not.toContain('current/dist/index.js')
+  })
+
+  it('bakes the installing shell PATH into EnvironmentVariables, XML-escaped', () => {
+    const plist = buildPlist({
+      label: 'md.agentconnect.daemon',
+      execPath: '/usr/bin/node',
+      logPath: '/home/u/.agentconnect/logs/daemon.log',
+      root: '/home/u/.agentconnect',
+      includeRootEnv: false,
+      envPath: '/opt/homebrew/bin:/a&b/bin'
+    })
+    expect(plist).toContain('<key>PATH</key>')
+    expect(plist).toContain('<string>/opt/homebrew/bin:/a&amp;b/bin</string>')
+  })
+
+  it('omits the PATH entry when no envPath is supplied', () => {
+    const plist = buildPlist({
+      label: 'md.agentconnect.daemon',
+      execPath: '/usr/bin/node',
+      logPath: '/home/u/.agentconnect/logs/daemon.log',
+      root: '/home/u/.agentconnect',
+      includeRootEnv: false
+    })
+    expect(plist).not.toContain('<key>PATH</key>')
+  })
+
   it('includes AGENTCONNECT_ROOT when non-default', () => {
     const plist = buildPlist({
       label: 'md.agentconnect.daemon',

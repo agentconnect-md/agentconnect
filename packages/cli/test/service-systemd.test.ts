@@ -27,9 +27,38 @@ describe('buildSystemdUnit', () => {
     // ExecStart runs the stable current-symlink path, not a versioned dist.
     expect(unit).toContain('ExecStart=/usr/bin/node /home/u/.agentconnect/current/dist/index.js run')
     expect(unit).toContain('Restart=always')
+    // TERM goes to the main process only (the run shell forwards exactly one
+    // TERM to the daemon); KILL escalation still sweeps the cgroup.
+    expect(unit).toContain('KillMode=mixed')
     expect(unit).toContain('Environment=AGENTCONNECT_SUPERVISOR=service')
     expect(unit).toContain('WantedBy=default.target')
     expect(unit).not.toContain('AGENTCONNECT_ROOT')
+  })
+
+  it('runs the CLI run shell when a cliEntry is pinned', () => {
+    const unit = buildSystemdUnit({
+      execPath: '/usr/bin/node',
+      root: '/home/u/.agentconnect',
+      includeRootEnv: false,
+      cliEntry: '/nvm/lib/node_modules/agentconnect/dist/index.js'
+    })
+    expect(unit).toContain('ExecStart=/usr/bin/node /nvm/lib/node_modules/agentconnect/dist/index.js run')
+    expect(unit).not.toContain('current/dist/index.js')
+  })
+
+  it('bakes the installing shell PATH in as a quoted, %-escaped Environment line', () => {
+    const unit = buildSystemdUnit({
+      execPath: '/usr/bin/node',
+      root: '/home/u/.agentconnect',
+      includeRootEnv: false,
+      envPath: '/home/u/.nvm/versions/node/v24.16.0/bin:/dir with space:/opt/100%/bin'
+    })
+    expect(unit).toContain('Environment="PATH=/home/u/.nvm/versions/node/v24.16.0/bin:/dir with space:/opt/100%%/bin"')
+  })
+
+  it('omits the PATH line when no envPath is supplied', () => {
+    const unit = buildSystemdUnit({ execPath: '/usr/bin/node', root: '/home/u/.agentconnect', includeRootEnv: false })
+    expect(unit).not.toContain('Environment="PATH=')
   })
 
   it('adds Environment=AGENTCONNECT_ROOT when non-default', () => {

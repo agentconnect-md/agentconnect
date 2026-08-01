@@ -36,6 +36,17 @@ describe('buildInstallOpts', () => {
     const result = buildInstallOpts({})
     expect(result.execPath).toBe(process.execPath)
   })
+
+  it('snapshots the invoking shell PATH as envPath', () => {
+    const result = buildInstallOpts({})
+    expect(result.envPath).toBe(process.env.PATH)
+  })
+
+  it('pins the CLI entry when supplied', () => {
+    const result = buildInstallOpts({ cliEntry: '/cli/dist/index.js' })
+    expect(result.cliEntry).toBe('/cli/dist/index.js')
+    expect(buildInstallOpts({}).cliEntry).toBeUndefined()
+  })
 })
 
 describe('persistCredentials', () => {
