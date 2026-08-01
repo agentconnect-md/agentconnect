@@ -13,15 +13,21 @@ import { readFileSync } from 'node:fs'
 const bundlePath = new URL('../dist/index.js', import.meta.url)
 const bundle = readFileSync(bundlePath, 'utf8')
 
-// Any static `import ... from '@agentconnect.md/x'` / `export ... from '...'`
-// left in the bundle means a workspace package wasn't inlined. These are never
-// published as deps, so they are unresolvable at runtime.
-const leaked = [...bundle.matchAll(/\bfrom\s*["'](@agentconnect\.md\/[^"']+)["']/g)].map((m) => m[1])
+// These packages must be embedded because the published manifest has no runtime
+// dependencies. Cover both static imports and the dynamic import used by the
+// daemon's hidden, exact-pinned skills CLI entry.
+const specs = [
+  ...bundle.matchAll(/\bfrom\s*["']([^"']+)["']/g),
+  ...bundle.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)
+].map((match) => match[1])
+const leaked = specs.filter(
+  (spec) => spec.startsWith('@agentconnect.md/') || spec === 'skills' || spec.startsWith('skills/')
+)
 
 if (leaked.length > 0) {
   const unique = [...new Set(leaked)].sort()
   console.error(
-    '✗ daemon bundle is not self-contained — these workspace imports were left external:\n' +
+    '✗ daemon bundle is not self-contained — these required imports were left external:\n' +
       unique.map((s) => `    ${s}`).join('\n') +
       '\n  tsdown must inline them. Ensure workspace deps are built before tsdown runs\n' +
       "  (the build's `pnpm --filter '{.}^...' build` step needs `dependencies` intact).\n"
@@ -29,4 +35,4 @@ if (leaked.length > 0) {
   process.exit(1)
 }
 
-console.log('✓ daemon bundle is self-contained (no external @agentconnect.md/* imports)')
+console.log('✓ daemon bundle is self-contained (workspace packages and skills CLI are bundled)')

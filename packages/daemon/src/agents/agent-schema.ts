@@ -202,8 +202,8 @@ export const AgentSchema = z.object({
   // at ACP session/new|load, after the daemon's own bridge entry. Empty ⇒ none;
   // unknown names are skipped with a warn (see mcp/resolve-servers.ts).
   mcpServers: z.array(z.string()).default([]),
-  // Skill sources to install into the workspace via `npx skills` after clone and
-  // before the ACP host spawns (design: docs/designs/shared-skills.md). CP-owned,
+  // Skill sources to install into the workspace via the daemon-bundled `skills`
+  // CLI after clone and before the ACP host spawns (design: docs/designs/shared-skills.md). CP-owned,
   // shipped inline on AgentSpec.skills — each entry is self-contained so the daemon
   // needs nothing but agent.json to install. Supersedes the deprecated
   // `workspace.skills` string list below (which is now an unused no-op).

@@ -1,10 +1,10 @@
 /**
- * Map an AgentConnect runtime id to the `npx skills` agent identifier used by
+ * Map an AgentConnect runtime id to the bundled `skills` CLI agent identifier used by
  * vercel-labs/skills (docs/designs/shared-skills.md §6.2). The CLI knows each
  * agent's per-runtime skills directory, so we only need to name the agent.
  *
  * Returns undefined when no native mapping exists — the caller then skips the
- * `npx skills` install for that runtime (the prompt-fallback path is P2, §6.5).
+ * installer for that runtime (the prompt-fallback path is P2, §6.5).
  * Matching is by substring so both bare ids ("claude") and ACP-suffixed ids
  * ("claude-acp") resolve.
  */

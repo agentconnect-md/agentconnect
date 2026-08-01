@@ -1,144 +1,320 @@
 /**
- * Install an agent's enabled skills into its workspace via `npx skills`
- * (docs/designs/shared-skills.md §6). Runs after the workspace is ready and
- * before the ACP session starts, so the runtime discovers the skills in its
- * project-scope directory (Claude: `<cwd>/.claude/skills`). The CLI owns the
- * per-runtime target layout — we only name the agent (`-a`).
+ * Install an agent's enabled skills into its workspace with the exact-pinned
+ * `skills` CLI bundled into the daemon (docs/designs/shared-skills.md §6).
+ * Runs after the workspace is ready and before the ACP session starts, so the
+ * runtime discovers skills in its project-scope directory.
  *
- * Non-blocking by contract: any failure (offline, missing CLI, bad source, a
- * runtime with no `npx skills` mapping) degrades to "no skill installed" and the
- * session still starts. Idempotent: a fingerprint marker in the workspace skips
- * the whole `npx` pass when the enabled set + runtime are unchanged, so the
- * common case costs one stat, not a network round-trip.
+ * The workspace is agent-writable across sessions while this installer runs
+ * with daemon authority. Consequently:
  *
- * Reconciling: `npx skills add` only ADDS, so disabling or narrowing a source
- * would leave stale skill copies the runtime keeps auto-discovering. The marker
- * records exactly the skill directories THIS daemon created; a changed run removes
- * those first (never touching manually-authored skills) before re-installing the
- * desired set — including the zero-desired case.
+ * - the CLI is launched through the daemon's own hidden entry, never `npx` or
+ *   project-local package resolution;
+ * - reconciliation state lives below the daemon-owned agent root, not `cwd`;
+ * - every workspace path the daemon removes or the CLI writes is checked with
+ *   no-follow containment first.
+ *
+ * Non-blocking by contract: a refused path, offline source, or unsupported
+ * runtime degrades to no newly installed skill and the session still starts.
  */
 import { execFile } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync
-} from 'node:fs'
-import { dirname, join } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, promises as fsp } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { AgentSkillEntry } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import { ContainedPathError, containedRemoveDir, containedTarget } from '../fs/contained-path.js'
 import { skillsAgentId } from './runtime-agent-map.js'
+import { SKILLS_CLI_VERSION } from './version.js'
 
-const execFileAsync = promisify(execFile)
+export { SKILLS_CLI_VERSION } from './version.js'
 
-// The `npx skills` package spec (design §6.2 — pinning guards against CLI drift).
-// Ops pin a specific version via AC_SKILLS_CLI (e.g. "skills@1.4.0" or a tarball
-// URL) without a code change; the default tracks latest. Trimmed + validated to a
-// plain package spec so the env value can't smuggle extra npx arguments.
-const DEFAULT_SKILLS_CLI_SPEC = 'skills'
-export function resolveSkillsCliSpec(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.AC_SKILLS_CLI?.trim()
-  if (!raw || raw.startsWith('-') || /\s/.test(raw)) return DEFAULT_SKILLS_CLI_SPEC
-  return raw
-}
-// Per-source install budget. A wedged network fetch must not hold the session.
+type SkillsExec = (
+  file: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeout: number }
+) => Promise<unknown>
+
+const execFileAsync = promisify(execFile) as SkillsExec
+
 const INSTALL_TIMEOUT_MS = 20_000
 const MARKER_DIR = '.agentconnect'
 const MARKER_FILE = 'skills-install.json'
-// Project-scope skill roots the CLI writes into, relative to the ACP cwd: Claude
-// uses `.claude/skills`, the other supported agents (codex/cursor/opencode/gemini)
-// use `.agents/skills`. Both are watched for reconcile + git-excluded.
-const SKILL_ROOTS = ['.claude/skills', '.agents/skills']
+const MAX_MARKER_BYTES = 64 * 1024
+const LOCAL_LOCK_FILE = 'skills-lock.json'
+const MAX_LOCAL_LOCK_BYTES = 1024 * 1024
+const MAX_WORKSPACE_RECORDS = 16
+const WORKSPACE_ID = /^[0-9a-f]{64}$/
+const SKILL_ROOTS = ['.claude/skills', '.agents/skills'] as const
 
-interface Marker {
+interface WorkspaceRecord {
   fingerprint?: string
   /** cwd-relative skill dirs this daemon created (for reconcile removal). */
   installed: string[]
 }
 
-/** Compose the string handed to `npx skills add` from a skill entry, folding an
- *  optional ref/subDir into the GitHub `tree/<ref>/<subdir>` path form (design §5).
- *  A source that already carries a `tree/` path, or a non-GitHub URL, passes
- *  through untouched. */
+interface Marker {
+  /** Ownership records keyed by daemon-computed workspace directory identity. */
+  workspaces: Record<string, WorkspaceRecord>
+}
+
+function isErrno(err: unknown, code: string): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === code
+}
+
+/** Compose the string handed to `skills add` from a skill entry, folding an
+ * optional ref/subDir into the GitHub `tree/<ref>/<subdir>` path form. */
 export function composeSource(entry: AgentSkillEntry): string {
   const { source, ref, subDir } = entry
-  if (/\/tree\//.test(source)) return source // already pinned to a ref/path
+  if (/\/tree\//.test(source)) return source
   if (!ref && !subDir) return source
   const shorthand = /^[^/\s]+\/[^/\s]+$/.test(source)
   const base = shorthand ? `https://github.com/${source}` : source
-  if (!/^https?:\/\/github\.com\//i.test(base)) return source // only github supports the tree path form
+  if (!/^https?:\/\/github\.com\//i.test(base)) return source
   const suffix = subDir ? `/${subDir.replace(/^\/+/, '')}` : ''
   return `${base.replace(/\/+$/, '')}/tree/${ref ?? 'main'}${suffix}`
 }
 
-function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[], cliSpec: string): string {
-  return createHash('sha256').update(JSON.stringify({ runtime, agentId, entries, cliSpec })).digest('hex')
+function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[], workspaceId: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ runtime, agentId, entries, cliVersion: SKILLS_CLI_VERSION, workspaceId }))
+    .digest('hex')
 }
 
-function markerPath(cwd: string): string {
-  return join(cwd, MARKER_DIR, MARKER_FILE)
+/** Bind private ownership state to one concrete workspace directory instance.
+ * The canonical path catches cwd switches; dev+ino catches a materialization
+ * replaced at the same path. The agent cannot forge this private marker. */
+async function workspaceIdentity(cwd: string): Promise<string> {
+  const canonical = await fsp.realpath(cwd)
+  const stat = await fsp.lstat(canonical)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new ContainedPathError('skills workspace is not a real directory')
+  }
+  return createHash('sha256')
+    .update(JSON.stringify({ path: canonical, dev: String(stat.dev), ino: String(stat.ino) }))
+    .digest('hex')
 }
 
-function readMarker(cwd: string): Marker {
+function markerPath(stateDir: string): string {
+  return join(stateDir, MARKER_DIR, MARKER_FILE)
+}
+
+async function atomicContainedWrite(
+  boundary: string,
+  root: string,
+  destination: string,
+  body: string,
+  label: string,
+  mode = 0o600
+): Promise<void> {
+  const target = await containedTarget(boundary, root, destination, { create: true, label })
+  if (!target) throw new ContainedPathError(`${label} could not be resolved`)
+  const temp = join(dirname(target), `.agentconnect-${randomUUID()}.tmp`)
   try {
-    const raw = JSON.parse(readFileSync(markerPath(cwd), 'utf8')) as { fingerprint?: unknown; installed?: unknown }
-    return {
-      ...(typeof raw.fingerprint === 'string' ? { fingerprint: raw.fingerprint } : {}),
-      installed: Array.isArray(raw.installed) ? raw.installed.filter((p): p is string => typeof p === 'string') : []
+    const handle = await fsp.open(temp, 'wx', mode)
+    try {
+      await handle.writeFile(body, 'utf8')
+    } finally {
+      await handle.close()
     }
-  } catch {
-    return { installed: [] }
+    await fsp.rename(temp, target)
+  } catch (err) {
+    await fsp.rm(temp, { force: true }).catch(() => undefined)
+    throw err
   }
 }
 
-function writeMarker(cwd: string, marker: Marker): void {
+async function readMarker(stateDir: string): Promise<Marker> {
+  const target = await containedTarget(stateDir, join(stateDir, MARKER_DIR), markerPath(stateDir), {
+    create: false,
+    label: 'skills marker'
+  })
+  if (!target) return { workspaces: {} }
+  let stat: import('node:fs').Stats
   try {
-    mkdirSync(join(cwd, MARKER_DIR), { recursive: true })
-    writeFileSync(markerPath(cwd), JSON.stringify(marker) + '\n')
-  } catch {
-    // A missing/stale marker only costs a redundant re-install next session — never fatal.
+    stat = await fsp.lstat(target)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return { workspaces: {} }
+    throw err
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new ContainedPathError('skills marker is not a regular file')
+  }
+  if (stat.size > MAX_MARKER_BYTES) throw new ContainedPathError('skills marker exceeds its size cap')
+  const raw = JSON.parse(await fsp.readFile(target, 'utf8')) as { workspaces?: unknown }
+  if (!raw.workspaces || typeof raw.workspaces !== 'object' || Array.isArray(raw.workspaces)) {
+    return { workspaces: {} }
+  }
+  const workspaces: Record<string, WorkspaceRecord> = {}
+  for (const [workspaceId, value] of Object.entries(raw.workspaces)) {
+    if (!WORKSPACE_ID.test(workspaceId) || !value || typeof value !== 'object' || Array.isArray(value)) continue
+    const record = value as { fingerprint?: unknown; installed?: unknown }
+    workspaces[workspaceId] = {
+      ...(typeof record.fingerprint === 'string' ? { fingerprint: record.fingerprint } : {}),
+      installed: Array.isArray(record.installed)
+        ? record.installed.filter((path): path is string => typeof path === 'string')
+        : []
+    }
+    if (Object.keys(workspaces).length > MAX_WORKSPACE_RECORDS) {
+      throw new ContainedPathError('skills marker has too many workspace records')
+    }
+  }
+  return { workspaces }
+}
+
+async function writeMarker(stateDir: string, marker: Marker): Promise<void> {
+  await atomicContainedWrite(
+    stateDir,
+    join(stateDir, MARKER_DIR),
+    markerPath(stateDir),
+    JSON.stringify(marker) + '\n',
+    'skills marker'
+  )
+}
+
+/** Reserve one bounded private-state slot before invoking the CLI. Empty
+ * records carry no deletion authority, so they are the only safe eviction
+ * candidates. Refuse a new workspace rather than create untracked copies. */
+function ensureWorkspaceCapacity(marker: Marker, workspaceId: string): Marker {
+  if (marker.workspaces[workspaceId]) return marker
+  const workspaces = { ...marker.workspaces }
+  let size = Object.keys(workspaces).length
+  for (const [id, record] of Object.entries(workspaces)) {
+    if (size < MAX_WORKSPACE_RECORDS) break
+    if (record.installed.length > 0) continue
+    delete workspaces[id]
+    size -= 1
+  }
+  if (size >= MAX_WORKSPACE_RECORDS) {
+    throw new ContainedPathError('skills ownership state is full')
+  }
+  return { workspaces }
+}
+
+function withWorkspaceRecord(marker: Marker, workspaceId: string, record: WorkspaceRecord): Marker {
+  return { workspaces: { ...marker.workspaces, [workspaceId]: record } }
+}
+
+/** Only a direct child of a known project skill root can be daemon-owned. */
+function isTrackedSkillDir(rel: string): boolean {
+  const match = /^(\.claude\/skills|\.agents\/skills)\/([^/]+)$/.exec(rel)
+  return match !== null && match[2] !== '.' && match[2] !== '..' && !match[2]!.includes('\0')
+}
+
+function trackedPath(cwd: string, rel: string): { root: string; target: string } {
+  const rootRel = rel.slice(0, rel.lastIndexOf('/'))
+  return {
+    root: join(cwd, ...rootRel.split('/')),
+    target: join(cwd, ...rel.split('/'))
   }
 }
 
-/** The marker lives inside `cwd`, so its recorded paths are untrusted input. Only a
- *  single non-dotted directory segment directly under a known skill root is a valid
- *  daemon-managed target; anything else (a `..` segment, an absolute path, a nested
- *  or dotted segment) is rejected so reconciliation only ever acts within a managed
- *  skill root. */
-function isTrackedSkillDir(rel: string): boolean {
-  const m = /^(\.claude\/skills|\.agents\/skills)\/([^/]+)$/.exec(rel)
-  if (!m) return false
-  const seg = m[2]!
-  return seg !== '.' && seg !== '..' && !seg.includes('\0')
+/** Resolve a skill root by walking every parent with lstat. Passing a synthetic
+ * child makes the root itself part of that walk, so a symlink at `.claude`,
+ * `.agents`, or `skills` is refused rather than followed. */
+async function safeSkillRoot(cwd: string, rootRel: (typeof SKILL_ROOTS)[number], create: boolean) {
+  const root = join(cwd, ...rootRel.split('/'))
+  const probe = await containedTarget(cwd, root, join(root, '.agentconnect-path-check'), {
+    create,
+    label: 'skill root'
+  })
+  return probe ? dirname(probe) : null
 }
 
-/** cwd-relative paths of the skill directories currently present under the CLI's
- *  project-scope roots. Used to diff before/after an install (what WE created) and
- *  to remove exactly our own copies on a later change. */
-function listSkillDirs(cwd: string): string[] {
-  const out: string[] = []
-  for (const root of SKILL_ROOTS) {
-    const abs = join(cwd, root)
+async function skillDirSnapshot(cwd: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  for (const rootRel of SKILL_ROOTS) {
+    const root = await safeSkillRoot(cwd, rootRel, false)
+    if (!root) continue
     let entries: import('node:fs').Dirent[]
     try {
-      entries = readdirSync(abs, { withFileTypes: true })
-    } catch {
-      continue // root absent
+      entries = await fsp.readdir(root, { withFileTypes: true })
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) continue
+      throw err
     }
-    for (const e of entries) if (e.isDirectory()) out.push(`${root}/${e.name}`)
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const stat = await fsp.lstat(join(root, entry.name))
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue
+      // The pinned CLI replaces a target directory before copying. Tracking the
+      // inode/timestamps as well as new names lets the first private-marker pass
+      // adopt copies installed by an older daemon without reading its untrusted
+      // workspace marker.
+      out.set(`${rootRel}/${entry.name}`, `${stat.dev}:${stat.ino}:${stat.ctimeMs}:${stat.mtimeMs}`)
+    }
   }
   return out
 }
 
-/** Walk up from `cwd` to the repository root (the dir holding `.git`), so exclude
- *  patterns land in the real repo even when the ACP cwd is a nested `agentDir`.
- *  Returns undefined for a from-scratch workspace (no `.git` above cwd). */
+async function validateSkillRoots(cwd: string): Promise<void> {
+  for (const rootRel of SKILL_ROOTS) await safeSkillRoot(cwd, rootRel, false)
+}
+
+async function trackedTargetIntact(cwd: string, rel: string): Promise<boolean> {
+  const { root, target } = trackedPath(cwd, rel)
+  const resolved = await containedTarget(cwd, root, target, { create: false, label: 'skill path' })
+  if (!resolved) return false
+  try {
+    const stat = await fsp.lstat(resolved)
+    return stat.isDirectory() && !stat.isSymbolicLink()
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return false
+    throw err
+  }
+}
+
+/** `skills add` writes this project lock alongside the skill roots. Refuse a
+ * symlink, special file, hard link, or unbounded file before handing the path to
+ * the trusted CLI; the agent is not running concurrently with this prep step. */
+async function assertSafeLocalLock(cwd: string): Promise<void> {
+  const target = join(cwd, LOCAL_LOCK_FILE)
+  let stat: import('node:fs').Stats
+  try {
+    stat = await fsp.lstat(target)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return
+    throw err
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    throw new ContainedPathError(`${LOCAL_LOCK_FILE} is not a private regular file`)
+  }
+  if (stat.size > MAX_LOCAL_LOCK_BYTES) throw new ContainedPathError(`${LOCAL_LOCK_FILE} exceeds its size cap`)
+}
+
+/** Remove the obsolete workspace marker only by unlinking its final entry. Its
+ * contents never influence ownership; a symlink parent is refused and ignored. */
+async function removeLegacyMarker(cwd: string): Promise<void> {
+  try {
+    const root = join(cwd, MARKER_DIR)
+    const target = await containedTarget(cwd, root, join(root, MARKER_FILE), {
+      create: false,
+      label: 'legacy skills marker'
+    })
+    if (!target) return
+    const stat = await fsp.lstat(target)
+    if (stat.isFile() || stat.isSymbolicLink()) await fsp.unlink(target)
+  } catch {
+    // Private state is already authoritative; legacy cleanup is cosmetic.
+  }
+}
+
+/** Source/dev runs through tsx; the published self-contained daemon re-enters
+ * its dist entry directly. Neither path consults the workspace's node_modules. */
+function skillsCliLauncher(): { cmd: string; args: string[] } {
+  const sourceEntry = fileURLToPath(new URL('../index.ts', import.meta.url))
+  if (existsSync(sourceEntry)) {
+    const req = createRequire(import.meta.url)
+    return { cmd: process.execPath, args: [req.resolve('tsx/cli'), sourceEntry] }
+  }
+  const entry = process.argv[1]
+  if (!entry) throw new Error('cannot locate the AgentConnect skills CLI entry')
+  return { cmd: process.execPath, args: [entry] }
+}
+
+/** Walk up to the repository root so exclude patterns work for a nested ACP cwd. */
 function findRepoRoot(cwd: string): string | undefined {
   let dir = cwd
   for (;;) {
@@ -149,32 +325,37 @@ function findRepoRoot(cwd: string): string | undefined {
   }
 }
 
-/** Keep installed skill dirs (and the marker) out of a git-repo workspace's tracked
- *  tree so the agent's `git status` stays clean. Excludes at the repo root (not the
- *  possibly-nested cwd), covering both `.claude/skills` and `.agents/skills`.
- *  Best-effort; from-scratch workspaces have no `.git` and are skipped. */
-function excludeFromGit(cwd: string): void {
+/** Cosmetic only, but still a daemon-authority write into an agent-writable repo.
+ * Use the same no-follow + atomic publish discipline as correctness state. */
+async function excludeFromGit(cwd: string): Promise<void> {
   const repoRoot = findRepoRoot(cwd)
-  if (repoRoot === undefined) return
+  if (!repoRoot) return
   const gitPath = join(repoRoot, '.git')
-  // A linked worktree has `.git` as a file pointing elsewhere; skip (cosmetic only).
   try {
-    if (!statSync(gitPath).isDirectory()) return
+    const gitStat = await fsp.lstat(gitPath)
+    if (!gitStat.isDirectory() || gitStat.isSymbolicLink()) return // linked worktree or refused link
+    const info = join(gitPath, 'info')
+    const exclude = join(info, 'exclude')
+    const target = await containedTarget(repoRoot, info, exclude, { create: true, label: 'git exclude' })
+    if (!target) return
+    let current = ''
+    try {
+      const stat = await fsp.lstat(target)
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_LOCAL_LOCK_BYTES) return
+      current = await fsp.readFile(target, 'utf8')
+    } catch (err) {
+      if (!isErrno(err, 'ENOENT')) return
+    }
+    const prefix = relative(repoRoot, cwd)
+    const rooted = prefix ? `${prefix}/` : ''
+    const want = [...SKILL_ROOTS.map((root) => `${rooted}${root}/`), `${rooted}${MARKER_DIR}/`]
+    const lines = new Set(current.split(/\r?\n/))
+    const missing = want.filter((entry) => !lines.has(entry))
+    if (missing.length === 0) return
+    const next = current + (current === '' || current.endsWith('\n') ? '' : '\n') + missing.join('\n') + '\n'
+    await atomicContainedWrite(repoRoot, info, exclude, next, 'git exclude')
   } catch {
-    return
-  }
-  const exclude = join(gitPath, 'info', 'exclude')
-  // Patterns are repo-root-relative — anchor them under the (possibly nested) cwd.
-  const rel = cwd === repoRoot ? '' : `${cwd.slice(repoRoot.length + 1)}/`
-  const want = [...SKILL_ROOTS.map((r) => `${rel}${r}/`), `${rel}${MARKER_DIR}/`]
-  try {
-    mkdirSync(dirname(exclude), { recursive: true })
-    const current = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
-    const missing = want.filter((p) => !current.includes(p))
-    if (missing.length)
-      appendFileSync(exclude, (current === '' || current.endsWith('\n') ? '' : '\n') + missing.join('\n') + '\n')
-  } catch {
-    // ignore — a dirty status is cosmetic, not correctness
+    // A dirty status is cosmetic; path refusal must not block the session.
   }
 }
 
@@ -185,109 +366,142 @@ export interface InstallSkillsResult {
   errors: Array<{ source: string; error: string }>
 }
 
-/**
- * Install `agent.skills` into `cwd`, reconciling away skill copies this daemon
- * previously created but that are no longer desired. Never throws. `env` is merged
- * into the child (git credential helper vars for private sources,
- * GIT_TERMINAL_PROMPT=0, etc.); `warn` receives non-fatal diagnostics.
- */
+export interface InstallSkillsOptions {
+  /** Trusted loader-derived agent root; never derive this from workspace config. */
+  stateDir: string
+  env?: NodeJS.ProcessEnv
+  warn?: (msg: string) => void
+  /** Test seam; production always uses Node + the daemon's hidden CLI entry. */
+  execFile?: SkillsExec
+}
+
+/** Install and reconcile agent skills. Never throws. */
 export async function installSkills(
   agent: Pick<Agent, 'id' | 'runtime' | 'skills'>,
   cwd: string,
-  opts: { env?: NodeJS.ProcessEnv; warn?: (msg: string) => void } = {}
+  opts: InstallSkillsOptions
 ): Promise<InstallSkillsResult> {
   const result: InstallSkillsResult = { installed: [], removed: [], skipped: null, errors: [] }
   const entries = agent.skills ?? []
   const agentId = skillsAgentId(agent.runtime)
-  const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env }
-  const cliSpec = resolveSkillsCliSpec(env)
-  // Fingerprint over runtime + mapped agent id + entries + the CLI spec: a runtime
-  // switch changes the target dir, and re-pinning AC_SKILLS_CLI must invalidate the
-  // cache so a changed CLI actually re-installs (it produces the on-disk skills).
-  const fp = fingerprint(agent.runtime, agentId ?? '', entries, cliSpec)
+  // The bundled upstream module cannot discover its own package.json after
+  // bundling; disable its optional telemetry rather than reporting the daemon's
+  // package version as the CLI version.
+  const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env, DISABLE_TELEMETRY: '1' }
 
-  // Only paths that are valid daemon-managed skill dirs may drive removal — the
-  // marker is untrusted input, so its out-of-root entries are filtered out here.
-  const prior = readMarker(cwd)
-  const priorTracked = prior.installed.filter(isTrackedSkillDir)
+  try {
+    const workspaceId = await workspaceIdentity(cwd)
+    const fp = fingerprint(agent.runtime, agentId ?? '', entries, workspaceId)
+    const marker = ensureWorkspaceCapacity(await readMarker(opts.stateDir), workspaceId)
+    // Create/validate the private marker parent before mutating the workspace.
+    await containedTarget(opts.stateDir, join(opts.stateDir, MARKER_DIR), markerPath(opts.stateDir), {
+      create: true,
+      label: 'skills marker'
+    })
+    const prior = marker.workspaces[workspaceId] ?? { installed: [] }
+    const priorTracked = prior.installed.filter(isTrackedSkillDir)
 
-  // The fast path requires more than a fingerprint match: every recorded target must
-  // still exist (a deleted/never-created install must repair, not stay "unchanged"),
-  // and a non-empty desired set must have recorded at least one owned target.
-  const targetsIntact =
-    priorTracked.length === prior.installed.length && priorTracked.every((rel) => existsSync(join(cwd, rel)))
-  const cacheCoversDesired = entries.length === 0 || priorTracked.length > 0
-  if (prior.fingerprint === fp && targetsIntact && cacheCoversDesired) {
-    result.skipped = 'unchanged'
+    // Validate existing roots before any reconcile operation. This rejects a
+    // planted root symlink even when it is unrelated to the first tracked path.
+    if (priorTracked.length > 0 || entries.length > 0) await validateSkillRoots(cwd)
+
+    const intact = await Promise.all(priorTracked.map((rel) => trackedTargetIntact(cwd, rel)))
+    const targetsIntact = priorTracked.length === prior.installed.length && intact.every(Boolean)
+    const cacheCoversDesired = entries.length === 0 || priorTracked.length > 0
+    if (prior.fingerprint === fp && targetsIntact && cacheCoversDesired) {
+      await removeLegacyMarker(cwd)
+      result.skipped = 'unchanged'
+      return result
+    }
+
+    // Failed removals stay owned in the private marker so a later prep retries.
+    const retained: string[] = []
+    for (const rel of priorTracked) {
+      const { root, target } = trackedPath(cwd, rel)
+      try {
+        await containedRemoveDir(cwd, root, target)
+        result.removed.push(rel)
+      } catch (err) {
+        retained.push(rel)
+        opts.warn?.(`skills: could not remove stale skill "${rel}" — ${err instanceof Error ? err.message : ''}`)
+      }
+    }
+
+    if (entries.length === 0 || !agentId) {
+      if (!agentId && entries.length > 0) {
+        opts.warn?.(`skills: no installer mapping for runtime "${agent.runtime}"; skipping install`)
+      }
+      await writeMarker(
+        opts.stateDir,
+        withWorkspaceRecord(marker, workspaceId, {
+          ...(retained.length === 0 ? { fingerprint: fp } : {}),
+          installed: retained
+        })
+      )
+      await removeLegacyMarker(cwd)
+      return result
+    }
+
+    const rootRel = agentId === 'claude-code' ? '.claude/skills' : '.agents/skills'
+    await safeSkillRoot(cwd, rootRel, true)
+    await assertSafeLocalLock(cwd)
+    const before = await skillDirSnapshot(cwd)
+    const launch = skillsCliLauncher()
+    const run = opts.execFile ?? execFileAsync
+
+    for (const entry of entries) {
+      const composed = composeSource(entry)
+      if (composed.startsWith('-')) {
+        result.errors.push({ source: entry.name, error: 'source resolves to an option-like argument' })
+        opts.warn?.(`skills: skipping option-like source for "${entry.name}": ${composed}`)
+        continue
+      }
+      const skillFlags = entry.skills.filter((skill) => !skill.startsWith('-'))
+      if (skillFlags.length !== entry.skills.length) {
+        opts.warn?.(`skills: dropped option-like skill name(s) for "${entry.name}"`)
+      }
+      const args = [
+        ...launch.args,
+        '__skills-cli',
+        'add',
+        composed,
+        '-a',
+        agentId,
+        '-y',
+        '--copy',
+        ...skillFlags.flatMap((skill) => ['-s', skill])
+      ]
+      try {
+        await run(launch.cmd, args, { cwd, env, timeout: INSTALL_TIMEOUT_MS })
+        result.installed.push(entry.name)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        result.errors.push({ source: entry.name, error: message })
+        opts.warn?.(`skills: install failed for "${entry.name}" (${composed}): ${message}`)
+      }
+    }
+
+    const after = await skillDirSnapshot(cwd)
+    const created = [...after].filter(([path, signature]) => before.get(path) !== signature).map(([path]) => path)
+    await excludeFromGit(cwd)
+    const effective = retained.length === 0 && result.errors.length === 0 && created.length > 0
+    await writeMarker(
+      opts.stateDir,
+      withWorkspaceRecord(marker, workspaceId, {
+        ...(effective ? { fingerprint: fp } : {}),
+        installed: [...new Set([...retained, ...created])]
+      })
+    )
+    await removeLegacyMarker(cwd)
+    return result
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    result.errors.push({ source: '*', error: message })
+    opts.warn?.(
+      err instanceof ContainedPathError
+        ? `skills: refused workspace installation — ${message}`
+        : `skills: could not prepare workspace installation — ${message}`
+    )
     return result
   }
-
-  // Reconcile: remove exactly the dirs we created last time (disable / narrow /
-  // runtime change / zero-desired all pass through here). Manually-authored skills
-  // are never in `priorTracked`, so they survive.
-  for (const rel of priorTracked) {
-    try {
-      rmSync(join(cwd, rel), { recursive: true, force: true })
-      result.removed.push(rel)
-    } catch {
-      // best-effort
-    }
-  }
-
-  if (entries.length === 0 || !agentId) {
-    if (!agentId && entries.length > 0) {
-      // P1: no native installer for this runtime; prompt-fallback is P2 (§6.5).
-      opts.warn?.(`skills: no npx-skills mapping for runtime "${agent.runtime}"; skipping install`)
-    }
-    // Nothing to install, but the reconcile above happened — record the empty state.
-    writeMarker(cwd, { fingerprint: fp, installed: [] })
-    return result
-  }
-
-  const before = new Set(listSkillDirs(cwd))
-  for (const entry of entries) {
-    const composed = composeSource(entry)
-    // Belt-and-suspenders (the protocol/CP boundary already validates these): a
-    // source or skill value beginning with "-" would be read by `npx skills` as a
-    // flag rather than a value, so skip option-like values here too.
-    if (composed.startsWith('-')) {
-      result.errors.push({ source: entry.name, error: 'source resolves to an option-like argument' })
-      opts.warn?.(`skills: skipping option-like source for "${entry.name}": ${composed}`)
-      continue
-    }
-    const skillFlags = entry.skills.filter((s) => !s.startsWith('-'))
-    if (skillFlags.length !== entry.skills.length) {
-      opts.warn?.(`skills: dropped option-like skill name(s) for "${entry.name}"`)
-    }
-    const args = [
-      '--yes',
-      cliSpec,
-      'add',
-      composed,
-      '-a',
-      agentId,
-      '-y',
-      '--copy',
-      ...skillFlags.flatMap((s) => ['-s', s])
-    ]
-    try {
-      await execFileAsync('npx', args, { cwd, env, timeout: INSTALL_TIMEOUT_MS })
-      result.installed.push(entry.name)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      result.errors.push({ source: entry.name, error: msg })
-      opts.warn?.(`skills: install failed for "${entry.name}" (${composed}): ${msg}`)
-    }
-  }
-
-  // Whatever appeared under the skill roots is ours to track (and later remove).
-  const created = listSkillDirs(cwd).filter((p) => !before.has(p))
-  excludeFromGit(cwd)
-  // Commit the fingerprint (the "unchanged" fast path) ONLY when the pass fully
-  // succeeded AND actually produced an owned target — otherwise a run that errored,
-  // or claimed success while creating nothing, must retry next session rather than
-  // caching a phantom install. Always record `created` so a later change cleans up.
-  const effective = result.errors.length === 0 && created.length > 0
-  writeMarker(cwd, { ...(effective ? { fingerprint: fp } : {}), installed: created })
-  return result
 }

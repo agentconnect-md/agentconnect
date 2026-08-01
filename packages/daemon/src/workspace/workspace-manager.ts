@@ -44,7 +44,7 @@ const skillsLog = makeLogger('info')
 
 /**
  * Post-clone skills step (docs/designs/shared-skills.md §6). Installs the agent's
- * enabled skills into its resolved ACP cwd via `npx skills`, then returns that cwd.
+ * enabled skills into its resolved ACP cwd via the daemon-bundled CLI, then returns that cwd.
  * Best-effort and non-blocking: `installSkills` never throws, and the common
  * no-skills path is a single stat. Kept out of the return expressions so both the
  * scratch and git-repo branches funnel through one install point.
@@ -56,20 +56,26 @@ export interface PrepareWorkspaceOptions {
 }
 
 async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
-  await installSkills(agent, acpCwd, {
-    env: {
-      ...gitEnvBase(),
-      GIT_TERMINAL_PROMPT: '0',
-      ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {})
-    },
-    warn: (msg) => skillsLog.warn(msg)
-  })
+  // `dir` is present on every discovered agent (LoadedAgent). Never fall back to
+  // cwd for installer state: cwd remains agent-writable across sandboxed runs.
+  const agentRoot = (agent as { dir?: string }).dir
+  if (agentRoot) {
+    await installSkills(agent, acpCwd, {
+      stateDir: agentRoot,
+      env: {
+        ...gitEnvBase(),
+        GIT_TERMINAL_PROMPT: '0',
+        ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {})
+      },
+      warn: (msg) => skillsLog.warn(msg)
+    })
+  } else if ((agent.skills?.length ?? 0) > 0) {
+    skillsLog.warn(`skills: agent "${agent.id}" has no trusted state directory; skipping install`)
+  }
   // Skills the user ACCEPTED from a dream are daemon-owned (they live under the
   // agent root, not in `agent.skills`), so they get their own materialization
   // pass — one that treats every path in the agent-writable cwd as hostile.
   // Runs AFTER installSkills so its reconciliation cannot remove these copies.
-  // `dir` is present on every discovered agent (LoadedAgent); a bare spec has none.
-  const agentRoot = (agent as { dir?: string }).dir
   if (agentRoot) {
     const managedSkills = await opts.managedSkills?.(agent)
     await materializeAcceptedDreamSkills({ dir: agentRoot, runtime: agent.runtime }, acpCwd, {
