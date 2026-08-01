@@ -1258,9 +1258,13 @@ describe('Slack interactive status bar', () => {
     // Config/default replication is covered separately; this proves the Slack cleanup
     // action deletes the remembered row and dedupes later usage/turn-end refreshes.
     const daemon = new Daemon({ root: scaffold() })
-    const conn = { deleteMessage: vi.fn(async () => true) }
+    const conn = {
+      deleteMessage: vi.fn(async () => true),
+      getThreadReplies: vi.fn(async () => [{ ts: 'legacy', text: ':bar_chart: legacy', isBot: true }])
+    }
+    const getStatusBarTs = vi.fn()
     const clearStatusBarTs = vi.fn()
-    ;(daemon as any).store = { clearStatusBarTs }
+    ;(daemon as any).store = { getStatusBarTs, clearStatusBarTs }
     const pending: any = {
       platform: 'slack',
       showStatusBar: false,
@@ -1279,6 +1283,14 @@ describe('Slack interactive status bar', () => {
 
     ;(daemon as any).emitStatusBar(pending)
     await pending.applyChain
+    expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
+
+    // Never adopt an unowned legacy row for deletion: a shared Slack thread may contain
+    // another Agent's status bar.
+    const unowned = { ...pending, statusBarTs: undefined, lastStatusBar: undefined, applyChain: Promise.resolve() }
+    ;(daemon as any).emitStatusBar(unowned)
+    await unowned.applyChain
+    expect(conn.getThreadReplies).not.toHaveBeenCalled()
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
   }, 15_000)
 

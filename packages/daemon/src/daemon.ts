@@ -10582,9 +10582,7 @@ export class Daemon {
         return
       }
       case 'clear-status-bar': {
-        let ts = p.statusBarTs ?? this.store.getStatusBarTs(p.sessionKey)
-        if (!ts && !p.statusBarAttempted) ts = await this.findExistingSlackStatusBarTs(conn, p)
-        p.statusBarAttempted = true
+        const ts = p.statusBarTs ?? this.store.getStatusBarTs(p.sessionKey)
         if (!ts) return
         p.statusBarTs = ts
         const deleted = await conn.deleteMessage(p.channel, ts)
