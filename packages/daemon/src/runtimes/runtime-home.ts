@@ -1,4 +1,15 @@
-import { chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync } from 'node:fs'
+import {
+  chmodSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync
+} from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { runtimeStateLocations } from './probe.js'
 import { extractOmpCredentials } from './omp-credentials.js'
@@ -50,7 +61,30 @@ function assertNoDestinationSymlink(home: string, target: string): void {
   }
 }
 
-function copySeedFile(source: string, destination: string, excludedDestinations: ReadonlySet<string>): void {
+function projectedJson(source: string, keys: readonly string[]): string | undefined {
+  const raw = readFileSync(source, 'utf8')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+  const sourceObject = parsed as Record<string, unknown>
+  const projected: Record<string, unknown> = {}
+  for (const key of keys) {
+    if (Object.hasOwn(sourceObject, key)) projected[key] = sourceObject[key]
+  }
+  if (Object.keys(projected).length === 0) return undefined
+  return `${JSON.stringify(projected)}\n`
+}
+
+function copySeedFile(
+  source: string,
+  destination: string,
+  excludedDestinations: ReadonlySet<string>,
+  seedJsonKeys?: readonly string[]
+): void {
   if (excludedDestinations.has(destination)) return
   if (existsSync(destination)) {
     if (lstatSync(destination).isSymbolicLink()) {
@@ -68,13 +102,19 @@ function copySeedFile(source: string, destination: string, excludedDestinations:
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_SEED_FILE_BYTES) return
   ensurePrivateDir(dirname(destination))
   try {
-    copyFileSync(source, destination, constants.COPYFILE_EXCL)
+    if (seedJsonKeys) {
+      const projected = projectedJson(source, seedJsonKeys)
+      if (projected === undefined) return
+      writeFileSync(destination, projected, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    } else {
+      copyFileSync(source, destination, constants.COPYFILE_EXCL)
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') return
     throw error
   }
   try {
-    chmodSync(destination, stat.mode & 0o700 ? stat.mode & 0o700 : 0o600)
+    chmodSync(destination, seedJsonKeys ? 0o600 : stat.mode & 0o700 ? stat.mode & 0o700 : 0o600)
   } catch {
     // Best effort; the private parent still prevents access by other users.
   }
@@ -95,7 +135,8 @@ function seedLocation(
   source: string,
   destination: string,
   excludedDestinations: ReadonlySet<string>,
-  seedFiles?: readonly string[]
+  seedFiles?: readonly string[],
+  seedJsonKeys?: readonly string[]
 ): void {
   let stat
   try {
@@ -106,7 +147,7 @@ function seedLocation(
   }
   if (stat.isSymbolicLink()) return
   if (stat.isFile()) {
-    copySeedFile(source, destination, excludedDestinations)
+    copySeedFile(source, destination, excludedDestinations, seedJsonKeys)
     return
   }
   if (!stat.isDirectory()) return
@@ -117,13 +158,13 @@ function seedLocation(
       const sourceFile = containedDestination(source, file)
       const destinationFile = containedDestination(destination, file)
       assertNoDestinationSymlink(home, destinationFile)
-      copySeedFile(sourceFile, destinationFile, excludedDestinations)
+      copySeedFile(sourceFile, destinationFile, excludedDestinations, seedJsonKeys)
     }
     return
   }
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     if (!entry.isFile() || !isConfigFile(entry.name)) continue
-    copySeedFile(join(source, entry.name), join(destination, entry.name), excludedDestinations)
+    copySeedFile(join(source, entry.name), join(destination, entry.name), excludedDestinations, seedJsonKeys)
   }
 }
 
@@ -156,7 +197,7 @@ export function prepareRuntimeHome(
   for (const location of locations) {
     const destination = containedDestination(home, location.destination)
     assertNoDestinationSymlink(home, destination)
-    seedLocation(home, location.source, destination, excluded, location.seedFiles)
+    seedLocation(home, location.source, destination, excluded, location.seedFiles, location.seedJsonKeys)
     if (runtimeId === 'omp') {
       extractOmpCredentials(join(location.source, 'agent.db'), join(destination, 'agent.db'))
     }

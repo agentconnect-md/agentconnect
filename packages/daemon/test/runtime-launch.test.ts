@@ -65,8 +65,20 @@ describe('prepareRuntimeLaunch', () => {
       join(customClaudeConfig, 'settings.json'),
       JSON.stringify({ env: { ANTHROPIC_API_KEY: 'seeded-settings-secret' } })
     )
-    writeFileSync(join(customClaudeConfig, '.claude.json'), JSON.stringify({ source: 'custom-config-dir' }))
-    writeFileSync(join(hostHome, '.claude.json'), JSON.stringify({ mcpToken: 'seeded-global-secret' }))
+    writeFileSync(
+      join(customClaudeConfig, '.claude.json'),
+      JSON.stringify({
+        additionalModelOptionsCache: [{ value: 'custom-fable', label: 'Custom Fable', description: 'test' }],
+        source: 'do-not-copy-custom-config-dir'
+      })
+    )
+    writeFileSync(
+      join(hostHome, '.claude.json'),
+      JSON.stringify({
+        additionalModelOptionsCache: [{ value: 'root-fable', label: 'Root Fable', description: 'test' }],
+        mcpToken: 'do-not-copy-global-secret'
+      })
+    )
     writeFileSync(identityTokenFile, 'trusted-parent-identity-token')
     writeFileSync(awsWebIdentityTokenFile, 'trusted-parent-aws-token')
     const launch = prepareRuntimeLaunch({
@@ -101,8 +113,12 @@ describe('prepareRuntimeLaunch', () => {
     const privateClaudeConfig = realpathSync(join(scopeDir, 'home', '.claude'))
     const privateClaudeGlobal = realpathSync(join(scopeDir, 'home', '.claude.json'))
     expect(existsSync(join(privateClaudeConfig, 'settings.json'))).toBe(false)
-    expect(readFileSync(join(privateClaudeConfig, '.claude.json'), 'utf8')).toContain('custom-config-dir')
-    expect(readFileSync(privateClaudeGlobal, 'utf8')).toContain('seeded-global-secret')
+    expect(JSON.parse(readFileSync(join(privateClaudeConfig, '.claude.json'), 'utf8'))).toEqual({
+      additionalModelOptionsCache: [{ value: 'custom-fable', label: 'Custom Fable', description: 'test' }]
+    })
+    expect(JSON.parse(readFileSync(privateClaudeGlobal, 'utf8'))).toEqual({
+      additionalModelOptionsCache: [{ value: 'root-fable', label: 'Root Fable', description: 'test' }]
+    })
     expect(launch.env.ANTHROPIC_IDENTITY_TOKEN_FILE).toBe(canonicalIdentityToken)
     expect(launch.env.AWS_WEB_IDENTITY_TOKEN_FILE).toBe(canonicalAwsWebIdentityToken)
     expect(coveredBy(settings.filesystem.denyRead, canonicalHostHome)).toBe(true)
