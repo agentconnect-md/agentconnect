@@ -12,12 +12,13 @@ function signature(a: Agent): string {
   return JSON.stringify(rest)
 }
 
-/** Sub-signature over the dimensions that determine the ACP host subprocess —
- *  the spawn binary (`runtime`) and the knobs baked into the host at construction:
- *  child env / system-prompt seed (agentChildEnv + cpRuntimeEnv) and the session
- *  config prefs (model / reasoningEffort / fastMode, applied per session via ACP
- *  set_config_option), and the OS sandbox wrapper. A change here means the cached
- *  host must be evicted so the next session respawns it fresh. */
+/** Sub-signature over the dimensions that determine the ACP host subprocess or
+ *  must be materialized before it starts — the spawn binary (`runtime`), workspace
+ *  skills, and the knobs baked into the host at construction: child env /
+ *  system-prompt seed (agentChildEnv + cpRuntimeEnv), session config prefs (model /
+ *  reasoningEffort / fastMode, applied per session via ACP set_config_option), and
+ *  the OS sandbox wrapper. A change here means the cached host must be evicted so
+ *  the next session respawns it fresh. */
 function hostSpawnSig(a: Agent): string {
   return JSON.stringify({
     runtime: a.runtime,
@@ -41,6 +42,10 @@ function hostSpawnSig(a: Agent): string {
     // materialized as config files (config-file-env.ts) — a value edit that
     // doesn't evict the host would leave the child running on the stale value.
     secrets: a.runtimeOverrides?.secrets,
+    // Workspace skills are reconciled before host startup. Evict a live host
+    // before changing them so the runtime never observes the remove/reinstall
+    // transaction halfway through and always discovers the final set.
+    skills: a.skills,
     managedSkills: a.managedSkills
   })
 }

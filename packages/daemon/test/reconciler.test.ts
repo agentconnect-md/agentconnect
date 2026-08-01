@@ -89,6 +89,23 @@ describe('diffAgents', () => {
     }
   })
 
+  it('respawns the host when the enabled workspace skills change', () => {
+    const before = {
+      ...a('x'),
+      skills: [{ name: 'kit', source: 'acme/skills', skills: ['review-pr', 'safe-deploy'] }]
+    } as Agent
+    const after = {
+      ...before,
+      skills: [{ name: 'kit', source: 'acme/skills', skills: ['safe-deploy'] }]
+    } as Agent
+
+    expect(diffAgents([after], actual(before)).toChange[0]).toMatchObject({
+      hostRespawn: true,
+      workspace: false,
+      integrations: false
+    })
+  })
+
   it('classifies a workspace edit as a workspace change (only)', () => {
     const after = {
       ...a('x'),
