@@ -241,7 +241,8 @@ export interface SessionUsageDto {
 // Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
 // visible only to the session owner (no role override, org owners included); 'org' to every member who can view
 // the owning agent. Deliberately NOT ResourceVisibility ('org' | 'restricted').
-export type SessionVisibility = 'private' | 'org'
+export type SessionVisibility = 'private' | 'org' | 'external'
+export type MutableSessionVisibility = 'private' | 'org'
 
 export interface SessionDto {
   sessionId: string
@@ -254,6 +255,8 @@ export interface SessionDto {
   // Absent/null on a CP that predates session visibility — treated as 'org'
   // (matching the server-side backfill of legacy rows).
   visibility?: SessionVisibility | null
+  externalProvider?: string | null
+  externalResolution?: 'pending' | 'settled' | 'invalid' | null
   triggeredBy: string | null
   hookKind?: 'webhook' | 'github' | null
   // Daemon-resolved display names; null until the daemon has resolved them.
@@ -301,6 +304,7 @@ export interface SessionListPageDto {
   /** Org-level "any session exists" boolean (first page only) — a bare boolean so the
    *  getting-started conversation step can be org-wide without exposing hidden rows. */
   orgHasSessions?: boolean
+  accessSyncDegraded?: boolean
 }
 
 export interface SessionListFilters {
@@ -330,6 +334,7 @@ export interface SessionListPage {
   total: number | null
   nextCursor: string | null
   orgHasSessions?: boolean
+  accessSyncDegraded?: boolean
 }
 
 export interface SessionRelationDto {
@@ -371,6 +376,9 @@ export interface SessionDetailDto {
   visibility?: SessionVisibility | null
   visibilityState?: 'pending' | 'applied' | null
   canChangeVisibility?: boolean | null
+  externalProvider?: string | null
+  externalResolution?: 'pending' | 'settled' | 'invalid' | null
+  accessSyncDegraded?: boolean
 }
 
 // The full ACP tool body (protocol `ToolBody`), transported as a JSON STRING in
@@ -1747,7 +1755,8 @@ export async function fetchSessions(
     sessions: page.sessions.map(sessionFromDto),
     total: page.total,
     nextCursor: page.nextCursor,
-    ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {})
+    ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {}),
+    ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {})
   }
 }
 
@@ -1804,11 +1813,30 @@ export interface SessionVisibilityResultDto {
 // DTO); invisible sessions 404 — never 403 (no existence oracle).
 export async function putSessionVisibility(
   sessionId: string,
-  visibility: SessionVisibility
+  visibility: MutableSessionVisibility
 ): Promise<SessionVisibilityResultDto> {
   return apiPut<SessionVisibilityResultDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/visibility`, {
     visibility
   })
+}
+
+export interface SlackSessionAccessDto {
+  provider: 'slack'
+  available: boolean
+  enabled: boolean
+  state: 'disabled' | 'enabling' | 'enabled' | 'degraded'
+  currentRevision: string
+  readFenceRevision: string | null
+  /** Owner-only migration diagnostic. */
+  hiddenSessions?: number
+}
+
+export function fetchSlackSessionAccess(orgId?: string): Promise<SlackSessionAccessDto> {
+  return apiGet<SlackSessionAccessDto>(`${orgBase(orgId)}/session-access/slack`)
+}
+
+export function putSlackSessionAccess(enabled: boolean, orgId?: string): Promise<SlackSessionAccessDto> {
+  return apiPut<SlackSessionAccessDto>(`${orgBase(orgId)}/session-access/slack`, { enabled })
 }
 
 // One page of a session's transcript, proxied live from the owning daemon. The
@@ -2403,6 +2431,7 @@ export interface UsageAgentDto {
 
 export interface UsageDto {
   range: UsageRange
+  accessSyncDegraded?: boolean
   totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
   agents: UsageAgentDto[]
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),

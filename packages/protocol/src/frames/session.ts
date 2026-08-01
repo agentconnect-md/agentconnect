@@ -248,7 +248,11 @@ export type ChildSessionStatusProbe = z.infer<typeof ChildSessionStatusProbe>
  */
 export const SessionVisibilityPush = z.object({
   sessionId: z.string().min(1), // opaque ACP session id (agent-assigned; NOT a wire UUID)
-  visibility: z.enum(['private', 'org']),
+  visibility: z.enum(['private', 'org', 'external']),
+  // New daemons use this explicit capture/recall verdict. It is optional for
+  // wire compatibility with older CPs and decouples the runtime safety gate
+  // from the console visibility vocabulary.
+  sharedMemoryExcluded: z.boolean().optional(),
   visibilityRev: z.number().int().nonnegative()
 })
 export type SessionVisibilityPush = z.infer<typeof SessionVisibilityPush>

@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
 import { buildHttpApp } from '../fakes/build-http.js'
-import { seedAgent } from '../fixtures/seed.js'
+import { seedAgent, seedSessionMeta } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { PgSessionUsageRepo } from '../../src/persistence/repositories/session-usage.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
@@ -25,6 +25,10 @@ const REG_ID = '55555555-5555-4555-8555-555555555555'
 const AGENT_A = '11111111-1111-4111-8111-111111111111'
 const AGENT_B = '22222222-2222-4222-8222-222222222222'
 const DAY_MS = 24 * 60 * 60 * 1000
+
+async function seedVisibleSession(agentId: string, sessionId: string, lastActivityAt: Date): Promise<void> {
+  await seedSessionMeta(prisma, sessionId, agentId, { lastActivityAt })
+}
 
 function authPayload(token: string) {
   return { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }
@@ -97,6 +101,7 @@ describe('usage/report handler — persists per-session token usage', () => {
     const now = new Date()
     const yesterday = new Date(now.getTime() - DAY_MS)
     const where = { agentId: AGENT_A, sessionId: 'span' }
+    await seedVisibleSession(AGENT_A, 'span', now)
 
     // Day 1: cumulative $1.
     stub.inject('usage/report', {
@@ -182,6 +187,13 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     // window either way, so the totals and the tz-shift sums are unaffected.)
     const sinceUtcMidnight = now.getTime() - Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
     const recent = (mins: number) => new Date(now.getTime() - Math.min(mins * 60_000, sinceUtcMidnight))
+
+    await Promise.all([
+      seedVisibleSession(AGENT_A, 'a1', recent(10)),
+      seedVisibleSession(AGENT_A, 'a2', recent(20)),
+      seedVisibleSession(AGENT_A, 'a-old', new Date(now.getTime() - 100 * DAY_MS)),
+      seedVisibleSession(AGENT_B, 'b1', recent(30))
+    ])
 
     // Agent A: two in-range sessions + one stale (100 days old, excluded from d30/d90).
     await prisma.sessionUsage.createMany({
@@ -286,6 +298,10 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
   it('d1 keeps only sessions active in the last 24h', async () => {
     await seedAgent(prisma, AGENT_A)
     const now = new Date()
+    await Promise.all([
+      seedVisibleSession(AGENT_A, 'fresh', new Date(now.getTime() - 60_000)),
+      seedVisibleSession(AGENT_A, 'stale', new Date(now.getTime() - 25 * 60 * 60_000))
+    ])
     await prisma.sessionUsage.createMany({
       data: [
         { agentId: AGENT_A, sessionId: 'fresh', totalTokens: 700, lastActivityAt: new Date(now.getTime() - 60_000) },
@@ -316,6 +332,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)
     const at = new Date(Date.now() - 60_000) // in-range
+    await seedVisibleSession(AGENT_A, 'dup', at)
     const input = {
       agentId: AgentId(AGENT_A),
       sessionId: 'dup',
@@ -346,6 +363,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)
     const min = (m: number) => new Date(Date.now() - m * 60_000)
+    await seedVisibleSession(AGENT_A, 'corr', min(10))
     // Same session, in report order: $1 → $2 → corrected down to $1.5 → $2.5.
     for (const [m, cost] of [
       [40, 1],
@@ -383,6 +401,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)
     const now = Date.now()
+    await seedVisibleSession(AGENT_A, 'span-win', new Date(now - 5 * 60_000))
     // $10 accrued BEFORE the d30 window, then one $11 cumulative report inside it.
     await repo.record({
       agentId: AgentId(AGENT_A),

@@ -166,6 +166,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         // the relay neither mints nor validates it; it only lets the woken child reply back.
         ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
         ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
+        ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
         // §5.4 report-back request, forwarded opaquely for the same reason: it is an instruction
         // about the caller's OWN lineage, so the relay carries it without minting or validating it.
         ...(msg.needsReply !== undefined ? { needsReply: msg.needsReply } : {}),

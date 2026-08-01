@@ -148,7 +148,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:1',
       traceId: '1',
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '1',
@@ -179,7 +179,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:1',
       traceId: '1',
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '1',
@@ -219,7 +219,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const mk = (ts: string, text: string) => ({
       msgId: `slack:C1:${ts}`,
       traceId: ts,
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '100.1',
@@ -600,7 +600,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const message = (agentId: string) => ({
       msgId: `slack:${agentId}:1.1`,
       traceId: agentId,
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: agentId,
       thread: '1.1',
@@ -665,7 +665,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await (daemon as any).dispatch('bot-a', {
         msgId: 'slack:C1:201.1',
         traceId: 'title-skip',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel: 'C1',
         thread: '201.1',
@@ -736,7 +736,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await (daemon as any).dispatch('bot-a', {
         msgId: `slack:${channel}:202.1`,
         traceId: 'channel-username',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel,
         thread: '202.1',
@@ -797,7 +797,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         (daemon as any).dispatch('bot-a', {
           msgId: 'slack:C1:202.2',
           traceId: 'channel-username-failure',
-          source: 'user',
+          source: 'cron',
           platform: 'slack',
           channel: 'C1',
           thread: '202.2',
@@ -836,7 +836,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:300.1',
       traceId: 'names',
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '300.1',
@@ -949,7 +949,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       (daemon as any).dispatch('bot-a', {
         msgId: 'slack:C1:400.1',
         traceId: 'quota',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel: 'C1',
         thread: '400.1',
@@ -1001,7 +1001,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       (daemon as any).dispatch('bot-a', {
         msgId: 'slack:C1:401.1',
         traceId: 'quota-bare',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel: 'C1',
         thread: '401.1',

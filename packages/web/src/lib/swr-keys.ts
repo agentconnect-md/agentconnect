@@ -20,6 +20,7 @@ export const consoleKeys = {
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),
   members: (orgId: string | null | undefined) => consoleKey(orgId, 'members'),
   inviteLink: (orgId: string | null | undefined) => consoleKey(orgId, 'invite-link'),
+  slackSessionAccess: (orgId: string | null | undefined) => consoleKey(orgId, 'slack-session-access'),
   usage: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
     consoleKey(orgId, 'usage', range),
   sessions: (

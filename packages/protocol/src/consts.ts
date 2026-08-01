@@ -29,6 +29,10 @@ export const SESSION_VISIBILITY_FEATURE = 'session-visibility-v1'
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'
 
+/** Daemon understands externally-bound Slack session audiences, including the
+ * `external` visibility value and the stricter shared-memory exclusion bit. */
+export const SLACK_SESSION_AUDIENCE_FEATURE = 'slack-session-audience-v1'
+
 /** Daemon supports one-time MCP assertions scoped to entitled webchat sessions. */
 export const DELEGATED_MCP_ASSERTION_FEATURE = 'delegated_mcp_assertion_v1'
 

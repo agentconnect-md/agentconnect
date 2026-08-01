@@ -87,6 +87,17 @@ export interface SessionRecord {
   // so later turns edit the same status line instead of posting duplicates.
   statusBarTs?: string | null
   memoryProvider?: 'none' | 'native' | 'managed' | 'external' | null
+  conversationKind?: 'dm' | 'group_dm' | 'channel' | null
+  // Immutable trusted source binding for supported shared input. These fields
+  // are metadata only and are echoed on every event/session milestone.
+  externalProvider?: string | null
+  externalRealmKey?: string | null
+  externalResourceKind?: string | null
+  externalResourceKey?: string | null
+  externalIntegrationId?: string | null
+  // Null is legacy/unknown. New rows pin either an external shared input or a
+  // non-external origin so a later turn cannot silently change audiences.
+  sourceBindingKind?: 'local' | 'external' | null
   // session-concept §5.3: the origin (parent) session's stable acpSessionId, when this session
   // was spawned by another session's `sendMessage` (case 2a / A2A). DURABLE parent link (first-wins):
   // it authorizes this session's SessionTarget replies back to the parent on EVERY turn, not just
@@ -441,7 +452,10 @@ export class LocalStore {
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, modelOverride TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT,
-        originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER
+        originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
+        externalProvider TEXT, externalRealmKey TEXT, externalResourceKind TEXT,
+        externalResourceKey TEXT, externalIntegrationId TEXT,
+        sourceBindingKind TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -1008,6 +1022,18 @@ export class LocalStore {
     if (!cols.some((c) => c.name === 'tenantScope')) this.db.exec('ALTER TABLE sessions ADD COLUMN tenantScope TEXT')
     if (!cols.some((c) => c.name === 'launchCorrelationId'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN launchCorrelationId TEXT')
+    if (!cols.some((c) => c.name === 'externalProvider'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN externalProvider TEXT')
+    if (!cols.some((c) => c.name === 'externalRealmKey'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN externalRealmKey TEXT')
+    if (!cols.some((c) => c.name === 'externalResourceKind'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN externalResourceKind TEXT')
+    if (!cols.some((c) => c.name === 'externalResourceKey'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN externalResourceKey TEXT')
+    if (!cols.some((c) => c.name === 'externalIntegrationId'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN externalIntegrationId TEXT')
+    if (!cols.some((c) => c.name === 'sourceBindingKind'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN sourceBindingKind TEXT')
   }
 
   /** Pre-visibility databases have no gate table; the CREATE above only runs on
@@ -1499,11 +1525,15 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO sessions
-           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId, needsParentReply)
+           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId, needsParentReply,
+            externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
+            sourceBindingKind)
          VALUES
            (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
-            @triggeredBy, @memoryProvider, @originSessionId, @needsParentReply)
+            @triggeredBy, @memoryProvider, @originSessionId, @needsParentReply,
+            @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
+            @sourceBindingKind)
          ON CONFLICT(key) DO UPDATE SET
            acpSessionId=excluded.acpSessionId, state=excluded.state,
            lastDeliveredTs=excluded.lastDeliveredTs, updatedAt=excluded.updatedAt,
@@ -1514,6 +1544,15 @@ export class LocalStore {
            END,
            triggeredBy=COALESCE(sessions.triggeredBy, excluded.triggeredBy),
            memoryProvider=excluded.memoryProvider,
+           externalProvider=COALESCE(sessions.externalProvider, excluded.externalProvider),
+           externalRealmKey=COALESCE(sessions.externalRealmKey, excluded.externalRealmKey),
+           externalResourceKind=COALESCE(sessions.externalResourceKind, excluded.externalResourceKind),
+           externalResourceKey=COALESCE(sessions.externalResourceKey, excluded.externalResourceKey),
+           -- Credential locator is not part of the immutable source tuple. A
+           -- Slack reinstall may replace the integration while the same
+           -- workspace/conversation remains the audience.
+           externalIntegrationId=COALESCE(excluded.externalIntegrationId, sessions.externalIntegrationId),
+           sourceBindingKind=COALESCE(sessions.sourceBindingKind, excluded.sourceBindingKind),
            -- Parent link is first-wins: set once when the session is spawned, never cleared by a
            -- later (human-triggered) turn that carries no origin.
            originSessionId=COALESCE(sessions.originSessionId, excluded.originSessionId),
@@ -1538,6 +1577,12 @@ export class LocalStore {
         updatedAt: rec.updatedAt,
         triggeredBy: rec.triggeredBy ?? null,
         memoryProvider: rec.memoryProvider ?? null,
+        externalProvider: rec.externalProvider ?? null,
+        externalRealmKey: rec.externalRealmKey ?? null,
+        externalResourceKind: rec.externalResourceKind ?? null,
+        externalResourceKey: rec.externalResourceKey ?? null,
+        externalIntegrationId: rec.externalIntegrationId ?? null,
+        sourceBindingKind: rec.sourceBindingKind ?? null,
         originSessionId: rec.originSessionId ?? null,
         needsParentReply: rec.needsParentReply === 1 ? 1 : null
       })
@@ -1623,6 +1668,13 @@ export class LocalStore {
    */
   isCaptureExcluded(acpSessionId: string | undefined): boolean {
     if (!acpSessionId) return true
+    // A trusted external source binding is a daemon-local hard deny. It must
+    // win even if an older CP `org` ack is still present while a legacy session
+    // is being bound, and it remains true when provider sync is disabled.
+    const external = this.db
+      .prepare('SELECT 1 FROM sessions WHERE acpSessionId = ? AND externalProvider IS NOT NULL LIMIT 1')
+      .get(acpSessionId)
+    if (external) return true
     const row = this.db
       .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE acpSessionId = ?')
       .get(acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined
@@ -1656,35 +1708,92 @@ export class LocalStore {
    *  originating message (session-visibility.md §4.1). First non-null wins. */
   setSessionClassification(
     key: string,
-    c: { conversationKind?: string; tenantScope?: string; launchCorrelationId?: string }
+    c: {
+      conversationKind?: string
+      tenantScope?: string
+      launchCorrelationId?: string
+      externalProvider?: string
+      externalRealmKey?: string
+      externalResourceKind?: string
+      externalResourceKey?: string
+      externalIntegrationId?: string
+      sourceBindingKind?: 'local' | 'external'
+    }
   ): void {
     this.db
       .prepare(
         `UPDATE sessions SET
            conversationKind = COALESCE(conversationKind, ?),
            tenantScope = COALESCE(tenantScope, ?),
-           launchCorrelationId = COALESCE(launchCorrelationId, ?)
+           launchCorrelationId = COALESCE(launchCorrelationId, ?),
+           externalProvider = COALESCE(externalProvider, ?),
+           externalRealmKey = COALESCE(externalRealmKey, ?),
+           externalResourceKind = COALESCE(externalResourceKind, ?),
+           externalResourceKey = COALESCE(externalResourceKey, ?),
+           -- Unlike the source tuple, the credential locator is replaceable.
+           externalIntegrationId = COALESCE(?, externalIntegrationId),
+           sourceBindingKind = COALESCE(sourceBindingKind, ?)
          WHERE key = ?`
       )
-      .run(c.conversationKind ?? null, c.tenantScope ?? null, c.launchCorrelationId ?? null, key)
+      .run(
+        c.conversationKind ?? null,
+        c.tenantScope ?? null,
+        c.launchCorrelationId ?? null,
+        c.externalProvider ?? null,
+        c.externalRealmKey ?? null,
+        c.externalResourceKind ?? null,
+        c.externalResourceKey ?? null,
+        c.externalIntegrationId ?? null,
+        c.sourceBindingKind ?? null,
+        key
+      )
   }
 
   /** Read them back by ACP session id, the key the telemetry emitter holds. */
   getSessionClassification(
     agentId: string,
     acpSessionId: string
-  ): { conversationKind?: string; tenantScope?: string; launchCorrelationId?: string } | undefined {
+  ):
+    | {
+        conversationKind?: string
+        tenantScope?: string
+        launchCorrelationId?: string
+        externalProvider?: string
+        externalRealmKey?: string
+        externalResourceKind?: string
+        externalResourceKey?: string
+        externalIntegrationId?: string
+      }
+    | undefined {
     const row = this.db
       .prepare(
-        'SELECT conversationKind, tenantScope, launchCorrelationId FROM sessions WHERE agentId = ? AND acpSessionId = ?'
+        `SELECT conversationKind, tenantScope, launchCorrelationId,
+                externalProvider, externalRealmKey, externalResourceKind,
+                externalResourceKey, externalIntegrationId
+         FROM sessions WHERE agentId = ? AND acpSessionId = ?`
       )
       .get(agentId, acpSessionId) as
-      { conversationKind: string | null; tenantScope: string | null; launchCorrelationId: string | null } | undefined
+      | {
+          conversationKind: string | null
+          tenantScope: string | null
+          launchCorrelationId: string | null
+          externalProvider: string | null
+          externalRealmKey: string | null
+          externalResourceKind: string | null
+          externalResourceKey: string | null
+          externalIntegrationId: string | null
+        }
+      | undefined
     if (!row) return undefined
     return {
       ...(row.conversationKind ? { conversationKind: row.conversationKind } : {}),
       ...(row.tenantScope ? { tenantScope: row.tenantScope } : {}),
-      ...(row.launchCorrelationId ? { launchCorrelationId: row.launchCorrelationId } : {})
+      ...(row.launchCorrelationId ? { launchCorrelationId: row.launchCorrelationId } : {}),
+      ...(row.externalProvider ? { externalProvider: row.externalProvider } : {}),
+      ...(row.externalRealmKey ? { externalRealmKey: row.externalRealmKey } : {}),
+      ...(row.externalResourceKind ? { externalResourceKind: row.externalResourceKind } : {}),
+      ...(row.externalResourceKey ? { externalResourceKey: row.externalResourceKey } : {}),
+      ...(row.externalIntegrationId ? { externalIntegrationId: row.externalIntegrationId } : {})
     }
   }
 

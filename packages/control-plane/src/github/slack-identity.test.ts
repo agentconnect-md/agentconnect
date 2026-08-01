@@ -147,6 +147,20 @@ describe('LogtoIdentityService.slackIdentityFor', () => {
     expect(calls.user).toBe(2)
   })
 
+  it('never reuses a Slack authorization identity beyond two minutes', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = { 'sub-1': slackUser(SLACK_RAW) }
+    const { fetchImpl, calls } = fakeLogto(users)
+    const svc = svcOf(fetchImpl, clock)
+
+    expect(await svc.slackIdentityFor('sub-1')).toMatchObject({ teamId: 'T0EXAMPLE1' })
+    delete users['sub-1']
+    clock.advance(120_001)
+
+    expect(await svc.slackIdentityFor('sub-1')).toBeNull()
+    expect(calls.user).toBe(2)
+  })
+
   it('drops the cached workspace when an identity is unlinked', async () => {
     // Otherwise Profile keeps showing a workspace the user just disconnected,
     // for the rest of the positive TTL.

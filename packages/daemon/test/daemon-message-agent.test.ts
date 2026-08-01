@@ -189,6 +189,41 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
+  it('inherits the caller session’s immutable Slack source binding', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const callerKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    ;(daemon as any).store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    ;(daemon as any).store.setSessionClassification(callerKey, {
+      sourceBindingKind: 'external',
+      externalProvider: 'slack',
+      externalRealmKey: 'T1',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-a'
+    })
+
+    await call(baseReq())
+
+    expect(calls[0]!.callMeta.externalOrigin).toEqual({
+      provider: 'slack',
+      realmKey: 'T1',
+      resourceKind: 'conversation',
+      resourceKey: 'C1'
+    })
+    await daemon.stop()
+  })
+
   it('delivers directly to the target with no visible post and no shared-transcript row', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)

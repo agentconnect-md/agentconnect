@@ -202,6 +202,68 @@ describe('canViewSession (session-visibility.md §5)', () => {
     expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
     expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
   })
+
+  it('uses the fixed external scope and current provider decision without an owner bypass', () => {
+    const s: SessionViewable = {
+      visibility: 'external',
+      ownerIdentity: null,
+      externalProvider: 'slack',
+      externalScopeId: 'scope-1',
+      externalResolution: 'settled',
+      classifiedPolicyRev: 3n
+    }
+    const externalAccess = {
+      policies: [{ provider: 'slack', readFenceRev: 3n }],
+      allowedScopes: [{ id: 'scope-1', aclRevision: 1n }],
+      decisionAt: new Date()
+    }
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')), externalAccess)).toBe(true)
+    expect(
+      canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')), {
+        ...externalAccess,
+        allowedScopes: []
+      })
+    ).toBe(false)
+  })
+
+  it('fails closed for unresolved external rows and pre-fence candidates', () => {
+    const principal = ctx(OTHER, 'collaborator')
+    const snapshot = {
+      policies: [{ provider: 'slack', readFenceRev: 4n }],
+      allowedScopes: [{ id: 'scope-1', aclRevision: 1n }],
+      decisionAt: new Date()
+    }
+    expect(
+      canViewSession(
+        {
+          visibility: 'external',
+          ownerIdentity: null,
+          externalProvider: 'slack',
+          externalScopeId: 'scope-1',
+          externalResolution: 'pending',
+          classifiedPolicyRev: 4n
+        },
+        principal,
+        idsOf(principal),
+        snapshot
+      )
+    ).toBe(false)
+    expect(
+      canViewSession(
+        {
+          visibility: 'org',
+          ownerIdentity: null,
+          externalProvider: 'slack',
+          externalScopeId: null,
+          externalResolution: 'pending',
+          classifiedPolicyRev: 3n
+        },
+        principal,
+        idsOf(principal),
+        snapshot
+      )
+    ).toBe(false)
+  })
 })
 
 describe('canChangeSessionVisibility', () => {
@@ -232,6 +294,23 @@ describe('canChangeSessionVisibility', () => {
     const owner = ctx(OTHER, 'owner')
     expect(canChangeSessionVisibility(session('org', null), owner, identitySetOf(owner))).toBe(false)
     expect(canChangeSessionVisibility(session('private', null), owner, identitySetOf(owner))).toBe(false)
+  })
+
+  it('never lets a human rewrite an externally bound audience', () => {
+    const principal = ctx(CREATOR, 'owner')
+    expect(
+      canChangeSessionVisibility(
+        {
+          visibility: 'external',
+          ownerIdentity: `user:${CREATOR}`,
+          externalProvider: 'slack',
+          externalScopeId: 'scope-1',
+          externalResolution: 'settled'
+        },
+        principal,
+        identitySetOf(principal)
+      )
+    ).toBe(false)
   })
 })
 

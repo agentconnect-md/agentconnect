@@ -58,6 +58,10 @@ function slackDmSession() {
     visibilitySource: 'default',
     visibilityRev: 0,
     visibilityAckedRev: 0,
+    externalProvider: null,
+    externalScopeId: null,
+    externalResolution: null,
+    classifiedPolicyRev: null,
     startedAt: at,
     endedAt: null
   }
@@ -74,6 +78,9 @@ function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string
       session: {
         get: vi.fn(async () => slackDmSession()),
         orgHasAny: vi.fn(async () => true),
+        listExternalScopes: vi.fn(async () => []),
+        getExternalScopes: vi.fn(async () => []),
+        getExternalAccessPolicy: vi.fn(async () => null),
         listPage,
         listChildren: vi.fn(async () => []),
         listFacets: vi.fn(async () => ({ agents: [], integrations: [], channels: [], triggers: [] }))
@@ -81,6 +88,7 @@ function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string
       sessionUsage: { get: vi.fn(async () => null) },
       hook: { getMany: vi.fn(async () => []) }
     },
+    clock: { now: () => Date.now() },
     ...(overrides.slackIdentityFor ? { logtoIdentity: { slackIdentityFor: overrides.slackIdentityFor } } : {})
   } as unknown as HttpDeps
   return { deps, listPage }
@@ -111,7 +119,10 @@ describe('session routes × viewer identity', () => {
       expect(res.statusCode).toBe(200)
       expect(listPage).toHaveBeenCalledWith(
         expect.objectContaining({
-          viewer: { role: 'collaborator', identitySet: expect.arrayContaining(['user:u-1', SLACK_OWNER]) }
+          viewer: expect.objectContaining({
+            role: 'collaborator',
+            identitySet: expect.arrayContaining(['user:u-1', SLACK_OWNER])
+          })
         })
       )
     } finally {

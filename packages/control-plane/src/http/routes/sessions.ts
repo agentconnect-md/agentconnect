@@ -16,9 +16,9 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
-import { orgOf, ctxOf } from '../rbac.js'
+import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { canChangeSessionVisibility, canView, canViewSession } from '../../authorization/policy.js'
-import { makeViewerIdentitySet } from '../viewer-identity.js'
+import { makeSessionAccessResolver } from '../session-access.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
@@ -32,7 +32,9 @@ import {
   ErrorDto,
   IdParam,
   SetSessionVisibilityBody,
-  SessionVisibilityDto
+  SessionVisibilityDto,
+  SetSessionExternalAccessBody,
+  SessionExternalAccessDto
 } from '../dto/index.js'
 
 const SessionFilterQueryDto = z.object({
@@ -258,7 +260,9 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
     permissionMode: s.permissionMode ?? null,
     outputMode: s.outputMode ?? null,
     daemonId: s.daemonId ?? null,
-    visibility: s.visibility
+    visibility: s.visibility,
+    externalProvider: s.externalProvider,
+    externalResolution: s.externalResolution
   }
 }
 
@@ -294,18 +298,94 @@ export function sessionRoutes(deps: HttpDeps) {
     // the session predicate. The repo arm and this in-app check must stay two
     // spellings of one rule — both come from `canViewSession`, fed the SAME
     // identity set: console identity plus the caller's linked Slack identity.
-    const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity)
-    const viewerOf = async (req: FastifyRequest) => {
-      return { role: ctxOf(req).role, identitySet: [...(await identitySetFor(req))] }
+    const sessionAccess = makeSessionAccessResolver(deps)
+    const viewerForQuery = async (req: FastifyRequest, query: Parameters<typeof sessionAccess.forQuery>[1]) => {
+      const access = await sessionAccess.forQuery(req, query)
+      return {
+        access,
+        viewer: {
+          role: ctxOf(req).role,
+          identitySet: [...access.identitySet],
+          externalAccess: access.externalAccess
+        }
+      }
     }
 
     const getOrgViewableSession = async (req: FastifyRequest, sessionId: string) => {
       const session = await deps.repos.session.get(SessionId(sessionId))
       if (!session) return null
-      if (!canViewSession(session, ctxOf(req), await identitySetFor(req))) return null
+      const access = await sessionAccess.forSessions(req, [session])
+      if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)) return null
       const agent = await getOrgViewableAgent(req, session.agentId)
-      return agent ? { session, agent } : null
+      return agent ? { session, agent, access } : null
     }
+
+    const slackAccessDto = async (orgId: OrgId, includeDiagnostics: boolean) => {
+      const [policy, hiddenSessions] = await Promise.all([
+        deps.repos.session.getExternalAccessPolicy(orgId, 'slack'),
+        includeDiagnostics ? deps.repos.session.countExternalUnresolved(orgId, 'slack') : Promise.resolve(undefined)
+      ])
+      return {
+        provider: 'slack' as const,
+        available: deps.logtoIdentity !== undefined && deps.slackSessionAccess !== undefined,
+        enabled: policy?.state !== undefined && policy.state !== 'disabled',
+        state: policy?.state ?? ('disabled' as const),
+        currentRevision: (policy?.currentRev ?? 0n).toString(),
+        readFenceRevision: policy?.readFenceRev?.toString() ?? null,
+        ...(hiddenSessions !== undefined ? { hiddenSessions } : {})
+      }
+    }
+
+    r.get(
+      '/session-access/slack',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Get Slack session access sync',
+          description:
+            'Returns whether shared Slack sessions use current Slack conversation membership for console access.',
+          operationId: 'getSlackSessionAccess',
+          response: { 200: SessionExternalAccessDto }
+        }
+      },
+      async (req) => slackAccessDto(orgOf(req), ctxOf(req).role === 'owner')
+    )
+
+    r.put(
+      '/session-access/slack',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Set Slack session access sync',
+          description:
+            'Owner-only setting. When enabled, shared Slack session access follows current conversation membership; unresolved history remains hidden.',
+          operationId: 'setSlackSessionAccess',
+          body: SetSessionExternalAccessBody,
+          response: { 200: SessionExternalAccessDto, 403: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        if (req.body.enabled && (!deps.logtoIdentity || !deps.slackSessionAccess)) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'Slack session access requires OIDC and Logto linked-identity configuration'
+          })
+        }
+        const result = await deps.repos.session.setExternalAccessEnabled(orgOf(req), 'slack', req.body.enabled)
+        if (result.affected.length > 0) void deps.visibilityPush?.notifySessions(result.affected)
+        return {
+          provider: 'slack' as const,
+          available: deps.logtoIdentity !== undefined && deps.slackSessionAccess !== undefined,
+          enabled: result.policy.state !== 'disabled',
+          state: result.policy.state,
+          currentRevision: result.policy.currentRev.toString(),
+          readFenceRevision: result.policy.readFenceRev?.toString() ?? null,
+          hiddenSessions: result.hiddenSessions
+        }
+      }
+    )
 
     r.get(
       '/sessions/facets',
@@ -326,9 +406,8 @@ export function sessionRoutes(deps: HttpDeps) {
           return { agents: [], integrations: [], channels: [], triggers: [] }
         }
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
-        const index = await deps.repos.session.listFacets({
+        const query = {
           agentIds: visibleAgentIds,
-          viewer: await viewerOf(req),
           ...(req.query.agentId ? { agentId: AgentId(req.query.agentId) } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
@@ -336,7 +415,9 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
           githubHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {})
-        })
+        }
+        const { viewer } = await viewerForQuery(req, query)
+        const index = await deps.repos.session.listFacets({ ...query, viewer })
         const metadataRows = [...index.integrations, ...index.channels, ...index.triggers]
         const hookMetadata = await hookMetadataForSessions(deps, metadataRows, orgOf(req))
         return sessionFacets(index, hookMetadata)
@@ -389,9 +470,8 @@ export function sessionRoutes(deps: HttpDeps) {
         // GitHub is a semantic subtype of hook sessions. Resolve definitions only
         // when integration classification or a repository-wide trigger filter needs them.
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, false)
-        const page = await deps.repos.session.listPage({
+        const query = {
           agentIds: selectedAgentIds,
-          viewer: await viewerOf(req),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
@@ -401,7 +481,9 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(cursor ? { cursor } : {}),
           limit: req.query.limit,
           includeTotal: !cursor
-        })
+        }
+        const { viewer, access } = await viewerForQuery(req, query)
+        const page = await deps.repos.session.listPage({ ...query, viewer })
         const hookMetadata = await hookMetadataForSessions(deps, page.sessions, orgOf(req))
         const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
 
@@ -409,6 +491,7 @@ export function sessionRoutes(deps: HttpDeps) {
           sessions: page.sessions.map((session) => sessionDto(session, hookMetadata)),
           total: page.total,
           nextCursor,
+          accessSyncDegraded: access.degraded,
           ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
         }
       }
@@ -436,28 +519,31 @@ export function sessionRoutes(deps: HttpDeps) {
         if (!owned) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
-        const { session: s } = owned
+        const { session: s, access } = owned
         // Relationships may cross agents (and daemons), so apply the same
         // owning-agent visibility rule to every linked session. A hidden parent
         // is indistinguishable from no parent; hidden children are omitted.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const ctx = ctxOf(req)
-        const identitySet = await identitySetFor(req)
         const [parent, children, usage] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
-          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds, {
-            role: ctx.role,
-            identitySet: [...identitySet]
-          }),
+          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
           deps.repos.sessionUsage.get(s.agentId, s.id)
         ])
+        const related = [...(parent ? [parent] : []), ...children]
+        const relatedAccess = await sessionAccess.forSessions(req, related)
         const parentVisible =
-          parent !== null && visibleAgentIdSet.has(parent.agentId) && canViewSession(parent, ctx, identitySet)
+          parent !== null &&
+          visibleAgentIdSet.has(parent.agentId) &&
+          canViewSession(parent, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
+        const visibleChildren = children.filter((child) =>
+          canViewSession(child, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
+        )
         return {
           id: s.id,
           parentSession: parentVisible ? sessionRelation(parent) : null,
-          childSessions: children.map(sessionRelation),
+          childSessions: visibleChildren.map(sessionRelation),
           agentId: s.agentId,
           launchId: s.launchId,
           platform: s.platform,
@@ -483,10 +569,13 @@ export function sessionRoutes(deps: HttpDeps) {
           daemonId: s.daemonId,
           activityState: s.activityState,
           visibility: s.visibility,
+          externalProvider: s.externalProvider,
+          externalResolution: s.externalResolution,
           // The §5.1 cutover state: CP read gates apply at commit, but the memory
           // boundary only takes effect once every affected daemon has acked.
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
-          canChangeVisibility: canChangeSessionVisibility(s, ctx, identitySet),
+          canChangeVisibility: canChangeSessionVisibility(s, ctx, access.identitySet),
+          accessSyncDegraded: access.degraded || relatedAccess.degraded,
           startedAt: s.startedAt.toISOString(),
           endedAt: s.endedAt ? s.endedAt.toISOString() : null
         }
@@ -530,6 +619,11 @@ export function sessionRoutes(deps: HttpDeps) {
             ...(req.query.after !== undefined ? { after: req.query.after } : {}),
             limit: req.query.limit ?? 50
           })
+          // Provider membership and identity can be revoked while the daemon is
+          // answering. Re-run the complete predicate before any body leaves CP.
+          if (!(await getOrgViewableSession(req, req.params.id))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+          }
           return {
             sessionId: page.sessionId,
             messages: page.messages,
@@ -585,6 +679,9 @@ export function sessionRoutes(deps: HttpDeps) {
             toolCallId: req.query.toolCallId,
             offset: req.query.offset ?? 0
           })
+          if (!(await getOrgViewableSession(req, req.params.id))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+          }
           return {
             sessionId: chunk.sessionId,
             toolCallId: chunk.toolCallId,
@@ -603,11 +700,12 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     )
 
-    // §4.3 reclassification — the escape hatch in both directions: publish a
-    // useful DM transcript to the org, or pull a channel/group-DM session
-    // private. Tightening cascades to descendants and stops future memory
-    // capture once every affected daemon acks (§5.1); it does NOT scrub what the
-    // agent already distilled while the session was org-visible.
+    // §4.3 direct-session reclassification — publish a useful DM transcript to
+    // the org, or pull an owned direct session private. Provider-bound shared
+    // sessions have an immutable audience and are rejected by the policy and
+    // repository guards. Tightening cascades to descendants and stops future
+    // memory capture once every affected daemon acks (§5.1); it does NOT scrub
+    // what the agent already distilled while the session was org-visible.
     r.put(
       '/sessions/:id/visibility',
       {
@@ -628,7 +726,7 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const ctx = ctxOf(req)
-        const identitySet = await identitySetFor(req)
+        const identitySet = owned.access.identitySet
         if (!canChangeSessionVisibility(owned.session, ctx, identitySet)) {
           return reply
             .code(403)

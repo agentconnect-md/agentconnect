@@ -64,6 +64,8 @@ model Org {
   organizationKnowledge     OrganizationKnowledge[]
   managedSkills             ManagedSkill[]
   organizationSuggestions   OrganizationSuggestion[]
+  externalScopes            ExternalScope[]
+  sessionExternalAccess     SessionExternalAccessPolicy[]
 
   @@map("org")
 }
@@ -817,12 +819,26 @@ enum ActivityState {
 
 // Per-session visibility tier (docs/designs/session-visibility.md §1): 'org'
 // (default) = visible to every member who can view the owning agent; 'private'
-// = session owner (identity match) ONLY — no role override, org owners
-// included. Composes with agent visibility — it never widens it. Share-by-link
-// is deliberately NOT a member of this enum (§8).
+// = session owner (identity match) ONLY — no role override, org owners included;
+// 'external' = current provider audience. Composes with agent visibility — it
+// never widens it. Share-by-link is deliberately NOT a member of this enum (§8).
 enum SessionVisibility {
   private
   org
+  external
+}
+
+enum ExternalResolution {
+  pending
+  settled
+  invalid
+}
+
+enum ExternalAccessPolicyState {
+  disabled
+  enabling
+  enabled
+  degraded
 }
 
 // How a session's visibility was determined (session-visibility.md §3, §4.5).
@@ -837,51 +853,58 @@ enum VisibilitySource {
 }
 
 model SessionMeta {
-  id                 String            @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
-  parentSessionId    String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
-  agentId            String            @db.Uuid
-  launchId           String?           @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
-  platform           String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
-  channel            String?
-  thread             String?
-  phase              SessionPhase      @default(start)
-  link               String? // deep-link (NOT a body)
-  summary            String?           @db.Text // short milestone text (NOT the stream)
-  title              String?           @db.Text // daemon-derived display title (NOT a body)
-  status             String?
-  triggeredBy        String?
-  channelName        String?
-  triggeredByName    String?
-  threadUrl          String?           @db.Text
+  id                  String              @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
+  parentSessionId     String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
+  agentId             String              @db.Uuid
+  launchId            String?             @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
+  platform            String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
+  channel             String?
+  thread              String?
+  phase               SessionPhase        @default(start)
+  link                String? // deep-link (NOT a body)
+  summary             String?             @db.Text // short milestone text (NOT the stream)
+  title               String?             @db.Text // daemon-derived display title (NOT a body)
+  status              String?
+  triggeredBy         String?
+  channelName         String?
+  triggeredByName     String?
+  threadUrl           String?             @db.Text
   // ── execution-config snapshot (what the session actually ran with) ──
   // Daemon-reported via event/session (session override ?? agent config at run
   // time); null ⇒ never reported / the runtime's own default. Recorded so the
   // console shows what a session USED, not the agent's config at view time.
-  runtime            String?
-  model              String?
-  effort             String? // reasoning effort level (runtime-owned vocabulary)
-  fastMode           Boolean?
-  permissionMode     String? // runtime permission/approval mode
-  outputMode         String? // daemon-side output verbosity (low/medium/high)
-  daemonId           String?           @db.Uuid // daemon that reported the session — stamped by the CP from the authenticated WS conn, never daemon-echoed
-  activityState      ActivityState     @default(idle)
+  runtime             String?
+  model               String?
+  effort              String? // reasoning effort level (runtime-owned vocabulary)
+  fastMode            Boolean?
+  permissionMode      String? // runtime permission/approval mode
+  outputMode          String? // daemon-side output verbosity (low/medium/high)
+  daemonId            String?             @db.Uuid // daemon that reported the session — stamped by the CP from the authenticated WS conn, never daemon-echoed
+  activityState       ActivityState       @default(idle)
   // ── session visibility (docs/designs/session-visibility.md §3) ──
-  orgId              String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent
-  visibility         SessionVisibility @default(org)
-  ownerIdentity      String? // §2 namespaced identity (`user:<id>` | `<platform>:<scope>:<uid>`); null for automation/legacy/unresolved-owner rows (NOT a §2 owner-orphan, whose tuple is stored but unmatched)
-  visibilitySource   VisibilitySource  @default(default)
-  visibilityRev      Int               @default(0) // dedicated monotonic counter, bumped in the same tx as any visibility change (§5.1)
-  visibilityAckedRev Int               @default(-1) // daemon-ack watermark: 'applied' once >= visibilityRev; -1 = never acked (rev 0 is a real revision)
+  orgId               String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent
+  visibility          SessionVisibility   @default(org)
+  ownerIdentity       String? // §2 namespaced identity (`user:<id>` | `<platform>:<scope>:<uid>`); null for automation/legacy/unresolved-owner rows (NOT a §2 owner-orphan, whose tuple is stored but unmatched)
+  visibilitySource    VisibilitySource    @default(default)
+  visibilityRev       Int                 @default(0) // dedicated monotonic counter, bumped in the same tx as any visibility change (§5.1)
+  visibilityAckedRev  Int                 @default(-1) // daemon-ack watermark: 'applied' once >= visibilityRev; -1 = never acked (rev 0 is a real revision)
+  // Shared external input. The first trusted binding is immutable; ownerIdentity
+  // is provenance only and never authorizes an external row.
+  externalProvider    String?
+  externalScopeId     String?             @db.Uuid
+  externalResolution  ExternalResolution?
+  classifiedPolicyRev BigInt?             @db.BigInt
   // Cursor tokens pass through JavaScript Date (millisecond precision), so the
   // complete keyset tuple must use the same precision in Postgres.
-  lastActivityAt     DateTime          @db.Timestamptz(3)
-  startedAt          DateTime          @default(now()) @db.Timestamptz(3)
-  endedAt            DateTime?         @db.Timestamptz(6)
-  updatedAt          DateTime          @updatedAt @db.Timestamptz(6)
+  lastActivityAt      DateTime            @db.Timestamptz(3)
+  startedAt           DateTime            @default(now()) @db.Timestamptz(3)
+  endedAt             DateTime?           @db.Timestamptz(6)
+  updatedAt           DateTime            @updatedAt @db.Timestamptz(6)
 
-  agent  Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  launch AgentLaunch? @relation(fields: [launchId], references: [id], onDelete: SetNull)
-  daemon Daemon?      @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  launch        AgentLaunch?   @relation(fields: [launchId], references: [id], onDelete: SetNull)
+  daemon        Daemon?        @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  externalScope ExternalScope? @relation(fields: [externalScopeId, orgId, externalProvider], references: [id, orgId, provider], onDelete: Restrict, onUpdate: Restrict)
 
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
@@ -894,7 +917,52 @@ model SessionMeta {
   @@index([platform, channel])
   @@index([launchId])
   @@index([daemonId])
+  @@index([orgId, externalProvider, externalScopeId])
   @@map("session_meta")
+}
+
+// Stable provider resource referenced by SessionMeta. Provider ACLs themselves
+// are never copied here; access is resolved at read time and only short-lived
+// decisions are cached in process memory.
+model ExternalScope {
+  id             String    @id @default(uuid()) @db.Uuid
+  orgId          String
+  provider       String
+  realmKey       String
+  resourceKind   String
+  resourceKey    String
+  credentialKind String?
+  credentialId   String?
+  aclRevision    BigInt    @default(0) @db.BigInt
+  revokedAt      DateTime? @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+
+  org      Org           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sessions SessionMeta[]
+
+  @@unique([id, orgId, provider])
+  @@unique([orgId, provider, realmKey, resourceKind, resourceKey])
+  @@index([credentialKind, credentialId])
+  @@map("external_scope")
+}
+
+// Organization/provider policy. Missing is never interpreted as disabled: the
+// ingest transaction ensures this row before creating a supported candidate.
+model SessionExternalAccessPolicy {
+  orgId           String
+  provider        String
+  state           ExternalAccessPolicyState @default(disabled)
+  currentRev      BigInt                    @default(0) @db.BigInt
+  readFenceRev    BigInt?                   @db.BigInt
+  migrationCursor String?
+  createdAt       DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime                  @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, provider])
+  @@map("session_external_access_policy")
 }
 
 // Durable ownership metadata for a browser webchat conversation. The message

@@ -5,12 +5,13 @@
 
 /**
  * Session-level visibility badge + toggle (docs/designs/session-visibility.md
- * §4.3/§5.1/§6). Sessions use their OWN two-state enum ('org' | 'private') — this
- * deliberately mirrors VisibilityField's look without reusing its
- * ResourceVisibility ('org' | 'restricted') types or share-set machinery.
+ * §4.3/§5.1/§6). Sessions use their own visibility enum (`org`, `private`, or
+ * provider-managed `external`) — this deliberately mirrors VisibilityField's
+ * look without reusing its ResourceVisibility (`org` | `restricted`) types or
+ * share-set machinery.
  *
- * - Read-only viewers see a lock badge on private sessions and nothing on org
- *   sessions (org is the unmarked default).
+ * - Read-only viewers see a lock badge on private sessions, a provider audience
+ *   badge on external sessions, and nothing on org sessions.
  * - `canChange` (server-computed: the identity-matched session owner only)
  *   renders the two-option control instead. Tightening (org → private)
  *   confirms through a dialog carrying the memory caveat; widening is immediate.
@@ -21,7 +22,7 @@ import { useState } from 'react'
 import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
-import { putSessionVisibility, type SessionVisibility } from '@/lib/api'
+import { putSessionVisibility, type MutableSessionVisibility, type SessionVisibility } from '@/lib/api'
 
 export const SESSION_PRIVATE_TITLE = 'Private session — visible only to its owner'
 
@@ -30,6 +31,8 @@ export function SessionVisibilityControl({
   visibility,
   state,
   canChange,
+  externalProvider,
+  externalResolution,
   nativeMemory = false,
   onChanged
 }: {
@@ -39,6 +42,8 @@ export function SessionVisibilityControl({
   /** §5.1 tighten cutover state; 'pending' renders the spinner pill. */
   state?: 'pending' | 'applied' | null
   canChange: boolean
+  externalProvider?: string | null
+  externalResolution?: 'pending' | 'settled' | 'invalid' | null
   /** The owning agent persists memory inside its runtime (provider `native`),
    *  which has no per-session gate — so the copy must NOT promise that going
    *  private stops what the agent learns. See docs/product-conventions.md. */
@@ -51,7 +56,7 @@ export function SessionVisibilityControl({
   const [error, setError] = useState<string | null>(null)
   const effective: SessionVisibility = visibility ?? 'org'
 
-  const apply = async (next: SessionVisibility) => {
+  const apply = async (next: MutableSessionVisibility) => {
     setBusy(true)
     setError(null)
     try {
@@ -65,13 +70,31 @@ export function SessionVisibilityControl({
     }
   }
 
-  const pick = (next: SessionVisibility) => {
+  const pick = (next: MutableSessionVisibility) => {
     if (busy || next === effective) return
     setError(null)
     // Tightening surfaces the memory caveat first; widening never cascades and
     // applies immediately.
     if (next === 'private') setConfirming(true)
     else void apply('org')
+  }
+
+  if (effective === 'external') {
+    const provider = externalProvider === 'slack' ? 'Slack' : 'External'
+    const title =
+      externalResolution === 'settled'
+        ? `Visible to current members of the source ${provider} conversation`
+        : `${provider} membership could not be resolved; access is fail-closed`
+    return (
+      <span
+        title={title}
+        className="inline-flex items-center gap-[5px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+      >
+        <Icon name="users" size={13} color="var(--text-tertiary)" />
+        {provider} members
+        {state === 'pending' && <Spinner size={10} />}
+      </span>
+    )
   }
 
   if (!canChange) {
@@ -88,7 +111,7 @@ export function SessionVisibilityControl({
     )
   }
 
-  const segment = (v: SessionVisibility, icon: string, label: string, title: string) => {
+  const segment = (v: MutableSessionVisibility, icon: string, label: string, title: string) => {
     const on = effective === v
     return (
       <button

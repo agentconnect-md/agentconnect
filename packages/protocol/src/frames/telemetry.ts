@@ -22,6 +22,18 @@ export const Heartbeat = z.object({
 })
 export type Heartbeat = z.infer<typeof Heartbeat>
 
+/** Stable source tuple for a supported shared input. Credential locators are
+ * optional because A2A lineage carries only the immutable audience identity;
+ * direct ingest includes the integration so the CP can validate it. */
+export const ExternalSessionOrigin = z.object({
+  provider: z.literal('slack'),
+  realmKey: z.string().min(1).max(200).optional(),
+  resourceKind: z.literal('conversation'),
+  resourceKey: z.string().min(1).max(200),
+  integrationId: z.string().uuid().optional()
+})
+export type ExternalSessionOrigin = z.infer<typeof ExternalSessionOrigin>
+
 /** Converged session lifecycle milestone — protocol §7.2. NOT the message stream. */
 export const EventSession = z.object({
   sessionId: z.string(), // ACP session id (agent-assigned; a free string, NOT a wire UUID — matches usage/report)
@@ -61,6 +73,10 @@ export const EventSession = z.object({
   // `agent/launch`, echoed back so ingest can attribute the session to the
   // launching console user. NOT the launchId fence above.
   launchCorrelationId: z.string().uuid().optional(),
+  // Immutable audience candidate for a supported shared input. This is
+  // metadata-only: the CP validates the integration before binding a scope and
+  // resolves current provider membership only on authorized read paths.
+  externalOrigin: ExternalSessionOrigin.optional(),
   // Effective execution-config snapshot: what the session actually ran with
   // (per-session sticky override, else the agent's config at run time; absent ⇒
   // the runtime's own default). Recorded so the console shows what a session

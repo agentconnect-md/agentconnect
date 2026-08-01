@@ -194,6 +194,7 @@ import {
   RESERVED_RESTART_CODE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   SESSION_VISIBILITY_FEATURE,
+  SLACK_SESSION_AUDIENCE_FEATURE,
   effectiveMemoryDreamingPolicy,
   gitRepoLabel
 } from '@agentconnect.md/protocol'
@@ -301,6 +302,7 @@ import type {
   ChildSessionStatus,
   ChildSessionStatusProbe,
   SessionVisibilityPush,
+  ExternalSessionOrigin,
   WebchatMcpDelegationReference,
   ChannelAgentsOk
 } from '@agentconnect.md/protocol'
@@ -665,6 +667,11 @@ interface CallMeta {
    *  sessionId→daemon registry, so a cross-daemon reply routes by these coords + `callFrom`).
    *  Set alongside `originSessionId`. */
   originCoords?: { platform: Exclude<NormalizedMessage['platform'], 'hook'>; channel: string; thread?: string }
+  /** Immutable external source inherited from the waking Session. This is
+   * daemon-authored metadata and never comes from model text. The credential
+   * locator stays at the direct ingress; descendants inherit only the stable
+   * provider/realm/resource tuple. */
+  externalOrigin?: Omit<ExternalSessionOrigin, 'integrationId'>
   /** Daemon-internal (issue #536, never a tool input): when this turn calls
    *  `messageAgent`, deliver the woken peer's turn HEADLESS so it records silently
    *  with no channel output. Set only by the self-introduce-on-join fan-out; does
@@ -2202,12 +2209,10 @@ export class Daemon {
       cancelOrchestration: (req) => Promise.resolve(this.cancelOrchestrationForOwner(req)),
       submitGithubReview: (req) => this.submitGithubReview(req),
       memory: this.memory,
-      // session-visibility.md §5.1: the same capture gate that blocks automatic
-      // distillation also blocks an EXPLICIT write from a private session —
-      // agent memory is shared across users, so the tool path would otherwise
-      // be a way around it. Resolved from the caller's trusted session coords
-      // at call time, so a session tightened mid-life is covered.
-      memoryWriteAllowed: (ctx) => !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
+      // The same isolation verdict gates explicit recall and mutation of shared
+      // agent memory. Resolve it from trusted session coords at call time so a
+      // policy change takes effect for an already-running ACP session.
+      memoryAccessAllowed: (ctx) => !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.store.appendTranscript({
           channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
@@ -3883,6 +3888,7 @@ export class Daemon {
       'memory-dreaming-v1',
       ORGANIZATION_KNOWLEDGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
+      SLACK_SESSION_AUDIENCE_FEATURE,
       ...(this.delegatedMcpBroker && this.delegatedWebchatHosts && this.delegatedMcpIsolationHealthy()
         ? [DELEGATED_MCP_ASSERTION_FEATURE]
         : [])
@@ -4053,10 +4059,10 @@ export class Daemon {
   ): void {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
-    // Agent memory is agent-scoped and shared across users, so a private
-    // session's turn must never be distilled into it (session-visibility.md
-    // §5.1). The gate is checked HERE — before both the managed distillation and
-    // the external capture outbox — and fails closed on unknown state.
+    // Agent memory is agent-scoped and shared across users, so an isolated
+    // private or external session's turn must never be distilled into it. The
+    // gate is checked HERE — before both the managed distillation and the
+    // external capture outbox — and fails closed on unknown state.
     if (this.store.isCaptureExcluded(sessionId)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
@@ -5670,6 +5676,7 @@ export class Daemon {
       // back across the relay to a parent session that lives on the caller's daemon.
       ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
       ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
+      ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
       // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
       // local path — the directive names `originSessionId`, so it is meaningless without one.
       ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {}),
@@ -5959,6 +5966,7 @@ export class Daemon {
     // daemon). originSessionId is the caller session's stable acpSessionId (mid-turn, so it is
     // already minted); originCoords are its landing coords for cross-daemon reply routing.
     const originSessionId = this.store.getSession(callerKey)?.acpSessionId ?? undefined
+    const externalOrigin = this.externalOriginForSession(req.callerAgentId, originSessionId)
     const originCoordPlatform = platform === 'hook' ? 'slack' : platform
     const originCoords: CallMeta['originCoords'] = {
       platform: originCoordPlatform,
@@ -6035,7 +6043,8 @@ export class Daemon {
           sourceHopCount,
           correlationId,
           ...(originSessionId !== undefined ? { originSessionId } : {}),
-          originCoords
+          originCoords,
+          ...(externalOrigin ? { externalOrigin } : {})
         }
       )
       // §5.4: an ADMITTED remote wake is still a child this session may follow — its row lives on
@@ -6076,6 +6085,7 @@ export class Daemon {
       // §5.3: hand the child its origin so it can reply back with `sendMessage({sessionId})`.
       ...(originSessionId !== undefined ? { originSessionId } : {}),
       originCoords,
+      ...(externalOrigin ? { externalOrigin } : {}),
       // §5.3: `toAgent.needsReply` — tell the child to report its outcome back to that origin.
       // Meaningless without an origin to reply into, so it rides the same condition.
       ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {}),
@@ -6180,6 +6190,7 @@ export class Daemon {
     // origin could reply again (symmetric lineage). callFrom = the replier.
     const replyCoordPlatform = platform === 'hook' ? 'slack' : platform
     const replierSessionId = callerRec?.acpSessionId ?? undefined
+    const externalOrigin = this.externalOriginForSession(req.callerAgentId, replierSessionId)
     const replyOriginCoords: CallMeta['originCoords'] = {
       platform: replyCoordPlatform,
       channel: req.callerChannel,
@@ -6192,6 +6203,7 @@ export class Daemon {
       deliveryId,
       ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
       originCoords: replyOriginCoords,
+      ...(externalOrigin ? { externalOrigin } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
       ...(replierSessionId !== undefined && this.store.isCaptureExcluded(replierSessionId)
@@ -6275,7 +6287,8 @@ export class Daemon {
         sourceHopCount: inbound.hopCount,
         ...(correlationId !== undefined ? { correlationId } : {}),
         ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
-        originCoords: replyOriginCoords
+        originCoords: replyOriginCoords,
+        ...(externalOrigin ? { externalOrigin } : {})
       }
     )
     return {
@@ -6571,6 +6584,7 @@ export class Daemon {
       return false
     }
     const originSessionId = this.store.getSession(originKey)?.acpSessionId ?? undefined
+    const externalOrigin = this.externalOriginForSession(req.agentId, originSessionId)
     const originCoordPlatform = originPlatform === 'hook' ? 'slack' : originPlatform
     const deliveryId = randomUUID()
     const callMeta: CallMeta = {
@@ -6579,6 +6593,7 @@ export class Daemon {
       deliveryId,
       initializeOnly: true,
       ...(originSessionId ? { originSessionId } : {}),
+      ...(externalOrigin ? { externalOrigin } : {}),
       originCoords: {
         platform: originCoordPlatform,
         channel: req.originChannel,
@@ -6642,6 +6657,7 @@ export class Daemon {
       /** §5.3: the caller's origin session, forwarded so the remote child can reply back. */
       originSessionId?: string
       originCoords?: CallMeta['originCoords']
+      externalOrigin?: CallMeta['externalOrigin']
     }
   ): Promise<MessageAgentResult> {
     if (!this.relays) {
@@ -6670,6 +6686,7 @@ export class Daemon {
         ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
         ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
         ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
+        ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
         // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
         // having an origin for exactly the reason the local path is — there is nothing to report to
         // without one, and the target ignores it in that case anyway.
@@ -9376,11 +9393,32 @@ export class Daemon {
         throw err
       }
     }
+    const sourceBinding = this.bindSessionSource(agentId, key, msg, callMeta)
+    if (sourceBinding !== 'unchanged') {
+      finishEvaluation('turn.cancelled', { reason: 'session_source_mismatch' })
+      const conn = this.replyConnFor(agentId, integrationId)
+      const reason =
+        sourceBinding === 'unavailable'
+          ? 'This Slack conversation could not be assigned a stable workspace audience. Reconnect the Slack integration and try again.'
+          : 'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.'
+      // Only a human ingress gets a visible repair instruction. A2A delivery is
+      // intentionally postless; turning a rejected internal wake into a Slack
+      // message would leak workflow state and create unsolicited channel noise.
+      if (!callMeta && msg.source === 'user') {
+        try {
+          await conn?.postMessage(msg.channel, reason, msg.thread ?? msg.msgId)
+        } catch (err) {
+          this.log.warn(`session source: could not post rejection (${formatErr(err)})`)
+        }
+      }
+      this.log.warn(`session source: rejected Slack audience binding for ${key} (${sourceBinding})`)
+      return null
+    }
     // §3.3 correlation-recording hook: if this turn is an agent→agent delivery carrying a
     // correlationId, it MAY be a worker reporting back to a main that owns an orchestration.
-    // Record the result (owner-checked, trusted-callFrom, idempotent) BEFORE running the
-    // turn, so a fast N-th report is already durable when the main re-reads getOrchestration.
-    // Safe + additive: a non-matching/failed-check report is silently dropped.
+    // Run only after the source gate: a rejected cross-audience envelope must not
+    // copy its body into orchestration state even though no ACP prompt will run.
+    // The result is owner-checked, trusted-callFrom, and idempotent.
     if (callMeta?.correlationId !== undefined) {
       this.recordWorkerReport(key, callMeta, msg.text)
     }
@@ -9474,6 +9512,7 @@ export class Daemon {
       turnId?: string
       initializedOnly?: boolean
     }
+    const persistedSessionId = this.store.getSession(key)?.acpSessionId
     let delegatedHost: DelegatedWebchatHost | undefined
     try {
       // A prior provider post-turn operation is serialized. Managed needs this
@@ -9506,6 +9545,15 @@ export class Daemon {
         callMeta?.needsReply,
         {
           initializeOnly,
+          sharedMemoryExcluded:
+            webchat?.evaluation !== true &&
+            (persistedSessionId != null
+              ? this.store.isCaptureExcluded(persistedSessionId)
+              : callMeta !== undefined ||
+                msg.isDm ||
+                msg.platform === 'webchat' ||
+                this.pendingLaunchCorrelation.has(agentId) ||
+                this.slackExternalSource(agentId, msg, callMeta !== undefined) !== undefined),
           ...(delegatedHost
             ? {
                 host: delegatedHost.host,
@@ -9649,7 +9697,7 @@ export class Daemon {
       // from turn one for anything that could be private (session-visibility.md
       // §4.1/§5.1). Persisted on the session row so later re-emits — including
       // after a restart, when `msg` is long gone — still carry the same facts.
-      this.classifyNewSession(agentId, key, sessionId, msg, callMeta !== undefined, webchat?.evaluation === true)
+      this.classifyNewSession(agentId, key, sessionId, msg, callMeta, webchat?.evaluation === true)
       this.emitSessionMetadataSnapshot({
         sessionId,
         agentId,
@@ -11223,6 +11271,23 @@ export class Daemon {
     if (classification?.tenantScope !== undefined) event.transportScope = classification.tenantScope
     if (classification?.launchCorrelationId !== undefined) {
       event.launchCorrelationId = classification.launchCorrelationId
+    }
+    // Only a direct trusted ingress reports a credential locator. A2A children
+    // persist the same source tuple for the local gate but let the CP inherit
+    // the already-validated parent scope instead of presenting the parent's bot
+    // integration as if it belonged to the child agent.
+    if (
+      classification?.externalProvider === 'slack' &&
+      classification.externalResourceKey &&
+      classification.externalIntegrationId
+    ) {
+      event.externalOrigin = {
+        provider: 'slack',
+        resourceKind: 'conversation',
+        resourceKey: classification.externalResourceKey,
+        ...(classification.externalRealmKey ? { realmKey: classification.externalRealmKey } : {}),
+        integrationId: classification.externalIntegrationId
+      }
     }
     const thread = key?.thread ?? input.thread
     if (thread !== undefined) event.thread = thread
@@ -12961,11 +13026,11 @@ export class Daemon {
     key: string,
     acpSessionId: string,
     msg: NormalizedMessage,
-    isA2aChild: boolean,
+    callMeta: CallMeta | undefined,
     isEvaluation = false
   ): void {
     try {
-      this.classifyNewSessionOrThrow(agentId, key, acpSessionId, msg, isA2aChild, isEvaluation)
+      this.classifyNewSessionOrThrow(agentId, key, acpSessionId, msg, callMeta, isEvaluation)
     } catch (err) {
       // Never let classification break a turn — but fail CLOSED: an unclassified
       // session keeps memory capture excluded until the CP confirms otherwise.
@@ -12974,14 +13039,125 @@ export class Daemon {
     }
   }
 
+  /** Complete immutable source tuple carried by an A2A wake. The direct
+   * integration id is deliberately omitted: it is a credential locator owned
+   * by the root session's agent, not part of the audience identity. */
+  private externalOriginForSession(
+    agentId: string,
+    acpSessionId: string | undefined
+  ): Omit<ExternalSessionOrigin, 'integrationId'> | undefined {
+    if (!acpSessionId) return undefined
+    // ACP session ids are runtime-local and can collide across agents. Bind the
+    // lookup to the trusted caller agent so another runtime cannot lend this
+    // A2A wake its external audience by accident.
+    const rec = this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    if (
+      rec?.externalProvider !== 'slack' ||
+      !rec.externalRealmKey ||
+      rec.externalResourceKind !== 'conversation' ||
+      !rec.externalResourceKey
+    ) {
+      return undefined
+    }
+    return {
+      provider: 'slack',
+      realmKey: rec.externalRealmKey,
+      resourceKind: 'conversation',
+      resourceKey: rec.externalResourceKey
+    }
+  }
+
+  private slackExternalSource(
+    agentId: string,
+    msg: NormalizedMessage,
+    isA2aChild: boolean
+  ):
+    | {
+        externalProvider: 'slack'
+        externalRealmKey?: string
+        externalResourceKind: 'conversation'
+        externalResourceKey: string
+        externalIntegrationId?: string
+      }
+    | undefined {
+    if (msg.platform !== 'slack' || msg.isDm || isA2aChild) return undefined
+    const integrationId = this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
+    const realmKey = integrationId ? this.connByIntegration.get(integrationId)?.workspaceId?.() : undefined
+    // Cron and daemon-owned continuation turns can create or resume a real Slack
+    // thread, but synthetic/headless callers may use Slack-shaped coordinates with
+    // no connection. Bind those trusted system turns only when the destination is
+    // attributable. Human ingress must keep the incomplete tuple so the caller
+    // below fails closed instead of silently treating an unverified Slack turn as local.
+    if (msg.source !== 'user' && (!integrationId || !realmKey)) return undefined
+    return {
+      externalProvider: 'slack',
+      ...(realmKey ? { externalRealmKey: realmKey } : {}),
+      externalResourceKind: 'conversation',
+      externalResourceKey: msg.channel,
+      ...(integrationId ? { externalIntegrationId: integrationId } : {})
+    }
+  }
+
+  /**
+   * Existing rows may be reused only when this daemon already persisted the
+   * same trusted source. Legacy empty bindings are ambiguous (cron, A2A, or
+   * platform input) and therefore reject instead of claiming an old runtime.
+   */
+  private bindSessionSource(
+    agentId: string,
+    key: string,
+    msg: NormalizedMessage,
+    callMeta: CallMeta | undefined
+  ): 'unchanged' | 'mismatch' | 'unavailable' {
+    const direct = this.slackExternalSource(agentId, msg, callMeta !== undefined)
+    if (direct && (!direct.externalRealmKey || !direct.externalIntegrationId)) return 'unavailable'
+    const inherited = callMeta?.externalOrigin
+    if (inherited && !inherited.realmKey) return 'unavailable'
+    const source =
+      direct ??
+      (inherited
+        ? {
+            externalProvider: inherited.provider,
+            externalRealmKey: inherited.realmKey,
+            externalResourceKind: inherited.resourceKind,
+            externalResourceKey: inherited.resourceKey
+          }
+        : undefined)
+    const existing = this.store.getSession(key)
+    if (!existing) return 'unchanged'
+
+    // An A2A turn with no external lineage cannot enter an externally-bound
+    // runtime. Conversely, an external lineage cannot claim a local or legacy
+    // row even when its ACP id was cleared: that row can still carry transcript
+    // context and may be resumed. Both checks happen before transcript/prompt
+    // handling.
+    if (!source) return existing.externalProvider ? 'mismatch' : 'unchanged'
+
+    if (existing.sourceBindingKind === 'local') return 'mismatch'
+    if (existing.externalProvider !== null && existing.externalProvider !== undefined) {
+      const sameScope =
+        existing.externalProvider === source.externalProvider &&
+        existing.externalRealmKey === source.externalRealmKey &&
+        existing.externalResourceKind === source.externalResourceKind &&
+        existing.externalResourceKey === source.externalResourceKey
+      if (!sameScope) return 'mismatch'
+      // Fill optional realm/integration fields that were temporarily missing,
+      // without changing the already-bound canonical channel.
+      this.store.setSessionClassification(key, { ...source, sourceBindingKind: 'external' })
+      return 'unchanged'
+    }
+    return 'mismatch'
+  }
+
   private classifyNewSessionOrThrow(
     agentId: string,
     key: string,
     acpSessionId: string,
     msg: NormalizedMessage,
-    isA2aChild: boolean,
+    callMeta: CallMeta | undefined,
     isEvaluation: boolean
   ): void {
+    const isA2aChild = callMeta !== undefined
     const conversationKind = msg.isDm ? 'dm' : msg.isGroupDm ? 'group_dm' : 'channel'
     const integrationId =
       msg.platform === 'webchat'
@@ -12989,15 +13165,32 @@ export class Daemon {
         : this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
     const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
     const tenantScope = integration ? this.tenantScopeForIntegration(integration) : undefined
+    const directSlackSource = this.slackExternalSource(agentId, msg, isA2aChild)
+    const inheritedSlackSource = callMeta?.externalOrigin
+      ? {
+          externalProvider: callMeta.externalOrigin.provider,
+          externalRealmKey: callMeta.externalOrigin.realmKey,
+          externalResourceKind: callMeta.externalOrigin.resourceKind,
+          externalResourceKey: callMeta.externalOrigin.resourceKey
+        }
+      : undefined
+    const externalSlackSource = directSlackSource ?? inheritedSlackSource
     const launchCorrelationId = this.pendingLaunchCorrelation.get(agentId)
     if (launchCorrelationId) this.pendingLaunchCorrelation.delete(agentId)
     this.store.setSessionClassification(key, {
       conversationKind,
       ...(tenantScope ? { tenantScope } : {}),
-      ...(launchCorrelationId ? { launchCorrelationId } : {})
+      ...(launchCorrelationId ? { launchCorrelationId } : {}),
+      sourceBindingKind: externalSlackSource ? 'external' : 'local',
+      ...(externalSlackSource ?? {})
     })
     const locallyPrivate =
-      !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
+      !isEvaluation &&
+      (isA2aChild ||
+        msg.isDm ||
+        msg.platform === 'webchat' ||
+        launchCorrelationId !== undefined ||
+        externalSlackSource !== undefined)
     this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
   }
 
@@ -13681,7 +13874,8 @@ export class Daemon {
         `you already sent it after the task finished; do not report the same result twice. If the result ` +
         `needs no action at all, stay silent.`,
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
-      isDm: false
+      isDm: rec.conversationKind === 'dm',
+      ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
     }
     lease.bgWakes += 1
     this.log.info(`bg-task wake: "${what}" → agent "${agentId}" session ${acpSessionId} (${rec.key})`)
@@ -14791,7 +14985,7 @@ export class Daemon {
       // capture gate. Ordering is by the CP's durable revision, so retransmits
       // and out-of-order delivery are safe.
       applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' =>
-        this.store.applyCpCaptureGate(p.sessionId, p.visibility === 'private', p.visibilityRev)
+        this.store.applyCpCaptureGate(p.sessionId, p.sharedMemoryExcluded ?? p.visibility !== 'org', p.visibilityRev)
     }
   }
 

@@ -12,9 +12,10 @@
  * behind a custom domain must set LOGTO_MGMT_RESOURCE to the canonical
  * `https://tenant.example.com/api`).
  *
- * Caching: the M2M token until 60s before expiry; sub→login 10 min positive /
- * 60 s negative (a user who just linked GitHub should not wait long), both
- * single-flight. All lookups fail CLOSED at the callers (authorization gate).
+ * Caching: the M2M token until 60s before expiry; display/GitHub projections
+ * keep a 10 min positive / 60 s negative user cache, while Slack authorization
+ * caps reuse of a positive assertion at 2 min. Lookups are single-flight and
+ * fail CLOSED at their authorization callers.
  */
 import type { Clock } from '../domain/clock.js'
 import type { SocialIdentityMutationGate } from '../persistence/ports.js'
@@ -71,6 +72,11 @@ export class LogtoApiError extends Error {
 const TOKEN_SKEW_MS = 60_000
 const LOGIN_TTL_MS = 10 * 60_000
 const NEGATIVE_TTL_MS = 60_000
+// Slack identity participates in live Session authorization. Even if no
+// in-product unlink invalidation fires (for example an administrator changes
+// the Logto account directly), a positive assertion is never reused beyond
+// this hard lease.
+const SLACK_IDENTITY_TTL_MS = 120_000
 const TIMEOUT_MS = 10_000
 
 interface CachedLogin {
@@ -80,6 +86,7 @@ interface CachedLogin {
 
 interface CachedUser {
   user: LogtoUser | null
+  fetchedAt: number
   expiresAt: number
 }
 
@@ -222,7 +229,7 @@ export class LogtoIdentityService {
    * console's refresh call (`forgetUser`).
    */
   async slackIdentityFor(sub: string): Promise<SlackIdentity | null> {
-    return slackIdentityOf(await this.logtoUser(sub))
+    return slackIdentityOf(await this.logtoUser(sub, SLACK_IDENTITY_TTL_MS))
   }
 
   /**
@@ -262,9 +269,12 @@ export class LogtoIdentityService {
   }
 
   /** The cached upstream user every display read projects from. */
-  private async logtoUser(sub: string): Promise<LogtoUser | null> {
+  private async logtoUser(sub: string, maxAgeMs?: number): Promise<LogtoUser | null> {
     const cached = this.users.get(sub)
-    if (cached && cached.expiresAt > this.clock.now()) return cached.user
+    const now = this.clock.now()
+    if (cached && cached.expiresAt > now && (maxAgeMs === undefined || now - cached.fetchedAt < maxAgeMs)) {
+      return cached.user
+    }
     let pending = this.userInFlight.get(sub)
     if (!pending) {
       const tracked: Promise<LogtoUser | null> = this.lookupUser(sub).finally(() => {
@@ -358,14 +368,20 @@ export class LogtoIdentityService {
     const current = () => this.epochOf(sub) === epoch
     if (res.status === 404) {
       // Deleted at the provider — cache the miss briefly.
-      if (current()) this.users.set(sub, { user: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
+      if (current()) {
+        const fetchedAt = this.clock.now()
+        this.users.set(sub, { user: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
+      }
       return null
     }
     if (!res.ok) {
       throw new LogtoApiError(`logto user lookup failed: ${res.status}`, res.status, res.status >= 500)
     }
     const user = (await res.json()) as LogtoUser
-    if (current()) this.users.set(sub, { user, expiresAt: this.clock.now() + LOGIN_TTL_MS })
+    if (current()) {
+      const fetchedAt = this.clock.now()
+      this.users.set(sub, { user, fetchedAt, expiresAt: fetchedAt + LOGIN_TTL_MS })
+    }
     return user
   }
 
