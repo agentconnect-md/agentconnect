@@ -83,4 +83,29 @@ describe('DaemonReleaseResolver', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     await vi.waitFor(() => expect(r.get().latestVersion).toBe('1.4.1'))
   })
+
+  it('uses a shorter default TTL for rc than stable channels', async () => {
+    const clock = new FakeClock(1000)
+    let rcVersion = '1.5.0-rc.1'
+    const rcFetch = vi.fn(async () => ok({ rc: rcVersion }))
+    const stableFetch = vi.fn(async () => ok({ latest: '1.4.0' }))
+    const rc = new DaemonReleaseResolver('rc', clock, rcFetch)
+    const stable = new DaemonReleaseResolver('latest', clock, stableFetch)
+
+    rc.get()
+    stable.get()
+    await vi.waitFor(() => {
+      expect(rc.get().latestVersion).toBe('1.5.0-rc.1')
+      expect(stable.get().latestVersion).toBe('1.4.0')
+    })
+
+    rcVersion = '1.5.0-rc.2'
+    clock.advance(2 * 60_000 + 1)
+    rc.get()
+    stable.get()
+
+    expect(rcFetch).toHaveBeenCalledTimes(2)
+    expect(stableFetch).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(rc.get().latestVersion).toBe('1.5.0-rc.2'))
+  })
 })
