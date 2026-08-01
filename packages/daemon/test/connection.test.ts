@@ -392,7 +392,7 @@ describe('SlackConnection.getThreadReplies', () => {
           ts: '100.2',
           bot_id: 'BSHARED',
           text: ':bar_chart: opus',
-          metadata: { event_type: 'agentconnect_chrome', event_payload: {} }
+          metadata: { event_type: 'agentconnect_chrome', event_payload: { owner_agent_id: 'agent-a' } }
         },
         { ts: '100.3', user: 'U1', text: 'a human message' }
       ],
@@ -413,7 +413,7 @@ describe('SlackConnection.getThreadReplies', () => {
     )
 
     await expect(conn.getThreadReplies('C1', '100.1')).resolves.toEqual([
-      expect.objectContaining({ ts: '100.2', chrome: true }),
+      expect.objectContaining({ ts: '100.2', chrome: true, chromeOwnerAgentId: 'agent-a' }),
       expect.objectContaining({ ts: '100.3', chrome: false })
     ])
   })
@@ -1037,6 +1037,24 @@ describe('SlackConnection.updateBlocks', () => {
       metadata: {
         event_type: 'agentconnect_thread_event',
         event_payload: { author_agent_id: 'agent-a' }
+      }
+    })
+  })
+
+  it('re-stamps agent-scoped chrome ownership when a status bar is edited', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withUpdate(async (payload) => void calls.push(payload)) as any
+    )
+    const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'status' } }]
+
+    await expect(conn.updateBlocks('C1', '123.45', blocks, 'status', true, undefined, 'agent-a')).resolves.toBe(true)
+
+    expect(calls[0]).toMatchObject({
+      metadata: {
+        event_type: 'agentconnect_chrome',
+        event_payload: { owner_agent_id: 'agent-a' }
       }
     })
   })

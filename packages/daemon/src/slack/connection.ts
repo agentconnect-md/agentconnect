@@ -50,6 +50,10 @@ export interface SlackPostOptions {
    *  Slack metadata so a peer daemon's thread backfill can skip it — chrome is never
    *  conversation and must not be re-ingested as a transcript text row. */
   chrome?: boolean
+  /** Stable AgentConnect owner for agent-scoped chrome such as a session status bar.
+   *  Multiple agents can share one Slack app identity, so bot_id/app_id alone cannot
+   *  safely decide which agent may adopt and edit an existing chrome row. */
+  chromeOwnerAgentId?: string
 }
 
 /** Optional per-status identity overrides supported by assistant.threads.setStatus.
@@ -64,7 +68,16 @@ export interface SlackStatusOptions {
  *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
 export const SLACK_CHROME_EVENT_TYPE = 'agentconnect_chrome'
 
-function slackMessageMetadata(options?: Pick<SlackPostOptions, 'agentAuthorId' | 'chrome'>) {
+function slackMessageMetadata(options?: Pick<SlackPostOptions, 'agentAuthorId' | 'chrome' | 'chromeOwnerAgentId'>) {
+  if (options?.chrome) {
+    const ownerAgentId = options.chromeOwnerAgentId?.trim()
+    return {
+      metadata: {
+        event_type: SLACK_CHROME_EVENT_TYPE,
+        event_payload: ownerAgentId ? { owner_agent_id: ownerAgentId } : {}
+      }
+    }
+  }
   const agentAuthorId = options?.agentAuthorId?.trim()
   if (agentAuthorId) {
     return {
@@ -74,7 +87,7 @@ function slackMessageMetadata(options?: Pick<SlackPostOptions, 'agentAuthorId' |
       }
     }
   }
-  return options?.chrome ? { metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} } } : {}
+  return {}
 }
 
 /** App-level tokens are structured `xapp-1-{APP_ID}-{epoch}-{hex}`. Keep this
@@ -290,7 +303,7 @@ type AppLike = {
           files?: SlackFile[]
           metadata?: {
             event_type?: string
-            event_payload?: { author_agent_id?: unknown }
+            event_payload?: { author_agent_id?: unknown; owner_agent_id?: unknown }
           }
         }[]
         has_more?: boolean
@@ -904,7 +917,8 @@ export class SlackConnection {
     blocks: unknown[],
     text?: string,
     chrome = false,
-    agentAuthorId?: string
+    agentAuthorId?: string,
+    chromeOwnerAgentId?: string
   ): Promise<boolean> {
     try {
       return await this.queue.enqueue(async () => {
@@ -915,7 +929,7 @@ export class SlackConnection {
           blocks,
           unfurl_links: false,
           unfurl_media: false,
-          ...slackMessageMetadata({ chrome, agentAuthorId })
+          ...slackMessageMetadata({ chrome, agentAuthorId, chromeOwnerAgentId })
         })
         return true
       })
@@ -962,6 +976,7 @@ export class SlackConnection {
     {
       sender: string
       agentAuthorId?: string
+      chromeOwnerAgentId?: string
       appId?: string
       ts: string
       text: string
@@ -973,6 +988,7 @@ export class SlackConnection {
     const out: {
       sender: string
       agentAuthorId?: string
+      chromeOwnerAgentId?: string
       appId?: string
       ts: string
       text: string
@@ -1007,11 +1023,17 @@ export class SlackConnection {
             typeof m.metadata.event_payload?.author_agent_id === 'string'
               ? m.metadata.event_payload.author_agent_id.trim()
               : ''
+          const chromeOwnerAgentId =
+            m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE &&
+            typeof m.metadata.event_payload?.owner_agent_id === 'string'
+              ? m.metadata.event_payload.owner_agent_id.trim()
+              : ''
           out.push({
             // Some Slack bot rows expose both `user` and `bot_id`. Keep the stable bot
             // identity as sender so legacy rows from the same app reconcile consistently.
             sender: m.bot_id ?? m.user ?? 'unknown',
             ...(metadataAuthor ? { agentAuthorId: metadataAuthor } : {}),
+            ...(chromeOwnerAgentId ? { chromeOwnerAgentId } : {}),
             ...(appId ? { appId } : {}),
             ts: m.ts,
             text: extractSlackMessageText(m),

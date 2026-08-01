@@ -439,6 +439,37 @@ describe('SessionManager', () => {
     store.close()
   })
 
+  it('surfaces the Slack self identity in the agent meta so the model recognizes its own mention', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1') } as any
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory,
+      slackBotUserIdFor: (integrationId) => (integrationId === 'int-a' ? 'U-SELF' : undefined)
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.1', text: '<@U-SELF> <@U-OTHER> count off' }),
+      undefined,
+      'int-a'
+    )
+    expect((blocks[0] as any).text).toContain(
+      '- Slack identity: bot user <@U-SELF> is YOU — a message mentioning this ID is addressed to you'
+    )
+    store.close()
+  })
+
+  it('omits the Slack identity line when the bot user id is unresolved', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1') } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }), undefined, 'int-a')
+    expect((blocks[0] as any).text).not.toContain('Slack identity')
+    store.close()
+  })
+
   it('recognizes a codex-acp raw-prompt fallback title as a standing-context echo', async () => {
     const store = newStore()
     // Non-meta runtime: the standing context inlines as block 0, and codex-acp

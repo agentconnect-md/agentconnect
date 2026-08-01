@@ -22,7 +22,8 @@ const AGENT_IDENTITY = {
 const STATUS_BAR_POST_OPTIONS = {
   username: AGENT_IDENTITY.displayName,
   icon_url: AGENT_IDENTITY.iconUrl,
-  chrome: true
+  chrome: true,
+  chromeOwnerAgentId: 'bot-a'
 }
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 const SESSION_KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', TRANSPORT_SCOPE)
@@ -274,6 +275,84 @@ describe('Daemon in-conversation commands', () => {
     expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-names', accepted: true })
     expect(noteMessage).toHaveBeenCalledWith(conn, payload)
     expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
+  })
+
+  it('stamps trigger=mention on relay im when the message mentions the integration bot', () => {
+    // Relay arbitration never populates the wire `trigger`; the daemon recomputes it
+    // from the mention list + this integration's own bot identity (see handleRelayIm).
+    const daemon = new Daemon()
+    const dispatch = vi.fn(async () => {})
+    ;(daemon as any).agents.set('bot-a', {})
+    ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
+    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).dispatch = dispatch
+    const { trigger: _t, ...bare } = dm('relay-mention', '<@U-SELF> hello')
+    const msg: RdMsgIm = {
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: 'slack:C1:dm',
+      msgId: 'relay-mention',
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'C1',
+      payload: { ...bare, mentionedBots: ['U-OTHER', 'U-SELF'] } as any
+    }
+    expect((daemon as any).handleRelayMsg(msg, () => {})).toEqual({ msgId: 'relay-mention', accepted: true })
+    expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining({ trigger: 'mention' }), 'int-a')
+  })
+
+  it('leaves trigger unset on relay im when the mention list does not name this bot', () => {
+    const daemon = new Daemon()
+    const dispatch = vi.fn(async () => {})
+    ;(daemon as any).agents.set('bot-a', {})
+    ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
+    ;(daemon as any).isSessionMuted = () => false
+    ;(daemon as any).dispatch = dispatch
+    const { trigger: _t, ...bare } = dm('relay-no-mention', 'hello')
+    const msg: RdMsgIm = {
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: 'slack:C1:dm',
+      msgId: 'relay-no-mention',
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'C1',
+      payload: { ...bare, mentionedBots: ['U-OTHER'] } as any
+    }
+    ;(daemon as any).handleRelayMsg(msg, () => {})
+    expect(dispatch).toHaveBeenCalledWith('bot-a', expect.not.objectContaining({ trigger: expect.anything() }), 'int-a')
+  })
+
+  it('an explicit mention un-mutes a !stop-muted relay session; anything else stays dropped', () => {
+    // Without the recomputed trigger the mute check can never see 'mention' on the
+    // relay path — a !stop-muted agent in a shared channel would be dead forever.
+    const daemon = new Daemon()
+    const dispatch = vi.fn(async () => {})
+    const setSessionMuted = vi.fn()
+    ;(daemon as any).agents.set('bot-a', {})
+    ;(daemon as any).connByIntegration.set('int-a', { botUserId: 'U-SELF' })
+    ;(daemon as any).isSessionMuted = () => true
+    ;(daemon as any).setSessionMuted = setSessionMuted
+    ;(daemon as any).recordUnrouted = vi.fn()
+    ;(daemon as any).dispatch = dispatch
+    const frame = (msgId: string, mentionedBots: string[]): RdMsgIm => {
+      const { trigger: _t, ...bare } = dm(msgId, 'wake up')
+      return {
+        source: 'im',
+        agentId: 'bot-a',
+        sessionKey: 'slack:C1:dm',
+        msgId,
+        botId: '11111111-1111-4111-8111-111111111111',
+        integrationId: 'int-a',
+        chatId: 'C1',
+        payload: { ...bare, mentionedBots } as any
+      }
+    }
+    ;(daemon as any).handleRelayMsg(frame('muted-plain', []), () => {})
+    expect(dispatch).not.toHaveBeenCalled()
+    ;(daemon as any).handleRelayMsg(frame('muted-mention', ['U-SELF']), () => {})
+    expect(setSessionMuted).toHaveBeenCalledWith(expect.any(String), false)
+    expect(dispatch).toHaveBeenCalledWith('bot-a', expect.objectContaining({ trigger: 'mention' }), 'int-a')
   })
 
   it('dedups shared-bot retries per bot while dispatching the same Slack message for two bots', () => {
@@ -1241,7 +1320,9 @@ describe('Slack interactive status bar', () => {
       'sb1',
       expect.any(Array),
       expect.stringContaining('opus-4.8'),
-      true
+      true,
+      undefined,
+      'bot-a'
     )
     // The in-thread message is one section row: status + View Session + overflow.
     const blocks = conn.postBlocks.mock.calls[0]![1] as { type: string; text?: { text: string }; accessory?: any }[]
@@ -1313,7 +1394,15 @@ describe('Slack interactive status bar', () => {
     p.lastStatusBar = undefined // mimic a usage update that changes the visible header
     ;(daemon as any).emitStatusBar(p)
     await vi.waitFor(() =>
-      expect(conn.updateBlocks).toHaveBeenCalledWith('C1', 'sb1', expect.any(Array), expect.any(String), true)
+      expect(conn.updateBlocks).toHaveBeenCalledWith(
+        'C1',
+        'sb1',
+        expect.any(Array),
+        expect.any(String),
+        true,
+        undefined,
+        'bot-a'
+      )
     )
     expect(p.statusBarTs).toBe('sb1')
     expect((daemon as any).store.getStatusBarTs(p.sessionKey)).toBe('sb1')
@@ -1646,10 +1735,27 @@ describe('Slack interactive status bar', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
     await daemon.start()
     const conn = routableWithBlocks(daemon)
+    ;(conn as any).botId = 'B1'
     ;(conn as any).getThreadReplies = vi.fn(async () => [
       { sender: 'U1', ts: 'T1', text: 'hi', isBot: false, attachments: [] },
-      { sender: 'B1', ts: '111.1', text: ':bar_chart: *old* - ctx 1.0k', isBot: true, attachments: [] },
-      { sender: 'B1', ts: '222.2', text: ':bar_chart: *newer*', isBot: true, attachments: [] }
+      {
+        sender: 'B1',
+        ts: '111.1',
+        text: ':bar_chart: *old* - ctx 1.0k',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-a',
+        attachments: []
+      },
+      {
+        sender: 'B1',
+        ts: '222.2',
+        text: ':bar_chart: *newer*',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-a',
+        attachments: []
+      }
     ])
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
@@ -1659,7 +1765,9 @@ describe('Slack interactive status bar', () => {
         '111.1',
         expect.any(Array),
         expect.stringContaining('opus-4.8'),
-        true
+        true,
+        undefined,
+        'bot-a'
       )
     )
     expect(conn.postBlocks).not.toHaveBeenCalled()
@@ -1667,6 +1775,112 @@ describe('Slack interactive status bar', () => {
 
     release()
     await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('never adopts a status line another Slack app authored — posts its own instead', async () => {
+    // A shared multi-agent thread: each agent runs its own Slack app, and Slack only
+    // lets a bot chat.update its own messages. Adopting the sibling's bar would fail
+    // with cant_update_message on every usage tick (and show the wrong session's data).
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+    ;(conn as any).botId = 'B-MINE'
+    ;(conn as any).getThreadReplies = vi.fn(async () => [
+      { sender: 'U1', ts: 'T1', text: 'hi', isBot: false, attachments: [] },
+      {
+        sender: 'B-OTHER',
+        ts: '111.1',
+        text: ':bar_chart: *sibling* - ctx 9k',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-a',
+        attachments: []
+      }
+    ])
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled())
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === '111.1')).toBe(false)
+    expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
+
+    release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('never adopts a sibling Agent status line when both share one Slack app', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+    ;(conn as any).botId = 'B-SHARED'
+    ;(conn as any).getThreadReplies = vi.fn(async () => [
+      {
+        sender: 'B-SHARED',
+        ts: '111.1',
+        text: ':bar_chart: *sibling* - ctx 9k',
+        isBot: true,
+        chrome: true,
+        chromeOwnerAgentId: 'bot-b',
+        attachments: []
+      }
+    ])
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled())
+    expect(conn.updateBlocks.mock.calls.some((call) => call[1] === '111.1')).toBe(false)
+    expect(conn.postBlocks.mock.calls[0]?.[4]).toMatchObject({
+      chrome: true,
+      chromeOwnerAgentId: 'bot-a'
+    })
+    expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
+
+    release()
+    await turn
+    await daemon.stop()
+  }, 15_000)
+
+  it('drops a persisted status-bar ts when Slack rejects the update, and reposts', async () => {
+    // Heals rows poisoned by the pre-provenance adoption path: a foreign ts persisted
+    // on the session keeps failing chat.update forever — after an explicit false the
+    // ts must be discarded so a later status emit posts a fresh, editable bar.
+    const { host, release } = modelHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    const conn = routableWithBlocks(daemon)
+
+    // Turn 1: bar posted normally and its ts persisted.
+    const turn1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    release()
+    await turn1
+    const posted = (daemon as any).store.getStatusBarTs(SESSION_KEY)
+    expect(posted).toBeTruthy()
+
+    // Turn 2: Slack rejects every edit of that ts (cant_update_message).
+    ;(conn.updateBlocks as any).mockResolvedValue(false)
+    const second = modelHost()
+    ;(daemon as any).opts.hostFactory = () => second.host as any
+    const turn2 = (daemon as any).dispatch('bot-a', dm('101', 'hi again'), 'int-a')
+    await vi.waitFor(() =>
+      expect(conn.updateBlocks).toHaveBeenCalledWith(
+        'C1',
+        posted,
+        expect.anything(),
+        expect.anything(),
+        true,
+        undefined,
+        'bot-a'
+      )
+    )
+    // The dead ts is dropped and a later emit in the same turn posts a fresh bar.
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe(posted))
+
+    second.release()
+    await turn2
     await daemon.stop()
   }, 15_000)
 
