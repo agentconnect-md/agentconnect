@@ -2319,10 +2319,11 @@ export const SessionVisibilityDto = z.object({
 })
 
 export const SessionExternalAccessStateEnum = z.enum(['disabled', 'enabling', 'enabled', 'degraded'])
+export const SessionExternalAccessProviderEnum = z.enum(['slack', 'github'])
 export const SessionExternalAccessDto = z.object({
-  provider: z.literal('slack'),
-  /** False when this deployment cannot resolve linked Slack identities and
-   *  live conversation membership. An already-enabled policy still reads
+  provider: SessionExternalAccessProviderEnum,
+  /** False when this deployment cannot resolve linked provider identities and
+   *  current external membership. An already-enabled policy still reads
    *  fail-closed and may be disabled while unavailable. */
   available: z.boolean(),
   enabled: z.boolean(),

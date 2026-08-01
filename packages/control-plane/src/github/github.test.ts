@@ -331,6 +331,36 @@ describe('GithubService repository picker reads', () => {
     await svc.listRepos(installation, 1, 100)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
+
+  it('resolves a durable repository id to its current name through the installation grant', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toContain('/repositories/123')
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ghs_metadata')
+      return Response.json({
+        id: 123,
+        full_name: 'acme/renamed-repo',
+        private: true,
+        default_branch: 'main',
+        description: null
+      })
+    })
+    const svc = new GithubService({
+      cfg: cfg(),
+      clock: new FakeClock(),
+      installations: {} as never,
+      installState: { put: async () => {}, consume: async () => true },
+      pepper: 'p'.repeat(32),
+      fetchImpl
+    })
+    vi.spyOn(svc.tokens, 'metadataToken').mockResolvedValue('ghs_metadata')
+
+    await expect(svc.repoRefById(installation, 123n)).resolves.toEqual({
+      repoId: 123n,
+      fullName: 'acme/renamed-repo',
+      private: true,
+      defaultBranch: 'main'
+    })
+  })
 })
 
 describe('GithubService.uninstallInstallation', () => {

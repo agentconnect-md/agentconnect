@@ -119,6 +119,26 @@ describe('EventSession visibility-classification fields (session-visibility.md Â
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'channel' }).success).toBe(true)
   })
 
+  it('carries the exact accepted GitHub delivery as repository-scope proof', () => {
+    const externalOrigin = {
+      provider: 'github' as const,
+      realmKey: 'github.com' as const,
+      resourceKind: 'repository' as const,
+      resourceKey: '123456789',
+      hookId: '88888888-8888-4888-8888-888888888888',
+      deliveryKey: 'delivery-1',
+      sourceInstallationId: '456',
+      repoFullName: 'acme/repo'
+    }
+    expect(EventSession.parse({ ...legacyMilestone, externalOrigin }).externalOrigin).toEqual(externalOrigin)
+    expect(
+      EventSession.safeParse({
+        ...legacyMilestone,
+        externalOrigin: { ...externalOrigin, resourceKey: 'acme/repo' }
+      }).success
+    ).toBe(false)
+  })
+
   it('rejects an unknown conversationKind, an empty scope, and a non-uuid correlation id', () => {
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'thread' }).success).toBe(false)
     expect(EventSession.safeParse({ ...legacyMilestone, transportScope: '' }).success).toBe(false)

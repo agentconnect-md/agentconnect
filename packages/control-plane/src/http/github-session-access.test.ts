@@ -1,0 +1,100 @@
+import { describe, expect, it, vi } from 'vitest'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
+import type { ExternalScopeRecord, GithubInstallationRecord } from '../persistence/ports.js'
+import { UserAuthzDeniedError } from '../github/user-authz.js'
+import { GithubSessionAccessService } from './github-session-access.js'
+
+const installation: GithubInstallationRecord = {
+  id: '11111111-1111-4111-8111-111111111111',
+  orgId: 'org_1' as GithubInstallationRecord['orgId'],
+  installationId: 456n,
+  accountLogin: 'acme',
+  accountType: 'Organization',
+  repositorySelection: 'all',
+  permissions: { metadata: 'read' },
+  suspendedAt: null,
+  revokedAt: null,
+  createdAt: new Date(0)
+}
+
+const scope: ExternalScopeRecord = {
+  id: '22222222-2222-4222-8222-222222222222',
+  orgId: installation.orgId,
+  provider: 'github',
+  realmKey: 'github.com',
+  resourceKind: 'repository',
+  resourceKey: '123',
+  credentialKind: 'github_installation',
+  credentialId: installation.id,
+  aclRevision: 2n,
+  revokedAt: null
+}
+
+function make(privateRepo: boolean, permissionForUser = vi.fn()) {
+  const clock = new FakeClock()
+  const repoRefById = vi.fn().mockResolvedValue({
+    repoId: 123n,
+    fullName: 'acme/private-repo',
+    private: privateRepo,
+    defaultBranch: 'main'
+  })
+  const service = new GithubSessionAccessService({
+    installations: { get: vi.fn().mockResolvedValue(installation) } as never,
+    github: { repoRefById },
+    userAuthz: { permissionForUser },
+    clock
+  })
+  return { service, repoRefById, permissionForUser, clock }
+}
+
+describe('GithubSessionAccessService', () => {
+  it('allows an org member to read a public repository session without a linked GitHub identity', async () => {
+    const h = make(false)
+
+    await expect(h.service.resolve([scope], 'user-1')).resolves.toEqual({
+      allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+      degraded: false
+    })
+    expect(h.permissionForUser).not.toHaveBeenCalled()
+  })
+
+  it('requires the linked user to retain read access to a private repository', async () => {
+    const allowed = make(true, vi.fn().mockResolvedValue('read'))
+    const denied = make(
+      true,
+      vi.fn().mockRejectedValue(new UserAuthzDeniedError('GitHub identity required', 'GITHUB_IDENTITY_REQUIRED'))
+    )
+
+    expect((await allowed.service.resolve([scope], 'user-1')).allowedScopes).toHaveLength(1)
+    expect(allowed.permissionForUser).toHaveBeenCalledWith('user-1', installation, 'acme', 'private-repo', {
+      maxCacheAgeMs: 0
+    })
+    await expect(denied.service.resolve([scope], 'user-1')).resolves.toEqual({
+      allowedScopes: [],
+      degraded: false
+    })
+  })
+
+  it('refreshes an allowed provider decision at the 120 second hard limit', async () => {
+    const h = make(true, vi.fn().mockResolvedValue('read'))
+
+    await h.service.resolve([scope], 'user-1')
+    h.clock.advance(119_999)
+    await h.service.resolve([scope], 'user-1')
+    expect(h.permissionForUser).toHaveBeenCalledTimes(1)
+
+    h.clock.advance(1)
+    await h.service.resolve([scope], 'user-1')
+    expect(h.permissionForUser).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails closed and reports degradation when GitHub cannot resolve the current repository', async () => {
+    const h = make(true)
+    h.repoRefById.mockRejectedValue(new Error('provider unavailable'))
+
+    await expect(h.service.resolve([scope], 'user-1')).resolves.toEqual({
+      allowedScopes: [],
+      degraded: true
+    })
+  })
+})

@@ -86,6 +86,7 @@ import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
 import type { SlackSessionAccessResolver } from './slack-session-access.js'
+import type { GithubSessionAccessResolver } from './github-session-access.js'
 
 export interface HttpServerConfig extends HumanAuthConfig {
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
@@ -328,6 +329,8 @@ export interface HttpDeps {
   logtoIdentity?: LogtoIdentityService
   /** Current Slack conversation membership for external Session reads. */
   slackSessionAccess?: SlackSessionAccessResolver
+  /** Current GitHub repository visibility for external Session reads. */
+  githubSessionAccess?: GithubSessionAccessResolver
   /** Uploaded-icon object store (docs/designs/icon-uploads.md); absent ⇒ S3_* unset,
    *  the icon upload/delete routes are not mounted and the console hides Upload. */
   iconStore?: IconStore

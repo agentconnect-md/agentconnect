@@ -117,6 +117,7 @@ function toRunRecord(r: HookRun): HookRunRecord {
   return {
     id: r.id,
     hookId: HookId(r.hookId),
+    orgId: OrgId(r.orgId),
     deliveryKey: r.deliveryKey,
     event: r.event,
     agentId: r.agentId ? AgentId(r.agentId) : null,

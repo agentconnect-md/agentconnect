@@ -1,8 +1,9 @@
 # Session Visibility
 
-> **Status:** Implemented for direct `private` / `org` visibility and the first
-> external-audience adapter (Slack conversations). Share-by-link and additional
-> providers remain future work.
+> **Status:** Implemented for direct `private` / `org` visibility, Slack
+> conversation audiences, and GitHub repository audiences. The GitHub Settings
+> and inaccessible-session recovery UI land separately. Share-by-link and
+> additional providers remain future work.
 >
 > **Scope:** protocol + control-plane + daemon + web. Console authorization is
 > enforced on CP/BFF read paths. The daemon reports immutable source metadata,
@@ -30,9 +31,10 @@ This design gives every session its own visibility:
   corresponding external-audience policy is disabled.
 - **`external`** — visible only when the viewer currently belongs to the
   immutable external source scope recorded when the session was created.
-  Phase one supports Slack channel and group-DM conversations. The stored
-  scope is `(workspace, conversation)`; Slack remains authoritative for its
-  changing member list, which the CP resolves at read time.
+  Slack stores `(workspace, conversation)` and resolves current conversation
+  membership. GitHub hook sessions store the rename-proof numeric repository
+  id: public repositories require no linked identity; private repositories
+  require the viewer's currently linked GitHub account to retain read access.
 - **Share-by-link ("public")** — future work; a session with an active share
   link is readable by anyone holding the link. Deliberately **not** a member of
   the visibility enum; see §8.
@@ -149,9 +151,10 @@ enum VisibilitySource {
   share-by-link (§8) covers the near-term "share this session" ask.
 - `ExternalScope` stores only the stable provider resource identity and the
   credential locator needed to ask the provider. It never stores provider ACLs.
-  Slack membership decisions are bounded, short-lived in-process cache entries;
-  user-to-Slack identity remains provider-owned and is resolved from Logto per
-  request rather than copied into the AgentConnect database.
+  Slack membership and GitHub repository-access decisions are bounded,
+  short-lived in-process cache entries. Linked Slack and GitHub identities
+  remain provider-owned and are resolved from Logto rather than copied into the
+  AgentConnect database.
 - `SessionExternalAccessPolicy` is per organization and provider. Its revision
   and read fence make enablement fail closed while historical rows converge.
 
@@ -159,7 +162,10 @@ enum VisibilitySource {
 and kept legacy rows `org`; it did not guess DM ownership. The Slack-audience
 migration separately tags historical Slack-shaped shared sessions as provider
 candidates. Their source scope cannot be reconstructed safely, so enabling the
-Slack policy hides unresolved history instead of guessing an audience.
+Slack policy hides unresolved history instead of guessing an audience. The
+GitHub migration uses accepted `HookRun` snapshots only when every run tied to
+a session agrees on one numeric repository id; ambiguous history remains a
+hidden unresolved candidate after GitHub sync is enabled.
 
 ## 4. Classifying sessions at ingest
 
@@ -174,7 +180,8 @@ transportScope?: string // trusted workspace/tenant scope for ownerIdentity, §2
 launchCorrelationId?: string // Web API launch provenance, §4.4
 ```
 
-Shared-source sessions additionally report an `externalOrigin` tuple:
+Shared-source sessions additionally report a provider-specific
+`externalOrigin`. Slack reports:
 
 ```ts
 {
@@ -186,10 +193,31 @@ Shared-source sessions additionally report an `externalOrigin` tuple:
 }
 ```
 
+GitHub direct ingress reports:
+
+```ts
+{
+  provider: 'github'
+  realmKey: 'github.com'
+  resourceKind: 'repository'
+  resourceKey: string // numeric, rename-proof repository id
+  hookId: string
+  deliveryKey: string
+  sourceInstallationId: string
+  repoFullName: string // validated snapshot; not the ACL identity
+}
+```
+
 The daemon pins that tuple on first use. A later input from a different source
 is rejected rather than silently reusing the session. A2A descendants carry
-the audience identity (without credentials) and inherit the parent's access
-boundary across daemons.
+only the audience identity (without Slack integration ids or GitHub delivery
+proof) and inherit the parent's access boundary across daemons.
+
+Headless GitHub messages also namespace the daemon-local session key with the
+numeric repository id. The first post-upgrade delivery therefore starts a clean
+runtime instead of claiming an unscoped legacy runtime whose repository cannot
+be proved locally; historical Control-Plane metadata is still backfilled from
+accepted `HookRun` snapshots.
 
 The daemon derives this from `NormalizedMessage.isDm` / `isGroupDm`
 (`packages/daemon/src/messages/normalized.ts`) and reports the normalized fact
@@ -213,6 +241,7 @@ the other origin scalars:
 | Web API session launch (§4.4 correlation)              | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
 | IM DM (`conversationKind` = `dm`)                      | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
 | Slack group DM / channel with trusted `externalOrigin` | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
+| GitHub hook with an accepted delivery snapshot         | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                       |
 | Other IM group DM / channel (or absent kind)           | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
 | Agent-to-agent child (`triggeredBy` is an agent UUID)  | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
 | Automation without a trusted external destination      | `org`               | `null`                                                                                                                                |
@@ -236,9 +265,9 @@ Notes:
   of visibility** (DM, group DM, and channel alike). It is orthogonal to the
   visibility default: for `org` sessions it is provenance and the anchor for
   §4.3 reclassification rights, not an access gate.
-- A provider-bound group DM or channel never uses one initiator as its access
-  owner. With Slack sync enabled, its current conversation membership is the
-  audience; with sync disabled, new shared Slack sessions remain `org`.
+- A provider-bound conversation or repository never uses one initiator as its
+  access owner. With provider sync enabled, the current external audience is
+  authoritative; with sync disabled, new provider sessions remain `org`.
 - A cron or daemon-owned continuation delivered into an attributable Slack
   conversation is provider-bound at creation just like a human-started thread.
   Automation without a trusted external destination remains `org` with no owner.
@@ -355,11 +384,13 @@ canViewSession(s, ctx, identitySet) =
     : s.visibility === 'org' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
 ```
 
-`currentExternalAudienceAllows` requires a settled scope, a linked Slack
-identity, current Slack conversation membership, and matching durable policy /
-scope revisions. Provider errors, timeouts, unresolved history, and stale
-revisions deny access. Organization roles, including owner, never bypass this
-predicate.
+`currentExternalAudienceAllows` requires a settled scope and matching durable
+policy/scope revisions. Slack additionally requires a linked identity and
+current conversation membership. GitHub permits a currently public repository
+without a linked identity; a private repository requires the linked GitHub user
+to retain read permission. Provider errors, timeouts, unresolved history, and
+stale revisions deny access. Organization roles, including owner, never bypass
+this predicate.
 
 All of these already gate on agent visibility; each additionally applies the
 session predicate:
@@ -468,7 +499,7 @@ feeding shared memory once every affected daemon has acked (`applied`)",
 not retroactive amnesia.
 
 Shared external sessions are always excluded from managed shared-memory
-capture and recall, even while the Slack access-sync switch is disabled. This
+capture and recall, even while the provider access-sync switch is disabled. This
 prevents a provider-scoped conversation from feeding a broader organization
 memory namespace. The gate covers AgentConnect-managed and external memory
 paths; a runtime's own opaque/native memory cannot be isolated per session by
@@ -486,11 +517,12 @@ learned from it"); silence is not an option.
   The session detail page renders a lock badge for `private`, a provider badge
   for `external`, and the §4.3 visibility control only for direct-session
   owners allowed to use it.
-- Settings exposes an owner-only Slack access-sync switch, disabled by default.
-  When enabled, shared Slack session history follows current Slack conversation
-  membership. The detail page renders provider-bound visibility as read-only;
-  unresolved historical rows and transient provider failures are surfaced
-  without widening access.
+- Settings exposes owner-only provider access-sync switches, disabled by
+  default. Slack follows current conversation membership; GitHub follows
+  current repository visibility and user access. The GitHub switch and
+  inaccessible-session link action are a separate console change from the core
+  daemon/CP implementation. Provider-bound visibility is read-only; unresolved
+  history and transient provider failures are surfaced without widening access.
 - The existing client-side "mine" heuristic
   (`packages/web/src/lib/session-trigger.ts` email/userId matching) stays as a
   display concern (the "you" label) but is no longer doing authorization work.
@@ -507,6 +539,14 @@ user's own session — so `http/viewer-identity.ts` reads it per request
 up for their owners retroactively — no session backfill, per §2. Only a real
 OIDC session qualifies (devAuth and API-key callers have no verified subject),
 and a provider miss or error fails closed to the console identity.
+
+**GitHub (shipped in the provider adapter).** The BFF keeps the session scope as
+a numeric repository id and resolves its current canonical name with the
+installation credential. Public repositories need no user identity. For a
+private repository, `GithubUserAuthzService` resolves the caller's linked GitHub
+login from Logto and asks GitHub for that user's current effective repository
+permission. AgentConnect stores neither the GitHub login nor a copied provider
+ACL; only bounded allow/deny/error verdicts are cached in process.
 
 **Other platforms (future, separate design).** Telegram/Discord/Feishu have no
 OIDC sign-in to piggyback on, so they need a `UserIdentity` table (`userId`,
@@ -561,3 +601,7 @@ link ends public access without touching the session row.
   relationships, transcript/tool-body reauthorization, SSE, and usage parity;
   immutable direct source binding; A2A lineage across local and relay paths;
   managed-memory recall, mutation, automatic recall, capture, and Dream gates.
+- **GitHub external audience:** accepted-delivery and installation-claim
+  validation; numeric repository identity across rename; public, private-linked,
+  no-access, and provider-error decisions; ambiguous-history hiding; A2A scope
+  inheritance; owner-role non-bypass; and parity across every session read path.

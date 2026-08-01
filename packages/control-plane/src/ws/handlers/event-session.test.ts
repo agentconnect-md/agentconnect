@@ -10,11 +10,14 @@ const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const SESSION_ID = 'session-407'
 const INTEGRATION_ID = '11111111-1111-4111-8111-111111111111'
 const BOT_ID = '22222222-2222-4222-8222-222222222222'
+const HOOK_ID = '33333333-3333-4333-8333-333333333333'
+const GITHUB_INSTALLATION_ROW_ID = '44444444-4444-4444-8444-444444444444'
 
 function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
     agent: { get: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
+    hook: { get: vi.fn().mockResolvedValue(null) },
     ...extra
   } as unknown as DaemonWsDeps
 }
@@ -226,6 +229,122 @@ describe('handleEventSession', () => {
 
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({ externalCandidate: { provider: 'slack', resolution: 'invalid' } })
+    )
+  })
+
+  it('binds a GitHub audience only to the accepted delivery snapshot and installation claim', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      hook: {
+        getRun: vi.fn().mockResolvedValue({
+          orgId: 'org-1',
+          agentId: AGENT_ID,
+          repoId: 123n,
+          repoFullName: 'acme/repo',
+          sourceInstallationId: 456n
+        })
+      },
+      githubInstallation: {
+        getByInstallationId: vi.fn().mockResolvedValue({
+          id: GITHUB_INSTALLATION_ROW_ID,
+          orgId: 'org-1'
+        })
+      },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      externalOrigin: {
+        provider: 'github',
+        realmKey: 'github.com',
+        resourceKind: 'repository',
+        resourceKey: '123',
+        hookId: HOOK_ID,
+        deliveryKey: 'delivery-1',
+        sourceInstallationId: '456',
+        repoFullName: 'acme/repo'
+      }
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalCandidate: {
+          provider: 'github',
+          resolution: 'settled',
+          scope: {
+            realmKey: 'github.com',
+            resourceKind: 'repository',
+            resourceKey: '123',
+            credentialKind: 'github_installation',
+            credentialId: GITHUB_INSTALLATION_ROW_ID
+          }
+        }
+      })
+    )
+  })
+
+  it('rejects a GitHub audience that differs from the accepted delivery snapshot', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const getByInstallationId = vi.fn()
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      hook: {
+        getRun: vi.fn().mockResolvedValue({
+          orgId: 'org-1',
+          agentId: AGENT_ID,
+          repoId: 999n,
+          repoFullName: 'acme/repo',
+          sourceInstallationId: 456n
+        })
+      },
+      githubInstallation: { getByInstallationId },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      externalOrigin: {
+        provider: 'github',
+        realmKey: 'github.com',
+        resourceKind: 'repository',
+        resourceKey: '123',
+        hookId: HOOK_ID,
+        deliveryKey: 'delivery-1',
+        sourceInstallationId: '456',
+        repoFullName: 'acme/repo'
+      }
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({ externalCandidate: { provider: 'github', resolution: 'invalid' } })
+    )
+    expect(getByInstallationId).not.toHaveBeenCalled()
+  })
+
+  it('keeps a GitHub hook session from an older daemon unresolved', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      hook: {
+        get: vi.fn().mockResolvedValue({ kind: 'github', agentId: AGENT_ID })
+      },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      platform: 'hook',
+      channel: HOOK_ID,
+      triggeredBy: `hook:${HOOK_ID}`
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({ externalCandidate: { provider: 'github', resolution: 'pending' } })
     )
   })
 

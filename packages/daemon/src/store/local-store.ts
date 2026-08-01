@@ -1,7 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { DreamInfo, SessionImageAttachment } from '@agentconnect.md/protocol'
+import type { DreamInfo, ExternalSessionOrigin, SessionImageAttachment } from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 
 /** Per-tool-row rawInput budget in the mining prompt — enough for a command
@@ -95,6 +95,9 @@ export interface SessionRecord {
   externalResourceKind?: string | null
   externalResourceKey?: string | null
   externalIntegrationId?: string | null
+  /** Provider-specific proof retained only so a later event/session retry can
+   * re-present the exact direct origin to the CP. */
+  externalOriginJson?: string | null
   // Null is legacy/unknown. New rows pin either an external shared input or a
   // non-external origin so a later turn cannot silently change audiences.
   sourceBindingKind?: 'local' | 'external' | null
@@ -471,7 +474,7 @@ export class LocalStore {
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT,
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
         externalProvider TEXT, externalRealmKey TEXT, externalResourceKind TEXT,
-        externalResourceKey TEXT, externalIntegrationId TEXT,
+        externalResourceKey TEXT, externalIntegrationId TEXT, externalOriginJson TEXT,
         sourceBindingKind TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
@@ -1064,6 +1067,8 @@ export class LocalStore {
       this.db.exec('ALTER TABLE sessions ADD COLUMN externalResourceKey TEXT')
     if (!cols.some((c) => c.name === 'externalIntegrationId'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN externalIntegrationId TEXT')
+    if (!cols.some((c) => c.name === 'externalOriginJson'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN externalOriginJson TEXT')
     if (!cols.some((c) => c.name === 'sourceBindingKind'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN sourceBindingKind TEXT')
   }
@@ -1559,13 +1564,13 @@ export class LocalStore {
         `INSERT INTO sessions
            (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
-            sourceBindingKind)
+            externalOriginJson, sourceBindingKind)
          VALUES
            (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
             @triggeredBy, @memoryProvider, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
-            @sourceBindingKind)
+            @externalOriginJson, @sourceBindingKind)
          ON CONFLICT(key) DO UPDATE SET
            acpSessionId=excluded.acpSessionId, state=excluded.state,
            lastDeliveredTs=excluded.lastDeliveredTs, updatedAt=excluded.updatedAt,
@@ -1584,6 +1589,7 @@ export class LocalStore {
            -- Slack reinstall may replace the integration while the same
            -- workspace/conversation remains the audience.
            externalIntegrationId=COALESCE(excluded.externalIntegrationId, sessions.externalIntegrationId),
+           externalOriginJson=COALESCE(sessions.externalOriginJson, excluded.externalOriginJson),
            sourceBindingKind=COALESCE(sessions.sourceBindingKind, excluded.sourceBindingKind),
            -- Parent link is first-wins: set once when the session is spawned, never cleared by a
            -- later (human-triggered) turn that carries no origin.
@@ -1614,6 +1620,7 @@ export class LocalStore {
         externalResourceKind: rec.externalResourceKind ?? null,
         externalResourceKey: rec.externalResourceKey ?? null,
         externalIntegrationId: rec.externalIntegrationId ?? null,
+        externalOriginJson: rec.externalOriginJson ?? null,
         sourceBindingKind: rec.sourceBindingKind ?? null,
         originSessionId: rec.originSessionId ?? null,
         needsParentReply: rec.needsParentReply === 1 ? 1 : null
@@ -1749,6 +1756,7 @@ export class LocalStore {
       externalResourceKind?: string
       externalResourceKey?: string
       externalIntegrationId?: string
+      externalOrigin?: ExternalSessionOrigin
       sourceBindingKind?: 'local' | 'external'
     }
   ): void {
@@ -1764,6 +1772,7 @@ export class LocalStore {
            externalResourceKey = COALESCE(externalResourceKey, ?),
            -- Unlike the source tuple, the credential locator is replaceable.
            externalIntegrationId = COALESCE(?, externalIntegrationId),
+           externalOriginJson = COALESCE(externalOriginJson, ?),
            sourceBindingKind = COALESCE(sourceBindingKind, ?)
          WHERE key = ?`
       )
@@ -1776,6 +1785,7 @@ export class LocalStore {
         c.externalResourceKind ?? null,
         c.externalResourceKey ?? null,
         c.externalIntegrationId ?? null,
+        c.externalOrigin ? JSON.stringify(c.externalOrigin) : null,
         c.sourceBindingKind ?? null,
         key
       )
@@ -1795,13 +1805,14 @@ export class LocalStore {
         externalResourceKind?: string
         externalResourceKey?: string
         externalIntegrationId?: string
+        externalOrigin?: ExternalSessionOrigin
       }
     | undefined {
     const row = this.db
       .prepare(
         `SELECT conversationKind, tenantScope, launchCorrelationId,
                 externalProvider, externalRealmKey, externalResourceKind,
-                externalResourceKey, externalIntegrationId
+                externalResourceKey, externalIntegrationId, externalOriginJson
          FROM sessions WHERE agentId = ? AND acpSessionId = ?`
       )
       .get(agentId, acpSessionId) as
@@ -1814,6 +1825,7 @@ export class LocalStore {
           externalResourceKind: string | null
           externalResourceKey: string | null
           externalIntegrationId: string | null
+          externalOriginJson: string | null
         }
       | undefined
     if (!row) return undefined
@@ -1825,7 +1837,8 @@ export class LocalStore {
       ...(row.externalRealmKey ? { externalRealmKey: row.externalRealmKey } : {}),
       ...(row.externalResourceKind ? { externalResourceKind: row.externalResourceKind } : {}),
       ...(row.externalResourceKey ? { externalResourceKey: row.externalResourceKey } : {}),
-      ...(row.externalIntegrationId ? { externalIntegrationId: row.externalIntegrationId } : {})
+      ...(row.externalIntegrationId ? { externalIntegrationId: row.externalIntegrationId } : {}),
+      ...(row.externalOriginJson ? { externalOrigin: JSON.parse(row.externalOriginJson) as ExternalSessionOrigin } : {})
     }
   }
 

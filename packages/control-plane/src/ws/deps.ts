@@ -22,7 +22,8 @@ import type {
   WebchatConversationRepo,
   LaunchRepo,
   OrganizationKnowledgeRepo,
-  BotRepo
+  BotRepo,
+  GithubInstallationRepo
 } from '../persistence/ports.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { RelayRosterEntry } from '@agentconnect.md/protocol'
@@ -73,6 +74,9 @@ export interface DaemonWsDeps {
   /** Validates a daemon-reported external credential locator before a Session
    *  is bound to its immutable provider scope. */
   bot?: BotRepo
+  /** Resolves a trusted GitHub delivery's installation id to this org's
+   * durable credential locator before binding a repository ExternalScope. */
+  githubInstallation?: GithubInstallationRepo
   /** Persists authoritative membership snapshots and partial conversation reports. */
   integrationChannel: IntegrationChannelRepo
   /** Shares the HTTP agent-move boundary with daemon-originated conversation reports. */

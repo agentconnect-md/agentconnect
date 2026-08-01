@@ -19,6 +19,7 @@ type HookRunFixtureInput = Partial<HookRunRecord> & Pick<HookRunRecord, Required
 export function githubHookRun(input: HookRunFixtureInput): HookRunRecord {
   return {
     id: 'run-1',
+    orgId: 'org_1' as HookRunRecord['orgId'],
     deliveryKey: 'delivery-1',
     event: 'pull_request:opened',
     configRevision: 1n,

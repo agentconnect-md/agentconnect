@@ -22,16 +22,43 @@ export const Heartbeat = z.object({
 })
 export type Heartbeat = z.infer<typeof Heartbeat>
 
-/** Stable source tuple for a supported shared input. Credential locators are
- * optional because A2A lineage carries only the immutable audience identity;
- * direct ingest includes the integration so the CP can validate it. */
-export const ExternalSessionOrigin = z.object({
-  provider: z.literal('slack'),
-  realmKey: z.string().min(1).max(200).optional(),
-  resourceKind: z.literal('conversation'),
-  resourceKey: z.string().min(1).max(200),
-  integrationId: z.string().uuid().optional()
-})
+const ExternalKey = z.string().min(1).max(200)
+const GithubId = z.string().regex(/^[1-9]\d*$/)
+
+/** Immutable audience identity inherited by A2A descendants. Credential proof
+ * stays on the direct root only; children inherit this tuple from their parent. */
+export const ExternalSessionAudience = z.discriminatedUnion('provider', [
+  z.object({
+    provider: z.literal('slack'),
+    realmKey: ExternalKey.optional(),
+    resourceKind: z.literal('conversation'),
+    resourceKey: ExternalKey
+  }),
+  z.object({
+    provider: z.literal('github'),
+    realmKey: z.literal('github.com'),
+    resourceKind: z.literal('repository'),
+    // Rename-proof GitHub repository id, never owner/repo.
+    resourceKey: GithubId
+  })
+])
+export type ExternalSessionAudience = z.infer<typeof ExternalSessionAudience>
+
+/** Direct-ingress audience plus the provider-specific proof the CP validates
+ * before binding a durable ExternalScope. */
+export const ExternalSessionOrigin = z.discriminatedUnion('provider', [
+  ExternalSessionAudience.options[0].extend({
+    integrationId: z.string().uuid().optional()
+  }),
+  ExternalSessionAudience.options[1].extend({
+    hookId: z.string().uuid(),
+    deliveryKey: ExternalKey,
+    sourceInstallationId: GithubId,
+    // Trusted webhook snapshot; display/API-routing hint only. repoId above is
+    // the authorization identity and must still match the accepted HookRun.
+    repoFullName: ExternalKey
+  })
+])
 export type ExternalSessionOrigin = z.infer<typeof ExternalSessionOrigin>
 
 /** Converged session lifecycle milestone — protocol §7.2. NOT the message stream. */
