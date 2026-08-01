@@ -168,7 +168,7 @@ but is not a delivery or consistency primitive.
 ```mermaid
 flowchart TD
     A[Admit one logical turn] --> B[Refresh context at turn start]
-    B --> C[Capture context revision and provider checkpoint]
+    B --> C[Atomically coalesce included queue entries and capture the start fence]
     C --> D[Run ACP prompt into a staged attempt buffer]
     D --> E[Refresh provider thread and local observations]
     E --> F{New non-self conversation events?}
@@ -203,6 +203,13 @@ common entry point. It:
 `SessionManager` remains responsible for converting those events into ACP content
 blocks, enforcing the replay cap, applying the per-agent delivery cursor, attachments,
 quoted-source handling, standing context, and memory recall.
+
+The returned queue IDs are read-only candidates until the workflow claims its first
+generation. After every cold-start and pre-prompt ready gate has passed, the workflow
+uses the start-fence protocol in section 7.2 to terminalize only queued entries actually
+included in these blocks, capture `baseRevision`, and start the first prompt atomically.
+This prevents an included clarification from later running as a duplicate turn without
+losing it when initialization or a ready gate fails.
 
 This preserves the existing Slack behavior while making the source abstraction usable
 by the final refresh.
@@ -270,10 +277,18 @@ An inbound message routed to the same agent while it is busy currently waits as 
 turn. If the final refresh incorporates that message, leaving it queued would produce
 two answers.
 
-The refresh first identifies matching queued entries without mutating the queue. Only
-after the workflow has found invalidating events **and** decided under the thread mutex
-that the retry budget permits another generation does it atomically absorb entries
-whose stable platform event IDs are in the refresh result:
+There are two explicit coalescing points:
+
+- **Initial coalescing:** a queued entry included in the first prompt is absorbed by the
+  start-fence protocol in section 7.2. There is no retry decision yet, but all
+  pre-prompt gates must already have passed.
+- **Regeneration coalescing:** a final refresh first identifies matching queued entries
+  without mutating the queue. Only after the workflow has found invalidating events
+  **and** decided under the thread mutex that the retry budget permits another
+  generation does it absorb them.
+
+At either point, absorption applies only to entries whose stable platform event IDs are
+actually included in the corresponding prompt:
 
 - Remove those entries from `serialQueue`.
 - Mark their durable inbox rows terminal with a `coalesced_into_turn` outcome.
@@ -380,7 +395,31 @@ can still receive it as context.
 The existing transcript primary key keeps the later `SessionManager.handle()` append
 idempotent. Recipient delivery metadata can still be added when the agent is known.
 
-### 7.2 Commit linearization
+### 7.2 Start-fence linearization
+
+Platform I/O and initial prompt assembly happen without holding a mutex, and matching
+queue IDs remain read-only at that stage. After workspace/session initialization,
+runtime-setting restoration, and every existing pre-prompt ready gate has succeeded,
+the workflow enters the physical-thread mutex and:
+
+1. Imports/rechecks locally observed events that arrived during initialization and
+   appends the bounded eligible delta to the first prompt blocks.
+2. Selects same-agent queue entries whose stable event IDs are actually present in
+   those blocks.
+3. Terminalizes those entries as `coalesced_into_turn`, resolves their dispatch
+   promises with the current ACP session ID, and records recipient delivery metadata.
+4. Captures the resulting context revision/provider checkpoint as the first
+   generation's fence.
+5. Synchronously initiates `host.prompt(sessionId, blocks)` before releasing the mutex;
+   the returned promise may be awaited outside it.
+
+If initialization or a ready gate fails before this claim, no queued entry is mutated.
+Cancellation after the ACP request starts follows the existing in-flight cancellation
+path; the coalesced entries belong to that started prompt and must not run again.
+Messages observed after the start fence are intentionally outside the first prompt and
+are handled by the final-refresh protocol below.
+
+### 7.3 Commit linearization
 
 The coordinator maintains a short daemon-local mutex per physical thread
 `(platform, channel, thread, transportScope)`. Provider I/O happens outside the mutex;
@@ -409,7 +448,7 @@ unchanged" operation. The guarantee is therefore:
 > The daemon never commits a candidate while it knows, or can read in the final bounded
 > snapshot, that the logical thread changed since that generation began.
 
-### 7.3 Snapshot failure policy
+### 7.4 Snapshot failure policy
 
 Platform history reads are best-effort availability enhancements, not a reason to lose
 all replies. A capable adapter retries a failed final snapshot twice with bounded
@@ -534,7 +573,7 @@ become daemon limits only if production evidence shows a need for configuration.
   normal turn failure; never fall back to a stale answer.
 - `!cancel`, `!stop`, pause, loop protection, drain, and shutdown suppress all staged
   and queued answer actions. They also cancel an in-flight refresh when possible.
-- A provider snapshot timeout follows section 7.3; an ACP prompt timeout follows the
+- A provider snapshot timeout follows section 7.4; an ACP prompt timeout follows the
   existing turn failure path.
 - A platform commit failure follows existing best-effort send behavior and transcript
   rules. The workflow must not regenerate merely because delivery failed; context
@@ -607,6 +646,11 @@ Web UI.
   the second candidate is posted and recorded.
 - A message arriving during the provider refresh is caught by the local revision
   recheck.
+- A same-agent entry queued during cold/session initialization and included in the
+  first prompt is atomically terminalized at the start fence, reaches the model exactly
+  once, and cannot dispatch after the accepted answer.
+- A ready-gate failure before the start fence leaves every candidate queue entry
+  untouched and runnable.
 - A same-agent queued clarification is absorbed and not dispatched again.
 - A message addressed to another agent invalidates the candidate without stealing the
   other agent's activation.
