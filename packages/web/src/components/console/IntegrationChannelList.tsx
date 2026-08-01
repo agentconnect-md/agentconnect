@@ -15,10 +15,13 @@ import type { AgentIcon } from '@/lib/agent-icon'
  *  hover copy. */
 function TriggerToggle({
   channel,
+  platform,
   disabled,
   onChange
 }: {
   channel: IntegrationChannelRow
+  /** Names the room the way its platform does — one noun per card. */
+  platform?: string
   /** Demo rows (no live integration id) render the control inert. */
   disabled: boolean
   onChange: (trigger: IntegrationChannelRow['trigger']) => void
@@ -54,7 +57,7 @@ function TriggerToggle({
   // who wants the bot silent here but still in the channel on the platform has nowhere
   // else to say so. A GROUP DM takes the channel's choice, not the DM's: several people
   // share it, so "every message" must stay opt-in.
-  const here = channel.kind === 'mpim' ? 'this group DM' : 'this channel'
+  const here = `this ${rowNoun(channel.kind, platform)}`
   const segs: [IntegrationChannelRow['trigger'], string, string][] =
     channel.kind === 'im'
       ? [
@@ -203,9 +206,95 @@ type MemberAgent = { id: string; label: string; runtime: string; icon?: AgentIco
  */
 const canLeaveConversation = (platform?: string): boolean => platform === 'telegram'
 
-/** What "leave" is called where — the console should use the platform's own word for
- *  the room, not a generic one the operator has to translate. */
-const conversationNoun = (platform?: string): string => (platform === 'telegram' ? 'group' : 'channel')
+/**
+ * What this platform calls the room, and what to call a row of it.
+ *
+ * ONE noun per card. Telegram and Lark have groups; Slack and Discord have channels.
+ * Mixing them — a "#" row, a "channel" footer and a "Leave group" menu item, all
+ * describing the same Telegram row — makes an operator wonder whether they are three
+ * different things. A direct conversation is neither, so it keeps its own word.
+ */
+const roomNoun = (platform?: string): string => (platform === 'telegram' || platform === 'feishu' ? 'group' : 'channel')
+
+/** The noun for ONE row: a DM is never a channel or a group, whatever the platform. */
+const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
+  kind === 'im' ? 'conversation' : kind === 'mpim' ? 'group chat' : roomNoun(platform)
+
+/** The list marker. "#" is the channel convention Slack and Discord share; a Telegram
+ *  or Lark group has no such sigil, so it gets none rather than a borrowed one.
+ *  Exported because the mobile card header summarises the same row and must not
+ *  disagree with it — the two sit one above the other at ≤768px. */
+export const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
+  kind === 'im' ? '@' : kind === 'mpim' ? '@@' : roomNoun(platform) === 'group' ? '' : '#'
+
+/** The place, named as the operator knows it. "on the platform" is our word for it,
+ *  not theirs — a person deciding whether to remove a bot wants to read "in Telegram". */
+const platformName = (platform?: string): string =>
+  platform === 'telegram'
+    ? 'Telegram'
+    : platform === 'slack'
+      ? 'Slack'
+      : platform === 'discord'
+        ? 'Discord'
+        : platform === 'feishu'
+          ? 'Lark'
+          : 'the chat app'
+
+/** The row's name as displayed. DM labels are stored as "@Alice" (the name resolvers
+ *  write them that way) and the glyph column already renders the marker, so a leading
+ *  "@" is stripped to avoid "@@Alice". Exported alongside `roomGlyph` for the same
+ *  reason: the mobile card header summarises this row directly above it. */
+export const rowLabel = (row: Pick<IntegrationChannelRow, 'kind' | 'name'>): string =>
+  isDirectConversation(row.kind) ? row.name.replace(/^@+/, '') : row.name
+
+/** Whether the bot can be made to leave THIS row from here — the platform must have a
+ *  per-conversation leave, and the row must be somewhere membership applies at all. */
+export const canLeaveRow = (kind: IntegrationChannelRow['kind'], platform?: string): boolean =>
+  canLeaveConversation(platform) && !isDirectConversation(kind)
+
+/**
+ * The ONE action a row's menu offers, fully worded. Exported and pure because the rule
+ * it encodes — one action, the strongest the platform allows, and the copy carries
+ * whatever that leaves undone — is the whole design and belongs in a test rather than
+ * only in a rendered popover.
+ *
+ * Three cases hide behind "cannot leave", and they call for different sentences:
+ * a Discord bot belongs to a SERVER, so the way out is the band heading above the row,
+ * and naming Discord would send the operator hunting for a per-channel control that
+ * does not exist; a direct conversation is not somewhere the bot was ever ADDED, so
+ * there is nothing to be shown out of and the row is only a listing; everything else
+ * has a real membership the operator ends in the chat app.
+ */
+export function rowMenuAction(
+  row: Pick<IntegrationChannelRow, 'kind' | 'name'>,
+  platform?: string
+): { leave: boolean; name: string; label: string; icon: string; hint: string; confirm: string } {
+  const noun = rowNoun(row.kind, platform)
+  const name = rowLabel(row)
+  if (canLeaveRow(row.kind, platform)) {
+    return {
+      leave: true,
+      name,
+      label: `Leave ${noun}`,
+      icon: 'log-out',
+      hint: `The bot leaves this ${noun} in ${platformName(platform)} and the row goes with it. Add it back to undo.`,
+      confirm: `Have the bot leave ${name}? It leaves the ${noun} in ${platformName(platform)} and stops receiving anything there. Add it back to undo.`
+    }
+  }
+  const rest = isDirectConversation(row.kind)
+    ? `Nobody adds or removes a bot in a ${noun} — the row comes back on the next message.`
+    : platform === 'discord'
+      ? `A Discord bot belongs to a server, not one ${noun} — use Leave on the server heading above to take it out. If it is still in there, the row will come back.`
+      : `The bot stays in the ${noun} — remove it in ${platformName(platform)} for that. If it is still in there, the row will come back.`
+  return {
+    leave: false,
+    name,
+    label: 'Remove from this list',
+    icon: 'trash-2',
+    hint: `Only stops showing it here. ${rest}`,
+    confirm: `Remove ${name} from this list? ${rest}`
+  }
+}
 
 /** Fixed-position placement of the portalled popover, measured off its button. */
 type PopoverBox = { style: { left?: number; right?: number; top?: number; bottom?: number } }
@@ -232,14 +321,20 @@ export function placePopover(
 }
 
 /**
- * The per-row overflow menu: forget the row, and — where the platform allows it —
- * actually leave the conversation.
+ * The per-row overflow menu, which offers exactly ONE action — the strongest the
+ * platform allows, worded by `rowMenuAction`. Where the bot can leave, leaving is the
+ * only choice: it does everything the weaker one does and more, so offering both would
+ * ask the operator to distinguish two outcomes that differ only in how far they reach.
+ * Where it cannot, removing the row is the only choice and its copy carries the rest.
  *
- * The two are deliberately worded apart, because confusing them is the whole trap
- * this list used to set. Forgetting only stops AgentConnect listing a conversation
- * and is the sole remedy for one the bot already left on a platform that cannot
- * report its own departure; leaving changes the outside world and needs the bot to
- * still be there. Both confirm, since neither is undoable from here.
+ * That collapse is what makes the "already gone" case load-bearing: on a leave-capable
+ * platform a stale row has no second escape hatch, so Leave must also succeed when the
+ * bot has already been removed there (`isAlreadyOutOfChat`, daemon side).
+ *
+ * Each label names its OUTCOME. Neither says "forget", the earlier wording: it
+ * describes our bookkeeping, not the user's outcome, and in a product that gives agents
+ * a MEMORY it reads like erasing what was said. Both confirm, since neither is undoable
+ * from here.
  */
 function RowActions({
   channel,
@@ -250,7 +345,7 @@ function RowActions({
   channel: IntegrationChannelRow
   platform?: string
   onForget: () => Promise<void>
-  onLeave?: () => Promise<void>
+  onLeave: () => Promise<void>
 }) {
   const [box, setBox] = useState<PopoverBox | null>(null)
   const [busy, setBusy] = useState(false)
@@ -282,7 +377,7 @@ function RowActions({
     setBusy(true)
     void action().finally(() => setBusy(false))
   }
-  const noun = conversationNoun(platform)
+  const action = rowMenuAction(channel, platform)
   const item = (label: string, icon: string, hint: string, onClick: () => void) => (
     <button
       onClick={onClick}
@@ -308,8 +403,8 @@ function RowActions({
       <button
         ref={btnRef}
         onClick={toggle}
-        title={`More actions for ${channel.name}`}
-        aria-label={`More actions for ${channel.name}`}
+        title={`More actions for ${action.name}`}
+        aria-label={`More actions for ${action.name}`}
         aria-expanded={open}
         className={`iconbtn h-7 w-7 ${busy ? 'opacity-60' : ''}`}
       >
@@ -323,38 +418,11 @@ function RowActions({
               className="fixed z-[1100] w-[264px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
               style={box.style}
             >
-              {onLeave &&
-                item(
-                  `Leave ${noun}`,
-                  'log-out',
-                  `Removes the bot from this ${noun} on the platform. Add it again to undo.`,
-                  () =>
-                    run(async () => {
-                      if (
-                        !window.confirm(
-                          `Remove the bot from ${channel.name}? It leaves the ${noun} on the platform and stops receiving anything there. Re-invite it to undo.`
-                        )
-                      ) {
-                        return
-                      }
-                      await onLeave()
-                    })
-                )}
-              {item(
-                'Forget this conversation',
-                'trash-2',
-                'Removes the row here only. Use it when the bot has already left.',
-                () =>
-                  run(async () => {
-                    if (
-                      !window.confirm(
-                        `Stop listing ${channel.name}? The bot is not touched — if it is still in the conversation, the row comes back.`
-                      )
-                    ) {
-                      return
-                    }
-                    await onForget()
-                  })
+              {item(action.label, action.icon, action.hint, () =>
+                run(async () => {
+                  if (!window.confirm(action.confirm)) return
+                  await (action.leave ? onLeave() : onForget())
+                })
               )}
             </div>
           </>,
@@ -627,13 +695,9 @@ export function IntegrationChannelList({
         style={{ padding: `10px ${padX}px` }}
       >
         <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
-          {c.kind === 'im' ? '@' : c.kind === 'mpim' ? '@@' : '#'}
+          {roomGlyph(c.kind, platform)}
         </span>
-        {/* DM labels are stored as "@Alice" (name resolvers); the glyph column already
-            renders the marker, so strip a leading @ to avoid "@@Alice". */}
-        <span className="mono min-w-0 flex-1 truncate text-[13px] text-(--text-primary)">
-          {isDirectConversation(c.kind) ? c.name.replace(/^@+/, '') : c.name}
-        </span>
+        <span className="mono min-w-0 flex-1 truncate text-[13px] text-(--text-primary)">{rowLabel(c)}</span>
         <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
           {def && (
             <>
@@ -656,22 +720,21 @@ export function IntegrationChannelList({
           )}
           <TriggerToggle
             channel={c}
+            platform={platform}
             disabled={!integrationId}
             onChange={(trigger) => setChannelTrigger(integrationId!, c.channelId, trigger)}
           />
           {/* Demo rows have no integration to act on, so they carry no menu at all
-              rather than an inert one. */}
+              rather than an inert one. Both callbacks below are always wired; which ONE
+              the menu offers is `rowMenuAction`'s call, so that rule lives in one place. */}
           {integrationId && (
             <RowActions
               channel={c}
               platform={platform}
               onForget={() => act(() => forgetChannel(integrationId, c.channelId))}
-              {...(canLeaveConversation(platform) && !isDirectConversation(c.kind)
-                ? {
-                    onLeave: () =>
-                      act(() => leaveConversation(integrationId, { kind: 'conversation', channel: c.channelId }))
-                  }
-                : {})}
+              onLeave={() =>
+                act(() => leaveConversation(integrationId, { kind: 'conversation', channel: c.channelId }))
+              }
             />
           )}
         </div>
@@ -688,8 +751,7 @@ export function IntegrationChannelList({
         >
           <Icon name="lock" size={13} className="mt-[2px] flex-none" />
           <span>
-            This agent is private: conversations start off. Enable each channel or direct message below before the agent
-            responds there.
+            {`This agent is private: conversations start off. Enable each ${roomNoun(platform)} or direct message below before the agent responds there.`}
           </span>
         </div>
       )}
@@ -717,17 +779,13 @@ export function IntegrationChannelList({
       >
         <Icon name="info" size={14} className="mt-[3px] flex-none" />
         <span>
-          {shareable
-            ? 'Channels appear here when the bot is invited to them. Trigger is set per channel; default dispatch is the agent who handles unmatched messages.'
-            : gated
-              ? 'Channels appear here when the bot is invited; direct messages appear when someone writes to the bot.'
-              : 'Channels appear here when the bot is invited to them. Trigger is set per channel.'}{' '}
-          {/* Off silences without leaving; the row menu covers the rest. What the menu
-              can offer differs by platform, so promise only what is there — and where
-              leaving is not offered, say where it IS done rather than leaving the
-              operator to wonder. */}
-          Set a channel to off to silence the agent there, or use a row&rsquo;s menu to{' '}
-          {canLeaveConversation(platform) ? 'leave it or stop listing it' : 'stop listing it'}.
+          {/* Says where rows COME FROM, and — only where the row menu cannot do it —
+              where leaving is done instead. It deliberately no longer narrates the
+              menu's own items: those explain themselves on screen, and repeating them
+              here in different words was most of what made this card read oddly. */}
+          {`A ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per ${roomNoun(platform)}.`}
+          {gated && ' Direct messages appear when someone writes to the bot.'}
+          {shareable && ' Default dispatch is the agent who handles unmatched messages.'}
           {platform === 'discord' && ' A Discord bot joins servers, not channels, so it can only leave a whole server.'}
           {platform === 'slack' && ' To remove the bot from a channel, do it in Slack — this list updates by itself.'}
         </span>

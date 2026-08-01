@@ -129,7 +129,8 @@ their transcripts, and an agent may still post there when something else — a s
 task, another agent's hand-off — directs it to.
 
 Off is therefore the Console's answer to "stop responding here" while the bot stays put.
-Actually removing it is a separate action — see "Leaving and forgetting a conversation".
+Actually removing it is a separate action — see "Leaving a conversation and removing its
+row".
 
 A restricted agent expresses the same choice through its conversation gate, which is
 independently fail-closed: a conversation it has never been enabled in stays unroutable
@@ -142,28 +143,47 @@ had no way to know it was private. A channel switched Off says nothing at all: a
 operator already decided, and pointing the room at an admin would be both wrong and
 noise. Off is silence; the gate is a closed door with a sign on it.
 
-## Leaving and forgetting a conversation
+## Leaving a conversation and removing its row
 
 Three different things can end a conversation, and the Console must not blur them:
 
 - **Off** — the bot stays and goes quiet. Reversible in one click.
-- **Leave** — the bot is removed at the platform. It requires the bot to still be
-  there, and undoing it means re-inviting.
-- **Forget** — the row stops being listed. Nothing outside AgentConnect changes.
+- **Leave** — the bot is removed at the platform, and the row goes with it. Undoing it
+  means re-inviting.
+- **Remove from this list** — the row stops being listed. Nothing outside AgentConnect
+  changes.
 
-Forget exists because departure is not always observable. Only Slack reports its own
-membership authoritatively; a Telegram, Discord, or Lark report can only ever add, so
-a conversation the bot has already left would otherwise be listed forever with no way
-to clear it. Forget is that way. It follows that a forgotten row REAPPEARS on the next
-authoritative listing if the bot is in fact still a member — which is the correct
-answer to "why did it come back", not a bug: it never left, and Forget never claimed
-to make it.
+A row offers exactly ONE of the last two: the strongest the platform allows. Where the
+bot can be made to leave, Leave is the only choice on offer, because it already does
+everything removing the row does; presenting both would ask an operator to choose
+between two outcomes that differ only in reach, at the moment they least want a
+taxonomy. Where the bot cannot be made to leave, removing the row is the only choice,
+and its own wording carries the rest of the answer — that the bot is still in there and
+has to be shown out in the chat app.
+
+A direct conversation is the exception on both counts. Nobody is invited to one, so
+there is no membership to end and nothing to point the operator at; removing the row
+there is only ever removing a listing, and it says exactly that.
+
+That collapse puts a requirement on Leave. On a leave-capable platform a row has no
+second escape hatch, so Leave must also succeed when the bot is ALREADY out — the stale
+row left behind by someone removing the bot in the chat app is the very case these
+controls exist for, and a refusal there would strand an operator with a row they can
+see and cannot clear. A platform saying "not a member" therefore completes the Leave;
+any other refusal is still reported.
+
+Removing the row exists because departure is not always observable. Only Slack reports
+its own membership authoritatively; a Telegram, Discord, or Lark report can only ever
+add, so a conversation the bot has already left would otherwise be listed forever with
+no way to clear it. It follows that a removed row REAPPEARS on the next authoritative
+listing if the bot is in fact still a member — which is the correct answer to "why did
+it come back", not a bug: it never left, and removing a row never claimed to make it.
 
 Ending a listing must OUTLAST the reporting that produced it. On a platform that cannot
 enumerate, the conversation list is derived from session history, and leaving a
-conversation does not erase the sessions held in it — so both Leave and Forget are
-remembered durably at the edge, or the next refresh would rebuild the row from that
-history and quietly undo the operator. The suppression lifts when the conversation
+conversation does not erase the sessions held in it — so both actions are remembered
+durably at the edge, or the next refresh would rebuild the row from that history and
+quietly undo the operator. The suppression lifts when the conversation
 sends a message again: a platform only delivers those for a conversation the bot is
 actually in, so traffic is proof it was re-invited, and that is how re-inviting undoes
 a Leave without anyone having to find a button for it.
@@ -173,8 +193,9 @@ cosmetic. Telegram can withdraw from one conversation. A Discord bot has no
 per-channel membership at all — it joins a server and sees that server's channels
 through permissions — so the smallest thing it can leave is the whole server, taking
 every channel of it along. That action therefore belongs to the server, is confirmed
-as such, and is never offered on a channel row as though it were smaller than it is.
-Where a platform cannot leave at all, the Console offers only Off and Forget.
+as such, and is never offered on a channel row as though it were smaller than it is —
+which makes a Discord channel row one that cannot leave, so it offers removing the row
+and points at the server for the rest.
 
 Slack is deliberately in that last group even though its API could leave a channel.
 Doing so requires a scope that also grants creating, archiving, renaming and kicking,

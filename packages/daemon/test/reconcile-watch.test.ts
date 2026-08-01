@@ -1082,6 +1082,50 @@ describe('Daemon.leaveConversation', () => {
     await second.stop()
   })
 
+  // Leaving is the ONLY action a Telegram row offers, so it has to finish the job even
+  // when the bot is already out — that stale row is the whole reason this exists, and
+  // refusing would leave the operator with a row they can see and cannot clear.
+  it('clears the row when Telegram says the bot is already out of the chat', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    telegramAgent(daemon)
+    ;(daemon as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(TelegramConnection.prototype), {
+        leaveChannel: vi.fn().mockRejectedValue(new Error('Bad Request: chat not found'))
+      })
+
+    const verdict = await (daemon as any).leaveConversation({
+      integrationId: 'tg-int',
+      target: { kind: 'conversation', channel: '-100123' }
+    })
+
+    expect(verdict).toEqual({ ok: true })
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ removed: ['-100123'] }))
+  })
+
+  it('still reports a refusal that does NOT mean the bot is out', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    telegramAgent(daemon)
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(TelegramConnection.prototype), {
+        leaveChannel: vi.fn().mockRejectedValue(new Error('Too Many Requests: retry after 30'))
+      })
+
+    const verdict = await (daemon as any).leaveConversation({
+      integrationId: 'tg-int',
+      target: { kind: 'conversation', channel: '-100123' }
+    })
+
+    expect(verdict).toEqual({ ok: false, error: 'Too Many Requests: retry after 30' })
+    expect(emit).not.toHaveBeenCalled() // the row must not vanish on a transient failure
+  })
+
   it('refuses a conversation-scoped leave on Discord, where a bot can only leave a server', async () => {
     const { daemon } = makeStubDaemon(root1())
     await daemon.start()
