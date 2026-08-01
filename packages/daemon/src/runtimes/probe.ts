@@ -108,6 +108,12 @@ export interface RuntimeStateLocation {
    * seed. Omitted means the generic shallow config-file policy applies.
    */
   seedFiles?: readonly string[]
+  /**
+   * Optional top-level JSON keys to project instead of copying each selected
+   * source file wholesale. Invalid JSON or a source with none of these keys is
+   * not seeded.
+   */
+  seedJsonKeys?: readonly string[]
 }
 
 // --- home / XDG path resolution (honors the standard env overrides) ----------
@@ -134,8 +140,15 @@ function anyExists(...candidates: (string | undefined)[]): boolean {
 
 type RuntimeStateLocator = (env: NodeJS.ProcessEnv) => RuntimeStateLocation[]
 
-function state(source: string | undefined, destination: string, seedFiles?: readonly string[]): RuntimeStateLocation[] {
-  return source ? [{ source, destination, ...(seedFiles ? { seedFiles } : {}) }] : []
+function state(
+  source: string | undefined,
+  destination: string,
+  seedFiles?: readonly string[],
+  seedJsonKeys?: readonly string[]
+): RuntimeStateLocation[] {
+  return source
+    ? [{ source, destination, ...(seedFiles ? { seedFiles } : {}), ...(seedJsonKeys ? { seedJsonKeys } : {}) }]
+    : []
 }
 
 /**
@@ -156,20 +169,21 @@ const QODER_SEED = (brand: string): readonly string[] => [
   'mcp-oauth-tokens.json',
   'a2a-oauth-tokens.json'
 ]
+const CLAUDE_MODEL_CACHE_KEYS = ['additionalModelOptionsCache'] as const
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
-  // Anthropic Claude Code — seed only its ~/.claude.json global config.
+  // Anthropic Claude Code — seed only the rollout-model cache from ~/.claude.json.
   // The daemon pins CLAUDE_CONFIG_DIR=<private-home>/.claude (RUNTIME_PRIVATE_ENV),
-  // and Claude Code then reads its global config — including the GrowthBook feature
-  // cache that gates newer models (e.g. Fable 5) — from $CLAUDE_CONFIG_DIR/.claude.json,
-  // NOT the HOME-root copy. Host settings are daemon input and credentials are shared
-  // separately through CLAUDE_SECURESTORAGE_CONFIG_DIR; neither belongs in the private
-  // HOME. The HOME-root copy stays for Claude versions that ignore the config-dir env.
+  // and Claude Code reads additionalModelOptionsCache from that directory on its first
+  // session. Projecting that one field preserves rollout models (e.g. Fable 5) without
+  // copying host MCP, project, account, or machine state. Host settings are daemon input
+  // and credentials are shared separately through CLAUDE_SECURESTORAGE_CONFIG_DIR.
+  // The HOME-root copy stays for Claude versions that ignore the config-dir env.
   'claude-acp': (env) => [
-    ...state(env.CLAUDE_CONFIG_DIR, '.claude', ['.claude.json']),
-    ...state(join(home(env), '.claude'), '.claude', ['.claude.json']),
-    ...state(join(home(env), '.claude.json'), '.claude.json'),
-    ...state(join(home(env), '.claude.json'), join('.claude', '.claude.json'))
+    ...state(env.CLAUDE_CONFIG_DIR, '.claude', ['.claude.json'], CLAUDE_MODEL_CACHE_KEYS),
+    ...state(join(home(env), '.claude'), '.claude', ['.claude.json'], CLAUDE_MODEL_CACHE_KEYS),
+    ...state(join(home(env), '.claude.json'), '.claude.json', undefined, CLAUDE_MODEL_CACHE_KEYS),
+    ...state(join(home(env), '.claude.json'), join('.claude', '.claude.json'), undefined, CLAUDE_MODEL_CACHE_KEYS)
   ],
 
   // OpenAI Codex CLI — ~/.codex (honors $CODEX_HOME).

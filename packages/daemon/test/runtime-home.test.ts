@@ -17,24 +17,45 @@ function fixture(): { root: string; hostHome: string; scopeDir: string } {
 }
 
 describe('private runtime HOME', () => {
-  it('seeds only Claude global config and keeps host settings and credentials out', () => {
+  it('seeds only Claude model rollout cache and keeps other host state out', () => {
     const { hostHome, scopeDir } = fixture()
     writeFileSync(join(hostHome, '.claude', '.credentials.json'), '{"token":"host"}')
     writeFileSync(join(hostHome, '.claude', 'settings.json'), '{"theme":"dark"}')
     writeFileSync(join(hostHome, '.claude', 'state.sqlite'), 'do-not-copy')
     writeFileSync(join(hostHome, '.claude', 'sessions', 'old.json'), '{"old":true}')
-    writeFileSync(join(hostHome, '.claude.json'), '{"onboarded":true}')
+    writeFileSync(
+      join(hostHome, '.claude.json'),
+      JSON.stringify({
+        additionalModelOptionsCache: [{ value: 'claude-fable-5[1m]', label: 'Fable', description: 'test' }],
+        mcpServers: { private: { token: 'do-not-copy' } },
+        projects: { '/host/private': { allowedTools: [] } },
+        oauthAccount: { emailAddress: 'do-not-copy@example.test' }
+      })
+    )
 
     const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
     expect(existsSync(join(home, '.claude', '.credentials.json'))).toBe(false)
     expect(existsSync(join(home, '.claude', 'settings.json'))).toBe(false)
-    expect(existsSync(join(home, '.claude.json'))).toBe(true)
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))).toEqual({
+      additionalModelOptionsCache: [{ value: 'claude-fable-5[1m]', label: 'Fable', description: 'test' }]
+    })
     // Global config also lands in CLAUDE_CONFIG_DIR (<home>/.claude), which is
     // where a CLAUDE_CONFIG_DIR-pinned Claude Code actually reads it (the feature
     // cache there gates newer models like Fable 5).
-    expect(readFileSync(join(home, '.claude', '.claude.json'), 'utf8')).toContain('onboarded')
+    expect(JSON.parse(readFileSync(join(home, '.claude', '.claude.json'), 'utf8'))).toEqual({
+      additionalModelOptionsCache: [{ value: 'claude-fable-5[1m]', label: 'Fable', description: 'test' }]
+    })
     expect(existsSync(join(home, '.claude', 'state.sqlite'))).toBe(false)
     expect(existsSync(join(home, '.claude', 'sessions'))).toBe(false)
+  })
+
+  it('leaves Claude cold when the host global config has no model rollout cache', () => {
+    const { hostHome, scopeDir } = fixture()
+    writeFileSync(join(hostHome, '.claude.json'), JSON.stringify({ mcpServers: { private: {} } }))
+
+    const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    expect(existsSync(join(home, '.claude.json'))).toBe(false)
+    expect(existsSync(join(home, '.claude', '.claude.json'))).toBe(false)
   })
 
   it('seeds only Pi auth/settings from its nested agent directory', () => {
