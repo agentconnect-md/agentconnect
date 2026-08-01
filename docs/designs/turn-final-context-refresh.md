@@ -124,8 +124,9 @@ answer publication boundary.
 - **Conversation event:** normalized message text, attachments, and quote context that
   belong to a logical thread and may be shown to an agent.
 - **Self event:** an event proven to have been authored by the agent whose turn is
-  running. Provider-authenticated AgentConnect metadata is preferred over display
-  names or text heuristics.
+  running. Self is evaluated relative to `refresh(agentId)`, not assigned globally at
+  ingestion. Provider-authenticated AgentConnect author metadata is preferred over
+  display names or text heuristics.
 - **Chrome:** status bars, typing indicators, plans, progress, tool output, approval
   cards, and other daemon UI that is not conversation context.
 - **Context revision:** a daemon-local, monotonically increasing observation fence for
@@ -146,14 +147,16 @@ answer publication boundary.
 2. Self events and trusted daemon chrome never invalidate a candidate.
 3. Messages from humans, third-party bots, and other AgentConnect agents do invalidate
    a candidate when they belong to the same logical thread.
-4. Every invalidating event is supplied to the replacement prompt exactly once, in
+4. Peer-agent conversation events are persisted before routing or activation filtering;
+   only the authoring agent treats such an event as self.
+5. Every invalidating event is supplied to the replacement prompt exactly once, in
    platform event order, subject to the existing bounded replay policy.
-5. A queued activation absorbed by the current workflow is terminalized as coalesced
+6. A queued activation absorbed by the current workflow is terminalized as coalesced
    and does not run again.
-6. Only the accepted candidate becomes visible answer text and post-turn memory output.
-7. Token and cost accounting includes all generations because discarded generations
+7. Only the accepted candidate becomes visible answer text and post-turn memory output.
+8. Token and cost accounting includes all generations because discarded generations
    still consumed provider resources.
-8. Cancellation, pause, loop protection, or shutdown fences every generation and the
+9. Cancellation, pause, loop protection, or shutdown fences every generation and the
    eventual commit just as they fence an ordinary turn today.
 
 ## 5. Daemon-Owned Turn Output Workflow
@@ -176,7 +179,7 @@ flowchart TD
     J -- yes --> K[Invalidate candidate and absorb matching queued activations]
     K --> L[Prompt same ACP session with context-update notice and new events]
     L --> E
-    J -- no --> M[Publish no stale candidate; defer newest activation]
+    J -- no --> M[Publish no stale candidate; terminate the churned turn]
 ```
 
 The decision order in the diagram is conceptual. The implementation checks the retry
@@ -192,7 +195,8 @@ common entry point. It:
 2. Imports new conversation events idempotently into the local transcript.
 3. Includes live events that the daemon already observed, including a same-agent
    activation waiting in `serialQueue`.
-4. Filters the current agent's own output and trusted daemon chrome.
+4. Filters trusted daemon chrome, then filters only events whose trusted
+   `authorAgentId` equals the current `agentId`; peer-agent output remains context.
 5. Returns ordered prompt events, a context revision, a provider checkpoint, and a
    completeness label.
 
@@ -266,8 +270,10 @@ An inbound message routed to the same agent while it is busy currently waits as 
 turn. If the final refresh incorporates that message, leaving it queued would produce
 two answers.
 
-The workflow therefore asks the serial gate to atomically absorb queued entries whose
-stable platform event IDs are in the refresh result:
+The refresh first identifies matching queued entries without mutating the queue. Only
+after the workflow has found invalidating events **and** decided under the thread mutex
+that the retry budget permits another generation does it atomically absorb entries
+whose stable platform event IDs are in the refresh result:
 
 - Remove those entries from `serialQueue`.
 - Mark their durable inbox rows terminal with a `coalesced_into_turn` outcome.
@@ -321,9 +327,11 @@ interface ContextRefresh {
 }
 ```
 
-`NormalizedThreadEvent` needs stable provider identity, author provenance, text,
-attachments/quote metadata, event time, logical thread coordinates, and flags for
-trusted self/chrome. It must not infer self authorship from a mutable display name.
+`NormalizedThreadEvent` needs stable provider identity, trusted `authorAgentId` when
+known, text, attachments/quote metadata, event time, logical thread coordinates, and a
+trusted chrome flag. It must not persist a global `self` flag or infer agent authorship
+from a mutable display name: self is determined later by comparing `authorAgentId` with
+the agent passed to `refresh()`.
 
 The local store should expose a thread-scoped revision query rather than use `ts` as
 the universal finalization fence. Slack timestamps, Discord snowflakes, Feishu opaque
@@ -359,11 +367,15 @@ accepted generation.
 
 ### 7.1 Local observation before routing
 
-To make Telegram and queued same-agent messages visible, normalized inbound
-conversation events for a live thread must be durably observed before model dispatch,
-not only when `SessionManager.handle()` eventually runs. Command parsing and platform
-self-echo filtering happen first so control commands and daemon output are not turned
-into model context.
+To make Telegram, peer-agent output, and queued same-agent messages visible, normalized
+inbound conversation events for a live thread must be durably observed before model
+dispatch, not only when `SessionManager.handle()` eventually runs. Command parsing and
+trusted chrome classification happen first, but activation filtering does not precede
+observation. In particular, a provider delivery echo authored by an AgentConnect agent
+may be suppressed from waking another agent while its conversational event is still
+persisted (or deduplicated against the send-boundary row) with trusted `authorAgentId`.
+`refresh(agentId)` then excludes it only for that same authoring agent; every peer agent
+can still receive it as context.
 
 The existing transcript primary key keeps the later `SessionManager.handle()` append
 idempotent. Recipient delivery metadata can still be added when the agent is known.
@@ -377,11 +389,14 @@ then the workflow enters the mutex and:
 1. Imports the fetched provider events.
 2. Rechecks local thread revisions, catching gateway/long-poll events that arrived
    while the provider request was in flight.
-3. Absorbs matching same-agent queue entries.
-4. If any invalidating event exists, advances the generation fence and returns it to
-   regeneration.
-5. Otherwise claims the current revision as the commit fence and enqueues the accepted
-   answer's first platform action before releasing the mutex.
+3. If there is no invalidating event, claims the current revision as the commit fence
+   and enqueues the accepted answer's first platform action before releasing the mutex.
+4. If invalidating events exist, decides the retry-count and elapsed-time budget under
+   the same mutex, before mutating `serialQueue`.
+5. When the budget permits regeneration, absorbs matching same-agent queue entries,
+   advances the generation fence, and returns the delta to the workflow.
+6. When the budget is exhausted, leaves every matching queue entry untouched and
+   returns the terminal `context_churn` outcome.
 
 An inbound event observed before this local commit point invalidates the candidate. An
 event observed after it belongs to the next turn.
@@ -411,15 +426,24 @@ the newest bounded suffix with an elision notice, matching today's replay behavi
 
 | Platform      | Logical thread                                                                                         | Final refresh source                                                                                                                            | Completeness and required work                                                                                                                                                                                                                                               |
 | ------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Slack         | `thread_ts` (including the active assistant DM thread)                                                 | Incremental `conversations.replies` plus local observations                                                                                     | Authoritative bounded snapshot already exists. Generalize `fetchThreadHistory`, retain trusted AgentConnect metadata/chrome filtering, and reuse `oldest`/`latest` fencing.                                                                                                  |
+| Slack         | `thread_ts` (including the active assistant DM thread)                                                 | Incremental `conversations.replies` plus local observations                                                                                     | Generalize `fetchThreadHistory`, retain trusted AgentConnect metadata/chrome filtering, and reuse `oldest`/`latest` fencing. Treat the snapshot as authoritative only when the install's rate tier and complete pagination permit it; otherwise degrade to observed-only.    |
 | Discord       | The Discord thread channel ID; a top-level mention is re-keyed to the thread created from that message | Fetch channel messages after the provider checkpoint plus Gateway observations                                                                  | Add an incremental history method to `DiscordConnection`. Discord's Get Channel Messages endpoint supports `after`; it requires `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY`. Missing permission degrades to observed-only and must be reported.                                |
 | Lark / Feishu | Group topic/thread rooted by the message; P2P uses the chat as its logical thread                      | Fetch topic history when a provider `thread_id` is available, otherwise bounded chat history filtered to the logical root, plus WS observations | Preserve a provider thread reference separately from the daemon's stable logical key. Feishu's history API supports `container_id_type=thread`; add the required read scope and pagination. Missing scope degrades to observed-only during rollout.                          |
 | Telegram      | Forum topic ID, DM chat, or the daemon's reply-chain logical thread                                    | Daemon-observed Bot API updates only                                                                                                            | The Bot API delivers updates but does not provide an arbitrary bot chat-history read used by this daemon. Observe every eligible inbound event before routing. Privacy mode means the bot may not observe every group message, so the guarantee is explicitly observed-only. |
 
-References: [Slack `conversations.replies`](https://api.slack.com/methods/conversations.replies),
+References: [Slack `conversations.replies`](https://docs.slack.dev/reference/methods/conversations.replies/),
 [Discord Get Channel Messages](https://docs.discord.com/developers/resources/message#get-channel-messages),
 [Feishu topic history](https://open.feishu.cn/document/im-v1/message/thread-introduction), and
 [Telegram bot update visibility](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
+
+Slack cannot be assumed to support two history reads per turn at every installation.
+For commercially distributed apps installed outside the Slack Marketplace on or after
+May 29, 2025, Slack documents a `conversations.replies` limit of one request per minute
+and a maximum/default page size of 15; Marketplace and internal customer-built apps
+retain Tier 3 limits. The coordinator must detect `ratelimited`, honor `Retry-After`,
+avoid spending the turn blocked on a one-minute retry, and mark that refresh
+`observed-only`. Rollout metrics must separate this rate-tier degradation from ordinary
+transport failures.
 
 For all platforms, a message from the current agent is excluded only when authorship is
 trusted. Other AgentConnect agents' conversational output is included. Platform echoes
@@ -487,13 +511,19 @@ Initial defaults:
 When either budget is exhausted:
 
 1. Discard the current candidate.
-2. Do not absorb the newest same-agent activation that caused exhaustion; leave or
-   reinsert it at the head of the serial queue.
+2. Do not absorb any matching same-agent activation; the mutex decision happens before
+   queue mutation, so no terminalized entry ever needs to be reconstructed.
 3. Clear transient activity safely.
-4. Post at most one daemon-authored notice, according to output mode: "The conversation
-   kept changing while I was answering. I paused this reply and will continue with the
-   latest messages." The notice is trusted chrome, not agent output.
-5. Let the queued activation begin a fresh ordinary turn.
+4. If a same-agent activation is queued, release the current turn as
+   `turn.cancelled/context_churn` and let that untouched entry begin a fresh ordinary
+   turn.
+5. If churn came only from messages routed to another agent, there is no queued entry
+   that can continue the original work. End the current turn terminally and post at
+   most one daemon-authored notice, according to output mode: "The conversation kept
+   changing while I was answering, so I stopped this reply. Mention me again when the
+   thread settles." The notice is trusted chrome, not agent output.
+6. Do not create a synthetic continuation: it could self-feed forever in a busy shared
+   thread and would bypass the normal activation policy.
 
 The retry count, elapsed budget, and message limits should be constants in V1, then
 become daemon limits only if production evidence shows a need for configuration.
@@ -581,6 +611,10 @@ Web UI.
 - A message addressed to another agent invalidates the candidate without stealing the
   other agent's activation.
 - Repeated context churn exhausts the budget without publishing any discarded answer.
+- Budget exhaustion leaves every matching same-agent queue entry pending and
+  unterminalized so the serial gate can run it normally.
+- Peer-only churn with no current-agent queue entry terminates explicitly, posts no
+  promise of automatic continuation, and creates no synthetic activation.
 - Replacement failure, cancellation, pause, drain, and shutdown cannot release a staged
   candidate.
 - `none`, `minimal`, `low`, `medium`, and `high` preserve their final formatting and
