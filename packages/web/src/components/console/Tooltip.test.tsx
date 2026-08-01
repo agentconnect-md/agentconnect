@@ -168,6 +168,22 @@ describe('TooltipLayer', () => {
     expect(tooltip()?.textContent).toBe('Ships and rolls back deploys from chat.')
   })
 
+  it('releases a focused title before keyboard activation updates it', async () => {
+    const btn = iconButton('Expand sidebar')
+    // The collapsed rail's click changes its title prop to undefined. By the
+    // time this runs, the tooltip layer has already lifted the DOM attribute.
+    btn.addEventListener('click', () => btn.removeAttribute('title'))
+
+    await focus(btn)
+    expect(tooltip()?.textContent).toBe('Expand sidebar')
+
+    await act(async () => btn.click())
+    await act(async () => btn.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+
+    expect(tooltip()).toBeNull()
+    expect(btn.hasAttribute('title')).toBe(false)
+  })
+
   it('stays out of a subtree marked data-no-tooltip', async () => {
     const rail = document.createElement('aside')
     rail.setAttribute('data-no-tooltip', '')
