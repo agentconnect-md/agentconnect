@@ -24,6 +24,7 @@ import {
   sessionChannelDisplay,
   sessionPlatform,
   speaker,
+  status,
   type Agent,
   type SessionImage,
   type SessionStep
@@ -60,6 +61,7 @@ import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { WORK_LANES, toggleWorkPanel, workCounts, workPanelOpen, workSummary } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
+import { useCrumbStatusSlot } from '@/components/console/Shell'
 import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import {
   sessionEffortAfterModelChange,
@@ -907,6 +909,19 @@ export default function SessionDetailView() {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [session?.id, session?.platform, sessionBusy])
+
+  // Publish the run status to the shell's crumb badge. It has to come from here, not
+  // from `allSessions`: a deep link (or a parent/child link) to a session outside the
+  // loaded cursor pages only exists as the `fetchSessionDetail`-backed row above, and
+  // the Details popover no longer carries a status the desktop could fall back to.
+  const { register: registerCrumbStatus } = useCrumbStatusSlot()
+  const crumbStatusKey = session?.status ?? ''
+  const crumbStatusLabel = session?.statusLabel || (crumbStatusKey ? status(crumbStatusKey).label : '')
+  useEffect(() => {
+    if (!crumbStatusLabel) return
+    registerCrumbStatus({ status: crumbStatusKey, label: crumbStatusLabel })
+    return () => registerCrumbStatus(null)
+  }, [registerCrumbStatus, crumbStatusKey, crumbStatusLabel])
 
   if (!session) {
     // Shell owns detail navigation at both breakpoints; this branch only renders the
