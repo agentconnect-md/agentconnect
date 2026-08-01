@@ -500,14 +500,14 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
         // advisory mutation scope — agent binds take the same scope inside
         // their own transactions, so a bind either committed (⇒ 'bound') or
         // re-verifies the connection after this drop and is refused.
-        const outcome = await deps.repos.memoryConnectionWriter.deleteConnection(connection.id, orgOf(req))
-        if (outcome === 'busy') {
+        const deleted = await deps.repos.memoryConnectionWriter.deleteConnection(connection.id, orgOf(req))
+        if (deleted.outcome === 'busy') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'connection is being updated' })
         }
-        if (outcome === 'not_found') {
+        if (deleted.outcome === 'not_found') {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
-        if (outcome === 'bound') {
+        if (deleted.outcome === 'bound') {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
@@ -515,9 +515,14 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
           })
         }
         if (installation?.transport === 'streamable-http') {
+          // The tombstone revision comes from the fenced delete transaction —
+          // the `connection` read at route entry can be stale (a completed
+          // rotation advances TWO revisions), and the relay drops a tombstone at
+          // or below the revision it already holds, which would leave the
+          // deleted upstream and grant hashes live until reconnect.
           deps.relayControl.memoryConnectionUnassign({
             connectionId: connection.id,
-            revision: connection.revision + 1
+            revision: deleted.tombstoneRevision
           })
         }
         return reply.code(204).send(null)

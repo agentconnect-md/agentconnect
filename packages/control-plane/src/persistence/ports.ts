@@ -4140,8 +4140,20 @@ export interface MemoryConnectionWriter {
   >
   /** Agent-binding scan + row drop (secret/grant rows cascade) in one
    *  transaction under the connection's scope, so a concurrent agent bind
-   *  either commits first (⇒ 'bound') or re-verifies after and is refused. */
-  deleteConnection(id: string, orgId: OrgId): Promise<'deleted' | 'bound' | 'not_found' | 'busy'>
+   *  either commits first (⇒ 'bound') or re-verifies after and is refused.
+   *  `tombstoneRevision` (current revision + 1, read under the scope) is what
+   *  the caller must publish as the relay tombstone — a pre-transaction
+   *  revision can be outrun by a completed rotation, and the relay ignores a
+   *  tombstone at or below the revision it already holds. */
+  deleteConnection(
+    id: string,
+    orgId: OrgId
+  ): Promise<
+    | { outcome: 'deleted'; tombstoneRevision: number }
+    | { outcome: 'bound' }
+    | { outcome: 'not_found' }
+    | { outcome: 'busy' }
+  >
   /** Connection-reference scan + row drop under the installation's scope (the
    *  FK is Restrict, so this converts a constraint failure into a clean 409). */
   deleteInstallation(id: string, orgId: OrgId): Promise<'deleted' | 'referenced' | 'not_found' | 'busy'>

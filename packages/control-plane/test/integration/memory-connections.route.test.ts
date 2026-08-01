@@ -647,6 +647,55 @@ describe('external-memory connections — secret/grant discipline', () => {
     expect(active).toHaveLength(1)
     expect(active[0]!.id).not.toBe(firstGrant.id)
   })
+
+  it('a delete serialized after a rotation still publishes a winning tombstone', async () => {
+    // The DELETE's route-entry connection read can be arbitrarily stale, and a
+    // completed rotation advances TWO revisions — a tombstone computed from
+    // that stale read (old revision + 1) would be at or below the revision the
+    // relay already holds and be dropped, leaving the deleted connection's
+    // upstream and grant hashes live until reconnect. The tombstone revision
+    // must come from the row read inside the fenced delete transaction.
+    const relay = new SpyRelayControl()
+    const app = build({ relay })
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+
+    // Park the DELETE right after its route-entry read (revision 1).
+    const connections = app.deps.repos.externalMemoryConnection
+    const realGet = connections.get.bind(connections)
+    let releaseRead!: () => void
+    const gate = new Promise<void>((resolve) => (releaseRead = resolve))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((resolve) => (notifyParked = resolve))
+    let intercepted = false
+    connections.get = async (...args) => {
+      const value = await realGet(...args)
+      if (!intercepted) {
+        intercepted = true
+        notifyParked()
+        await gate
+      }
+      return value
+    }
+
+    const deleting = app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${connection.id}` })
+    await parked
+    // A full rotation completes meanwhile: overlap publish (2), retirement (3).
+    const rotated = await app.app.inject({ method: 'POST', url: `${CONNECTIONS}/${connection.id}/grant/rotate` })
+    expect(rotated.statusCode, rotated.body).toBe(200)
+    expect((rotated.json() as { revision: number }).revision).toBe(3)
+    const lastAssign = relay.assigns.at(-1)!
+    expect(lastAssign.revision).toBe(3)
+    releaseRead()
+    expect((await deleting).statusCode).toBe(204)
+
+    // Tombstone derived under the scope: strictly newer than every published
+    // assignment, so the relay's revision gate cannot drop it.
+    const tombstone = relay.unassigns.at(-1)!
+    expect(tombstone).toEqual({ connectionId: connection.id, revision: 4 })
+    expect(tombstone.revision).toBeGreaterThan(lastAssign.revision)
+    expect(await realGet(connection.id)).toBeNull()
+  })
 })
 
 describe('external-memory agent binding — placement and revocation', () => {

@@ -271,17 +271,35 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     }
   }
 
-  async deleteConnection(id: string, orgId: OrgId): Promise<'deleted' | 'bound' | 'not_found' | 'busy'> {
+  async deleteConnection(
+    id: string,
+    orgId: OrgId
+  ): Promise<
+    | { outcome: 'deleted'; tombstoneRevision: number }
+    | { outcome: 'bound' }
+    | { outcome: 'not_found' }
+    | { outcome: 'busy' }
+  > {
     return withTx(this.prisma, async (tx) => {
-      if (!(await tryLockMemoryConnectionScope(tx, id))) return 'busy'
-      const existing = await tx.externalMemoryConnection.findUnique({ where: { id }, select: { orgId: true } })
-      if (!existing || existing.orgId !== orgId) return 'not_found'
+      if (!(await tryLockMemoryConnectionScope(tx, id))) return { outcome: 'busy' as const }
+      const existing = await tx.externalMemoryConnection.findUnique({
+        where: { id },
+        select: { orgId: true, revision: true }
+      })
+      if (!existing || existing.orgId !== orgId) return { outcome: 'not_found' as const }
       // The binding scan shares this connection's scope with every agent write
       // that binds/unbinds it (PgAgentRepo) — a concurrent bind either committed
       // (seen here ⇒ 'bound') or re-verifies the connection after this drop.
-      if (await connectionBoundByAgent(tx, existing.orgId, id)) return 'bound'
+      if (await connectionBoundByAgent(tx, existing.orgId, id)) return { outcome: 'bound' as const }
       await tx.externalMemoryConnection.delete({ where: { id } }) // secret/grant rows cascade
-      return 'deleted'
+      // The relay tombstone must outrank every revision this row ever published,
+      // and only the row read under the scope knows that: a route-level read can
+      // be arbitrarily stale (a completed rotation advances TWO revisions), and
+      // the relay ignores a tombstone at or below the revision it already holds
+      // — which would leave the deleted upstream and grant hashes live until
+      // reconnect. All mutations serialize on this scope, so current + 1 is
+      // strictly newer than any assignment still in flight.
+      return { outcome: 'deleted' as const, tombstoneRevision: existing.revision + 1 }
     })
   }
 
