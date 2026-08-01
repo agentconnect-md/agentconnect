@@ -2291,6 +2291,9 @@ export class Daemon {
       memoryEnabled: this.evaluationProfile.memory === 'configured',
       collaborationEnabled: this.evaluationProfile.collaboration === 'configured',
       quoteForContextEvent: (event, replayed) => this.observedQuoteBlock(event, replayed),
+      // The session integration's own bot identity (auth.test-resolved on both
+      // socket and send-only connections) for the `# Agent` Slack-identity line.
+      slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
       // No runtime is whitelisted for the model-authored `setSessionTitle` fallback
       // anymore: codex-acp >= 1.1.3 emits native session_info_update titles itself
       // (issue #659), so every runtime now relies on its native ACP title path. The
@@ -5380,6 +5383,17 @@ export class Daemon {
     // Mirror the lookup here so session metadata/history can label the sender.
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
+    // Restore the trusted activation cause the relay path loses: the wire schema
+    // carries `trigger`, and direct ingress stamps 'mention' from its own router
+    // (onInbound → routeRules), but relay arbitration never populates it. Recompute
+    // from data already in hand — the message's mention list and this integration's
+    // own bot identity. Downstream it gates the explicit-mention prompt reminder
+    // (an opaque <@U…> token is not otherwise recognizable as "you") and the
+    // `!stop` un-mute rule below — without it a muted relay-channel agent could
+    // never be woken again.
+    if (!normalized.trigger && conn?.botUserId && normalized.mentionedBots.includes(conn.botUserId)) {
+      normalized.trigger = 'mention'
+    }
     const feishuConn = this.fsConnByIntegration.get(msg.integrationId)
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
     // HTTP-bot ingress is pre-addressed and bypasses onInbound(), so repeat the
@@ -11236,7 +11250,18 @@ export class Daemon {
         }
         if (ts) {
           p.statusBarTs = ts
-          await conn.updateBlocks(p.channel, ts, action.blocks, action.text, true)
+          const updated = await conn.updateBlocks(p.channel, ts, action.blocks, action.text, true)
+          // Duck-typed test connections historically return void; only an explicit
+          // false means Slack rejected the edit — typically cant_update_message on a
+          // bar another Slack app authored (a foreign ts persisted by the
+          // pre-provenance adoption path). Drop the dead ts so the next status emit
+          // re-resolves — provenance-filtered adoption or a fresh own post — instead
+          // of hammering an uneditable message on every usage tick. A transient
+          // failure costs at most one duplicate bar; a foreign ts never heals.
+          if (updated === false) {
+            p.statusBarTs = undefined
+            this.store.clearStatusBarTs(p.sessionKey)
+          }
         } else if (!p.statusBarAttempted) {
           p.statusBarAttempted = true
           // The session status line represents the selected agent, so keep its author
@@ -11257,13 +11282,20 @@ export class Daemon {
 
   /** Best-effort adoption path for sessions that already have an older status bar in
    *  Slack before `statusBarTs` was persisted locally. We scan in Slack's thread order
-   *  and pick the first bot-authored status fallback, so future turns update the topmost
-   *  existing line instead of adding one more duplicate. */
+   *  and pick the first status line THIS connection's own Slack app authored, so future
+   *  turns update the topmost existing line instead of adding one more duplicate.
+   *  Author provenance is mandatory: the bar is edited in place via chat.update, and
+   *  Slack only lets a bot edit its own messages — a sibling agent's bar in a shared
+   *  multi-agent thread (a different app) is neither editable (cant_update_message on
+   *  every usage tick) nor semantically ours (its numbers describe the other agent's
+   *  session). Reply rows keep `sender` = bot_id ?? user, so match either identity. */
   private async findExistingSlackStatusBarTs(conn: SlackConnection, p: Pending): Promise<string | undefined> {
     const getThreadReplies = (conn as { getThreadReplies?: SlackConnection['getThreadReplies'] }).getThreadReplies
     if (!getThreadReplies) return undefined
+    const own = new Set([conn.botId, conn.botUserId].filter(Boolean))
+    if (own.size === 0) return undefined
     const replies = await getThreadReplies.call(conn, p.channel, p.statusThread)
-    return replies.find((m) => m.isBot && isSlackStatusBarText(m.text))?.ts
+    return replies.find((m) => m.isBot && own.has(m.sender) && isSlackStatusBarText(m.text))?.ts
   }
 
   /**

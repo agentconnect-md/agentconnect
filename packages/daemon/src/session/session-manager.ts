@@ -262,6 +262,12 @@ export class SessionManager {
       /** Daemon-observed reply-source sidecar for context rows. Standalone/test
        * callers omit it and preserve the historical transcript-only behavior. */
       quoteForContextEvent?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined
+      /** The agent's own Slack bot user id on an integration (auth.test-resolved).
+       *  Surfaced as the `Slack identity` line of the `# Agent` block: platform
+       *  mentions are opaque `<@U…>` tokens, and without this binding the model
+       *  cannot tell that a multi-mention message addresses it — the
+       *  response-choice rule then misfires into AC_NO_RESPONSE. */
+      slackBotUserIdFor?: (integrationId: string) => string | undefined
       /** Whether this runtime needs AgentConnect's model-authored title fallback.
        *  Native-title runtimes (for example Claude) leave this false. */
       usesSessionTitleTool?: (agent: Agent) => boolean
@@ -592,11 +598,21 @@ export class SessionManager {
     }).materialize.filter((m) => secretNames.includes(m.sourceVar))
     const fileSecretNames = new Set(fileSecrets.map((m) => m.sourceVar))
     const envSecretNames = secretNames.filter((n) => !fileSecretNames.has(n))
+    // The agent's own Slack mention token. A Slack mention is an opaque user id
+    // (`<@U…>`) that resembles neither the agent's name nor anything else in the
+    // prompt — without this standing line the model cannot recognize its own
+    // mention in a multi-mention message and may wrongly classify the activation
+    // as "not for me" (session/no-response.ts).
+    const slackSelfId =
+      msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined
     const agentMeta = [
       AGENT_META_OPENING[0],
       `${AGENT_META_OPENING[1]} ${agent.name}`,
       `- ID: ${agent.id}`,
       `- Source: ${msg.platform}`,
+      ...(slackSelfId
+        ? [`- Slack identity: bot user <@${slackSelfId}> is YOU — a message mentioning this ID is addressed to you`]
+        : []),
       `- Channel: ${msg.channel}`,
       ...(channelName ? [`- Channel name: ${channelName}`] : []),
       // session-concept §2.3: standing locator lines. `Thread` is this session's thread
