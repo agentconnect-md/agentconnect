@@ -4,7 +4,7 @@ import useSWR from 'swr'
 import { MOCK_MODE } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { fetchExternalMemoryConnections } from '@/lib/api'
+import { fetchExternalMemoryConnections, listManagedSkills } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { McpServersCard } from '@/components/console/McpServersCard'
 import { SkillSourcesCard } from '@/components/console/SkillSourcesCard'
@@ -17,8 +17,10 @@ export default function ToolsHubView() {
   const { data: memoryConnections = [] } = useSWR(memoryConnectionKey, ([, orgId]) =>
     fetchExternalMemoryConnections(orgId)
   )
+  const managedSkillsKey = consoleKeys.managedSkills(activeOrg?.id, false)
+  const { data: managedSkills = [] } = useSWR(managedSkillsKey, ([, orgId]) => listManagedSkills(false, orgId))
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
-  const canManageMemory = myRole === 'owner' // installation + connection trust actions are owner-only
+  const canManageOwnerResources = myRole === 'owner' // managed artifacts + connection trust actions are owner-only
   // One responsive tree serves both form factors (the phone gets the same content,
   // reflowed): the MCP tiles and Skills library stack to a single column, while
   // `.psub` is hidden on mobile so the Shell app bar's title stands alone.
@@ -44,8 +46,8 @@ export default function ToolsHubView() {
           <div className="statval">{mcpProviders.length}</div>
         </div>
         <div className="card stat">
-          <div className="statlbl">Skill sources</div>
-          <div className="statval">{skillSources.length}</div>
+          <div className="statlbl">Skills library</div>
+          <div className="statval">{skillSources.length + managedSkills.length}</div>
         </div>
         <div className="card stat">
           <div className="statlbl">External memory</div>
@@ -61,8 +63,8 @@ export default function ToolsHubView() {
         )}
       </div>
       <McpServersCard canWrite={canWrite} />
-      <SkillSourcesCard canWrite={canWrite} />
-      <MemoryConnectionsCard canManage={canManageMemory} />
+      <SkillSourcesCard canWrite={canWrite} canManage={canManageOwnerResources} />
+      <MemoryConnectionsCard canManage={canManageOwnerResources} />
     </div>
   )
 }

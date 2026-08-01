@@ -407,6 +407,11 @@ each source, following `facts/daemon-runtimes`.
 
 Replace mock data with the real surface, following `McpServersCard`:
 
+- The **Skills library** is one card for both source kinds: Git-backed sources
+  from this design and centrally accepted immutable managed bundles from
+  [organization-knowledge.md](organization-knowledge.md). Managed bundles are
+  labeled separately and expose their lazy revision history in place; they do
+  not pass through `npx skills` or this source registry.
 - **Import from GitHub** opens a modal that (1) selects or enters a repository,
   reusing the installation-to-picker flow from `AddAgentRepoModal` or accepting
   `owner/repo`; (2) optionally selects a branch, tag, or commit ref and a

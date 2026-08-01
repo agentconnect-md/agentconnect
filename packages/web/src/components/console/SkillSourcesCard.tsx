@@ -1,23 +1,33 @@
 'use client'
 
-// Skills library card (Tools & Skills page) — the org-level shared-skills source
-// registry (docs/designs/shared-skills.md). Each source is a repo / git URL the
-// daemon installs into an agent's workspace via `npx skills` after clone and
-// before the ACP session starts. This card lists the sources as tiles and drives
-// create / edit / delete; per-agent enablement lives on the agent detail view.
+// Skills library card (Tools & Skills page) — one surface for the org-level
+// Git source registry (docs/designs/shared-skills.md) and centrally accepted
+// immutable managed bundles (docs/designs/organization-knowledge.md). Git
+// sources install via `npx skills`; managed bundles use the daemon's pinned
+// digest cache. Per-agent enablement for both lives on the agent detail view.
 //
 // A source records only WHERE skills come from (source string + optional ref /
 // subDir / skill filter) — nothing secret. Self-contained (own create/edit/delete
 // dialogs in a scrim, like the MCP servers card).
 
 import { useRef, useState } from 'react'
+import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
+import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
-import { fmtDate, type SkillSourceDto } from '@/lib/api'
+import {
+  fmtDate,
+  listManagedSkills,
+  setManagedSkillArchived,
+  type ManagedSkillDto,
+  type SkillSourceDto
+} from '@/lib/api'
+import { consoleKeys } from '@/lib/swr-keys'
+import { ManagedSkillTile } from '@/components/console/ManagedSkillTile'
 import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
 import { LoadingState } from '@/components/marks'
-import { Button, Icon } from '@/components/ui'
+import { Button, Icon, Toggle } from '@/components/ui'
 
 /** Split a comma/whitespace-separated skill filter into a clean string[]. */
 function parseSkills(raw: string): string[] {
@@ -27,35 +37,70 @@ function parseSkills(raw: string): string[] {
     .filter(Boolean)
 }
 
-export function SkillSourcesCard({ canWrite }: { canWrite: boolean }) {
+export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; canManage: boolean }) {
   const { skillSources, skillSourcesLoading } = useConsoleData()
+  const { activeOrg } = useOrgs()
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<SkillSourceDto | null>(null)
   const [deleting, setDeleting] = useState<SkillSourceDto | null>(null)
+  const [includeArchived, setIncludeArchived] = useState(false)
+  const [managedActionError, setManagedActionError] = useState<string | null>(null)
+  const managedSkillsKey = consoleKeys.managedSkills(activeOrg?.id, includeArchived)
+  const managedSkills = useSWR(managedSkillsKey, ([, orgId, , archiveMode]) =>
+    listManagedSkills(archiveMode === 'include-archived', orgId)
+  )
+  const managedRows = managedSkills.data ?? []
+  const loading = skillSourcesLoading || managedSkills.isLoading
+  const empty = skillSources.length === 0 && managedRows.length === 0
+
+  const archiveManagedSkill = async (skill: ManagedSkillDto) => {
+    setManagedActionError(null)
+    try {
+      await setManagedSkillArchived(skill.id, !skill.archivedAt)
+      await managedSkills.mutate()
+    } catch (cause) {
+      setManagedActionError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
 
   return (
-    <div className="card">
-      <div className="cardhead justify-between">
+    <div className="card overflow-hidden">
+      <div className="cardhead flex-wrap justify-between gap-2">
         <span className="inline-flex items-baseline gap-[10px]">
           <span className="cardtitle">Skills library</span>
-          <span className="mono text-[11px] text-(--text-tertiary)">installed per agent via npx skills</span>
+          <span className="mono text-[11px] text-(--text-tertiary)">Git sources and managed bundles</span>
         </span>
-        {canWrite && (
-          <Button variant="secondary" size="xs" onClick={() => setCreating(true)}>
-            <Icon name="plus" size={14} />
-            Import from GitHub
-          </Button>
-        )}
+        <span className="flex flex-wrap items-center justify-end gap-3">
+          <label className="flex items-center gap-2 font-sans text-[11.5px] text-(--text-tertiary)">
+            Include archived
+            <Toggle checked={includeArchived} onChange={setIncludeArchived} />
+          </label>
+          {canWrite && (
+            <Button variant="secondary" size="xs" onClick={() => setCreating(true)}>
+              <Icon name="plus" size={14} />
+              Import from GitHub
+            </Button>
+          )}
+        </span>
       </div>
 
-      {skillSourcesLoading && skillSources.length === 0 ? (
+      {loading && empty && !managedSkills.error ? (
         <LoadingState size={22} padding={20} />
-      ) : skillSources.length === 0 ? (
+      ) : empty && !managedSkills.error ? (
         <div className="px-4 py-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No skill sources yet. Import a repo of skills to make them available to your agents.
+          No skills yet. Import a GitHub source or accept a managed skill suggestion to make skills available to your
+          agents.
         </div>
       ) : (
         <ToolTileGrid>
+          {managedRows.map((skill) => (
+            <ManagedSkillTile
+              key={skill.id}
+              skill={skill}
+              canManage={canManage}
+              onArchive={() => void archiveManagedSkill(skill)}
+            />
+          ))}
           {skillSources.map((s) => (
             <SourceTile
               key={s.id}
@@ -66,6 +111,12 @@ export function SkillSourcesCard({ canWrite }: { canWrite: boolean }) {
             />
           ))}
         </ToolTileGrid>
+      )}
+
+      {(managedSkills.error || managedActionError) && (
+        <div className="border-t border-(--border-subtle) px-4 py-[11px] font-sans text-[12px] text-(--status-error)">
+          {managedActionError ?? managedSkills.error.message}
+        </div>
       )}
 
       {creating && (
