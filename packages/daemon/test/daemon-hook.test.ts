@@ -588,6 +588,12 @@ describe('Daemon rd/msg hook fires', () => {
         text: string
       }>
       const agentRows = transcript.filter((row) => row.sender === AGENT_ID)
+      expect(transcript).toContainEqual(
+        expect.objectContaining({ sender: 'alice', text: expect.stringContaining(`GitHub ${event}:opened`) })
+      )
+      expect((daemon as any).store.getSessionByAcpId(`acp-${event}`)).toMatchObject({
+        triggeredBy: `hook:${HOOK_ID}`
+      })
       // Commentary and tool activity remain session-local and observable.
       expect(agentRows.some((row) => row.kind === 'text' && row.text === 'I am checking the repository.')).toBe(true)
       expect(agentRows.filter((row) => row.kind === 'tool').map((row) => row.text)).toEqual([
@@ -1584,6 +1590,8 @@ describe('buildHookMessage', () => {
       channel: HOOK_ID,
       thread: 'd-1',
       trigger: 'hook',
+      sender: { id: `hook:${HOOK_ID}` },
+      sessionTriggerId: `hook:${HOOK_ID}`,
       headless: true,
       isDm: false
     })
@@ -1680,6 +1688,13 @@ describe('buildHookMessage', () => {
       expect(head).toContain('GitHub issues:opened — acme/infra#42 "db down"')
       expect(head).toContain('From: mallory (NONE) · labels: bug, p0')
       expect(head).toContain('https://github.com/acme/infra/issues/42')
+    })
+
+    it('attributes the message to the GitHub actor while retaining the hook trigger', () => {
+      expect(buildHookMessage(ghFire(), 'trace-actor')).toMatchObject({
+        sender: { id: 'mallory' },
+        sessionTriggerId: `hook:${HOOK_ID}`
+      })
     })
 
     it('adds a truncation notice pointing the agent at gh', () => {

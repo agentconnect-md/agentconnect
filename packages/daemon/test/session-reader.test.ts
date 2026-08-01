@@ -8,6 +8,7 @@ import { createSessionReader } from '../src/cp/session-reader.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const OTHER_AGENT = '22222222-2222-4222-8222-222222222222'
+const HOOK = '33333333-3333-4333-8333-333333333333'
 
 function store(): LocalStore {
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-reader-')), 'local.sqlite'))
@@ -291,6 +292,42 @@ describe('SessionReader', () => {
     expect(messages.map((m) => [m.sender, m.senderName])).toEqual([
       ['U1', 'Dana Reyes'],
       [AGENT, undefined] // agent-id senders have no display_names entry → omitted
+    ])
+    s.close()
+  })
+
+  it('recovers the GitHub actor for trusted transcript rows written before structured attribution', () => {
+    const s = store()
+    const transportScope = 'github:123'
+    s.upsertSession({
+      key: sessionKey('hook', 'acme/infra', '384', AGENT, transportScope),
+      agentId: AGENT,
+      platform: 'hook',
+      channel: 'acme/infra',
+      thread: '384',
+      transportScope,
+      acpSessionId: 'acp-github',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1,
+      triggeredBy: `hook:${HOOK}`
+    })
+    s.appendTranscript({
+      channel: transcriptChannelKey('acme/infra', transportScope),
+      thread: '384',
+      ts: '1',
+      sender: `hook:${HOOK}`,
+      recipient: AGENT,
+      kind: 'text',
+      text: [
+        'GitHub pull_request:opened — acme/infra#384 "fix participant attribution"',
+        'From: alice (CONTRIBUTOR)',
+        'https://github.invalid/acme/infra/pull/384'
+      ].join('\n')
+    })
+
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-github', limit: 50 }).messages).toEqual([
+      expect.objectContaining({ sender: 'alice' })
     ])
     s.close()
   })

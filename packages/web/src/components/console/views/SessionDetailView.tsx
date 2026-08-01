@@ -1118,7 +1118,7 @@ export default function SessionDetailView() {
   }
 
   const turns: Turn[] = []
-  const speakers = new Set<string>()
+  const speakers = new Map<string, string>()
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
@@ -1136,17 +1136,18 @@ export default function SessionDetailView() {
         // Count participants by stable sender id — two people can share a display name.
         const cron = asCron(m.sender)
         const senderAgent = participantAgent(m.sender, m.text, m.trustedAgentBot)
-        speakers.add(senderAgent?.id ?? m.sender)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
+        const participant = isSelf(m.sender)
+          ? speaker('@you')
+          : speaker(
+              senderAgentName ?? m.sender,
+              cron?.name ?? (cron ? 'Schedule' : senderLabel(m.sender, m.senderName ?? hookFallback))
+            )
+        speakers.set(senderAgent?.id ?? m.sender, participant.name)
         turns.push({
           kind: 'user',
-          sp: isSelf(m.sender)
-            ? speaker('@you')
-            : speaker(
-                senderAgentName ?? m.sender,
-                cron?.name ?? (cron ? 'Schedule' : senderLabel(m.sender, m.senderName ?? hookFallback))
-              ),
+          sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: isSelf(m.sender) ? me?.picture : memberPictureByIdentity.get(m.sender),
           sourceLabel: platName(sessionIntegration),
@@ -1165,11 +1166,12 @@ export default function SessionDetailView() {
         const who = stp.who ?? session.user
         const cron = asCron(who)
         const senderAgent = participantAgent(who, stp.text)
-        speakers.add(senderAgent?.id ?? who)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
+        const participant = speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
+        speakers.set(senderAgent?.id ?? who, participant.name)
         turns.push({
           kind: 'user',
-          sp: speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName)),
+          sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: isSelf(who) ? me?.picture : memberPictureByIdentity.get(who),
           sourceLabel: platName(sessionIntegration),
@@ -1200,11 +1202,12 @@ export default function SessionDetailView() {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
         const senderAgent = participantAgent(who, stp.text)
-        speakers.add(senderAgent?.id ?? who)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
+        const participant = speaker(senderAgentName ?? who, senderAgentName)
+        speakers.set(senderAgent?.id ?? who, participant.name)
         turns.push({
           kind: 'user',
-          sp: speaker(senderAgentName ?? who, senderAgentName),
+          sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: isSelf(who) ? me?.picture : memberPictureByIdentity.get(who),
           sourceLabel: platName(sessionIntegration),
@@ -1233,7 +1236,8 @@ export default function SessionDetailView() {
   // Sole author reads as "You" when it's the viewer (webchat) — checked on the raw
   // triggeredBy id, not the display `user`, since a resolved name would mask the match.
   const soleAuthor = senderLabel(session.triggeredBy, session.user)
-  const participantsLabel = speakers.size > 1 ? speakers.size + ' participants' : soleAuthor
+  const soleSpeaker = speakers.size === 1 ? speakers.entries().next().value : undefined
+  const participantsLabel = speakers.size > 1 ? speakers.size + ' participants' : (soleSpeaker?.[1] ?? soleAuthor)
   // The session's `daemon` is the owning agent's daemonId (or '—' when unplaced);
   // resolve it to the daemon's display name — never surface the raw id/host
   // (short-id fallback when it isn't in the fleet), matching the Agents list.
@@ -1248,7 +1252,11 @@ export default function SessionDetailView() {
   // shown participant, render the chip as a link back to the owning schedule
   // (name-first once the crons list resolves it; the raw `cron:<id>` still links if
   // it hasn't).
-  const headerCron = participantsLabel === session.user ? asCron(session.user) : null
+  const headerCron = soleSpeaker
+    ? asCron(soleSpeaker[0])
+    : participantsLabel === session.user
+      ? asCron(session.user)
+      : null
   const pgEmpty = isPg && session.steps.length === 0 && !pgBusy
   // "No messages" only when nothing is rendered — a resumed webchat turn folds into
   // `turns`, so once you've sent one the empty card gives way to the transcript.
