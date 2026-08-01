@@ -4086,19 +4086,27 @@ export interface MemoryConnectionWriter {
   >
   /** Full secret replacement (when supplied) + config/revision update in one
    *  transaction under the connection's scope — a failure can no longer leave
-   *  new secrets beside an old definition, so there is no compensation pair. */
+   *  new secrets beside an old definition, so there is no compensation pair.
+   *  `secrets` is the snapshot read INSIDE that transaction: the projection
+   *  payload for exactly the committed revision. Pushing anything read outside
+   *  the transaction can pair an older credential with a newer revision, which
+   *  the relay's revision gate then pins until reconnect. */
   updateConnection(
     id: string,
     orgId: OrgId,
     patch: { config?: Record<string, unknown>; secrets?: Record<string, string> }
   ): Promise<
-    { outcome: 'updated'; connection: ExternalMemoryConnectionRecord } | { outcome: 'not_found' } | { outcome: 'busy' }
+    | { outcome: 'updated'; connection: ExternalMemoryConnectionRecord; secrets: Record<string, string> }
+    | { outcome: 'not_found' }
+    | { outcome: 'busy' }
   >
-  /** The rotation's durable half: revision bump + fresh-grant mint (or newest
-   *  reuse after a failed earlier rotation) under the connection's scope. The
-   *  active-grant set is re-read in the transaction and compared against the
-   *  caller-observed snapshot — concurrent grant churn resolves to `busy`. The
-   *  overlap-before-revoke push and the retire of `retiring` stay at the route. */
+  /** The rotation's durable first half: revision bump + fresh-grant mint (or
+   *  newest reuse after a failed earlier rotation) under the connection's
+   *  scope. The active-grant set is re-read in the transaction and compared
+   *  against the caller-observed snapshot — concurrent grant churn resolves to
+   *  `busy`. `secrets` is the in-transaction snapshot for the overlap push.
+   *  The overlap push itself stays at the route; retirement goes through
+   *  {@link finalizeGrantRotation}. */
   prepareGrantRotation(
     id: string,
     orgId: OrgId
@@ -4108,7 +4116,25 @@ export interface MemoryConnectionWriter {
         connection: ExternalMemoryConnectionRecord
         fresh: ExternalMemoryGrantRecord
         retiring: ExternalMemoryGrantRecord[]
+        secrets: Record<string, string>
       }
+    | { outcome: 'not_found' }
+    | { outcome: 'busy' }
+  >
+  /** The rotation's durable second half, after the overlap push fully acked:
+   *  revoke the retiring grants AND bump the revision in one transaction under
+   *  the connection's scope. The relay honors a whole-list assign only at a
+   *  strictly newer revision (and a per-hash unassign only at the exact current
+   *  one), so retirement must own a revision greater than every assignment that
+   *  could still carry the retired hash — the caller republishes the
+   *  post-retirement allowlist under the returned connection's revision, and a
+   *  delayed pre-retirement assign can no longer reintroduce the revoked grant. */
+  finalizeGrantRotation(
+    id: string,
+    orgId: OrgId,
+    retiringGrantIds: readonly string[]
+  ): Promise<
+    | { outcome: 'retired'; connection: ExternalMemoryConnectionRecord; secrets: Record<string, string> }
     | { outcome: 'not_found' }
     | { outcome: 'busy' }
   >

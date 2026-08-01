@@ -14,7 +14,7 @@ import type { ExternalMemoryConnectionRecord, MemoryPluginInstallationRecord } f
 import type { OrgId } from '../../domain/ids.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
-import { blockedUpstreamUrl, grantKeyHash, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { blockedUpstreamUrl, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import {
   boundedMemoryConfig,
   memoryConnectionSpec,
@@ -374,7 +374,13 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
         if (result.outcome === 'not_found') {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
-        await pushConnection(result.connection, installation, secrets)
+        // Push the writer's in-transaction snapshot, never the pre-transaction
+        // read above (which is validation input only): a config-only patch that
+        // read old secrets, then committed AFTER a concurrent secret
+        // replacement, would otherwise publish the old credential under the
+        // newer revision — and the relay's revision gate would pin it there
+        // until reconnect.
+        await pushConnection(result.connection, installation, result.secrets)
         return connectionDto(result.connection, deps)
       }
     )
@@ -416,10 +422,11 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
             message: 'local stdio connections have no relay grant; replace the connection secrets instead'
           })
         }
-        // Durable half in one transaction under the connection's advisory
+        // Durable first half in one transaction under the connection's advisory
         // mutation scope: revision bump + fresh-grant mint (or newest reuse
         // after a failed earlier attempt — never an unbounded chain of pending
-        // grants), with the active set CAS-checked against this read.
+        // grants), with the active set CAS-checked against this read and the
+        // secret snapshot paired with the committed revision.
         const prepared = await deps.repos.memoryConnectionWriter.prepareGrantRotation(connection.id, orgOf(req))
         if (prepared.outcome === 'busy') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'connection is being updated' })
@@ -427,8 +434,12 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
         if (prepared.outcome === 'not_found') {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
-        const secrets = (await deps.repos.externalMemoryConnectionSecret.get(connection.id)) ?? {}
-        const distributed = await pushConnection(prepared.connection, installation, secrets, prepared.fresh.key)
+        const distributed = await pushConnection(
+          prepared.connection,
+          installation,
+          prepared.secrets,
+          prepared.fresh.key
+        )
         if (!distributed) {
           return reply.code(503).send({
             error: 'Service Unavailable',
@@ -436,15 +447,32 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
             message: 'replacement grant was retained, but not every placed daemon acknowledged it; retry rotation'
           })
         }
-        for (const grant of prepared.retiring) {
-          await deps.repos.externalMemoryGrant.revoke(grant.id)
-          deps.relayControl.memoryConnectionUnassign({
-            connectionId: connection.id,
-            revision: prepared.connection.revision,
-            grantKeyHash: grantKeyHash(grant.key)
-          })
+        if (prepared.retiring.length === 0) return connectionDto(prepared.connection, deps)
+        // Durable second half: revoke + revision bump in one fenced transaction,
+        // then republish the post-retirement allowlist under that strictly newer
+        // revision. The relay's whole-list assign replaces the hash set, so this
+        // is what actually evicts the retired hash — a per-hash unassign only
+        // applies at the exact current table revision, and a concurrent
+        // mutation's assign landing between the overlap push and retirement
+        // would make it a no-op, leaving the revoked grant authorized until
+        // reconnect. The republish is best-effort like every projection push:
+        // if it is lost, the reconnect baseline replays the post-revoke truth.
+        const finalized = await deps.repos.memoryConnectionWriter.finalizeGrantRotation(
+          connection.id,
+          orgOf(req),
+          prepared.retiring.map((grant) => grant.id)
+        )
+        if (finalized.outcome === 'busy') {
+          // The overlap set (old + new, both acked) stays live; the operator
+          // retries and the next rotation reuses the newest grant and retires
+          // the remainder — the same convergence path as a failed overlap push.
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'connection is being updated' })
         }
-        return connectionDto(prepared.connection, deps)
+        if (finalized.outcome === 'not_found') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
+        }
+        await pushConnection(finalized.connection, installation, finalized.secrets, prepared.fresh.key)
+        return connectionDto(finalized.connection, deps)
       }
     )
 

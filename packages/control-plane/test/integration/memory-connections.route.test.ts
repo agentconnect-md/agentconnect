@@ -23,6 +23,7 @@ import {
   tryLockMemoryInstallationScope
 } from '../../src/persistence/memory-connection-lock.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
+import { grantKeyHash } from '../../src/orchestrator/mcpProvider.js'
 import type { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
@@ -436,16 +437,23 @@ describe('external-memory connections — secret/grant discipline', () => {
       url: `${CONNECTIONS}/${connection.id}/grant/rotate`
     })
     expect(rotated.statusCode).toBe(200)
-    expect(rotated.json()).toMatchObject({ revision: 3, status: 'probing', probedRevision: null })
+    // Two fenced revisions per rotation: the overlap publish (3), then the
+    // retirement (4) — revoke + bump commit together so the post-retirement
+    // allowlist is republished strictly newer than any concurrent assignment.
+    expect(rotated.json()).toMatchObject({ revision: 4, status: 'probing', probedRevision: null })
     const active = await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)
     expect(active).toHaveLength(1)
     expect(active[0]!.id).not.toBe(firstGrant.id)
     expect(rotated.body).not.toContain(active[0]!.key)
 
-    // Last assign carries old+new hashes before the old hash is retired.
-    expect(relay.assigns.at(-1)!.grantKeyHashes).toHaveLength(2)
-    expect(relay.unassigns.at(-1)).toMatchObject({ connectionId: connection.id })
-    expect(relay.unassigns.at(-1)!.grantKeyHash).toBeDefined()
+    // Overlap-first: the second-to-last assign carries old+new hashes; the last
+    // is the retirement's whole-list replace (newer revision, fresh hash only).
+    // Retirement never uses a per-hash unassign — it only applies at the exact
+    // current table revision, which a concurrent assign can move.
+    expect(relay.assigns.at(-2)!.grantKeyHashes).toHaveLength(2)
+    expect(relay.assigns.at(-1)).toMatchObject({ connectionId: connection.id, revision: 4 })
+    expect(relay.assigns.at(-1)!.grantKeyHashes).toHaveLength(1)
+    expect(relay.unassigns).toHaveLength(0)
   })
 
   it('retains the old grant until every placed daemon acknowledges the replacement', async () => {
@@ -484,9 +492,12 @@ describe('external-memory connections — secret/grant discipline', () => {
       url: `${CONNECTIONS}/${connection.id}/grant/rotate`
     })
     expect(retried.statusCode, retried.body).toBe(200)
-    expect(retried.json()).toMatchObject({ revision: 3, status: 'probing' })
+    // Overlap re-publish (3, reusing the pending grant) + fenced retirement (4).
+    expect(retried.json()).toMatchObject({ revision: 4, status: 'probing' })
     expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(1)
-    expect(relay.unassigns).toHaveLength(1)
+    expect(relay.assigns.at(-1)).toMatchObject({ revision: 4 })
+    expect(relay.assigns.at(-1)!.grantKeyHashes).toHaveLength(1)
+    expect(relay.unassigns).toHaveLength(0)
   })
 
   it('rejects an overlapping mutation instead of interleaving secret/revision/grant state', async () => {
@@ -523,6 +534,118 @@ describe('external-memory connections — secret/grant discipline', () => {
     expect(first.statusCode).toBe(200)
     expect(await repo.get(connection.id)).toMatchObject({ revision: 2, config: { projectId: 'serialized' } })
     expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(1)
+  })
+
+  it('a config-only PATCH republishes a concurrently replaced secret, never its stale pre-transaction read', async () => {
+    // The advisory scope ends at COMMIT, so the commit/push interleaving is:
+    // config-only B reads prior secrets → secret-replacing A commits revision 2
+    // and pushes → B commits revision 3 and pushes. The relay honors only
+    // strictly newer revisions, so if B's push carried its stale read, revision
+    // 3 would pin the OLD credential (A's revision-2 repair is ignored) until
+    // reconnect. The writer therefore snapshots the secrets INSIDE B's
+    // transaction and the route pushes exactly that.
+    const relay = new SpyRelayControl()
+    const app = build({ relay })
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+
+    // Park the config-only PATCH right after its pre-transaction prior-secrets
+    // read (validation input) — the stale snapshot that must NOT reach the relay.
+    const store = app.deps.repos.externalMemoryConnectionSecret
+    const realGet = store.get.bind(store)
+    let releaseRead!: () => void
+    const gate = new Promise<void>((resolve) => (releaseRead = resolve))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((resolve) => (notifyParked = resolve))
+    let intercepted = false
+    store.get = async (...args) => {
+      const value = await realGet(...args)
+      if (!intercepted) {
+        intercepted = true
+        notifyParked()
+        await gate
+      }
+      return value
+    }
+
+    const configOnly = app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { config: { projectId: 'config-only' } }
+    })
+    await parked
+    const secretReplace = await app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { secrets: { apiKey: 'replaced-upstream-secret' } }
+    })
+    expect(secretReplace.statusCode).toBe(200) // revision 2, new credential
+    releaseRead()
+    expect((await configOnly).statusCode).toBe(200) // revision 3
+
+    const last = relay.assigns.at(-1)!
+    expect(last).toMatchObject({ connectionId: connection.id, revision: 3 })
+    const headerValues = last.headers.map((header) => header.value)
+    expect(headerValues).toContain('replaced-upstream-secret')
+    expect(headerValues).not.toContain('upstream-secret')
+  })
+
+  it('a delayed pre-retirement assignment cannot reintroduce the retired grant', async () => {
+    // Between the rotation's overlap push and its retirement, a concurrent
+    // config PATCH can commit a newer revision and assign the overlap set
+    // {old,new} — the interleaving that made an exact-revision per-hash
+    // unassign a no-op (the relay would keep honoring the revoked grant until
+    // reconnect). Retirement therefore revokes AND bumps the revision in one
+    // fenced transaction, then republishes the whole post-retirement allowlist
+    // strictly newer than that assignment.
+    const relay = new SpyRelayControl()
+    const app = build({ relay })
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+    const grants = app.deps.repos.externalMemoryGrant
+    const firstGrant = (await grants.activeForConnection(connection.id))[0]!
+
+    // Park the rotation at its overlap push's grant read (prepare committed:
+    // revision 2, old+new active) so the config PATCH can slip in fully.
+    const realActive = grants.activeForConnection.bind(grants)
+    let releasePush!: () => void
+    const gate = new Promise<void>((resolve) => (releasePush = resolve))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((resolve) => (notifyParked = resolve))
+    let intercepted = false
+    grants.activeForConnection = async (...args) => {
+      if (!intercepted) {
+        intercepted = true
+        notifyParked()
+        await gate
+      }
+      return realActive(...args)
+    }
+
+    const rotating = app.app.inject({ method: 'POST', url: `${CONNECTIONS}/${connection.id}/grant/rotate` })
+    await parked
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { config: { projectId: 'pre-retirement-racer' } }
+    })
+    expect(patched.statusCode).toBe(200) // revision 3, assigns {old,new} at 3
+    const racerAssign = relay.assigns.at(-1)!
+    expect(racerAssign.revision).toBe(3)
+    expect(racerAssign.grantKeyHashes).toHaveLength(2)
+    releasePush()
+    const rotated = await rotating
+    expect(rotated.statusCode, rotated.body).toBe(200)
+
+    // The retirement publish outruns the racer: strictly newer revision, whole
+    // allowlist replaced, retired hash gone — durable truth and relay agree.
+    const last = relay.assigns.at(-1)!
+    expect(last.revision).toBeGreaterThan(racerAssign.revision)
+    expect(last.grantKeyHashes).toHaveLength(1)
+    expect(last.grantKeyHashes).not.toContain(grantKeyHash(firstGrant.key))
+    const active = await realActive(connection.id)
+    expect(active).toHaveLength(1)
+    expect(active[0]!.id).not.toBe(firstGrant.id)
   })
 })
 

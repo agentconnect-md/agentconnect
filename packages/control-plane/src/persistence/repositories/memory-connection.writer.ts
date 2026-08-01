@@ -29,6 +29,22 @@ async function sealValues(cipher: SecretCipher, values: Record<string, string>):
   )
 }
 
+async function openValues(cipher: SecretCipher, sealed: Record<string, string>): Promise<Record<string, string>> {
+  return Object.fromEntries(
+    await Promise.all(Object.entries(sealed).map(async ([name, value]) => [name, await cipher.open(value)] as const))
+  )
+}
+
+/** The sealed secret row as of the surrounding transaction — the ONLY read that
+ *  may feed a projection push for the revision that transaction commits. A
+ *  pre-transaction read can pair an older credential with a newer committed
+ *  revision, and the relay's revision gate then rejects every in-order repair
+ *  until reconnect. Decrypt AFTER commit ({@link openValues}). */
+async function sealedSecretsInTx(tx: Prisma.TransactionClient, connectionId: string): Promise<Record<string, string>> {
+  const row = await tx.externalMemoryConnectionSecret.findUnique({ where: { connectionId } })
+  return (row?.values as Record<string, string> | undefined) ?? {}
+}
+
 /** The connection's active grants, oldest first, with decrypted keys — the
  *  same read `PgExternalMemoryGrantRepo.activeForConnection` serves, inlined so
  *  the writer needs no second repo instance. Runs OUTSIDE any transaction (the
@@ -121,10 +137,12 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     orgId: OrgId,
     patch: { config?: Record<string, unknown>; secrets?: Record<string, string> }
   ): Promise<
-    { outcome: 'updated'; connection: ExternalMemoryConnectionRecord } | { outcome: 'not_found' } | { outcome: 'busy' }
+    | { outcome: 'updated'; connection: ExternalMemoryConnectionRecord; secrets: Record<string, string> }
+    | { outcome: 'not_found' }
+    | { outcome: 'busy' }
   > {
     const sealedSecrets = patch.secrets !== undefined ? await sealValues(this.cipher, patch.secrets) : undefined
-    return withTx(this.prisma, async (tx) => {
+    const result = await withTx(this.prisma, async (tx) => {
       if (!(await tryLockMemoryConnectionScope(tx, id))) return { outcome: 'busy' as const }
       const existing = await tx.externalMemoryConnection.findUnique({ where: { id }, select: { orgId: true } })
       if (!existing || existing.orgId !== orgId) return { outcome: 'not_found' as const }
@@ -138,8 +156,18 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
       const connection = await new PgExternalMemoryConnectionRepo(tx).update(id, {
         ...(patch.config !== undefined ? { config: patch.config } : {})
       })
-      return { outcome: 'updated' as const, connection }
+      // The projection snapshot for the revision THIS transaction commits: a
+      // config-only patch must republish the concurrently-replaced secrets, not
+      // whatever the route read before the transaction (the relay's revision
+      // gate would pin that stale credential until reconnect).
+      return { outcome: 'updated' as const, connection, sealedSnapshot: await sealedSecretsInTx(tx, id) }
     })
+    if (result.outcome !== 'updated') return result
+    return {
+      outcome: 'updated',
+      connection: result.connection,
+      secrets: await openValues(this.cipher, result.sealedSnapshot)
+    }
   }
 
   async prepareGrantRotation(
@@ -151,6 +179,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
         connection: ExternalMemoryConnectionRecord
         fresh: ExternalMemoryGrantRecord
         retiring: ExternalMemoryGrantRecord[]
+        secrets: Record<string, string>
       }
     | { outcome: 'not_found' }
     | { outcome: 'busy' }
@@ -163,7 +192,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     const reuse = observed.length > 1 ? observed.at(-1)! : undefined
     const freshKey = reuse ? undefined : mintGrantKey()
     const sealedFreshKey = freshKey ? await this.cipher.seal(freshKey) : undefined
-    return withTx(this.prisma, async (tx) => {
+    const result = await withTx(this.prisma, async (tx) => {
       if (!(await tryLockMemoryConnectionScope(tx, id))) return { outcome: 'busy' as const }
       const existing = await tx.externalMemoryConnection.findUnique({ where: { id }, select: { orgId: true } })
       if (!existing || existing.orgId !== orgId) return { outcome: 'not_found' as const }
@@ -198,9 +227,48 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
         outcome: 'prepared' as const,
         connection,
         fresh,
-        retiring: observed.filter((grant) => grant.id !== fresh.id)
+        retiring: observed.filter((grant) => grant.id !== fresh.id),
+        sealedSnapshot: await sealedSecretsInTx(tx, id)
       }
     })
+    if (result.outcome !== 'prepared') return result
+    const { sealedSnapshot, ...prepared } = result
+    return { ...prepared, secrets: await openValues(this.cipher, sealedSnapshot) }
+  }
+
+  async finalizeGrantRotation(
+    id: string,
+    orgId: OrgId,
+    retiringGrantIds: readonly string[]
+  ): Promise<
+    | { outcome: 'retired'; connection: ExternalMemoryConnectionRecord; secrets: Record<string, string> }
+    | { outcome: 'not_found' }
+    | { outcome: 'busy' }
+  > {
+    const result = await withTx(this.prisma, async (tx) => {
+      if (!(await tryLockMemoryConnectionScope(tx, id))) return { outcome: 'busy' as const }
+      const existing = await tx.externalMemoryConnection.findUnique({ where: { id }, select: { orgId: true } })
+      if (!existing || existing.orgId !== orgId) return { outcome: 'not_found' as const }
+      // Revocation and the revision bump commit TOGETHER, under the scope: the
+      // relay honors a whole-list assign only at a strictly newer revision (and
+      // a per-hash unassign only at the exact current one), so retirement must
+      // own a revision greater than every assignment that could still carry the
+      // retired hash. The caller then republishes the post-retirement allowlist
+      // under this revision — a delayed pre-retirement assign can no longer
+      // reintroduce the revoked grant.
+      await tx.externalMemoryGrant.updateMany({
+        where: { id: { in: [...retiringGrantIds] }, connectionId: id },
+        data: { status: 'revoked' }
+      })
+      const connection = await new PgExternalMemoryConnectionRepo(tx).update(id, {})
+      return { outcome: 'retired' as const, connection, sealedSnapshot: await sealedSecretsInTx(tx, id) }
+    })
+    if (result.outcome !== 'retired') return result
+    return {
+      outcome: 'retired',
+      connection: result.connection,
+      secrets: await openValues(this.cipher, result.sealedSnapshot)
+    }
   }
 
   async deleteConnection(id: string, orgId: OrgId): Promise<'deleted' | 'bound' | 'not_found' | 'busy'> {
