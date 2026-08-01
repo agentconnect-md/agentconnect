@@ -8,6 +8,7 @@ const a = (id: string): Agent =>
     name: id,
     status: 'active',
     runtime: 'claude',
+    restrictFileAccess: false,
     workspace: { mode: 'from-scratch', path: '/tmp', gitBranch: 'main', pullOnNewSession: true, skills: [] },
     integrations: [],
     output: { mode: 'medium' },
@@ -44,6 +45,22 @@ describe('diffAgents', () => {
     expect(toChange).toHaveLength(1)
     expect(toChange[0]).toMatchObject({ hostRespawn: true, workspace: false, integrations: false })
     expect(toChange[0].agent.id).toBe('x')
+  })
+
+  it('classifies enabling or disabling the OS sandbox as a host-spawn change', () => {
+    const unsandboxed = a('x')
+    const sandboxed = { ...unsandboxed, restrictFileAccess: true } as Agent
+
+    expect(diffAgents([sandboxed], actual(unsandboxed)).toChange[0]).toMatchObject({
+      hostRespawn: true,
+      workspace: false,
+      integrations: false
+    })
+    expect(diffAgents([unsandboxed], actual(sandboxed)).toChange[0]).toMatchObject({
+      hostRespawn: true,
+      workspace: false,
+      integrations: false
+    })
   })
 
   it('classifies model / description / reasoningEffort / executionMode / fastMode / env as host-spawn changes', () => {

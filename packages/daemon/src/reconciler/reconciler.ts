@@ -16,11 +16,12 @@ function signature(a: Agent): string {
  *  the spawn binary (`runtime`) and the knobs baked into the host at construction:
  *  child env / system-prompt seed (agentChildEnv + cpRuntimeEnv) and the session
  *  config prefs (model / reasoningEffort / fastMode, applied per session via ACP
- *  set_config_option). A change here means the cached host must be evicted so
- *  the next session respawns it fresh. */
+ *  set_config_option), and the OS sandbox wrapper. A change here means the cached
+ *  host must be evicted so the next session respawns it fresh. */
 function hostSpawnSig(a: Agent): string {
   return JSON.stringify({
     runtime: a.runtime,
+    restrictFileAccess: a.restrictFileAccess,
     model: a.runtimeOverrides?.model,
     description: a.description,
     reasoningEffort: a.reasoningEffort,
