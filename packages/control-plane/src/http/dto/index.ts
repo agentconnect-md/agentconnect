@@ -912,6 +912,34 @@ export const SkillSourcePreviewDto = z.object({
   skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))
 })
 
+/** `GET /skill-sources/registry/search` — public skills.sh index lookup for the
+ *  "Install from skills.sh" flow. Discovery only: nothing is persisted, and the
+ *  caller still POSTs a normal source create with the hit it picked. */
+export const SkillRegistrySearchQuery = z.object({
+  q: z.string().trim().min(1).max(120),
+  /** Narrow to one GitHub owner (the index's own `--owner` filter). */
+  owner: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, { message: 'owner must be a valid GitHub owner' })
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(25).default(10)
+})
+
+/** `reachable:false` (with an empty list) means the index could not be read —
+ *  distinct from "searched fine, matched nothing", so the UI can say which. */
+export const SkillRegistrySearchDto = z.object({
+  reachable: z.boolean(),
+  skills: z.array(
+    z.object({
+      id: z.string(), // registry slug `<owner>/<repo>/<skill>` (the skills.sh page)
+      name: z.string(), // skill dir name — becomes the source's one-entry `skills` filter
+      source: z.string(), // `owner/repo` — becomes the source string
+      installs: z.number().nullable()
+    })
+  )
+})
+
 /** `GET /skill-sources/:id/skills` — the source's discovered SKILL.md manifest for
  *  the agent editor's per-skill picker. Best-effort: `resolvable:false` (empty
  *  skills) when the source isn't a scannable GitHub repo or no installation covers

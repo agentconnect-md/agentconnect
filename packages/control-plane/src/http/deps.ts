@@ -77,6 +77,7 @@ import type { FeishuBotVerifier } from './feishu-identity.js'
 import type { FeishuAppIconSyncer } from './feishu-app-icon.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
+import type { SkillRegistrySearcher } from './skills-registry.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
 import type { RemoteGrantAuthenticator } from './mcp/remote-grant-authenticator.js'
@@ -287,6 +288,11 @@ export interface HttpDeps {
    *  (§Tier B). Optional/injectable; absent (with PUBLIC_CP_URL) ⇒ the funnel routes
    *  404 and the console falls back to the manual manifest flow. */
   slackConfigApi?: SlackConfigApi
+  /** Reads the public skills.sh index for the Skills library's "Install from
+   *  skills.sh" search. Optional/injectable so tests stay offline (absent ⇒ the
+   *  search route reports the index unreachable and the console offers the GitHub
+   *  import path instead). */
+  searchSkillRegistry?: SkillRegistrySearcher
   /** Validates a Telegram token, derives its bot name, and checks that Group Privacy
    *  Mode is disabled before the integration is installed. */
   verifyTelegramBot: TelegramBotVerifier

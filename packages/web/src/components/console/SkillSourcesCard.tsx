@@ -6,6 +6,11 @@
 // sources install via `npx skills`; managed bundles use the daemon's pinned
 // digest cache. Per-agent enablement for both lives on the agent detail view.
 //
+// A Git source is registered two ways: "Import from GitHub" takes a repository
+// you already know, and "Install from skills.sh" searches the public registry by
+// skill name (InstallRegistrySkillModal). Both end at the same POST — the second
+// just fills the source string and skill filter from the hit you picked.
+//
 // A source records only WHERE skills come from (source string + optional ref /
 // subDir / skill filter) — nothing secret. Self-contained (own create/edit/delete
 // dialogs in a scrim, like the MCP servers card).
@@ -24,6 +29,7 @@ import {
 } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { ManagedSkillTile } from '@/components/console/ManagedSkillTile'
+import { InstallRegistrySkillModal } from '@/components/console/InstallRegistrySkillModal'
 import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
 import { LoadingState } from '@/components/marks'
@@ -42,6 +48,7 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
   const { activeOrg } = useOrgs()
   const { mutate: mutateSWR } = useSWRConfig()
   const [creating, setCreating] = useState(false)
+  const [browsing, setBrowsing] = useState(false)
   const [editing, setEditing] = useState<SkillSourceDto | null>(null)
   const [deleting, setDeleting] = useState<SkillSourceDto | null>(null)
   const [includeArchived, setIncludeArchived] = useState(false)
@@ -81,10 +88,16 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
             <Toggle checked={includeArchived} onChange={setIncludeArchived} />
           </label>
           {canWrite && (
-            <Button variant="secondary" size="xs" onClick={() => setCreating(true)}>
-              <Icon name="plus" size={14} />
-              Import from GitHub
-            </Button>
+            <>
+              <Button variant="secondary" size="xs" onClick={() => setBrowsing(true)}>
+                <Icon name="search" size={14} />
+                Install from skills.sh
+              </Button>
+              <Button variant="secondary" size="xs" onClick={() => setCreating(true)}>
+                <Icon name="plus" size={14} />
+                Import from GitHub
+              </Button>
+            </>
           )}
         </span>
       </div>
@@ -93,8 +106,8 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
         <LoadingState size={22} padding={20} />
       ) : empty && !managedSkills.error ? (
         <div className="px-4 py-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No skills yet. Import a GitHub source or accept a managed skill suggestion to make skills available to your
-          agents.
+          No skills yet. Install one from skills.sh, import a GitHub source, or accept a managed skill suggestion to
+          make skills available to your agents.
         </div>
       ) : (
         <ToolTileGrid>
@@ -124,6 +137,13 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
         </div>
       )}
 
+      {browsing && (
+        <div className="scrim">
+          <div className="modal">
+            <InstallRegistrySkillModal existing={skillSources} onClose={() => setBrowsing(false)} />
+          </div>
+        </div>
+      )}
       {creating && (
         <div className="scrim">
           <div className="modal">

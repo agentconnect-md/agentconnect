@@ -3513,6 +3513,28 @@ export async function fetchAgentSkillSources(agentId: string): Promise<AgentSkil
   return apiGet<AgentSkillSourceDto[]>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skill-sources`)
 }
 
+// One hit from the public skills.sh index (GET /skill-sources/registry/search).
+// The CP proxies the lookup — skills.sh sends no CORS headers — and normalizes each
+// row into the two strings a source create needs: `source` (owner/repo) and `name`
+// (the skill dir, which becomes a one-entry `skills` filter). `reachable:false`
+// means the index could not be read, NOT that nothing matched.
+export interface SkillRegistryHitDto {
+  id: string // registry slug `<owner>/<repo>/<skill>` — the skills.sh page
+  name: string
+  source: string
+  installs: number | null
+}
+export interface SkillRegistrySearchDto {
+  reachable: boolean
+  skills: SkillRegistryHitDto[]
+}
+
+export async function searchSkillRegistry(q: string, owner?: string): Promise<SkillRegistrySearchDto> {
+  const params = new URLSearchParams({ q })
+  if (owner) params.set('owner', owner)
+  return apiGet<SkillRegistrySearchDto>(`${orgBase()}/skill-sources/registry/search?${params.toString()}`)
+}
+
 export async function previewSkillSource(input: PreviewSkillSourceInput): Promise<SkillSourcePreviewDto> {
   return apiPost<SkillSourcePreviewDto>(`${orgBase()}/skill-sources/preview`, input)
 }
