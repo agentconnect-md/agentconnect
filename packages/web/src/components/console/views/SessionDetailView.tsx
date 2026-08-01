@@ -718,12 +718,21 @@ export default function SessionDetailView() {
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
     { refreshInterval: 30_000 }
   )
-  // Provider-rendered session links carry only caller-known source context. It
-  // never changes authorization, so unknown and unauthorized 404s stay equivalent.
+  // Provider-rendered links use `source`; links opened from the Sessions list
+  // can also retain its `integration` filter. Both are caller-known hints only:
+  // neither changes authorization, so unknown and unauthorized 404s stay
+  // equivalent.
   const source = searchParams.get('source')
-  const profileLinkProvider =
-    (source === 'slack' || source === 'github') && socialLoginProviders().some((provider) => provider.target === source)
+  const integration = searchParams.get('integration')
+  const hintedProvider =
+    source === 'slack' || source === 'github'
       ? source
+      : integration === 'slack' || integration === 'github'
+        ? integration
+        : undefined
+  const profileLinkProvider =
+    hintedProvider && socialLoginProviders().some((provider) => provider.target === hintedProvider)
+      ? hintedProvider
       : undefined
   const profileLinkCandidate =
     sessionDetailError instanceof ApiError &&

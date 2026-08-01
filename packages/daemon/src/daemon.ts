@@ -11065,7 +11065,7 @@ export class Daemon {
    *  the explicit local `webAppUrl`, else the CP-provided origin, else the local default
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
    *  known; without it the link falls back to `<base>/sessions/<id>`. Slack/GitHub links
-   *  carry a presentation-only source hint for the generic 404 recovery action. */
+   *  carry a presentation-only source hint for the generic 404 profile-linking action. */
   private sessionLink(acpSessionId: string, source?: 'slack' | 'github'): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
     const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
