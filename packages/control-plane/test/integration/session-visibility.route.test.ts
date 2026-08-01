@@ -296,6 +296,87 @@ describe('session visibility — Slack conversation audience', () => {
     expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('degraded')
   })
 
+  // The post-commit settlement path (§4.5) inherits the parent's audience after
+  // the child's own transaction closed — including the interleaving where the
+  // parent lands and is stamped legacy in between. Provenance must ride along, or
+  // the child settles as an unmarked unresolved row and reports a live failure
+  // that never happened.
+  it('carries legacy provenance through out-of-order parent settlement', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-slack-parent-${randomUUID()}`
+    const childId = `s-slack-child-${randomUUID()}`
+    const credentialId = randomUUID()
+
+    // The child arrives first and finds no parent: private + inherited_pending.
+    const orphan = await repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_LEGACY',
+      at: new Date(),
+      classification: { inherit: true }
+    })
+    expect(orphan.session).toMatchObject({ visibilitySource: 'inherited_pending', externalProvider: null })
+
+    // The parent lands as an unresolved Slack candidate (seeded directly so it
+    // does not settle the child on the way in), and enabling stamps it legacy.
+    await seedSessionMeta(prisma, parentId, agentId, { daemonId, channel: 'C_LEGACY' })
+    await prisma.sessionMeta.update({
+      where: { id: parentId },
+      // classifiedPolicyRev is required by session_meta_external_shape_check
+      // whenever a provider is set; 0 is the pre-enable policy revision.
+      data: { externalProvider: 'slack', externalResolution: 'pending', classifiedPolicyRev: 0n }
+    })
+    const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    expect(enabled.policy.state).toBe('enabled')
+
+    // Now the child's settlement runs and copies the parent's audience.
+    await repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'plan',
+      platform: 'slack',
+      channel: 'C_LEGACY',
+      at: new Date(),
+      classification: { inherit: true }
+    })
+    expect(await repo.get(SessionId(childId))).toMatchObject({
+      visibilitySource: 'inherited',
+      externalProvider: 'slack',
+      externalResolution: 'pending',
+      legacyUnresolved: true
+    })
+
+    // Settling the parent forces a policy recomputation: the inherited child is
+    // expected backlog, so nothing degrades.
+    await repo.recordMilestone({
+      sessionId: SessionId(parentId),
+      agentId,
+      phase: 'plan',
+      platform: 'slack',
+      channel: 'C_LEGACY',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: {
+        provider: 'slack',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'T_INSTALL',
+          resourceKind: 'conversation',
+          resourceKey: 'C_LEGACY',
+          credentialKind: 'bot',
+          credentialId
+        }
+      }
+    })
+    expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('enabled')
+  })
+
   it('keeps the creation-time scope fixed and applies current membership only after enable', async () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })

@@ -573,7 +573,7 @@ export class PgSessionRepo implements SessionRepo {
         Prisma.sql`
           SELECT "visibility", "ownerIdentity", "visibilitySource",
                  "externalProvider", "externalScopeId", "externalResolution",
-                 "classifiedPolicyRev"
+                 "legacyUnresolved", "classifiedPolicyRev"
           FROM "session_meta" WHERE "id" = ${parentSessionId} FOR SHARE
         `
       )
@@ -586,6 +586,10 @@ export class PgSessionRepo implements SessionRepo {
           "externalProvider" = ${parent[0]!.externalProvider},
           "externalScopeId" = ${parent[0]!.externalScopeId}::uuid,
           "externalResolution" = ${parent[0]!.externalResolution}::"ExternalResolution",
+          -- Provenance travels with the audience on BOTH inheritance paths, or a
+          -- child that settles here after its parent was stamped legacy would
+          -- look like a post-enable failure and degrade the policy for good.
+          "legacyUnresolved" = ${parent[0]!.legacyUnresolved},
           "classifiedPolicyRev" = ${parent[0]!.classifiedPolicyRev},
           "visibilitySource" = 'inherited'::"VisibilitySource",
           "visibilityRev" = "visibilityRev" + 1,
