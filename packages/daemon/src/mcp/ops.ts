@@ -481,6 +481,7 @@ const MULTI_INTEGRATION_NOTE =
 const SEND_MESSAGE_TARGET_HELP =
   'Valid targets: agent {"to":{"toAgent":"<agent-id>"},"message":"..."}; ' +
   'channel {"to":{"channel":"<channel-id>"},"message":"..."}; ' +
+  'human DM {"to":{"toUser":"<Slack-user-id>"},"message":"..."}; ' +
   'session {"to":{"sessionId":"<Parent session>"},"message":"..."}'
 
 function resolveGatewayForPlatform(
@@ -725,9 +726,9 @@ export async function executeTool(
   // Unified outbound send (session-concept §3). One tool merges the old `sendPlatformMessage`
   // (post to a platform channel/user) and `messageAgent` (wake a peer agent), plus SessionTarget
   // replies. Universal (any agent — a memory-only agent can still wake a peer / reply), handled
-  // before the platform-gateway gate. `to` is a strict three-branch union: `sessionId` replies into
+  // before the platform-gateway gate. `to` is a strict four-branch union: `sessionId` replies into
   // an origin session; `toAgent` wakes one peer (with optional landing coords); `channel` posts one
-  // visible platform message (optionally addressing a human via `toUser`).
+  // visible platform message; and `toUser` sends a Slack DM.
   // SECURITY: the caller identity + coords come from the trusted session context, never tool input.
   if (name === 'sendMessage') {
     const to = optionalObject(args, 'to')
@@ -751,17 +752,23 @@ export async function executeTool(
       })
     }
 
-    // MessageTarget — one required branch anchor: `toAgent` for a direct wake, or `channel` for a
-    // visible post. Branch-specific validation below keeps ignored/mixed fields out even when a
-    // caller bypasses the advertised JSON Schema (as unit tests and older clients can).
-    const channel = optionalString(to, 'channel')
+    // MessageTarget — one required branch anchor: `toAgent` for a direct wake, `channel` for a
+    // visible channel post, or `toUser` for a Slack DM. Branch-specific validation below keeps
+    // ignored/mixed fields out even when a caller bypasses the advertised JSON Schema.
+    let channel = optionalString(to, 'channel')
     const { toAgent, needsReply } = parseAgentTarget(to.toAgent)
     const toUser = optionalString(to, 'toUser')
-    if (channel === undefined && toAgent === undefined) {
+    if (channel !== undefined && toUser !== undefined) {
+      throw new Error('sendMessage: `channel` and `toUser` cannot be combined; to send a Slack DM, omit `channel`')
+    }
+    if (channel === undefined && toAgent === undefined && toUser === undefined) {
       throw new Error(`sendMessage: \`to\` does not select a target. ${SEND_MESSAGE_TARGET_HELP}`)
     }
     if (toAgent !== undefined) assertOnlyKeys(to, ['toAgent', 'channel', 'thread'], 'agent target')
-    else assertOnlyKeys(to, ['channel', 'platform', 'toUser', 'thread', 'integrationId'], 'channel target')
+    else if (toUser !== undefined) assertOnlyKeys(to, ['toUser', 'platform', 'integrationId'], 'human DM target')
+    else assertOnlyKeys(to, ['channel', 'platform', 'thread', 'integrationId'], 'channel target')
+    const directMessage = toUser !== undefined
+    channel ??= toUser
 
     // The trusted wake request (built once) — also fed to the preflight below. `thread` and
     // `transcriptTs` are filled AFTER the post (they depend on the post's ts), so this base copy
@@ -790,14 +797,13 @@ export async function executeTool(
     // owning daemon); such a rare reject can still leave a post — an accepted residual.
     const wakeRejection = baseWakeReq !== undefined ? (deps.preflightWake?.(baseWakeReq) ?? null) : null
 
-    // (A) Post a visible IM to a platform channel. This runs whenever a `channel` is given —
-    // including alongside `toAgent` (see (B)), except when the gated wake would be rejected.
+    // (A) Post a visible IM to a platform channel or Slack user. A human target uses the Slack
+    // member id directly as chat.postMessage's destination, which opens or reuses that DM.
     // Routing is by `platform` (+ optional `integrationId`) to ANY platform the agent is
     // connected to; identity is stamped from the trusted session. THREAD DEFAULT: a deliberate
     // `sendMessage` posts to the channel ROOT — "reply here" is the agent's normal turn output,
     // so an explicit send is a top-level post unless it names a `thread`. `thread:"<id>"` targets
-    // that thread; absent or "" ⇒ root. `toUser` @-addresses/DMs a human (Slack only; channel-
-    // target branch only). We post BEFORE any peer wake (B) so the wake can land in the SAME
+    // that thread; absent or "" ⇒ root. We post BEFORE any peer wake (B) so the wake can land in the SAME
     // thread a human sees — for a root post that thread is the post's own `ts`, which only exists
     // after the send.
     let post:
@@ -811,17 +817,15 @@ export async function executeTool(
     // back — the peer then falls back to messageAgent's default thread).
     let postedThread: string | undefined
     if (channel !== undefined && wakeRejection === null) {
-      const wantPlatform = optionalString(to, 'platform') ?? ctx.platform
+      const wantPlatform = optionalString(to, 'platform') ?? (directMessage ? 'slack' : ctx.platform)
       const wantIntegrationId = optionalString(to, 'integrationId')
       const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
       const thread = optionalString(to, 'thread') || undefined
-      let body = message
-      if (toUser !== undefined) {
+      const body = message
+      if (directMessage) {
         if (wantPlatform !== 'slack') {
           throw new Error(`sendMessage: toUser is only supported on Slack (not ${wantPlatform}) yet`)
         }
-        const mention = /^<@[^>]+>$/.test(toUser) ? toUser : `<@${toUser}>`
-        body = `${mention} ${message}`
       }
       const identity: SendIdentity = {
         ...(ctx.agentName ? { username: ctx.agentName } : {}),

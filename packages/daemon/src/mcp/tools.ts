@@ -144,8 +144,9 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
   const channelTarget = {
     title: 'Channel target',
     description:
-      'Post one visible message to a platform channel, optionally addressing one human. A post at channel root ' +
-      'opens a NEW session of your own on that post; only an explicit `thread` continues an existing conversation.',
+      'Post one visible message to a platform channel. A post at channel root opens a NEW session of your own on ' +
+      'that post; only an explicit `thread` continues an existing conversation. For a Slack DM, use `toUser` ' +
+      'without setting `channel`.',
     ...obj(
       {
         channel: {
@@ -154,11 +155,6 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
           description: 'Target channel / chat id (Slack `C0123ABC`, Telegram/Discord/Feishu chat id).'
         },
         platform,
-        toUser: {
-          type: 'string',
-          minLength: 1,
-          description: 'Optional platform member id to @mention / DM a human in the post (Slack only for now).'
-        },
         thread: {
           type: 'string',
           description:
@@ -172,6 +168,26 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         }
       },
       ['channel']
+    )
+  }
+  const humanTarget = {
+    title: 'Human DM target',
+    description: 'Direct-message one Slack user. Do not set `channel`; `toUser` is the destination.',
+    ...obj(
+      {
+        toUser: {
+          type: 'string',
+          minLength: 1,
+          description: 'Slack member id to direct-message, such as `U0123ABC`.'
+        },
+        platform,
+        integrationId: {
+          type: 'string',
+          minLength: 1,
+          description: 'Optional. Pick a specific bot when the agent has multiple Slack integrations.'
+        }
+      },
+      ['toUser']
     )
   }
   const sessionTarget = {
@@ -202,8 +218,7 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     description: collaboration
       ? 'Send one message to exactly one target. Your own turn reply already reaches the conversation you are in, so ' +
         'use this tool for what that reply cannot do: reach a DIFFERENT conversation — another channel or thread, a ' +
-        'session, or a peer agent — or @-mention a specific human with `toUser`, which may be right here. Choose one ' +
-        'form:\n' +
+        'human DM, a session, or a peer agent. Choose one form:\n' +
         '- Peer agent (direct wake): `{"to":{"toAgent":"<agent id>"},"message":"..."}` is a postless wake. Add a ' +
         '`channel` (and optional `thread`) to also post a visible message and thread the peer’s reply there. Get the ' +
         'id from listAgents and send one call per peer; never substitute a platform member id. When the wake ' +
@@ -211,28 +226,28 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'check whether the peer is still working. Use ' +
         '`{"to":{"toAgent":{"agentId":"<agent id>","needsReply":true}},"message":"..."}` to also instruct that ' +
         'session to report back to you when it is done or has failed.\n' +
-        '- Channel or human (visible post): `{"to":{"channel":"<channel id>"},"message":"..."}`. Add `toUser` only ' +
-        'to address an actual human, or `platform` to use another connected platform. Without a `thread` this posts ' +
-        'at channel root, which opens a NEW session of your own on that post — it never continues an existing ' +
-        'conversation.\n' +
+        '- Channel (visible post): `{"to":{"channel":"<channel id>"},"message":"..."}`. Add `platform` to use ' +
+        'another connected platform. Without a `thread` this posts at channel root, which opens a NEW session of ' +
+        'your own on that post — it never continues an existing conversation.\n' +
+        '- Human DM: `{"to":{"toUser":"<Slack user id>"},"message":"..."}`. Do not also set `channel`.\n' +
         '- Parent session (direct reply): `{"to":{"sessionId":"<Parent session>"},"message":"..."}`. Use the id ' +
         'from your `# Agent` block. Relay an answer back to whoever asked this way — never by posting it at their ' +
         'channel root.\n' +
         'Write `message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone or wake yourself.'
-      : 'Post one visible message to exactly one platform channel or human. Your own turn reply already reaches the ' +
+      : 'Post one visible message to exactly one platform channel or Slack user. Your own turn reply already reaches the ' +
         'conversation you are in, so use this tool for what that reply cannot do: reach a DIFFERENT conversation — ' +
-        'another channel, or another thread in this one — or @-mention a specific human with `toUser`, which may be ' +
-        'right here. Use ' +
-        '`{"to":{"channel":"<channel id>"},"message":"..."}` and add `toUser`, `platform`, `thread`, or ' +
-        '`integrationId` only when needed. Without a `thread` this posts at channel root, which opens a NEW session ' +
-        'of your own on that post. Peer-agent and parent-session delivery are disabled for this run. Write ' +
-        '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone.',
+        'another channel, another thread in this one, or a human DM. Use ' +
+        '`{"to":{"channel":"<channel id>"},"message":"..."}` for a channel or ' +
+        '`{"to":{"toUser":"<Slack user id>"},"message":"..."}` for a DM; do not combine the two targets. ' +
+        'Without a `thread`, a channel send posts at channel root and opens a NEW session of your own on that post. ' +
+        'Peer-agent and parent-session delivery are disabled for this run. Write `message` as CommonMark/GFM. The ' +
+        'daemon supplies your identity; you cannot impersonate anyone.',
     inputSchema: obj(
       {
         to: {
           type: 'object',
           description: 'Choose exactly one target branch. Fields from different branches cannot be mixed.',
-          oneOf: collaboration ? [agentTarget, channelTarget, sessionTarget] : [channelTarget]
+          oneOf: collaboration ? [agentTarget, channelTarget, humanTarget, sessionTarget] : [channelTarget, humanTarget]
         },
         message: {
           type: 'string',

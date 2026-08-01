@@ -494,24 +494,26 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', undefined, authorIdentity)
   })
 
-  it('toUser @-mentions a human on Slack (prepends <@id>), and rejects toUser off Slack', async () => {
+  it('toUser alone sends a Slack DM without changing the message body', async () => {
     const gw = fakeGateway()
     const { deps: d, recorded } = deps(gw)
-    await executeTool(ctx, 'sendMessage', { to: { channel: 'C_CURRENT', toUser: 'U9' }, message: 'ping' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', '<@U9> ping', undefined, authorIdentity)
-    // An already-wrapped mention is left as-is.
-    await executeTool(ctx, 'sendMessage', { to: { channel: 'C_CURRENT', toUser: '<@U9>' }, message: 'again' }, d)
-    expect(gw.postMessage).toHaveBeenLastCalledWith('C_CURRENT', '<@U9> again', undefined, authorIdentity)
-    expect(recorded).toEqual([
-      { channel: 'C_CURRENT', thread: 'ts-123', text: '<@U9> ping', ts: 'ts-123' },
-      { channel: 'C_CURRENT', thread: 'ts-123', text: '<@U9> again', ts: 'ts-123' }
-    ])
+    const res = (await executeTool(ctx, 'sendMessage', { to: { toUser: 'U9' }, message: 'ping' }, d)) as {
+      post: Record<string, unknown>
+    }
+    expect(gw.postMessage).toHaveBeenCalledWith('U9', 'ping', undefined, authorIdentity)
+    expect(recorded).toEqual([{ channel: 'U9', thread: 'ts-123', text: 'ping', ts: 'ts-123' }])
+    expect(res.post).toMatchObject({ platform: 'slack', channel: 'U9', thread: null, ts: 'ts-123' })
+  })
 
+  it('rejects toUser off Slack before posting', async () => {
+    const gw = fakeGateway()
+    const { deps: d } = deps(gw)
     // toUser is Slack-only for now — on another platform it throws (nothing posted).
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
     await expect(
-      executeTool(dual, 'sendMessage', { to: { platform: 'telegram', channel: '-100', toUser: '42' }, message: 'x' }, d)
+      executeTool(dual, 'sendMessage', { to: { platform: 'telegram', toUser: '42' }, message: 'x' }, d)
     ).rejects.toThrow(/only supported on Slack/)
+    expect(gw.postMessage).not.toHaveBeenCalled()
   })
 })
 
@@ -930,13 +932,19 @@ describe('executeTool: sendMessage (wake / reply)', () => {
 
   it.each([
     { to: {}, label: 'empty target' },
-    { to: { platform: 'slack' }, label: 'platform-only target' },
-    { to: { toUser: 'U1' }, label: 'human id without a channel' }
+    { to: { platform: 'slack' }, label: 'platform-only target' }
   ])('rejects $label before dispatch and returns repairable target examples', async ({ to }) => {
     const { deps: d } = wakeDeps()
     await expect(executeTool(ctx, 'sendMessage', { to, message: 'x' }, d)).rejects.toThrow(
-      /Valid targets:.*toAgent.*channel.*sessionId/
+      /Valid targets:.*toAgent.*channel.*toUser.*sessionId/
     )
+  })
+
+  it('rejects channel plus toUser with a DM-specific repair hint', async () => {
+    const { deps: d } = wakeDeps()
+    await expect(
+      executeTool(ctx, 'sendMessage', { to: { channel: 'C1', toUser: 'U1' }, message: 'private' }, d)
+    ).rejects.toThrow(/cannot be combined; to send a Slack DM, omit `channel`/)
   })
 
   it.each([

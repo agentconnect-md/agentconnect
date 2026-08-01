@@ -26,9 +26,9 @@ describe('toolsForIntegrations', () => {
   }
   const sendToSchema = (ints: Integration[]) =>
     (sendTool(ints)!.inputSchema.properties as Record<string, ObjectSchema>).to
-  const sendTargetBranch = (ints: Integration[], targetField: 'toAgent' | 'channel' | 'sessionId') =>
+  const sendTargetBranch = (ints: Integration[], targetField: 'toAgent' | 'channel' | 'toUser' | 'sessionId') =>
     sendToSchema(ints).oneOf!.find((branch) => branch.required?.includes(targetField))!
-  // The unified sendMessage tool's platform enum belongs only to the channel-target branch.
+  // Read the visible-send platform enum from the channel-target branch.
   const sendPlatformEnum = (ints: Integration[]) => {
     return sendTargetBranch(ints, 'channel').properties.platform!.enum
   }
@@ -102,7 +102,7 @@ describe('toolsForIntegrations', () => {
 
     const to = sendToSchema([slackInt])
     expect(to.type).toBe('object')
-    expect(to.oneOf).toHaveLength(3)
+    expect(to.oneOf).toHaveLength(4)
 
     const agent = sendTargetBranch([slackInt], 'toAgent')
     expect(agent.required).toEqual(['toAgent'])
@@ -112,7 +112,14 @@ describe('toolsForIntegrations', () => {
     const channel = sendTargetBranch([slackInt], 'channel')
     expect(channel.required).toEqual(['channel'])
     expect(channel.additionalProperties).toBe(false)
-    expect(Object.keys(channel.properties)).toEqual(['channel', 'platform', 'toUser', 'thread', 'integrationId'])
+    expect(Object.keys(channel.properties)).toEqual(['channel', 'platform', 'thread', 'integrationId'])
+    expect(channel.description).toContain('use `toUser` without setting `channel`')
+
+    const human = sendTargetBranch([slackInt], 'toUser')
+    expect(human.required).toEqual(['toUser'])
+    expect(human.additionalProperties).toBe(false)
+    expect(Object.keys(human.properties)).toEqual(['toUser', 'platform', 'integrationId'])
+    expect(human.description).toContain('Do not set `channel`')
 
     const session = sendTargetBranch([slackInt], 'sessionId')
     expect(session.required).toEqual(['sessionId'])
@@ -122,6 +129,7 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toMatch(/^Send one message to exactly one target\./)
     expect(tool.description).toContain('{"to":{"toAgent":"<agent id>"},"message":"..."}')
     expect(tool.description).toContain('{"to":{"channel":"<channel id>"},"message":"..."}')
+    expect(tool.description).toContain('{"to":{"toUser":"<Slack user id>"},"message":"..."}')
     expect(tool.description).toContain('{"to":{"sessionId":"<Parent session>"},"message":"..."}')
   })
 
@@ -150,19 +158,17 @@ describe('toolsForIntegrations', () => {
     for (const text of [description, sendTargetBranch([slackInt], 'channel').description!])
       expect(text).toMatch(/(at )?channel root/i)
 
-    // …and "different conversation" is not the whole rule either: `toUser` exists to @-mention a
-    // human, which is a legitimate reason to send into the conversation the agent is already in.
-    // Excluding it would make the preamble contradict the branch it introduces.
-    expect(description).toContain('@-mention a specific human with `toUser`, which may be right here')
+    expect(description).toContain('Human DM')
+    expect(description).toContain('Do not also set `channel`')
 
-    // Collaboration off ⇒ only the channel branch exists, and it is then the ONLY way to send —
-    // so the root-post cost must be stated there too (spawnChannelRootSession runs either way).
+    // Collaboration off leaves only the visible platform targets, so the channel-root cost must
+    // still be stated there (spawnChannelRootSession runs either way).
     const soloDescription = toolsForIntegrations([slackInt], { collaboration: false }).find(
       (t) => t.name === 'sendMessage'
     )!.description
     expect(soloDescription).toContain('opens a NEW session')
     expect(soloDescription).toContain('use this tool for what that reply cannot do')
-    expect(soloDescription).toContain('@-mention a specific human with `toUser`, which may be right here')
+    expect(soloDescription).toContain('{"to":{"toUser":"<Slack user id>"},"message":"..."}')
   })
 
   it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {
@@ -210,7 +216,7 @@ describe('toolsForIntegrations', () => {
     ])
   })
 
-  it('removes peer/orchestration targets for a collaboration-off treatment while preserving channel send', () => {
+  it('removes peer/orchestration targets for a collaboration-off treatment while preserving platform sends', () => {
     expect(toolsForIntegrations([], { collaboration: false }).map((tool) => tool.name)).toEqual([
       'readMemory',
       'writeMemory'
@@ -224,8 +230,9 @@ describe('toolsForIntegrations', () => {
     expect(names).toContain('sendMessage')
     const send = tools.find((tool) => tool.name === 'sendMessage')!
     const to = (send.inputSchema.properties as Record<string, ObjectSchema>).to
-    expect(to.oneOf).toHaveLength(1)
+    expect(to.oneOf).toHaveLength(2)
     expect(to.oneOf?.[0]?.required).toEqual(['channel'])
+    expect(to.oneOf?.[1]?.required).toEqual(['toUser'])
     expect(send.description).toContain('Peer-agent and parent-session delivery are disabled')
   })
 
