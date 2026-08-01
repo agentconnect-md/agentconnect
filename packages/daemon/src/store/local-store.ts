@@ -1229,6 +1229,16 @@ export class LocalStore {
     for (const channelId of channelIds) stmt.run(integrationId, channelId, now)
   }
 
+  /** Integrations holding any suppression. The reconnect replay keys on this as well
+   *  as its in-memory snapshots: a restart before the first reconnect leaves the
+   *  tombstone on disk with no cached snapshot to replay it alongside. */
+  retractedIntegrations(): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT integrationId FROM retracted_conversations').all() as {
+      integrationId: string
+    }[]
+    return rows.map((r) => r.integrationId)
+  }
+
   /** The conversations currently suppressed for one integration. */
   retractedConversations(integrationId: string): Set<string> {
     const rows = this.db

@@ -1056,6 +1056,32 @@ describe('Daemon.leaveConversation', () => {
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int', removed: ['-100123'] }))
   })
 
+  // The snapshots are in memory, the tombstones on disk. A restart before the first
+  // reconnect leaves a durable retraction with no cached snapshot beside it — keying
+  // replay on the map alone strands the CP row exactly when the original
+  // fire-and-forget retraction was the thing that got lost.
+  it('replays a tombstone that outlived the snapshot it was recorded next to', async () => {
+    const root = root1()
+    const first = makeStubDaemon(root).daemon
+    await first.start()
+    ;(first as any).cpClient = undefined // CP unreachable: the retraction EVT is lost
+    telegramAgent(first)
+    ;(first as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
+    ;(first as any).retractChannels('tg-int', ['-100123'])
+    await first.stop()
+
+    // A fresh process over the SAME root: the tombstone survived, the snapshot did not.
+    const second = makeStubDaemon(root).daemon
+    await second.start()
+    expect((second as any).channelSnapshots.get('tg-int')).toBeUndefined()
+    const emit = vi.fn()
+    ;(second as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(second as any).replayChannelSnapshots()
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int', removed: ['-100123'] }))
+    await second.stop()
+  })
+
   it('refuses a conversation-scoped leave on Discord, where a bot can only leave a server', async () => {
     const { daemon } = makeStubDaemon(root1())
     await daemon.start()

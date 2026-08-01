@@ -800,12 +800,26 @@ export function integrationRoutes(deps: HttpDeps) {
      * Best-effort: an offline daemon re-reports the conversation, which is the
      * pre-existing annoyance rather than a new failure, and the operator can act again.
      */
+    /**
+     * Does this platform need a durable suppression at all?
+     *
+     * Only the ones whose conversation list is rebuilt from session history — the
+     * daemon's `refreshObservedChannels` set. Slack re-lists its membership
+     * authoritatively, so its rows are governed by that listing and a tombstone would
+     * add nothing; demanding one would just make Forget fail whenever a Slack daemon
+     * is offline, for no gain. This is also why the multi-install fan-out below can
+     * never span several daemons today: a bot may only gain a second agent when it is
+     * shareable, and shareable is Slack-only.
+     */
+    const needsSuppression = (platform: string): boolean =>
+      platform === 'telegram' || platform === 'discord' || platform === 'feishu'
+
     const pushForget = async (
       integration: IntegrationRecord,
       agent: AgentRecord,
       channels: string[]
     ): Promise<{ ok: true } | { ok: false; body: { error: string; statusCode: number; message: string } }> => {
-      if (channels.length === 0) return { ok: true }
+      if (channels.length === 0 || !needsSuppression(integration.platform)) return { ok: true }
       const undeliverable = {
         ok: false as const,
         body: {

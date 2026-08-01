@@ -13559,16 +13559,24 @@ export class Daemon {
   /** Re-assert cached reports after a CP reconnect without upgrading a partial
    *  observation (including Slack gated-conversation discovery) to a full snapshot. */
   private replayChannelSnapshots(): void {
-    for (const [integrationId, snapshot] of this.channelSnapshots) {
-      // Replay the tombstones too. A retraction emitted while the CP was unreachable
-      // is simply lost — it is a fire-and-forget EVT — so without carrying it here the
-      // reconnect would re-assert what remains and leave the departed conversation
-      // listed forever, which is the exact failure this whole mechanism exists to end.
+    // Keyed by BOTH sources. The snapshots are in memory and the tombstones are on
+    // disk, so a restart before the first reconnect leaves an integration with a
+    // durable retraction and no cached snapshot — and keying on the map alone would
+    // replay nothing for it, stranding the CP row exactly when the original
+    // fire-and-forget retraction was the one thing that got lost.
+    const integrationIds = new Set([...this.channelSnapshots.keys(), ...this.store.retractedIntegrations()])
+    for (const integrationId of integrationIds) {
+      const snapshot = this.channelSnapshots.get(integrationId)
+      // Replay the tombstones too: a retraction emitted while the CP was unreachable
+      // is simply lost, so without carrying it here the reconnect would re-assert what
+      // remains and leave the departed conversation listed forever — the exact failure
+      // this whole mechanism exists to end.
       const removed = [...this.store.retractedConversations(integrationId)]
+      if (!snapshot && removed.length === 0) continue
       this.cpClient?.emitIntegrationChannels({
         integrationId,
-        channels: snapshot.channels,
-        ...(snapshot.authoritative ? {} : { authoritative: false }),
+        channels: snapshot?.channels ?? [],
+        ...(snapshot?.authoritative ? {} : { authoritative: false }),
         ...(removed.length > 0 ? { removed } : {})
       })
     }

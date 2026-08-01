@@ -88,6 +88,20 @@ async function install(app: HttpApp): Promise<string> {
   return (res.json() as { id: string }).id
 }
 
+/** Install a TELEGRAM integration — the platform whose rows are session-derived, so
+ *  the only one where a durable suppression is what makes a removal stick. */
+async function installTelegram(app: HttpApp): Promise<string> {
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+  const res = await app.app.inject({
+    method: 'POST',
+    url: `${ORG}/integrations`,
+    payload: { name: 'acme-tg', platform: 'telegram', agentId, telegram: { botToken: '123456:AAE-xyz' } }
+  })
+  expect(res.statusCode).toBe(201)
+  return (res.json() as { id: string }).id
+}
+
 /** Dispatch a hand-built `integration/channels` EVT through the real handler. */
 async function report(
   daemonId: string,
@@ -1032,10 +1046,11 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     expect(res.statusCode).toBe(204)
     expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C2'])
     expect(spy.leaves).toEqual([]) // the bot was never touched on Slack
-    // …but the daemon IS told to stop reporting it. Without that its next observed
-    // refresh rebuilds the row from session history and undoes this silently.
-    expect(spy.forgets).toEqual([{ daemonId: DAEMON, f: { integrationId: id, channels: ['C1'] } }])
-    // It also gets the recomputed spec, or its routing would keep the row.
+    // Slack re-lists its membership authoritatively, so that listing governs the row
+    // and a tombstone would add nothing — demanding one would only make Forget fail
+    // whenever a Slack daemon is offline.
+    expect(spy.forgets).toEqual([])
+    // It still gets the recomputed spec, or its routing would keep the row.
     expect(spy.upserts.at(-1)!.daemonId).toBe(DAEMON)
   })
 
@@ -1153,8 +1168,8 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     const spy = new SpyControl()
     spy.forgetThrows = new NoConnection(DAEMON)
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
-    const id = await install(running)
-    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    const id = await installTelegram(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }], undefined, undefined, false)
 
     const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/C1` })
 
@@ -1171,6 +1186,21 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     const retried = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/C1` })
     expect(retried.statusCode).toBe(204)
     expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  // The rule the two cases above encode, stated once: suppression exists only for the
+  // platforms whose rows are rebuilt from session history.
+  it('pushes the suppression for a session-derived platform', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await installTelegram(running)
+    await report(DAEMON, id, [{ id: '-100123', name: 'Team' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/-100123` })
+
+    expect(res.statusCode).toBe(204)
+    expect(spy.forgets).toEqual([{ daemonId: DAEMON, f: { integrationId: id, channels: ['-100123'] } }])
   })
 
   it('refuses a server-scoped leave on a platform that has no server', async () => {
