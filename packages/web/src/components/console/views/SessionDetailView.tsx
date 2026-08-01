@@ -916,15 +916,17 @@ export default function SessionDetailView() {
   // title the crumb collapses to the bare "Sessions" label — taking the status badge
   // nested inside it down with it — and the Details popover no longer carries a status
   // the desktop could fall back to.
+  // The slot carries the route id it describes: the shell renders the next route before
+  // this effect's cleanup runs, so without it session A's crumb paints on session B.
   const { register: registerCrumb } = useCrumbSlot()
   const crumbTitle = session?.title ?? ''
   const crumbStatusKey = session?.status ?? ''
   const crumbStatusLabel = session?.statusLabel || (crumbStatusKey ? status(crumbStatusKey).label : '')
   useEffect(() => {
     if (!crumbTitle) return
-    registerCrumb({ title: crumbTitle, status: crumbStatusKey, statusLabel: crumbStatusLabel })
+    registerCrumb({ id, title: crumbTitle, status: crumbStatusKey, statusLabel: crumbStatusLabel })
     return () => registerCrumb(null)
-  }, [registerCrumb, crumbTitle, crumbStatusKey, crumbStatusLabel])
+  }, [registerCrumb, id, crumbTitle, crumbStatusKey, crumbStatusLabel])
 
   if (!session) {
     // Shell owns detail navigation at both breakpoints; this branch only renders the

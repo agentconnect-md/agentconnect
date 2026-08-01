@@ -479,8 +479,12 @@ function ShellChrome({ children }: { children: ReactNode }) {
     if (section === 'crons') return crons.find((c) => c.id === id)?.name
     return undefined
   })()
-  // The slot beats the list lookup — see lib/crumb.ts for why the list alone isn't enough.
-  const { title: pushTitle, show: titleResolved } = detailCrumb(crumb, listTitle ?? undefined, crumbSlot?.title)
+  // The slot beats the list lookup, but only on the route it describes — see lib/crumb.ts.
+  const {
+    title: pushTitle,
+    show: titleResolved,
+    badge: crumbBadge
+  } = detailCrumb(crumb, seg[1], listTitle ?? undefined, crumbSlot)
 
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
   // hard refresh — no history) route to the parent list so "back" never leaves the app.
@@ -662,19 +666,19 @@ function ShellChrome({ children }: { children: ReactNode }) {
                     </Link>
                     <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="flex-none" />
                     <b className="min-w-0 truncate">{pushTitle}</b>
-                    {crumbSlot && (
+                    {crumbBadge && (
                       <span
                         className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-full px-2 py-[1px] font-sans text-[12px] font-semibold leading-normal"
                         style={{
-                          background: status(crumbSlot.status).bg,
-                          color: status(crumbSlot.status).text
+                          background: status(crumbBadge.status).bg,
+                          color: status(crumbBadge.status).text
                         }}
                       >
                         <span
                           className="h-[6px] w-[6px] flex-none rounded-full"
-                          style={{ background: status(crumbSlot.status).dot }}
+                          style={{ background: status(crumbBadge.status).dot }}
                         />
-                        {crumbSlot.statusLabel}
+                        {crumbBadge.statusLabel}
                       </span>
                     )}
                   </>
