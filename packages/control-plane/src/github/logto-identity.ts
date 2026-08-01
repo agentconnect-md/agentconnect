@@ -81,6 +81,7 @@ const TIMEOUT_MS = 10_000
 
 interface CachedLogin {
   login: string | null
+  fetchedAt: number
   expiresAt: number
 }
 
@@ -200,9 +201,12 @@ export class LogtoIdentityService {
    * account has no GitHub identity (e.g. Google sign-in) — callers map null to
    * a GITHUB_IDENTITY_REQUIRED denial, never a silent allow.
    */
-  async githubLoginFor(sub: string): Promise<string | null> {
+  async githubLoginFor(sub: string, maxAgeMs?: number): Promise<string | null> {
     const cached = this.logins.get(sub)
-    if (cached && cached.expiresAt > this.clock.now()) return cached.login
+    const now = this.clock.now()
+    if (cached && cached.expiresAt > now && (maxAgeMs === undefined || now - cached.fetchedAt < maxAgeMs)) {
+      return cached.login
+    }
     let pending = this.loginInFlight.get(sub)
     if (!pending) {
       const tracked: Promise<string | null> = this.lookupLogin(sub).finally(() => {
@@ -391,7 +395,10 @@ export class LogtoIdentityService {
     const current = () => this.epochOf(sub) === epoch
     if (res.status === 404) {
       // Deleted at the provider — no identity, cache the miss briefly.
-      if (current()) this.logins.set(sub, { login: null, expiresAt: this.clock.now() + NEGATIVE_TTL_MS })
+      if (current()) {
+        const fetchedAt = this.clock.now()
+        this.logins.set(sub, { login: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
+      }
       return null
     }
     if (!res.ok) {
@@ -401,9 +408,11 @@ export class LogtoIdentityService {
     const raw = user.identities?.github?.details?.rawData
     const login = firstString(raw?.userInfo?.login, raw?.login)
     if (current()) {
+      const fetchedAt = this.clock.now()
       this.logins.set(sub, {
         login,
-        expiresAt: this.clock.now() + (login ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
+        fetchedAt,
+        expiresAt: fetchedAt + (login ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
       })
     }
     return login

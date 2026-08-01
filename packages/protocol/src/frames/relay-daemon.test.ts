@@ -482,6 +482,39 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RdAgentMsgFwd.parse(fwd).externalOrigin).toEqual(externalOrigin)
   })
 
+  it('carries only the immutable GitHub repository audience through A2A wire legs', () => {
+    const externalOrigin = {
+      provider: 'github' as const,
+      realmKey: 'github.com' as const,
+      resourceKind: 'repository' as const,
+      resourceKey: '123456789'
+    }
+    const msg = {
+      claimedFromAgentId: AGENT_ID,
+      toAgentId: '44444444-4444-4444-8444-444444444444',
+      text: 'delegate this',
+      // Headless hook callers use the relay's existing Slack-shaped A2A
+      // coordinate; the inherited audience remains GitHub repository-scoped.
+      coords: { platform: 'slack' as const, channel: 'repo-session' },
+      hopCount: 0,
+      deliveryId: 'delivery-1',
+      externalOrigin
+    }
+    expect(RdAgentMsg.parse(msg).externalOrigin).toEqual(externalOrigin)
+    expect(
+      RdAgentMsgFwd.parse({
+        trustedFromAgentId: AGENT_ID,
+        orgId: ORG_ID,
+        toAgentId: msg.toAgentId,
+        text: msg.text,
+        coords: msg.coords,
+        hopCount: 1,
+        deliveryId: msg.deliveryId,
+        externalOrigin
+      }).externalOrigin
+    ).toEqual(externalOrigin)
+  })
+
   it('rd/chat streams webchat output and done events verbatim', () => {
     const output = {
       chatId: CONV_ID,

@@ -54,7 +54,7 @@ export interface UserRepoAccess {
 // Narrow structural deps (the composition root passes LogtoIdentityService /
 // GithubService / PgUserRepo; tests pass plain objects).
 interface UserAuthzDeps {
-  identity: { githubLoginFor(sub: string): Promise<string | null> }
+  identity: { githubLoginFor(sub: string, maxAgeMs?: number): Promise<string | null> }
   github: {
     getRepoMeta(ins: GithubInstallationRecord, owner: string, repo: string): Promise<{ private: boolean } | null>
     userRepoPermission(
@@ -75,7 +75,7 @@ const FILTER_CONCURRENCY = 8
 export class GithubUserAuthzService {
   /** (installation, repo, login) → effective permission; the one cacheable unit
    *  shared by the preflight, the create gate AND the list filter. */
-  private readonly perms = new Map<string, { value: RepoPermission; expiresAt: number }>()
+  private readonly perms = new Map<string, { value: RepoPermission; fetchedAt: number; expiresAt: number }>()
   private readonly permsInFlight = new Map<string, Promise<RepoPermission>>()
   /** (installation, repo) → meta (or null = out of grant), same TTL. */
   private readonly metas = new Map<string, { value: { private: boolean } | null; expiresAt: number }>()
@@ -85,7 +85,7 @@ export class GithubUserAuthzService {
 
   /** The caller's GitHub login, or a GITHUB_IDENTITY_REQUIRED denial — the
    *  shared first leg of every check. */
-  private async loginOf(userId: string): Promise<string> {
+  private async loginOf(userId: string, maxCacheAgeMs?: number): Promise<string> {
     const sub = await this.deps.users.getOidcSubject(userId)
     if (!sub) {
       throw new UserAuthzDeniedError(
@@ -93,7 +93,7 @@ export class GithubUserAuthzService {
         'GITHUB_IDENTITY_REQUIRED'
       )
     }
-    const login = await this.deps.identity.githubLoginFor(sub)
+    const login = await this.deps.identity.githubLoginFor(sub, maxCacheAgeMs)
     if (!login) {
       throw new UserAuthzDeniedError(
         'no GitHub identity on this account — sign in with GitHub to verify repo access',
@@ -112,23 +112,42 @@ export class GithubUserAuthzService {
     login: string,
     ins: GithubInstallationRecord,
     owner: string,
-    repo: string
+    repo: string,
+    maxCacheAgeMs?: number
   ): Promise<RepoPermission> {
     const key = this.permissionKey(login, ins, owner, repo)
     const cached = this.perms.get(key)
-    if (cached && cached.expiresAt > this.deps.clock.now()) return Promise.resolve(cached.value)
+    const now = this.deps.clock.now()
+    if (cached && cached.expiresAt > now && (maxCacheAgeMs === undefined || now - cached.fetchedAt < maxCacheAgeMs)) {
+      return Promise.resolve(cached.value)
+    }
     let pending = this.permsInFlight.get(key)
     if (!pending) {
       pending = this.deps.github
         .userRepoPermission(ins, owner, repo, login)
         .then((value) => {
-          this.perms.set(key, { value, expiresAt: this.deps.clock.now() + ACCESS_TTL_MS })
+          const fetchedAt = this.deps.clock.now()
+          this.perms.set(key, { value, fetchedAt, expiresAt: fetchedAt + ACCESS_TTL_MS })
           return value
         })
         .finally(() => this.permsInFlight.delete(key))
       this.permsInFlight.set(key, pending)
     }
     return pending
+  }
+
+  /** Resolve only the user's effective permission. Callers that already
+   * verified repository metadata can cap or bypass this service's picker cache
+   * instead of extending a shorter authorization lease. */
+  async permissionForUser(
+    userId: string,
+    ins: GithubInstallationRecord,
+    owner: string,
+    repo: string,
+    options: { maxCacheAgeMs?: number } = {}
+  ): Promise<RepoPermission> {
+    const login = await this.loginOf(userId, options.maxCacheAgeMs)
+    return this.permissionOf(login, ins, owner, repo, options.maxCacheAgeMs)
   }
 
   /** Cached + deduped repo meta (privacy flag; null = out of grant). */

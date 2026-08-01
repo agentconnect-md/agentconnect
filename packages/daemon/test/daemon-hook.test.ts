@@ -13,6 +13,7 @@ import { Daemon } from '../src/daemon.js'
 import {
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
+  type EventSession,
   type HookReport,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
@@ -82,9 +83,12 @@ function streamingHost() {
 /** Capture and ACK hook/report requests the daemon emits on turn end. */
 function fakeCpClient() {
   const hookReports: HookReport[] = []
+  const sessionEvents: EventSession[] = []
   return {
     hookReports,
+    sessionEvents,
     stop: vi.fn(async () => {}),
+    emitEventSession: (event: EventSession) => sessionEvents.push(event),
     emitHookReport: async (r: HookReport) => {
       hookReports.push(r)
       return 'acknowledged' as const
@@ -166,6 +170,13 @@ describe('Daemon rd/msg hook fires', () => {
     const ack = await (daemon as any).handleRelayMsg(
       fire({
         sessionKey: 'agentconnect-md/agentconnect#144',
+        github: {
+          repoId: '123',
+          repoFullName: 'agentconnect-md/agentconnect',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 144
+        },
         context: {
           source: 'github',
           event: 'pull_request',
@@ -181,9 +192,20 @@ describe('Daemon rd/msg hook fires', () => {
 
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
-    expect((daemon as any).store.getSessionByAcpId('acp-hook-1')?.title).toBe(
-      'PR agentconnect-md/agentconnect#144: perf(github): speed up review delivery'
-    )
+    expect((daemon as any).store.getSessionByAcpId('acp-hook-1')).toMatchObject({
+      title: 'PR agentconnect-md/agentconnect#144: perf(github): speed up review delivery',
+      transportScope: 'github:123'
+    })
+    expect(cp.sessionEvents.at(-1)?.externalOrigin).toEqual({
+      provider: 'github',
+      realmKey: 'github.com',
+      resourceKind: 'repository',
+      resourceKey: '123',
+      hookId: HOOK_ID,
+      deliveryKey: 'd-1',
+      sourceInstallationId: '456',
+      repoFullName: 'agentconnect-md/agentconnect'
+    })
     await daemon.stop()
   }, 15_000)
 
@@ -1035,6 +1057,12 @@ describe('Daemon rd/msg hook fires', () => {
       sessionKey: 'acme/infra#42',
       msgId: `${HOOK_ID}:${deliveryKey}`,
       deliveryKey,
+      github: {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'issue'
+      },
       context: {
         source: 'github',
         event: 'issues',

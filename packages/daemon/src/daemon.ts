@@ -283,6 +283,7 @@ import type {
   ChildSessionStatusProbe,
   SessionVisibilityPush,
   WebchatRemoteMcpEntitlement,
+  ExternalSessionAudience,
   ExternalSessionOrigin,
   ChannelAgentsOk
 } from '@agentconnect.md/protocol'
@@ -651,7 +652,7 @@ interface CallMeta {
    * daemon-authored metadata and never comes from model text. The credential
    * locator stays at the direct ingress; descendants inherit only the stable
    * provider/realm/resource tuple. */
-  externalOrigin?: Omit<ExternalSessionOrigin, 'integrationId'>
+  externalOrigin?: ExternalSessionAudience
   /** Daemon-internal (issue #536, never a tool input): when this turn calls
    *  `messageAgent`, deliver the woken peer's turn HEADLESS so it records silently
    *  with no channel output. Set only by the self-introduce-on-join fan-out; does
@@ -6866,7 +6867,7 @@ export class Daemon {
     // headless in practice. The relay already opened the HookRun row, so close it
     // honestly as a no-op success rather than orphaning it.
     if (c?.source === 'github' && c.action === 'deleted' && !msg.target) {
-      const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId)
+      const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
       if (!this.store.getSession(key)?.acpSessionId) {
         this.log.info(`hook: skipping github ${c.event ?? 'event'}:deleted fire ${msg.msgId} — no session for ${key}`)
         // Preserve R2a's admission/outbox guarantee even though this teardown
@@ -9140,7 +9141,7 @@ export class Daemon {
         throw err
       }
     }
-    const sourceBinding = this.bindSessionSource(agentId, key, msg, callMeta)
+    const sourceBinding = this.bindSessionSource(agentId, key, msg, callMeta, hookContext)
     if (sourceBinding !== 'unchanged') {
       finishEvaluation('turn.cancelled', { reason: 'session_source_mismatch' })
       const conn = this.replyConnFor(agentId, integrationId)
@@ -9158,7 +9159,7 @@ export class Daemon {
           this.log.warn(`session source: could not post rejection (${formatErr(err)})`)
         }
       }
-      this.log.warn(`session source: rejected Slack audience binding for ${key} (${sourceBinding})`)
+      this.log.warn(`session source: rejected external audience binding for ${key} (${sourceBinding})`)
       return null
     }
     // §3.3 correlation-recording hook: if this turn is an agent→agent delivery carrying a
@@ -9456,7 +9457,7 @@ export class Daemon {
       // from turn one for anything that could be private (session-visibility.md
       // §4.1/§5.1). Persisted on the session row so later re-emits — including
       // after a restart, when `msg` is long gone — still carry the same facts.
-      this.classifyNewSession(agentId, key, sessionId, msg, callMeta, webchat?.evaluation === true)
+      this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
       this.emitSessionMetadataSnapshot({
         sessionId,
         agentId,
@@ -11037,11 +11038,14 @@ export class Daemon {
     // persist the same source tuple for the local gate but let the CP inherit
     // the already-validated parent scope instead of presenting the parent's bot
     // integration as if it belonged to the child agent.
-    if (
+    if (classification?.externalOrigin) event.externalOrigin = classification.externalOrigin
+    else if (
       classification?.externalProvider === 'slack' &&
       classification.externalResourceKey &&
       classification.externalIntegrationId
     ) {
+      // Rolling compatibility for a Slack row created before direct-origin
+      // proof was persisted as one object.
       event.externalOrigin = {
         provider: 'slack',
         resourceKind: 'conversation',
@@ -12795,10 +12799,11 @@ export class Daemon {
     acpSessionId: string,
     msg: NormalizedMessage,
     callMeta: CallMeta | undefined,
+    hookContext: HookDispatchContext | undefined,
     isEvaluation = false
   ): void {
     try {
-      this.classifyNewSessionOrThrow(agentId, key, acpSessionId, msg, callMeta, isEvaluation)
+      this.classifyNewSessionOrThrow(agentId, key, acpSessionId, msg, callMeta, hookContext, isEvaluation)
     } catch (err) {
       // Never let classification break a turn — but fail CLOSED: an unclassified
       // session keeps memory capture excluded until the CP confirms otherwise.
@@ -12813,25 +12818,56 @@ export class Daemon {
   private externalOriginForSession(
     agentId: string,
     acpSessionId: string | undefined
-  ): Omit<ExternalSessionOrigin, 'integrationId'> | undefined {
+  ): ExternalSessionAudience | undefined {
     if (!acpSessionId) return undefined
     // ACP session ids are runtime-local and can collide across agents. Bind the
     // lookup to the trusted caller agent so another runtime cannot lend this
     // A2A wake its external audience by accident.
     const rec = this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    if (rec?.externalProvider === 'slack' && rec.externalResourceKind === 'conversation' && rec.externalResourceKey) {
+      return {
+        provider: 'slack',
+        ...(rec.externalRealmKey ? { realmKey: rec.externalRealmKey } : {}),
+        resourceKind: 'conversation',
+        resourceKey: rec.externalResourceKey
+      }
+    }
     if (
-      rec?.externalProvider !== 'slack' ||
-      !rec.externalRealmKey ||
-      rec.externalResourceKind !== 'conversation' ||
-      !rec.externalResourceKey
+      rec?.externalProvider === 'github' &&
+      rec.externalRealmKey === 'github.com' &&
+      rec.externalResourceKind === 'repository' &&
+      rec.externalResourceKey &&
+      /^[1-9]\d*$/.test(rec.externalResourceKey)
     ) {
-      return undefined
+      return {
+        provider: 'github',
+        realmKey: 'github.com',
+        resourceKind: 'repository',
+        resourceKey: rec.externalResourceKey
+      }
+    }
+    return undefined
+  }
+
+  private githubExternalSource(hookContext: HookDispatchContext | undefined) {
+    const github = hookContext?.github
+    if (!github) return undefined
+    const externalOrigin: ExternalSessionOrigin = {
+      provider: 'github',
+      realmKey: 'github.com',
+      resourceKind: 'repository',
+      resourceKey: github.repoId,
+      hookId: hookContext.hookId,
+      deliveryKey: hookContext.deliveryKey,
+      sourceInstallationId: github.sourceInstallationId,
+      repoFullName: github.repoFullName
     }
     return {
-      provider: 'slack',
-      realmKey: rec.externalRealmKey,
-      resourceKind: 'conversation',
-      resourceKey: rec.externalResourceKey
+      externalProvider: 'github' as const,
+      externalRealmKey: externalOrigin.realmKey,
+      externalResourceKind: externalOrigin.resourceKind,
+      externalResourceKey: externalOrigin.resourceKey,
+      externalOrigin
     }
   }
 
@@ -12875,10 +12911,14 @@ export class Daemon {
     agentId: string,
     key: string,
     msg: NormalizedMessage,
-    callMeta: CallMeta | undefined
+    callMeta: CallMeta | undefined,
+    hookContext: HookDispatchContext | undefined
   ): 'unchanged' | 'mismatch' | 'unavailable' {
-    const direct = this.slackExternalSource(agentId, msg, callMeta !== undefined)
-    if (direct && (!direct.externalRealmKey || !direct.externalIntegrationId)) return 'unavailable'
+    const direct =
+      this.githubExternalSource(hookContext) ?? this.slackExternalSource(agentId, msg, callMeta !== undefined)
+    if (direct?.externalProvider === 'slack' && (!direct.externalRealmKey || !direct.externalIntegrationId)) {
+      return 'unavailable'
+    }
     const inherited = callMeta?.externalOrigin
     if (inherited && !inherited.realmKey) return 'unavailable'
     const source =
@@ -12923,6 +12963,7 @@ export class Daemon {
     acpSessionId: string,
     msg: NormalizedMessage,
     callMeta: CallMeta | undefined,
+    hookContext: HookDispatchContext | undefined,
     isEvaluation: boolean
   ): void {
     const isA2aChild = callMeta !== undefined
@@ -12933,8 +12974,9 @@ export class Daemon {
         : this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
     const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
     const tenantScope = integration ? this.tenantScopeForIntegration(integration) : undefined
-    const directSlackSource = this.slackExternalSource(agentId, msg, isA2aChild)
-    const inheritedSlackSource = callMeta?.externalOrigin
+    const directExternalSource =
+      this.githubExternalSource(hookContext) ?? this.slackExternalSource(agentId, msg, isA2aChild)
+    const inheritedExternalSource = callMeta?.externalOrigin
       ? {
           externalProvider: callMeta.externalOrigin.provider,
           externalRealmKey: callMeta.externalOrigin.realmKey,
@@ -12942,15 +12984,15 @@ export class Daemon {
           externalResourceKey: callMeta.externalOrigin.resourceKey
         }
       : undefined
-    const externalSlackSource = directSlackSource ?? inheritedSlackSource
+    const externalSource = directExternalSource ?? inheritedExternalSource
     const launchCorrelationId = this.pendingLaunchCorrelation.get(agentId)
     if (launchCorrelationId) this.pendingLaunchCorrelation.delete(agentId)
     this.store.setSessionClassification(key, {
       conversationKind,
       ...(tenantScope ? { tenantScope } : {}),
       ...(launchCorrelationId ? { launchCorrelationId } : {}),
-      sourceBindingKind: externalSlackSource ? 'external' : 'local',
-      ...(externalSlackSource ?? {})
+      sourceBindingKind: externalSource ? 'external' : 'local',
+      ...(externalSource ?? {})
     })
     const locallyPrivate =
       !isEvaluation &&
@@ -12958,7 +13000,7 @@ export class Daemon {
         msg.isDm ||
         msg.platform === 'webchat' ||
         launchCorrelationId !== undefined ||
-        externalSlackSource !== undefined)
+        externalSource !== undefined)
     this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
   }
 

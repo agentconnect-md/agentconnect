@@ -1739,6 +1739,8 @@ export interface HookRecord {
 export interface HookRunRecord {
   id: string
   hookId: HookId
+  /** Organization captured with the accepted delivery. */
+  orgId: OrgId
   deliveryKey: string
   event: string | null
   agentId: AgentId | null

@@ -339,6 +339,34 @@ export class GithubService {
     return pending
   }
 
+  /** Resolve a rename-proof repository id to its current canonical name. The
+   * installation metadata token proves the repository is still in the App's
+   * grant; a genuine miss is a durable deny, while provider failures bubble. */
+  async repoRefById(
+    ins: GithubInstallationRecord,
+    repoId: bigint
+  ): Promise<{ repoId: bigint; fullName: string; private: boolean; defaultBranch: string } | null> {
+    const token = await this.tokens.metadataToken(ins.installationId)
+    try {
+      const repo = await githubRequest<GhRepo>(`/repositories/${repoId}`, {
+        auth: token,
+        fetchImpl: this.deps.fetchImpl,
+        baseUrl: this.deps.baseUrl,
+        bigIdsAsStrings: true
+      })
+      if (BigInt(repo.id) !== repoId) return null
+      return {
+        repoId,
+        fullName: repo.full_name,
+        private: repo.private,
+        defaultBranch: repo.default_branch
+      }
+    } catch (err) {
+      if (err instanceof GithubApiError && (err.status === 404 || err.status === 422)) return null
+      throw err
+    }
+  }
+
   /** Branch names for the picker — needs contents:read (metadata-only 403s). */
   async listBranches(ins: GithubInstallationRecord, owner: string, repo: string): Promise<string[]> {
     const cred = await this.tokens.mint(ins.installationId, `${owner}/${repo}`, 'read')

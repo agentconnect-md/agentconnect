@@ -115,6 +115,19 @@ describe('LogtoIdentityService', () => {
     expect(calls.token).toBe(1) // one M2M token covered everything
   })
 
+  it('can bypass the display login cache for a fresh authorization assertion', async () => {
+    const users: Record<string, unknown> = {
+      'sub-1': { identities: { github: { details: { rawData: { userInfo: { login: 'before' } } } } } }
+    }
+    const { fetchImpl, calls } = fakeLogto(users)
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
+
+    expect(await svc.githubLoginFor('sub-1')).toBe('before')
+    users['sub-1'] = { identities: { github: { details: { rawData: { userInfo: { login: 'after' } } } } } }
+    expect(await svc.githubLoginFor('sub-1', 0)).toBe('after')
+    expect(calls.user).toBe(2)
+  })
+
   it('surfaces mgmt-API failures as retryable LogtoApiError (the gate fails closed)', async () => {
     const fetchImpl = async (url: string): Promise<Response> =>
       url.endsWith('/oidc/token')
@@ -266,6 +279,16 @@ describe('GithubUserAuthzService', () => {
     expect(calls.permission).toBe(1)
     clock.advance(5 * 60_000 + 1)
     await svc.assertAccess('u1', INS, 'o', 'r', 'write')
+    expect(calls.permission).toBe(2)
+  })
+
+  it('can bypass the picker cache for a shorter-lived authorization lease', async () => {
+    const { svc, calls } = authz({ login: 'me', permission: 'read' })
+    await svc.permissionForUser('u1', INS, 'o', 'r')
+    await svc.permissionForUser('u1', INS, 'o', 'r')
+    expect(calls.permission).toBe(1)
+
+    await svc.permissionForUser('u1', INS, 'o', 'r', { maxCacheAgeMs: 0 })
     expect(calls.permission).toBe(2)
   })
 

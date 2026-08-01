@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ExternalSessionOrigin } from './telemetry.js'
+import { ExternalSessionAudience } from './telemetry.js'
 import {
   NormalizedPlatformMessageSchema,
   PlatformAttachmentSchema,
@@ -372,7 +372,7 @@ export const RdAgentMsg = z.object({
   // Immutable external source inherited from the caller's Session. The relay
   // forwards it opaquely; the target daemon uses it only for its local
   // pre-prompt source-binding gate.
-  externalOrigin: ExternalSessionOrigin.omit({ integrationId: true }).optional(),
+  externalOrigin: ExternalSessionAudience.optional(),
   // session-concept §5.4: the caller asked the woken session to report its outcome back into
   // `originSessionId` (`sendMessage`'s `toAgent.needsReply`). The target daemon turns this into a
   // standing directive on the child; it is never part of the delivered `text`. Meaningless without
@@ -458,7 +458,7 @@ export const RdAgentMsgFwd = z.object({
     .optional(),
   // Forwarded verbatim from RdAgentMsg. It is daemon-authored lineage metadata,
   // never inferred from model text or target coordinates.
-  externalOrigin: ExternalSessionOrigin.omit({ integrationId: true }).optional(),
+  externalOrigin: ExternalSessionAudience.optional(),
   // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
   // session report its outcome back into `originSessionId`. Opaque to the relay — it is the
   // caller's own instruction about its own lineage, not a claim the relay mints or validates.

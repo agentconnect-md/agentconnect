@@ -369,6 +369,36 @@ describe('session visibility — Slack conversation audience', () => {
   })
 })
 
+describe('session visibility — GitHub repository audience', () => {
+  it('exposes an independent owner-only sync setting', async () => {
+    const owner = await makeUser(`sv-github-owner-${randomUUID()}`, 'owner')
+    const collaborator = await makeUser(`sv-github-collab-${randomUUID()}`, 'collaborator')
+
+    const read = await appAs(collaborator).app.inject({ method: 'GET', url: `${ORG}/session-access/github` })
+    expect(read.statusCode).toBe(200)
+    expect(read.json()).toMatchObject({ provider: 'github', available: false, enabled: false })
+    expect(read.json()).not.toHaveProperty('hiddenSessions')
+
+    const forbidden = await appAs(collaborator).app.inject({
+      method: 'PUT',
+      url: `${ORG}/session-access/github`,
+      payload: { enabled: true }
+    })
+    expect(forbidden.statusCode).toBe(403)
+
+    const enabled = await appAs(owner, {
+      logtoIdentity: {} as never,
+      githubSessionAccess: { resolve: async () => ({ allowedScopes: [], degraded: false }) }
+    }).app.inject({
+      method: 'PUT',
+      url: `${ORG}/session-access/github`,
+      payload: { enabled: true }
+    })
+    expect(enabled.statusCode).toBe(200)
+    expect(enabled.json()).toMatchObject({ provider: 'github', available: true, enabled: true, state: 'enabled' })
+  })
+})
+
 describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
   it('lets the recorded owner pull an org session private and publish it back', async () => {
     const initiator = await makeUser('sv-put-owner', 'collaborator')

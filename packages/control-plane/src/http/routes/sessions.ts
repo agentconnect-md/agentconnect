@@ -320,14 +320,18 @@ export function sessionRoutes(deps: HttpDeps) {
       return agent ? { session, agent, access } : null
     }
 
-    const slackAccessDto = async (orgId: OrgId, includeDiagnostics: boolean) => {
+    const externalAccessAvailable = (provider: 'slack' | 'github') =>
+      deps.logtoIdentity !== undefined &&
+      (provider === 'slack' ? deps.slackSessionAccess !== undefined : deps.githubSessionAccess !== undefined)
+
+    const externalAccessDto = async (orgId: OrgId, provider: 'slack' | 'github', includeDiagnostics: boolean) => {
       const [policy, hiddenSessions] = await Promise.all([
-        deps.repos.session.getExternalAccessPolicy(orgId, 'slack'),
-        includeDiagnostics ? deps.repos.session.countExternalUnresolved(orgId, 'slack') : Promise.resolve(undefined)
+        deps.repos.session.getExternalAccessPolicy(orgId, provider),
+        includeDiagnostics ? deps.repos.session.countExternalUnresolved(orgId, provider) : Promise.resolve(undefined)
       ])
       return {
-        provider: 'slack' as const,
-        available: deps.logtoIdentity !== undefined && deps.slackSessionAccess !== undefined,
+        provider,
+        available: externalAccessAvailable(provider),
         enabled: policy?.state !== undefined && policy.state !== 'disabled',
         state: policy?.state ?? ('disabled' as const),
         currentRevision: (policy?.currentRev ?? 0n).toString(),
@@ -336,56 +340,60 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     }
 
-    r.get(
-      '/session-access/slack',
-      {
-        schema: {
-          tags: [Tag.Sessions],
-          summary: 'Get Slack session access sync',
-          description:
-            'Returns whether shared Slack sessions use current Slack conversation membership for console access.',
-          operationId: 'getSlackSessionAccess',
-          response: { 200: SessionExternalAccessDto }
-        }
-      },
-      async (req) => slackAccessDto(orgOf(req), ctxOf(req).role === 'owner')
-    )
+    const registerExternalAccessRoutes = (provider: 'slack' | 'github') => {
+      const label = provider === 'slack' ? 'Slack' : 'GitHub'
+      r.get(
+        `/session-access/${provider}`,
+        {
+          schema: {
+            tags: [Tag.Sessions],
+            summary: `Get ${label} session access sync`,
+            description: `Returns whether ${label} sessions use the provider's current audience for console access.`,
+            operationId: `get${label}SessionAccess`,
+            response: { 200: SessionExternalAccessDto }
+          }
+        },
+        async (req) => externalAccessDto(orgOf(req), provider, ctxOf(req).role === 'owner')
+      )
 
-    r.put(
-      '/session-access/slack',
-      {
-        schema: {
-          tags: [Tag.Sessions],
-          summary: 'Set Slack session access sync',
-          description:
-            'Owner-only setting. When enabled, shared Slack session access follows current conversation membership; unresolved history remains hidden.',
-          operationId: 'setSlackSessionAccess',
-          body: SetSessionExternalAccessBody,
-          response: { 200: SessionExternalAccessDto, 403: ErrorDto, 409: ErrorDto }
+      r.put(
+        `/session-access/${provider}`,
+        {
+          schema: {
+            tags: [Tag.Sessions],
+            summary: `Set ${label} session access sync`,
+            description: `Owner-only setting. When enabled, ${label} sessions follow the provider's current audience; unresolved history remains hidden.`,
+            operationId: `set${label}SessionAccess`,
+            body: SetSessionExternalAccessBody,
+            response: { 200: SessionExternalAccessDto, 403: ErrorDto, 409: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          if (denyNonOwner(req, reply)) return
+          if (req.body.enabled && !externalAccessAvailable(provider)) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: `${label} session access requires OIDC and linked-identity configuration`
+            })
+          }
+          const result = await deps.repos.session.setExternalAccessEnabled(orgOf(req), provider, req.body.enabled)
+          if (result.affected.length > 0) void deps.visibilityPush?.notifySessions(result.affected)
+          return {
+            provider,
+            available: externalAccessAvailable(provider),
+            enabled: result.policy.state !== 'disabled',
+            state: result.policy.state,
+            currentRevision: result.policy.currentRev.toString(),
+            readFenceRevision: result.policy.readFenceRev?.toString() ?? null,
+            hiddenSessions: result.hiddenSessions
+          }
         }
-      },
-      async (req, reply) => {
-        if (denyNonOwner(req, reply)) return
-        if (req.body.enabled && (!deps.logtoIdentity || !deps.slackSessionAccess)) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'Slack session access requires OIDC and Logto linked-identity configuration'
-          })
-        }
-        const result = await deps.repos.session.setExternalAccessEnabled(orgOf(req), 'slack', req.body.enabled)
-        if (result.affected.length > 0) void deps.visibilityPush?.notifySessions(result.affected)
-        return {
-          provider: 'slack' as const,
-          available: deps.logtoIdentity !== undefined && deps.slackSessionAccess !== undefined,
-          enabled: result.policy.state !== 'disabled',
-          state: result.policy.state,
-          currentRevision: result.policy.currentRev.toString(),
-          readFenceRevision: result.policy.readFenceRev?.toString() ?? null,
-          hiddenSessions: result.hiddenSessions
-        }
-      }
-    )
+      )
+    }
+
+    registerExternalAccessRoutes('slack')
+    registerExternalAccessRoutes('github')
 
     r.get(
       '/sessions/facets',

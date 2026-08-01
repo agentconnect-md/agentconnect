@@ -163,6 +163,7 @@ import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 import { SlackSessionAccessService } from './http/slack-session-access.js'
+import { GithubSessionAccessService } from './http/github-session-access.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -699,6 +700,14 @@ export function buildContainer(
     clock,
     ...(opts.slackFetch ? { fetchImpl: opts.slackFetch } : {})
   })
+  const githubSessionAccess = github
+    ? new GithubSessionAccessService({
+        installations: repos.githubInstallation,
+        github,
+        ...(githubUserAuthz ? { userAuthz: githubUserAuthz } : {}),
+        clock
+      })
+    : undefined
 
   const httpDeps: HttpDeps = {
     clock,
@@ -791,6 +800,7 @@ export function buildContainer(
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
     slackSessionAccess,
+    ...(githubSessionAccess ? { githubSessionAccess } : {}),
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     ...(slackPlatformApp ? { slackPlatformApp } : {}),
@@ -950,6 +960,7 @@ export function buildContainer(
     sessionUsage: repos.sessionUsage,
     integration: repos.integration,
     bot: repos.bot,
+    githubInstallation: repos.githubInstallation,
     integrationChannel: repos.integrationChannel,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),

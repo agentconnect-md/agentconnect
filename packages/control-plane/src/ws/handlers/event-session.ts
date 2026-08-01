@@ -13,7 +13,7 @@
  * daemon, and an existing sessionId remains bound to its first agent.
  */
 import { isFrame, type EventSession } from '@agentconnect.md/protocol'
-import { AgentId, BotId, DaemonId, IntegrationId, LaunchId, SessionId } from '../../domain/ids.js'
+import { AgentId, BotId, DaemonId, HookId, IntegrationId, LaunchId, SessionId } from '../../domain/ids.js'
 import { classifySession } from '../../domain/session-visibility.js'
 import type { DaemonWsDeps } from '../deps.js'
 import type { Handler } from './index.js'
@@ -51,6 +51,15 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
 async function externalCandidate(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
   const origin = p.externalOrigin
   if (!origin) {
+    const triggerId = p.triggeredBy?.startsWith('hook:')
+      ? p.triggeredBy.slice('hook:'.length)
+      : p.platform === 'hook'
+        ? p.channel
+        : undefined
+    const hook = triggerId ? await deps.hook.get(HookId(triggerId)) : null
+    const legacyGithub = hook?.kind === 'github' && hook.agentId === agentId
+    if (legacyGithub) return { provider: 'github', resolution: 'pending' as const }
+
     // During a homogeneous upgrade every new daemon reports the trusted source
     // tuple. Keep mixed-version ingest fail-closed too: an older root Slack
     // channel/group-DM milestone is a durable unresolved candidate, never an
@@ -66,6 +75,34 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
     return legacySharedSlack ? { provider: 'slack', resolution: 'pending' as const } : undefined
   }
   const pending = { provider: origin.provider, resolution: 'pending' as const }
+  if (origin.provider === 'github') {
+    const run = await deps.hook.getRun(HookId(origin.hookId), origin.deliveryKey)
+    if (!run || !deps.githubInstallation) return pending
+    if (
+      run.agentId !== agentId ||
+      run.repoId?.toString() !== origin.resourceKey ||
+      run.repoFullName !== origin.repoFullName ||
+      run.sourceInstallationId?.toString() !== origin.sourceInstallationId
+    ) {
+      return { provider: 'github', resolution: 'invalid' as const }
+    }
+    const installation = await deps.githubInstallation.getByInstallationId(BigInt(origin.sourceInstallationId))
+    if (!installation) return pending
+    if (installation.orgId !== run.orgId) {
+      return { provider: 'github', resolution: 'invalid' as const }
+    }
+    return {
+      provider: 'github',
+      resolution: 'settled' as const,
+      scope: {
+        realmKey: 'github.com',
+        resourceKind: 'repository',
+        resourceKey: origin.resourceKey,
+        credentialKind: 'github_installation',
+        credentialId: installation.id
+      }
+    }
+  }
   if (!origin.integrationId || !origin.realmKey) return pending
   const integration = await deps.integration.get(IntegrationId(origin.integrationId))
   if (

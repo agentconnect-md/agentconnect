@@ -307,6 +307,10 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
     platform: 'hook',
     channel,
     ...(thread ? { thread } : {}),
+    // A pre-audience daemon used an unscoped local key. Pinning the immutable
+    // repository id here creates a clean runtime after upgrade instead of
+    // letting a mutable hook id claim legacy context from another repository.
+    ...(msg.github ? { transportScope: `github:${msg.github.repoId}` } : {}),
     sender: { id: `hook:${msg.hookId}`, isBot: false },
     text: buildHookText(msg),
     ...(initialSessionTitle ? { initialSessionTitle } : {}),
