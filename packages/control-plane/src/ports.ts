@@ -237,6 +237,9 @@ export interface DaemonLiveness {
  */
 export interface DaemonRegistry {
   upsertOnRegister(daemonId: DaemonId, req: RegisterReq): Promise<void>
+  /** Persist a mid-connection `capabilities/update` full-replace (the durable
+   *  sibling of the ConnectionRegistry's live copy). */
+  updateCapabilities(daemonId: DaemonId, capabilities: RegisterReq['capabilities']): Promise<void>
   /** Close a pending CP-commanded restart/upgrade op once the daemon has ACTUALLY
    *  reached READY (called post-reconcile, cli-daemon-split.md §7). Best-effort. */
   settleLifecycleOpOnReady(daemonId: DaemonId): Promise<void>

@@ -1,22 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { corsWebOrigin, loadConfig, resolveWebAppUrl } from './env.js'
-
-const REQUIRED_ENV = {
-  DATABASE_URL: 'postgresql://postgres:postgres@example.test:5432/agentconnect',
-  API_KEY_PEPPER: 'unit-test-pepper-0123456789abcdefghij'
-}
-
-describe('WEBCHAT_PRESET_MCP_ENABLED', () => {
-  it('defaults to false', () => {
-    expect(loadConfig(REQUIRED_ENV).WEBCHAT_PRESET_MCP_ENABLED).toBe(false)
-  })
-
-  it('enables only for the explicit string true', () => {
-    expect(loadConfig({ ...REQUIRED_ENV, WEBCHAT_PRESET_MCP_ENABLED: 'true' }).WEBCHAT_PRESET_MCP_ENABLED).toBe(true)
-    expect(loadConfig({ ...REQUIRED_ENV, WEBCHAT_PRESET_MCP_ENABLED: 'false' }).WEBCHAT_PRESET_MCP_ENABLED).toBe(false)
-    expect(() => loadConfig({ ...REQUIRED_ENV, WEBCHAT_PRESET_MCP_ENABLED: '1' })).toThrow()
-  })
-})
+import { corsWebOrigin, resolveWebAppUrl } from './env.js'
 
 describe('corsWebOrigin', () => {
   it('returns a single concrete origin verbatim', () => {

@@ -231,6 +231,37 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect(readJson(file).introduceOnJoin).toBe(true)
   })
 
+  it('folds the builtin preset marker into raw.builtin', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ builtin: true }), deps)
+
+    expect(readJson(file).builtin).toBe(true)
+  })
+
+  it('leaves an on-disk builtin marker untouched when the spec omits it (older CP)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      builtin: true,
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ builtin: undefined }), deps)
+
+    expect(readJson(file).builtin).toBe(true)
+  })
+
   it('folds a model change into runtimeOverrides.model', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

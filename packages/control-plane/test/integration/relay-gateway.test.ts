@@ -495,10 +495,9 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     daemonWs.close()
   })
 
-  it('rc/verify(webchat-token) establishes a preset delegation only when the rollout gate and daemon capability pass', async () => {
+  it('rc/verify(webchat-token) establishes a preset delegation when the daemon capability passes', async () => {
     const { app, base } = await start({
-      PUBLIC_RELAY_URL: RELAY_URL,
-      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+      PUBLIC_RELAY_URL: RELAY_URL
     })
     const daemonWs = await connectDaemonReady(base, [WEBCHAT_REMOTE_MCP_FEATURE])
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
@@ -544,28 +543,9 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     daemonWs.close()
   })
 
-  it('keeps ordinary preset webchat when the rollout gate is disabled', async () => {
-    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
-    const daemonWs = await connectDaemonReady(base, [WEBCHAT_REMOTE_MCP_FEATURE])
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    await prisma.presetAgent.create({
-      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
-    })
-    const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
-
-    const verified = await verifyWebchat(base, token.token, 'pod-gate-off')
-
-    expect(verified.result).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON })
-    expect(verified.result.remoteMcp).toBeUndefined()
-    expect(await prisma.webchatMcpDelegation.count()).toBe(0)
-    verified.ws.close()
-    daemonWs.close()
-  })
-
   it('keeps ordinary preset webchat when the daemon lacks the remote-MCP capability', async () => {
     const { app, base } = await start({
-      PUBLIC_RELAY_URL: RELAY_URL,
-      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+      PUBLIC_RELAY_URL: RELAY_URL
     })
     const daemonWs = await connectDaemonReady(base)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
@@ -585,8 +565,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
 
   it('keeps ordinary non-preset webchat when remote-MCP entitlement is denied', async () => {
     const { app, base } = await start({
-      PUBLIC_RELAY_URL: RELAY_URL,
-      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+      PUBLIC_RELAY_URL: RELAY_URL
     })
     const daemonWs = await connectDaemonReady(base, [WEBCHAT_REMOTE_MCP_FEATURE])
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
@@ -603,8 +582,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
 
   it('keeps ordinary webchat but omits remote MCP when the token owner loses current membership', async () => {
     const { app, base } = await start({
-      PUBLIC_RELAY_URL: RELAY_URL,
-      WEBCHAT_PRESET_MCP_ENABLED: 'true'
+      PUBLIC_RELAY_URL: RELAY_URL
     })
     const daemonWs = await connectDaemonReady(base, [WEBCHAT_REMOTE_MCP_FEATURE])
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })

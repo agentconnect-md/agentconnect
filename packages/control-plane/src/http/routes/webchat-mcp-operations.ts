@@ -79,7 +79,6 @@ export function webchatMcpOperationRoutes(deps: HttpDeps) {
       principal?: { userId: string }
       orgCtx?: { orgId: OrgId; userId: string; role: 'owner' | 'collaborator' | 'viewer' }
     }) => {
-      if (!deps.remoteGrantAuth.isEnabled()) return null
       const agent = await deps.repos.agent.get(AgentId(req.params.agentId))
       const userId = req.principal!.userId
       if (!agent || !agent.daemonId || agent.orgId !== req.params.orgId || !canView(agent, ctxOf(req as never)))

@@ -33,7 +33,6 @@ export type RemoteGrantClaimResult =
 
 export interface RemoteGrantAuthenticatorDeps extends LiveWebchatMcpAuthorityDeps {
   clock: Pick<Clock, 'now'>
-  featureEnabled(): boolean
   sessions: { hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean> }
   tokenCodec: Pick<WebchatMcpGrantTokenCodec, 'hash'>
   grants: Pick<WebchatMcpAccessGrantRepo, 'getByTokenHash'>
@@ -44,16 +43,11 @@ export interface RemoteGrantAuthenticatorDeps extends LiveWebchatMcpAuthorityDep
 export class RemoteGrantAuthenticator {
   constructor(private readonly deps: RemoteGrantAuthenticatorDeps) {}
 
-  isEnabled(): boolean {
-    return this.deps.featureEnabled()
-  }
-
   async authenticate(input: {
     bearer: string
     requestBytes: Uint8Array
     parseMetadata(): ParsedInvocationMetadata | Promise<ParsedInvocationMetadata>
   }): Promise<RemoteGrantClaimResult> {
-    if (!this.isEnabled()) return { kind: 'denied', reason: 'feature_disabled' }
     const tokenHash = this.deps.tokenCodec.hash(input.bearer)
     if (!tokenHash) return { kind: 'denied', reason: 'credential' }
     const now = new Date(this.deps.clock.now())

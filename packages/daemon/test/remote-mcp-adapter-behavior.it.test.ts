@@ -36,10 +36,11 @@
  *     which is exactly why a conversation-lifetime id can never be a durable
  *     operation identity and §8 receipts must be grant-scoped.
  *
- * OPT-IN: requires network (npx fetch) and an initialized/authenticated
- * adapter on this host. Run as:
+ * OPT-IN: requires network where the launch fetches a package and an
+ * initialized/authenticated adapter on this host. Run as:
  *
- *   REMOTE_MCP_ADAPTER_IT=claude-acp,codex-acp pnpm vitest run test/remote-mcp-adapter-behavior.it.test.ts
+ *   REMOTE_MCP_ADAPTER_IT=claude-acp,codex-acp,opencode,grok-build \
+ *     pnpm vitest run test/remote-mcp-adapter-behavior.it.test.ts
  *
  * CI skips it (no env). The validation record in src/mcp/remote-mcp-runtimes.ts
  * names the exact launches this harness was last run against; that table is an
@@ -53,6 +54,7 @@ import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { AcpHost } from '../src/acp/acp-host.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
+import { resolveCommandPath } from '../src/runtimes/probe.js'
 
 const TARGETS = (process.env.REMOTE_MCP_ADAPTER_IT ?? '')
   .split(',')
@@ -63,13 +65,13 @@ const TARGETS = (process.env.REMOTE_MCP_ADAPTER_IT ?? '')
  * Candidate launches. Every entry admitted by VALIDATED_REMOTE_MCP_LAUNCHES
  * must appear here byte-identically and must PASS; an entry may also be listed
  * while it is only a candidate, so a future release can be re-validated here
- * before being admitted. `codex-acp@1.1.7` is currently such a candidate — it
- * fetches `tools/list` over the descriptor but never exposes those tools to the
- * model, so it fails this harness and stays out of the allowlist.
+ * before being admitted.
  */
 const ADAPTERS: Record<string, { command: string; args: string[] }> = {
   'claude-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'] },
-  'codex-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.1.7'] }
+  'codex-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.1.7'] },
+  opencode: { command: './opencode', args: ['acp'] },
+  'grok-build': { command: 'npx', args: ['-y', '@xai-official/grok@0.2.118', 'agent', 'stdio'] }
 }
 
 interface SeenRequest {
@@ -183,7 +185,10 @@ const settle = (ms = 4_000) => new Promise((resolve) => setTimeout(resolve, ms))
  * artifact with the validated argument vector — only fd 2 is redirected.
  */
 function captureStderrLaunch(adapter: { command: string; args: string[] }, logPath: string): RuntimeDef {
-  const quoted = [adapter.command, ...adapter.args].map((part) => `'${part.replace(/'/g, `'\\''`)}'`).join(' ')
+  // Mirror AcpHost's production resolution of registry commands such as
+  // `./opencode`: try the literal path, then its basename on PATH.
+  const command = resolveCommandPath(adapter.command) ?? adapter.command
+  const quoted = [command, ...adapter.args].map((part) => `'${part.replace(/'/g, `'\\''`)}'`).join(' ')
   return { command: 'sh', args: ['-c', `exec ${quoted} 2>>'${logPath}'`], env: [] }
 }
 
@@ -257,6 +262,10 @@ for (const [runtimeId, adapter] of Object.entries(ADAPTERS)) {
         // adapter process already holds a descriptor must complete a FULL turn
         // that explicitly attempts the probe tool — and still produce no
         // authorized traffic of its own.
+        // Let descriptor-session background discovery settle before taking the
+        // baseline; only traffic caused after the bare turn begins is relevant
+        // to the cross-session carryover assertion.
+        await settle()
         const authorizedBeforeBare = authorized().length
         const bareSession = await firstHost.newSession(workdir)
         await firstHost.prompt(bareSession, [
@@ -268,7 +277,10 @@ for (const [runtimeId, adapter] of Object.entries(ADAPTERS)) {
           }
         ])
         await settle()
-        expect(authorized().length).toBe(authorizedBeforeBare)
+        expect(
+          authorized().length,
+          `descriptor-free session caused authorized traffic: ${JSON.stringify(authorized().slice(authorizedBeforeBare))}`
+        ).toBe(authorizedBeforeBare)
 
         // (5) the reveal turn MUST run: an adapter that cannot complete it
         // yields no model-visible evidence, so the harness fails rather than

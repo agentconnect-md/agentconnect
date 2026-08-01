@@ -225,6 +225,8 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       introduceOnJoin: false,
       // #642: sandbox preference — always shipped (definite column); default false.
       restrictFileAccess: false,
+      // Preset marker — always shipped so the daemon can gate preset-only capabilities.
+      builtin: false,
       workspace: { mode: 'scratch', gitCredential: 'github-app' }
     })
 

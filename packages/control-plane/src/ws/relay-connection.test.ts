@@ -162,7 +162,6 @@ async function toReady(transport: FakeServerTransport): Promise<void> {
 
 function buildWebchatVerifier(
   over: {
-    enabled?: boolean
     tokenClaims?: WebchatTokenClaims | null
     daemonId?: string | null
     daemonState?: string
@@ -207,7 +206,6 @@ function buildWebchatVerifier(
     getDaemon,
     establish,
     verifier: createWebchatTokenVerifier({
-      enabled: over.enabled ?? true,
       tokens: { verify },
       agents: { get: getAgent },
       daemons: { get: getDaemon },
@@ -217,7 +215,7 @@ function buildWebchatVerifier(
 }
 
 describe('webchat verification remote-MCP gate', () => {
-  it('adds only the non-secret entitlement after ordinary verification and both rollout gates pass', async () => {
+  it('adds only the non-secret entitlement after ordinary verification when the daemon capability passes', async () => {
     const h = buildWebchatVerifier()
 
     const result = await h.verifier('browser-credential')
@@ -240,11 +238,8 @@ describe('webchat verification remote-MCP gate', () => {
     expect(JSON.stringify(result)).not.toContain('browser-credential')
   })
 
-  it.each([
-    { enabled: false, features: [WEBCHAT_REMOTE_MCP_FEATURE], label: 'server gate is off' },
-    { enabled: true, features: [], label: 'daemon capability is absent' }
-  ])('returns ordinary webchat without establishment when $label', async ({ enabled, features }) => {
-    const h = buildWebchatVerifier({ enabled, daemonFeatures: features })
+  it('returns ordinary webchat without establishment when the daemon capability is absent', async () => {
+    const h = buildWebchatVerifier({ daemonFeatures: [] })
 
     const result = await h.verifier('browser-credential')
 

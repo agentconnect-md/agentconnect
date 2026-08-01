@@ -438,6 +438,9 @@ function applySpecFields(
   if (spec.introduceOnJoin !== undefined) raw.introduceOnJoin = spec.introduceOnJoin
   // Sandbox toggle (#312): the CP always ships it (definite column); absent ⇒ leave alone.
   if (spec.restrictFileAccess !== undefined) raw.restrictFileAccess = spec.restrictFileAccess
+  // Preset marker (preset-agents.md §3.1): the CP always ships it (definite record
+  // field), so a flip replicates; absent (older CP) ⇒ leave the on-disk value alone.
+  if (spec.builtin !== undefined) raw.builtin = spec.builtin
   if (spec.memory !== undefined) raw.memory = spec.memory
 
   // Output settings preserve sibling/future keys while applying CP-owned values.

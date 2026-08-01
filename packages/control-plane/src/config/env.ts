@@ -104,14 +104,6 @@ export const AppConfigSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
-  // ── Built-in preset webchat MCP delegation — rollout gate, default OFF ──
-  // Grant establishment is additionally gated on a live daemon advertising the
-  // private, session-scoped remote-MCP capability. Keep this explicit string boolean:
-  // z.coerce.boolean() would incorrectly enable the feature for `"false"`.
-  WEBCHAT_PRESET_MCP_ENABLED: z
-    .enum(['true', 'false'])
-    .default('false')
-    .transform((v) => v === 'true'),
   // ── Platform-published (distributed) Slack app (preset-agents.md §5.3) — opt-in ──
   // The deployment-level Slack app users "Add to Slack" via standard OAuth v2.
   // ALL FOUR must be set to enable the feature; any unset ⇒ absent (the
