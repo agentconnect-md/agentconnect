@@ -31,6 +31,10 @@ describe('skills.sh registry search', () => {
           hit({ skillId: '--force', name: '--force' }), // would be read as a `-s` flag
           hit({ source: 'https://evil.example/repo?token=x' }), // not the owner/repo form
           hit({ source: 'anthropics/skills evil' }), // whitespace-split into extra argv
+          hit({ source: '../repo' }), // `npx skills add` reads this as a LOCAL path
+          hit({ source: './repo' }),
+          hit({ source: 'anthropics/skills/pdf' }), // three segments: not owner/repo
+          hit({ source: '-a/repo' }), // option-like owner
           hit({ skillId: null, name: null }),
           'not-an-object',
           hit()

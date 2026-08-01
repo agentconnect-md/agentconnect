@@ -144,11 +144,22 @@ describe('organization Skills library', () => {
   })
 
   it('installs a searched skills.sh hit as a one-skill source, and marks what the library already has', async () => {
+    // A same-repo source scoped to a subdirectory covers only that directory, so a
+    // skill elsewhere in the repo must stay installable.
+    mocks.skillSources.push({
+      ...mocks.skillSources[0]!,
+      id: 'source-2',
+      name: 'docs-kit',
+      source: 'openai/skills',
+      subDir: 'docs',
+      skills: []
+    })
     const hits = [
       { id: 'anthropics/skills/pdf', name: 'pdf', source: 'anthropics/skills', installs: 169905 },
       // Covered by the seeded acme/platform-skills source (install-all), so it must
       // render as "added" rather than as an installable choice.
-      { id: 'acme/platform-skills/review-pr', name: 'review-pr', source: 'acme/platform-skills', installs: 12 }
+      { id: 'acme/platform-skills/review-pr', name: 'review-pr', source: 'acme/platform-skills', installs: 12 },
+      { id: 'openai/skills/xlsx', name: 'xlsx', source: 'openai/skills', installs: 7 }
     ]
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -175,6 +186,16 @@ describe('organization Skills library', () => {
     const covered = buttonWithText('review-pr', '.modalbody')
     expect(covered.disabled).toBe(true)
     expect(covered.textContent).toContain('already in your library as platform-skills')
+
+    expect(buttonWithText('xlsx', '.modalbody').disabled).toBe(false)
+
+    // Editing the query retires the previous hits for the whole debounce window —
+    // a row from a search the input no longer shows must not stay clickable.
+    await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'xlsx')
+    expect(host.querySelector('.modalbody')?.textContent).toContain('Searching…')
+    expect(host.querySelector('.modalbody')?.textContent).not.toContain('169.9K installs')
+    await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'pdf')
+    await settleUntil(() => host.textContent?.includes('169.9K installs') === true, 40)
 
     await act(async () => buttonWithText('anthropics/skills', '.modalbody').click())
     await act(async () => buttonWithText('Install', '.modalfoot').click())

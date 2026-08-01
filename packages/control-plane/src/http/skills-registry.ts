@@ -46,7 +46,19 @@ const REGISTRY_TIMEOUT_MS = 6000
 const DEFAULT_LIMIT = 10
 // `owner/repo`, the only source form the index yields — and a valid positional for
 // `npx skills add` (no leading "-", no query/fragment, no userinfo).
-const OWNER_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
+//
+// The owner half uses GitHub's own grammar (alphanumerics + hyphen) rather than a
+// loose segment match, because `npx skills add` ALSO accepts a local path: a
+// registry row claiming `../repo` or `./repo` would otherwise persist as a source
+// that resolves against the agent's workspace instead of fetching a repository.
+const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
+const REPO = /^[A-Za-z0-9._-]{1,100}$/
+function isOwnerRepo(source: string): boolean {
+  const [owner, repo, ...rest] = source.split('/')
+  if (rest.length > 0 || !owner || !repo) return false
+  if (repo === '.' || repo === '..') return false
+  return OWNER.test(owner) && REPO.test(repo)
+}
 // Mirrors dto SkillFilterName: a `-s` VALUE, so it may not start with "-".
 const SKILL_NAME = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/
 // Mirrors the slug shape the registry links by; display + link only, never a CLI arg.
@@ -66,7 +78,7 @@ function normalize(raw: unknown): RegistrySkill | null {
   // `skillId` is the directory name; `name` is its display form and usually equal.
   const source = field(r.source)
   const name = field(r.skillId) ?? field(r.name)
-  if (!source || !name || !OWNER_REPO.test(source) || !SKILL_NAME.test(name)) return null
+  if (!source || !name || !isOwnerRepo(source) || !SKILL_NAME.test(name)) return null
   const id = field(r.id)
   return {
     id: id && SLUG.test(id) ? id : `${source}/${name}`,

@@ -60,9 +60,10 @@ export function InstallRegistrySkillModal({
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
   const [q, setQ] = useState('')
-  const [hits, setHits] = useState<SkillRegistryHitDto[] | null>(null)
-  const [reachable, setReachable] = useState(true)
-  const [searching, setSearching] = useState(false)
+  // Results carry the query they answer, so an edited query hides the previous
+  // hits for the whole debounce + network window instead of leaving rows from a
+  // different search on screen and clickable.
+  const [hits, setHits] = useState<{ query: string; reachable: boolean; skills: SkillRegistryHitDto[] } | null>(null)
   const [picked, setPicked] = useState<SkillRegistryHitDto | null>(null)
   const [name, setName] = useState('')
   const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
@@ -77,23 +78,17 @@ export function InstallRegistrySkillModal({
     const seq = (seqRef.current += 1)
     if (query.length < MIN_QUERY) {
       setHits(null)
-      setSearching(false)
       return
     }
-    setSearching(true)
     const timer = setTimeout(() => {
       void searchSkillRegistry(query).then(
         (r) => {
           if (seqRef.current !== seq) return
-          setReachable(r.reachable)
-          setHits(r.skills)
-          setSearching(false)
+          setHits({ query, reachable: r.reachable, skills: r.skills })
         },
         () => {
           if (seqRef.current !== seq) return
-          setReachable(false)
-          setHits([])
-          setSearching(false)
+          setHits({ query, reachable: false, skills: [] })
         }
       )
     }, DEBOUNCE_MS)
@@ -101,14 +96,19 @@ export function InstallRegistrySkillModal({
   }, [q])
 
   const takenNames = useMemo(() => existing.map((s) => s.name), [existing])
+  // Results are only shown while they still answer what the input says.
+  const shown = hits && hits.query === q.trim() ? hits : null
 
   // A hit is already covered when some source points at the same repo AND either
-  // installs the whole repo or already lists this skill.
+  // names this skill explicitly or installs the whole repo. An empty filter only
+  // means "whole repo" when the source isn't scoped to a subdirectory — a subDir
+  // source installs just that directory, so skills elsewhere in the repo are still
+  // installable.
   const coveredBy = (hit: SkillRegistryHitDto): SkillSourceDto | undefined =>
     existing.find(
       (s) =>
         s.source.trim().toLowerCase() === hit.source.toLowerCase() &&
-        (s.skills.length === 0 || s.skills.includes(hit.name))
+        (s.skills.includes(hit.name) || (s.skills.length === 0 && !s.subDir))
     )
 
   const pick = (hit: SkillRegistryHitDto) => {
@@ -212,12 +212,12 @@ export function InstallRegistrySkillModal({
                   Type at least {MIN_QUERY} characters to search skills.sh — the same index{' '}
                   <span className="mono">npx skills find</span> reads.
                 </div>
-              ) : searching && hits === null ? (
+              ) : !shown ? (
                 <div className="flex items-center gap-2 px-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                   <Icon name="loader" size={14} className="animate-spin" />
                   Searching…
                 </div>
-              ) : !reachable ? (
+              ) : !shown.reachable ? (
                 <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                   <Icon name="info" size={14} className="mt-[1px] flex-none" />
                   <span>
@@ -225,12 +225,12 @@ export function InstallRegistrySkillModal({
                     &ldquo;Import from GitHub&rdquo;.
                   </span>
                 </div>
-              ) : (hits?.length ?? 0) === 0 ? (
+              ) : shown.skills.length === 0 ? (
                 <div className="px-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                   No skills match &ldquo;{q.trim()}&rdquo;.
                 </div>
               ) : (
-                (hits ?? []).map((hit) => {
+                shown.skills.map((hit) => {
                   const covered = coveredBy(hit)
                   const installs = fmtInstalls(hit.installs)
                   return (
