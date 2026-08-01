@@ -1,5 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { splitIntoSections } from '../slack/formatter.js'
+import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 
 /**
@@ -233,7 +234,7 @@ export class TelegramConverger {
       if (!trimmed || isNoResponsePrefix(trimmed)) return []
       return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
     }
-    return [...this.drainReasoning(), ...this.flush()]
+    return [...this.drainReasoning(), ...this.flushStreaming()]
   }
 
   /** minimal: a Telegram message caps at 4096 chars; head-clamp the live view when longer
@@ -282,6 +283,23 @@ export class TelegramConverger {
     if (isNoResponsePrefix(trimmed)) return []
     const text = this.buf
     this.buf = ''
+    return this.emitBody(text, final)
+  }
+
+  /** The idle timer's body flush. Unlike a semantic boundary (tool call / plan / thinking,
+   *  where the model really did finish a text block) this fires on a mere pause in the ACP
+   *  stream, so it posts only up to the last paragraph break and re-buffers the rest —
+   *  otherwise one reply is split across two messages mid-sentence (§stream-boundary). */
+  private flushStreaming(): TelegramAction[] {
+    const trimmed = this.buf.trim()
+    if (!trimmed || isNoResponsePrefix(trimmed)) return []
+    const { ready, tail } = splitAtParagraphBoundary(this.buf)
+    if (!ready) return []
+    this.buf = tail
+    return this.emitBody(ready, false)
+  }
+
+  private emitBody(text: string, final: boolean): TelegramAction[] {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'

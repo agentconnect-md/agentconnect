@@ -19,6 +19,21 @@ describe('DiscordConverger modes', () => {
     const c = new DiscordConverger('medium')
     expect(kinds(c.onUpdate(toolCall({ toolCallId: 't1', title: 'Bash' })))).toEqual(['typing', 'progress'])
   })
+
+  it('idle-flushes only through the last paragraph break so a reply is never cut mid-sentence', () => {
+    const c = new DiscordConverger('medium')
+    c.onUpdate(chunk('First paragraph.\n\nStill streaming mid-wo'))
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'First paragraph.\n\n' }])
+    c.onUpdate(chunk('rd.'))
+    expect(c.onFinal()).toContainEqual({ kind: 'post', text: 'Still streaming mid-word.' })
+  })
+
+  it('idle-flushes nothing while the buffer holds no paragraph break yet', () => {
+    const c = new DiscordConverger('medium')
+    c.onUpdate(chunk('one long line so f'))
+    expect(c.flushBuffered()).toEqual([])
+    expect(c.hasBuffered()).toBe(true)
+  })
 })
 
 describe('DiscordConverger AC_NO_RESPONSE suppression', () => {

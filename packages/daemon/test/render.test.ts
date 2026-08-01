@@ -394,7 +394,10 @@ describe('OutputConverger', () => {
   it('high mode: an idle flush emits reasoning before the body so Thinking posts above the reply', () => {
     const hi = new OutputConverger('high')
     hi.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'weighing options' } } as any)
-    hi.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Here is the answer.' } } as any)
+    hi.onUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Here is the answer.\n\n' }
+    } as any)
     const actions = hi.flushBuffered()
     const rIdx = actions.findIndex((a) => a.kind === 'reasoning')
     const pIdx = actions.findIndex((a) => a.kind === 'post')
@@ -574,26 +577,60 @@ describe('OutputConverger', () => {
   it('hasBuffered tracks the body buffer; flushBuffered drains it for the idle timer', () => {
     const c = new OutputConverger('medium')
     expect(c.hasBuffered()).toBe(false)
-    c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'streaming…' } } as any)
+    c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'streaming…\n\n' } } as any)
     expect(c.hasBuffered()).toBe(true)
-    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'streaming…' }])
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'streaming…\n\n' }])
     expect(c.hasBuffered()).toBe(false)
     expect(c.flushBuffered()).toEqual([]) // nothing left
+  })
+
+  it('idle-flushes only through the last paragraph break so a reply is never cut mid-sentence', () => {
+    const c = new OutputConverger('medium')
+    const chunk = (text: string) =>
+      c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } as any)
+    // ACP text deltas are token-sized, so a pause in the stream can leave the buffer mid-word.
+    chunk('The pinned tag is nine commits stale.\n\nSo I am rebuilding the depend')
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'The pinned tag is nine commits stale.\n\n' }])
+    // The held tail keeps streaming and settles as one message at turn end.
+    chunk('ency graph before building.')
+    expect(c.onFinal(undefined)).toContainEqual({
+      kind: 'post',
+      text: 'So I am rebuilding the dependency graph before building.'
+    })
+  })
+
+  it('idle-flushes nothing while the buffer holds no paragraph break yet', () => {
+    const c = new OutputConverger('medium')
+    c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'one long line so f' } } as any)
+    expect(c.flushBuffered()).toEqual([])
+    expect(c.hasBuffered()).toBe(true) // still buffered, not dropped
+  })
+
+  it('a tool boundary still drains the whole buffer — the model finished that text block', () => {
+    const c = new OutputConverger('low')
+    c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Let me check.' } } as any)
+    const actions = c.onUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 't1',
+      title: 'Read',
+      status: 'pending'
+    } as any)
+    expect(actions[0]).toEqual({ kind: 'post', text: 'Let me check.' })
   })
 
   it('posts the agent markdown verbatim when flushing body text (no mrkdwn conversion)', () => {
     const c = new OutputConverger('medium')
     c.onUpdate({
       sessionUpdate: 'agent_message_chunk',
-      content: { type: 'text', text: 'see **bold** and [docs](https://x.io)' }
+      content: { type: 'text', text: 'see **bold** and [docs](https://x.io)\n\n' }
     } as any)
     const [post] = c.flushBuffered()
-    expect(post).toEqual({ kind: 'post', text: 'see **bold** and [docs](https://x.io)' })
+    expect(post).toEqual({ kind: 'post', text: 'see **bold** and [docs](https://x.io)\n\n' })
   })
 
   it('splits an over-long body into multiple ≤block-limit post sections', () => {
     const c = new OutputConverger('medium')
-    const big = `${'a'.repeat(9000)}\n${'b'.repeat(9000)}`
+    const big = `${'a'.repeat(9000)}\n${'b'.repeat(9000)}\n\n`
     c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: big } } as any)
     const posts = c.flushBuffered()
     expect(posts.length).toBe(2)

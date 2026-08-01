@@ -1,5 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
+import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 
 /**
@@ -338,7 +339,7 @@ export class DiscordConverger {
       if (!trimmed || isNoResponsePrefix(trimmed)) return []
       return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
     }
-    return [...this.drainReasoning(), ...this.flush()]
+    return [...this.drainReasoning(), ...this.flushStreaming()]
   }
 
   /** minimal: a Discord message caps at 2000 chars; head-clamp the live view when longer
@@ -385,6 +386,23 @@ export class DiscordConverger {
     if (isNoResponsePrefix(trimmed)) return []
     const text = this.buf
     this.buf = ''
+    return this.emitBody(text)
+  }
+
+  /** The idle timer's body flush. Unlike a semantic boundary (tool call / plan / thinking,
+   *  where the model really did finish a text block) this fires on a mere pause in the ACP
+   *  stream, so it posts only up to the last paragraph break and re-buffers the rest —
+   *  otherwise one reply is split across two messages mid-sentence (§stream-boundary). */
+  private flushStreaming(): DiscordAction[] {
+    const trimmed = this.buf.trim()
+    if (!trimmed || isNoResponsePrefix(trimmed)) return []
+    const { ready, tail } = splitAtParagraphBoundary(this.buf)
+    if (!ready) return []
+    this.buf = tail
+    return this.emitBody(ready)
+  }
+
+  private emitBody(text: string): DiscordAction[] {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'

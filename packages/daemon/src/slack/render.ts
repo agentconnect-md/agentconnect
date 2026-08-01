@@ -15,6 +15,7 @@ export {
   encodePermValue
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
+import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { splitIntoSections } from './formatter.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -855,7 +856,7 @@ export class OutputConverger {
       if (!trimmed || isNoResponsePrefix(trimmed)) return []
       return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
     }
-    return [...this.drainReasoning(), ...this.flush()]
+    return [...this.drainReasoning(), ...this.flushStreaming()]
   }
 
   /** minimal: the single live message can hold one Block Kit `markdown` block (≤12000
@@ -907,6 +908,23 @@ export class OutputConverger {
     if (isNoResponsePrefix(trimmed)) return []
     const text = this.buf
     this.buf = ''
+    return this.emitBody(text)
+  }
+
+  /** The idle timer's body flush. Unlike a semantic boundary (tool call / plan / thinking,
+   *  where the model really did finish a text block) this fires on a mere pause in the ACP
+   *  stream, so it posts only up to the last paragraph break and re-buffers the rest —
+   *  otherwise one reply is split across two messages mid-sentence (§stream-boundary). */
+  private flushStreaming(): SlackAction[] {
+    const trimmed = this.buf.trim()
+    if (!trimmed || isNoResponsePrefix(trimmed)) return []
+    const { ready, tail } = splitAtParagraphBoundary(this.buf)
+    if (!ready) return []
+    this.buf = tail
+    return this.emitBody(ready)
+  }
+
+  private emitBody(text: string): SlackAction[] {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` is handled
     // before the connection check on every platform, so it lands even though replyConn is unset.
     const recordOnly = this.mode === 'none'
