@@ -29,6 +29,23 @@ export interface ControllerDeps {
 export interface InstallOpts {
   execPath: string
   includeRootEnv: boolean
+  /**
+   * Absolute path to this CLI's own dist entry. When present, the unit runs
+   * `execPath cliEntry run` — the CLI run shell — which launches the daemon
+   * through the user's interactive login shell so it inherits a fresh
+   * terminal-equivalent environment (run-shell.ts / service-spawn.ts). Without
+   * it the unit falls back to running the daemon entry directly (legacy form).
+   * Pinned at install time and refreshed on every re-install, like `execPath`.
+   */
+  cliEntry?: string
+  /**
+   * Install-time snapshot of the invoking shell's `PATH`, baked into the unit.
+   * Service managers give user units a minimal PATH and never source shell
+   * profiles; this keeps the CLI itself and the direct-spawn fallback working
+   * even when the login-shell launch is unavailable. Refreshed on every
+   * re-install, like `execPath`.
+   */
+  envPath?: string
 }
 
 export interface ServiceStatus {

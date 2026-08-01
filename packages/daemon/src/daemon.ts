@@ -165,6 +165,7 @@ import {
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
+import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   probeAllRuntimes,
   isAuthRequiredError,
@@ -1836,6 +1837,12 @@ export class Daemon {
   }
 
   async start(): Promise<void> {
+    // A service-installed daemon normally arrives through the CLI run shell's
+    // login-shell launch with a full user env (cli service-spawn.ts). This is
+    // the backstop for legacy direct-ExecStart units and bare docker runs:
+    // keep npx/npm (siblings of the launching Node) resolvable for runtime
+    // probing and launching before anything reads process.env.
+    ensureNodeBinOnPath()
     const root = resolveRoot(this.opts.root)
     const cfg = loadConfig({
       root,

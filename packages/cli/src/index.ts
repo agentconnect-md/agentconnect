@@ -19,7 +19,8 @@ const fail = (cmd: string, err: unknown): never => {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const root = resolveRoot(parseRootFlag(argv))
-  selfHealCliEntry(root, fileURLToPath(import.meta.url))
+  const cliEntry = fileURLToPath(import.meta.url)
+  selfHealCliEntry(root, cliEntry)
 
   // ── Route by the first positional command (honoring global options before it),
   //    reserving only CLI-owned commands; everything else delegates verbatim (§4.2).
@@ -60,7 +61,12 @@ async function main(): Promise<void> {
       process.exit(1)
     }
   }
-  const installOpts = () => ({ execPath: process.execPath, includeRootEnv: Boolean(program.opts().root) })
+  const installOpts = () => ({
+    execPath: process.execPath,
+    includeRootEnv: Boolean(program.opts().root),
+    cliEntry,
+    ...(process.env.PATH ? { envPath: process.env.PATH } : {})
+  })
 
   program
     .command('up')
@@ -169,7 +175,8 @@ async function main(): Promise<void> {
           apiKey: opts.apiKey,
           daemonId: opts.daemonId,
           root: opts.root,
-          configPath: opts.config
+          configPath: opts.config,
+          cliEntry
         })
         process.exit(0)
       } catch (err) {

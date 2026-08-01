@@ -24,6 +24,17 @@ export function daemonLogPath(root: string): string {
   return join(root, 'logs', 'daemon.log')
 }
 
+/**
+ * `<root>/daemon.lock` — the daemon's single-instance lock, holding the live
+ * daemon's pid. Kept BYTE-FOR-BYTE identical to the daemon's `lockPath`
+ * (packages/daemon/src/paths.ts). The service run shell reads it as the daemon
+ * readiness signal: a login-shell launch `exec`s into the daemon (pid is
+ * preserved), so lock content == spawned child pid ⇔ the daemon came up.
+ */
+export function daemonLockPath(root: string): string {
+  return join(root, 'daemon.lock')
+}
+
 // ── version store layout (cli-daemon-split.md §3) ──
 
 /** `<root>/versions` — parent of every installed daemon version directory. */

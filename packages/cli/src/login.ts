@@ -89,6 +89,8 @@ export interface RunLoginOpts {
   daemonId?: string
   root?: string
   configPath?: string
+  /** This CLI's own dist entry, pinned into the service unit (InstallOpts.cliEntry). */
+  cliEntry?: string
 }
 
 /**
@@ -97,10 +99,12 @@ export interface RunLoginOpts {
  * The unit's daemon entry is always `<root>/current/dist/index.js`, so no entry
  * path is threaded here (§6).
  */
-export function buildInstallOpts(opts: { root?: string }): InstallOpts {
+export function buildInstallOpts(opts: { root?: string; cliEntry?: string }): InstallOpts {
   return {
     execPath: process.execPath,
-    includeRootEnv: resolveRoot(opts.root) !== resolveRoot(undefined)
+    includeRootEnv: resolveRoot(opts.root) !== resolveRoot(undefined),
+    ...(opts.cliEntry ? { cliEntry: opts.cliEntry } : {}),
+    ...(process.env.PATH ? { envPath: process.env.PATH } : {})
   }
 }
 
