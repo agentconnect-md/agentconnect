@@ -33,6 +33,20 @@ an operator explicitly paused remains `paused`. Once the operation succeeds, fai
 expires, the console returns to the daemon's current connection status; a daemon that
 did not return then reads `offline`.
 
+## Where a streamed reply may be split
+
+A long reply may be delivered as more than one chat message, but a split must always fall
+on a boundary the reader can see. The streaming transport's own rhythm is not such a
+boundary: model output arrives in token-sized pieces, so a pause in the stream routinely
+lands mid-sentence or mid-word, and cutting there splits one answer across two messages at
+a meaningless point.
+
+So a split driven by elapsed time may only happen at a paragraph break outside a fenced
+code block; text after the last such break stays buffered until more arrives, until the
+agent finishes the text block (a tool call, a plan, a thinking step), or until the turn
+ends. Splits the reader already expects — a completed text block before the agent starts
+working, or a body longer than the platform's per-message limit — are unaffected.
+
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack

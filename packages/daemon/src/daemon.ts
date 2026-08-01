@@ -10127,18 +10127,20 @@ export class Daemon {
         // Some runtimes narrate their terminal error into the message stream just
         // before rejecting the prompt — codex-acp mirrors quota exhaustion / auth
         // expiry as an agent_message_chunk — and that text is still sitting in the
-        // converger buffer (the idle flush never fired). Flush it as the reply so it
-        // isn't dropped with the turn, and skip the ⚠️ notice when the flushed text
-        // already carries the same message (posting both would say it twice). The
-        // notice rides the apply chain as a `post` so it lands after the flushed
-        // body and is recorded into the transcript either way.
+        // converger buffer (the idle flush never fired, or held a partial paragraph
+        // back). `flushTerminal` takes the WHOLE buffer — this turn has no later flush
+        // and never reaches onFinal — so the runtime's text isn't dropped with it, and
+        // the ⚠️ notice is skipped when the flushed text already carries the same
+        // message (posting both would say it twice). The notice rides the apply chain
+        // as a `post` so it lands after the flushed body and is recorded into the
+        // transcript either way.
         const reason = turnFailureReason(err)
         if (p.conv instanceof FeishuConverger) {
           const attribution = showFooter ? currentAttributionInfo() : undefined
           for (const action of p.conv.onFailure(reason, attribution)) this.enqueueApply(p, action)
         } else {
           let covered = false
-          for (const action of p.conv.flushBuffered()) {
+          for (const action of p.conv.flushTerminal()) {
             covered ||= action.kind === 'post' && action.text.includes(reason)
             this.enqueueApply(p, action)
           }
