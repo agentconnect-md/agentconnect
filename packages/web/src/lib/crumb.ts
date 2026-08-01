@@ -1,5 +1,7 @@
-// Detail-crumb resolution for the console shell's top bar (and the mobile push-screen
-// app bar, which reuses the same title).
+// Detail-title resolution for the mobile push-screen app bar. (Desktop v2 has no top
+// bar at all, so the badge this returns is currently unused there — the session page
+// renders its own title + status row. The badge stays because the resolution rule is
+// the same one a title strip would need, and dropping it would lose the id guard.)
 //
 // The shell derives a push title by looking the route id up in the console data lists.
 // Those lists hold only what has actually been fetched — `allSessions` is the loaded

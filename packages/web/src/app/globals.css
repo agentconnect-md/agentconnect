@@ -364,13 +364,22 @@
   }
   .railbrand {
     position: relative;
-    height: 56px;
+    height: 52px;
     display: flex;
     align-items: center;
     gap: 10px;
-    /* Right padding is smaller than left to seat the hover-reveal collapse toggle. */
-    padding: 0 12px 0 18px;
+    /* Left padding seats the 24px logo on the SAME centre line as the nav icons and
+       the footer avatar (x = 32), so nothing shifts sideways when the rail collapses
+       onto its 64px centre. The design's own mock leaves the logo 2px light — this
+       is the deliberate correction. Right padding is smaller to seat the two icon
+       buttons (collapse + search). */
+    padding: 0 10px 0 20px;
     border-bottom: 1px solid var(--border-inverse);
+    /* Keep the first nav row off the divider — its hover/active pill is a filled
+       rectangle, and flush against the rule it reads as a seam. Lives on the brand
+       row (not the first item) so expanded and collapsed shift by the same amount
+       and their glyph rows stay on identical y positions. */
+    margin-bottom: 6px;
   }
   /* Brand logo+wordmark link (left) and the collapse toggle (right) are siblings in
      `.railbrand` — a button can't nest inside the logo's <a>. Display lives on the
@@ -382,19 +391,24 @@
     min-width: 0;
     text-decoration: none;
   }
+  /* The brand row's two icon buttons. They read as one pair pushed to the rail's
+     right edge: search is permanent (it is the only way into the search dialog now
+     that the top bar is gone), collapse fades in on rail hover to its left. Both are
+     22px boxes around 16px glyphs, and the negative margin cancels `.railbrand`'s
+     10px flex gap so the glyphs sit ~8px apart without the boxes overlapping. */
   .railtoggle {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
+    width: 22px;
+    height: 22px;
     margin-left: auto;
     flex: none;
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    border-radius: 5px;
     background: none;
-    color: var(--text-inverse-dim);
+    color: rgba(255, 255, 255, 0.55);
     cursor: pointer;
     opacity: 0;
   }
@@ -402,70 +416,104 @@
   .railtoggle:focus-visible {
     opacity: 1;
   }
-  .railtoggle:hover {
+  .railsrbtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin-right: 2px;
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: rgba(255, 255, 255, 0.55);
+    cursor: pointer;
+  }
+  .railtoggle + .railsrbtn {
+    margin-left: -9px;
+  }
+  .railtoggle:hover,
+  .railsrbtn:hover {
     background: rgba(255, 255, 255, 0.08);
     color: #fff;
   }
-  .navlbl {
-    font: 600 11px var(--font-mono);
-    color: var(--text-inverse-dim);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    padding: 16px 16px 8px;
-  }
+  /* Inset pill nav (design v2, ChatGPT-style): no full-bleed tile, no 3px brand
+     edge — a rounded pill with symmetric 10px gutters. The active glyph keeps the
+     brand accent while the label goes white. */
   .navitem {
     display: flex;
     align-items: center;
     gap: 11px;
+    margin: 1px 10px;
     padding: 9px 14px 9px 13px;
-    border-left: 3px solid transparent;
+    border: 0;
+    border-radius: 8px;
     color: var(--text-inverse-dim);
     font: 500 14px var(--font-sans);
     cursor: pointer;
     background: none;
-    border-top: 0;
-    border-right: 0;
-    border-bottom: 0;
-    width: 100%;
+    width: calc(100% - 20px);
     text-align: left;
   }
   /* Rail items sit on the plum surface, where the design system's hover is a
-     low-alpha white overlay — one step below the .on state's 0.07. */
+     low-alpha white overlay — one step below the .on state's 0.09. */
   .navitem:hover {
     color: #fff;
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.05);
   }
   .navitem.on {
     color: #fff;
-    background: rgba(255, 255, 255, 0.07);
-    border-left-color: var(--brand);
+    background: rgba(255, 255, 255, 0.09);
   }
-  .navitem.on i {
-    color: #fff;
+  /* The active row's glyph keeps the brand accent while its label goes white — that
+     colour step, not just the pill, is what marks the row. Selector is `svg` because
+     the Icon primitive renders a lucide <svg> (the design's markup uses <i>), and the
+     call site must NOT pass an inline `color`, which would outrank this. */
+  .navitem.on svg {
+    color: var(--magenta-300);
   }
-  .navitem i {
-    width: 18px;
-    height: 18px;
+  .navitem svg {
     flex: none;
   }
   /* ----- Collapsed rail (64px, icons only) ----- */
   .rail.collapsed {
     width: 64px;
   }
-  .rail.collapsed .brandword,
-  .rail.collapsed .navlbl {
+  .rail.collapsed .brandword {
     display: none;
   }
   .rail.collapsed .railbrand {
     justify-content: center;
     padding: 0;
+    /* Collapsed, the rail is one uninterrupted column of glyphs — the rules that
+       fenced the brand row off from the nav (and the footer off from it) only make
+       sense next to labels, so both dividers go. */
+    border-bottom: 0;
   }
   .rail.collapsed .navitem {
     justify-content: center;
+    margin: 1px 8px;
     padding: 9px 0;
+    width: calc(100% - 16px);
   }
   .rail.collapsed .navitem span {
     display: none;
+  }
+  /* Collapsed, the brand-row search button gives way to a nav-row one directly above
+     Home, so search stays reachable at the same 32px centre line as every other glyph.
+     It takes the ordinary nav spacing on both sides — an extra top margin here would
+     make the brand→first-row gap wider collapsed than expanded, and the two states
+     have to line up. */
+  .railsrnav {
+    display: none;
+  }
+  .rail.collapsed .railsrbtn {
+    display: none;
+  }
+  .rail.collapsed .railsrnav {
+    display: flex;
   }
   /* Collapsed: the toggle overlays the centered logo, invisible but still in the tab
      order (opacity, not display:none) so a keyboard-only user can Tab to it and
@@ -484,32 +532,63 @@
   .rail.collapsed .railbrand:has(.railtoggle:focus-visible) .railbrand-logo {
     opacity: 0;
   }
+  /* ----- Rail footer: the account block (design v2) -----
+     With the top bar gone this is the console's only identity surface, so it carries
+     the avatar, the signed-in name and the ACTIVE ORG, and its menu absorbs what the
+     old top-bar avatar menu and rail Settings link used to own: org switching,
+     Profile, Settings, the theme toggle and sign-out. */
+  .railfoot {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 10px;
+    border-top: 1px solid var(--border-inverse);
+  }
+  .pfbtn {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 5px 7px 5px 9px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: #fff;
+    cursor: pointer;
+    text-align: left;
+  }
+  .pfbtn:hover {
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .pfav {
+    flex: none;
+    line-height: 0;
+  }
+  .rail.collapsed .railfoot {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 10px 8px;
+    border-top: 0;
+  }
+  .rail.collapsed .pfbtn {
+    justify-content: center;
+    padding: 5px 0;
+  }
+  .rail.collapsed .pfname {
+    display: none;
+  }
+  /* The help popover needs room the 64px rail hasn't got, and its contents are all
+     reachable from the docs anyway — collapsed, it steps aside for the account block. */
+  .rail.collapsed .railhelp {
+    display: none;
+  }
   .main {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-width: 0;
-  }
-  .top {
-    height: 56px;
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 0 24px;
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--surface-card);
-  }
-  .crumb {
-    font: 500 13px var(--font-sans);
-    color: var(--text-tertiary);
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-  .crumb b {
-    font-weight: 600;
-    color: var(--text-primary);
   }
   .search {
     flex: 1;
@@ -523,12 +602,65 @@
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
   }
-  /* ===== unified search (top-bar search box + results panel) ===== */
+  /* ===== unified search (search box + results panel) ===== */
   .searchwrap {
     position: relative;
     width: 340px;
     flex: none;
     z-index: 60;
+  }
+  /* ----- Rail variant: a centred command dialog instead of an inline box -----
+     The search now lives in the rail, where a 340px box does not fit, so the box
+     itself is hidden and the rail's magnifier opens it. Open, the box and its
+     results panel detach into one 600px stack floating at 16vh — the same markup
+     and the same keyboard model, re-seated. Kept as CSS on the shared component
+     (rather than a second component) so the two presentations cannot drift. */
+  .railsr {
+    position: static;
+    width: auto;
+    margin: 0;
+  }
+  .railsr .search {
+    display: none;
+  }
+  .railsr .search.focus {
+    display: flex;
+    position: fixed;
+    left: 50%;
+    top: 16vh;
+    transform: translateX(-50%);
+    width: 600px;
+    max-width: calc(100vw - 48px);
+    height: 52px;
+    gap: 11px;
+    padding: 0 16px;
+    z-index: 960;
+    background: var(--surface-card);
+    border: 1px solid var(--border-default);
+    border-bottom: 1px solid var(--border-subtle);
+    border-radius: 12px 12px 0 0;
+    box-shadow: var(--shadow-xl);
+  }
+  .railsr .search.focus .srinput {
+    font-size: 15px;
+  }
+  .railsr .srscrim {
+    background: rgba(17, 22, 29, 0.5);
+    backdrop-filter: blur(2px);
+    z-index: 955;
+  }
+  .railsr .srpanel {
+    position: fixed;
+    left: 50%;
+    right: auto;
+    top: calc(16vh + 52px);
+    transform: translateX(-50%);
+    width: 600px;
+    max-width: calc(100vw - 48px);
+    border-top: 0;
+    border-radius: 0 0 12px 12px;
+    box-shadow: var(--shadow-xl);
+    z-index: 960;
   }
   .search.focus {
     background: var(--surface-card);
@@ -702,7 +834,9 @@
   .content {
     flex: 1;
     overflow: auto;
-    padding: 26px 30px;
+    /* Extra top padding: with the top bar deleted the content is the first thing
+       under the window chrome, and 26px let every page's first line ride the edge. */
+    padding: 34px 30px 26px;
   }
   /* Whole-view loading placeholder (see LoadingState `fill`): a fixed, viewport-
    centred overlay. Fixed (not a flow box) so the spinner sits at the SAME screen
@@ -2454,11 +2588,8 @@
       display: none;
     }
 
-    /* ----- app bar: the desktop top bar is swapped for the mobile app bar (.mtop),
-     which comes in two variants (list-tab vs push) rendered by the shell ----- */
-    .top {
-      display: none;
-    }
+    /* ----- app bar: desktop has no top bar at all (v2 is a pure left/right split),
+     so mobile brings its own (.mtop), in two variants (list-tab vs push) ----- */
     .mtop {
       display: flex;
       align-items: center;

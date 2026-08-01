@@ -53,8 +53,9 @@ const CAP = 3
 export function GlobalSearch({
   autoFocus = false,
   mobile = false,
+  rail = false,
   onClose
-}: { autoFocus?: boolean; mobile?: boolean; onClose?: () => void } = {}) {
+}: { autoFocus?: boolean; mobile?: boolean; rail?: boolean; onClose?: () => void } = {}) {
   const router = useRouter()
   const { orgPath } = useOrgs()
   const { agents, daemons, crons, allSessions } = useConsoleData()
@@ -429,7 +430,9 @@ export function GlobalSearch({
   }
 
   return (
-    <div className="searchwrap">
+    // `railsr` re-seats this same markup as a centred command dialog — the box is
+    // hidden until opened, then floats with its panel (globals.css `.railsr`).
+    <div className={rail ? 'searchwrap railsr' : 'searchwrap'}>
       <div className={open ? 'search focus' : 'search'}>
         <Icon name="search" size={16} color="var(--text-tertiary)" />
         <input

@@ -1,9 +1,14 @@
 'use client'
 
-// The console shell: the persistent rail + top bar that wrap every route, plus
-// the auth gate and the data/playground/modal providers. Replaces the old
-// in-component `page` switch — navigation is now real routing (<Link> +
-// usePathname), so each view lives at its own URL.
+// The console shell: the persistent rail that wraps every route, plus the auth gate
+// and the data/playground/modal providers. Replaces the old in-component `page`
+// switch — navigation is now real routing (<Link> + usePathname), so each view lives
+// at its own URL.
+//
+// Desktop is a pure left/right split (design v2): the rail carries the brand, the
+// search trigger, navigation and the account block, and the main column is content
+// only — no top bar, no breadcrumb, no back-link. Mobile keeps its own app bar
+// (`.mtop`), which is where the section/entity title still shows.
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { SiModelcontextprotocol } from 'react-icons/si'
@@ -13,7 +18,7 @@ import { useParams, usePathname, useRouter } from 'next/navigation'
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
 import { ApiError, getMyAccess, type OrgDto } from '@/lib/api'
-import { agentLabel, status } from '@/lib/data'
+import { agentLabel } from '@/lib/data'
 import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
@@ -86,7 +91,8 @@ const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon'> = {
   '/daemons': 'daemon'
 }
 
-// Section label for the header breadcrumb, matched by path prefix.
+// Section label for the mobile app bar, matched by path prefix. (Desktop has no
+// title strip — the rail's active row says where you are.)
 const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/home', label: 'Home' },
   { prefix: '/agents', label: 'Agents' },
@@ -175,48 +181,71 @@ export default function ConsoleShell({ children }: { children: ReactNode }) {
   )
 }
 
-// Rail org switcher (design: `ws.*`) — auth mode only. In no-auth mode there is
-// exactly one local default org, so the picker is hidden entirely.
-function OrgSwitcher({ collapsed, canCreateOrg }: { collapsed: boolean; canCreateOrg: boolean }) {
-  const { orgs, activeOrg, setActiveOrg } = useOrgs()
-  const { openModal } = useModal()
+// Rail-footer account block (design v2's `pf.*`) — auth mode only.
+//
+// With the top bar deleted this is the console's single identity surface, so its
+// menu collects everything that used to be spread across the chrome: the org
+// switcher that sat at the TOP of the rail, the top-bar avatar menu's Profile /
+// Settings / Sign out, the rail's Settings link, and the top-bar theme toggle.
+// The button face carries the two facts you need at a glance — who you are and
+// which org you are acting in.
+function RailAccount({
+  display,
+  collapsed,
+  orgs,
+  activeOrg,
+  setActiveOrg,
+  orgPath,
+  openModal,
+  canCreateOrg,
+  theme,
+  onToggleTheme,
+  onSignOut
+}: {
+  display: { picture?: string | null; initials: string; name: string; email?: string }
+  collapsed: boolean
+  orgs: OrgDto[]
+  activeOrg: OrgDto | null
+  setActiveOrg: (id: string) => void
+  orgPath: (path: string) => string
+  openModal: (kind: 'createOrg') => void
+  canCreateOrg: boolean
+  theme: Theme
+  onToggleTheme: () => void
+  onSignOut: () => void
+}) {
   const [open, setOpen] = useState(false)
-  if (!activeOrg) return null
-
-  const square = (org: OrgDto) => (
-    <OrgIconView
-      icon={org.icon}
-      iconUrl={org.iconUrl}
-      label={org.name ?? org.slug}
-      fallbackColor={orgColor(org.id)}
-      size={22}
-      className="rounded-[5px] text-[11px]"
-    />
-  )
+  const orgName = activeOrg ? (activeOrg.name ?? activeOrg.slug) : ''
 
   return (
-    <div className={`relative pt-[10px] pb-[2px] ${collapsed ? 'px-2' : 'px-3'}`}>
+    <div className="relative min-w-0 flex-1">
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        title={collapsed ? (activeOrg.name ?? activeOrg.slug) : undefined}
-        className={`flex w-full cursor-pointer items-center rounded-[7px] border border-(--border-inverse) bg-[rgba(255,255,255,.05)] py-[6px] text-left ${collapsed ? 'justify-center px-0' : 'gap-[9px] px-[9px]'}`}
+        className="pfbtn"
+        title={collapsed ? display.name : 'Account'}
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
-        {square(activeOrg)}
-        {!collapsed && (
-          <>
-            <span className="min-w-0 flex-1 truncate font-sans text-[13px] font-semibold leading-normal text-white">
-              {activeOrg.name ?? activeOrg.slug}
-            </span>
-            <Icon name="chevrons-up-down" size={14} color="var(--text-inverse-dim)" className="flex-none" />
-          </>
-        )}
+        <span className="pfav">
+          <Avatar src={display.picture} initials={display.initials} size={26} fontSize={10} />
+        </span>
+        <span className="pfname min-w-0 flex-1 overflow-hidden">
+          <span className="block truncate font-sans text-[12.5px] font-semibold leading-normal text-white">
+            {display.name}
+          </span>
+          {orgName && (
+            <span className="mono block truncate text-[10.5px] font-medium text-(--text-inverse-dim)">{orgName}</span>
+          )}
+        </span>
       </button>
       {open && (
         <>
-          <div onClick={() => setOpen(false)} className="fixed inset-0 z-45" />
-          <div
-            className={`absolute top-[calc(100%_-_1px)] z-50 rounded-md border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg) ${collapsed ? 'left-2 w-[230px]' : 'right-3 left-3'}`}
-          >
+          <div className="fixed inset-0 z-45" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[238px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+            {display.email && (
+              <div className="mono truncate px-3 pt-2 pb-[6px] text-[11px] text-(--text-tertiary)">{display.email}</div>
+            )}
             {orgs.map((o) => (
               <button
                 key={o.id}
@@ -226,28 +255,51 @@ function OrgSwitcher({ collapsed, canCreateOrg }: { collapsed: boolean; canCreat
                   setOpen(false)
                 }}
               >
-                <span className="inline-flex items-center gap-[9px]">
-                  {square(o)}
-                  {o.name ?? o.slug}
+                <span className="inline-flex min-w-0 items-center gap-[9px]">
+                  <OrgIconView
+                    icon={o.icon}
+                    iconUrl={o.iconUrl}
+                    label={o.name ?? o.slug}
+                    fallbackColor={orgColor(o.id)}
+                    size={22}
+                    className="rounded-[5px] text-[11px]"
+                  />
+                  <span className="truncate">{o.name ?? o.slug}</span>
                 </span>
-                {o.id === activeOrg.id && <Icon name="check" size={15} color="var(--brand)" />}
+                {o.id === activeOrg?.id && <Icon name="check" size={15} color="var(--brand)" className="flex-none" />}
               </button>
             ))}
             {canCreateOrg && (
-              <>
-                <div className="mx-[2px] my-1 h-[1px] bg-(--border-subtle)" />
-                <button
-                  className="dmi"
-                  onClick={() => {
-                    setOpen(false)
-                    openModal('createOrg')
-                  }}
-                >
-                  <Icon name="plus" size={15} />
-                  Create organization
-                </button>
-              </>
+              <button
+                className="dmi"
+                onClick={() => {
+                  setOpen(false)
+                  openModal('createOrg')
+                }}
+              >
+                <Icon name="plus" size={15} color="var(--text-tertiary)" />
+                Create organization
+              </button>
             )}
+            <div className="dmsep" />
+            <Link href={orgPath('/profile')} className="dmi no-underline" onClick={() => setOpen(false)}>
+              <Icon name="circle-user-round" size={15} color="var(--text-tertiary)" />
+              Profile
+            </Link>
+            <Link href={orgPath('/settings')} className="dmi no-underline" onClick={() => setOpen(false)}>
+              <Icon name="settings" size={15} color="var(--text-tertiary)" />
+              Settings
+            </Link>
+            <div className="dmsep" />
+            <button className="dmi" onClick={onToggleTheme}>
+              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={15} color="var(--text-tertiary)" />
+              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            </button>
+            <div className="dmsep" />
+            <button className="dmi" onClick={onSignOut}>
+              <Icon name="log-out" size={15} color="var(--text-tertiary)" />
+              Sign out
+            </button>
           </div>
         </>
       )}
@@ -480,18 +532,15 @@ function ShellChrome({ children }: { children: ReactNode }) {
     return undefined
   })()
   // The slot beats the list lookup, but only on the route it describes — see lib/crumb.ts.
-  const {
-    title: pushTitle,
-    show: titleResolved,
-    badge: crumbBadge
-  } = detailCrumb(crumb, seg[1], listTitle ?? undefined, crumbSlot)
+  // Only the title is consumed now: the desktop crumb (which also carried the status
+  // badge) is gone, and the mobile app bar shows the title alone.
+  const { title: pushTitle } = detailCrumb(crumb, seg[1], listTitle ?? undefined, crumbSlot)
 
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
   // hard refresh — no history) route to the parent list so "back" never leaves the app.
   const hasParentList = LIST_ROUTES.includes(`/${seg[0] ?? ''}`)
   const parentList = hasParentList ? `/${seg[0]}` : '/home'
   const parentListHref = orgPath(parentList + (seg[0] === 'sessions' ? sessionFilterSearch(locationSearch) : ''))
-  const showDetailCrumb = hasParentList && seg.length >= 2 && crumb !== '' && titleResolved
   const goBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) router.back()
     else router.push(parentListHref)
@@ -525,8 +574,8 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 className="railbrand-logo cursor-pointer select-none"
                 aria-label="Go to Home"
               >
-                <LogoMark />
-                <span className="brandword font-sans text-[17px] font-semibold leading-normal tracking-[-.02em] text-white">
+                <LogoMark size={24} />
+                <span className="brandword font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
                   Agent<span className="text-(--magenta-300)">Connect</span>
                 </span>
               </Link>
@@ -537,20 +586,24 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 title={railCollapsed ? 'Expand sidebar' : undefined}
                 aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
-                <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={17} />
+                <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />
+              </button>
+              {/* Search sits at the rail's outer edge, permanently visible — with no
+              top bar it is the console's only search affordance, so unlike the
+              collapse toggle beside it, it never hides. Collapsed, CSS swaps it for
+              the `.railsrnav` row below. */}
+              <button type="button" onClick={openSearch} className="railsrbtn" title="Search" aria-label="Search">
+                <Icon name="search" size={16} />
               </button>
             </div>
-            {/* Org picker + "Organization" section label — only in auth mode; the
-            no-auth default org needs neither (there's a single implicit org). A
-            small spacer keeps the nav off the brand divider when both are gone. */}
-            {authOn ? (
-              <>
-                <OrgSwitcher collapsed={railCollapsed} canCreateOrg={canCreateOrg} />
-                <div className="navlbl">Organization</div>
-              </>
-            ) : (
-              <div className="h-3" />
-            )}
+            {/* The search dialog itself. It renders in the rail so the trigger and the
+            dialog share one component; `rail` re-seats the open state as a centred
+            command palette (globals.css `.railsr`). */}
+            <GlobalSearch rail />
+            <button type="button" onClick={openSearch} className="navitem railsrnav" title="Search" aria-label="Search">
+              <Icon name="search" size={18} />
+              <span>Search</span>
+            </button>
             {NAV_ITEMS.map((item) => {
               const on = isActive(barePath, item.href)
               return (
@@ -560,37 +613,49 @@ function ShellChrome({ children }: { children: ReactNode }) {
                   title={railCollapsed ? item.label : undefined}
                   className={on ? 'navitem on' : 'navitem'}
                 >
-                  <Icon name={item.icon} size={18} color={on ? '#fff' : undefined} />
+                  {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
+                  <Icon name={item.icon} size={18} />
                   <span>{item.label}</span>
                 </Link>
               )
             })}
-            {/* Rail footer: Settings (auth mode only, theme toggle lives by the search)
-            + a Help & resources menu that opens UPWARD. The help menu shows in every
-            mode — the docs/MCP links are useful with or without sign-in. */}
-            <div
-              className={`mt-auto border-t border-(--border-inverse) ${railCollapsed ? 'flex flex-col items-stretch gap-1 px-2 py-[10px]' : 'flex items-center gap-[6px] px-4 py-[14px]'}`}
-            >
-              {authOn && (
-                <Link
-                  href={orgPath('/settings')}
-                  title={railCollapsed ? 'Settings' : undefined}
-                  className={`${isActive(barePath, '/settings') ? 'navitem on' : 'navitem'} my-0 rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full justify-center px-0' : 'flex-1 px-3'}`}
+            {/* Rail footer. In auth mode this is the account block: avatar + name +
+            active org, whose menu carries everything the deleted top bar used to —
+            org switching, Profile, Settings, the theme toggle, sign-out. No-auth has
+            no identity and one implicit org, so it keeps just the theme toggle. The
+            Help menu shows in both modes — the docs links are useful either way. */}
+            <div className="railfoot">
+              {authOn ? (
+                <RailAccount
+                  display={display}
+                  collapsed={railCollapsed}
+                  orgs={orgs}
+                  activeOrg={activeOrg}
+                  setActiveOrg={setActiveOrg}
+                  orgPath={orgPath}
+                  openModal={openModal}
+                  canCreateOrg={canCreateOrg}
+                  theme={theme}
+                  onToggleTheme={toggleTheme}
+                  onSignOut={signOut}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  className="navitem m-0 w-auto flex-none justify-center rounded-[6px] px-2 py-[9px]"
+                  title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                  aria-label="Toggle theme"
                 >
-                  <Icon
-                    name="settings"
-                    size={18}
-                    color={isActive(barePath, '/settings') ? 'var(--brand)' : undefined}
-                  />
-                  <span>Settings</span>
-                </Link>
+                  <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />
+                </button>
               )}
-              <div className={`relative ${railCollapsed ? 'w-full' : 'flex-none'}`}>
+              <div className="railhelp relative flex-none">
                 <button
                   type="button"
                   onClick={() => setHelpMenu((v) => !v)}
-                  className={`navitem justify-center rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full px-0' : 'w-auto flex-none px-[11px]'}`}
-                  title={railCollapsed ? 'Help & resources' : undefined}
+                  className="navitem m-0 w-auto flex-none justify-center rounded-[6px] px-2 py-[9px]"
+                  title="Help & resources"
                   aria-label="Help & resources"
                 >
                   <Icon name="circle-question-mark" size={18} color={helpMenu ? 'var(--brand)' : undefined} />
@@ -651,46 +716,11 @@ function ShellChrome({ children }: { children: ReactNode }) {
             </div>
           </aside>
 
-          {/* ===== MAIN ===== */}
+          {/* ===== MAIN =====
+          Desktop has NO top bar (design v2 is a pure left/right split): no breadcrumb,
+          no parent back-link, no title strip. The rail states where you are, and each
+          detail view owns its own heading. Mobile still needs one — `.mtop` below. */}
           <div className="main">
-            <header className="top">
-              <div className="crumb min-w-0">
-                {showDetailCrumb ? (
-                  <>
-                    <Link
-                      href={parentListHref}
-                      className="flex-none text-(--text-tertiary) no-underline hover:text-(--text-secondary)"
-                    >
-                      {crumb}
-                    </Link>
-                    <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="flex-none" />
-                    <b className="min-w-0 truncate">{pushTitle}</b>
-                    {crumbBadge && (
-                      <span
-                        className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-full px-2 py-[1px] font-sans text-[12px] font-semibold leading-normal"
-                        style={{
-                          background: status(crumbBadge.status).bg,
-                          color: status(crumbBadge.status).text
-                        }}
-                      >
-                        <span
-                          className="h-[6px] w-[6px] flex-none rounded-full"
-                          style={{ background: status(crumbBadge.status).dot }}
-                        />
-                        {crumbBadge.statusLabel}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  crumb
-                )}
-              </div>
-              <div className="topspacer flex-1" />
-              <GlobalSearch />
-              <ThemeToggle theme={theme} onToggle={toggleTheme} />
-              {authOn && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
-            </header>
-
             {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
             <header className="mtop">
               {isListRoute ? (
