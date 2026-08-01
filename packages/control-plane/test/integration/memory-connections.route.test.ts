@@ -16,10 +16,52 @@ import type {
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { seedDaemon } from '../fixtures/seed.js'
+import type { Prisma } from '../../src/generated/prisma/client.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import {
+  tryLockMemoryConnectionScope,
+  tryLockMemoryInstallationScope
+} from '../../src/persistence/memory-connection-lock.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
+import { grantKeyHash } from '../../src/orchestrator/mcpProvider.js'
 import type { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+
+/**
+ * Hold an external-memory advisory mutation scope from an INDEPENDENT
+ * transaction — the exact shape of a concurrent mutation on another
+ * control-plane instance (e.g. the rolling-update overlap window). Every
+ * mutation that touches the scoped resource fail-fasts with 409 until
+ * release() lets this holder's transaction commit.
+ */
+async function holdMemoryScope(
+  take: (tx: Prisma.TransactionClient) => Promise<boolean>
+): Promise<{ release: () => Promise<void> }> {
+  let open!: () => void
+  const gate = new Promise<void>((resolve) => (open = resolve))
+  let notifyHeld!: () => void
+  const held = new Promise<void>((resolve) => (notifyHeld = resolve))
+  const settled = prisma.$transaction(
+    async (tx) => {
+      expect(await take(tx)).toBe(true)
+      notifyHeld()
+      await gate
+    },
+    { timeout: 20_000 }
+  )
+  await held
+  return {
+    release: async () => {
+      open()
+      await settled
+    }
+  }
+}
+
+const holdMemoryConnectionScope = (connectionId: string) =>
+  holdMemoryScope((tx) => tryLockMemoryConnectionScope(tx, connectionId))
+const holdMemoryInstallationScope = (installationId: string) =>
+  holdMemoryScope((tx) => tryLockMemoryInstallationScope(tx, installationId))
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const INSTALLATIONS = `${ORG}/memory-plugin-installations`
@@ -191,40 +233,37 @@ describe('memory plugin installations — owner-reviewed trust boundary', () => 
   it('serializes installation deletion against connection creation', async () => {
     const app = build()
     const installationId = await createInstallation(app)
-    const repo = app.deps.repos.externalMemoryConnection
-    const create = repo.create.bind(repo)
-    let entered!: () => void
-    let resume!: () => void
-    let pendingConnectionId = ''
-    const started = new Promise<void>((resolve) => (entered = resolve))
-    const blocked = new Promise<void>((resolve) => (resume = resolve))
-    repo.create = async (...args) => {
-      pendingConnectionId = args[0].id ?? ''
-      entered()
-      await blocked
-      return create(...args)
-    }
 
-    const creating = app.app.inject({
+    // "The other instance" holds the installation's advisory mutation scope —
+    // the connection create (whose reference insert must not slip under a
+    // concurrent delete's scan) and the installation delete both fail fast.
+    // There is no observable half-created connection anymore: the row, its
+    // sealed secrets, and its grant commit in ONE transaction under this scope.
+    const hold = await holdMemoryInstallationScope(installationId)
+    const creating = await app.app.inject({
       method: 'POST',
       url: CONNECTIONS,
       payload: { installationId, config: {}, secrets: { apiKey: 'secret' } }
     })
-    await started
-    const binding = await app.app.inject({
-      method: 'POST',
-      url: `${ORG}/agents`,
-      payload: {
-        name: 'half-created-connection-agent',
-        runtime: 'claude',
-        memory: { provider: 'external', connectionId: pendingConnectionId }
-      }
-    })
-    expect(binding.statusCode).toBe(409)
+    expect(creating.statusCode).toBe(409)
+    expect((creating.json() as { message: string }).message).toContain('installation is being updated')
     const deleting = await app.app.inject({ method: 'DELETE', url: `${INSTALLATIONS}/${installationId}` })
     expect(deleting.statusCode).toBe(409)
-    resume()
-    expect((await creating).statusCode).toBe(201)
+    await hold.release()
+
+    // Once free: the create commits atomically, and the delete then refuses on
+    // the committed reference.
+    const created = await app.app.inject({
+      method: 'POST',
+      url: CONNECTIONS,
+      payload: { installationId, config: {}, secrets: { apiKey: 'secret' } }
+    })
+    expect(created.statusCode).toBe(201)
+    const referenced = await app.app.inject({ method: 'DELETE', url: `${INSTALLATIONS}/${installationId}` })
+    expect(referenced.statusCode).toBe(409)
+    expect((referenced.json() as { message: string }).message).toContain(
+      'installation still has external-memory connections'
+    )
     expect(await app.deps.repos.memoryPluginInstallation.get(installationId)).not.toBeNull()
   })
 })
@@ -398,16 +437,23 @@ describe('external-memory connections — secret/grant discipline', () => {
       url: `${CONNECTIONS}/${connection.id}/grant/rotate`
     })
     expect(rotated.statusCode).toBe(200)
-    expect(rotated.json()).toMatchObject({ revision: 3, status: 'probing', probedRevision: null })
+    // Two fenced revisions per rotation: the overlap publish (3), then the
+    // retirement (4) — revoke + bump commit together so the post-retirement
+    // allowlist is republished strictly newer than any concurrent assignment.
+    expect(rotated.json()).toMatchObject({ revision: 4, status: 'probing', probedRevision: null })
     const active = await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)
     expect(active).toHaveLength(1)
     expect(active[0]!.id).not.toBe(firstGrant.id)
     expect(rotated.body).not.toContain(active[0]!.key)
 
-    // Last assign carries old+new hashes before the old hash is retired.
-    expect(relay.assigns.at(-1)!.grantKeyHashes).toHaveLength(2)
-    expect(relay.unassigns.at(-1)).toMatchObject({ connectionId: connection.id })
-    expect(relay.unassigns.at(-1)!.grantKeyHash).toBeDefined()
+    // Overlap-first: the second-to-last assign carries old+new hashes; the last
+    // is the retirement's whole-list replace (newer revision, fresh hash only).
+    // Retirement never uses a per-hash unassign — it only applies at the exact
+    // current table revision, which a concurrent assign can move.
+    expect(relay.assigns.at(-2)!.grantKeyHashes).toHaveLength(2)
+    expect(relay.assigns.at(-1)).toMatchObject({ connectionId: connection.id, revision: 4 })
+    expect(relay.assigns.at(-1)!.grantKeyHashes).toHaveLength(1)
+    expect(relay.unassigns).toHaveLength(0)
   })
 
   it('retains the old grant until every placed daemon acknowledges the replacement', async () => {
@@ -446,9 +492,12 @@ describe('external-memory connections — secret/grant discipline', () => {
       url: `${CONNECTIONS}/${connection.id}/grant/rotate`
     })
     expect(retried.statusCode, retried.body).toBe(200)
-    expect(retried.json()).toMatchObject({ revision: 3, status: 'probing' })
+    // Overlap re-publish (3, reusing the pending grant) + fenced retirement (4).
+    expect(retried.json()).toMatchObject({ revision: 4, status: 'probing' })
     expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(1)
-    expect(relay.unassigns).toHaveLength(1)
+    expect(relay.assigns.at(-1)).toMatchObject({ revision: 4 })
+    expect(relay.assigns.at(-1)!.grantKeyHashes).toHaveLength(1)
+    expect(relay.unassigns).toHaveLength(0)
   })
 
   it('rejects an overlapping mutation instead of interleaving secret/revision/grant state', async () => {
@@ -456,53 +505,225 @@ describe('external-memory connections — secret/grant discipline', () => {
     const installationId = await createInstallation(app)
     const connection = await createConnection(app, installationId)
     const repo = app.deps.repos.externalMemoryConnection
-    const update = repo.update.bind(repo)
-    let entered!: () => void
-    let resume!: () => void
-    const started = new Promise<void>((resolve) => (entered = resolve))
-    const blocked = new Promise<void>((resolve) => (resume = resolve))
-    repo.update = async (...args) => {
-      entered()
-      await blocked
-      return update(...args)
-    }
 
-    const first = app.app.inject({
+    // "The other instance" holds the connection's advisory mutation scope —
+    // every definition/grant mutation fail-fasts with 409 instead of queueing
+    // (or interleaving its secret/revision/grant writes with the holder's).
+    const hold = await holdMemoryConnectionScope(connection.id)
+    const patching = await app.app.inject({
       method: 'PATCH',
       url: `${CONNECTIONS}/${connection.id}`,
       payload: { config: { projectId: 'serialized' } }
     })
-    await started
-    const overlapping = await app.app.inject({
+    expect(patching.statusCode).toBe(409)
+    expect((patching.json() as { message: string }).message).toContain('connection is being updated')
+    const rotating = await app.app.inject({
       method: 'POST',
       url: `${CONNECTIONS}/${connection.id}/grant/rotate`
     })
-    expect(overlapping.statusCode).toBe(409)
-    resume()
-    expect((await first).statusCode).toBe(200)
+    expect(rotating.statusCode).toBe(409)
+    const deleting = await app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${connection.id}` })
+    expect(deleting.statusCode).toBe(409)
+    await hold.release()
+
+    const first = await app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { config: { projectId: 'serialized' } }
+    })
+    expect(first.statusCode).toBe(200)
     expect(await repo.get(connection.id)).toMatchObject({ revision: 2, config: { projectId: 'serialized' } })
     expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(1)
+  })
+
+  it('a config-only PATCH republishes a concurrently replaced secret, never its stale pre-transaction read', async () => {
+    // The advisory scope ends at COMMIT, so the commit/push interleaving is:
+    // config-only B reads prior secrets → secret-replacing A commits revision 2
+    // and pushes → B commits revision 3 and pushes. The relay honors only
+    // strictly newer revisions, so if B's push carried its stale read, revision
+    // 3 would pin the OLD credential (A's revision-2 repair is ignored) until
+    // reconnect. The writer therefore snapshots the secrets INSIDE B's
+    // transaction and the route pushes exactly that.
+    const relay = new SpyRelayControl()
+    const app = build({ relay })
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+
+    // Park the config-only PATCH right after its pre-transaction prior-secrets
+    // read (validation input) — the stale snapshot that must NOT reach the relay.
+    const store = app.deps.repos.externalMemoryConnectionSecret
+    const realGet = store.get.bind(store)
+    let releaseRead!: () => void
+    const gate = new Promise<void>((resolve) => (releaseRead = resolve))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((resolve) => (notifyParked = resolve))
+    let intercepted = false
+    store.get = async (...args) => {
+      const value = await realGet(...args)
+      if (!intercepted) {
+        intercepted = true
+        notifyParked()
+        await gate
+      }
+      return value
+    }
+
+    const configOnly = app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { config: { projectId: 'config-only' } }
+    })
+    await parked
+    const secretReplace = await app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { secrets: { apiKey: 'replaced-upstream-secret' } }
+    })
+    expect(secretReplace.statusCode).toBe(200) // revision 2, new credential
+    releaseRead()
+    expect((await configOnly).statusCode).toBe(200) // revision 3
+
+    const last = relay.assigns.at(-1)!
+    expect(last).toMatchObject({ connectionId: connection.id, revision: 3 })
+    const headerValues = last.headers.map((header) => header.value)
+    expect(headerValues).toContain('replaced-upstream-secret')
+    expect(headerValues).not.toContain('upstream-secret')
+  })
+
+  it('a delayed pre-retirement assignment cannot reintroduce the retired grant', async () => {
+    // Between the rotation's overlap push and its retirement, a concurrent
+    // config PATCH can commit a newer revision and assign the overlap set
+    // {old,new} — the interleaving that made an exact-revision per-hash
+    // unassign a no-op (the relay would keep honoring the revoked grant until
+    // reconnect). Retirement therefore revokes AND bumps the revision in one
+    // fenced transaction, then republishes the whole post-retirement allowlist
+    // strictly newer than that assignment.
+    const relay = new SpyRelayControl()
+    const app = build({ relay })
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+    const grants = app.deps.repos.externalMemoryGrant
+    const firstGrant = (await grants.activeForConnection(connection.id))[0]!
+
+    // Park the rotation at its overlap push's grant read (prepare committed:
+    // revision 2, old+new active) so the config PATCH can slip in fully.
+    const realActive = grants.activeForConnection.bind(grants)
+    let releasePush!: () => void
+    const gate = new Promise<void>((resolve) => (releasePush = resolve))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((resolve) => (notifyParked = resolve))
+    let intercepted = false
+    grants.activeForConnection = async (...args) => {
+      if (!intercepted) {
+        intercepted = true
+        notifyParked()
+        await gate
+      }
+      return realActive(...args)
+    }
+
+    const rotating = app.app.inject({ method: 'POST', url: `${CONNECTIONS}/${connection.id}/grant/rotate` })
+    await parked
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${CONNECTIONS}/${connection.id}`,
+      payload: { config: { projectId: 'pre-retirement-racer' } }
+    })
+    expect(patched.statusCode).toBe(200) // revision 3, assigns {old,new} at 3
+    const racerAssign = relay.assigns.at(-1)!
+    expect(racerAssign.revision).toBe(3)
+    expect(racerAssign.grantKeyHashes).toHaveLength(2)
+    releasePush()
+    const rotated = await rotating
+    expect(rotated.statusCode, rotated.body).toBe(200)
+
+    // The retirement publish outruns the racer: strictly newer revision, whole
+    // allowlist replaced, retired hash gone — durable truth and relay agree.
+    const last = relay.assigns.at(-1)!
+    expect(last.revision).toBeGreaterThan(racerAssign.revision)
+    expect(last.grantKeyHashes).toHaveLength(1)
+    expect(last.grantKeyHashes).not.toContain(grantKeyHash(firstGrant.key))
+    const active = await realActive(connection.id)
+    expect(active).toHaveLength(1)
+    expect(active[0]!.id).not.toBe(firstGrant.id)
+  })
+
+  it('a delete serialized after a rotation still publishes a winning tombstone', async () => {
+    // The DELETE's route-entry connection read can be arbitrarily stale, and a
+    // completed rotation advances TWO revisions — a tombstone computed from
+    // that stale read (old revision + 1) would be at or below the revision the
+    // relay already holds and be dropped, leaving the deleted connection's
+    // upstream and grant hashes live until reconnect. The tombstone revision
+    // must come from the row read inside the fenced delete transaction.
+    const relay = new SpyRelayControl()
+    const app = build({ relay })
+    const installationId = await createInstallation(app)
+    const connection = await createConnection(app, installationId)
+
+    // Park the DELETE right after its route-entry read (revision 1).
+    const connections = app.deps.repos.externalMemoryConnection
+    const realGet = connections.get.bind(connections)
+    let releaseRead!: () => void
+    const gate = new Promise<void>((resolve) => (releaseRead = resolve))
+    let notifyParked!: () => void
+    const parked = new Promise<void>((resolve) => (notifyParked = resolve))
+    let intercepted = false
+    connections.get = async (...args) => {
+      const value = await realGet(...args)
+      if (!intercepted) {
+        intercepted = true
+        notifyParked()
+        await gate
+      }
+      return value
+    }
+
+    const deleting = app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${connection.id}` })
+    await parked
+    // A full rotation completes meanwhile: overlap publish (2), retirement (3).
+    const rotated = await app.app.inject({ method: 'POST', url: `${CONNECTIONS}/${connection.id}/grant/rotate` })
+    expect(rotated.statusCode, rotated.body).toBe(200)
+    expect((rotated.json() as { revision: number }).revision).toBe(3)
+    const lastAssign = relay.assigns.at(-1)!
+    expect(lastAssign.revision).toBe(3)
+    releaseRead()
+    expect((await deleting).statusCode).toBe(204)
+
+    // Tombstone derived under the scope: strictly newer than every published
+    // assignment, so the relay's revision gate cannot drop it.
+    const tombstone = relay.unassigns.at(-1)!
+    expect(tombstone).toEqual({ connectionId: connection.id, revision: 4 })
+    expect(tombstone.revision).toBeGreaterThan(lastAssign.revision)
+    expect(await realGet(connection.id)).toBeNull()
   })
 })
 
 describe('external-memory agent binding — placement and revocation', () => {
-  it('serializes connection deletion against an agent binding commit', async () => {
+  it('fail-fasts connection deletion and agent binds/edits/deletes while a mutation holds the scope', async () => {
     const app = build()
     const installationId = await createInstallation(app)
     const connection = await createConnection(app, installationId)
-    const writer = app.deps.repos.agentConfig
-    const create = writer.create.bind(writer)
-    let entered!: () => void
-    let resume!: () => void
-    const started = new Promise<void>((resolve) => (entered = resolve))
-    const blocked = new Promise<void>((resolve) => (resume = resolve))
-    writer.create = async (...args) => {
-      entered()
-      await blocked
-      return create(...args)
-    }
+    const holder = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'bound-holder-agent',
+        runtime: 'claude',
+        memory: { provider: 'external', connectionId: connection.id }
+      }
+    })
+    expect(holder.statusCode).toBe(201)
+    const holderId = (holder.json() as { id: string }).id
 
-    const binding = app.app.inject({
+    // "The other instance" holds the connection's advisory mutation scope: the
+    // delete's no-agent-bound scan and every agent write touching the binding
+    // (create bind, config edit of a bound agent, agent delete) take the same
+    // scope inside their own transactions, so all of them fail fast.
+    const hold = await holdMemoryConnectionScope(connection.id)
+    const deleting = await app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${connection.id}` })
+    expect(deleting.statusCode).toBe(409)
+    expect((deleting.json() as { message: string }).message).toContain('being updated')
+    const binding = await app.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
       payload: {
@@ -511,13 +732,67 @@ describe('external-memory agent binding — placement and revocation', () => {
         memory: { provider: 'external', connectionId: connection.id }
       }
     })
-    await started
-    const deleting = await app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${connection.id}` })
-    expect(deleting.statusCode).toBe(409)
-    expect((deleting.json() as { message: string }).message).toContain('being updated')
-    resume()
-    expect((await binding).statusCode).toBe(201)
+    expect(binding.statusCode).toBe(409)
+    expect((binding.json() as { message: string }).message).toContain('being updated')
+    const editing = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${holderId}`,
+      payload: { model: 'other-model' }
+    })
+    expect(editing.statusCode).toBe(409)
+    expect((editing.json() as { message: string }).message).toContain('being updated')
+    const removing = await app.app.inject({ method: 'DELETE', url: `${ORG}/agents/${holderId}` })
+    expect(removing.statusCode).toBe(409)
+    expect((removing.json() as { message: string }).message).toContain('being updated')
+    await hold.release()
+
     expect(await app.deps.repos.externalMemoryConnection.get(connection.id)).not.toBeNull()
+    const settled = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${holderId}`,
+      payload: { model: 'other-model' }
+    })
+    expect(settled.statusCode).toBe(200)
+  })
+
+  it('a committed bind refuses the delete; a committed delete refuses the bind (never a dangling binding)', async () => {
+    const app = build()
+    const installationId = await createInstallation(app)
+
+    // Bind first: the delete's fenced scan sees the committed binding → 409.
+    const boundTo = await createConnection(app, installationId)
+    const bound = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'bind-first-agent',
+        runtime: 'claude',
+        memory: { provider: 'external', connectionId: boundTo.id }
+      }
+    })
+    expect(bound.statusCode).toBe(201)
+    const refused = await app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${boundTo.id}` })
+    expect(refused.statusCode).toBe(409)
+    expect((refused.json() as { message: string }).message).toContain('still bound to an agent')
+
+    // Delete first: the bind's in-transaction existence re-check refuses → the
+    // check-then-delete race around the FK-less JSON binding can end in either
+    // order, but never with an agent bound to a dropped connection.
+    const dropped = await createConnection(app, installationId)
+    expect((await app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${dropped.id}` })).statusCode).toBe(204)
+    const dangling = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'delete-first-agent',
+        runtime: 'claude',
+        memory: { provider: 'external', connectionId: dropped.id }
+      }
+    })
+    expect(dangling.statusCode).toBe(400)
+    expect((dangling.json() as { message: string }).message).toContain(
+      'external memory connection not found in this organization'
+    )
   })
 
   it('pushes the private registry before AgentSpec, permits probing bootstrap, and removes it after unbind', async () => {

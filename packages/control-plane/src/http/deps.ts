@@ -34,6 +34,7 @@ import type {
   ExternalMemoryConnectionRepo,
   ExternalMemoryConnectionSecretStore,
   ExternalMemoryGrantRepo,
+  MemoryConnectionWriter,
   SlackInstallStore,
   SlackPlatformInstallStore,
   FeishuAppRegistrationStore,
@@ -63,7 +64,6 @@ import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
-import type { ExclusiveMutationGate } from '../orchestrator/exclusiveMutationGate.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from './slack-identity.js'
@@ -189,6 +189,9 @@ export interface HttpDeps {
     externalMemoryConnectionSecret: ExternalMemoryConnectionSecretStore
     /** Daemon-private purpose-specific relay grants. */
     externalMemoryGrant: ExternalMemoryGrantRepo
+    /** Transactional check-then-write pairs for external-memory mutations,
+     *  serialized cross-instance via advisory mutation scopes ('busy' ⇒ 409). */
+    memoryConnectionWriter: MemoryConnectionWriter
     /** Pending config-token auto-install sessions (§Tier B); holds secret material, never DTO'd. */
     slackInstall: SlackInstallStore
     /** Pending platform-app installs (preset-agents.md §5.3): OAuth state → tenancy, no secrets. */
@@ -239,8 +242,6 @@ export interface HttpDeps {
   collabRoutes: CollabRoutesService
   /** Process-local exclusive move vs shared CRUD gate; valid with one active CP writer. */
   agentMutations: AgentMutationGate
-  /** Process-local exclusive connection mutation vs agent bind/unbind gate. */
-  memoryConnectionMutations: ExclusiveMutationGate
   /** Hot assignment-owner index paired with the durable AssignmentRepo. */
   sessionOwners: { releaseSession(key: SessionKey): void }
   /** Compiles hooks into relay rules and keeps the pool converged — hook CRUD

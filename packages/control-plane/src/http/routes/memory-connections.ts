@@ -14,7 +14,7 @@ import type { ExternalMemoryConnectionRecord, MemoryPluginInstallationRecord } f
 import type { OrgId } from '../../domain/ids.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
-import { blockedUpstreamUrl, grantKeyHash, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { blockedUpstreamUrl, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import {
   boundedMemoryConfig,
   memoryConnectionSpec,
@@ -80,7 +80,6 @@ async function connectionDto(
 export function memoryConnectionRoutes(deps: HttpDeps) {
   return async function memoryConnectionRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
-    const installationMutationId = (id: string) => `installation:${id}`
     const relayBaseUrl = async (): Promise<string | null> => {
       const alive = await deps.repos.relay.listAlive(new Date(Date.now() - (deps.config.RELAY_STALE_MS ?? 0)))
       return alive[0]?.daemonUrl ? relayHttpOrigin(alive[0].daemonUrl) : null
@@ -211,31 +210,24 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const release = deps.memoryConnectionMutations.tryBeginMutation(installationMutationId(req.params.id))
-        if (!release) {
+        // Reference scan + row drop in one transaction under the installation's
+        // advisory mutation scope — a concurrent connection create either
+        // committed (⇒ 'referenced') or re-checks after the drop and 404s.
+        const outcome = await deps.repos.memoryConnectionWriter.deleteInstallation(req.params.id, orgOf(req))
+        if (outcome === 'busy') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'installation is being updated' })
         }
-        try {
-          const installation = await deps.repos.memoryPluginInstallation.get(req.params.id)
-          if (!installation || installation.orgId !== orgOf(req)) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
-          }
-          if (
-            (await deps.repos.externalMemoryConnection.listForOrg(orgOf(req))).some(
-              (c) => c.installationId === installation.id
-            )
-          ) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'installation still has external-memory connections'
-            })
-          }
-          await deps.repos.memoryPluginInstallation.delete(installation.id)
-          return reply.code(204).send(null)
-        } finally {
-          release()
+        if (outcome === 'not_found') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
+        if (outcome === 'referenced') {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'installation still has external-memory connections'
+          })
+        }
+        return reply.code(204).send(null)
       }
     )
 
@@ -293,50 +285,42 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const connectionId = randomUUID()
-        const release = deps.memoryConnectionMutations.tryBeginMutation([
-          installationMutationId(req.body.installationId),
-          connectionId
-        ])
-        if (!release) {
-          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'installation is being updated' })
+        // Friendly reads/validation first; the writer re-checks the installation
+        // inside its transaction under the installation's advisory mutation
+        // scope, and commits the row + sealed secrets + minted grant atomically
+        // (no delete-the-row compensation pair anymore).
+        const installation = await deps.repos.memoryPluginInstallation.get(req.body.installationId)
+        if (!installation || installation.orgId !== orgOf(req)) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
-        try {
-          const installation = await deps.repos.memoryPluginInstallation.get(req.body.installationId)
-          if (!installation || installation.orgId !== orgOf(req)) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
-          }
-          const configError = boundedMemoryConfig(req.body.config)
-          const secretError = validateMemorySecrets(installation.secretHeaders, req.body.secrets)
-          if (configError || secretError) {
-            return reply.code(400).send({
-              error: 'Bad Request',
-              statusCode: 400,
-              message: configError ?? secretError!
-            })
-          }
-          const row = await deps.repos.externalMemoryConnection.create({
-            id: connectionId,
+        const configError = boundedMemoryConfig(req.body.config)
+        const secretError = validateMemorySecrets(installation.secretHeaders, req.body.secrets)
+        if (configError || secretError) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: configError ?? secretError!
+          })
+        }
+        const created = await deps.repos.memoryConnectionWriter.createConnection(
+          {
+            id: randomUUID(),
             orgId: orgOf(req),
             installationId: installation.id,
             config: req.body.config,
             ...(req.principal ? { createdByUserId: req.principal.userId } : {})
-          })
-          try {
-            await deps.repos.externalMemoryConnectionSecret.put(row.id, req.body.secrets)
-            const grant =
-              installation.transport === 'streamable-http'
-                ? await deps.repos.externalMemoryGrant.mintFor(row.id)
-                : undefined
-            await pushConnection(row, installation, req.body.secrets, grant?.key)
-          } catch (error) {
-            await deps.repos.externalMemoryConnection.delete(row.id).catch(() => undefined)
-            throw error
-          }
-          return reply.code(201).send(await connectionDto(row, deps))
-        } finally {
-          release()
+          },
+          req.body.secrets,
+          installation.transport === 'streamable-http'
+        )
+        if (created.outcome === 'busy') {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'installation is being updated' })
         }
+        if (created.outcome === 'installation_missing') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
+        }
+        await pushConnection(created.connection, installation, req.body.secrets, created.grantKey)
+        return reply.code(201).send(await connectionDto(created.connection, deps))
       }
     )
 
@@ -356,50 +340,48 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const release = deps.memoryConnectionMutations.tryBeginMutation(req.params.id)
-        if (!release) {
+        const existing = await deps.repos.externalMemoryConnection.get(req.params.id)
+        if (!existing || existing.orgId !== orgOf(req)) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
+        }
+        const installation = await deps.repos.memoryPluginInstallation.get(existing.installationId)
+        if (!installation) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
+        }
+        const priorSecrets = (await deps.repos.externalMemoryConnectionSecret.get(existing.id)) ?? {}
+        const secrets = req.body.secrets ?? priorSecrets
+        const config = req.body.config ?? existing.config
+        const configError = boundedMemoryConfig(config)
+        const secretError = validateMemorySecrets(installation.secretHeaders, secrets)
+        if (configError || secretError) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: configError ?? secretError!
+          })
+        }
+        // Secret replacement + revision bump commit as ONE transaction under
+        // the connection's advisory mutation scope (the writer), so a failure
+        // can't leave new secrets beside the old definition and no concurrent
+        // mutation can interleave with the pair.
+        const result = await deps.repos.memoryConnectionWriter.updateConnection(existing.id, orgOf(req), {
+          ...(req.body.config !== undefined ? { config: req.body.config } : {}),
+          ...(req.body.secrets !== undefined ? { secrets: req.body.secrets } : {})
+        })
+        if (result.outcome === 'busy') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'connection is being updated' })
         }
-        try {
-          const existing = await deps.repos.externalMemoryConnection.get(req.params.id)
-          if (!existing || existing.orgId !== orgOf(req)) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
-          }
-          const installation = await deps.repos.memoryPluginInstallation.get(existing.installationId)
-          if (!installation) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
-          }
-          const priorSecrets = (await deps.repos.externalMemoryConnectionSecret.get(existing.id)) ?? {}
-          const secrets = req.body.secrets ?? priorSecrets
-          const config = req.body.config ?? existing.config
-          const configError = boundedMemoryConfig(config)
-          const secretError = validateMemorySecrets(installation.secretHeaders, secrets)
-          if (configError || secretError) {
-            return reply.code(400).send({
-              error: 'Bad Request',
-              statusCode: 400,
-              message: configError ?? secretError!
-            })
-          }
-          if (req.body.secrets !== undefined) {
-            await deps.repos.externalMemoryConnectionSecret.put(existing.id, req.body.secrets)
-          }
-          let updated: ExternalMemoryConnectionRecord
-          try {
-            updated = await deps.repos.externalMemoryConnection.update(existing.id, {
-              ...(req.body.config !== undefined ? { config: req.body.config } : {})
-            })
-          } catch (error) {
-            if (req.body.secrets !== undefined) {
-              await deps.repos.externalMemoryConnectionSecret.put(existing.id, priorSecrets).catch(() => undefined)
-            }
-            throw error
-          }
-          await pushConnection(updated, installation, secrets)
-          return connectionDto(updated, deps)
-        } finally {
-          release()
+        if (result.outcome === 'not_found') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
+        // Push the writer's in-transaction snapshot, never the pre-transaction
+        // read above (which is validation input only): a config-only patch that
+        // read old secrets, then committed AFTER a concurrent secret
+        // replacement, would otherwise publish the old credential under the
+        // newer revision — and the relay's revision gate would pin it there
+        // until reconnect.
+        await pushConnection(result.connection, installation, result.secrets)
+        return connectionDto(result.connection, deps)
       }
     )
 
@@ -425,53 +407,72 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const release = deps.memoryConnectionMutations.tryBeginMutation(req.params.id)
-        if (!release) {
+        const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
+        if (!connection || connection.orgId !== orgOf(req)) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
+        }
+        const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
+        if (!installation) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
+        }
+        if (installation.transport === 'stdio') {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'local stdio connections have no relay grant; replace the connection secrets instead'
+          })
+        }
+        // Durable first half in one transaction under the connection's advisory
+        // mutation scope: revision bump + fresh-grant mint (or newest reuse
+        // after a failed earlier attempt — never an unbounded chain of pending
+        // grants), with the active set CAS-checked against this read and the
+        // secret snapshot paired with the committed revision.
+        const prepared = await deps.repos.memoryConnectionWriter.prepareGrantRotation(connection.id, orgOf(req))
+        if (prepared.outcome === 'busy') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'connection is being updated' })
         }
-        try {
-          const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
-          if (!connection || connection.orgId !== orgOf(req)) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
-          }
-          const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
-          if (!installation) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
-          }
-          if (installation.transport === 'stdio') {
-            return reply.code(400).send({
-              error: 'Bad Request',
-              statusCode: 400,
-              message: 'local stdio connections have no relay grant; replace the connection secrets instead'
-            })
-          }
-          const prior = await deps.repos.externalMemoryGrant.activeForConnection(connection.id)
-          const updated = await deps.repos.externalMemoryConnection.update(connection.id, {})
-          // A failed earlier attempt leaves old+new active. Reuse the newest key
-          // on retry instead of minting an unbounded chain of pending grants.
-          const fresh = prior.length > 1 ? prior.at(-1)! : await deps.repos.externalMemoryGrant.mintFor(connection.id)
-          const retiring = prior.filter((grant) => grant.id !== fresh.id)
-          const secrets = (await deps.repos.externalMemoryConnectionSecret.get(connection.id)) ?? {}
-          const distributed = await pushConnection(updated, installation, secrets, fresh.key)
-          if (!distributed) {
-            return reply.code(503).send({
-              error: 'Service Unavailable',
-              statusCode: 503,
-              message: 'replacement grant was retained, but not every placed daemon acknowledged it; retry rotation'
-            })
-          }
-          for (const grant of retiring) {
-            await deps.repos.externalMemoryGrant.revoke(grant.id)
-            deps.relayControl.memoryConnectionUnassign({
-              connectionId: connection.id,
-              revision: updated.revision,
-              grantKeyHash: grantKeyHash(grant.key)
-            })
-          }
-          return connectionDto(updated, deps)
-        } finally {
-          release()
+        if (prepared.outcome === 'not_found') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
+        const distributed = await pushConnection(
+          prepared.connection,
+          installation,
+          prepared.secrets,
+          prepared.fresh.key
+        )
+        if (!distributed) {
+          return reply.code(503).send({
+            error: 'Service Unavailable',
+            statusCode: 503,
+            message: 'replacement grant was retained, but not every placed daemon acknowledged it; retry rotation'
+          })
+        }
+        if (prepared.retiring.length === 0) return connectionDto(prepared.connection, deps)
+        // Durable second half: revoke + revision bump in one fenced transaction,
+        // then republish the post-retirement allowlist under that strictly newer
+        // revision. The relay's whole-list assign replaces the hash set, so this
+        // is what actually evicts the retired hash — a per-hash unassign only
+        // applies at the exact current table revision, and a concurrent
+        // mutation's assign landing between the overlap push and retirement
+        // would make it a no-op, leaving the revoked grant authorized until
+        // reconnect. The republish is best-effort like every projection push:
+        // if it is lost, the reconnect baseline replays the post-revoke truth.
+        const finalized = await deps.repos.memoryConnectionWriter.finalizeGrantRotation(
+          connection.id,
+          orgOf(req),
+          prepared.retiring.map((grant) => grant.id)
+        )
+        if (finalized.outcome === 'busy') {
+          // The overlap set (old + new, both acked) stays live; the operator
+          // retries and the next rotation reuses the newest grant and retires
+          // the remainder — the same convergence path as a failed overlap push.
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'connection is being updated' })
+        }
+        if (finalized.outcome === 'not_found') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
+        }
+        await pushConnection(finalized.connection, installation, finalized.secrets, prepared.fresh.key)
+        return connectionDto(finalized.connection, deps)
       }
     )
 
@@ -490,35 +491,41 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const release = deps.memoryConnectionMutations.tryBeginMutation(req.params.id)
-        if (!release) {
+        const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
+        if (!connection || connection.orgId !== orgOf(req)) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
+        }
+        const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
+        // Binding scan + row drop in one transaction under the connection's
+        // advisory mutation scope — agent binds take the same scope inside
+        // their own transactions, so a bind either committed (⇒ 'bound') or
+        // re-verifies the connection after this drop and is refused.
+        const deleted = await deps.repos.memoryConnectionWriter.deleteConnection(connection.id, orgOf(req))
+        if (deleted.outcome === 'busy') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'connection is being updated' })
         }
-        try {
-          const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
-          if (!connection || connection.orgId !== orgOf(req)) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
-          }
-          const users = await agentsUsing(connection.orgId, connection.id)
-          if (users.length) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'connection is still bound to an agent'
-            })
-          }
-          const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
-          await deps.repos.externalMemoryConnection.delete(connection.id)
-          if (installation?.transport === 'streamable-http') {
-            deps.relayControl.memoryConnectionUnassign({
-              connectionId: connection.id,
-              revision: connection.revision + 1
-            })
-          }
-          return reply.code(204).send(null)
-        } finally {
-          release()
+        if (deleted.outcome === 'not_found') {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
+        if (deleted.outcome === 'bound') {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'connection is still bound to an agent'
+          })
+        }
+        if (installation?.transport === 'streamable-http') {
+          // The tombstone revision comes from the fenced delete transaction —
+          // the `connection` read at route entry can be stale (a completed
+          // rotation advances TWO revisions), and the relay drops a tombstone at
+          // or below the revision it already holds, which would leave the
+          // deleted upstream and grant hashes live until reconnect.
+          deps.relayControl.memoryConnectionUnassign({
+            connectionId: connection.id,
+            revision: deleted.tombstoneRevision
+          })
+        }
+        return reply.code(204).send(null)
       }
     )
   }

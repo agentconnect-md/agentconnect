@@ -36,12 +36,16 @@ import {
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { type AgentRecord, type AgentWorkspace, isSyntheticEmail } from '../../persistence/ports.js'
+import {
+  type AgentRecord,
+  type AgentSkillSourceFence,
+  type AgentWorkspace,
+  isSyntheticEmail
+} from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import { serializeByProviderNames } from './mcp-providers.js'
-import { serializeBySkillSourceNames } from './skill-sources.js'
 
 /** Thrown inside the provider-name fence when the in-fence visibility re-check
  *  refuses an enable-list name; the route maps it to a 403. */
@@ -59,7 +63,11 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed, AgentMoveService } from '../../orchestrator/agentMove.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { ProtocolError } from '../../domain/errors.js'
-import { AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE } from '../../persistence/errors.js'
+import {
+  AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE,
+  MemoryConnectionBusy,
+  MemoryConnectionMissing
+} from '../../persistence/errors.js'
 import {
   CreateAgentBody,
   SetAgentWorkspaceBody,
@@ -666,45 +674,46 @@ export function agentRoutes(deps: HttpDeps) {
         : null
     }
 
-    // The skill-source twin of withSubmittedMcpProviderChains — same fence, same
-    // reasoning (see that helper and routes/skill-sources.ts): the write joins the
-    // (orgId, name) chain of every SOURCE its submitted skill-refs name, keyed off
-    // the whole submitted list (a stale full-replace PATCH may be the write that
-    // RESTORES a ref after a concurrent removal). Removal-only submissions ([] /
-    // null / untouched) join no chain.
+    // The skill-source twin of withSubmittedMcpProviderChains, carried as an
+    // in-transaction fence rather than a route-level chain (see
+    // routes/skill-sources.ts and AgentSkillSourceFence): the repo takes the
+    // (orgId, name) advisory scope of every SOURCE the submitted skill-refs
+    // name, keyed off the whole submitted list (a stale full-replace PATCH may
+    // be the write that RESTORES a ref after a concurrent removal).
+    // Removal-only submissions ([] / null / untouched) carry no fence.
     //
-    // The visibility gate re-runs INSIDE the fence with the keep-exemption derived
-    // from the agent's COMMITTED refs (evaluated in the row-locked update
-    // transaction via AgentUpdateOpts.authorizeSkills): a kept ref's source can be
-    // neither deleted nor name-captured while held (both 409 while referenced), so
-    // the committed hold is exactly the authorization it was granted under. One
-    // skills-specific difference from MCP: there is no daemon-local fallback for a
-    // skill-ref — a submitted NEW ref whose source is unknown (e.g. just deleted in
-    // this very chain) or unviewable is refused, so a dangling ref can never be
-    // committed through this surface. A refusal surfaces as SkillEnableDenied (the
-    // route maps it to 403).
-    const withSubmittedSkillSourceChains = async <T>(
+    // The visibility gate runs INSIDE the write's transaction, under those
+    // scopes, with the keep-exemption derived from the agent's COMMITTED refs
+    // (the row-locked bag read): a kept ref's source can be neither deleted nor
+    // name-captured while held (both 409 while referenced), so the committed
+    // hold is exactly the authorization it was granted under. One
+    // skills-specific difference from MCP: there is no daemon-local fallback
+    // for a skill-ref — a submitted NEW ref whose source is unknown (e.g. just
+    // deleted under the same scope) or unviewable is refused, so a dangling ref
+    // can never be committed through this surface. A refusal surfaces as
+    // SkillEnableDenied (the route maps it to 403).
+    const skillSourceFenceFor = (
       orgId: OrgId,
       ctx: ViewCtx,
-      submitted: readonly string[] | null | undefined,
-      run: (authorizeSkills: (currentlyHeld: readonly string[]) => void) => Promise<T>
-    ): Promise<T> => {
-      if (!submitted || submitted.length === 0) return run(() => {})
-      const names = submitted.map((ref) => parseSkillRef(ref).source)
-      return serializeBySkillSourceNames(orgId, names, async () => {
-        const visible = new Set((await deps.repos.skillSource.listForOrg(orgId, ctx)).map((s) => s.name))
-        return run((currentlyHeld) => {
-          const held = new Set(currentlyHeld)
+      submitted: readonly string[] | null | undefined
+    ): AgentSkillSourceFence | undefined => {
+      if (!submitted || submitted.length === 0) return undefined
+      return {
+        orgId,
+        names: submitted.map((ref) => parseSkillRef(ref).source),
+        viewer: ctx,
+        authorize: (committedHeld, visibleSourceNames) => {
+          const held = new Set(committedHeld)
           const blocked = [
             ...new Set(submitted.filter((ref) => !held.has(ref)).map((ref) => parseSkillRef(ref).source))
-          ].filter((n) => !visible.has(n))
+          ].filter((n) => !visibleSourceNames.has(n))
           if (blocked.length) {
             throw new SkillEnableDenied(
               `cannot enable skills from a source you don't have access to: ${blocked.join(', ')}`
             )
           }
-        })
-      })
+        }
+      }
     }
 
     const validateExternalMemoryBinding = async (
@@ -738,10 +747,6 @@ export function agentRoutes(deps: HttpDeps) {
       const invalid = rows.some((row) => !row || row.orgId !== orgId || row.archivedAt !== null)
       return invalid ? 'managed skill not found, archived, or outside this organization' : null
     }
-
-    const externalMemoryConnectionIds = (...memories: Array<AgentRecord['memory'] | null | undefined>): string[] => [
-      ...new Set(memories.flatMap((memory) => (memory?.provider === 'external' ? [memory.connectionId] : [])))
-    ]
 
     /** Registry-before-agent ordering: a live daemon must see the referenced
      * connection before it applies an external-memory AgentSpec. */
@@ -982,16 +987,10 @@ export function agentRoutes(deps: HttpDeps) {
         if (managedSkillError) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: managedSkillError })
         }
-        const memoryRelease = deps.memoryConnectionMutations.tryBeginMutation(
-          externalMemoryConnectionIds(req.body.memory)
-        )
-        if (!memoryRelease) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'external memory connection is being updated; retry agent creation'
-          })
-        }
+        // The friendly external-memory validation runs here; the authoritative
+        // fence (connection advisory try-lock + in-transaction existence
+        // re-check) lives inside the create transaction (PgAgentRepo) and
+        // surfaces as MemoryConnectionBusy/Missing in the catch below.
         try {
           const memoryError = await validateExternalMemoryBinding(req.body.memory, orgOf(req))
           if (memoryError) {
@@ -1019,64 +1018,64 @@ export function agentRoutes(deps: HttpDeps) {
               : undefined
           // One transaction for the agent row + its initial secret rows (sealing
           // happens before it opens) — a failure can't leave a partial definition.
-          // Chained per submitted MCP provider name AND per submitted skill-ref source
-          // name so the row can't commit inside a concurrent registry-delete's
-          // check→drop window. Nesting order (providers outer, sources inner) is fixed
-          // everywhere agent writes take both, so the two chain families can't cycle.
+          // Chained per submitted MCP provider name (route-level chain), and fenced
+          // per submitted skill-ref source name INSIDE the create transaction (the
+          // skillSources opts) so the row can't commit inside a concurrent
+          // registry-delete's check→drop window. The MCP chain wraps the whole
+          // transaction, so the two fence families still nest in a fixed order.
+          const skillsFence = skillSourceFenceFor(orgOf(req), ctxOf(req), req.body.skills)
           let agent: AgentRecord
           try {
-            agent = await withSubmittedMcpProviderChains(orgOf(req), ctxOf(req), req.body.mcpServers, (authorize) =>
-              withSubmittedSkillSourceChains(orgOf(req), ctxOf(req), req.body.skills, (authorizeSkills) => {
-                // A not-yet-created agent holds nothing, and nothing can concurrently
-                // remove from it — the empty-hold decision is stable through create.
-                authorize([])
-                authorizeSkills([])
-                return deps.repos.agentConfig.create(
-                  {
-                    id: agentId,
-                    orgId: orgOf(req),
-                    name: req.body.name,
-                    ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
-                    // Absent ⇒ the repo assigns a random glyph+color combo (product default).
-                    ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
-                    ...(req.body.description !== undefined ? { description: req.body.description } : {}),
-                    runtime: req.body.runtime,
-                    ...(req.body.model !== undefined ? { model: req.body.model } : {}),
-                    ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
-                    ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
-                    ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
-                    ...(req.body.showStatusBar !== undefined ? { showStatusBar: req.body.showStatusBar } : {}),
-                    ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
-                    ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
-                    ...(req.body.allowRuntimeChangesInChat !== undefined
-                      ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
-                      : {}),
-                    ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
-                    ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                    restrictFileAccess,
-                    ...(req.body.env !== undefined ? { env: req.body.env } : {}),
-                    ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
-                    ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
-                    ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
-                    ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
-                    ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
-                    ...(workspace !== undefined ? { workspace } : {}),
-                    ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
-                    ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
-                    ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
-                    ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
-                    callPolicy,
-                    allowedCallerAgentIds: initialAllowedCallers ?? [],
-                    outboundPolicy,
-                    allowedTargetAgentIds: initialAllowedTargets ?? [],
-                    capabilities: req.body.capabilities
-                  },
-                  // Initial write-only secrets — same transaction, so the first
-                  // replicateUpsert below always sees the complete definition.
-                  req.body.secrets
-                )
-              })
-            )
+            agent = await withSubmittedMcpProviderChains(orgOf(req), ctxOf(req), req.body.mcpServers, (authorize) => {
+              // A not-yet-created agent holds nothing, and nothing can concurrently
+              // remove from it — the empty-hold decision is stable through create.
+              authorize([])
+              return deps.repos.agentConfig.create(
+                {
+                  id: agentId,
+                  orgId: orgOf(req),
+                  name: req.body.name,
+                  ...(req.body.displayName !== undefined ? { displayName: req.body.displayName } : {}),
+                  // Absent ⇒ the repo assigns a random glyph+color combo (product default).
+                  ...(req.body.icon !== undefined ? { icon: req.body.icon } : {}),
+                  ...(req.body.description !== undefined ? { description: req.body.description } : {}),
+                  runtime: req.body.runtime,
+                  ...(req.body.model !== undefined ? { model: req.body.model } : {}),
+                  ...(req.body.reasoningEffort !== undefined ? { reasoningEffort: req.body.reasoningEffort } : {}),
+                  ...(req.body.outputMode !== undefined ? { outputMode: req.body.outputMode } : {}),
+                  ...(req.body.showFooter !== undefined ? { showFooter: req.body.showFooter } : {}),
+                  ...(req.body.showStatusBar !== undefined ? { showStatusBar: req.body.showStatusBar } : {}),
+                  ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
+                  ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
+                  ...(req.body.allowRuntimeChangesInChat !== undefined
+                    ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
+                    : {}),
+                  ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
+                  ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
+                  restrictFileAccess,
+                  ...(req.body.env !== undefined ? { env: req.body.env } : {}),
+                  ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
+                  ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
+                  ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
+                  ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
+                  ...(req.body.daemonId !== undefined ? { daemonId: DaemonId(req.body.daemonId) } : {}),
+                  ...(workspace !== undefined ? { workspace } : {}),
+                  ...(workspaceRepoId !== undefined ? { workspaceRepoId } : {}),
+                  ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
+                  ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
+                  ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
+                  callPolicy,
+                  allowedCallerAgentIds: initialAllowedCallers ?? [],
+                  outboundPolicy,
+                  allowedTargetAgentIds: initialAllowedTargets ?? [],
+                  capabilities: req.body.capabilities
+                },
+                // Initial write-only secrets — same transaction, so the first
+                // replicateUpsert below always sees the complete definition.
+                req.body.secrets,
+                skillsFence ? { skillSources: skillsFence } : undefined
+              )
+            })
           } catch (e) {
             if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
@@ -1129,8 +1128,18 @@ export function agentRoutes(deps: HttpDeps) {
             ),
             ...(connect ? { connect } : {})
           })
-        } finally {
-          memoryRelease()
+        } catch (e) {
+          if (e instanceof MemoryConnectionBusy) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'external memory connection is being updated; retry agent creation'
+            })
+          }
+          if (e instanceof MemoryConnectionMissing) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: e.message })
+          }
+          throw e
         }
       }
     )
@@ -1382,18 +1391,11 @@ export function agentRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent move is in progress; retry the edit' })
         }
+        // External-memory fencing (advisory try-lock on the committed + target
+        // connections and the in-transaction existence re-check) happens inside
+        // the update transaction (PgAgentRepo); MemoryConnectionBusy/Missing
+        // surface in the catch below.
         const targetMemory = req.body.memory === undefined ? existing.memory : req.body.memory
-        const memoryRelease = deps.memoryConnectionMutations.tryBeginMutation(
-          externalMemoryConnectionIds(existing.memory, targetMemory)
-        )
-        if (!memoryRelease) {
-          release()
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'external memory connection is being updated; retry the edit'
-          })
-        }
         try {
           if (!(await refreshMutationAgent(existing))) {
             return reply
@@ -1507,10 +1509,12 @@ export function agentRoutes(deps: HttpDeps) {
           // The row patch and the secret merge commit as ONE transaction (sealing
           // outside it), so the replicateUpsert below can only ever ship a
           // definition that fully applied — never a half-updated one. Chained per
-          // submitted MCP provider name AND per submitted skill-ref source name so
-          // the row can't commit inside a concurrent registry-delete's check→drop
-          // window (nesting order fixed: providers outer, sources inner).
+          // submitted MCP provider name (route-level chain, wrapping the whole
+          // transaction) and fenced per submitted skill-ref source name INSIDE
+          // that transaction (the skillSources opts), so the row can't commit
+          // inside a concurrent registry-delete's check→drop window.
           const { secrets: secretsPatch, ...bodyPatch } = req.body
+          const skillsFence = skillSourceFenceFor(orgOf(req), ctxOf(req), req.body.skills)
           let agent: AgentRecord
           try {
             agent = await withSubmittedMcpProviderChains(
@@ -1518,18 +1522,16 @@ export function agentRoutes(deps: HttpDeps) {
               ctxOf(req),
               req.body.mcpServers,
               (authorizeMcpServers) =>
-                withSubmittedSkillSourceChains(orgOf(req), ctxOf(req), req.body.skills, (authorizeSkills) =>
-                  deps.repos.agentConfig.update(
-                    AgentId(req.params.id),
-                    {
-                      ...bodyPatch,
-                      ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
-                    },
-                    secretsPatch,
-                    // Evaluated inside the row-locked transaction, against the same
-                    // committed lists this write merges onto (see the fence helpers).
-                    { authorizeMcpServers, authorizeSkills }
-                  )
+                deps.repos.agentConfig.update(
+                  AgentId(req.params.id),
+                  {
+                    ...bodyPatch,
+                    ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
+                  },
+                  secretsPatch,
+                  // Evaluated inside the row-locked transaction, against the same
+                  // committed lists this write merges onto (see the fence helpers).
+                  { authorizeMcpServers, ...(skillsFence ? { skillSources: skillsFence } : {}) }
                 )
             )
           } catch (e) {
@@ -1555,8 +1557,19 @@ export function agentRoutes(deps: HttpDeps) {
             iconBasesOf(deps),
             sandboxPolicy
           )
+        } catch (e) {
+          if (e instanceof MemoryConnectionBusy) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'external memory connection is being updated; retry the edit'
+            })
+          }
+          if (e instanceof MemoryConnectionMissing) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: e.message })
+          }
+          throw e
         } finally {
-          memoryRelease()
           release()
         }
       }
@@ -1799,10 +1812,14 @@ export function agentRoutes(deps: HttpDeps) {
           }
         }
 
-        const memoryRelease = deps.memoryConnectionMutations.tryBeginMutation(
-          externalMemoryConnectionIds(existing.memory)
-        )
-        if (!memoryRelease) return conflict('external memory connection is being updated; retry the move')
+        // A move takes NO external-memory mutation scope: its connection work is
+        // staging pushes (no connection row writes), and it can outlive any
+        // transactional lock while a daemon drains. A connection mutation that
+        // lands mid-move can leave the target holding a stale spec only until
+        // the post-commit re-push below / the usage-checked removal in the
+        // finally / the daemon reconnect snapshot converge it — and a connection
+        // DELETE stays impossible throughout because this agent's committed
+        // binding keeps its "no agent bound" scan refusing (409).
         let targetStaged = false
         try {
           // The connection registry is a separate private wire. Stage it before
@@ -1888,7 +1905,6 @@ export function agentRoutes(deps: HttpDeps) {
           if (targetStaged && existing.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(existing.orgId, target.daemonId, existing.memory.connectionId)
           }
-          memoryRelease()
         }
       }
     )
@@ -1929,17 +1945,9 @@ export function agentRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent move is in progress; retry the delete' })
         }
-        const memoryRelease = deps.memoryConnectionMutations.tryBeginMutation(
-          externalMemoryConnectionIds(existing.memory)
-        )
-        if (!memoryRelease) {
-          release()
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'external memory connection is being updated; retry the delete'
-          })
-        }
+        // External-memory fencing (advisory try-lock on the committed binding's
+        // connection) happens inside the delete transaction (PgAgentRepo);
+        // MemoryConnectionBusy surfaces in the catch below.
         try {
           const current = await refreshMutationAgent(existing)
           if (!current) {
@@ -1975,8 +1983,16 @@ export function agentRoutes(deps: HttpDeps) {
           }
           for (const h of removedHooks) deps.hooks.remove(h.id)
           return reply.code(204).send(null)
+        } catch (e) {
+          if (e instanceof MemoryConnectionBusy) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'external memory connection is being updated; retry the delete'
+            })
+          }
+          throw e
         } finally {
-          memoryRelease()
           release()
         }
       }

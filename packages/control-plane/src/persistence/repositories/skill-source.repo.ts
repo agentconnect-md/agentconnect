@@ -8,7 +8,7 @@
  * no upstream credential, and private-repo reads reuse the daemon's GitHub App
  * token path. A Shareable, so the same visibility policy as agents/MCP applies.
  */
-import type { SkillSource } from '../../generated/prisma/client.js'
+import type { Prisma, SkillSource } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   SkillSourceRepo,
@@ -21,6 +21,25 @@ import type {
 import { visibilityWhere } from '../../authorization/policy.js'
 import { OrgId } from '../../domain/ids.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
+import { lockSkillSourceNameScope } from '../skill-source-lock.js'
+import { parseSkillRef } from '../../orchestrator/skillSource.js'
+
+/**
+ * True while any agent in the org still enables skills under `name`. Agents
+ * store refs ("<source>/<skill>" / "<source>/*" / "<source>") in their
+ * runtimeOverrides JSON bag — there is deliberately no FK — so this scan is the
+ * reference check, and it is only meaningful inside a transaction that holds
+ * the (orgId, name) advisory scope: agent enable-list writes take the same
+ * scope, so a reference can neither appear nor vanish between this read and
+ * the caller's write.
+ */
+async function skillSourceNameReferenced(tx: Prisma.TransactionClient, orgId: string, name: string): Promise<boolean> {
+  const agents = await tx.agent.findMany({ where: { orgId }, select: { runtimeOverrides: true } })
+  return agents.some((agent) => {
+    const skills = (agent.runtimeOverrides as { skills?: string[] } | null)?.skills ?? []
+    return skills.some((ref) => parseSkillRef(ref).source === name)
+  })
+}
 
 function toRecord(s: SkillSource): SkillSourceRecord {
   return {
@@ -44,9 +63,19 @@ function toRecord(s: SkillSource): SkillSourceRecord {
 export class PgSkillSourceRepo implements SkillSourceRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  async create(input: CreateSkillSourceInput): Promise<SkillSourceRecord> {
+  /**
+   * Register a source under the name-capture guard: agents bind by NAME, so a
+   * new source must not silently capture enable-refs agents already hold under
+   * it. Returns null while any agent still references the name. The scan and
+   * the insert share one transaction holding the (orgId, name) advisory scope,
+   * so an agent enable-list write cannot land in between — across control-plane
+   * instances, not just this process.
+   */
+  async create(input: CreateSkillSourceInput): Promise<SkillSourceRecord | null> {
     const ownerUserId = input.ownerUserId ?? input.createdByUserId
     return withAmbientTx(this.db, async (tx) => {
+      await lockSkillSourceNameScope(tx, input.orgId, input.name)
+      if (await skillSourceNameReferenced(tx, input.orgId, input.name)) return null
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: input.orgId,
         visibility: input.visibility ?? 'org',
@@ -101,8 +130,13 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
     return withAmbientTx(this.db, async (tx) => {
       const existing = await tx.skillSource.findUniqueOrThrow({
         where: { id },
-        select: { orgId: true, ownerUserId: true }
+        select: { orgId: true, name: true, ownerUserId: true }
       })
+      // Agent enable-list writes authorize against source visibility inside the
+      // same (orgId, name) advisory scope (name is immutable, so the pre-lock
+      // read of it is stable) — a sharing flip cannot land between their
+      // visibility check and their commit.
+      await lockSkillSourceNameScope(tx, existing.orgId, existing.name)
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
         visibility: sharing.visibility,
@@ -133,7 +167,25 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
     return toRecord(s)
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.skillSource.delete({ where: { id } })
+  /**
+   * Delete under the referenced-guard: agents bind by NAME, so dropping a row
+   * agents still enable would leave dangling selectors that silently re-bind to
+   * any future same-name source. The scan and the drop share one transaction
+   * holding the (orgId, name) advisory scope (same fence as create and agent
+   * enable-list writes). 'referenced' ⇒ the caller answers 409; a row already
+   * gone resolves to 'deleted' (the outcome is idempotent).
+   */
+  async delete(id: string): Promise<'deleted' | 'referenced'> {
+    return withAmbientTx(this.db, async (tx) => {
+      const existing = await tx.skillSource.findUnique({ where: { id }, select: { orgId: true, name: true } })
+      if (!existing) return 'deleted'
+      await lockSkillSourceNameScope(tx, existing.orgId, existing.name)
+      // Re-read after taking the scope: a concurrent delete may have won it.
+      const row = await tx.skillSource.findUnique({ where: { id }, select: { id: true } })
+      if (!row) return 'deleted'
+      if (await skillSourceNameReferenced(tx, existing.orgId, existing.name)) return 'referenced'
+      await tx.skillSource.delete({ where: { id } })
+      return 'deleted'
+    })
   }
 }

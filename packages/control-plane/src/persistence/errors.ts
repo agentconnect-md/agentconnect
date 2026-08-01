@@ -84,6 +84,38 @@ export class AgentWorkspaceIntegrationConflict extends Error {
 }
 
 /**
+ * An agent write touching an external-memory binding lost the fail-fast race
+ * for its connection's advisory mutation scope (persistence/memory-connection-lock.ts):
+ * a connection/grant mutation or a conflicting agent write holds it. HTTP maps
+ * this to 409 so the operator retries against settled state — the same
+ * semantics the process-local ExclusiveMutationGate used to provide.
+ */
+export class MemoryConnectionBusy extends Error {
+  readonly code = 'MEMORY_CONNECTION_BUSY' as const
+
+  constructor() {
+    super('external memory connection is being updated')
+    this.name = 'MemoryConnectionBusy'
+  }
+}
+
+/**
+ * The transaction-time existence check behind an agent's external-memory bind
+ * found no such connection in the agent's organization. The route-level
+ * validation answers the friendly 400 first; this closes the residual window
+ * where a connection DELETE commits between that validation and the agent
+ * write's own transaction.
+ */
+export class MemoryConnectionMissing extends Error {
+  readonly code = 'MEMORY_CONNECTION_MISSING' as const
+
+  constructor() {
+    super('external memory connection not found in this organization')
+    this.name = 'MemoryConnectionMissing'
+  }
+}
+
+/**
  * A membership-dependent transaction reached persistence after one of its
  * required organization memberships disappeared. HTTP maps this to the same
  * not-found shape as the org-scope guard; non-HTTP callers can match the code.

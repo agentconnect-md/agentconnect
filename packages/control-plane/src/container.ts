@@ -42,6 +42,7 @@ import {
   PgAgentRepo,
   PgAgentSecretStore,
   PgAgentConfigWriter,
+  PgMemoryConnectionWriter,
   PgAssignmentRepo,
   PgSessionRepo,
   PgSessionUsageRepo,
@@ -138,7 +139,6 @@ import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from './orchestrator/agentMutationGate.js'
 import { AgentMoveService } from './orchestrator/agentMove.js'
-import { ExclusiveMutationGate } from './orchestrator/exclusiveMutationGate.js'
 import { createDaemonWsServer } from './ws/gateway.js'
 import type { DaemonWsServerDeps } from './ws/gateway.js'
 import { createRelayWsServer } from './ws/relay-gateway.js'
@@ -271,6 +271,10 @@ export function buildContainer(
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, secretCipher),
+    // Owns its transactions: every external-memory check-then-write pair runs
+    // under the advisory mutation scopes, so it stays serialized across CP
+    // instances (rolling updates included).
+    memoryConnectionWriter: new PgMemoryConnectionWriter(prisma, secretCipher),
     threadAffinity: new PgThreadAffinityStore(prisma),
     slackInstall: new PgSlackInstallStore(prisma, secretCipher),
     slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
@@ -486,7 +490,6 @@ export function buildContainer(
   // §2.3/§6.2): relays get the all-org table; daemons get their org-scoped copy.
   const collabRoutes = new CollabRoutesService(repos.daemon, repos.integration, repos.agent, relayControl, sender)
   const agentMutations = new AgentMutationGate()
-  const memoryConnectionMutations = new ExclusiveMutationGate()
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
   // (alive within the failover window), fed into `register/ok.relays` and fanned to
@@ -744,6 +747,7 @@ export function buildContainer(
       externalMemoryConnection: repos.externalMemoryConnection,
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,
       externalMemoryGrant: repos.externalMemoryGrant,
+      memoryConnectionWriter: repos.memoryConnectionWriter,
       slackInstall: repos.slackInstall,
       slackPlatformInstall: repos.slackPlatformInstall,
       feishuAppRegistration: repos.feishuAppRegistration,
@@ -767,7 +771,6 @@ export function buildContainer(
     httpBot,
     collabRoutes,
     agentMutations,
-    memoryConnectionMutations,
     sessionOwners: connReg,
     hooks: hookService,
     ...(githubRunReporter ? { kickGithubRunReporter: () => githubRunReporter.kick() } : {}),
