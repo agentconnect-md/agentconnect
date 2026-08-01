@@ -1,5 +1,5 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
-import { LocalStore, sessionKey, transcriptChannelKey } from '../store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptRow } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
@@ -180,7 +180,7 @@ function sameQuotedBody(replayedText: string, quotedText: string): boolean {
  * context compaction.
  */
 export function quotedSourceBlock(
-  msg: NormalizedMessage,
+  msg: Pick<NormalizedMessage, 'quoted'>,
   ctx: { replayed: readonly { ts: string; text: string }[] }
 ): string | undefined {
   const quoted = msg.quoted
@@ -259,6 +259,9 @@ export class SessionManager {
       memoryEnabled?: boolean
       /** Evaluation treatment control. Defaults on for all production callers. */
       collaborationEnabled?: boolean
+      /** Daemon-observed reply-source sidecar for context rows. Standalone/test
+       * callers omit it and preserve the historical transcript-only behavior. */
+      quoteForContextEvent?: (event: TranscriptRow, replayed: readonly TranscriptRow[]) => string | undefined
       /** Whether this runtime needs AgentConnect's model-authored title fallback.
        *  Native-title runtimes (for example Claude) leave this false. */
       usesSessionTitleTool?: (agent: Agent) => boolean
@@ -909,6 +912,13 @@ export class SessionManager {
           elided: remainder.length - suffix.length
         }
       }
+      const renderContext = (entries: typeof participantGap): string =>
+        entries
+          .flatMap((event) => {
+            const quote = this.deps.quoteForContextEvent?.(event, entries)
+            return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
+          })
+          .join('\n')
       // Own authored rows are not repeated to the model, but they ARE first-class events
       // in the shared log and therefore may advance this agent's read cursor once the
       // surrounding stable window is consumed.
@@ -943,7 +953,7 @@ export class SessionManager {
           elided > 0
             ? `(unread thread messages, oldest to newest — ${elided} earlier message(s) elided)`
             : '(unread thread messages, oldest to newest)'
-        blocks.push({ type: 'text', text: `${head}\n${context.map((e) => `[${e.sender}] ${e.text}`).join('\n')}` })
+        blocks.push({ type: 'text', text: `${head}\n${renderContext(context)}` })
         contextEventTs = context.map((entry) => entry.ts)
       } else {
         // Normal in-order activation: preserve the established context-prefix + current
@@ -955,7 +965,7 @@ export class SessionManager {
             elided > 0
               ? `(thread context you may have missed — ${elided} earlier message(s) elided)`
               : '(thread context you may have missed)'
-          const ctxText = context.map((e) => `[${e.sender}] ${e.text}`).join('\n')
+          const ctxText = renderContext(context)
           blocks.push({ type: 'text', text: `${head}\n${ctxText}` })
         }
         const quotedBlock = quotedSourceBlock(msg, { replayed: context })

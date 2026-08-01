@@ -516,6 +516,7 @@ function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): Memo
 const MAX_QUEUED_PER_SESSION = 10
 const MAX_TURN_CONTEXT_REGENERATIONS = 3
 const MAX_TURN_CONTEXT_REGENERATION_MS = 120_000
+const MAX_OBSERVED_QUOTE_SIDECARS = 10_000
 
 /** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
  *  how long after the abort the daemon stops awaiting `host.prompt` and discards
@@ -1105,6 +1106,11 @@ interface Pending {
    *  chat-side approval card. Frozen for the turn, so a mid-turn `none → low` change can't
    *  desync it from the connection it was derived from. */
   approvalSurfaceSuppressed: boolean
+  /** Union of explicit human-approval wait intervals for this turn. Regeneration
+   * budgets subtract these intervals while retaining runtime/tool work time. */
+  approvalWaitMs: number
+  approvalWaitDepth: number
+  approvalWaitStartedAt?: number
   /** ts of the single in-place "main progress" message, once posted (medium/high). */
   progressTs?: string
   /** Whether the progress message's first post was attempted (so a failed initial
@@ -1476,6 +1482,10 @@ export class Daemon {
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
   private threadContext!: ThreadContextCoordinator
+  /** Inline reply sources are prompt context, not transcript body text. Keep a
+   * bounded event-id sidecar so every in-flight agent sees quotes from routed,
+   * peer-routed, and unrouted observations without changing console transcripts. */
+  private readonly observedQuoteSidecars = new Map<string, NonNullable<NormalizedMessage['quoted']>>()
   // integrationId -> the SlackConnection that owns it (for replies). Holds BOTH
   // socket-mode (direct) and send-only (HTTP-bot) connections — an HTTP bot's
   // send-only client is registered here too so replies/attachments/MCP reuse it.
@@ -2276,6 +2286,7 @@ export class Daemon {
         }),
       memoryEnabled: this.evaluationProfile.memory === 'configured',
       collaborationEnabled: this.evaluationProfile.collaboration === 'configured',
+      quoteForContextEvent: (event, replayed) => this.observedQuoteBlock(event, replayed),
       // No runtime is whitelisted for the model-authored `setSessionTitle` fallback
       // anymore: codex-acp >= 1.1.3 emits native session_info_update titles itself
       // (issue #659), so every runtime now relies on its native ACP title path. The
@@ -7637,6 +7648,17 @@ export class Daemon {
     })
     if (!recentlyActive && !inFlight && !initializing) return
     const mention = includeAttachment ? attachmentMention(msg.attachments) : ''
+    if (msg.quoted?.text) {
+      const quoteKey = this.observedQuoteKey(transcriptChannel, thread, ts)
+      // Refresh insertion order on duplicate delivery, then bound stale sidecars.
+      this.observedQuoteSidecars.delete(quoteKey)
+      this.observedQuoteSidecars.set(quoteKey, msg.quoted)
+      while (this.observedQuoteSidecars.size > MAX_OBSERVED_QUOTE_SIDECARS) {
+        const oldest = this.observedQuoteSidecars.keys().next().value
+        if (oldest === undefined) break
+        this.observedQuoteSidecars.delete(oldest)
+      }
+    }
     const before = this.store.threadTranscriptRevision(transcriptChannel, thread)
     this.threadContext.observeInbound({
       channel: transcriptChannel,
@@ -7798,14 +7820,13 @@ export class Daemon {
     return (this.serialQueue.get(key) ?? []).filter((entry) => eventTs.has(transcriptCoords(entry.msg).ts))
   }
 
-  private queuedQuotedContextBlocks(
-    entries: readonly QueueEntry[],
-    replayed: readonly { ts: string; text: string }[]
-  ): import('@agentclientprotocol/sdk').ContentBlock[] {
-    return entries.flatMap((entry) => {
-      const text = quotedSourceBlock(entry.msg, { replayed })
-      return text ? [{ type: 'text' as const, text }] : []
-    })
+  private observedQuoteKey(transcriptChannel: string, thread: string, ts: string): string {
+    return JSON.stringify([transcriptChannel, thread, ts])
+  }
+
+  private observedQuoteBlock(event: TranscriptRow, replayed: readonly TranscriptRow[]): string | undefined {
+    const quoted = this.observedQuoteSidecars.get(this.observedQuoteKey(event.channel, event.thread, event.ts))
+    return quoted ? quotedSourceBlock({ quoted }, { replayed }) : undefined
   }
 
   /** Start/regeneration fence queue mutation. The caller has already decided that
@@ -9975,6 +9996,8 @@ export class Daemon {
         webchat,
         headless: msg.headless
       }),
+      approvalWaitMs: 0,
+      approvalWaitDepth: 0,
       runtimeCostReported: false,
       usageReportSent: false,
       evaluationTurnId,
@@ -10134,12 +10157,15 @@ export class Daemon {
           ...(handled.contextEventTs ?? []),
           ...initialRefresh.events.map((event) => event.ts)
         ])
-        const queuedMatches = this.queuedEntriesMatchingContext(key, representedEventTs)
         const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []
         if (initialRefresh.events.length > 0) {
-          deltaBlocks.push({ type: 'text', text: initialContextDeltaText(initialRefresh.events) })
+          deltaBlocks.push({
+            type: 'text',
+            text: initialContextDeltaText(initialRefresh.events, (event) =>
+              this.observedQuoteBlock(event, initialRefresh.events)
+            )
+          })
         }
-        deltaBlocks.push(...this.queuedQuotedContextBlocks(queuedMatches, initialRefresh.events))
         promptBlocks.push(...deltaBlocks)
         if (deltaBlocks.length > 0) {
           finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...deltaBlocks])
@@ -10172,6 +10198,7 @@ export class Daemon {
       let evaluationUsage: PromptResult['usage']
       let generation = 0
       let regenerationStartedAt: number | undefined
+      let regenerationApprovalWaitBaseline = 0
       const codexUsageIsPerPrompt = this.isCodexRuntime(agentId)
 
       while (true) {
@@ -10285,10 +10312,15 @@ export class Daemon {
         })
         const eventTs = new Set(invalidatingEvents.map((event) => event.ts))
         const queuedMatches = this.queuedEntriesMatchingContext(key, eventTs)
+        const regenerationElapsedMs =
+          regenerationStartedAt === undefined
+            ? 0
+            : this.clock.now() -
+              regenerationStartedAt -
+              Math.max(0, p.approvalWaitMs - regenerationApprovalWaitBaseline)
         const retryAvailable =
           generation < MAX_TURN_CONTEXT_REGENERATIONS &&
-          (regenerationStartedAt === undefined ||
-            this.clock.now() - regenerationStartedAt < MAX_TURN_CONTEXT_REGENERATION_MS)
+          (regenerationStartedAt === undefined || regenerationElapsedMs < MAX_TURN_CONTEXT_REGENERATION_MS)
         if (!retryAvailable) {
           defaultTurnOutputMetrics.candidateDiscarded('context_churn')
           defaultTurnOutputMetrics.contextChurnExhausted(p.platform)
@@ -10311,13 +10343,18 @@ export class Daemon {
         baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
         generation += 1
         promptBlocks = [
-          { type: 'text', text: contextUpdateText(invalidatingEvents) },
-          ...this.queuedQuotedContextBlocks(queuedMatches, invalidatingEvents)
+          {
+            type: 'text',
+            text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents))
+          }
         ]
         finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
         // The wall-clock budget covers replacement work only. A slow original
         // generation (including approval waits) must never consume the first retry.
-        regenerationStartedAt ??= this.clock.now()
+        if (regenerationStartedAt === undefined) {
+          regenerationStartedAt = this.clock.now()
+          regenerationApprovalWaitBaseline = p.approvalWaitMs
+        }
         defaultTurnOutputMetrics.regeneration(p.platform, 'started')
         this.emitEvaluation({
           type: 'turn.regeneration_started',
@@ -12168,6 +12205,24 @@ export class Daemon {
     }
   }
 
+  /** Exclude only explicit human decision latency from regeneration wall time.
+   * A depth counter measures the union of overlapping approval intervals. */
+  private async trackHumanApprovalWait<T>(p: Pending, result: Promise<T>): Promise<T> {
+    p.approvalWaitDepth ??= 0
+    p.approvalWaitMs ??= 0
+    if (p.approvalWaitDepth === 0) p.approvalWaitStartedAt = this.clock.now()
+    p.approvalWaitDepth += 1
+    try {
+      return await result
+    } finally {
+      p.approvalWaitDepth = Math.max(0, p.approvalWaitDepth - 1)
+      if (p.approvalWaitDepth === 0 && p.approvalWaitStartedAt !== undefined) {
+        p.approvalWaitMs += Math.max(0, this.clock.now() - p.approvalWaitStartedAt)
+        delete p.approvalWaitStartedAt
+      }
+    }
+  }
+
   private awaitEditorPermission(
     agentId: string,
     sessionId: string,
@@ -12187,7 +12242,7 @@ export class Daemon {
       evaluationParams,
       resolve: resolveResult
     })
-    return result
+    return this.trackHumanApprovalWait(p, result)
   }
 
   private awaitEditorElicitation(
@@ -12206,7 +12261,7 @@ export class Daemon {
       sessionId,
       resolve: resolveResult
     })
-    return result
+    return this.trackHumanApprovalWait(p, result)
   }
 
   private async awaitChatPermission(
@@ -12261,7 +12316,7 @@ export class Daemon {
       return await result
     }
     live.ts = ts
-    return await result
+    return await this.trackHumanApprovalWait(p, result)
   }
 
   private decideEditorPermission(req: AgentPermissionDecision): Ack {
@@ -12690,7 +12745,7 @@ export class Daemon {
       return await result
     }
     live.ts = ts
-    return await result
+    return isApproval ? await this.trackHumanApprovalWait(p, result) : await result
   }
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP

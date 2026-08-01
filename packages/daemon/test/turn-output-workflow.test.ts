@@ -117,6 +117,11 @@ describe('TurnOutputWorkflow', () => {
     expect(conn.postMessage).not.toHaveBeenCalled()
 
     const clarificationMessage = msg('100.2', 'important clarification')
+    clarificationMessage.quoted = {
+      messageId: '99.9',
+      sender: 'U2',
+      text: 'the deployment failed with ECONNRESET'
+    }
     const clarification = (daemon as any).dispatch('bot-a', clarificationMessage, 'int-a')
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a', firstMessage.transportScope)
     expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
@@ -128,6 +133,9 @@ describe('TurnOutputWorkflow', () => {
 
     expect(prompts[1]).toContain('AgentConnect context update')
     expect(prompts[1]).toContain('important clarification')
+    expect(prompts[1].indexOf('the deployment failed with ECONNRESET')).toBeLessThan(
+      prompts[1].indexOf('[U1] important clarification')
+    )
     const publishedBodies = conn.postMessage.mock.calls.map((call) => String(call[1]))
     expect(publishedBodies).toContain('fresh replacement')
     expect(publishedBodies.join('\n')).not.toContain('stale candidate')
@@ -176,22 +184,35 @@ describe('TurnOutputWorkflow', () => {
 
     const firstMessage = msg('100.1', 'original request')
     const first = (daemon as any).dispatch('bot-a', firstMessage, 'int-a')
-    const clarificationMessage = msg('100.2', 'pre-prompt clarification')
-    clarificationMessage.quoted = {
+    const firstClarification = msg('100.2', 'first pre-prompt clarification')
+    firstClarification.quoted = {
       messageId: '99.9',
       sender: 'U2',
       text: 'the deployment failed with ECONNRESET'
     }
-    const clarification = (daemon as any).dispatch('bot-a', clarificationMessage, 'int-a')
+    const secondClarification = msg('100.3', 'second pre-prompt clarification')
+    secondClarification.quoted = {
+      messageId: '99.8',
+      sender: 'U3',
+      text: 'the rollback is still running'
+    }
+    const clarification = (daemon as any).dispatch('bot-a', firstClarification, 'int-a')
+    const second = (daemon as any).dispatch('bot-a', secondClarification, 'int-a')
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a', firstMessage.transportScope)
 
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce())
     expect(prompts[0]).toContain('original request')
-    expect(prompts[0]).toContain('pre-prompt clarification')
-    expect(prompts[0]).toContain('the message this reply quotes')
-    expect(prompts[0]).toContain('[U2] the deployment failed with ECONNRESET')
+    const firstQuote = prompts[0].indexOf('[U2] the deployment failed with ECONNRESET')
+    const firstReply = prompts[0].indexOf('[U1] first pre-prompt clarification')
+    const secondQuote = prompts[0].indexOf('[U3] the rollback is still running')
+    const secondReply = prompts[0].indexOf('[U1] second pre-prompt clarification')
+    expect(firstQuote).toBeGreaterThanOrEqual(0)
+    expect(firstQuote).toBeLessThan(firstReply)
+    expect(firstReply).toBeLessThan(secondQuote)
+    expect(secondQuote).toBeLessThan(secondReply)
     expect((daemon as any).serialQueue.has(key)).toBe(false)
     await expect(clarification).resolves.toBe('acp-1')
+    await expect(second).resolves.toBe('acp-1')
 
     release()
     await expect(first).resolves.toBe('acp-1')
@@ -201,23 +222,42 @@ describe('TurnOutputWorkflow', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('starts the wall-clock retry budget with the first replacement, not the original generation', async () => {
+  it('starts the retry budget with replacement work and excludes explicit approval waits', async () => {
     const clock = new FakeClock()
     const context = {} as { daemon: Daemon; firstMessage: NormalizedMessage }
     let onUpdate!: (sessionId: string, update: unknown) => void
+    const prompts: string[] = []
     const host = {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => 'acp-1'),
       hasSession: vi.fn(() => true),
-      prompt: vi.fn(async (sessionId: string) => {
+      prompt: vi.fn(async (sessionId: string, blocks: { text?: string }[]) => {
         const generation = host.prompt.mock.calls.length
+        prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
         onUpdate(sessionId, {
           sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: generation === 1 ? 'stale candidate' : 'fresh replacement' }
+          content: { type: 'text', text: generation === 3 ? 'fresh replacement' : 'stale candidate' }
         })
         if (generation === 1) {
           clock.advance(120_001)
           const clarification = msg('100.2', 'late clarification')
+          clarification.transportScope = context.firstMessage.transportScope
+          clarification.quoted = { messageId: '99.9', sender: 'U2', text: 'peer-only quoted source' }
+          ;(context.daemon as any).recordObservedInbound(clarification, 'bot-a')
+        } else if (generation === 2) {
+          const approval = (context.daemon as any).onAcpPermission('bot-a', sessionId, {
+            sessionId,
+            options: [
+              { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+              { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ],
+            toolCall: { toolCallId: 'tc-1', title: 'Bash' }
+          })
+          const [requestId] = (context.daemon as any).pendingEditorPermissions.keys()
+          clock.advance(120_001)
+          ;(context.daemon as any).decideEditorPermission({ agentId: 'bot-a', requestId, decision: 'allow' })
+          await approval
+          const clarification = msg('100.3', 'clarification after approval')
           clarification.transportScope = context.firstMessage.transportScope
           ;(context.daemon as any).recordObservedInbound(clarification, 'bot-a')
         }
@@ -242,7 +282,9 @@ describe('TurnOutputWorkflow', () => {
 
     await expect((daemon as any).dispatch('bot-a', firstMessage, 'int-a')).resolves.toBe('acp-1')
 
-    expect(host.prompt).toHaveBeenCalledTimes(2)
+    expect(host.prompt).toHaveBeenCalledTimes(3)
+    expect(prompts[1]).toContain('peer-only quoted source')
+    expect(prompts[1].indexOf('peer-only quoted source')).toBeLessThan(prompts[1].indexOf('[U1] late clarification'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'fresh replacement', 'T1', expect.anything())
     await daemon.stop()
   }, 15_000)

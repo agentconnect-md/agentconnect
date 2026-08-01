@@ -100,7 +100,10 @@ export class ThreadContextCoordinator {
 
 /** Stable, provider-neutral replacement prompt. The bounded newest suffix matches
  * the daemon's existing replay cap and keeps chronological order inside the suffix. */
-export function contextUpdateText(events: readonly TranscriptRow[]): string {
+export function contextUpdateText(
+  events: readonly TranscriptRow[],
+  quoteFor?: (event: TranscriptRow) => string | undefined
+): string {
   const suffix = events.slice(-MAX_CONTEXT_REFRESH_EVENTS)
   const elided = events.length - suffix.length
   const heading =
@@ -111,16 +114,27 @@ export function contextUpdateText(events: readonly TranscriptRow[]): string {
     'unless it matters to the user.)'
   const deltaHeading =
     elided > 0 ? `(new thread messages — ${elided} earlier message(s) elided)` : '(new thread messages)'
-  return `${heading}\n\n${deltaHeading}\n${suffix.map((event) => `[${event.sender}] ${event.text}`).join('\n')}`
+  const rows = suffix.flatMap((event) => {
+    const quote = quoteFor?.(event)
+    return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
+  })
+  return `${heading}\n\n${deltaHeading}\n${rows.join('\n')}`
 }
 
 /** Initial-fence deltas use a shorter heading: there is no discarded candidate yet. */
-export function initialContextDeltaText(events: readonly TranscriptRow[]): string {
+export function initialContextDeltaText(
+  events: readonly TranscriptRow[],
+  quoteFor?: (event: TranscriptRow) => string | undefined
+): string {
   const suffix = events.slice(-MAX_CONTEXT_REFRESH_EVENTS)
   const elided = events.length - suffix.length
   const heading =
     elided > 0
       ? `(additional thread messages before this turn started — ${elided} earlier message(s) elided)`
       : '(additional thread messages before this turn started)'
-  return `${heading}\n${suffix.map((event) => `[${event.sender}] ${event.text}`).join('\n')}`
+  const rows = suffix.flatMap((event) => {
+    const quote = quoteFor?.(event)
+    return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
+  })
+  return `${heading}\n${rows.join('\n')}`
 }
