@@ -330,7 +330,7 @@ describe('messageAgent: same-daemon delivery', () => {
         integrations: [{ id: 'int-a', platform: 'slack' }]
       },
       'sendMessage',
-      { to: { toAgent: 'bot-b', channel: 'C1' }, message: 'handoff' },
+      { toAgent: 'bot-b', channel: 'C1', message: 'handoff' },
       { ...(daemon as any).mcp.deps, canRun: () => true }
     )) as { wake?: { delivered: boolean; reason?: string }; post?: unknown }
 
@@ -376,7 +376,7 @@ describe('messageAgent: same-daemon delivery', () => {
   })
 
   // COORDINATE INTEGRITY on the SAME-DAEMON path — the third wake path, and the one whose
-  // coordinate is MODEL-supplied (`to.channel` / `to.thread` reach `req` verbatim). The
+  // coordinate is MODEL-supplied (`channel` / `thread` reach `req` verbatim). The
   // relay hop and `rd/agentmsg` terminal-verify both gate the asserted coordinate; without
   // the same gate here a model could name a channel its own agent cannot reach and RESUME a
   // co-located peer's session living there.

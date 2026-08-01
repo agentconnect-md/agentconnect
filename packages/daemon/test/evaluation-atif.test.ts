@@ -32,7 +32,7 @@ describe('ATIF v1.7 evaluation trajectory', () => {
           sessionUpdate: 'tool_call',
           toolCallId: 'call-1',
           title: 'Send to specialist',
-          rawInput: { server: 'agentconnect', tool: 'sendMessage', arguments: { to: { toAgent: 'worker' } } }
+          rawInput: { server: 'agentconnect', tool: 'sendMessage', arguments: { toAgent: 'worker' } }
         }
       }
     })

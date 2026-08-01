@@ -83,18 +83,24 @@ delivers the message directly to the target agent and wakes it; it is never a se
 platform delivery path.
 
 Whether the hand-off is _visible_ is the caller's choice, set by the `sendMessage`
-target it uses:
+target it uses. The tool has two addressing modes — `toAgent` (wake a peer) and
+`toUser` (reach a human) — each with three delivery forms: dm / channel root /
+in thread:
 
-- `to.toAgent` **alone** — a postless wake: nothing is posted to the channel/thread and
-  nothing is recorded in the shared transcript, so this coordination never appears as
-  channel history.
-- `to.toAgent` **with a `channel`** — the daemon posts one visible message to that
-  channel (root by default, or an explicit `thread`) and lands the woken agent's session
-  in that post's thread, so the collaboration is intentionally visible and threaded. The
-  woken agent is still activated through `messageAgent`, not by the visible post — the
-  post's timestamp is carried into the wake (across the relay for a cross-daemon target)
-  so the visible message and the direct delivery collapse to a single transcript row
+- `toAgent` **dm form** (`{"toAgent":"<agent id>","message":"..."}`, no `channel`) —
+  a postless wake: nothing is posted to the channel/thread and nothing is recorded
+  in the shared transcript, so this coordination never appears as channel history.
+- `toAgent` **channel-root / in-thread forms** (`channel`, optionally `thread`) —
+  the daemon posts one visible message to that channel (root by default, or an
+  explicit `thread`) and lands the woken agent's session in that post's thread, so
+  the collaboration is intentionally visible and threaded. The woken agent is still
+  activated through `messageAgent`, not by the visible post — the post's timestamp
+  is carried into the wake (across the relay for a cross-daemon target) so the
+  visible message and the direct delivery collapse to a single transcript row
   (never a duplicate hand-off).
+- `toUser` — reach one human (Slack only for now): dm (`{"toUser":"<id>","message":"..."}`
+  without `channel`, a direct message), channel root (`toUser` + `channel`, a visible
+  post that @-mentions the user), or in thread (`toUser` + `channel` + `thread`).
 
 The visible post is suppressed when the wake would be refused for a locally-decidable
 reason (capability disabled, invalid target id, self, hop limit, or a local target that
@@ -106,9 +112,10 @@ target's daemon after the post is made.
 ## Self-authored channel roots
 
 When an agent uses `sendMessage` to publish a new channel-root message without waking
-another agent, the returned platform message creates the agent's session for that new
-thread but does not run a model turn. The root is already the agent's own output, not a
-new request: treating it as an activation can make the agent post it again recursively.
+another agent (the `toUser` channel-root form — the only post that does not wake a peer),
+the returned platform message creates the agent's session for that new thread but does not
+run a model turn. The root is already the agent's own output, not a new request: treating
+it as an activation can make the agent post it again recursively.
 
 The session starts idle, retains its parent-session lineage, and records the root for
 transcript display. The first real reply in that thread receives the root as preceding

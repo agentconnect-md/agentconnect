@@ -175,41 +175,47 @@ SessionTarget, and the daemon still authorizes the write.
 After consolidation:
 
 ```ts
-sendMessage(to: MessageTarget | SessionTarget, message: string): void
+sendMessage(target: AgentTarget | UserTarget | SessionTarget, message: string): void
 ```
 
-`to` is a discriminated union addressed either by platform coordinates or by
-session.
+The arguments are a top-level union of **two addressing modes** — `toAgent` (wake
+a peer agent) and `toUser` (reach a human) — each with **three delivery forms**
+selected by the coordinates (dm / channel root / in thread) — plus the separate
+`sessionId` reply branch.
 
-### 3.1 MessageTarget: platform-coordinate addressing
+### 3.1 AgentTarget / UserTarget: who to reach, and in which form
 
 ```ts
-type MessageTarget = {
-  platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // Defaults to current session; narrowed to installed platforms
-  channel?: string   // Channel ID or name; omitted means no visible channel post
-  toUser?: string    // Platform user ID to mention or direct-message
-  // AgentConnect agent ID to wake. The object form adds delivery options; see section 5.4.
-  toAgent?: string | { agentId: string; needsReply?: boolean }
-  thread?: string    // Existing thread in which the receiver should reply
+// Mode 1 — wake one AgentConnect peer.
+type AgentTarget = {
+  toAgent: string | { agentId: string; needsReply?: boolean } // object form: see section 5.4
+  channel?: string // absent ⇒ dm (postless wake); present without thread ⇒ channel root; with thread ⇒ in thread
+  thread?: string  // in-thread form only (requires `channel`)
+}
+
+// Mode 2 — reach one human platform member.
+type UserTarget = {
+  toUser: string             // platform member ID (Slack only for now)
+  platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // dm defaults to Slack; channel/thread forms default to current session
+  channel?: string           // absent ⇒ dm (Slack DM); present without thread ⇒ channel root; with thread ⇒ in thread
+  thread?: string            // in-thread form only (requires `channel`)
+  integrationId?: string     // pick a specific bot when the agent has several on the platform
 }
 ```
 
-Every field is optional. Two orthogonal decisions use different fields:
+Exactly one mode key (`toAgent` or `toUser`) is required; the form is decided by
+the coordinates:
 
-1. `channel` and optional `platform` decide whether and where to post a visible
-   IM message.
-2. `toAgent` decides which agent to wake; `toUser` decides which human to
-   mention or message.
+| Mode      | dm                                                              | channel root                                                                                  | in thread                                                                                                    |
+| --------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `toAgent` | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post + wake, peer anchored to it | `{"toAgent":"A","channel":"C","thread":"T","message":"…"}` — visible thread post + wake, peer in that thread |
+| `toUser`  | `{"toUser":"U","message":"…"}` — Slack DM                       | `{"toUser":"U","channel":"C","message":"…"}` — root post @-mentioning the user                | `{"toUser":"U","channel":"C","thread":"T","message":"…"}` — thread post @-mentioning the user                |
 
-| Combination                             | Meaning                                                                                              |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| **Only `toAgent`**, no channel          | **Wake an agent without posting any IM.** One agent delegates work to another without channel noise. |
-| `channel` + `toAgent`                   | Wake another agent **and** post a visible mention in the channel, as in cases 2b and 3b.             |
-| `channel` without `toUser` or `toAgent` | Post to the channel without mentioning anyone, as in cases 2a and 3.                                 |
-| `channel` + `toUser`                    | Post and mention or direct-message a **human**, without waking an agent.                             |
-
-- The target must identify something actionable: either a `channel` to post to
-  or a `toAgent` to wake. The daemon rejects an empty action.
+- The target must name exactly one recipient: `toAgent` or `toUser`. The daemon
+  rejects an empty action and rejects mixing both modes in one call. There is no
+  bare `channel`-only mode: every send addresses an agent or a human (a visible
+  channel post without a mention is expressed as a `toUser` channel-root or
+  in-thread form).
 - Separate `toUser` and `toAgent` make human delivery and agent wake-up
   explicit in the type system. The daemon no longer guesses whether an ID is a
   platform user or an AgentConnect agent. `toAgent` comes from `listAgents`
@@ -228,22 +234,25 @@ Every field is optional. Two orthogonal decisions use different fields:
   (`webchat` / `dream`) is replaced by the caller-derived `a2a:<callerAgentId>`, so
   every wake from one caller into one peer shares a single pairwise session. See
   [agent-collaboration-implementation.md](agent-collaboration-implementation.md) §2.5.
-- Omitting `platform` means the current session platform. Cross-platform cases
-  3 and 3b specify it. The daemon owns all bot tokens and selects the connection
-  by platform and, when necessary, integration. The model sees no token.
-  This preserves the existing `sendPlatformMessage` boundary at
-  `mcp/tools.ts:55-98`.
+- Omitting `platform` means Slack for a `toUser` DM (the destination is the user
+  id) and the current session platform otherwise. Cross-platform cases 3 and 3b
+  specify it. The daemon owns all bot tokens and selects the connection by
+  platform and, when necessary, integration. The model sees no token. This
+  preserves the existing `sendPlatformMessage` boundary at `mcp/tools.ts:55-98`.
 - The daemon injects the caller agent ID from session context. It is never a
   tool argument, so a caller cannot impersonate another agent or call itself as
   a different identity.
+- `toUser` is Slack-only for now: a `toUser` DM posts to the member id directly,
+  and the channel-root / in-thread forms prepend an `<@user>` mention to the
+  visible post. Any other platform is rejected before dispatch.
 - `thread` determines the platform thread only when `channel` is present.
   Passing an existing thread posts there. Omitting it or passing `""` posts a
   new top-level channel message, **not the current session thread**. Normal
   owner output already replies in the current thread, so an explicit
-  `sendMessage` defaults to a clean top-level post. Posting at the root creates
+  `sendMessage` defaults to a clean top-level post. A `toUser` root post creates
   a new owner session, as in case 2a; specifying a thread continues the
-  corresponding session. This is platform placement, distinct from replying to
-  a parent by SessionTarget, which uses only `sessionId`.
+  corresponding session. This is platform placement, distinct from replying to a
+  parent by SessionTarget, which uses only `sessionId`.
 
 ### 3.2 SessionTarget: session addressing
 
@@ -263,8 +272,8 @@ type SessionTarget = {
 
 ### 3.3 Discrimination and invariants
 
-- If `to` contains `sessionId`, it is a SessionTarget; otherwise it is a
-  MessageTarget.
+- If the call has `sessionId`, it is a SessionTarget; otherwise it must name
+  exactly one of `toAgent` / `toUser`.
 - A `sendMessage` call is always recorded in the caller's session as a
   `{ type: agent, from: <caller> }` tool message. Its effects--posting an IM,
   waking another agent, or injecting another session--happen in other sessions,
@@ -278,7 +287,7 @@ Agent-to-agent communication is not a separate mechanism. It is a
 `sendMessage` whose `toAgent` names an AgentConnect agent ID.
 
 - The caller session records an outbound `{ type: agent, from: agentA }` tool:
-  `sendMessage(to={toAgent: "agentB", ...}, message)`.
+  `sendMessage({toAgent: "agentB", ...}, message)`.
 - The call wakes agent B and records an inbound
   `{ type: system, from: agentA }` in B's session. To the receiver, an
   originating agent is a **system source**, not a human.
@@ -382,7 +391,7 @@ implements the same-thread form, and unified `sendMessage` reuses it.
    is B's logical `sessionKey`, and deletes it at turn end at `daemon.ts:6605`.
    It also writes `originSessionId` as `Parent session` in B's `# Agent`
    system-prompt block at `session-manager.ts:312`. B can then call
-   `sendMessage(to={sessionId: <Parent session>})`.
+   `sendMessage({sessionId: <Parent session>})`.
 3. **Authorize and inject on reply.** When B calls a SessionTarget, the daemon:
    - Gets `inbound` from `activeTurnCallMeta.get(callerKey)` at
      `daemon.ts:3491`.
@@ -510,14 +519,14 @@ work therefore needs a handle on the child and a way to ask how it is going.
              |                                                            |
   A output ->| {type: agent, from: agentA}     text: "..."                |
              | {type: agent, from: agentA}                               |
-             |   tool: sendMessage(to={toAgent:"agentB", ...}, ...)       |-- A2A origin
+             |   tool: sendMessage({toAgent:"agentB", ...}, ...)          |-- A2A origin
              +-----------------------------------------------^------------+
                     | wake and create, B.origin = A           | SessionTarget A
                     v                                          | inserts system from B
              +---------------- session B (owner: agentB) ------+----------+
   inbound -> | {type: system, from: agentA}     @agentB request           |
   B output ->| {type: agent, from: agentB}                               |
-             |   tool: sendMessage(to={sessionId: A}, ...)                |-- reply origin
+             |   tool: sendMessage({sessionId: A}, ...)                   |-- reply origin
              +------------------------------------------------------------+
 ```
 
@@ -526,7 +535,7 @@ work therefore needs a handle on the child and a way to ask how it is going.
 ## 7. Case walkthrough
 
 Notation is `{type: ..., from: ...}: <content>`. Session separators are shown
-explicitly. `sendMessage` arguments are shortened to `to={...}, msg="..."`.
+explicitly. `sendMessage` arguments are shortened to `{...}, msg="..."`.
 
 ### 7.1 Case 1: ordinary human message
 
@@ -543,19 +552,19 @@ A system prompt starts the session, followed by a human mention:
 Both messages are inbound to agent A. Session 1 is a root, so it has no
 `Parent session` and nowhere to reply through SessionTarget.
 
-### 7.2 Case 2a: post to a channel without mentioning another agent
+### 7.2 Case 2a: post to a channel, mentioning a human
 
-Agent A calls `sendMessage` with only `channel`, no `toUser` or `toAgent`.
-This is a plain channel post. It initializes a new idle session owned by A,
-keyed by the returned platform message id, but does **not** run a model turn.
-The post is A's own output rather than a new request, so activating on it would
-allow `sendMessage` to recursively create more roots.
+Agent A calls `sendMessage` in the `toUser` channel-root form (`toUser` +
+`channel`, no `toAgent`). It initializes a new idle session owned by A, keyed by
+the returned platform message id, but does **not** run a model turn. The post is
+A's own output rather than a new request, so activating on it would allow
+`sendMessage` to recursively create more roots.
 
 ```text
 --- session 1 ---                    (owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       to={channel: "#channel"},
+                                       {toUser: "<human id>", channel: "#channel"},
                                        msg="Please review this.")
 
 --- session 2 initialized ---        (owner: agentA; origin: session 1; idle)
@@ -583,7 +592,7 @@ This wakes a new session owned by B.
 --- session 1 ---                    (owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       to={channel: "#channel", toAgent: "agentB"},
+                                       {toAgent: "agentB", channel: "#channel"},
                                        msg="Please investigate this.")
 
 --- session 2 created ---            (owner: agentB; origin: session 1)
@@ -594,7 +603,7 @@ This wakes a new session owned by B.
 
   ... agentB finishes and reports using Parent session ...
 {type: agent, from: agentB}:         tool: sendMessage(
-                                       to={sessionId: S1},
+                                       {sessionId: S1},
                                        msg="Done. Here is the result.")
 
 --- session 1 continued ---          (owner: agentA)
@@ -624,7 +633,7 @@ posts A's message before waking B.
 --- session 1 ---                    (owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       to={toAgent: "agentB"},
+                                       {toAgent: "agentB"},
                                        msg="Run X and report back.")
 
 --- session 2 created ---            (owner: agentB; origin: session 1)
@@ -636,9 +645,9 @@ posts A's message before waking B.
 ```
 
 There is no double-trigger risk because no platform mention exists. B replies
-through `sendMessage(to={sessionId: S1})` exactly as in case 2b.
+through `sendMessage({sessionId: S1})` exactly as in case 2b.
 
-### 7.4 Case 3: send from Telegram to a Slack channel without mentioning another agent
+### 7.4 Case 3: send from Telegram to a Slack channel, mentioning a human
 
 A's session lives on Telegram, but `sendMessage` targets Slack:
 
@@ -646,14 +655,14 @@ A's session lives on Telegram, but `sendMessage` targets Slack:
 --- session 1 ---                    (platform: telegram, owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       to={platform: slack, channel: "#channel"},
+                                       {toUser: "<human id>", platform: slack, channel: "#channel"},
                                        msg="Please review this.")
 
 --- session 2 initialized ---        (platform: slack, owner: agentA; origin: session 1; idle)
 {type: agent, from: agentA}:         Please review this.  (recorded, not prompted)
 ```
 
-The session platform, Telegram, is where it lives; `to.platform`, Slack, is the
+The session platform, Telegram, is where it lives; `platform: slack` is the
 platform this tool invocation operates. Cross-platform sending does not change
 the caller session's platform. Initialization and first-reply replay match case 2a.
 
@@ -667,7 +676,7 @@ waking B in a Slack session.
 --- session 1 ---                    (platform: telegram, owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       to={platform: slack, channel: "#channel", toAgent: "agentB"},
+                                       {toAgent: "agentB", platform: slack, channel: "#channel"},
                                        msg="Please investigate this.")
 
 --- session 2 created ---            (platform: slack, owner: agentB; origin: session 1)
@@ -675,7 +684,7 @@ waking B in a Slack session.
 
   ... agentB finishes ...
 {type: agent, from: agentB}:         tool: sendMessage(
-                                       to={sessionId: "session 1"},
+                                       {sessionId: "session 1"},
                                        msg="Done. Here is the result.")
 
 --- session 1 continued ---          (platform: telegram, owner: agentA)
@@ -709,7 +718,7 @@ waking B in a Slack session.
    records an outbound agent tool, and the receiver records inbound system input
    from the caller.
 6. **Replies use the origin edge:** a session woken by `sendMessage` has an
-   origin. `sendMessage(to={sessionId: origin})` inserts system input from the
+   origin. `sendMessage({sessionId: origin})` inserts system input from the
    child owner into that existing origin without creating a session, even
    across platforms.
 7. **Startup metadata:** the `# Agent` system-prompt block includes `Thread` and
@@ -722,7 +731,7 @@ waking B in a Slack session.
    real `@agentB` message, that platform event cannot create a second session
    for an AgentConnect-managed agent. Silent delegation has no such event.
 10. **Session platform differs from target platform:** a session's platform is
-    where it lives. `sendMessage.to.platform` may differ, and the two sides of
+    where it lives. `sendMessage.platform` may differ, and the two sides of
     agent-to-agent delivery may live on different platforms.
 11. **Lineage is readable in exactly one direction:** an admitted wake returns
     the child's `childSessionId`, and `viewSessionStatus` accepts only a session

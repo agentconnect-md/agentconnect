@@ -634,7 +634,7 @@ describe('SessionManager', () => {
       await wake(sm, 'do this and tell me', true)
       const metaArg = host.newSession.mock.calls[0][3] as string
       expect(metaArg).toContain('# Reporting back to your parent session')
-      expect(metaArg).toContain('{"to":{"sessionId":"origin-sess-9"},"message":"..."}')
+      expect(metaArg).toContain('{"sessionId":"origin-sess-9","message":"..."}')
       // Persisted, so later turns and resumes keep it.
       expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply).toBe(1)
       store.close()
@@ -1556,9 +1556,9 @@ describe('SessionManager — collaboration preamble', () => {
     expect(first).toContain('# Collaborating with other agents')
     // Waking / replying / posting each get a complete sendMessage target example, not dotted pseudo-syntax.
     expect(first).toContain('`sendMessage`')
-    expect(first).toContain('{"to":{"toAgent":"<agent id>"},"message":"..."}')
-    expect(first).toContain('{"to":{"sessionId":"<Parent session>"},"message":"..."}')
-    expect(first).toContain('{"to":{"channel":"<channel id>"},"message":"..."}')
+    expect(first).toContain('{"toAgent":"<agent id>","message":"..."}')
+    expect(first).toContain('{"sessionId":"<Parent session>","message":"..."}')
+    expect(first).toContain('{"toUser":"<Slack user id>","message":"..."}')
     expect(first).not.toContain('`to.toAgent`')
     expect(first).not.toContain('`to.sessionId`')
     expect(first).not.toContain('`messageAgent`')

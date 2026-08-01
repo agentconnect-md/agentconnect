@@ -5844,7 +5844,7 @@ export class Daemon {
 
     // COORDINATE INTEGRITY — the SAME decision the relay's ingress and this daemon's
     // `rd/agentmsg` terminal-verify apply, so all three wake paths enforce one rule. Channel
-    // stopped AUTHORIZING the call, but `req.channel` (a model-supplied `to.channel`, or the
+    // stopped AUTHORIZING the call, but `req.channel` (a model-supplied `channel`, or the
     // turn's own channel) is still the woken peer's session coordinate, so without this a
     // model could name a channel its agent cannot reach and RESUME a co-located peer's
     // session there. Org comes from the caller's own directory entry, never from the

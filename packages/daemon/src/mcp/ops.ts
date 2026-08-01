@@ -479,10 +479,9 @@ const MULTI_INTEGRATION_NOTE =
   'listChannels/listChannelMembers/getUserProfile to query a known target on a chosen bot.'
 
 const SEND_MESSAGE_TARGET_HELP =
-  'Valid targets: agent {"to":{"toAgent":"<agent-id>"},"message":"..."}; ' +
-  'channel {"to":{"channel":"<channel-id>"},"message":"..."}; ' +
-  'human DM {"to":{"toUser":"<Slack-user-id>"},"message":"..."}; ' +
-  'session {"to":{"sessionId":"<Parent session>"},"message":"..."}'
+  'Valid targets: agent {"toAgent":"<agent-id>","message":"..."}; ' +
+  'user {"toUser":"<Slack-user-id>","message":"..."}; ' +
+  'session {"sessionId":"<Parent session>","message":"..."}'
 
 function resolveGatewayForPlatform(
   ctx: SessionContext,
@@ -726,20 +725,18 @@ export async function executeTool(
   // Unified outbound send (session-concept §3). One tool merges the old `sendPlatformMessage`
   // (post to a platform channel/user) and `messageAgent` (wake a peer agent), plus SessionTarget
   // replies. Universal (any agent — a memory-only agent can still wake a peer / reply), handled
-  // before the platform-gateway gate. `to` is a strict four-branch union: `sessionId` replies into
-  // an origin session; `toAgent` wakes one peer (with optional landing coords); `channel` posts one
-  // visible platform message; and `toUser` sends a Slack DM.
+  // before the platform-gateway gate. The tool takes exactly TWO addressing modes — `toAgent`
+  // (wake a peer agent) and `toUser` (reach a human) — each with THREE delivery forms: dm,
+  // channel root, and in thread. `sessionId` stays a separate reply branch.
   // SECURITY: the caller identity + coords come from the trusted session context, never tool input.
   if (name === 'sendMessage') {
-    const to = optionalObject(args, 'to')
-    if (!to) throw new Error('missing required object argument: to')
     const message = requireString(args, 'message')
 
     // Discriminant (§3.3): a `sessionId` ⇒ SessionTarget — reply into that existing session.
-    const sessionId = optionalString(to, 'sessionId')
+    const sessionId = optionalString(args, 'sessionId')
     if (sessionId !== undefined) {
-      assertOnlyKeys(to, ['sessionId', 'correlationId'], 'session target')
-      const correlationId = optionalString(to, 'correlationId')
+      assertOnlyKeys(args, ['sessionId', 'correlationId', 'message'], 'session target')
+      const correlationId = optionalString(args, 'correlationId')
       return await deps.replyToSession({
         callerAgentId: ctx.agentId,
         platform: ctx.platform,
@@ -752,23 +749,27 @@ export async function executeTool(
       })
     }
 
-    // MessageTarget — one required branch anchor: `toAgent` for a direct wake, `channel` for a
-    // visible channel post, or `toUser` for a Slack DM. Branch-specific validation below keeps
-    // ignored/mixed fields out even when a caller bypasses the advertised JSON Schema.
-    let channel = optionalString(to, 'channel')
-    const { toAgent, needsReply } = parseAgentTarget(to.toAgent)
-    const toUser = optionalString(to, 'toUser')
-    if (channel !== undefined && toUser !== undefined) {
-      throw new Error('sendMessage: `channel` and `toUser` cannot be combined; to send a Slack DM, omit `channel`')
+    // MessageTarget — exactly ONE of the two modes: `toAgent` wakes a peer agent, `toUser`
+    // reaches a platform user. The delivery form is selected by the coords: no `channel` ⇒ dm,
+    // `channel` without `thread` ⇒ channel root, `channel` + `thread` ⇒ in thread.
+    // Branch-specific validation below keeps ignored/mixed fields out even when a caller
+    // bypasses the advertised JSON Schema (as unit tests and older clients can).
+    const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
+    const toUser = optionalString(args, 'toUser')
+    if (toAgent === undefined && toUser === undefined) {
+      throw new Error(`sendMessage: \`toAgent\` or \`toUser\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`)
     }
-    if (channel === undefined && toAgent === undefined && toUser === undefined) {
-      throw new Error(`sendMessage: \`to\` does not select a target. ${SEND_MESSAGE_TARGET_HELP}`)
+    if (toAgent !== undefined && toUser !== undefined) {
+      throw new Error(
+        `sendMessage: \`toAgent\` and \`toUser\` are mutually exclusive — pick one mode. ${SEND_MESSAGE_TARGET_HELP}`
+      )
     }
-    if (toAgent !== undefined) assertOnlyKeys(to, ['toAgent', 'channel', 'thread'], 'agent target')
-    else if (toUser !== undefined) assertOnlyKeys(to, ['toUser', 'platform', 'integrationId'], 'human DM target')
-    else assertOnlyKeys(to, ['channel', 'platform', 'thread', 'integrationId'], 'channel target')
-    const directMessage = toUser !== undefined
-    channel ??= toUser
+    const channel = optionalString(args, 'channel')
+    if (toAgent !== undefined) assertOnlyKeys(args, ['toAgent', 'channel', 'thread', 'message'], 'agent target')
+    else assertOnlyKeys(args, ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'message'], 'user target')
+    if (toUser !== undefined && channel === undefined && optionalString(args, 'thread') !== undefined) {
+      throw new Error('sendMessage: `thread` needs a `channel` — a DM has no thread to post into')
+    }
 
     // The trusted wake request (built once) — also fed to the preflight below. `thread` and
     // `transcriptTs` are filled AFTER the post (they depend on the post's ts), so this base copy
@@ -797,15 +798,16 @@ export async function executeTool(
     // owning daemon); such a rare reject can still leave a post — an accepted residual.
     const wakeRejection = baseWakeReq !== undefined ? (deps.preflightWake?.(baseWakeReq) ?? null) : null
 
-    // (A) Post a visible IM to a platform channel or Slack user. A human target uses the Slack
-    // member id directly as chat.postMessage's destination, which opens or reuses that DM.
-    // Routing is by `platform` (+ optional `integrationId`) to ANY platform the agent is
-    // connected to; identity is stamped from the trusted session. THREAD DEFAULT: a deliberate
-    // `sendMessage` posts to the channel ROOT — "reply here" is the agent's normal turn output,
-    // so an explicit send is a top-level post unless it names a `thread`. `thread:"<id>"` targets
-    // that thread; absent or "" ⇒ root. We post BEFORE any peer wake (B) so the wake can land in the SAME
-    // thread a human sees — for a root post that thread is the post's own `ts`, which only exists
-    // after the send.
+    // (A) Post a visible IM to a platform channel or Slack user. The destination is the
+    // `channel` for the channel-root / in-thread forms; the `toUser` DM form (no channel) uses
+    // the Slack member id directly as chat.postMessage's destination, which opens or reuses
+    // that DM. Routing is by `platform` (+ optional `integrationId`) to ANY platform the agent
+    // is connected to; identity is stamped from the trusted session. THREAD DEFAULT: a
+    // deliberate `sendMessage` posts to the channel ROOT — "reply here" is the agent's normal
+    // turn output, so an explicit send is a top-level post unless it names a `thread`.
+    // `thread:"<id>"` targets that thread; absent or "" ⇒ root. We post BEFORE any peer wake
+    // (B) so the wake can land in the SAME thread a human sees — for a root post that thread is
+    // the post's own `ts`, which only exists after the send.
     let post:
       { platform: string; integrationId: string; channel: string; thread: string | null; ts: string } | undefined
     // Set when the root post just forked a conversation this agent is already part of — see the
@@ -816,15 +818,25 @@ export async function executeTool(
     // `thread` reuses it; a root post anchors to the post's `ts` (undefined if no real ts came
     // back — the peer then falls back to messageAgent's default thread).
     let postedThread: string | undefined
-    if (channel !== undefined && wakeRejection === null) {
-      const wantPlatform = optionalString(to, 'platform') ?? (directMessage ? 'slack' : ctx.platform)
-      const wantIntegrationId = optionalString(to, 'integrationId')
+    // Destination: an explicit `channel` (channel-root / in-thread forms), else the `toUser`
+    // DM form targets the user id itself.
+    const postChannel = channel ?? (toUser !== undefined ? toUser : undefined)
+    if (postChannel !== undefined && wakeRejection === null) {
+      const directMessage = toUser !== undefined && channel === undefined
+      const wantPlatform = optionalString(args, 'platform') ?? (directMessage ? 'slack' : ctx.platform)
+      const wantIntegrationId = optionalString(args, 'integrationId')
       const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
-      const thread = optionalString(to, 'thread') || undefined
-      const body = message
-      if (directMessage) {
+      const thread = optionalString(args, 'thread') || undefined
+      let body = message
+      if (toUser !== undefined) {
         if (wantPlatform !== 'slack') {
           throw new Error(`sendMessage: toUser is only supported on Slack (not ${wantPlatform}) yet`)
+        }
+        // dm form: the user id IS the destination and the body is unchanged; the channel-root /
+        // in-thread forms @-mention the user inside the visible post.
+        if (channel !== undefined) {
+          const mention = /^<@[^>]+>$/.test(toUser) ? toUser : `<@${toUser}>`
+          body = `${mention} ${message}`
         }
       }
       const identity: SendIdentity = {
@@ -832,23 +844,23 @@ export async function executeTool(
         ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
         agentAuthorId: ctx.agentId
       }
-      const ts = (await gw.postMessage(channel, body, thread, identity)) ?? `local-${deps.now()}`
+      const ts = (await gw.postMessage(postChannel, body, thread, identity)) ?? `local-${deps.now()}`
       // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
       // continuous conversation, and no id carries that — ask the platform, once, and only where
       // the answer can change the key. A failed lookup falls back to the non-DM conversation
       // rather than failing the send that already happened.
       const isDmTarget =
         thread === undefined && (wantPlatform === 'telegram' || wantPlatform === 'feishu')
-          ? ((await gw.getChannelInfo(channel).catch(() => undefined))?.isIm ?? false)
+          ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
           : false
       postedThread =
-        thread ?? (ts.startsWith('local-') ? undefined : threadKeyForPost(wantPlatform, channel, ts, isDmTarget))
+        thread ?? (ts.startsWith('local-') ? undefined : threadKeyForPost(wantPlatform, postChannel, ts, isDmTarget))
       // Record the post in the thread it BELONGS to — the one it just created for a root post,
       // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
       // row to coords that match no session at all). It is also what resolves a later reply to
       // this post back onto this thread, so it must be the same canonical key the session uses.
-      deps.recordOutbound(ctx, channel, postedThread, body, ts, targetId)
-      post = { platform: wantPlatform, integrationId: targetId, channel, thread: thread ?? null, ts }
+      deps.recordOutbound(ctx, postChannel, postedThread, body, ts, targetId)
+      post = { platform: wantPlatform, integrationId: targetId, channel: postChannel, thread: thread ?? null, ts }
       // session-concept case 2a: a ROOT post (no thread) with NO peer wake seeds a NEW session
       // owned by this agent, keyed by the post's own thread, origin = the current session. When
       // there IS a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the
@@ -859,7 +871,7 @@ export async function executeTool(
           agentId: ctx.agentId,
           platform: wantPlatform,
           ...(targetId ? { integrationId: targetId } : {}),
-          channel,
+          channel: postChannel,
           thread: postedThread,
           postTs: ts,
           text: body,
@@ -890,7 +902,7 @@ export async function executeTool(
                 callerChannel: ctx.channel,
                 callerThread: ctx.thread,
                 targetPlatform: wantPlatform,
-                targetChannel: channel,
+                targetChannel: postChannel,
                 targetThread: postedThread,
                 ...(targetId ? { targetIntegrationId: targetId } : {})
               })
@@ -899,7 +911,7 @@ export async function executeTool(
           notice =
             `This posted at the ROOT of the conversation your parent session occupies, so it starts a separate ` +
             `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
-            `it, call sendMessage with {"to":{"sessionId":"${relation.sessionId}"}}.`
+            `it, call sendMessage with {"sessionId":"${relation.sessionId}"}.`
         } else if (relation?.kind === 'self') {
           notice =
             `This posted at the ROOT of the conversation this session is already in, so it starts a separate ` +
@@ -924,7 +936,11 @@ export async function executeTool(
     let wake: MessageAgentResult | undefined
     if (baseWakeReq !== undefined) {
       const threadForWake =
-        channel !== undefined ? postedThread : 'thread' in to ? optionalString(to, 'thread') || undefined : ctx.thread
+        channel !== undefined
+          ? postedThread
+          : 'thread' in args
+            ? optionalString(args, 'thread') || undefined
+            : ctx.thread
       wake = await deps.messageAgent({
         ...baseWakeReq,
         ...(threadForWake !== undefined ? { thread: threadForWake } : {}),
@@ -1169,7 +1185,7 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
 }
 
 /**
- * Normalize `to.toAgent`, which accepts either the bare agent id or
+ * Normalize `toAgent`, which accepts either the bare agent id or
  * `{ agentId, needsReply }`. The bare-string form stays supported indefinitely: it is what
  * every published example and every warm ACP session's tool descriptor teaches, and the object
  * form only adds delivery options on top of it. `undefined` ⇒ this is not an agent target.
@@ -1177,17 +1193,17 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
 function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean } {
   if (value === undefined || value === null) return {}
   if (typeof value === 'string') {
-    if (value.length === 0) throw new Error('sendMessage: `to.toAgent` must be a non-empty agent id')
+    if (value.length === 0) throw new Error('sendMessage: `toAgent` must be a non-empty agent id')
     return { toAgent: value }
   }
   if (typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('sendMessage: `to.toAgent` must be an agent id string or {"agentId":"…","needsReply":bool}')
+    throw new Error('sendMessage: `toAgent` must be an agent id string or {"agentId":"…","needsReply":bool}')
   }
   const target = value as Record<string, unknown>
   assertOnlyKeys(target, ['agentId', 'needsReply'], 'agent target `toAgent`')
   const needsReply = target.needsReply
   if (needsReply !== undefined && needsReply !== null && typeof needsReply !== 'boolean') {
-    throw new Error('sendMessage: `to.toAgent.needsReply` must be a boolean')
+    throw new Error('sendMessage: `toAgent.needsReply` must be a boolean')
   }
   return { toAgent: requireString(target, 'agentId'), ...(needsReply === true ? { needsReply: true } : {}) }
 }
