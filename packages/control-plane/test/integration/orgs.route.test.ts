@@ -18,6 +18,7 @@ interface OrgBody {
   id: string
   name: string | null
   slug: string
+  defaultAgentVisibility: 'all' | 'selected'
   role: string
   memberCount: number
   createdAt: string
@@ -34,6 +35,7 @@ describe('GET /orgs', () => {
       expect(body[0]!.id).toBe(DEFAULT_ORG_ID)
       expect(body[0]!.role).toBe('owner')
       expect(body[0]!.memberCount).toBe(1)
+      expect(body[0]!.defaultAgentVisibility).toBe('selected')
     } finally {
       await close()
     }
@@ -53,6 +55,7 @@ describe('POST /orgs', () => {
       const org = res.json() as OrgBody
       expect(org.role).toBe('owner')
       expect(org.memberCount).toBe(1)
+      expect(org.defaultAgentVisibility).toBe('selected')
 
       const list = (await (await app.inject({ method: 'GET', url: '/api/v1/orgs' })).json()) as OrgBody[]
       expect(list.map((o) => o.slug)).toContain('acme')
@@ -130,6 +133,48 @@ describe('PATCH /orgs/:id', () => {
       expect((res.json() as OrgBody).name).toBeNull()
       const row = await prisma.org.findUnique({ where: { id: DEFAULT_ORG_ID } })
       expect(row?.name).toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('uses the org visibility default for future agents without rewriting existing agents', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const before = await app.inject({
+        method: 'POST',
+        url: `${ORG}/agents`,
+        payload: { name: 'before-policy-change', runtime: 'claude' }
+      })
+      expect(before.statusCode).toBe(201)
+      expect(before.json()).toMatchObject({ callPolicy: 'selected', outboundPolicy: 'selected' })
+
+      const updated = await app.inject({
+        method: 'PATCH',
+        url: ORG,
+        payload: { defaultAgentVisibility: 'all' }
+      })
+      expect(updated.statusCode).toBe(200)
+      expect((updated.json() as OrgBody).defaultAgentVisibility).toBe('all')
+
+      const after = await app.inject({
+        method: 'POST',
+        url: `${ORG}/agents`,
+        payload: { name: 'after-policy-change', runtime: 'claude' }
+      })
+      expect(after.statusCode).toBe(201)
+      expect(after.json()).toMatchObject({
+        callPolicy: 'all',
+        allowedCallerAgentIds: [],
+        outboundPolicy: 'all',
+        allowedTargetAgentIds: []
+      })
+
+      const unchanged = await app.inject({
+        method: 'GET',
+        url: `${ORG}/agents/${(before.json() as { id: string }).id}`
+      })
+      expect(unchanged.json()).toMatchObject({ callPolicy: 'selected', outboundPolicy: 'selected' })
     } finally {
       await close()
     }

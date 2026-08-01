@@ -245,11 +245,6 @@ export function AgentCallVisibility({
         >
           {peers.length === 0 ? <>No other agents are available yet.</> : allAgentsSummary}
         </div>
-        {variant !== 'section' && (
-          <span className="col-start-2 w-fit rounded-full bg-(--surface-active) px-[9px] py-[2px] font-sans text-[11.5px] font-semibold leading-normal text-(--text-tertiary) desktop:col-auto desktop:flex-none">
-            default
-          </span>
-        )}
       </div>
     ) : !editable ? (
       // Read-only `selected`: the chosen peers as plain chips — no search field,

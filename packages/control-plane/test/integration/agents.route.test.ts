@@ -95,6 +95,8 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       lastModifiedAt: string
       callPolicy: string
       allowedCallerAgentIds: string[]
+      outboundPolicy: string
+      allowedTargetAgentIds: string[]
     }
     expect(created.id).toMatch(/[0-9a-f-]{36}/)
     expect(created.name).toBe('router-bot')
@@ -105,8 +107,10 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(Number.isNaN(Date.parse(created.createdAt))).toBe(false)
     expect(created.lastModifiedBy).toBe(created.createdBy)
     expect(created.lastModifiedAt).toBe(created.createdAt)
-    expect(created.callPolicy).toBe('all')
+    expect(created.callPolicy).toBe('selected')
     expect(created.allowedCallerAgentIds).toEqual([])
+    expect(created.outboundPolicy).toBe('selected')
+    expect(created.allowedTargetAgentIds).toEqual([])
 
     // Persisted in the real DB — the FK points at the seeded owner user.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
@@ -128,14 +132,18 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       lastModifiedAt: string
       callPolicy: string
       allowedCallerAgentIds: string[]
+      outboundPolicy: string
+      allowedTargetAgentIds: string[]
     }
     expect(fetched.id).toBe(created.id)
     expect(fetched.name).toBe('router-bot')
     expect(fetched.capabilities).toEqual(['fs.read', 'fs.write'])
     expect(fetched.lastModifiedBy).toBe(created.lastModifiedBy)
     expect(fetched.lastModifiedAt).toBe(created.lastModifiedAt)
-    expect(fetched.callPolicy).toBe('all')
+    expect(fetched.callPolicy).toBe('selected')
     expect(fetched.allowedCallerAgentIds).toEqual([])
+    expect(fetched.outboundPolicy).toBe('selected')
+    expect(fetched.allowedTargetAgentIds).toEqual([])
   })
 
   it('defaults and locks Run in sandbox from the placed daemon policy', async () => {
@@ -339,7 +347,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     })
     expect(outboundOnly.statusCode).toBe(201)
     expect(outboundOnly.json()).toMatchObject({
-      callPolicy: 'all',
+      callPolicy: 'selected',
       allowedCallerAgentIds: [],
       outboundPolicy: 'selected',
       allowedTargetAgentIds: [callerId]
@@ -358,9 +366,9 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     })
     expect(dflt.statusCode).toBe(201)
     expect(dflt.json()).toMatchObject({
-      callPolicy: 'all',
+      callPolicy: 'selected',
       allowedCallerAgentIds: [],
-      outboundPolicy: 'all',
+      outboundPolicy: 'selected',
       allowedTargetAgentIds: []
     })
   })

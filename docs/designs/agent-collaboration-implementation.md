@@ -403,10 +403,16 @@ snapshot that has not caught up.
 
 The data model stores:
 
-- `callPolicy: 'all' | 'selected'`, defaulting to `all`, allows any peer in the same org.
+- `Org.defaultAgentVisibility: 'all' | 'selected'`, defaulting to `selected`, seeds both
+  directions for newly created agents and never rewrites existing ones.
+- `callPolicy: 'all' | 'selected'`; when `selected`, accepts no peer until allowed.
 - `allowedCallerAgentIds: string[]` is the set of agent IDs allowed when `callPolicy='selected'`.
-- `outboundPolicy: 'all' | 'selected'` and `allowedTargetAgentIds` constrain
-  which peers the caller may select.
+- `outboundPolicy: 'all' | 'selected'`; its
+  `allowedTargetAgentIds` constrain which peers the caller may select.
+
+An agent create may override either direction explicitly. The Agent columns retain
+`selected` database defaults as a fail-closed fallback for writes that bypass the
+repository creation seam.
 
 `AgentSpec` carries local target policy, while the versioned collaboration
 snapshot supplies caller/target organization, placement, and policy data for

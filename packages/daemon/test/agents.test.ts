@@ -172,6 +172,10 @@ describe('AgentSchema defaults', () => {
     expect(parsed.output.showFooter).toBe(true)
     expect(parsed.allowRuntimeChangesInChat).toBe(false)
     expect(parsed.restrictFileAccess).toBe(false)
+    expect(parsed.callPolicy).toBe('selected')
+    expect(parsed.allowedCallerAgentIds).toEqual([])
+    expect(parsed.outboundPolicy).toBe('selected')
+    expect(parsed.allowedTargetAgentIds).toEqual([])
   })
 
   it('defaults permissionMode to default when omitted', () => {

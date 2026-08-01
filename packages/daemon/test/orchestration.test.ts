@@ -13,6 +13,7 @@ import type { StartOrchestrationReq, OrchestrationOwnerReq } from '../src/mcp/op
  * one-shot cron deadline — without running a real ACP turn.
  */
 
+/** These scenarios model an explicitly connected worker pool; isolated defaults live in agents.test.ts. */
 function scaffold(agentIds: string[]): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-orch-'))
   writeFileSync(
@@ -35,7 +36,11 @@ function scaffold(agentIds: string[]): string {
         runtime: 'claude',
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
         integrations: [],
-        output: { mode: 'low' }
+        output: { mode: 'low' },
+        callPolicy: 'all',
+        allowedCallerAgentIds: [],
+        outboundPolicy: 'all',
+        allowedTargetAgentIds: []
       })
     )
   }

@@ -24,6 +24,7 @@ import {
   type MemberRole,
   type OrgDto
 } from '@/lib/api'
+import type { AgentCallPolicy } from '@/lib/data'
 
 // Last-used org slug, kept in a COOKIE (not localStorage) so the proxy
 // can send `/` straight to `/{slug}/agents` with one server redirect — no
@@ -84,12 +85,15 @@ interface OrgContextValue {
   orgPath: (path: string) => string
   /** Switch the active org — navigates to the same page under the new slug. */
   setActiveOrg: (orgId: string) => void
-  /** Re-pull `GET /orgs` (after create / rename / membership changes). */
+  /** Re-pull `GET /orgs` (after create / settings / membership changes). */
   refreshOrgs: () => Promise<void>
   /** Create an org (caller becomes owner) and switch into it. Display name optional. */
   createOrg: (input: { name?: string; slug: string }) => Promise<OrgDto>
-  /** Rename / re-slug an org (owner-only server-side), then re-sync the URL. */
-  renameOrg: (orgId: string, patch: { name?: string; slug?: string }) => Promise<void>
+  /** Update org settings (owner-only server-side), then re-sync the URL if needed. */
+  updateOrg: (
+    orgId: string,
+    patch: { name?: string; slug?: string; defaultAgentVisibility?: AgentCallPolicy }
+  ) => Promise<void>
   /** Delete an org (owner-only; 409 while it has daemons). The console then
    *  moves to a remaining org — or the self-healed personal one. */
   deleteOrg: (orgId: string) => Promise<void>
@@ -181,8 +185,8 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     [pathname, slug, refreshOrgs, router]
   )
 
-  const renameOrg = useCallback(
-    async (orgId: string, patch: { name?: string; slug?: string }) => {
+  const updateOrg = useCallback(
+    async (orgId: string, patch: { name?: string; slug?: string; defaultAgentVisibility?: AgentCallPolicy }) => {
       const updated = await apiUpdateOrg(orgId, patch)
       // Record the new slug BEFORE the list refreshes — the URL reconciliation
       // effect fires on the refreshed list (old slug now unknown) and must
@@ -233,11 +237,11 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       setActiveOrg,
       refreshOrgs,
       createOrg,
-      renameOrg,
+      updateOrg,
       deleteOrg,
       leaveOrg
     }),
-    [orgs, activeOrg, loading, error, orgPath, setActiveOrg, refreshOrgs, createOrg, renameOrg, deleteOrg, leaveOrg]
+    [orgs, activeOrg, loading, error, orgPath, setActiveOrg, refreshOrgs, createOrg, updateOrg, deleteOrg, leaveOrg]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

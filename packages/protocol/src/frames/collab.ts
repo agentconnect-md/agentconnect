@@ -39,11 +39,12 @@ export const CollabAgentPlacement = z.object({
    *  recognize AgentConnect-authored platform messages and keep agent-to-agent
    *  activation on the trusted `messageAgent` path. */
   botAppId: z.string().optional(),
-  callPolicy: z.enum(['all', 'selected']).default('all'),
+  // Missing policy from an older or incomplete snapshot must not create a peer edge.
+  callPolicy: z.enum(['all', 'selected']).default('selected'),
   allowedCallerAgentIds: z.array(z.string()).default([]),
   /** Caller-side authorization. Effective A→B access requires A's outbound
    * policy to admit B and B's inbound call policy to admit A. */
-  outboundPolicy: z.enum(['all', 'selected']).default('all'),
+  outboundPolicy: z.enum(['all', 'selected']).default('selected'),
   allowedTargetAgentIds: z.array(z.string()).default([]),
   // Directory name of the agent — carried so any daemon holding the snapshot can label a
   // REMOTE peer (caller or target) by name in a visible agent-call post, without a CP

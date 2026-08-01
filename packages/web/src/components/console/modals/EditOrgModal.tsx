@@ -2,21 +2,26 @@
 
 // Edit-organization dialog (design: `isEditWorkspaceModal`). REAL: PATCH
 // /orgs/:id (owner-only server-side; the Settings page only offers the button
-// to owners). Edits the ACTIVE org's URL name (slug) + display name, and hosts
-// the delete-organization danger zone (two-click confirm; the CP refuses while
-// the org still has daemons, and everything else cascades).
+// to owners). Edits the ACTIVE org's URL name (slug), display name, and default
+// policy for future agents, and hosts the delete-organization danger zone
+// (two-click confirm; the CP refuses while the org still has daemons, and
+// everything else cascades).
 
 import { useState } from 'react'
 import { Button, Icon } from '@/components/ui'
 import { ApiError } from '@/lib/api'
 import { useOrgs, orgColor, orgUrlPrefix } from '@/lib/org-context'
+import type { AgentCallPolicy } from '@/lib/data'
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
 
 export default function EditOrgModal({ onClose }: { onClose: () => void }) {
-  const { activeOrg, renameOrg, deleteOrg } = useOrgs()
+  const { activeOrg, updateOrg, deleteOrg } = useOrgs()
   const [slug, setSlug] = useState(activeOrg?.slug ?? '')
   const [name, setName] = useState(activeOrg?.name ?? '')
+  const [defaultAgentVisibility, setDefaultAgentVisibility] = useState<AgentCallPolicy>(
+    activeOrg?.defaultAgentVisibility ?? 'selected'
+  )
   const [busy, setBusy] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -27,11 +32,16 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
 
   const submit = async () => {
     if (!valid || busy) return
-    if (slug === activeOrg.slug && (nextName || null) === (activeOrg.name ?? null)) return onClose()
+    if (
+      slug === activeOrg.slug &&
+      (nextName || null) === (activeOrg.name ?? null) &&
+      defaultAgentVisibility === (activeOrg.defaultAgentVisibility ?? 'selected')
+    )
+      return onClose()
     setBusy(true)
     setErr(null)
     try {
-      await renameOrg(activeOrg.id, { name: nextName, slug })
+      await updateOrg(activeOrg.id, { name: nextName, slug, defaultAgentVisibility })
       onClose()
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) setErr('That URL name is already taken.')
@@ -102,9 +112,44 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
             Anything you like — shown across the console. Leave blank to use the URL name.
           </span>
         </div>
+        <div className="fld mt-[14px]">
+          <span className="fldlbl">Default agent visibility</span>
+          <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Default agent visibility">
+            {(
+              [
+                { key: 'selected', label: 'Isolated', sub: 'No peer access until agents are selected.' },
+                { key: 'all', label: 'All agents', sub: 'Open in both directions to the organization.' }
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                role="radio"
+                disabled={busy}
+                aria-checked={defaultAgentVisibility === option.key}
+                onClick={() => setDefaultAgentVisibility(option.key)}
+                className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[8px] text-left ${
+                  defaultAgentVisibility === option.key
+                    ? 'border-(--brand) bg-(--surface-active)'
+                    : 'border-(--border-default) bg-(--surface-app)'
+                } ${busy ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+              >
+                <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                  {option.label}
+                </span>
+                <span className="font-sans text-[11px] font-normal leading-[1.4] text-(--text-tertiary)">
+                  {option.sub}
+                </span>
+              </button>
+            ))}
+          </div>
+          <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            Applies only to newly created agents. Each agent can still override both directions.
+          </span>
+        </div>
         <div className="mt-[14px] flex items-start gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="info" size={14} className="mt-[1px] flex-none" />
-          <span>Only owners can edit these. Changing the name updates the organization URL for everyone.</span>
+          <span>Only owners can edit these settings. Changing the name updates the organization URL for everyone.</span>
         </div>
         <div className="mt-[18px] flex items-center gap-[11px] rounded-[9px] border border-[rgba(220,75,75,.28)] bg-(--status-error-soft) px-[13px] py-3">
           <Icon name="trash-2" size={16} color="var(--status-error)" className="flex-none" />

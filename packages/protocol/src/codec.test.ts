@@ -1186,7 +1186,7 @@ describe('collaboration/routes snapshot', () => {
     expect(r.frame.payload.agents[0]!.orgId).toBe(ORG_ID)
     expect(r.frame.payload.agents[0]!.allowedTargetAgentIds).toEqual([AGENT_ID])
     // Placement defaults still apply through the .extend()
-    expect(r.frame.payload.agents[0]!.callPolicy).toBe('all')
+    expect(r.frame.payload.agents[0]!.callPolicy).toBe('selected')
     expect(r.frame.payload.agents[0]!.allowedCallerAgentIds).toEqual([])
   })
 

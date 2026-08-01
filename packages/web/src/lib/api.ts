@@ -879,11 +879,11 @@ export interface CreateAgentInput {
   /** Initial visibility (absent ⇒ 'org'); sharedWith is intersected with org members. */
   visibility?: ResourceVisibility
   sharedWith?: string[]
-  /** Initial agent-call policy (absent ⇒ 'all'); allowedCallerAgentIds is
+  /** Initial agent-call policy (absent ⇒ the organization's default); allowedCallerAgentIds is
    *  intersected with visible same-org peers and only bites when 'selected'. */
   callPolicy?: AgentCallPolicy
   allowedCallerAgentIds?: string[]
-  /** Outbound half (absent ⇒ 'all'); intersected with visible peers server-side. */
+  /** Outbound half (absent ⇒ the organization's default); intersected with visible peers server-side. */
   outboundPolicy?: AgentCallPolicy
   allowedTargetAgentIds?: string[]
 }
@@ -962,6 +962,8 @@ export interface OrgDto {
   icon: AgentIcon | null
   /** Resolved URL for an uploaded `image` org icon; null otherwise. */
   iconUrl: string | null
+  /** Default applied to both directional policies of newly created agents. */
+  defaultAgentVisibility?: AgentCallPolicy
   /** Whether the object store is configured — the console shows Upload only when true. */
   iconUploadEnabled: boolean
   /** The signed-in user's role in this org. */
@@ -1498,9 +1500,9 @@ export function agentFromDto(d: AgentDto): Agent {
     ownerUserId: d.ownerUserId,
     canEdit: d.canEdit,
     canManageSharing: d.canManageSharing,
-    callPolicy: d.callPolicy,
-    allowedCallerAgentIds: d.allowedCallerAgentIds,
-    outboundPolicy: d.outboundPolicy ?? 'all',
+    callPolicy: d.callPolicy ?? 'selected',
+    allowedCallerAgentIds: d.allowedCallerAgentIds ?? [],
+    outboundPolicy: d.outboundPolicy ?? 'selected',
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
@@ -3105,10 +3107,15 @@ export async function createOrg(input: { name?: string; slug: string }): Promise
   return org
 }
 
-// Rename / re-slug an org (PATCH /orgs/:id, owner of that org only).
+// Update org settings (PATCH /orgs/:id, owner of that org only).
 export async function updateOrg(
   orgId: string,
-  patch: { name?: string; slug?: string; icon?: AgentIcon | null }
+  patch: {
+    name?: string
+    slug?: string
+    icon?: AgentIcon | null
+    defaultAgentVisibility?: AgentCallPolicy
+  }
 ): Promise<OrgDto> {
   return apiPatch<OrgDto>(`/orgs/${encodeURIComponent(orgId)}`, patch)
 }

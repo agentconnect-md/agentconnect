@@ -485,12 +485,12 @@ export const CreateAgentBody = z.object({
   // in one call instead of create-then-share.
   visibility: ResourceVisibilityEnum.optional(),
   sharedWith: z.array(z.string()).optional(),
-  // Initial agent-call policy (absent ⇒ 'all'); `allowedCallerAgentIds` is
+  // Initial agent-call policy (absent ⇒ the organization's default); `allowedCallerAgentIds` is
   // intersected with visible same-org peers in the route (same rule as the
   // dedicated call-policy PUT). Lets a create restrict callers in one request.
   callPolicy: AgentCallPolicyEnum.optional(),
   allowedCallerAgentIds: z.array(z.string().uuid()).optional(),
-  // Outbound half of the same policy (absent ⇒ 'all'), intersected the same way.
+  // Outbound half of the same policy (absent ⇒ the organization's default), intersected the same way.
   outboundPolicy: AgentCallPolicyEnum.optional(),
   allowedTargetAgentIds: z.array(z.string().uuid()).optional()
 })
@@ -1857,6 +1857,8 @@ export const OrgDto = z.object({
   slug: z.string(),
   /** Console avatar descriptor; null ⇒ generated default (rendered by the org icon endpoint). */
   icon: AgentIconDto.nullable(),
+  /** Applied to both directional policies when a new agent does not explicitly choose one. */
+  defaultAgentVisibility: AgentCallPolicyEnum,
   /** Resolved URL for an uploaded `image` org icon (object-store public URL); null for
    *  glyph/default (the console renders those locally) or when no store is configured. */
   iconUrl: z.string().nullable(),
@@ -1879,7 +1881,7 @@ export const CreateOrgBody = z.object({
   slug: OrgSlug
 })
 
-/** `PATCH /orgs/:id` — rename / re-slug (owner-only). At least one field.
+/** `PATCH /orgs/:id` — update organization settings (owner-only). At least one field.
  *  A blank `name` clears the display name (back to the slug fallback). */
 export const UpdateOrgBody = z
   .object({
@@ -1887,11 +1889,17 @@ export const UpdateOrgBody = z
     slug: OrgSlug.optional(),
     // Glyph/runtime icon via JSON (the picker's non-upload path); an uploaded `image`
     // icon goes through PUT /orgs/:id/icon, so it is not accepted here. null ⇒ default.
-    icon: AgentIconBody.nullable().optional()
+    icon: AgentIconBody.nullable().optional(),
+    // Seeds both inbound and outbound policies for future agents only.
+    defaultAgentVisibility: AgentCallPolicyEnum.optional()
   })
-  .refine((b) => b.name !== undefined || b.slug !== undefined || b.icon !== undefined, {
-    message: 'nothing to update'
-  })
+  .refine(
+    (b) =>
+      b.name !== undefined || b.slug !== undefined || b.icon !== undefined || b.defaultAgentVisibility !== undefined,
+    {
+      message: 'nothing to update'
+    }
+  )
 
 // ── crons ────────────────────────────────────────────────────────────────
 export const Platform = z.enum(['slack', 'telegram', 'discord', 'feishu'])
