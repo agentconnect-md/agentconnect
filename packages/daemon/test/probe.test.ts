@@ -196,6 +196,12 @@ describe('isRuntimeAvailable / custom probes', () => {
     mkdirSync(join(cliHome, '.qoder'))
     expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: cleanHome, QODER_CLI_HOME: cliHome }))).toBe(true)
     expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: cleanHome, GEMINI_CLI_HOME: cliHome }))).toBe(true)
+
+    const namedHome = mkdtempSync(join(tmpdir(), 'ac-qoder-named-home-'))
+    mkdirSync(join(namedHome, 'custom-qoder'))
+    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: namedHome, QODER_CONFIG_DIR_NAME: 'custom-qoder' }))).toBe(
+      true
+    )
   })
 
   it('qoder-cli-cn needs ~/.qoder-cn even when qoderclicn is on PATH', () => {
@@ -206,13 +212,18 @@ describe('isRuntimeAvailable / custom probes', () => {
     expect(isRuntimeAvailable('qoder-cli-cn', rt, env())).toBe(true)
   })
 
-  it('qoder-cli-cn honors $QODERCN_CONFIG_DIR override', () => {
+  it('qoder-cli-cn honors its config directory overrides', () => {
     makeExecutable(binDir, 'qoderclicn')
     const rt: RuntimeDef = { command: 'qoderclicn', args: ['--acp'], env: [] }
     const cleanHome = mkdtempSync(join(tmpdir(), 'ac-qodercn-home-'))
     const configDir = mkdtempSync(join(tmpdir(), 'ac-qodercn-cfg-'))
     expect(isRuntimeAvailable('qoder-cli-cn', rt, env({ HOME: cleanHome }))).toBe(false)
     expect(isRuntimeAvailable('qoder-cli-cn', rt, env({ HOME: cleanHome, QODERCN_CONFIG_DIR: configDir }))).toBe(true)
+
+    mkdirSync(join(cleanHome, 'custom-qoder-cn'))
+    expect(
+      isRuntimeAvailable('qoder-cli-cn', rt, env({ HOME: cleanHome, QODERCN_CONFIG_DIR_NAME: 'custom-qoder-cn' }))
+    ).toBe(true)
   })
 
   it('cursor needs the CLI-specific cli-config.json (dir alone is not enough)', () => {

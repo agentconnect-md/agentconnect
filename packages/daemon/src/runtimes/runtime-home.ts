@@ -228,6 +228,11 @@ const RUNTIME_PRIVATE_ENV: Record<string, RuntimePrivateEnv> = {
     ZEROCLAW_CONFIG_DIR: join(home, '.zeroclaw'),
     ZEROCLAW_DATA_DIR: join(home, '.zeroclaw', 'data')
   }),
+  // Pin global state even when CONFIG_DIR_NAME is customized. That variable may
+  // still select the project-local directory, but auth always resolves through
+  // the reviewed private-HOME link prepared by runtime-credentials.
+  'qoder-cli': (home) => ({ QODER_CONFIG_DIR: join(home, '.qoder') }),
+  'qoder-cli-cn': (home) => ({ QODERCN_CONFIG_DIR: join(home, '.qoder-cn') }),
   omp: (home) => ({ PI_CODING_AGENT_DIR: join(home, '.omp', 'agent') }),
   'pi-acp': (home) => ({ PI_CODING_AGENT_DIR: join(home, '.pi', 'agent') }),
   cline: (home) => ({

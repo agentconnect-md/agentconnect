@@ -88,7 +88,7 @@ describe('private runtime HOME', () => {
       }
     )
     expect(env.HOME).toBe(home)
-    expect(env.QODER_CONFIG_DIR).toBeUndefined()
+    expect(env.QODER_CONFIG_DIR).toBe(join(home, '.qoder'))
     expect(env.QODER_CLI_HOME).toBeUndefined()
     expect(env.GEMINI_CLI_HOME).toBeUndefined()
   })

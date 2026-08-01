@@ -151,13 +151,27 @@ describe('Linux shared runtime login', () => {
   })
 
   it.each([
-    { runtimeId: 'qoder-cli', command: 'qodercli', configName: '.qoder' },
-    { runtimeId: 'qoder-cli-cn', command: 'qoderclicn', configName: '.qoder-cn' }
+    {
+      runtimeId: 'qoder-cli',
+      command: 'qodercli',
+      configName: '.qoder',
+      hostConfigName: 'custom-qoder',
+      hostConfigNameEnv: 'QODER_CONFIG_DIR_NAME',
+      privateConfigEnv: 'QODER_CONFIG_DIR'
+    },
+    {
+      runtimeId: 'qoder-cli-cn',
+      command: 'qoderclicn',
+      configName: '.qoder-cn',
+      hostConfigName: 'custom-qoder-cn',
+      hostConfigNameEnv: 'QODERCN_CONFIG_DIR_NAME',
+      privateConfigEnv: 'QODERCN_CONFIG_DIR'
+    }
   ])(
     'shares refreshable $runtimeId auth while keeping the rest of HOME private',
-    ({ runtimeId, command, configName }) => {
+    ({ runtimeId, command, configName, hostConfigName, hostConfigNameEnv, privateConfigEnv }) => {
       const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
-      const hostConfig = join(hostHome, configName)
+      const hostConfig = join(hostHome, hostConfigName)
       const sharedAuth = join(hostConfig, '.auth')
       mkdirSync(sharedAuth, { recursive: true })
       writeFileSync(join(hostConfig, 'settings.json'), '{"theme":"dark"}')
@@ -174,10 +188,11 @@ describe('Linux shared runtime login', () => {
         runInSandbox: true,
         sandboxMechanism: 'bwrap',
         credentialPlatform: 'linux',
-        hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin', [hostConfigNameEnv]: hostConfigName }
       })
 
       const privateAuth = join(scopeDir, 'home', configName, '.auth')
+      expect(launch.env[privateConfigEnv]).toBe(join(scopeDir, 'home', configName))
       expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)
       expect(realpathSync(privateAuth)).toBe(realpathSync(sharedAuth))
       expect(readFileSync(join(scopeDir, 'home', configName, 'settings.json'), 'utf8')).toContain('dark')
