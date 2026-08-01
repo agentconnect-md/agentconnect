@@ -1,12 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { composeSource, installSkills, resolveSkillsCliSpec } from '../src/skills/install-skills.js'
+import { composeSource, installSkills, SKILLS_CLI_VERSION } from '../src/skills/install-skills.js'
 import { skillsAgentId } from '../src/skills/runtime-agent-map.js'
 
 describe('skillsAgentId', () => {
-  it('maps known runtimes (bare + acp-suffixed) to npx-skills agent ids', () => {
+  it('maps known runtimes (bare + acp-suffixed) to skills CLI agent ids', () => {
     expect(skillsAgentId('claude')).toBe('claude-code')
     expect(skillsAgentId('claude-acp')).toBe('claude-code')
     expect(skillsAgentId('codex-acp')).toBe('codex')
@@ -14,22 +24,17 @@ describe('skillsAgentId', () => {
     expect(skillsAgentId('qwen-code')).toBe('gemini-cli')
     expect(skillsAgentId('cursor')).toBe('cursor')
   })
+
   it('returns undefined for an unmapped runtime', () => {
     expect(skillsAgentId('some-exotic-agent')).toBeUndefined()
   })
 })
 
-describe('resolveSkillsCliSpec (AC_SKILLS_CLI pin)', () => {
-  it('defaults to "skills" when unset', () => {
-    expect(resolveSkillsCliSpec({})).toBe('skills')
-  })
-  it('honors a clean pinned version spec', () => {
-    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: 'skills@1.4.0' })).toBe('skills@1.4.0')
-  })
-  it('rejects option-like or whitespace-bearing values (no arg smuggling)', () => {
-    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: '--evil' })).toBe('skills')
-    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: 'skills --run x' })).toBe('skills')
-    expect(resolveSkillsCliSpec({ AC_SKILLS_CLI: '   ' })).toBe('skills')
+describe('trusted skills CLI', () => {
+  it('keeps the bundled CLI constant aligned with the exact package dependency', () => {
+    const req = createRequire(import.meta.url)
+    const manifest = req('skills/package.json') as { version: string }
+    expect(manifest.version).toBe(SKILLS_CLI_VERSION)
   })
 })
 
@@ -59,8 +64,8 @@ describe('composeSource', () => {
   })
 
   it('leaves an already-tree source alone', () => {
-    const s = 'https://github.com/acme/skills/tree/main/pack'
-    expect(composeSource({ ...base, source: s, ref: 'ignored' })).toBe(s)
+    const source = 'https://github.com/acme/skills/tree/main/pack'
+    expect(composeSource({ ...base, source, ref: 'ignored' })).toBe(source)
   })
 
   it('does not compose non-github sources', () => {
@@ -70,76 +75,291 @@ describe('composeSource', () => {
   })
 })
 
-describe('installSkills reconcile (no npx: empty/unmapped paths)', () => {
+describe('installSkills reconcile and containment', () => {
+  let root: string
   let cwd: string
-  const marker = () => join(cwd, '.agentconnect', 'skills-install.json')
-  const writeMarker = (m: unknown) => {
-    mkdirSync(join(cwd, '.agentconnect'), { recursive: true })
-    writeFileSync(marker(), JSON.stringify(m))
+  let stateDir: string
+  let outside: string
+  const marker = () => join(stateDir, '.agentconnect', 'skills-install.json')
+  const writeMarker = (value: unknown) => {
+    mkdirSync(join(stateDir, '.agentconnect'), { recursive: true })
+    writeFileSync(marker(), JSON.stringify(value))
   }
+  const readMarker = () =>
+    JSON.parse(readFileSync(marker(), 'utf8')) as {
+      workspaces: Record<string, { fingerprint?: string; installed: string[] }>
+    }
+  const markerRecords = () => Object.values(readMarker().workspaces)
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), 'skills-'))
+    root = mkdtempSync(join(tmpdir(), 'skills-'))
+    cwd = join(root, 'workspace')
+    stateDir = join(root, 'agent')
+    outside = join(root, 'outside')
+    mkdirSync(cwd)
+    mkdirSync(stateDir)
+    mkdirSync(outside)
   })
+
   afterEach(() => {
-    rmSync(cwd, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
   })
 
-  it('disabling the last skill removes previously-installed dirs and clears the marker', async () => {
-    mkdirSync(join(cwd, '.claude', 'skills', 'review-pr'), { recursive: true })
-    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/review-pr'] })
+  it('stores reconciliation state in the daemon-owned agent directory', async () => {
+    const legacy = join(cwd, '.agentconnect', 'skills-install.json')
+    mkdirSync(join(cwd, '.agentconnect'))
+    writeFileSync(legacy, JSON.stringify({ fingerprint: 'untrusted', installed: ['/etc'] }))
 
-    const res = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
 
-    expect(existsSync(join(cwd, '.claude', 'skills', 'review-pr'))).toBe(false)
-    expect(res.removed).toEqual(['.claude/skills/review-pr'])
-    expect(JSON.parse(readFileSync(marker(), 'utf8'))).toMatchObject({ installed: [] })
+    expect(existsSync(marker())).toBe(true)
+    expect(existsSync(legacy)).toBe(false)
   })
 
-  it('never removes a manually-authored skill (one not recorded as daemon-installed)', async () => {
+  it.each([
+    { runtime: 'claude', agentId: 'claude-code', rootRel: '.claude/skills' },
+    { runtime: 'codex-acp', agentId: 'codex', rootRel: '.agents/skills' }
+  ])('installs and later reconciles $runtime copies', async ({ runtime, agentId, rootRel }) => {
+    const calls: Array<{ file: string; args: string[] }> = []
+    const exec = async (file: string, args: string[]) => {
+      calls.push({ file, args })
+      mkdirSync(join(cwd, ...rootRel.split('/'), 'review-pr'), { recursive: true })
+    }
+
+    const installed = await installSkills(
+      { id: 'a1', runtime, skills: [{ name: 'source', source: 'acme/skills', skills: ['review-pr'] }] },
+      cwd,
+      { stateDir, execFile: exec }
+    )
+
+    expect(installed.installed).toEqual(['source'])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.file).toBe(process.execPath)
+    expect(calls[0]!.args).toEqual(
+      expect.arrayContaining(['__skills-cli', 'add', 'acme/skills', '-a', agentId, '-y', '--copy'])
+    )
+    expect(markerRecords()).toEqual([expect.objectContaining({ installed: [`${rootRel}/review-pr`] })])
+
+    const removed = await installSkills({ id: 'a1', runtime, skills: [] }, cwd, { stateDir })
+    expect(removed.removed).toEqual([`${rootRel}/review-pr`])
+    expect(existsSync(join(cwd, ...rootRel.split('/'), 'review-pr'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('runs the bundled CLI, not a workspace-local skills package', async () => {
+    const sentinel = join(outside, 'workspace-package-ran')
+    const localBin = join(cwd, 'node_modules', '.bin', 'skills')
+    mkdirSync(join(cwd, 'node_modules', '.bin'), { recursive: true })
+    writeFileSync(localBin, `#!/bin/sh\ntouch '${sentinel}'\n`)
+    chmodSync(localBin, 0o755)
+    const source = join(outside, 'source')
+    mkdirSync(source)
+    writeFileSync(
+      join(source, 'SKILL.md'),
+      [
+        '---',
+        'name: safe-copy',
+        'description: Verifies the daemon-bundled skills CLI.',
+        '---',
+        '',
+        '# Safe copy',
+        ''
+      ].join('\n')
+    )
+    mkdirSync(join(cwd, '.claude', 'skills', 'safe-copy'), { recursive: true })
+    writeFileSync(join(cwd, '.claude', 'skills', 'safe-copy', 'OLD'), 'old daemon copy')
+
+    const result = await installSkills(
+      { id: 'a1', runtime: 'claude', skills: [{ name: 'source', source, skills: [] }] },
+      cwd,
+      { stateDir }
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.installed).toEqual(['source'])
+    expect(existsSync(join(cwd, '.claude', 'skills', 'safe-copy', 'SKILL.md'))).toBe(true)
+    expect(existsSync(join(cwd, '.claude', 'skills', 'safe-copy', 'OLD'))).toBe(false)
+    expect(markerRecords()).toEqual([expect.objectContaining({ installed: ['.claude/skills/safe-copy'] })])
+    expect(existsSync(sentinel)).toBe(false)
+  })
+
+  it('keeps manually-authored skills while removing recorded copies', async () => {
     mkdirSync(join(cwd, '.claude', 'skills', 'mine'), { recursive: true })
-    mkdirSync(join(cwd, '.claude', 'skills', 'daemon-installed'), { recursive: true })
-    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/daemon-installed'] })
+    await installSkills(
+      { id: 'a1', runtime: 'claude', skills: [{ name: 'source', source: 'acme/skills', skills: [] }] },
+      cwd,
+      {
+        stateDir,
+        execFile: async () => {
+          mkdirSync(join(cwd, '.claude', 'skills', 'daemon-installed'), { recursive: true })
+        }
+      }
+    )
 
-    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
 
     expect(existsSync(join(cwd, '.claude', 'skills', 'mine'))).toBe(true)
     expect(existsSync(join(cwd, '.claude', 'skills', 'daemon-installed'))).toBe(false)
   })
 
-  it('changing AC_SKILLS_CLI invalidates the fingerprint (re-install, not skip)', async () => {
-    const readFp = () => JSON.parse(readFileSync(marker(), 'utf8')).fingerprint as string
-    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { env: { AC_SKILLS_CLI: 'skills@1.0.0' } })
-    const first = readFp()
-    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { env: { AC_SKILLS_CLI: 'skills@2.0.0' } })
-    expect(readFp()).not.toBe(first) // the pinned CLI spec is part of the fingerprint
+  it('does not carry daemon ownership into a different workspace', async () => {
+    const desired = {
+      id: 'a1',
+      runtime: 'claude',
+      skills: [{ name: 'source', source: 'acme/skills', skills: ['same-name'] }]
+    }
+    await installSkills(desired, cwd, {
+      stateDir,
+      execFile: async () => {
+        mkdirSync(join(cwd, '.claude', 'skills', 'same-name'), { recursive: true })
+      }
+    })
+
+    const nextCwd = join(root, 'workspace-b')
+    const manual = join(nextCwd, '.claude', 'skills', 'same-name')
+    mkdirSync(manual, { recursive: true })
+    writeFileSync(join(manual, 'MANUAL'), 'keep')
+    let installs = 0
+
+    const reconciled = await installSkills(desired, nextCwd, {
+      stateDir,
+      execFile: async () => {
+        installs += 1
+      }
+    })
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, nextCwd, { stateDir })
+
+    expect(reconciled.skipped).toBeNull()
+    expect(installs).toBe(1)
+    expect(readFileSync(join(manual, 'MANUAL'), 'utf8')).toBe('keep')
   })
 
-  it('an unchanged fingerprint skips entirely (no removal)', async () => {
-    // fingerprint of runtime=claude, agentId=claude-code, skills=[] — recompute-stable.
-    const first = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
-    expect(first.skipped).toBeNull() // first run writes the marker
+  it('retains independent ownership when switching away and back', async () => {
+    const installed = join(cwd, '.claude', 'skills', 'owned-in-a')
+    await installSkills(
+      { id: 'a1', runtime: 'claude', skills: [{ name: 'source', source: 'acme/skills', skills: [] }] },
+      cwd,
+      {
+        stateDir,
+        execFile: async () => {
+          mkdirSync(installed, { recursive: true })
+        }
+      }
+    )
+
+    const nextCwd = join(root, 'workspace-b')
+    mkdirSync(nextCwd)
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, nextCwd, { stateDir })
+    const reconciled = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
+
+    expect(reconciled.removed).toEqual(['.claude/skills/owned-in-a'])
+    expect(existsSync(installed)).toBe(false)
+  })
+
+  it('uses an intact private fingerprint as the unchanged fast path', async () => {
+    const first = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
+    expect(first.skipped).toBeNull()
     mkdirSync(join(cwd, '.claude', 'skills', 'untracked'), { recursive: true })
-    const second = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
+
+    const second = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
+
     expect(second.skipped).toBe('unchanged')
     expect(existsSync(join(cwd, '.claude', 'skills', 'untracked'))).toBe(true)
   })
 
-  it('an unmapped runtime still reconciles away prior daemon-installed copies', async () => {
-    mkdirSync(join(cwd, '.agents', 'skills', 'x'), { recursive: true })
-    writeMarker({ fingerprint: 'old', installed: ['.agents/skills/x'] })
-    await installSkills({ id: 'a1', runtime: 'exotic-agent', skills: [{ name: 'x', source: 'o/r', skills: [] }] }, cwd)
+  it('an unmapped runtime still reconciles prior daemon-owned copies', async () => {
+    await installSkills(
+      { id: 'a1', runtime: 'codex', skills: [{ name: 'source', source: 'acme/skills', skills: [] }] },
+      cwd,
+      {
+        stateDir,
+        execFile: async () => {
+          mkdirSync(join(cwd, '.agents', 'skills', 'x'), { recursive: true })
+        }
+      }
+    )
+
+    await installSkills(
+      { id: 'a1', runtime: 'exotic-agent', skills: [{ name: 'x', source: 'o/r', skills: [] }] },
+      cwd,
+      { stateDir }
+    )
+
     expect(existsSync(join(cwd, '.agents', 'skills', 'x'))).toBe(false)
   })
 
-  it('only removes marker paths that are direct children of a managed skill root', async () => {
-    // The marker lives in the workspace, so its paths are untrusted input. An entry
-    // that resolves outside a managed skill root must be ignored — the reconcile only
-    // acts on paths matching the strict "<root>/<segment>" grammar.
+  it('ignores marker entries outside direct managed-root children', async () => {
     mkdirSync(join(cwd, 'sub', 'keep'), { recursive: true })
-    writeMarker({ fingerprint: 'old', installed: ['.claude/skills/../../sub/keep', '../outside', '/etc'] })
-    const res = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd)
-    expect(existsSync(join(cwd, 'sub', 'keep'))).toBe(true) // unrelated dir untouched
-    expect(res.removed).toEqual([]) // none matched the managed-root grammar
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
+    const saved = readMarker()
+    const workspaceId = Object.keys(saved.workspaces)[0]!
+    saved.workspaces[workspaceId] = {
+      fingerprint: 'old',
+      installed: ['.claude/skills/../../sub/keep', '../outside', '/etc']
+    }
+    writeMarker(saved)
+
+    const result = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
+
+    expect(existsSync(join(cwd, 'sub', 'keep'))).toBe(true)
+    expect(result.removed).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a symlinked private marker without touching its target',
+    async () => {
+      const canary = join(outside, 'marker.json')
+      writeFileSync(canary, 'CANARY')
+      mkdirSync(join(stateDir, '.agentconnect'))
+      symlinkSync(canary, marker(), 'file')
+
+      const result = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, { stateDir })
+
+      expect(result.errors[0]?.source).toBe('*')
+      expect(readFileSync(canary, 'utf8')).toBe('CANARY')
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')('refuses a symlinked skill root before invoking the CLI', async () => {
+    const canary = join(outside, 'keep')
+    writeFileSync(canary, 'CANARY')
+    mkdirSync(join(cwd, '.claude'))
+    symlinkSync(outside, join(cwd, '.claude', 'skills'), 'dir')
+    let invoked = false
+
+    const result = await installSkills(
+      { id: 'a1', runtime: 'claude', skills: [{ name: 'source', source: 'acme/skills', skills: [] }] },
+      cwd,
+      {
+        stateDir,
+        execFile: async () => {
+          invoked = true
+        }
+      }
+    )
+
+    expect(invoked).toBe(false)
+    expect(result.errors[0]?.error).toMatch(/symlink|non-directory/)
+    expect(readFileSync(canary, 'utf8')).toBe('CANARY')
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a symlinked CLI lock before invoking the CLI', async () => {
+    const canary = join(outside, 'lock.json')
+    writeFileSync(canary, 'CANARY')
+    symlinkSync(canary, join(cwd, 'skills-lock.json'), 'file')
+    let invoked = false
+
+    await installSkills(
+      { id: 'a1', runtime: 'claude', skills: [{ name: 'source', source: 'acme/skills', skills: [] }] },
+      cwd,
+      {
+        stateDir,
+        execFile: async () => {
+          invoked = true
+        }
+      }
+    )
+
+    expect(invoked).toBe(false)
+    expect(readFileSync(canary, 'utf8')).toBe('CANARY')
   })
 })
