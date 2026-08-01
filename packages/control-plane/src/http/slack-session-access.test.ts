@@ -19,6 +19,14 @@ function scope(): ExternalScopeRecord {
   }
 }
 
+function scopeAt(index: number): ExternalScopeRecord {
+  return {
+    ...scope(),
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    resourceKey: `C_CHANNEL_${index}`
+  }
+}
+
 function bot(): BotRecord {
   return {
     id: BOT_ID,
@@ -45,6 +53,25 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe('SlackSessionAccessService', () => {
+  it('resolves allowed scopes beyond the first 200', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+      }
+      if (url.includes('users.info')) {
+        return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+      }
+      throw new Error(`unexpected Slack request: ${url}`)
+    })
+    const scopes = Array.from({ length: 201 }, (_, index) => scopeAt(index + 1))
+
+    const result = await service(fetchImpl).resolve(scopes, new Set(['slack:T_INSTALL:U_MEMBER']))
+
+    expect(result.degraded).toBe(false)
+    expect(result.allowedScopes).toHaveLength(201)
+    expect(result.allowedScopes.at(-1)).toEqual({ id: scopes[200]!.id, aclRevision: scopes[200]!.aclRevision })
+  })
+
   it('allows a full workspace member to read a public channel without joining it', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.includes('conversations.info')) {

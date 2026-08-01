@@ -7,7 +7,8 @@ const ALLOW_TTL_MS = 120_000
 const DENY_TTL_MS = 30_000
 const UNKNOWN_TTL_MS = 5_000
 const MAX_CACHE_ENTRIES = 10_000
-const MAX_SCOPES_PER_REQUEST = 200
+const SCOPES_PER_BATCH = 200
+const SCOPE_CONCURRENCY = 6
 
 type Decision = 'allow' | 'deny' | 'unknown'
 type CachedDecision = { decision: Decision; expiresAt: number }
@@ -52,13 +53,19 @@ export class GithubSessionAccessService implements GithubSessionAccessResolver {
 
   async resolve(scopes: readonly ExternalScopeRecord[], userId: string): Promise<GithubSessionAccessResult> {
     if (scopes.length === 0) return { allowedScopes: [], degraded: false }
-    const bounded = scopes.slice(0, MAX_SCOPES_PER_REQUEST)
-    let degraded = scopes.length > bounded.length
-    const decisions = await mapLimited(bounded, 6, async (scope) => {
-      const decision = await this.resolveScope(scope, userId)
-      if (decision === 'unknown') degraded = true
-      return { scope, decision }
-    })
+    let degraded = false
+    const decisions: Array<{ scope: ExternalScopeRecord; decision: Decision }> = []
+    // 200 is a provider-work batch, never a visibility ceiling. Walk every
+    // batch so UUID ordering cannot silently hide an otherwise-allowed scope.
+    for (let start = 0; start < scopes.length; start += SCOPES_PER_BATCH) {
+      decisions.push(
+        ...(await mapLimited(scopes.slice(start, start + SCOPES_PER_BATCH), SCOPE_CONCURRENCY, async (scope) => {
+          const decision = await this.resolveScope(scope, userId)
+          if (decision === 'unknown') degraded = true
+          return { scope, decision }
+        }))
+      )
+    }
     return {
       allowedScopes: decisions
         .filter(({ decision }) => decision === 'allow')
