@@ -144,8 +144,9 @@ function state(source: string | undefined, destination: string, seedFiles?: read
  * per-agent runtime HOME. Sources honor host env overrides; destinations always use
  * the runtime's conventional layout under the private HOME.
  */
-/** Config + browser-login credential files a Qoder edition writes under its
- * config dir. `brand` is the credential-file prefix (`qoder-cli`/`qoder-cli-cn`). */
+/** Config + legacy browser-login files a Qoder edition writes under its config
+ * dir. Current `.auth/` login state is shared separately by runtime-credentials;
+ * `brand` is the legacy credential-file prefix (`qoder-cli`/`qoder-cli-cn`). */
 const QODER_SEED = (brand: string): readonly string[] => [
   'settings.json',
   'config.json',
