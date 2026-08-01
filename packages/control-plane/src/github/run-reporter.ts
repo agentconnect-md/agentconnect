@@ -27,6 +27,7 @@ import { githubRequest, GithubApiError, type FetchLike } from './api.js'
 import {
   authoritativeHookProjectionState,
   hookRuntimeProjectionState,
+  hookSkippedCheckGuidance,
   hookSkippedCheckLabel,
   type ProjectionDesiredState
 } from './projection-state.js'
@@ -88,10 +89,19 @@ interface SubjectAssociationResult {
   errorCode: SubjectAssociationErrorCode | null
 }
 
+/** One `Request review`-style button GitHub renders on the Check. */
+interface CheckAction {
+  label: string
+  description: string
+  identifier: string
+}
+
 interface CheckPresentation {
   detailsUrl?: string
   agentUrl?: string
   skippedLabel?: string
+  /** Markdown appended to the summary; Checks-tab only, unlike the title. */
+  skippedGuidance?: string
   requestReviewAction?: boolean
 }
 
@@ -282,6 +292,9 @@ export interface GithubRunReporterDeps {
   orgs?: Pick<OrgRepo, 'slugById'>
   /** Console origin used for Check Run links; unset keeps GitHub's default App link. */
   webAppUrl?: string
+  /** GITHUB_APP_SLUG — the `@<slug>` handle a maintainer mentions to summon a
+   * review. Unset keeps the Check copy handle-free. */
+  appSlug?: string
   github: Pick<
     GithubService,
     | 'mintChecksForAgent'
@@ -574,11 +587,16 @@ export class GithubRunReporter {
             method: 'POST',
             auth: token,
             body: {
-              // Keep creates discoverable by binaries from before the display
-              // rename. The human name is applied only after checkRunId is
-              // durable, so mixed-version workers and rollbacks can reconcile
-              // an ambiguous POST through the legacy query.
-              name: legacyCheckName(projection),
+              // One write settles the Check completely. The create used to
+              // publish a legacy recovery name and repair it afterwards, but
+              // GitHub replaces `actions` on every update, so that second
+              // request had to carry presentation — which made a cosmetic,
+              // fence-free write into a stateful one racing the next
+              // generation. Naming the Check correctly up front removes the
+              // second write, and with it the race. `findCreatedCheck` still
+              // reads the legacy name so creates already in flight from an
+              // earlier binary stay recoverable.
+              name: checkName(projection),
               head_sha: projection.reportSha,
               external_id: projection.externalId,
               ...payload
@@ -589,9 +607,7 @@ export class GithubRunReporter {
           }
         )
         const checkRunId = String(created.id)
-        if (await this.finish(projection, marker, checkRunId, installationId, effectiveState, associationError)) {
-          await this.renameCreatedCheck(projection, checkRunId, token, owner, repo)
-        }
+        await this.finish(projection, marker, checkRunId, installationId, effectiveState, associationError)
       }
     } catch (err) {
       await this.handleWriteError(projection, err, installationId)
@@ -623,10 +639,12 @@ export class GithubRunReporter {
       )
         run = candidate
     }
-    const skippedLabel = hookSkippedCheckLabel(run?.reason) ?? undefined
+    const skippedLabel = hookSkippedCheckLabel(run?.reason, this.deps.appSlug) ?? undefined
+    const skippedGuidance = hookSkippedCheckGuidance(run?.reason, this.deps.appSlug) ?? undefined
     const requestReviewAction = run?.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED || undefined
     const fallback = {
       ...(skippedLabel ? { skippedLabel } : {}),
+      ...(skippedGuidance ? { skippedGuidance } : {}),
       ...(requestReviewAction ? { requestReviewAction } : {})
     }
     if (!this.deps.webAppUrl || !this.deps.orgs) return fallback
@@ -733,7 +751,6 @@ export class GithubRunReporter {
     installationId: bigint
   ): Promise<void> {
     const marker = projection.writeMarker!
-    const recoveringCreate = projection.checkRunId === null
     try {
       let recovered: CheckRunResponse | null = null
       if (projection.checkRunId) {
@@ -765,12 +782,11 @@ export class GithubRunReporter {
           projection.subjectSyncGeneration === projection.generation ? projection.subjectSyncErrorCode : null
         )
         const checkRunId = String(recovered.id)
-        if (
-          (await this.finish(projection, marker, checkRunId, installationId, recoveredState, associationError)) &&
-          recoveringCreate
-        ) {
-          await this.renameCreatedCheck(projection, checkRunId, token, owner, repo)
-        }
+        // Recovery settles the projection against what GitHub observed and
+        // writes nothing further. A create publishes its final name and
+        // actions in one request, so there is no repair left to perform — and
+        // this path must not invent presentation it did not compute.
+        await this.finish(projection, marker, checkRunId, installationId, recoveredState, associationError)
         return
       }
       // GitHub list/get can lag an accepted mutation. Preserve the mutex and
@@ -802,7 +818,26 @@ export class GithubRunReporter {
     owner: string,
     repo: string
   ): Promise<CheckRunResponse | null> {
-    const name = encodeURIComponent(legacyCheckName(projection))
+    // Creates publish the display name directly. The legacy recovery name is
+    // still searched so a POST left in flight by an earlier binary — which
+    // named its creates `agentconnect/info/review/<hookId>` and repaired the
+    // label afterwards — stays recoverable across the upgrade.
+    for (const candidate of [checkName(projection), legacyCheckName(projection)]) {
+      const found = await this.findCreatedCheckByName(projection, marker, token, owner, repo, candidate)
+      if (found) return found
+    }
+    return null
+  }
+
+  private async findCreatedCheckByName(
+    projection: HookReviewProjectionRecord,
+    marker: string,
+    token: string,
+    owner: string,
+    repo: string,
+    checkRunName: string
+  ): Promise<CheckRunResponse | null> {
+    const name = encodeURIComponent(checkRunName)
     for (let page = 1; page <= MAX_RECOVERY_PAGES; page++) {
       const response = await githubRequest<CheckRunsResponse>(
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(projection.reportSha)}/check-runs?check_name=${name}&filter=all&per_page=100&page=${page}`,
@@ -845,36 +880,6 @@ export class GithubRunReporter {
     const fresh = await this.deps.hooks.getReviewProjection(projection.id)
     if (fresh) await this.advancePending(fresh)
     return true
-  }
-
-  private async renameCreatedCheck(
-    projection: HookReviewProjectionRecord,
-    checkRunId: string,
-    token: string,
-    owner: string,
-    repo: string
-  ): Promise<void> {
-    // This cosmetic write happens only after checkRunId is durable. It does not
-    // need the projection write mutex: an ambiguous outcome cannot regress the
-    // Check state, and every later state PATCH also carries the readable name.
-    try {
-      await githubRequest<CheckRunResponse>(
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${encodeURIComponent(checkRunId)}`,
-        {
-          method: 'PATCH',
-          auth: token,
-          body: { name: checkName(projection) },
-          fetchImpl: this.deps.fetchImpl,
-          baseUrl: this.deps.baseUrl,
-          bigIdsAsStrings: true
-        }
-      )
-    } catch (err) {
-      this.deps.log?.warn?.(
-        { projectionId: projection.id, checkRunId, err: errorLabel(err, 'check_rename_failed') },
-        'github-run-reporter: check rename failed'
-      )
-    }
   }
 
   private async advancePending(projection: HookReviewProjectionRecord): Promise<void> {
@@ -998,6 +1003,10 @@ function checkPayload(
     projection.agentName && presentation.agentUrl
       ? `[${projection.agentName}](${presentation.agentUrl})`
       : projection.agentName
+  // Same gate as the call-to-action title: the how-to belongs on the Check only
+  // while it is actually parked waiting for a maintainer. The write marker stays
+  // last so recovery keeps matching on it.
+  const guidance = state === 'skipped' && !associationError ? presentation.skippedGuidance : undefined
   const normalizedSummary = [
     `Phase: ${state}`,
     ...(agentLabel ? [`Agent: ${agentLabel}`] : []),
@@ -1006,13 +1015,14 @@ function checkPayload(
       ? [`Pull requests: ${openSubjects.map((subject) => `#${subject.pullNumber}`).join(', ')}`]
       : []),
     ...(associationError ? [`Association: ${associationError}`] : []),
+    ...(guidance ? ['', guidance, ''] : []),
     `<!-- agentconnect-write:${marker} -->`
   ].join('\n')
   const output = {
     title: checkOutputTitle(state, associationError, presentation),
     summary: normalizedSummary
   }
-  const actions = presentation.requestReviewAction
+  const actions: CheckAction[] = presentation.requestReviewAction
     ? [
         {
           label: 'Request review',

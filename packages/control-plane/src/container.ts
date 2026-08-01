@@ -641,6 +641,7 @@ export function buildContainer(
         agents: repos.agent,
         orgs: repos.org,
         ...(webAppUrl ? { webAppUrl } : {}),
+        ...(githubAppCfg?.slug ? { appSlug: githubAppCfg.slug } : {}),
         github,
         clock,
         ...(githubRunCoordinator ? { repair: () => githubRunCoordinator.repair() } : {}),
