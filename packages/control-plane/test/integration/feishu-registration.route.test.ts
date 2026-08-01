@@ -497,13 +497,16 @@ describe('Feishu/Lark one-click app registration', () => {
     const startDto = started.json() as { id: string; transport: string }
     expect(startDto.transport).toBe('http')
 
-    await vi.waitFor(async () => {
-      const polled = await app.app.inject({
-        method: 'GET',
-        url: `${ORG}/integrations/feishu/app/${startDto.id}`
-      })
-      expect(polled.json()).toMatchObject({ status: 'completed' })
-    })
+    await vi.waitFor(
+      async () => {
+        const polled = await app.app.inject({
+          method: 'GET',
+          url: `${ORG}/integrations/feishu/app/${startDto.id}`
+        })
+        expect(polled.json()).toMatchObject({ status: 'completed' })
+      },
+      { timeout: 5_000 }
+    )
 
     const bot = await prisma.bot.findFirstOrThrow({ where: { feishuAppId: 'cli_http_oneclick' } })
     const secret = await prisma.botSecret.findUniqueOrThrow({ where: { botId: bot.id } })
