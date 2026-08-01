@@ -40,6 +40,38 @@ describe('GET /orgs', () => {
       await close()
     }
   })
+
+  it('remembers the active org per membership and returns it first', async () => {
+    const other = await prisma.org.create({ data: { name: 'Other', slug: 'other' } })
+    await prisma.membership.create({ data: { orgId: other.id, userId: DEFAULT_OWNER_ID, role: 'collaborator' } })
+    const peer = await prisma.user.create({ data: { email: 'org-choice-peer@example.com' } })
+    await prisma.membership.create({ data: { orgId: other.id, userId: peer.id, role: 'collaborator' } })
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const selected = await app.inject({
+        method: 'PUT',
+        url: `/api/v1/orgs/${other.id}/selection`
+      })
+      expect(selected.statusCode).toBe(204)
+
+      const list = (await (await app.inject({ method: 'GET', url: '/api/v1/orgs' })).json()) as OrgBody[]
+      expect(list.map((org) => org.id)).toEqual([other.id, DEFAULT_ORG_ID])
+      const [mine, theirs] = await Promise.all([
+        prisma.membership.findUniqueOrThrow({
+          where: { orgId_userId: { orgId: other.id, userId: DEFAULT_OWNER_ID } },
+          select: { lastSelectedAt: true }
+        }),
+        prisma.membership.findUniqueOrThrow({
+          where: { orgId_userId: { orgId: other.id, userId: peer.id } },
+          select: { lastSelectedAt: true }
+        })
+      ])
+      expect(mine.lastSelectedAt).toBeInstanceOf(Date)
+      expect(theirs.lastSelectedAt).toBeNull()
+    } finally {
+      await close()
+    }
+  })
 })
 
 describe('POST /orgs', () => {

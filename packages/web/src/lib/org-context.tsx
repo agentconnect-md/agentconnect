@@ -7,7 +7,7 @@
 // (never a legal user slug), so no-auth installs read `/-/agents` with zero
 // special-casing — it's just an org like any other. An unknown slug (e.g. the
 // `/-/…` entry point in a hosted deployment where nobody belongs to the
-// default org) falls back to the last-used / first org and fixes the URL.
+// default org) falls back to the remembered / first org and fixes the URL.
 //
 // The resolved org's ID is handed to the API client (`setApiOrgId`) — every
 // org-scoped CP call goes to `/orgs/{orgId}/…`.
@@ -17,6 +17,7 @@ import { useParams, usePathname, useRouter } from 'next/navigation'
 import {
   fetchOrgs,
   setApiOrgId,
+  selectOrg as apiSelectOrg,
   createOrg as apiCreateOrg,
   updateOrg as apiUpdateOrg,
   deleteOrg as apiDeleteOrg,
@@ -26,9 +27,9 @@ import {
 } from '@/lib/api'
 import type { AgentCallPolicy } from '@/lib/data'
 
-// Last-used org slug, kept in a COOKIE (not localStorage) so the proxy
-// can send `/` straight to `/{slug}/agents` with one server redirect — no
-// visible hop through the default org.
+// Last-used org slug kept only as a browser fallback for a renamed/unknown
+// explicit URL. Bare entries restore the account's server-stored preference;
+// a browser-wide cookie must not choose an organization for a different user.
 const LAST_SLUG_COOKIE = 'ac.org'
 
 function readLastSlug(): string | null {
@@ -68,6 +69,21 @@ export function orgColor(orgId: string): string {
   let h = 0
   for (let i = 0; i < orgId.length; i++) h = (h * 31 + orgId.charCodeAt(i)) >>> 0
   return ORG_COLORS[h % ORG_COLORS.length]!
+}
+
+/** Resolve the organization for the current URL. A real org segment is an
+ * explicit choice; a bare entry is a proxy rewrite and must restore the
+ * account's server-ordered preference instead of treating the rewritten `-`
+ * segment as a choice. */
+export function resolveOrgTarget(
+  orgs: OrgDto[],
+  activeOrg: OrgDto | null,
+  lastSlug: string | null,
+  hasOrgSegment: boolean
+): OrgDto | undefined {
+  if (!hasOrgSegment) return orgs[0]
+  if (activeOrg) return activeOrg
+  return orgs.find((o) => o.slug === lastSlug) ?? orgs[0]
 }
 
 interface OrgContextValue {
@@ -111,12 +127,15 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   const slug = typeof params.slug === 'string' ? decodeURIComponent(params.slug) : '-'
 
   const [orgs, setOrgs] = useState<OrgDto[]>([])
+  const [rememberedOrgId, setRememberedOrgId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const refreshOrgs = useCallback(async () => {
     try {
-      setOrgs(await fetchOrgs())
+      const next = await fetchOrgs()
+      setOrgs(next)
+      setRememberedOrgId(next[0]?.id ?? null)
       setError(null)
     } catch (cause) {
       // CP unreachable — leave whatever we had and surface the failure through
@@ -131,9 +150,13 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     void refreshOrgs()
   }, [refreshOrgs])
 
-  // Resolve the URL slug to an org — nothing more: `-` is simply the seeded
-  // default org's slug, not a special case.
-  const activeOrg = useMemo(() => orgs.find((o) => o.slug === slug) ?? null, [orgs, slug])
+  const hasOrgSegment = pathname.split('/')[1] === slug
+  // A proxy rewrite can supply the internal `-` param while the visible URL is
+  // still bare. It is not an active-org choice until canonicalization finishes.
+  const activeOrg = useMemo(
+    () => (hasOrgSegment ? (orgs.find((o) => o.slug === slug) ?? null) : null),
+    [orgs, slug, hasOrgSegment]
+  )
 
   // Hand the resolved org to the API client DURING render (parent renders
   // before children, so data-context's fetch effects see it; an effect here
@@ -149,16 +172,33 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   // bar still shows the bare entered path.
   useEffect(() => {
     if (loading || orgs.length === 0) return
-    const target = activeOrg ?? orgs.find((o) => o.slug === readLastSlug()) ?? orgs[0]!
-    if (pathname.split('/')[1] !== target.slug) {
+    const target = resolveOrgTarget(orgs, activeOrg, readLastSlug(), hasOrgSegment)
+    if (target && pathname.split('/')[1] !== target.slug) {
       router.replace(`/${target.slug}${subPath(pathname, slug)}${window.location.search}`)
     }
-  }, [loading, orgs, activeOrg, slug, pathname, router])
+  }, [loading, orgs, activeOrg, hasOrgSegment, slug, pathname, router])
 
-  // Remember the resolved org for the next bare-URL entry.
+  // Remember an explicit org URL. During a bare-entry proxy rewrite, `slug`
+  // can be `-` without the user having selected it, so wait for canonicalization.
   useEffect(() => {
-    if (activeOrg) writeLastSlug(activeOrg.slug)
-  }, [activeOrg])
+    if (!activeOrg || !hasOrgSegment) return
+    writeLastSlug(activeOrg.slug)
+    // A different explicit URL is a new choice. Track successful writes
+    // separately from the list so a quick B → A switch cannot mistake stale
+    // ordering for the server's current preference.
+    if (rememberedOrgId !== activeOrg.id) {
+      void apiSelectOrg(activeOrg.id)
+        .then(() => {
+          setRememberedOrgId(activeOrg.id)
+          setOrgs((prev) => {
+            if (prev[0]?.id === activeOrg.id) return prev
+            const selected = prev.find((org) => org.id === activeOrg.id)
+            return selected ? [selected, ...prev.filter((org) => org.id !== selected.id)] : prev
+          })
+        })
+        .catch(() => {})
+    }
+  }, [activeOrg, hasOrgSegment, rememberedOrgId])
 
   const orgPath = useCallback((path: string) => `/${activeOrg?.slug ?? slug}${path}`, [activeOrg, slug])
 
@@ -176,7 +216,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     async (input: { name?: string; slug: string }) => {
       const org = await apiCreateOrg(input)
       // Append optimistically BEFORE switching so activeOrg never goes null.
-      setOrgs((prev) => (prev.some((o) => o.id === org.id) ? prev : [...prev, org]))
+      setOrgs((prev) => (prev.some((candidate) => candidate.id === org.id) ? prev : [...prev, org]))
       writeLastSlug(org.slug)
       router.push(`/${org.slug}${subPath(pathname, slug)}`)
       await refreshOrgs()

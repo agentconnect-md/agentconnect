@@ -9,6 +9,7 @@
  *
  * Org surface (mounted under `/orgs/:orgId` behind the org-scope guard):
  *   GET    / → the org itself, from the caller's perspective
+ *   PUT    /selection → remember it as the caller's active org
  *   PATCH  / → update identity / new-agent visibility default (owner-only)
  *   DELETE / → delete the org (owner-only; refused while it still has
  *              daemons — physical machines are detached explicitly first;
@@ -152,6 +153,23 @@ export function orgScopedRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'organization not found' })
         }
         return toDto(record, deps)
+      }
+    )
+
+    r.put(
+      '/selection',
+      {
+        schema: {
+          tags: [Tag.Organizations],
+          summary: 'Select the organization',
+          description: 'Remember this organization as the signed-in user’s active organization.',
+          operationId: 'selectOrganization',
+          response: { 204: z.null(), 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        await deps.repos.org.selectForUser(req.orgCtx!.orgId, req.principal!.userId, new Date(deps.clock.now()))
+        return reply.code(204).send(null)
       }
     )
 

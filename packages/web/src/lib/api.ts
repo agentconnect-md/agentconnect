@@ -1263,13 +1263,14 @@ async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T
 }
 
-async function apiPut<T>(path: string, body: unknown): Promise<T> {
+async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${cpBase()}${path}`, {
     method: 'PUT',
-    headers: await authHeaders({ 'content-type': 'application/json' }),
-    body: JSON.stringify(body)
+    headers: await authHeaders(body === undefined ? undefined : { 'content-type': 'application/json' }),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
   })
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
+  if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
 
@@ -3192,6 +3193,13 @@ export async function revokeMyApiKey(id: string): Promise<UserApiKeyDto> {
 // Every org the signed-in user belongs to (GET /orgs) — the picker + Settings.
 export async function fetchOrgs(): Promise<OrgDto[]> {
   return apiGet<OrgDto[]>('/orgs')
+}
+
+// Persist the caller's active org on their membership. The browser cookie is
+// only a stale-link fallback; this preference restores bare entries after
+// sign-out and on other devices.
+export async function selectOrg(orgId: string): Promise<void> {
+  await apiPut<void>(`/orgs/${encodeURIComponent(orgId)}/selection`)
 }
 
 // Create an org (POST /orgs); the caller becomes its first owner. The display
