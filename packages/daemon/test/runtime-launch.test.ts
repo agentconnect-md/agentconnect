@@ -12,8 +12,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/runtimes/launch-policy.js'
@@ -39,41 +38,6 @@ function coveredBy(paths: string[], target: string): boolean {
 }
 
 describe('prepareRuntimeLaunch', () => {
-  it('carries the daemon broker mask only on an enforced bwrap launch', () => {
-    const testRoot = mkdtempSync(join(tmpdir(), 'ac-runtime-mask-'))
-    const resolvedRoot = realpathSync(testRoot)
-    const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
-    expect(resolvedRoot.startsWith(repoRoot + sep)).toBe(false)
-    const scopeDir = join(testRoot, 'agent')
-    const cwd = join(scopeDir, 'workspace')
-    const hostHome = join(testRoot, 'host-home')
-    const maskedRoots = [join(testRoot, 'broker'), join(testRoot, 'webchat-hosts')]
-    mkdirSync(cwd, { recursive: true })
-    mkdirSync(hostHome)
-    for (const maskedRoot of maskedRoots) mkdirSync(maskedRoot)
-    try {
-      const launch = prepareRuntimeLaunch({
-        runtimeId: 'claude-acp',
-        scopeDir,
-        cwd,
-        runInSandbox: true,
-        daemonRoot: testRoot,
-        sandboxMechanism: 'bwrap',
-        maskedReadRoots: maskedRoots,
-        hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
-      })
-      expect(launch.sandbox?.maskedReadRoots).toEqual(maskedRoots)
-      expect(launch.sandbox?.settingsPath).toBe(
-        join(realpathSync(scopeDir), '.agentconnect', 'sandbox', 'settings.json')
-      )
-      expect(launch.sandbox?.cwd).toBe(realpathSync(cwd))
-      const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
-      for (const path of maskedRoots) expect(coveredBy(settings.filesystem.denyRead, realpathSync(path))).toBe(true)
-    } finally {
-      rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
   it('inherits the daemon environment and creates no private HOME when the effective sandbox is off', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const launch = prepareRuntimeLaunch({

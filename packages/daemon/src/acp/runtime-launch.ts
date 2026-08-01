@@ -20,7 +20,6 @@ export interface PreparedRuntimeLaunch {
     cwd: string
     denyReadRoots: string[]
     allowReadRoots: string[]
-    maskedReadRoots?: string[]
   }
 }
 
@@ -61,12 +60,7 @@ export function prepareRuntimeLaunch(opts: {
   credentialPlatform?: NodeJS.Platform
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
-  /** Daemon-private roots every untrusted bwrap child must see as empty. */
-  maskedReadRoots?: string[]
 }): PreparedRuntimeLaunch {
-  if ((opts.maskedReadRoots?.length ?? 0) > 0 && (!opts.runInSandbox || opts.sandboxMechanism !== 'bwrap')) {
-    throw new Error('daemon-private read roots can only be masked by an enforced bwrap launch')
-  }
   if (!opts.runInSandbox && !opts.isolateHome) {
     return { env: opts.explicitEnv ?? {}, inheritProcessEnv: true }
   }
@@ -129,7 +123,6 @@ export function prepareRuntimeLaunch(opts: {
       ...(opts.agentsRoot ? [safeRoot(opts.agentsRoot, 'agents root')] : []),
       ...hostHomeRoots,
       ...sharedTempRoots,
-      ...(opts.maskedReadRoots ?? []).map((path) => safeRoot(path, 'daemon-private read root')),
       ...allRuntimeStateRoots
     ]
     denyReadRoots = compactReadRoots(protectedRoots)
@@ -201,7 +194,7 @@ export function prepareRuntimeLaunch(opts: {
     trustedReadRoots: trustedRuntimeReadRoots,
     trustedWriteRoots: credentialWritableRoots
   })
-  // SRT write roots (and delegated bwrap bind sources) must exist before spawn.
+  // SRT write roots must exist before spawn.
   // This also initializes workspace/memory for a newly-created agent.
   for (const path of boundary.writable) {
     if (!existsSync(path)) mkdirSync(path, { recursive: true })
@@ -224,8 +217,7 @@ export function prepareRuntimeLaunch(opts: {
       settingsPath,
       cwd: boundary.gitSafeDirectories[0]!,
       denyReadRoots,
-      allowReadRoots: boundary.allowRead,
-      ...(opts.maskedReadRoots?.length ? { maskedReadRoots: opts.maskedReadRoots } : {})
+      allowReadRoots: boundary.allowRead
     }
   }
 }

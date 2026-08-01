@@ -145,8 +145,6 @@ export interface AcpSandboxLaunch {
   settingsPath?: string
   /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
   cwd?: string
-  /** Optional daemon-owned roots hidden from untrusted bwrap hosts. */
-  maskedReadRoots?: string[]
 }
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
