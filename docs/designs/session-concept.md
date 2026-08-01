@@ -179,7 +179,7 @@ sendMessage(target: AgentTarget | UserTarget | ChannelTarget | SessionTarget, me
 ```
 
 The arguments are a top-level union of **two addressing modes** — `toAgent` (wake
-a peer agent) and `toUser` (reach a human) — each with **three delivery forms**
+a peer agent) and `toUser` (reach one or more humans) — each with **three delivery forms**
 selected by the coordinates (dm / channel root / in thread) — plus a bare
 `channel`-only post (no recipient) and the separate `sessionId` reply branch.
 
@@ -193,9 +193,9 @@ type AgentTarget = {
   thread?: string  // in-thread form only (requires `channel`)
 }
 
-// Mode 2 — reach one human platform member.
+// Mode 2 — reach human platform members.
 type UserTarget = {
-  toUser: string             // platform member ID (Slack only for now)
+  toUser: string | string[]  // one member id; channel/thread forms also accept a non-empty unique-id array
   platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // dm defaults to Slack; channel/thread forms default to current session
   channel?: string           // absent ⇒ dm (Slack DM); present without thread ⇒ channel root; with thread ⇒ in thread
   thread?: string            // in-thread form only (requires `channel`)
@@ -214,11 +214,11 @@ type ChannelTarget = {
 Exactly one target key is required: `toAgent`, `toUser`, or `channel`. For the two
 recipient modes the form is decided by the coordinates:
 
-| Mode             | dm                                                              | channel root                                                                                  | in thread                                                                                                    |
-| ---------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `toAgent`        | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post + wake, peer anchored to it | `{"toAgent":"A","channel":"C","thread":"T","message":"…"}` — visible thread post + wake, peer in that thread |
-| `toUser`         | `{"toUser":"U","message":"…"}` — Slack DM                       | `{"toUser":"U","channel":"C","message":"…"}` — root post @-mentioning the user                | `{"toUser":"U","channel":"C","thread":"T","message":"…"}` — thread post @-mentioning the user                |
-| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient                                     | `{"channel":"C","thread":"T","message":"…"}` — thread post, no recipient                                     |
+| Mode             | dm                                                              | channel root                                                                                     | in thread                                                                                                       |
+| ---------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `toAgent`        | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post + wake, peer anchored to it    | `{"toAgent":"A","channel":"C","thread":"T","message":"…"}` — visible thread post + wake, peer in that thread    |
+| `toUser`         | `{"toUser":"U","message":"…"}` — Slack DM to one person         | `{"toUser":["U1","U2"],"channel":"C","message":"…"}` — one root post mentioning all listed users | `{"toUser":["U1","U2"],"channel":"C","thread":"T","message":"…"}` — one thread post mentioning all listed users |
+| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient                                        | `{"channel":"C","thread":"T","message":"…"}` — thread post, no recipient                                        |
 
 - The target must identify an action: `toAgent`, `toUser`, or `channel`. The
   daemon rejects an empty action and rejects mixing `toAgent` with `toUser` in
@@ -230,7 +230,8 @@ recipient modes the form is decided by the coordinates:
   (deprecated alias `listChannelAgents`), which lists every peer in the caller's
   organization that the directional call policy admits — a peer need not share a
   channel with the caller, and need not have an IM integration at all. `toUser` is
-  a platform member ID.
+  one platform member ID, or a non-empty array of unique member ids when `channel`
+  is present.
 - A `toAgent` wake is authorized by that call policy alone; `channel` is a
   **delivery coordinate**, not an authorization key. It still decides where the
   optional visible post lands and, through the session key, which session the peer
@@ -250,9 +251,11 @@ recipient modes the form is decided by the coordinates:
 - The daemon injects the caller agent ID from session context. It is never a
   tool argument, so a caller cannot impersonate another agent or call itself as
   a different identity.
-- `toUser` is Slack-only for now: a `toUser` DM posts to the member id directly,
-  and the channel-root / in-thread forms prepend an `<@user>` mention to the
-  visible post. Any other platform is rejected before dispatch.
+- `toUser` is Slack-only for now: a `toUser` DM accepts one string and posts to that
+  member id directly. The channel-root / in-thread forms accept one id or a non-empty
+  unique-id array and prepend every corresponding `<@user>` mention to the single
+  visible post. An array without `channel` is rejected rather than interpreted as a
+  group DM. Any other platform is rejected before dispatch.
 - `thread` determines the platform thread only when `channel` is present.
   Passing an existing thread posts there. Omitting it or passing `""` posts a
   new top-level channel message, **not the current session thread**. Normal

@@ -1613,6 +1613,7 @@ describe('SessionManager — collaboration preamble', () => {
     expect(first).toContain('{"toAgent":"<agent id>","message":"..."}')
     expect(first).toContain('{"sessionId":"<Parent session>","message":"..."}')
     expect(first).toContain('{"toUser":"<Slack user id>","message":"..."}')
+    expect(first).toContain('"toUser":["<user id 1>","<user id 2>"]')
     expect(first).not.toContain('`to.toAgent`')
     expect(first).not.toContain('`to.sessionId`')
     expect(first).not.toContain('`messageAgent`')

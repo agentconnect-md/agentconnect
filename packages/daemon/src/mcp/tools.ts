@@ -178,23 +178,40 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     )
   }
 
-  // Mode 2 — toUser: reach one human platform member. Forms: dm (no channel — Slack DM),
-  // channel root (channel, no thread — @-mention at root), in thread (channel + thread —
-  // @-mention inside the thread).
+  // Mode 2 — toUser: reach one or more human platform members. DM stays singular (one string,
+  // no channel); channel-root / in-thread sends accept either one id or an array and @-mention
+  // every named user in the one visible post.
   const userTarget = {
-    title: 'toUser — send to a platform user',
+    title: 'toUser — send to platform users',
     description:
-      'Deliver to one human platform member, with three forms: dm (`{"toUser":"<id>","message":"..."}`) ' +
-      'direct-messages that user (Slack only for now); channel root ' +
-      '(`{"toUser":"<id>","channel":"<C>","message":"..."}`) posts at the channel root and @-mentions the user; in ' +
-      'thread (`{"toUser":"<id>","channel":"<C>","thread":"<T>","message":"..."}`) posts into that thread and ' +
-      '@-mentions the user there.',
+      'Reach human platform members (Slack only for now). The dm form takes exactly one id ' +
+      '(`{"toUser":"<id>","message":"..."}`). The channel root and in thread forms accept either one id or a ' +
+      'non-empty id array; `{"toUser":["<id-1>","<id-2>"],"channel":"<C>","message":"..."}` posts one ' +
+      'message that @-mentions every listed user. Add `thread` to post those mentions inside that thread.',
     ...obj(
       {
         toUser: {
-          type: 'string',
-          minLength: 1,
-          description: 'Platform member id to reach, such as Slack `U0123ABC`.'
+          description:
+            'One platform member id, or a non-empty array of unique ids for a channel-root / in-thread post. ' +
+            'An array is not a group DM: it requires `channel` and @-mentions all listed users in one message.',
+          oneOf: [
+            {
+              type: 'string',
+              minLength: 1,
+              description: 'One platform member id, such as Slack `U0123ABC`.'
+            },
+            {
+              type: 'array',
+              minItems: 1,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1
+              },
+              description:
+                'Platform member ids to @-mention together. Valid only when `channel` is also supplied; never a DM.'
+            }
+          ]
         },
         channel,
         thread,
@@ -253,8 +270,8 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
   return {
     name: 'sendMessage',
     description: collaboration
-      ? 'Send one message to exactly one target: a peer agent (`toAgent`), a human (`toUser`), a channel with no ' +
-        'recipient, or the parent-session reply. The two recipient modes each have three forms: dm / channel root / ' +
+      ? 'Send one message using exactly one target mode: a peer agent (`toAgent`), human users (`toUser`), a channel ' +
+        'with no recipient, or the parent-session reply. The two recipient modes each have three forms: dm / channel root / ' +
         'in thread. Your own turn reply already reaches the conversation you are in, so use this tool only for what ' +
         'that reply cannot do: a different conversation, a human, a peer agent, or a parent-session reply.\n' +
         '- toAgent — wake exactly one peer agent (id from listAgents; never a platform member id):\n' +
@@ -265,12 +282,11 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'posts into that thread and reuses it for the peer.\n' +
         '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` to have the peer report back ' +
         'when it finishes or fails; pass the returned `childSessionId` to `viewSessionStatus` to check on it.\n' +
-        '- toUser — reach one human (Slack only for now):\n' +
+        '- toUser — reach human users (Slack only for now):\n' +
         '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
-        '  • channel root: `{"toUser":"<Slack user id>","channel":"<channel id>","message":"..."}` — posts at the ' +
-        'channel root and @-mentions the user.\n' +
-        '  • in thread: `{"toUser":"<Slack user id>","channel":"<channel id>","thread":"<thread id>","message":"..."}` — ' +
-        'posts into that thread and @-mentions the user there.\n' +
+        '  • channel root: `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}` — ' +
+        'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
+        '  • in thread: add `"thread":"<thread id>"` to that channel form to post all mentions inside the thread.\n' +
         '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts to the channel ' +
         'without waking anyone or @-mentioning anyone; add `platform`, `thread`, or `integrationId` only when needed.\n' +
         '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
@@ -278,12 +294,13 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'A channel-root post (no `thread`) opens a NEW session of your own on that post; an explicit `thread` ' +
         'continues the existing conversation. Write `message` as CommonMark/GFM. The daemon supplies your identity; ' +
         'you cannot impersonate anyone or wake yourself.'
-      : 'Post one visible message to exactly one channel or human. Your own turn reply already reaches the ' +
+      : 'Post one visible message to exactly one channel or a set of human recipients. Your own turn reply already reaches the ' +
         'conversation you are in, so use this tool only for what that reply cannot do: a different conversation or a ' +
         'human. Use `{"channel":"<channel id>","message":"..."}` for a bare channel post, ' +
-        '`{"toUser":"<Slack user id>","message":"..."}` for a DM, or `{"toUser":"<Slack user id>","channel":"<channel ' +
-        'id>","message":"..."}` for a channel-root post that @-mentions the user; add `"thread":"<thread id>"` to ' +
-        'post into that thread instead. A channel-root post opens a NEW session of your own on that post. Peer-agent ' +
+        '`{"toUser":"<Slack user id>","message":"..."}` for a DM, or `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel ' +
+        'id>","message":"..."}` for a channel-root post that @-mentions every listed user; a single id also works, ' +
+        'and adding `"thread":"<thread id>"` posts into that thread instead. A channel-root post opens a NEW session ' +
+        'of your own on that post. Peer-agent ' +
         'and parent-session delivery are disabled for this run. Write `message` as CommonMark/GFM. The daemon ' +
         'supplies your identity; you cannot impersonate anyone.',
     inputSchema: unionOf(

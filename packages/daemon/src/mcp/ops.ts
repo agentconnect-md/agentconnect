@@ -480,7 +480,8 @@ const MULTI_INTEGRATION_NOTE =
 
 const SEND_MESSAGE_TARGET_HELP =
   'Valid targets: agent {"toAgent":"<agent-id>","message":"..."}; ' +
-  'user {"toUser":"<Slack-user-id>","message":"..."}; ' +
+  'user DM {"toUser":"<Slack-user-id>","message":"..."}; ' +
+  'channel users {"toUser":["<id-1>","<id-2>"],"channel":"<channel-id>","message":"..."}; ' +
   'channel {"channel":"<channel-id>","message":"..."}; ' +
   'session {"sessionId":"<Parent session>","message":"..."}'
 
@@ -727,7 +728,7 @@ export async function executeTool(
   // (post to a platform channel/user) and `messageAgent` (wake a peer agent), plus SessionTarget
   // replies. Universal (any agent — a memory-only agent can still wake a peer / reply), handled
   // before the platform-gateway gate. The tool takes exactly TWO addressing modes — `toAgent`
-  // (wake a peer agent) and `toUser` (reach a human) — each with THREE delivery forms: dm,
+  // (wake a peer agent) and `toUser` (reach humans) — each with THREE delivery forms: dm,
   // channel root, and in thread. `sessionId` stays a separate reply branch.
   // SECURITY: the caller identity + coords come from the trusted session context, never tool input.
   if (name === 'sendMessage') {
@@ -750,32 +751,35 @@ export async function executeTool(
       })
     }
 
-    // MessageTarget — exactly ONE target: `toAgent` wakes a peer agent, `toUser` reaches a
-    // platform user, and `channel` alone posts a bare visible message without addressing
+    // MessageTarget — exactly ONE target mode: `toAgent` wakes a peer agent, `toUser` reaches
+    // platform users, and `channel` alone posts a bare visible message without addressing
     // anyone. For the two recipient modes the delivery form is selected by the coords: no
     // `channel` ⇒ dm, `channel` without `thread` ⇒ channel root, `channel` + `thread` ⇒ in
     // thread. Branch-specific validation below keeps ignored/mixed fields out even when a
     // caller bypasses the advertised JSON Schema (as unit tests and older clients can).
     const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
-    const toUser = optionalString(args, 'toUser')
+    const toUsers = parseUserTargets(args.toUser)
     const channel = optionalString(args, 'channel')
-    if (toAgent === undefined && toUser === undefined && channel === undefined) {
+    if (toAgent === undefined && toUsers === undefined && channel === undefined) {
       throw new Error(
         `sendMessage: \`toAgent\`, \`toUser\`, or \`channel\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`
       )
     }
-    if (toAgent !== undefined && toUser !== undefined) {
+    if (toAgent !== undefined && toUsers !== undefined) {
       throw new Error(
         `sendMessage: \`toAgent\` and \`toUser\` are mutually exclusive — pick one mode. ${SEND_MESSAGE_TARGET_HELP}`
       )
     }
     if (toAgent !== undefined) assertOnlyKeys(args, ['toAgent', 'channel', 'thread', 'message'], 'agent target')
-    else if (toUser !== undefined) {
+    else if (toUsers !== undefined) {
       assertOnlyKeys(args, ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'message'], 'user target')
     } else {
       assertOnlyKeys(args, ['channel', 'thread', 'platform', 'integrationId', 'message'], 'channel target')
     }
-    if (toUser !== undefined && channel === undefined && optionalString(args, 'thread') !== undefined) {
+    if (toUsers !== undefined && channel === undefined && Array.isArray(args.toUser)) {
+      throw new Error('sendMessage: a `toUser` array requires `channel` — direct messages accept exactly one user id')
+    }
+    if (toUsers !== undefined && channel === undefined && optionalString(args, 'thread') !== undefined) {
       throw new Error('sendMessage: `thread` needs a `channel` — a DM has no thread to post into')
     }
 
@@ -828,23 +832,23 @@ export async function executeTool(
     let postedThread: string | undefined
     // Destination: an explicit `channel` (channel-root / in-thread forms), else the `toUser`
     // DM form targets the user id itself.
-    const postChannel = channel ?? (toUser !== undefined ? toUser : undefined)
+    const postChannel = channel ?? toUsers?.[0]
     if (postChannel !== undefined && wakeRejection === null) {
-      const directMessage = toUser !== undefined && channel === undefined
+      const directMessage = toUsers !== undefined && channel === undefined
       const wantPlatform = optionalString(args, 'platform') ?? (directMessage ? 'slack' : ctx.platform)
       const wantIntegrationId = optionalString(args, 'integrationId')
       const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
       const thread = optionalString(args, 'thread') || undefined
       let body = message
-      if (toUser !== undefined) {
+      if (toUsers !== undefined) {
         if (wantPlatform !== 'slack') {
           throw new Error(`sendMessage: toUser is only supported on Slack (not ${wantPlatform}) yet`)
         }
-        // dm form: the user id IS the destination and the body is unchanged; the channel-root /
-        // in-thread forms @-mention the user inside the visible post.
+        // dm form: the one user id IS the destination and the body is unchanged; the channel-root /
+        // in-thread forms @-mention every named user inside the one visible post.
         if (channel !== undefined) {
-          const mention = /^<@[^>]+>$/.test(toUser) ? toUser : `<@${toUser}>`
-          body = `${mention} ${message}`
+          const mentions = toUsers.map((user) => (/^<@[^>]+>$/.test(user) ? user : `<@${user}>`))
+          body = `${mentions.join(' ')} ${message}`
         }
       }
       const identity: SendIdentity = {
@@ -1214,6 +1218,25 @@ function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: bool
     throw new Error('sendMessage: `toAgent.needsReply` must be a boolean')
   }
   return { toAgent: requireString(target, 'agentId'), ...(needsReply === true ? { needsReply: true } : {}) }
+}
+
+/** Normalize `toUser`: one id works for every delivery form; a non-empty array is reserved
+ * for one visible channel-root / in-thread post that @-mentions every listed Slack member. */
+function parseUserTargets(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  const users = typeof value === 'string' ? [value] : value
+  if (!Array.isArray(users)) {
+    throw new Error('sendMessage: `toUser` must be a user id string or a non-empty array of user id strings')
+  }
+  if (users.length === 0 || users.some((user) => typeof user !== 'string' || user.trim().length === 0)) {
+    throw new Error('sendMessage: `toUser` must be a user id string or a non-empty array of user id strings')
+  }
+  const ids = users as string[]
+  const canonicalIds = ids.map((id) => /^<@([^>]+)>$/.exec(id)?.[1] ?? id)
+  if (new Set(canonicalIds).size !== canonicalIds.length) {
+    throw new Error('sendMessage: `toUser` must not contain duplicate user ids')
+  }
+  return ids
 }
 
 function assertOnlyKeys(args: Record<string, unknown>, allowed: readonly string[], target: string): void {
