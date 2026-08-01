@@ -1160,6 +1160,17 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
 
     expect(res.statusCode).toBe(502)
     expect((res.json() as { message: string }).message).toContain('offline')
+    // The row must SURVIVE. Deleting it and then reporting failure would leave the
+    // console empty while telling the operator it failed — and the advised retry would
+    // 404 on the already-deleted row instead of re-attempting the suppression.
+    const channels = new PgIntegrationChannelRepo(prisma)
+    expect((await channels.listForIntegration(IntegrationId(id))).map((c) => c.channelId)).toEqual(['C1'])
+
+    // …so the retry the message advises actually works once the daemon is back.
+    spy.forgetThrows = null
+    const retried = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/C1` })
+    expect(retried.statusCode).toBe(204)
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
   })
 
   it('refuses a server-scoped leave on a platform that has no server', async () => {

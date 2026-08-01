@@ -1094,22 +1094,26 @@ export function integrationRoutes(deps: HttpDeps) {
               .code(409)
               .send({ error: 'Conflict', statusCode: 409, message: 'channel owner changed; refresh and retry' })
           }
+          const rows = await deps.repos.integrationChannel.listForIntegration(integration.id)
+          if (!rows.some((row) => row.channelId === req.params.channelId)) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
+          }
+          // Suppress at the SOURCE FIRST, and only then delete. The daemon's tombstone
+          // is what makes the removal stick — its observed set is rebuilt from session
+          // history — so deleting first and reporting 502 afterwards would leave the row
+          // gone from the console while telling the operator it failed, and the advised
+          // retry would 404 on the already-deleted row instead of re-attempting the
+          // suppression. Same order the leave route uses: confirm, then touch local state.
+          const suppressed = await pushForget(integration, agent, [req.params.channelId])
+          if (!suppressed.ok) return reply.code(502).send(suppressed.body)
           // A shared bot's CHANNEL state is bot-scoped — ownership and trigger are
           // replicated across every install — so forgetting it on one install alone
           // would leave siblings listing it and let the compiler resurrect the row. A
           // direct row is per-agent and stays on this install only (§14.3).
           const installs = scope.botScoped ? await deps.repos.integration.listForBot(bot.id) : [integration]
-          let removed = false
           for (const install of installs) {
-            if (await deps.repos.integrationChannel.deleteChannel(install.id, req.params.channelId)) removed = true
+            await deps.repos.integrationChannel.deleteChannel(install.id, req.params.channelId)
           }
-          if (!removed) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
-          }
-          // Suppress it at the source too, or the daemon's next observed refresh
-          // rebuilds the row from session history and quietly undoes this.
-          const suppressed = await pushForget(integration, agent, [req.params.channelId])
-          if (!suppressed.ok) return reply.code(502).send(suppressed.body)
           await republishChannels(integration, bot, agent)
           return reply.code(204).send(null)
         } finally {
