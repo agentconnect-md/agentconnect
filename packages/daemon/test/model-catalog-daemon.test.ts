@@ -15,8 +15,8 @@ import { FakeClock } from './cp/fake-clock.js'
 
 /** Daemon-level integration tests for the runtime-model-catalog wiring
  *  (design runtime-model-catalog.md §4/§6/§9): startup hydrate, the sweep
- *  fold's phase-1 seeding + provenance flip, the fail-to-empty split
- *  (advertisement vs capability), and the cached-provenance activation gate. */
+ *  fold's phase-1 seeding + provenance flip, last-good advertisement fallback,
+ *  and the cached-provenance activation gate. */
 
 const FAKE_RT: RuntimeDef = { command: 'fake-agent', args: ['--acp'], env: [] }
 
@@ -203,8 +203,8 @@ describe('daemon activation gate provenance rule', () => {
   })
 })
 
-describe('daemon fail-to-empty split (advertisement vs capability)', () => {
-  it('a probe failure empties models[] but keeps the catalog in the frame; a later success restores models without phase 2', async () => {
+describe('daemon last-good advertisement fallback', () => {
+  it('a transient first probe failure keeps cached models + catalog; a later success replaces them without phase 2', async () => {
     const dir = root()
     seedCache(dir, [
       { runtimeId: 'fake', defaultModel: 'm-a', models: [{ id: 'm-a', caps: { efforts: [{ value: 'low' }] } }] }
@@ -225,9 +225,12 @@ describe('daemon fail-to-empty split (advertisement vs capability)', () => {
       await (daemon as any).probeRuntimesAndEmit(true)
       expect(probe).toHaveBeenCalledTimes(1)
       const failed = emitted[0]![0]!
-      // Advertisement empties (don't offer an unreachable runtime)...
-      expect(failed.models).toEqual([])
-      // ...but capability knowledge survives the failure, on the wire and on disk.
+      // A disposable refresh can fail while established runtime homes remain
+      // usable. Keep the last-good advertisement permissive until live evidence
+      // replaces it, instead of making the picker disappear after restart.
+      expect(failed.models).toEqual(['m-a'])
+      expect(failed.modelsSource).toBe('cached')
+      // Capability knowledge also survives the failure, on the wire and on disk.
       expect(failed.modelCatalog).toEqual(cachedCatalog)
       expect(((daemon as any).store as LocalStore).listRuntimeModelCaps('fake').map((r) => r.modelId)).toEqual(['m-a'])
       expect(noteProbe).not.toHaveBeenCalled() // failures never reach phase 2
@@ -250,13 +253,15 @@ describe('daemon fail-to-empty split (advertisement vs capability)', () => {
 
 describe('daemon auth-required probe fold', () => {
   it('flags authRequired in the snapshot on an auth-rejected probe and clears it once a probe succeeds', async () => {
+    const dir = root()
+    seedCache(dir, [{ runtimeId: 'fake', models: [{ id: 'm-cached', caps: {} }] }])
     const clock = new FakeClock()
     clock.advance(10_000)
     let results: RuntimeProbeResult[] = [
       { runtime: 'fake', ok: false, models: [], error: 'Authentication required', authRequired: true }
     ]
     const probe = vi.fn(async () => results)
-    const daemon = daemonWith({ root: root(), catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
+    const daemon = daemonWith({ root: dir, catalog: catalogOf({ fake: FAKE_RT }), clock, probe })
 
     try {
       await daemon.start()
@@ -264,8 +269,13 @@ describe('daemon auth-required probe fold', () => {
       const emitted = captureEmits(daemon)
 
       await (daemon as any).probeRuntimesAndEmit(true)
-      // The runtime stays listed (installed) but carries the login warning.
-      expect(emitted[0]![0]).toMatchObject({ runtime: 'fake', models: [], authRequired: true })
+      // Authentication rejection is authoritative and clears even a warm cache.
+      expect(emitted[0]![0]).toMatchObject({
+        runtime: 'fake',
+        models: [],
+        modelsSource: 'probed',
+        authRequired: true
+      })
 
       // Logged in meanwhile: the next sweep drops the flag off the frame
       // entirely (absent ⇒ ok, matching older-daemon semantics).
@@ -293,6 +303,8 @@ describe('daemon auth-required probe fold', () => {
       const emitted = captureEmits(daemon)
       await (daemon as any).probeRuntimesAndEmit(true)
       expect(emitted[0]![0]!.authRequired).toBeUndefined()
+      // With no last-good cache, there is nothing to preserve.
+      expect(emitted[0]![0]).toMatchObject({ models: [], modelsSource: 'probed' })
     } finally {
       await daemon.stop()
     }
