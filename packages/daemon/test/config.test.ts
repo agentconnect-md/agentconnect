@@ -24,6 +24,7 @@ describe('loadConfig', () => {
     expect(cfg.runtimes.claude.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
     expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['https://github.com', 'ssh://github.com'])
+    expect(cfg.features.turnFinalContextRefresh).toBe(false)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
   })
@@ -87,6 +88,11 @@ describe('loadConfig', () => {
   it('allows the daemon to opt out of account-app isolation explicitly', () => {
     const root = tmpRoot({ version: 1, security: { isolateAccountApps: false } })
     expect(loadConfig({ root }).security.isolateAccountApps).toBe(false)
+  })
+
+  it('enables turn-final context refresh only through the explicit rollout flag', () => {
+    const root = tmpRoot({ version: 1, features: { turnFinalContextRefresh: true } })
+    expect(loadConfig({ root }).features.turnFinalContextRefresh).toBe(true)
   })
 
   it('normalizes an operator-owned workspace Git origin allowlist', () => {

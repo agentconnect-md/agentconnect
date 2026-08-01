@@ -10,6 +10,8 @@ export const EvaluationEventTypeSchema = z.enum([
   'turn.failed',
   'turn.cancelled',
   'turn.timed_out',
+  'turn.context_changed',
+  'turn.regeneration_started',
   'acp.update',
   'memory.recall.requested',
   'memory.recall.completed',

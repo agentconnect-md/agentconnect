@@ -3,6 +3,8 @@
 > Status: Proposed
 > Scope: daemon-owned interactive IM turns (Slack, Discord, Lark / Feishu, and Telegram)
 > Primary implementation area: `packages/daemon`
+> Rollout: core staging, local observation, Slack final snapshots, and observed-only
+> fallback are available behind `features.turnFinalContextRefresh` (default `false`)
 
 ## 1. Summary
 

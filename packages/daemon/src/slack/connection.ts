@@ -944,14 +944,20 @@ export class SlackConnection {
   /**
    * Pull a Slack thread's full history (conversations.replies, cursor-paginated)
    * for §8.4/§9.2 mid-thread context. Returns root + replies in Slack ts order;
-   * best-effort (returns what it fetched, [] on error). Bot/system frames keep
-   * their bot_id as the sender so the caller can attribute them.
+   * best-effort (returns what it fetched, [] on error) unless a final-fence caller
+   * requests `throwOnError`. Bot/system frames keep their bot_id as the sender so
+   * the caller can attribute them.
    */
   async getThreadReplies(
     channel: string,
     threadTs: string,
     maxMessages = 200,
-    window?: { oldest?: string; latest?: string }
+    window?: {
+      oldest?: string
+      latest?: string
+      throwOnError?: boolean
+      readState?: { truncated: boolean }
+    }
   ): Promise<
     {
       sender: string
@@ -991,7 +997,9 @@ export class SlackConnection {
           ...(window?.oldest || window?.latest ? { inclusive: false } : {}),
           ...(cursor ? { cursor } : {})
         })
-        for (const m of res.messages ?? []) {
+        const messages = res.messages ?? []
+        for (let index = 0; index < messages.length; index += 1) {
+          const m = messages[index]!
           if (!m.ts) continue
           const appId = m.app_id ?? m.bot_profile?.app_id
           const metadataAuthor =
@@ -1013,7 +1021,12 @@ export class SlackConnection {
               .map(toAttachment)
               .filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== null)
           })
-          if (out.length >= maxMessages) return out
+          if (out.length >= maxMessages) {
+            if (window?.readState && (index < messages.length - 1 || Boolean(res.has_more))) {
+              window.readState.truncated = true
+            }
+            return out
+          }
         }
         cursor = res.has_more ? res.response_metadata?.next_cursor : undefined
       } while (cursor)
@@ -1021,6 +1034,7 @@ export class SlackConnection {
       this.deps.log?.debug(
         `slack: conversations.replies failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`
       )
+      if (window?.throwOnError) throw err
     }
     return out
   }

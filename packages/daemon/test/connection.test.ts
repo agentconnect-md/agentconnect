@@ -226,6 +226,54 @@ describe('SlackConnection.listBotChannels', () => {
 })
 
 describe('SlackConnection.getThreadReplies', () => {
+  it('can surface snapshot failures to the turn-final refresh caller', async () => {
+    const replies = vi.fn(async () => {
+      throw Object.assign(new Error('rate_limited'), { code: 'slack_webapi_rate_limited' })
+    })
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await expect(conn.getThreadReplies('C1', '100.1', 200, { throwOnError: true })).rejects.toThrow('rate_limited')
+  })
+
+  it('marks a bounded snapshot as truncated when provider rows remain', async () => {
+    const replies = vi.fn(async () => ({
+      messages: [
+        { ts: '100.2', user: 'U1', text: 'first' },
+        { ts: '100.3', user: 'U1', text: 'second' }
+      ],
+      has_more: false
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+    const readState = { truncated: false }
+
+    await expect(conn.getThreadReplies('C1', '100.1', 1, { readState })).resolves.toHaveLength(1)
+    expect(readState.truncated).toBe(true)
+  })
+
   it('bounds an incremental thread snapshot by the delivered watermark and wall-clock cutoff', async () => {
     const replies = vi.fn(async () => ({
       messages: [{ ts: '100.3', user: 'U1', text: 'latest unread' }],

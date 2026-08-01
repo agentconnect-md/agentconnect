@@ -68,7 +68,7 @@ function compareSlackTs(a: string, b: string): number {
   return am < bm ? -1 : am > bm ? 1 : 0
 }
 
-function slackTsForWallClock(ms: number): string {
+export function slackTsForWallClock(ms: number): string {
   const whole = Math.floor(ms / 1_000)
   return `${whole}.${String(Math.floor(ms % 1_000) * 1_000).padStart(6, '0')}`
 }
@@ -383,6 +383,14 @@ export class SessionManager {
     captureInput?: string
     /** Stable provider-neutral post-turn identity. */
     turnId?: string
+    /** Daemon-local observation fence captured with the conversation rows assembled
+     * into the first prompt, before attachment and memory I/O may yield again. */
+    contextRevision?: number
+    /** Stable provider coordinates actually represented in the first prompt. Used by
+     * the daemon's start fence to coalesce only matching queued activations. */
+    contextEventTs?: string[]
+    /** Incremental provider read checkpoint associated with the assembled snapshot. */
+    providerCheckpoint?: string
   }> {
     const agent = this.deps.agentById(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
@@ -876,6 +884,8 @@ export class SessionManager {
     // every participant catches up all thread events through its own stable cutoff when it
     // next wakes. Workflow correlation remains out-of-band in trusted CallMeta.
     const blocks: ContentBlock[] = []
+    let contextEventTs: string[] = []
+    let contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread)
     {
       const gap = this.deps.store
         .transcriptSince(transcriptChannel, thread, markerBefore)
@@ -946,6 +956,7 @@ export class SessionManager {
             ? `(unread thread messages, oldest to newest — ${elided} earlier message(s) elided)`
             : '(unread thread messages, oldest to newest)'
         blocks.push({ type: 'text', text: `${head}\n${context.map((e) => `[${e.sender}] ${e.text}`).join('\n')}` })
+        contextEventTs = context.map((entry) => entry.ts)
       } else {
         // Normal in-order activation: preserve the established context-prefix + current
         // prompt shape, while never replaying this agent's own recorded messages.
@@ -967,8 +978,10 @@ export class SessionManager {
         // (cron/hook) triggers stay bare, and an agent delivery already names its caller in the
         // forwarded text (`@caller: …` from prepareAgentDelivery).
         blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${msg.text}` : msg.text })
+        contextEventTs = [...context.map((entry) => entry.ts), ts]
       }
       rec.lastDeliveredTs = deliveredThrough ?? ts
+      contextRevision = this.deps.store.threadTranscriptRevision(transcriptChannel, thread)
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.
@@ -1130,7 +1143,16 @@ export class SessionManager {
     if (needsReplyToParent) rec.needsParentReply = 1
     this.deps.store.upsertSession(rec)
 
-    return { sessionId: rec.acpSessionId!, blocks, created, captureInput, turnId }
+    return {
+      sessionId: rec.acpSessionId!,
+      blocks,
+      created,
+      captureInput,
+      turnId,
+      contextRevision,
+      contextEventTs,
+      ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {})
+    }
   }
 
   /** Decide whether to re-inject the compact no-response reminder on a later turn,

@@ -20,13 +20,27 @@ import {
   type SessionRecord,
   type SubtaskRow,
   type TranscriptMutation,
+  type TranscriptRow,
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
 import { detectSandbox, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
 import { permissionModeDisplayLabel } from './acp/permission-modes.js'
-import { SessionManager, transcriptCoords, isStandingContextTitleEcho } from './session/session-manager.js'
+import {
+  SessionManager,
+  transcriptCoords,
+  isStandingContextTitleEcho,
+  slackTsForWallClock
+} from './session/session-manager.js'
+import {
+  ThreadContextCoordinator,
+  contextUpdateText,
+  initialContextDeltaText,
+  type ContextRefresh,
+  type ThreadContextSnapshot
+} from './session/thread-context.js'
+import { defaultTurnOutputMetrics } from './session/turn-output-metrics.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
@@ -498,6 +512,8 @@ function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): Memo
 }
 
 const MAX_QUEUED_PER_SESSION = 10
+const MAX_TURN_CONTEXT_REGENERATIONS = 3
+const MAX_TURN_CONTEXT_REGENERATION_MS = 120_000
 
 /** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
  *  how long after the abort the daemon stops awaiting `host.prompt` and discards
@@ -1016,6 +1032,13 @@ interface Pending {
   rec: TranscriptRecorder
   /** Complete raw assistant text, used only as input to opt-in memory distillation. */
   replyText: string
+  /** IM answer text is generation-local until the final context fence accepts it. */
+  attemptReplyText: string
+  /** Answer-bearing ACP updates withheld from the platform converger until commit. */
+  attemptAnswerUpdates: any[]
+  /** Interactive IM platforms use staged answer delivery; webchat/hooks keep their
+   * existing transport-specific contracts and remain outside the initial rollout. */
+  stageAnswer: boolean
   /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
    *  requests may carry only this opaque id, regardless of which ACP path is used. */
   builtinSystemToolCallIds: Set<string>
@@ -1450,6 +1473,7 @@ export class Daemon {
   private scheduler!: Scheduler
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
+  private threadContext!: ThreadContextCoordinator
   // integrationId -> the SlackConnection that owns it (for replies). Holds BOTH
   // socket-mode (direct) and send-only (HTTP-bot) connections — an HTTP bot's
   // send-only client is registered here too so replies/attachments/MCP reuse it.
@@ -2214,6 +2238,10 @@ export class Daemon {
     await this.mcp.start()
 
     const cliEntry = daemonEntryForShims(root)
+
+    this.threadContext = new ThreadContextCoordinator(this.store, (error) =>
+      this.log.warn(`turn context snapshot degraded to observed-only (${formatErr(error)})`)
+    )
 
     this.sessions = new SessionManager({
       store: this.store,
@@ -4675,6 +4703,10 @@ export class Daemon {
       )
       return
     }
+    // Observation precedes activation gates and queue admission. A clarification
+    // arriving while this logical thread is busy must be visible to the running
+    // turn's final refresh even though its own SessionManager.handle() has not begun.
+    if (this.cfg.features.turnFinalContextRefresh) this.recordObservedInbound(msg, result.agentId)
     // Preserve the router's trusted self-mention match for prompt assembly. The raw
     // platform text contains only an opaque id (`<@U…>` on Slack); without this cause the
     // model cannot know that id is the bot identity bound to the selected agent.
@@ -7573,6 +7605,15 @@ export class Daemon {
    *  transcript growth to threads with live work — without it, a thread that ever
    *  held a session would record forever (no session-`closed` lifecycle yet). */
   private recordUnrouted(msg: NormalizedMessage): void {
+    // Preserve the established default transcript shape until the rollout flag is
+    // enabled; the new observer folds attachment mentions into context prompts.
+    this.recordObservedInbound(msg, undefined, this.cfg.features.turnFinalContextRefresh)
+  }
+
+  /** Persist one conversational ingress for a live physical thread before routing
+   * can delay or suppress its activation. Stable transcript coordinates make the
+   * later SessionManager append an idempotent delivery/provenance upgrade. */
+  private recordObservedInbound(msg: NormalizedMessage, recipient?: string, includeAttachment = true): void {
     const { thread, ts } = transcriptCoords(msg)
     const transcriptChannel = transcriptChannelKey(msg.channel, msg.transportScope)
     // Active = a session touched within the idle window OR a turn in flight right
@@ -7585,16 +7626,28 @@ export class Daemon {
     const inFlight = [...this.pending.values()].some(
       (p) => p.transcriptChannel === transcriptChannel && p.statusThread === thread
     )
-    if (!recentlyActive && !inFlight) return
-    this.store.appendTranscript({
+    const initializing = [...this.activeGateEntries.values()].some((entry) => {
+      const coords = transcriptCoords(entry.msg)
+      return (
+        transcriptChannelKey(entry.msg.channel, entry.msg.transportScope) === transcriptChannel &&
+        coords.thread === thread
+      )
+    })
+    if (!recentlyActive && !inFlight && !initializing) return
+    const mention = includeAttachment ? attachmentMention(msg.attachments) : ''
+    const before = this.store.threadTranscriptRevision(transcriptChannel, thread)
+    this.threadContext.observeInbound({
       channel: transcriptChannel,
       thread,
       ts,
       sender: msg.sender.id,
+      ...(recipient ? { recipient } : {}),
       kind: 'text',
-      text: msg.text
+      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text
     })
-    this.log.debug(`transcript: recorded unrouted msg ch=${msg.channel} thread=${thread} ts=${ts} (live session)`)
+    const after = this.store.threadTranscriptRevision(transcriptChannel, thread)
+    if (after > before)
+      this.log.debug(`transcript: observed inbound msg ch=${msg.channel} thread=${thread} ts=${ts} (live session)`)
   }
 
   /**
@@ -7609,9 +7662,12 @@ export class Daemon {
     channel: string,
     threadTs: string,
     cutoffTs?: string,
-    afterTs?: string | null
+    afterTs?: string | null,
+    strict = false,
+    integrationId?: string,
+    readState?: { truncated: boolean }
   ): Promise<{ sender: string; ts: string; text: string; trustedAgentBot?: boolean }[]> {
-    const conn = this.replyConnFor(agentId) as Partial<SlackConnection> | undefined
+    const conn = this.replyConnFor(agentId, integrationId) as Partial<SlackConnection> | undefined
     // Only Slack can pull thread history (conversations.replies). Telegram long-poll
     // has no arbitrary-history API, so a cold mid-thread mention just starts fresh.
     // Duck-typed (method presence) so test fakes work as well as a real SlackConnection.
@@ -7619,7 +7675,9 @@ export class Daemon {
     const ours = new Set([conn.botUserId, conn.botId].filter(Boolean))
     const replies = await conn.getThreadReplies(channel, threadTs, 200, {
       ...(afterTs ? { oldest: afterTs } : {}),
-      ...(cutoffTs ? { latest: cutoffTs } : {})
+      ...(cutoffTs ? { latest: cutoffTs } : {}),
+      ...(strict ? { throwOnError: true } : {}),
+      ...(readState ? { readState } : {})
     })
     return (
       replies
@@ -7652,6 +7710,150 @@ export class Daemon {
           }
         })
     )
+  }
+
+  /** Incremental provider snapshot for the final-fence workflow. Other IMs use the
+   * same coordinator with daemon-observed rows until their history adapters land. */
+  private finalThreadSnapshot(
+    pending: Pending,
+    providerCheckpoint?: string
+  ): (() => Promise<ThreadContextSnapshot>) | undefined {
+    if (pending.platform !== 'slack') return undefined
+    const conn = this.replyConnFor(pending.agentId, pending.integrationId) as Partial<SlackConnection> | undefined
+    if (typeof conn?.getThreadReplies !== 'function') return undefined
+    return async () => {
+      const checkpoint = slackTsForWallClock(this.clock.now())
+      const readState = { truncated: false }
+      const history = await this.fetchThreadHistory(
+        pending.agentId,
+        pending.channel,
+        pending.statusThread,
+        checkpoint,
+        providerCheckpoint,
+        true,
+        pending.integrationId,
+        readState
+      )
+      return {
+        checkpoint,
+        // A bounded page with known remaining provider rows is never described as an
+        // authoritative empty tail. Imported rows still invalidate this generation;
+        // the completeness label exposes the remaining provider-side gap.
+        completeness: readState.truncated ? 'observed-only' : 'authoritative',
+        events: history.map((event) => ({
+          channel: pending.transcriptChannel,
+          thread: pending.statusThread,
+          ts: event.ts,
+          sender: event.sender,
+          kind: 'text' as const,
+          text: event.text,
+          ...(event.trustedAgentBot ? { trustedAgentBot: true } : {})
+        }))
+      }
+    }
+  }
+
+  private async refreshTurnContext(
+    pending: Pending,
+    afterRevision: number,
+    providerCheckpoint: string | undefined,
+    includeProviderSnapshot: boolean
+  ): Promise<ContextRefresh> {
+    const startedAt = this.clock.now()
+    const snapshot = includeProviderSnapshot ? this.finalThreadSnapshot(pending, providerCheckpoint) : undefined
+    const refresh = await this.threadContext.refresh({
+      agentId: pending.agentId,
+      transcriptChannel: pending.transcriptChannel,
+      thread: pending.statusThread,
+      afterRevision,
+      ...(providerCheckpoint ? { providerCheckpoint } : {}),
+      ...(snapshot ? { snapshot } : {})
+    })
+    const phase = includeProviderSnapshot ? 'final' : 'start'
+    defaultTurnOutputMetrics.refresh({
+      platform: pending.platform,
+      phase,
+      completeness: refresh.completeness,
+      result: refresh.snapshotFailed ? 'degraded' : 'ok',
+      durationMs: Math.max(0, this.clock.now() - startedAt)
+    })
+    defaultTurnOutputMetrics.events(
+      pending.platform,
+      refresh.completeness === 'authoritative' ? 'provider' : 'observed',
+      refresh.events.length
+    )
+    return refresh
+  }
+
+  private localInvalidatingEvents(pending: Pending, afterRevision: number): TranscriptRow[] {
+    return this.store
+      .transcriptSinceRevision(pending.transcriptChannel, pending.statusThread, afterRevision)
+      .filter((row) => row.kind === 'text' && row.sender !== pending.agentId)
+      .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
+  }
+
+  private queuedEntriesMatchingContext(key: string, eventTs: ReadonlySet<string>): QueueEntry[] {
+    return (this.serialQueue.get(key) ?? []).filter((entry) => eventTs.has(transcriptCoords(entry.msg).ts))
+  }
+
+  /** Start/regeneration fence queue mutation. The caller has already decided that
+   * these exact provider events are represented in a prompt that will be initiated
+   * synchronously before yielding back to ingress. */
+  private coalesceQueuedContext(key: string, sessionId: string, eventTs: ReadonlySet<string>): number {
+    const queue = this.serialQueue.get(key)
+    if (!queue?.length || eventTs.size === 0) return 0
+    const kept: QueueEntry[] = []
+    let count = 0
+    for (const entry of queue) {
+      if (!eventTs.has(transcriptCoords(entry.msg).ts)) {
+        kept.push(entry)
+        continue
+      }
+      count += 1
+      const { thread, ts } = transcriptCoords(entry.msg)
+      const mention = attachmentMention(entry.msg.attachments)
+      this.store.appendTranscript({
+        channel: transcriptChannelKey(entry.msg.channel, entry.msg.transportScope),
+        thread,
+        ts,
+        sender: entry.msg.sender.id,
+        recipient: entry.agentId,
+        kind: 'text',
+        text: mention ? `${entry.msg.text}\n${mention}`.trim() : entry.msg.text
+      })
+      this.removeInbox(entry)
+      entry.resolve(sessionId)
+      this.emitEvaluation({
+        type: 'turn.cancelled',
+        agentId: entry.agentId,
+        sessionId,
+        turnId: this.evaluationTurnIdFor(entry.agentId, entry.msg),
+        platform: entry.msg.platform,
+        channel: entry.msg.channel,
+        data: { reason: 'coalesced_into_turn' }
+      })
+    }
+    if (kept.length > 0) this.serialQueue.set(key, kept)
+    else this.serialQueue.delete(key)
+    if (count > 0) {
+      defaultTurnOutputMetrics.queueCoalesced(queue[0]!.msg.platform, count)
+      this.log.info(`turn context: coalesced ${count} queued activation(s) into ${key}`)
+    }
+    return count
+  }
+
+  /** Move only the accepted generation through the existing renderer. This call and
+   * the first enqueue performed by the caller form the local answer commit point. */
+  private acceptStagedAttempt(pending: Pending): void {
+    pending.replyText = pending.attemptReplyText
+    for (const update of pending.attemptAnswerUpdates) {
+      for (const action of pending.conv.onUpdate(update)) this.enqueueApply(pending, action)
+    }
+  }
+
+  private discardStagedAttempt(pending: Pending): void {
+    pending.attemptReplyText = ''
+    pending.attemptAnswerUpdates = []
   }
 
   // ── §4.3/§6.9 per-sessionKey serial admission gate ────────────────────────────
@@ -8842,6 +9044,15 @@ export class Daemon {
     if (integrationId !== undefined) {
       msg.transportScope ??= this.transportScopeForIntegrationIds([integrationId])
     }
+    if (
+      this.cfg.features.turnFinalContextRefresh &&
+      (msg.platform === 'slack' ||
+        msg.platform === 'telegram' ||
+        msg.platform === 'discord' ||
+        msg.platform === 'feishu')
+    ) {
+      this.recordObservedInbound(msg, agentId)
+    }
     return new Promise<string | null>((resolve, reject) => {
       let admissionSettled = false
       const settleAdmission = (result: { accepted: boolean; reason?: string; duplicate?: boolean }): void => {
@@ -9466,6 +9677,9 @@ export class Daemon {
       captureInput?: string
       turnId?: string
       initializedOnly?: boolean
+      contextRevision?: number
+      contextEventTs?: string[]
+      providerCheckpoint?: string
     }
     const persistedSessionId = this.store.getSession(key)?.acpSessionId
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
@@ -9711,6 +9925,16 @@ export class Daemon {
       conv,
       rec,
       replyText: '',
+      attemptReplyText: '',
+      attemptAnswerUpdates: [],
+      stageAnswer:
+        this.cfg.features.turnFinalContextRefresh &&
+        !webchat &&
+        !githubReply &&
+        (msg.platform === 'slack' ||
+          msg.platform === 'telegram' ||
+          msg.platform === 'discord' ||
+          msg.platform === 'feishu'),
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
       agentId,
@@ -9883,6 +10107,28 @@ export class Daemon {
       this.rematerializeConfigFiles(agentId)
       const runtimeAgentInfo = host.acpAgentInfo?.()
       const acpVersion = host.acpProtocolVersion?.()
+
+      let promptBlocks = [...blocks]
+      let baseRevision =
+        handled.contextRevision ?? this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+      let providerCheckpoint = handled.providerCheckpoint
+      if (p.stageAnswer) {
+        // Recheck observations that landed while attachments, memory recall, or
+        // runtime ready gates were awaiting. Queue entries remain untouched until
+        // every gate above has succeeded.
+        const initialRefresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, false)
+        if (initialRefresh.events.length > 0) {
+          promptBlocks.push({ type: 'text', text: initialContextDeltaText(initialRefresh.events) })
+        }
+        const representedEventTs = new Set([
+          ...(handled.contextEventTs ?? []),
+          ...initialRefresh.events.map((event) => event.ts)
+        ])
+        this.coalesceQueuedContext(key, sessionId, representedEventTs)
+        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
+      }
+
       this.emitEvaluation({
         type: 'turn.started',
         agentId,
@@ -9900,48 +10146,168 @@ export class Daemon {
           ...(acpVersion ? { acpVersion } : {})
         }
       })
-      const { stopReason, usage } = await host.prompt(sessionId, blocks)
-      // A completed prompt proves the runtime's credentials work — drop any
-      // login-required mark (no-op emit unless the flag actually flips).
-      this.noteRuntimeAuthFromTurn(agent.runtime, false)
-      if (p.outputSuppressed) {
-        finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
-        if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
-        if (hookContext && !this.draining) {
-          this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
-        }
-        return null
-      }
-      if (usage) {
-        const counts = {
-          totalTokens: usage.totalTokens,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          thoughtTokens: usage.thoughtTokens ?? undefined,
-          cachedReadTokens: usage.cachedReadTokens ?? undefined,
-          cachedWriteTokens: usage.cachedWriteTokens ?? undefined
-        }
-        // ACP's Usage is still experimental and adapters disagree on its fold
-        // semantics. codex-acp v1.1.x explicitly returns the current turn's
-        // `lastTokenUsage`; established adapters in this daemon remain latest-wins.
-        if (this.isCodexRuntime(agentId)) {
-          this.store.addTokenUsage(key, counts)
-          if (!p.runtimeCostReported) {
-            const estimate = estimateOpenAiTurnCost(turnModel, counts)
-            if (estimate.ok) {
-              if (!this.store.addCost(key, estimate.amount, estimate.currency)) {
-                this.log.debug(`cost fallback skipped for session ${sessionId}: existing currency differs from USD`)
-              }
-            } else {
-              this.log.debug(
-                `cost fallback unavailable for session ${sessionId} model=${turnModel ?? '(unknown)'}: ${estimate.reason}`
-              )
-            }
+      type PromptResult = Awaited<ReturnType<typeof host.prompt>>
+      let stopReason!: PromptResult['stopReason']
+      let usage: PromptResult['usage']
+      let evaluationUsage: PromptResult['usage']
+      let generation = 0
+      const regenerationStartedAt = this.clock.now()
+      const codexUsageIsPerPrompt = this.isCodexRuntime(agentId)
+
+      while (true) {
+        if (p.stageAnswer) this.discardStagedAttempt(p)
+
+        // Start-fence linearization: no await occurs between queue coalescing above
+        // (or the prior regeneration decision) and initiating this ACP request.
+        const promptPromise = host.prompt(sessionId, promptBlocks)
+        const result = await promptPromise
+        stopReason = result.stopReason
+        usage = result.usage
+
+        // A completed prompt proves the runtime's credentials work — drop any
+        // login-required mark (no-op emit unless the flag actually flips).
+        this.noteRuntimeAuthFromTurn(agent.runtime, false)
+        if (p.outputSuppressed) {
+          finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
+          if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
+          if (hookContext && !this.draining) {
+            this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
           }
-        } else {
-          this.store.setTokenUsage(key, counts)
+          return null
         }
+        if (usage) {
+          const counts = {
+            totalTokens: usage.totalTokens,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            thoughtTokens: usage.thoughtTokens ?? undefined,
+            cachedReadTokens: usage.cachedReadTokens ?? undefined,
+            cachedWriteTokens: usage.cachedWriteTokens ?? undefined
+          }
+          // codex-acp reports one prompt delta, so every discarded generation is
+          // additive. Other established adapters report a session snapshot and keep
+          // their existing latest-wins fold.
+          if (codexUsageIsPerPrompt) {
+            this.store.addTokenUsage(key, counts)
+            evaluationUsage = {
+              totalTokens: (evaluationUsage?.totalTokens ?? 0) + (usage.totalTokens ?? 0),
+              inputTokens: (evaluationUsage?.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+              outputTokens: (evaluationUsage?.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+              thoughtTokens: (evaluationUsage?.thoughtTokens ?? 0) + (usage.thoughtTokens ?? 0),
+              cachedReadTokens: (evaluationUsage?.cachedReadTokens ?? 0) + (usage.cachedReadTokens ?? 0),
+              cachedWriteTokens: (evaluationUsage?.cachedWriteTokens ?? 0) + (usage.cachedWriteTokens ?? 0)
+            }
+            if (!p.runtimeCostReported) {
+              const estimate = estimateOpenAiTurnCost(turnModel, counts)
+              if (estimate.ok) {
+                if (!this.store.addCost(key, estimate.amount, estimate.currency)) {
+                  this.log.debug(`cost fallback skipped for session ${sessionId}: existing currency differs from USD`)
+                }
+              } else {
+                this.log.debug(
+                  `cost fallback unavailable for session ${sessionId} model=${turnModel ?? '(unknown)'}: ${estimate.reason}`
+                )
+              }
+            }
+          } else {
+            this.store.setTokenUsage(key, counts)
+            evaluationUsage = usage
+          }
+        }
+
+        if (!p.stageAnswer) break
+
+        const refresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, true)
+        providerCheckpoint = refresh.providerCheckpoint ?? providerCheckpoint
+        // An operator interrupt can arrive after the ACP request resolves while the
+        // provider snapshot is still in flight. Re-fence the commit here: the normal
+        // prompt-result check above is no longer sufficient once finalization awaits.
+        if (p.outputSuppressed) {
+          this.discardStagedAttempt(p)
+          finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
+          if (p.outputSuppressed === 'loop protection') finalPhase = 'problem'
+          if (hookContext && !this.draining) {
+            this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
+          }
+          return null
+        }
+        // Recheck once more after provider I/O reconciliation returned. This is the
+        // local commit fence that catches gateway events arriving during that read.
+        const lateEvents = this.localInvalidatingEvents(p, refresh.revision)
+        const invalidatingEvents = [...refresh.events, ...lateEvents].sort(
+          (a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq
+        )
+        const finalRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+
+        if (invalidatingEvents.length === 0) {
+          this.acceptStagedAttempt(p)
+          if (generation > 0) defaultTurnOutputMetrics.regeneration(p.platform, 'accepted')
+          defaultTurnOutputMetrics.generations(generation + 1)
+          baseRevision = finalRevision
+          break
+        }
+
+        this.discardStagedAttempt(p)
+        this.emitEvaluation({
+          type: 'turn.context_changed',
+          agentId,
+          sessionId,
+          turnId: evaluationTurnId,
+          platform: msg.platform,
+          channel: msg.channel,
+          data: {
+            generation,
+            fromRevision: baseRevision,
+            toRevision: finalRevision,
+            eventCount: invalidatingEvents.length,
+            completeness: refresh.completeness
+          }
+        })
+        const eventTs = new Set(invalidatingEvents.map((event) => event.ts))
+        const queuedMatches = this.queuedEntriesMatchingContext(key, eventTs)
+        const retryAvailable =
+          generation < MAX_TURN_CONTEXT_REGENERATIONS &&
+          this.clock.now() - regenerationStartedAt < MAX_TURN_CONTEXT_REGENERATION_MS
+        if (!retryAvailable) {
+          defaultTurnOutputMetrics.candidateDiscarded('context_churn')
+          defaultTurnOutputMetrics.contextChurnExhausted(p.platform)
+          defaultTurnOutputMetrics.generations(generation + 1)
+          finishEvaluation('turn.cancelled', { reason: 'context_churn', generations: generation + 1 })
+          this.showActivity(replyConn, msg.channel, statusThread, '')
+          if (p.conv instanceof FeishuConverger) this.enqueueApply(p, { kind: 'card-cancel' })
+          if (queuedMatches.length === 0 && mode !== 'none') {
+            const notice =
+              'The conversation kept changing while I was answering, so I stopped this reply. Mention me again when the thread settles.'
+            this.enqueueApply(
+              p,
+              p.conv instanceof FeishuConverger
+                ? { kind: 'notice', text: notice }
+                : { kind: 'post', text: notice, attributed: false }
+            )
+          }
+          return null
+        }
+
+        // Retry-budget decision precedes queue mutation. Only activations whose
+        // provider ids are present in this exact replacement prompt are absorbed.
+        defaultTurnOutputMetrics.candidateDiscarded('context_changed')
+        this.coalesceQueuedContext(key, sessionId, eventTs)
+        baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
+        generation += 1
+        promptBlocks = [{ type: 'text', text: contextUpdateText(invalidatingEvents) }]
+        defaultTurnOutputMetrics.regeneration(p.platform, 'started')
+        this.emitEvaluation({
+          type: 'turn.regeneration_started',
+          agentId,
+          sessionId,
+          turnId: evaluationTurnId,
+          platform: msg.platform,
+          channel: msg.channel,
+          data: { generation, eventCount: invalidatingEvents.length }
+        })
       }
+
+      usage = evaluationUsage ?? usage
       // Turn-end refresh: the token totals only arrive here (the prompt response), so
       // fold them into the bar now.
       this.emitStatusBar(p)
@@ -12645,8 +13011,15 @@ export class Daemon {
       }
     }
     if (!p) return
-    if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
-      p.replyText += String(update.content.text ?? '')
+    const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
+    if (isAnswerChunk) {
+      const text = String(update.content.text ?? '')
+      if (p.stageAnswer) {
+        p.attemptReplyText += text
+        p.attemptAnswerUpdates.push(update)
+      } else {
+        p.replyText += text
+      }
     }
     // `setSessionTitle` is daemon housekeeping, not conversational activity. Codex
     // ACP reports it as an ordinary MCP tool_call, followed by title-less updates
@@ -12677,7 +13050,7 @@ export class Daemon {
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
     if (p.webchat) this.emitWebchatUpdate(p, update)
-    else if (!isHeadlessGithubFinal) {
+    else if (!isHeadlessGithubFinal && !(p.stageAnswer && isAnswerChunk)) {
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
       this.armFeishuStream(p)

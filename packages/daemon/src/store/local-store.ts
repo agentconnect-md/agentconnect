@@ -2562,6 +2562,29 @@ export class LocalStore {
       .all(channel, thread, sinceTs) as unknown as TranscriptEntry[]
   }
 
+  /**
+   * Provider-neutral context fence for one physical conversation thread. Unlike
+   * `transcriptSince`, this never compares provider message ids from different
+   * ordering domains; it follows the daemon's monotonic observation revision.
+   */
+  threadTranscriptRevision(channel: string, thread: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript WHERE channel = ? AND thread = ?')
+      .get(channel, thread) as { revision: number }
+    return row.revision
+  }
+
+  /** Conversation and audit rows observed after a thread-local revision fence. */
+  transcriptSinceRevision(channel: string, thread: string, afterRevision: number): TranscriptRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM transcript
+         WHERE channel = ? AND thread = ? AND revision > ?
+         ORDER BY revision ASC, seq ASC`
+      )
+      .all(channel, thread, afterRevision) as unknown as TranscriptRow[]
+  }
+
   /** The earliest inbound (non-agent) `text` message in a thread — the triggering user
    *  message. Used as a session-title fallback when neither ACP nor the title tool
    *  supplied one. Before the first meaningful request, this avoids showing only

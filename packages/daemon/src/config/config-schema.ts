@@ -157,6 +157,13 @@ export const ConfigSchema = z.object({
   logging: z
     .object({ level: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info') })
     .default({ level: 'info' }),
+  /** Daemon-local rollout switches. They are intentionally operator-owned and
+   * never negotiated through the control plane or placed on the message hot path. */
+  features: z
+    .object({
+      turnFinalContextRefresh: z.boolean().default(false)
+    })
+    .default({ turnFinalContextRefresh: false }),
   limits: z
     .object({
       maxAgents: z.number().int().default(32),
