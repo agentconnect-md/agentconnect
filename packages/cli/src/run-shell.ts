@@ -1,5 +1,5 @@
 import { RESERVED_RESTART_CODE } from '@agentconnect.md/protocol'
-import { exitAsChild, resolveDaemonEntry, spawnDaemon } from './delegate.js'
+import { exitAsChild, resolveDaemonEntry, spawnDaemon, type ChildResult } from './delegate.js'
 import { spawnDaemonViaLoginShell } from './service-spawn.js'
 import { versionInstall } from './version-commands.js'
 import { currentVersion, readMeta } from './version-store.js'
@@ -57,15 +57,34 @@ export async function ensureDaemonInstalled(root: string): Promise<void> {
  * daemon installs its own handlers) is reproduced faithfully rather than being
  * reported as a clean exit.
  */
+/** What the respawn loop does after a child exits. Pure so the shutdown race
+ *  (stop requested before the login-shell attempt reached readiness) is
+ *  regression-testable without spawning processes. */
+export function decideNext(
+  result: ChildResult & { ready?: boolean },
+  state: { viaShell: boolean; stopRequested: boolean }
+): 'exit' | 'fallback-direct' | 'respawn' {
+  // A requested stop beats everything: the exit we just observed is the stop
+  // being honored (the forwarded TERM may have hit a not-yet-ready login
+  // shell), and launching ANY replacement would leave a daemon running — or
+  // starting — after the service manager asked us to stop.
+  if (state.stopRequested) return 'exit'
+  if (state.viaShell && result.ready === false) return 'fallback-direct'
+  if (result.code === RESERVED_RESTART_CODE) return 'respawn'
+  return 'exit'
+}
+
 export async function runShell(root: string, argv: string[]): Promise<never> {
   await ensureDaemonInstalled(root)
 
   let current: ReturnType<typeof spawnDaemon>['child'] | undefined
+  let stopRequested = false
 
   const onInt = (): void => {
     // no-op: the child receives terminal SIGINT directly via the shared pgroup.
   }
   const onTerm = (): void => {
+    stopRequested = true
     current?.kill('SIGTERM')
   }
   process.on('SIGINT', onInt)
@@ -84,7 +103,8 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
     current = child
     const result = await done
     current = undefined
-    if (viaShell && 'ready' in result && !result.ready) {
+    const next = decideNext(result, { viaShell, stopRequested })
+    if (next === 'fallback-direct') {
       // The login shell exited/was killed before the daemon ever wrote its
       // lock — profile problem, not a daemon problem. Retry without the shell;
       // a genuine daemon startup error will then surface and propagate.
@@ -92,7 +112,7 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
       viaShell = false
       continue
     }
-    if (result.code === RESERVED_RESTART_CODE) continue // planned restart/upgrade — respawn current
+    if (next === 'respawn') continue // planned restart/upgrade — respawn current
     return exitAsChild(result, cleanup)
   }
 }
