@@ -587,11 +587,16 @@ export class GithubRunReporter {
             method: 'POST',
             auth: token,
             body: {
-              // Keep creates discoverable by binaries from before the display
-              // rename. The human name is applied only after checkRunId is
-              // durable, so mixed-version workers and rollbacks can reconcile
-              // an ambiguous POST through the legacy query.
-              name: legacyCheckName(projection),
+              // One write settles the Check completely. The create used to
+              // publish a legacy recovery name and repair it afterwards, but
+              // GitHub replaces `actions` on every update, so that second
+              // request had to carry presentation — which made a cosmetic,
+              // fence-free write into a stateful one racing the next
+              // generation. Naming the Check correctly up front removes the
+              // second write, and with it the race. `findCreatedCheck` still
+              // reads the legacy name so creates already in flight from an
+              // earlier binary stay recoverable.
+              name: checkName(projection),
               head_sha: projection.reportSha,
               external_id: projection.externalId,
               ...payload
@@ -602,20 +607,7 @@ export class GithubRunReporter {
           }
         )
         const checkRunId = String(created.id)
-        if (await this.finish(projection, marker, checkRunId, installationId, effectiveState, associationError)) {
-          await this.renameCreatedCheck(
-            projection,
-            checkRunId,
-            token,
-            owner,
-            repo,
-            installationId,
-            subjects,
-            effectiveState,
-            associationError,
-            presentation
-          )
-        }
+        await this.finish(projection, marker, checkRunId, installationId, effectiveState, associationError)
       }
     } catch (err) {
       await this.handleWriteError(projection, err, installationId)
@@ -759,7 +751,6 @@ export class GithubRunReporter {
     installationId: bigint
   ): Promise<void> {
     const marker = projection.writeMarker!
-    const recoveringCreate = projection.checkRunId === null
     try {
       let recovered: CheckRunResponse | null = null
       if (projection.checkRunId) {
@@ -791,14 +782,11 @@ export class GithubRunReporter {
           projection.subjectSyncGeneration === projection.generation ? projection.subjectSyncErrorCode : null
         )
         const checkRunId = String(recovered.id)
-        if (
-          (await this.finish(projection, marker, checkRunId, installationId, recoveredState, associationError)) &&
-          recoveringCreate
-        ) {
-          // Recovery knows only what GitHub observed and must not invent
-          // presentation, so it installs the readable name and nothing else.
-          await this.patchCheckName(projection, checkRunId, token, owner, repo)
-        }
+        // Recovery settles the projection against what GitHub observed and
+        // writes nothing further. A create publishes its final name and
+        // actions in one request, so there is no repair left to perform — and
+        // this path must not invent presentation it did not compute.
+        await this.finish(projection, marker, checkRunId, installationId, recoveredState, associationError)
         return
       }
       // GitHub list/get can lag an accepted mutation. Preserve the mutex and
@@ -830,7 +818,26 @@ export class GithubRunReporter {
     owner: string,
     repo: string
   ): Promise<CheckRunResponse | null> {
-    const name = encodeURIComponent(legacyCheckName(projection))
+    // Creates publish the display name directly. The legacy recovery name is
+    // still searched so a POST left in flight by an earlier binary — which
+    // named its creates `agentconnect/info/review/<hookId>` and repaired the
+    // label afterwards — stays recoverable across the upgrade.
+    for (const candidate of [checkName(projection), legacyCheckName(projection)]) {
+      const found = await this.findCreatedCheckByName(projection, marker, token, owner, repo, candidate)
+      if (found) return found
+    }
+    return null
+  }
+
+  private async findCreatedCheckByName(
+    projection: HookReviewProjectionRecord,
+    marker: string,
+    token: string,
+    owner: string,
+    repo: string,
+    checkRunName: string
+  ): Promise<CheckRunResponse | null> {
+    const name = encodeURIComponent(checkRunName)
     for (let page = 1; page <= MAX_RECOVERY_PAGES; page++) {
       const response = await githubRequest<CheckRunsResponse>(
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(projection.reportSha)}/check-runs?check_name=${name}&filter=all&per_page=100&page=${page}`,
@@ -873,113 +880,6 @@ export class GithubRunReporter {
     const fresh = await this.deps.hooks.getReviewProjection(projection.id)
     if (fresh) await this.advancePending(fresh)
     return true
-  }
-
-  /** Install the readable display name and nothing else. Generation-invariant
-   * and idempotent, so it needs no write mutex: every later state PATCH carries
-   * the same label. */
-  private async patchCheckName(
-    projection: HookReviewProjectionRecord,
-    checkRunId: string,
-    token: string,
-    owner: string,
-    repo: string
-  ): Promise<void> {
-    try {
-      await githubRequest<CheckRunResponse>(
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${encodeURIComponent(checkRunId)}`,
-        {
-          method: 'PATCH',
-          auth: token,
-          body: { name: checkName(projection) },
-          fetchImpl: this.deps.fetchImpl,
-          baseUrl: this.deps.baseUrl,
-          bigIdsAsStrings: true
-        }
-      )
-    } catch (err) {
-      this.deps.log?.warn?.(
-        { projectionId: projection.id, checkRunId, err: errorLabel(err, 'check_rename_failed') },
-        'github-run-reporter: check rename failed'
-      )
-    }
-  }
-
-  private async renameCreatedCheck(
-    projection: HookReviewProjectionRecord,
-    checkRunId: string,
-    token: string,
-    owner: string,
-    repo: string,
-    installationId: bigint,
-    subjects: readonly HookReviewSubjectRecord[],
-    effectiveState: ProjectionDesiredState,
-    associationError: SubjectAssociationErrorCode | null,
-    presentation: CheckPresentation
-  ): Promise<void> {
-    // The create POST publishes the legacy recovery name, so a second write has
-    // to install the readable one. It re-asserts the whole payload rather than
-    // the name alone: GitHub replaces `actions` on every update, and a
-    // projection whose first write is already terminal — an external PR parked
-    // on `review_request_required` — never receives another state PATCH, so
-    // this is the last request GitHub sees for that Check. A name-only write
-    // would strip the buttons the create just published.
-    //
-    // Re-asserting presentation makes this a state write, so it takes the
-    // projection write mutex like any other. Losing that race means a newer
-    // generation owns the Check; that generation's own PATCH carries both the
-    // readable name and its own actions, so dropping this write is correct.
-    const marker = randomUUID()
-    if (
-      !(await this.deps.hooks.beginProjectionWrite(
-        projection.id,
-        projection.generation,
-        this.workerId,
-        marker,
-        'update',
-        new Date(this.deps.clock.now())
-      ))
-    ) {
-      this.deps.log?.info(
-        { projectionId: projection.id, checkRunId },
-        'github-run-reporter: display-name write skipped — generation advanced'
-      )
-      return
-    }
-    try {
-      await githubRequest<CheckRunResponse>(
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${encodeURIComponent(checkRunId)}`,
-        {
-          method: 'PATCH',
-          auth: token,
-          body: {
-            name: checkName(projection),
-            ...checkPayload(
-              projection,
-              marker,
-              new Date(this.deps.clock.now()),
-              subjects,
-              effectiveState,
-              associationError,
-              presentation
-            )
-          },
-          fetchImpl: this.deps.fetchImpl,
-          baseUrl: this.deps.baseUrl,
-          bigIdsAsStrings: true
-        }
-      )
-    } catch (err) {
-      this.deps.log?.warn?.(
-        { projectionId: projection.id, checkRunId, err: errorLabel(err, 'check_rename_failed') },
-        'github-run-reporter: check rename failed'
-      )
-    }
-    // Landed or not, the Check's settled *state* is the one the create already
-    // wrote — this request differs from it only in name and actions. Release
-    // the fence with that observed value instead of leaving a presentation-only
-    // write to be reconciled as an ambiguous state mutation.
-    await this.finish(projection, marker, checkRunId, installationId, effectiveState, associationError)
   }
 
   private async advancePending(projection: HookReviewProjectionRecord): Promise<void> {

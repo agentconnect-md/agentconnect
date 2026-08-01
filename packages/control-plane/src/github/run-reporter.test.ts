@@ -720,12 +720,14 @@ describe('GithubRunReporter', () => {
 
     await reporter.tick()
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    // One request settles the Check: it is created under its display name, so
+    // no follow-up write exists that could strip the create's actions.
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
     const [url, init] = fetchImpl.mock.calls[0]!
     expect(url).toBe('https://api.github.com/repos/acme/repo/check-runs')
     expect(init?.method).toBe('POST')
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>
-    expect(body.name).toBe(`${LEGACY_CHECK_NAME_PREFIX_FOR_TEST}${hookId}`)
+    expect(body.name).toBe(CHECK_NAME_FOR_TEST)
     expect(body.head_sha).toBe(p.reportSha)
     expect(body.external_id).toBe(p.externalId)
     expect(body.details_url).toBeUndefined()
@@ -741,20 +743,6 @@ describe('GithubRunReporter', () => {
     ])
     expect(JSON.stringify(body.output)).not.toContain(hookId)
     expect(JSON.stringify(body.output)).not.toContain('Generation:')
-    const [renameUrl, renameInit] = fetchImpl.mock.calls[1]!
-    expect(renameUrl).toBe('https://api.github.com/repos/acme/repo/check-runs/90071992547409931')
-    expect(renameInit?.method).toBe('PATCH')
-    // The display write re-asserts the whole payload, not the name alone:
-    // GitHub replaces `actions` on every update.
-    expect(JSON.parse(String(renameInit?.body))).toMatchObject({
-      name: CHECK_NAME_FOR_TEST,
-      actions: [],
-      status: 'queued',
-      output: { title: 'Waiting for review' }
-    })
-    expect(hooks.completeProjectionWrite.mock.invocationCallOrder[0]).toBeLessThan(
-      fetchImpl.mock.invocationCallOrder[1]!
-    )
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
       expect.objectContaining({
         projectionId: p.id,
@@ -782,7 +770,7 @@ describe('GithubRunReporter', () => {
 
       await reporter.tick()
 
-      expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toMatchObject({
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toMatchObject({
         name: `AgentConnect PR Review: ${agentName}`,
         actions: []
       })
@@ -817,28 +805,6 @@ describe('GithubRunReporter', () => {
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
       expect.objectContaining({ observedState: 'in_progress' })
     )
-  })
-
-  it('keeps a completed create durable when the cosmetic rename fails', async () => {
-    const p = projection()
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === 'POST') {
-        return Response.json(
-          { id: '90071992547409931', external_id: p.externalId, status: 'queued', conclusion: null },
-          { status: 201 }
-        )
-      }
-      throw new Error('rename socket reset')
-    })
-    const { reporter, hooks } = worker(p, fetchImpl)
-
-    await reporter.tick()
-
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-    expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ checkRunId: '90071992547409931', observedState: 'queued' })
-    )
-    expect(hooks.retryProjectionWrite).not.toHaveBeenCalled()
   })
 
   it('updates the same check run to a terminal conclusion', async () => {
@@ -1079,10 +1045,9 @@ describe('GithubRunReporter', () => {
     ])
   })
 
-  it('re-asserts the Request review action on the rename that follows a terminal create', async () => {
-    // A Check created already terminal never gets a later state PATCH, so the
-    // cosmetic rename is the last request GitHub sees. A name-only PATCH there
-    // leaves the create POST's buttons unrepeated.
+  it('publishes the Request review action on the create itself', async () => {
+    // The create is the only request for a Check that is already terminal, so
+    // the button it publishes can never be stripped by a follow-up write.
     const p = projection({ desiredState: 'skipped', observedState: null, checkRunId: null })
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
@@ -1101,45 +1066,14 @@ describe('GithubRunReporter', () => {
 
     await reporter.tick()
 
-    const renameInit = fetchImpl.mock.calls.at(-1)![1]
-    expect(renameInit?.method).toBe('PATCH')
-    expect(JSON.parse(String(renameInit?.body))).toMatchObject({
+    const creates = fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')
+    expect(creates).toHaveLength(1)
+    expect(JSON.parse(String(creates[0]![1]?.body))).toMatchObject({
       name: CHECK_NAME_FOR_TEST,
       conclusion: 'skipped',
       actions: [{ label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }]
     })
-  })
-
-  it('drops the post-create display write when a newer generation already owns the Check', async () => {
-    // The display write mutates presentation, so it takes the projection write
-    // mutex. Losing that race means generation N+1 owns the Check; its own
-    // PATCH carries the readable name and its own actions, and this stale write
-    // must not restore N's Request review button over it.
-    const p = projection({ desiredState: 'skipped', observedState: null, checkRunId: null })
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
-      if (init?.method === 'POST') return Response.json({ id: '90071992547409934', external_id: p.externalId })
-      return Response.json({ id: '90071992547409934' })
-    })
-    // First call fences the create; the second is the display write, by which
-    // point the row has advanced past this generation.
-    const beginProjectionWrite = vi.fn(async () => beginProjectionWrite.mock.calls.length === 1)
-    const { reporter } = worker(p, fetchImpl, {
-      beginProjectionWrite,
-      getRunById: vi.fn(async () =>
-        run({
-          status: 'failed',
-          completedAt: new Date(NOW),
-          reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED
-        })
-      )
-    })
-
-    await reporter.tick()
-
-    expect(beginProjectionWrite).toHaveBeenCalledTimes(2)
-    const patches = fetchImpl.mock.calls.filter(([, init]) => init?.method === 'PATCH')
-    expect(patches).toHaveLength(0)
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0)
   })
 
   it('retries before writing when skipped presentation metadata is temporarily unavailable', async () => {
@@ -1361,12 +1295,12 @@ describe('GithubRunReporter', () => {
 
     await reporter.tick()
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    // Creates publish the display name, so the first lookup finds it and
+    // recovery writes nothing further.
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(fetchImpl.mock.calls[0]![1]?.method).toBe('GET')
     expect(fetchImpl.mock.calls[0]![0]).toContain(`/commits/${p.reportSha}/check-runs?`)
-    expect(fetchImpl.mock.calls[0]![0]).toContain(
-      `check_name=${encodeURIComponent(`${LEGACY_CHECK_NAME_PREFIX_FOR_TEST}${hookId}`)}`
-    )
+    expect(fetchImpl.mock.calls[0]![0]).toContain(`check_name=${encodeURIComponent(CHECK_NAME_FOR_TEST)}`)
     expect(hooks.beginProjectionWrite).not.toHaveBeenCalled()
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1377,10 +1311,46 @@ describe('GithubRunReporter', () => {
         observedState: 'queued'
       })
     )
-    expect(fetchImpl.mock.calls[1]![1]?.method).toBe('PATCH')
-    expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toEqual({ name: CHECK_NAME_FOR_TEST })
-    expect(hooks.completeProjectionWrite.mock.invocationCallOrder[0]).toBeLessThan(
-      fetchImpl.mock.invocationCallOrder[1]!
+  })
+
+  it('recovers an ambiguous create left in flight under the legacy name', async () => {
+    // An earlier binary named its creates for recovery and repaired the label
+    // afterwards. Such a POST may still be in flight across the upgrade, so the
+    // legacy name stays searchable after the display-name lookup misses.
+    const marker = 'legacy-named-marker'
+    const p = projection({
+      desiredState: 'success',
+      sealedThrough: 1n,
+      writeMarker: marker,
+      writePhase: 'create',
+      writeStartedAt: new Date(NOW - 1_000)
+    })
+    const legacyName = encodeURIComponent(`${LEGACY_CHECK_NAME_PREFIX_FOR_TEST}${hookId}`)
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes(`check_name=${legacyName}`)
+        ? Response.json({
+            total_count: 1,
+            check_runs: [
+              {
+                id: '12345678901234567',
+                external_id: p.externalId,
+                status: 'queued',
+                conclusion: null,
+                output: { summary: `Phase: queued\n<!-- agentconnect-write:${marker} -->` }
+              }
+            ]
+          })
+        : Response.json({ total_count: 0, check_runs: [] })
+    )
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls[0]![0]).toContain(`check_name=${encodeURIComponent(CHECK_NAME_FOR_TEST)}`)
+    expect(fetchImpl.mock.calls[1]![0]).toContain(`check_name=${legacyName}`)
+    expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
+      expect.objectContaining({ writeMarker: marker, checkRunId: '12345678901234567', observedState: 'queued' })
     )
   })
 
