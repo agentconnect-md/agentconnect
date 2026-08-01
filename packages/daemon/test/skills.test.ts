@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -253,6 +254,33 @@ describe('installSkills reconcile and containment', () => {
 
     expect(reconciled.removed).toEqual(['.claude/skills/owned-in-a'])
     expect(existsSync(installed)).toBe(false)
+  })
+
+  it('reclaims ownership capacity after the workspace directory is replaced', async () => {
+    const desired = {
+      id: 'a1',
+      runtime: 'claude',
+      skills: [{ name: 'source', source: 'acme/skills', skills: [] }]
+    }
+    const replacements = Array.from({ length: 16 }, (_, index) => join(root, `replacement-${index}`))
+    for (const replacement of replacements) mkdirSync(replacement)
+
+    for (let replacement = 0; replacement <= 16; replacement += 1) {
+      if (replacement > 0) {
+        rmSync(cwd, { recursive: true, force: true })
+        renameSync(replacements[replacement - 1]!, cwd)
+      }
+      const result = await installSkills(desired, cwd, {
+        stateDir,
+        execFile: async () => {
+          mkdirSync(join(cwd, '.claude', 'skills', `copy-${replacement}`), { recursive: true })
+        }
+      })
+
+      expect(result.errors).toEqual([])
+    }
+
+    expect(Object.keys(readMarker().workspaces)).toHaveLength(16)
   })
 
   it('uses an intact private fingerprint as the unchanged fast path', async () => {

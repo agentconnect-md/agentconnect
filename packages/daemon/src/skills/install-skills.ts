@@ -20,7 +20,7 @@ import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, promises as fsp } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { AgentSkillEntry } from '@agentconnect.md/protocol'
@@ -51,6 +51,8 @@ const SKILL_ROOTS = ['.claude/skills', '.agents/skills'] as const
 
 interface WorkspaceRecord {
   fingerprint?: string
+  /** Canonical cwd used to confirm that this directory instance still exists. */
+  workspacePath?: string
   /** cwd-relative skill dirs this daemon created (for reconcile removal). */
   installed: string[]
 }
@@ -86,15 +88,24 @@ function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[
 /** Bind private ownership state to one concrete workspace directory instance.
  * The canonical path catches cwd switches; dev+ino catches a materialization
  * replaced at the same path. The agent cannot forge this private marker. */
-async function workspaceIdentity(cwd: string): Promise<string> {
+interface WorkspaceIdentity {
+  id: string
+  path: string
+}
+
+function workspaceId(path: string, stat: import('node:fs').Stats): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ path, dev: String(stat.dev), ino: String(stat.ino) }))
+    .digest('hex')
+}
+
+async function workspaceIdentity(cwd: string): Promise<WorkspaceIdentity> {
   const canonical = await fsp.realpath(cwd)
   const stat = await fsp.lstat(canonical)
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new ContainedPathError('skills workspace is not a real directory')
   }
-  return createHash('sha256')
-    .update(JSON.stringify({ path: canonical, dev: String(stat.dev), ino: String(stat.ino) }))
-    .digest('hex')
+  return { id: workspaceId(canonical, stat), path: canonical }
 }
 
 function markerPath(stateDir: string): string {
@@ -150,9 +161,14 @@ async function readMarker(stateDir: string): Promise<Marker> {
   const workspaces: Record<string, WorkspaceRecord> = {}
   for (const [workspaceId, value] of Object.entries(raw.workspaces)) {
     if (!WORKSPACE_ID.test(workspaceId) || !value || typeof value !== 'object' || Array.isArray(value)) continue
-    const record = value as { fingerprint?: unknown; installed?: unknown }
+    const record = value as { fingerprint?: unknown; workspacePath?: unknown; installed?: unknown }
     workspaces[workspaceId] = {
       ...(typeof record.fingerprint === 'string' ? { fingerprint: record.fingerprint } : {}),
+      ...(typeof record.workspacePath === 'string' &&
+      isAbsolute(record.workspacePath) &&
+      !record.workspacePath.includes('\0')
+        ? { workspacePath: record.workspacePath }
+        : {}),
       installed: Array.isArray(record.installed)
         ? record.installed.filter((path): path is string => typeof path === 'string')
         : []
@@ -174,16 +190,29 @@ async function writeMarker(stateDir: string, marker: Marker): Promise<void> {
   )
 }
 
-/** Reserve one bounded private-state slot before invoking the CLI. Empty
- * records carry no deletion authority, so they are the only safe eviction
- * candidates. Refuse a new workspace rather than create untracked copies. */
-function ensureWorkspaceCapacity(marker: Marker, workspaceId: string): Marker {
-  if (marker.workspaces[workspaceId]) return marker
+/** Reserve one bounded private-state slot before invoking the CLI. A record is
+ * reclaimable when it owns nothing or its exact directory instance no longer
+ * exists. Refuse a new workspace rather than evict ownership from a live one. */
+async function ensureWorkspaceCapacity(marker: Marker, workspace: WorkspaceIdentity): Promise<Marker> {
+  if (marker.workspaces[workspace.id]) return marker
   const workspaces = { ...marker.workspaces }
   let size = Object.keys(workspaces).length
   for (const [id, record] of Object.entries(workspaces)) {
     if (size < MAX_WORKSPACE_RECORDS) break
-    if (record.installed.length > 0) continue
+    let reclaimable = record.installed.length === 0
+    if (!reclaimable && record.workspacePath) {
+      if (record.workspacePath === workspace.path) {
+        reclaimable = true
+      } else {
+        try {
+          const stat = await fsp.lstat(record.workspacePath)
+          reclaimable = !stat.isDirectory() || stat.isSymbolicLink() || workspaceId(record.workspacePath, stat) !== id
+        } catch (err) {
+          if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) reclaimable = true
+        }
+      }
+    }
+    if (!reclaimable) continue
     delete workspaces[id]
     size -= 1
   }
@@ -390,15 +419,15 @@ export async function installSkills(
   const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env, DISABLE_TELEMETRY: '1' }
 
   try {
-    const workspaceId = await workspaceIdentity(cwd)
-    const fp = fingerprint(agent.runtime, agentId ?? '', entries, workspaceId)
-    const marker = ensureWorkspaceCapacity(await readMarker(opts.stateDir), workspaceId)
+    const workspace = await workspaceIdentity(cwd)
+    const fp = fingerprint(agent.runtime, agentId ?? '', entries, workspace.id)
+    const marker = await ensureWorkspaceCapacity(await readMarker(opts.stateDir), workspace)
     // Create/validate the private marker parent before mutating the workspace.
     await containedTarget(opts.stateDir, join(opts.stateDir, MARKER_DIR), markerPath(opts.stateDir), {
       create: true,
       label: 'skills marker'
     })
-    const prior = marker.workspaces[workspaceId] ?? { installed: [] }
+    const prior = marker.workspaces[workspace.id] ?? { installed: [] }
     const priorTracked = prior.installed.filter(isTrackedSkillDir)
 
     // Validate existing roots before any reconcile operation. This rejects a
@@ -409,6 +438,12 @@ export async function installSkills(
     const targetsIntact = priorTracked.length === prior.installed.length && intact.every(Boolean)
     const cacheCoversDesired = entries.length === 0 || priorTracked.length > 0
     if (prior.fingerprint === fp && targetsIntact && cacheCoversDesired) {
+      if (prior.workspacePath !== workspace.path) {
+        await writeMarker(
+          opts.stateDir,
+          withWorkspaceRecord(marker, workspace.id, { ...prior, workspacePath: workspace.path })
+        )
+      }
       await removeLegacyMarker(cwd)
       result.skipped = 'unchanged'
       return result
@@ -433,8 +468,9 @@ export async function installSkills(
       }
       await writeMarker(
         opts.stateDir,
-        withWorkspaceRecord(marker, workspaceId, {
+        withWorkspaceRecord(marker, workspace.id, {
           ...(retained.length === 0 ? { fingerprint: fp } : {}),
+          workspacePath: workspace.path,
           installed: retained
         })
       )
@@ -487,8 +523,9 @@ export async function installSkills(
     const effective = retained.length === 0 && result.errors.length === 0 && created.length > 0
     await writeMarker(
       opts.stateDir,
-      withWorkspaceRecord(marker, workspaceId, {
+      withWorkspaceRecord(marker, workspace.id, {
         ...(effective ? { fingerprint: fp } : {}),
+        workspacePath: workspace.path,
         installed: [...new Set([...retained, ...created])]
       })
     )
