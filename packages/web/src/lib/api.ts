@@ -2867,6 +2867,25 @@ export async function updateIntegrationChannel(
   )
 }
 
+/** Forget a conversation row (DELETE …/channels/:channelId). Cleanup only — the bot
+ *  is not touched on the platform, and the row returns on the next authoritative
+ *  listing if it is still a member there. */
+export async function forgetIntegrationChannel(integrationId: string, channelId: string): Promise<void> {
+  await apiDelete<void>(
+    `${orgBase()}/integrations/${encodeURIComponent(integrationId)}/channels/${encodeURIComponent(channelId)}`
+  )
+}
+
+/** Withdraw the bot from a conversation, or (Discord) a whole server, at the PLATFORM.
+ *  Rejects with the platform's own message when it refuses — a missing scope, a
+ *  last-member channel — which the caller shows verbatim. */
+export async function leaveIntegrationConversation(
+  integrationId: string,
+  target: { kind: 'conversation'; channel: string } | { kind: 'space'; spaceId: string }
+): Promise<void> {
+  await apiPost<void>(`${orgBase()}/integrations/${encodeURIComponent(integrationId)}/leave`, { target })
+}
+
 /** Flip a bot's shared-bot opt-in (PATCH /bots/:id). */
 export async function updateBot(id: string, shareable: boolean): Promise<BotDto> {
   return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, { shareable })
