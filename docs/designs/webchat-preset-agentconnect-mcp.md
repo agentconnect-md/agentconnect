@@ -361,6 +361,18 @@ client cannot issue any tool request before initializing, so denying the handsha
 denies the whole server, and the session loses `agentconnect-admin` entirely. Every
 other JSON-RPC method stays denied.
 
+The private-current-session predicate (§5.2) is re-checked at request time for
+`tools/call` only. The descriptor is installed during `session/new`, and the daemon
+registers the resulting session with the CP only after that call returns — so the
+adapter's `initialize` and immediate `tools/list` always precede the
+current-session pointer and would deterministically lose that race (adapters do
+not retry a failed connect; the session would show no administration tools until
+the next descriptor rotation). Both are safe without the predicate: the handshake
+reaches no tool and `tools/list` serves the static curated catalog with no
+org-scoped data. `tools/call` — the step that actually wields the delegated
+authority — is issued mid-turn, after registration, and is denied whenever the
+conversation's current session is not private.
+
 Nested REST calls receive an already resolved internal principal. The raw grant is
 not replayed as REST Bearer authentication and cannot authenticate an external REST
 request.
