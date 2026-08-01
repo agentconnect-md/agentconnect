@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 
 /** Effort sentinel `'ultracode'` (matching Claude Code's own `ultracode` settings
@@ -5,6 +6,106 @@ import type { RuntimeDef } from '../config/config-schema.js'
  *  deliberately NOT a `thought_level` select value: the claude-acp runtime rejects
  *  effort="ultracode" ("Invalid value"). See `claudeSessionMeta` in acp-host.ts. */
 export const ULTRACODE_EFFORT = 'ultracode'
+
+/** Provider credential files that the trusted Claude parent may read but its
+ * native sandbox must hide from model-authored Bash. */
+const CLAUDE_PROVIDER_CREDENTIAL_FILE_ENV = [
+  'ANTHROPIC_IDENTITY_TOKEN_FILE',
+  'AWS_CONFIG_FILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+  'GOOGLE_APPLICATION_CREDENTIALS'
+] as const
+
+/** Anthropic profile selectors are unsupported for sandboxed Claude launches.
+ * Profile JSON may be agent-writable and must never choose host exceptions. */
+export const CLAUDE_PROFILE_ENV = ['ANTHROPIC_CONFIG_DIR', 'ANTHROPIC_PROFILE'] as const
+
+/** Claude provider credentials the parent runtime may consume but the native
+ * sandbox removes from sandboxed Bash commands. Shared-login credentials normally
+ * live in a file; these cover explicit API/gateway configurations as well. */
+const CLAUDE_PROVIDER_CREDENTIAL_ENV = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_IDENTITY_TOKEN',
+  'ANTHROPIC_IDENTITY_TOKEN_FILE',
+  ...CLAUDE_PROFILE_ENV,
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'ANTHROPIC_AWS_API_KEY',
+  'ANTHROPIC_FOUNDRY_API_KEY',
+  'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_EC2_METADATA_SERVICE_ENDPOINT',
+  'AWS_CONFIG_FILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'CLOUDSDK_AUTH_ACCESS_TOKEN',
+  'GOOGLE_APPLICATION_CREDENTIALS'
+] as const
+
+type ClaudeCredentialPathEnv = (typeof CLAUDE_PROVIDER_CREDENTIAL_FILE_ENV)[number]
+
+/** Discover direct provider credential file pointers from the trusted runtime
+ * environment. Profile JSON is deliberately not inspected: agent-writable input
+ * must never generate an outer-sandbox exception. */
+export function claudeProviderCredentialFiles(
+  env: NodeJS.ProcessEnv,
+  cwd: string
+): Array<{ envName: ClaudeCredentialPathEnv; path: string }> {
+  return CLAUDE_PROVIDER_CREDENTIAL_FILE_ENV.flatMap((name) => {
+    const path = env[name]?.trim()
+    return path ? [{ envName: name, path: resolve(cwd, path) }] : []
+  })
+}
+
+export interface ClaudeInnerSandboxSettings {
+  enabled: true
+  failIfUnavailable: true
+  autoAllowBashIfSandboxed: true
+  allowUnsandboxedCommands: false
+  filesystem: {
+    denyRead: string[]
+    denyWrite: string[]
+  }
+  credentials: {
+    files: Array<{ path: string; mode: 'deny' }>
+    envVars: Array<{ name: (typeof CLAUDE_PROVIDER_CREDENTIAL_ENV)[number]; mode: 'deny' }>
+  }
+}
+
+/** Build the SDK-native policy passed through claude-agent-acp's
+ * `_meta.claudeCode.options.sandbox`. Using the dedicated option preserves the
+ * adapter's CLAUDE_MODEL_CONFIG fallback (which `options.settings` would replace).
+ * The outer AgentConnect SRT remains the host boundary; this nested sandbox
+ * confines model-authored Bash and its descendants, while the parent Claude
+ * process retains shared-login access. */
+export function claudeInnerSandboxSettings(protectedCredentialRoots: readonly string[]): ClaudeInnerSandboxSettings {
+  const roots = [...new Set(protectedCredentialRoots)]
+  return {
+    enabled: true,
+    failIfUnavailable: true,
+    autoAllowBashIfSandboxed: true,
+    allowUnsandboxedCommands: false,
+    filesystem: {
+      denyRead: roots,
+      denyWrite: roots
+    },
+    credentials: {
+      files: roots.map((path) => ({ path, mode: 'deny' as const })),
+      envVars: CLAUDE_PROVIDER_CREDENTIAL_ENV.map((name) => ({ name, mode: 'deny' as const }))
+    }
+  }
+}
 
 /** A Claude Code runtime (its command/args reference `claude`) — these embed the
  *  @anthropic-ai/claude-agent-sdk, which needs a Claude Code executable. The ONE

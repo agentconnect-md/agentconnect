@@ -21,7 +21,7 @@ import {
 } from '../agents/runtime-memory.js'
 import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../agents/memory-provider.js'
 import type { RuntimeDef } from '../config/config-schema.js'
-import { isClaudeRuntimeDef } from '../acp/claude-runtime.js'
+import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../acp/claude-runtime.js'
 import { resolveCommandPath } from './probe.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './read-roots.js'
 
@@ -191,7 +191,12 @@ export function composeRuntimeLaunch(opts: {
     ...opts.runtime,
     command: sandboxAccess?.runtimeExecutable ?? opts.runtime.command,
     args: [...opts.runtime.args],
-    env: [...opts.runtime.env]
+    // AcpHost merges runtime.env before launch.env. Filter here as well as in
+    // prepareRuntimeLaunch so omission cannot restore a disabled profile selector.
+    env:
+      opts.runInSandbox && isClaudeRuntimeDef(opts.runtime)
+        ? opts.runtime.env.filter(({ name }) => !CLAUDE_PROFILE_ENV.some((profileName) => profileName === name))
+        : [...opts.runtime.env]
   }
 
   if (!protectedMemory) return { runtime: composed, launch }

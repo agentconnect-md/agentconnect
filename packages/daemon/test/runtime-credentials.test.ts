@@ -73,6 +73,7 @@ describe('Linux shared runtime login', () => {
     expect(existsSync(join(hostClaude, '.credentials.json'))).toBe(false)
     expect(existsSync(join(privateClaude, '.credentials.json'))).toBe(false)
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(sharedDir)
+    expect(launch.sandbox?.protectedCredentialRoots).toEqual([sharedDir])
 
     writeFileSync(join(sharedDir, '.credentials.json'), '{"accessToken":"refreshed"}')
     const scopeB = join(daemonRoot, 'agents', 'agent-b')
@@ -120,6 +121,7 @@ describe('Linux shared runtime login', () => {
     expect(realpathSync(privateAuth)).toBe(realpathSync(hostAuth))
     expect(readFileSync(hostAuth, 'utf8')).toContain('"new"')
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(realpathSync(hostAuth))
+    expect(launch.sandbox?.protectedCredentialRoots).toEqual([realpathSync(hostAuth)])
 
     writeFileSync(privateAuth, '{"last_refresh":"2026-03-01T00:00:00Z","token":"refreshed"}')
     expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)
