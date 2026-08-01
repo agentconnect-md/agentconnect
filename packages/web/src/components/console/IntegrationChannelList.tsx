@@ -221,9 +221,33 @@ const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string
   kind === 'im' ? 'conversation' : kind === 'mpim' ? 'group chat' : roomNoun(platform)
 
 /** The list marker. "#" is the channel convention Slack and Discord share; a Telegram
- *  or Lark group has no such sigil, so it gets none rather than a borrowed one. */
-const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
+ *  or Lark group has no such sigil, so it gets none rather than a borrowed one.
+ *  Exported because the mobile card header summarises the same row and must not
+ *  disagree with it — the two sit one above the other at ≤768px. */
+export const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
   kind === 'im' ? '@' : kind === 'mpim' ? '@@' : roomNoun(platform) === 'group' ? '' : '#'
+
+/** The place, named as the operator knows it. "on the platform" is our word for it,
+ *  not theirs — a person deciding whether to remove a bot wants to read "in Telegram". */
+const platformName = (platform?: string): string =>
+  platform === 'telegram'
+    ? 'Telegram'
+    : platform === 'slack'
+      ? 'Slack'
+      : platform === 'discord'
+        ? 'Discord'
+        : platform === 'feishu'
+          ? 'Lark'
+          : 'the chat app'
+
+/** Where the bot cannot be shown out from here, this is the sentence that says so.
+ *  Discord is the odd one: a bot belongs to a SERVER, so the way out is the band
+ *  heading above the row, not the chat app — pointing at Discord would send the
+ *  operator looking for a per-channel control that does not exist. */
+const manualExit = (platform: string | undefined, noun: string): string =>
+  platform === 'discord'
+    ? `A Discord bot belongs to a server, not one ${noun} — use Leave on the server heading above to take it out.`
+    : `The bot stays in the ${noun} — remove it in ${platformName(platform)} for that.`
 
 /** Fixed-position placement of the portalled popover, measured off its button. */
 type PopoverBox = { style: { left?: number; right?: number; top?: number; bottom?: number } }
@@ -250,14 +274,22 @@ export function placePopover(
 }
 
 /**
- * The per-row overflow menu: forget the row, and — where the platform allows it —
- * actually leave the conversation.
+ * The per-row overflow menu, which offers exactly ONE action — the strongest one the
+ * platform allows. Where the bot can leave, leaving is the only choice: it does
+ * everything the weaker one does and more, so offering both would ask the operator to
+ * distinguish two outcomes that differ only in how far they reach. Where it cannot
+ * (a Slack channel — see `canLeaveConversation`), removing from the list is the only
+ * choice, and its own copy is what tells the operator the bot is still in there and
+ * has to be shown out by hand.
  *
- * The two are deliberately worded apart, because confusing them is the whole trap
- * this list used to set. Forgetting only stops AgentConnect listing a conversation
- * and is the sole remedy for one the bot already left on a platform that cannot
- * report its own departure; leaving changes the outside world and needs the bot to
- * still be there. Both confirm, since neither is undoable from here.
+ * That collapse is what makes the "already gone" case load-bearing: on a leave-capable
+ * platform a stale row has no second escape hatch, so Leave must also succeed when the
+ * bot has already been removed there (`isAlreadyOutOfChat`, daemon side).
+ *
+ * Each label names its OUTCOME. Neither says "forget", the earlier wording: it
+ * describes our bookkeeping, not the user's outcome, and in a product that gives agents
+ * a MEMORY it reads like erasing what was said. Both confirm, since neither is undoable
+ * from here.
  */
 function RowActions({
   channel,
@@ -341,39 +373,39 @@ function RowActions({
               className="fixed z-[1100] w-[264px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
               style={box.style}
             >
-              {onLeave &&
-                item(
-                  `Leave ${noun}`,
-                  'log-out',
-                  `Removes the bot from this ${noun} on the platform. Add it again to undo.`,
-                  () =>
-                    run(async () => {
-                      if (
-                        !window.confirm(
-                          `Remove the bot from ${channel.name}? It leaves the ${noun} on the platform and stops receiving anything there. Re-invite it to undo.`
-                        )
-                      ) {
-                        return
-                      }
-                      await onLeave()
-                    })
-                )}
-              {item(
-                `Forget this ${noun}`,
-                'trash-2',
-                'Removes the row here only. Use it when the bot has already left.',
-                () =>
-                  run(async () => {
-                    if (
-                      !window.confirm(
-                        `Stop listing ${channel.name}? The bot is not touched — if it is still in the ${noun}, the row comes back.`
-                      )
-                    ) {
-                      return
-                    }
-                    await onForget()
-                  })
-              )}
+              {onLeave
+                ? item(
+                    `Leave ${noun}`,
+                    'log-out',
+                    `The bot leaves this ${noun} in ${platformName(platform)} and the row goes with it. Add it back to undo.`,
+                    () =>
+                      run(async () => {
+                        if (
+                          !window.confirm(
+                            `Have the bot leave ${channel.name}? It leaves the ${noun} in ${platformName(platform)} and stops receiving anything there. Add it back to undo.`
+                          )
+                        ) {
+                          return
+                        }
+                        await onLeave()
+                      })
+                  )
+                : item(
+                    'Remove from this list',
+                    'trash-2',
+                    `Only stops showing it here. ${manualExit(platform, noun)}`,
+                    () =>
+                      run(async () => {
+                        if (
+                          !window.confirm(
+                            `Remove ${channel.name} from this list? ${manualExit(platform, noun)} If it is still in there, the row will come back.`
+                          )
+                        ) {
+                          return
+                        }
+                        await onForget()
+                      })
+                  )}
             </div>
           </>,
           document.body

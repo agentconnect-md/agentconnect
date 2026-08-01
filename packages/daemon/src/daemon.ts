@@ -311,6 +311,30 @@ function formatErr(err: unknown): string {
   return e?.stack ?? String(err)
 }
 
+/**
+ * Does this Telegram failure just mean the bot is ALREADY out of the chat?
+ *
+ * Telegram offers no "am I in this chat" query, so the only way to learn it is to try
+ * to leave and read the refusal. These are the shapes it uses for a chat the bot
+ * cannot be in — removed, kicked, or the chat is gone. Anything else is a genuine
+ * failure and must still reach the operator.
+ *
+ * Matching on message text is a heuristic, and deliberately a safe one: a mis-read
+ * error only retires a row that is still live, which is the already-documented
+ * behaviour of a removed row — it returns on that conversation's next message.
+ */
+function isAlreadyOutOfChat(err: unknown): boolean {
+  const message = ((err as { message?: string })?.message ?? '').toLowerCase()
+  return (
+    message.includes('chat not found') ||
+    message.includes('not a member') ||
+    message.includes('bot was kicked') ||
+    message.includes('bot is not a member') ||
+    message.includes('user_not_participant') ||
+    message.includes('peer_id_invalid')
+  )
+}
+
 // ACP runtime identities for THIS daemon's own MCP tools. ALL_TOOL_NAMES is the
 // registry of every tool the agentconnect MCP server can inject; both approval
 // transports below derive their trust policy from this same set.
@@ -3336,7 +3360,19 @@ export class Daemon {
         return { ok: true }
       }
       if (conn instanceof TelegramConnection) {
-        await conn.leaveChannel(target.channel)
+        try {
+          await conn.leaveChannel(target.channel)
+        } catch (err) {
+          // Already out — someone removed the bot in Telegram and the row simply
+          // outlived it, which is the whole reason these rows accumulate. Leaving is
+          // the ONLY action offered on a Telegram row, so it has to finish the job in
+          // both states: refusing here would strand the operator with a row they can
+          // see, cannot leave, and have no other control over. Any other failure is
+          // still reported. Worst case of a mis-read error is the documented
+          // behaviour of a removed row — it returns on the conversation's next message.
+          if (!isAlreadyOutOfChat(err)) throw err
+          this.log.debug(`telegram: already out of ${target.channel} — retracting the row`)
+        }
         this.retractChannels(leave.integrationId, [target.channel])
         return { ok: true }
       }
