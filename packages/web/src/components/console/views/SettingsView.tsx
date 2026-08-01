@@ -91,7 +91,7 @@ const SESSION_ACCESS_COPY: Record<
     details: [
       'Public channels follow Slack workspace access; private channels, group DMs, guests and Slack Connect users need current membership.',
       'DMs stay private, and agent memory learned earlier is not erased.',
-      'Sessions that predate this setting have no recoverable Slack scope and stay hidden for good.',
+      'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
       'Turning this off leaves already-synced sessions following Slack.'
     ].join('\n'),
     unavailable: 'Needs OIDC sign-in and linked Slack identities.',
@@ -105,7 +105,7 @@ const SESSION_ACCESS_COPY: Record<
     details: [
       'Public-repository sessions stay visible to members who can view the agent; private-repository sessions need a linked GitHub profile with current access.',
       'Agent memory learned earlier is not erased.',
-      'Sessions that predate this setting have no recoverable repository scope and stay hidden for good.',
+      'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
       'Turning this off leaves already-synced sessions following GitHub.'
     ].join('\n'),
     unavailable: 'Needs OIDC sign-in and GitHub access checks.',

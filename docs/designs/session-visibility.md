@@ -159,14 +159,17 @@ enum VisibilitySource {
   AgentConnect database.
 - `SessionExternalAccessPolicy` is per organization and provider. Its revision
   and read fence make enablement fail closed while historical rows converge.
-  `legacyUnresolved` is the low-water mark of the unresolved count since
-  enablement: history whose scope cannot be reconstructed never settles, so
-  counting it as degradation would pin any organization with pre-existing
-  history to a permanent fault state and bury the one signal that matters.
-  `degraded` therefore means the live unresolved count **exceeds** the mark —
-  a candidate that failed to resolve after the policy was turned on. The mark
-  is adopted at enable and ratchets down as legacy rows settle; the backlog
-  itself stays reportable to owners as `hiddenSessions`.
+  History whose scope cannot be reconstructed only settles if new trusted
+  activity rebinds the same session, so treating it as degradation would pin any
+  organization with pre-existing history to a permanent fault state and bury the
+  one signal that matters. Enablement therefore stamps
+  `SessionMeta.legacyUnresolved` on the rows that are already unresolved
+  at that instant, and `degraded` means an unresolved row exists **without** that
+  mark — a candidate that failed to resolve after the policy was turned on. The
+  provenance is per row on purpose: a mere count of the backlog is fungible, so
+  settling one legacy row would offset a live post-enable failure and silently
+  clear the fault. A2A descendants inherit the mark with the audience they
+  inherit; the backlog stays reportable to owners as `hiddenSessions`.
 
 **Migration / backfill:** the original visibility migration populated `orgId`
 and kept legacy rows `org`; it did not guess DM ownership. The Slack-audience

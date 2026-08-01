@@ -923,10 +923,6 @@ export interface SessionExternalAccessPolicyRecord {
   state: ExternalAccessPolicyState
   currentRev: bigint
   readFenceRev: bigint | null
-  /** Low-water mark of the unresolved count since enablement. History whose
-   *  scope the migration could not reconstruct is permanent and expected, so it
-   *  never means `degraded` — only a count ABOVE this mark does. */
-  legacyUnresolved: number
   migrationCursor: string | null
 }
 
@@ -974,6 +970,9 @@ export interface SessionMetaRecord {
   externalProvider: string | null
   externalScopeId: string | null
   externalResolution: ExternalResolution | null
+  /** Already unresolved when the policy was enabled — expected history rather
+   *  than a live failure, and inherited with the audience by A2A descendants. */
+  legacyUnresolved: boolean
   classifiedPolicyRev: bigint | null
   startedAt: Date
   endedAt: Date | null

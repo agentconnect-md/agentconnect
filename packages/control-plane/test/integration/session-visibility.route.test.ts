@@ -222,9 +222,8 @@ describe('session visibility — Slack conversation audience', () => {
     })
     expect(ownerResponse.statusCode).toBe(200)
     // The pre-existing candidate stays hidden and is reported, but enabling
-    // adopts it as the legacy mark: unrecoverable history is not a fault state.
+    // marks it legacy: unrecoverable history is not a fault state.
     expect(ownerResponse.json()).toMatchObject({ enabled: true, state: 'enabled', hiddenSessions: 1 })
-    expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.legacyUnresolved).toBe(1)
 
     const stillHidden = (
       await appAs(owner, {
@@ -239,8 +238,9 @@ describe('session visibility — Slack conversation audience', () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
     const repo = new PgSessionRepo(prisma)
+    const legacySessionId = `s-slack-legacy-${randomUUID()}`
     await repo.recordMilestone({
-      sessionId: SessionId(`s-slack-legacy-${randomUUID()}`),
+      sessionId: SessionId(legacySessionId),
       agentId,
       phase: 'start',
       platform: 'slack',
@@ -252,9 +252,10 @@ describe('session visibility — Slack conversation audience', () => {
 
     const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
     expect(enabled).toMatchObject({ hiddenSessions: 1 })
-    expect(enabled.policy).toMatchObject({ state: 'enabled', legacyUnresolved: 1 })
+    expect(enabled.policy).toMatchObject({ state: 'enabled' })
 
-    // A second unresolved candidate exceeds the mark — that one IS actionable.
+    // A candidate that fails to resolve AFTER enablement carries no legacy mark
+    // — that one IS actionable.
     await repo.recordMilestone({
       sessionId: SessionId(`s-slack-new-${randomUUID()}`),
       agentId,
@@ -265,6 +266,33 @@ describe('session visibility — Slack conversation audience', () => {
       classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
       externalCandidate: { provider: 'slack', resolution: 'pending' }
     })
+    expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('degraded')
+
+    // Turnover must not absolve the live failure: settling the LEGACY candidate
+    // leaves the post-enable one unresolved, so the policy stays degraded. An
+    // aggregate low-water mark would read "back to one unresolved row" here and
+    // silently return to 'enabled'.
+    await repo.recordMilestone({
+      sessionId: SessionId(legacySessionId),
+      agentId,
+      phase: 'plan',
+      platform: 'slack',
+      channel: 'C_LEGACY',
+      at: new Date(),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: {
+        provider: 'slack',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'T_INSTALL',
+          resourceKind: 'conversation',
+          resourceKey: 'C_LEGACY',
+          credentialKind: 'bot',
+          credentialId: randomUUID()
+        }
+      }
+    })
+    expect(await repo.countExternalUnresolved(OrgId(DEFAULT_ORG_ID), 'slack')).toBe(1)
     expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('degraded')
   })
 
