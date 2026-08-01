@@ -3323,7 +3323,8 @@ export interface UserRepo {
    * email-only row is claimed by setting its `oidcSubject`) AND a personal org is
    * created with the user as its `owner` — so everyone lands in a workspace they
    * own. Later calls are a cheap idempotent fetch (plus the synthetic-email
-   * upgrade). Org selection is per-request (`resolveOrgContext`), not stored here.
+   * upgrade). Authorization remains per-request (`resolveOrgContext`); the last
+   * console choice is only a preference on the user's membership.
    */
   provisionOidcUser(input: ProvisionOidcUserInput): Promise<{ userId: string }>
 
@@ -3420,8 +3421,12 @@ export interface UserRepo {
 }
 
 export interface OrgRepo {
-  /** Every org the user belongs to, with their role — insertion order. */
+  /** Every org the user belongs to, with their role — most recently selected
+   * first, then insertion order for memberships without a selection. */
   listForUser(userId: string): Promise<OrgRecord[]>
+  /** Remember this member's active organization. Throws P2025 when the
+   * membership no longer exists. */
+  selectForUser(orgId: string, userId: string, selectedAt: Date): Promise<void>
   /** Create an org with `ownerUserId` as its first owner (one transaction). */
   create(input: { name: string | null; slug: string; ownerUserId: string }): Promise<OrgRecord>
   /** Update org settings. Throws P2025 when absent, P2002 on a slug collision. */

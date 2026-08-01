@@ -30,7 +30,10 @@ export class PgOrgRepo implements OrgRepo {
     const rows = await this.db.membership.findMany({
       where: { userId },
       include: { org: { include: { _count: { select: { members: true, daemons: true } } } } },
-      orderBy: { id: 'asc' } // cuids are time-sortable ⇒ insertion order (personal org first)
+      orderBy: [
+        { lastSelectedAt: { sort: 'desc', nulls: 'last' } },
+        { id: 'asc' } // cuids are time-sortable ⇒ insertion order when no choice exists
+      ]
     })
     return rows.map((m) => ({
       id: m.org.id,
@@ -44,6 +47,13 @@ export class PgOrgRepo implements OrgRepo {
       createdAt: m.org.createdAt,
       updatedAt: m.org.updatedAt
     }))
+  }
+
+  async selectForUser(orgId: string, userId: string, selectedAt: Date): Promise<void> {
+    await this.db.membership.update({
+      where: { orgId_userId: { orgId, userId } },
+      data: { lastSelectedAt: selectedAt }
+    })
   }
 
   async create(input: { name: string | null; slug: string; ownerUserId: string }): Promise<OrgRecord> {

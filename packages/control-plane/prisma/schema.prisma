@@ -174,15 +174,18 @@ enum AgentCallPolicy {
 }
 
 model Membership {
-  id        String   @id @default(cuid())
-  orgId     String
-  userId    String
-  role      OrgRole  @default(collaborator)
+  id             String    @id @default(cuid())
+  orgId          String
+  userId         String
+  role           OrgRole   @default(collaborator)
   // When this user joined THIS org — not their account signup. The console's
   // "joined" column reads it, and removal picks the ownership-transfer
   // recipient by it (resource-visibility.md §8.2). Pre-existing rows were
   // backfilled from the cuid embedded in `id`, which is that same instant.
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  // The last time THIS user selected THIS org in the console. Nullable keeps
+  // existing memberships in their original insertion order until a choice is made.
+  lastSelectedAt DateTime? @db.Timestamptz(6)
 
   org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

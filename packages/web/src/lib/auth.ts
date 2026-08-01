@@ -153,7 +153,7 @@ function clearLocalSessionMetadata(): void {
   cachedUser = null
   resetAnalytics()
   // The next sign-in may be a different user, so do not carry the previous
-  // user's organization selection into the new session.
+  // session's fallback cookie into it. The CP restores that user's preference.
   document.cookie = 'ac.org=; path=/; max-age=0'
   // A link proof belongs to the session that earned it. Left behind, the next
   // user in this tab would start a link Logto can only reject at the callback.

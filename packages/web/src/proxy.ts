@@ -5,26 +5,12 @@ import { NextResponse, type NextRequest } from 'next/server'
 // forbids a user org from taking it), so a no-auth install lives at
 // `/-/agents`; hosted users live on their own slug.
 //
-// Entry points (`/` and hand-typed bare page paths) are normalized WITHOUT an
-// ugly intermediate hop:
-//   - the `ac.org` cookie (written by the org context whenever an org
-//     resolves) names the last-used slug → ONE server redirect straight to
-//     `/{slug}/…`;
-//   - no cookie yet (first visit) → REWRITE to the default org's tree, so the
-//     address bar keeps the entered URL until the client resolves the real
-//     org and replaces it in one step.
-// A stale cookie (renamed/removed org) is fine: the org context's
-// reconciliation replaces an unknown slug with the caller's real org.
+// Entry points (`/` and hand-typed bare page paths) are rewritten to the
+// default org's tree while the address bar keeps the entered URL. OrgProvider
+// then resolves the signed-in user's server-stored preference and replaces the
+// URL in one step. A browser-wide cookie cannot drive this choice: it would
+// leak one account's last org into another account and drift across devices.
 const CONSOLE_ROOTS = ['home', 'agents', 'sessions', 'daemons', 'crons', 'tools', 'usage', 'settings', 'profile']
-
-// A real slug or the reserved `-` — anything else in the cookie is ignored
-// (it goes straight into a redirect path, so validate strictly).
-const SLUG_RE = /^(?:-|[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$/
-
-function lastOrgSlug(req: NextRequest): string | null {
-  const raw = req.cookies.get('ac.org')?.value
-  return raw && SLUG_RE.test(raw) ? raw : null
-}
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
@@ -34,11 +20,6 @@ export function proxy(req: NextRequest) {
 
   const consolePath = pathname === '/' ? '/home' : pathname
   const url = req.nextUrl.clone()
-  const slug = lastOrgSlug(req)
-  if (slug) {
-    url.pathname = `/${slug}${consolePath}`
-    return NextResponse.redirect(url)
-  }
   url.pathname = `/-${consolePath}`
   return NextResponse.rewrite(url)
 }
