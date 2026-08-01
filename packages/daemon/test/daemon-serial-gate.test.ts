@@ -20,6 +20,9 @@ function scaffold(): string {
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // This suite pins the base serial-gate contract (one turn per queued
+      // activation); the coalescing on-path is covered by turn-output-workflow.
+      features: { turnFinalContextRefresh: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )

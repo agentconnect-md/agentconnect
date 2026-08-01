@@ -184,6 +184,9 @@ function scaffold(agentIds: string[] = ['bot-a']): string {
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // This suite pins one-persisted-row-per-turn inbox replay; queue coalescing
+      // under the refresh fence is covered by turn-output-workflow.
+      features: { turnFinalContextRefresh: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
