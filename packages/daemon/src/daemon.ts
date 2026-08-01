@@ -16246,13 +16246,21 @@ export class Daemon {
         }
       }
       this.refreshAdmittedRuntimes()
-      // Overwrite unconditionally: a runtime that went from reachable → unreachable
-      // must drop its previously-cached models rather than keep advertising stale ones.
       for (const r of results) {
-        this.runtimeModels.set(r.runtime, r.ok ? r.models : [])
-        // Either way this is now live knowledge — the cached-provenance leniency
-        // (activation/move model gates) ends with the first real probe.
-        this.runtimeModelsSource.set(r.runtime, 'probed')
+        // Successful probes (including empty selectors) and auth failures are
+        // authoritative. Preserve a non-empty cache-hydrated list across other
+        // startup probe failures: disposable probe homes can fail while established
+        // agent homes remain usable. Cached provenance keeps model gates permissive
+        // until a later successful probe supplies live knowledge.
+        const keepCachedAdvertisement =
+          !r.ok &&
+          !r.authRequired &&
+          this.runtimeModelsSource.get(r.runtime) === 'cached' &&
+          (this.runtimeModels.get(r.runtime)?.length ?? 0) > 0
+        if (!keepCachedAdvertisement) {
+          this.runtimeModels.set(r.runtime, r.ok ? r.models : [])
+          this.runtimeModelsSource.set(r.runtime, 'probed')
+        }
         if (r.ok && r.acpProtocolVersion !== undefined) this.runtimeAcpVersions.set(r.runtime, r.acpProtocolVersion)
         else this.runtimeAcpVersions.delete(r.runtime)
         if (r.ok && r.probedVersion) this.runtimeProbedVersions.set(r.runtime, r.probedVersion)

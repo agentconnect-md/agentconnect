@@ -382,19 +382,19 @@ Lifecycle rules:
    visible through `observedAt` and the mismatch, until a new discovery replaces
    them. The UI must not fall back to knowing nothing the instant an adapter is
    upgraded.
-5. Division of responsibility with existing **fail-to-empty** behavior
-   (`daemon.ts:10561-10573`), which clears the runtime's advertised models after
-   probe failure to avoid advertising an unusable runtime: that behavior still
-   governs **advertisement** (`models[]`) unchanged. Probe failure means this
-   frame reports `models: []`. **Capability** (`modelCatalog`) comes from
-   independent `runtimeCatalogs` and is **not cleared by fail-to-empty**; the
-   failure frame still carries it. The model picker uses `models[]` and does not
-   advertise an unusable runtime, while CP capability knowledge is not reset to
-   null by one 30-second timeout. When the runtime recovers, the next successful
-   probe restores advertisement; capabilities never disappeared and need no
-   repeat discovery. "Never probed" (cold startup) is distinct from "probe
-   failed": the former serves cached advertisement; the latter clears only
-   advertisement.
+5. **Advertisement refresh failures preserve a cache-hydrated last-good list.**
+   A successful probe replaces `models[]` authoritatively, including a successful
+   empty selector. A known authentication rejection also clears the list and
+   carries `authRequired`, because the runtime cannot serve it until the operator
+   signs in. Any other failure of the first background refresh keeps non-empty
+   cache-hydrated `models[]` with `modelsSource: 'cached'`. Package-launch probes
+   use a fresh private HOME and can time out while warming dependencies even when
+   established agent homes remain healthy; erasing the cache in that state makes
+   the picker appear after restart and then disappear. Cached provenance keeps
+   activation/move validation permissive until a later successful probe replaces
+   it. A cold daemon with no cached list still reports `models: []` on failure.
+   **Capability** (`modelCatalog`) remains independent and is never cleared by a
+   probe failure.
 6. **Garbage collection**: during hydration, ignore runtime IDs absent from the
    current catalog resolved from registry/user/curated sources. Do not advertise
    or report them, but retain the rows because resolution may have failed
@@ -592,12 +592,12 @@ fails**.
 
 Every old/new component combination is lossless:
 
-| Combination                              | Behavior                                                                                                                                                                    |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| New daemon + old CP                      | zod strips/ignores new fields; old behavior remains                                                                                                                         |
-| Old daemon + new CP                      | catalog/modelsSource/seq are always absent; UI uses static fallback exactly as today; capability gates use probed semantics, also matching today                            |
-| First startup of new daemon (cold cache) | First frame has empty models and no catalog; phase 1/2 fill them in subsequent frames                                                                                       |
-| Restart of new daemon (warm cache)       | First frame includes last-good models (`modelsSource: 'cached'`) + catalog, fixing the clearing window for registry/user runtimes; see the §4 rule-1 scope note for curated |
+| Combination                              | Behavior                                                                                                                                                                                                  |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New daemon + old CP                      | zod strips/ignores new fields; old behavior remains                                                                                                                                                       |
+| Old daemon + new CP                      | catalog/modelsSource/seq are always absent; UI uses static fallback exactly as today; capability gates use probed semantics, also matching today                                                          |
+| First startup of new daemon (cold cache) | First frame has empty models and no catalog; phase 1/2 fill them in subsequent frames                                                                                                                     |
+| Restart of new daemon (warm cache)       | First frame includes last-good models (`modelsSource: 'cached'`) + catalog; a non-auth refresh failure keeps that fallback until a successful probe replaces it; see the §4 rule-1 scope note for curated |
 
 Delivery order, with each step independently releasable:
 
@@ -638,9 +638,11 @@ existing `probeRuntimes` / `hostFactory` seams.
   `modelsSource: 'cached'`; curated runtime is absent before admission.
 - **Capability-gate provenance**: a `cached` list does not reject model
   activation/move; a `probed` list remains strict.
-- **Fail-to-empty split**: probe failure reports `models: []` while the
-  **catalog remains in the frame** and cache rows remain. The next successful
-  probe restores advertisement immediately without rerunning phase 2.
+- **Last-good refresh fallback**: a non-auth failure of the first probe keeps
+  cache-hydrated `models[]` with `modelsSource: 'cached'`, while a cold-cache or
+  auth-required failure reports `models: []`; the catalog remains in every
+  failure frame. The next successful probe replaces advertisement immediately
+  without rerunning phase 2.
 - **Discovery gate**: after phase 1 writes metadata the gate remains open
   (`complete=0`); after full success, another same-fingerprint sweep does not
   trigger it; changed `probedVersion`, model-set difference, and driver age past
