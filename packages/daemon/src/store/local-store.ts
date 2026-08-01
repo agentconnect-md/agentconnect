@@ -1,7 +1,13 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { DreamInfo, ExternalSessionOrigin, SessionImageAttachment } from '@agentconnect.md/protocol'
+import {
+  QuotedMessageSchema,
+  type DreamInfo,
+  type ExternalSessionOrigin,
+  type QuotedMessage,
+  type SessionImageAttachment
+} from '@agentconnect.md/protocol'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 
 /** Per-tool-row rawInput budget in the mining prompt — enough for a command
@@ -195,6 +201,13 @@ export interface TranscriptEntry {
   text: string
   /** Bounded inline webchat images. Persisted daemon-side; never provider-backed files. */
   attachments?: SessionImageAttachment[]
+  /** Bounded provider-supplied reply source used only when rebuilding model context.
+   *  It is stored beside the conversational row but never exposed as transcript text. */
+  quoted?: QuotedMessage
+  /** Durable SQLite representation populated on reads. Callers should normally write
+   *  `quoted`; retaining this field on read-back entries makes replay/reconciliation
+   *  preserve the sidecar without adding it to the user-visible message contract. */
+  quoteJson?: string | null
   /** The agent this row was delivered TO (an inbound trigger / replayed context), when
    *  known. Absent for an agent's own output rows (those attribute via `sender`) and for
    *  unrouted messages. Lets the console session view show what one agent actually
@@ -213,6 +226,19 @@ export interface TranscriptRow extends TranscriptEntry {
   toolCallId?: string | null
   body?: string | null // JSON.stringify(ToolBody); NULL for text/reasoning rows
   attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
+}
+
+/** Decode daemon-private quote metadata fail-closed. Local DB corruption or a row from
+ * an older schema must never turn arbitrary JSON into prompt context. */
+export function transcriptQuoted(entry: Pick<TranscriptEntry, 'quoted' | 'quoteJson'>): QuotedMessage | undefined {
+  if (entry.quoted?.text) return entry.quoted
+  if (!entry.quoteJson) return undefined
+  try {
+    const parsed = QuotedMessageSchema.safeParse(JSON.parse(entry.quoteJson))
+    return parsed.success && parsed.data.text ? parsed.data : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export interface TranscriptEventCursor {
@@ -548,7 +574,7 @@ export class LocalStore {
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
-        attachmentsJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0
+        attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
@@ -779,6 +805,7 @@ export class LocalStore {
     this.migrateInboxLoopGuardCounted()
     this.migrateTranscriptToolBody()
     this.migrateTranscriptAttachments()
+    this.migrateTranscriptQuote()
     this.migrateTranscriptRecipient()
     this.migrateTranscriptTrustedAgentBot()
     this.migrateTranscriptEventTime()
@@ -1017,6 +1044,13 @@ export class LocalStore {
     const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'attachmentsJson'))
       this.db.exec('ALTER TABLE transcript ADD COLUMN attachmentsJson TEXT')
+  }
+
+  /** Add daemon-private quoted-reply context to existing transcript tables. The JSON
+   *  is deliberately not mapped onto the console's SessionMessage shape. */
+  private migrateTranscriptQuote(): void {
+    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'quoteJson')) this.db.exec('ALTER TABLE transcript ADD COLUMN quoteJson TEXT')
   }
 
   /** Add the defaultPermissionMode column to runtime_catalog_meta for DBs that
@@ -2410,20 +2444,22 @@ export class LocalStore {
   }
 
   appendTranscript(e: TranscriptEntry): void {
-    const { attachments, trustedAgentBot, ...entry } = e
+    const { attachments, trustedAgentBot, quoted, quoteJson, ...entry } = e
+    const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
     const revision = this.transcriptRevision + 1
     const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, trustedAgentBot, revision)
+           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision)
          VALUES
-           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @trustedAgentBot, @revision)`
+           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision)`
       )
       .run({
         ...entry,
         recipient: e.recipient ?? null,
         eventTimeUs: transcriptEventTimeUs(e.ts),
         attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
+        quoteJson: durableQuoteJson,
         trustedAgentBot: trustedAgentBot ? 1 : null,
         revision
       } as unknown as SqlParams)
@@ -2441,6 +2477,19 @@ export class LocalStore {
             )
             .run(e.channel, e.thread, e.ts)
         : undefined
+    // A later duplicate can be the first copy that carries provider reply metadata
+    // (or a corrected selected passage). Upgrade it without ever clearing a quote when
+    // a provider snapshot subsequently re-appends the same text row without metadata.
+    const quoteUpgraded =
+      Number(inserted.changes) === 0 && durableQuoteJson !== null
+        ? this.db
+            .prepare(
+              `UPDATE transcript SET quoteJson = ?
+               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'
+                 AND COALESCE(quoteJson, '') <> ?`
+            )
+            .run(durableQuoteJson, e.channel, e.thread, e.ts, durableQuoteJson)
+        : undefined
     // Record the delivery separately so it survives the text-row dedup above: if this same
     // (channel, thread, ts) was already recorded by another agent, the INSERT OR IGNORE
     // dropped this row and its `recipient`, but the message WAS delivered to this agent too.
@@ -2453,7 +2502,11 @@ export class LocalStore {
 
     if (Number(inserted.changes) === 1) {
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], revision)
-    } else if (Number(provenanceUpgraded?.changes ?? 0) === 1 || Number(delivered?.changes ?? 0) === 1) {
+    } else if (
+      Number(provenanceUpgraded?.changes ?? 0) === 1 ||
+      Number(quoteUpgraded?.changes ?? 0) === 1 ||
+      Number(delivered?.changes ?? 0) === 1
+    ) {
       const deliveryRevision = this.transcriptRevision + 1
       this.db
         .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")

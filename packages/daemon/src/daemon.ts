@@ -15,6 +15,7 @@ import {
   LocalStore,
   sessionKey,
   transcriptChannelKey,
+  transcriptQuoted,
   type InboxRow,
   type OrchestrationRow,
   type SessionRecord,
@@ -517,7 +518,6 @@ function dreamingPolicyOf(agent: { memory?: Agent['memory'] } | undefined): Memo
 const MAX_QUEUED_PER_SESSION = 10
 const MAX_TURN_CONTEXT_REGENERATIONS = 3
 const MAX_TURN_CONTEXT_REGENERATION_MS = 120_000
-const MAX_OBSERVED_QUOTE_SIDECARS = 10_000
 
 /** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
  *  how long after the abort the daemon stops awaiting `host.prompt` and discards
@@ -1483,10 +1483,6 @@ export class Daemon {
   private dreamScheduler!: DreamScheduler
   private sessions!: SessionManager
   private threadContext!: ThreadContextCoordinator
-  /** Inline reply sources are prompt context, not transcript body text. Keep a
-   * bounded event-id sidecar so every in-flight agent sees quotes from routed,
-   * peer-routed, and unrouted observations without changing console transcripts. */
-  private readonly observedQuoteSidecars = new Map<string, NonNullable<NormalizedMessage['quoted']>>()
   // integrationId -> the SlackConnection that owns it (for replies). Holds BOTH
   // socket-mode (direct) and send-only (HTTP-bot) connections — an HTTP bot's
   // send-only client is registered here too so replies/attachments/MCP reuse it.
@@ -7649,17 +7645,6 @@ export class Daemon {
     })
     if (!recentlyActive && !inFlight && !initializing) return
     const mention = includeAttachment ? attachmentMention(msg.attachments) : ''
-    if (msg.quoted?.text) {
-      const quoteKey = this.observedQuoteKey(transcriptChannel, thread, ts)
-      // Refresh insertion order on duplicate delivery, then bound stale sidecars.
-      this.observedQuoteSidecars.delete(quoteKey)
-      this.observedQuoteSidecars.set(quoteKey, msg.quoted)
-      while (this.observedQuoteSidecars.size > MAX_OBSERVED_QUOTE_SIDECARS) {
-        const oldest = this.observedQuoteSidecars.keys().next().value
-        if (oldest === undefined) break
-        this.observedQuoteSidecars.delete(oldest)
-      }
-    }
     const before = this.store.threadTranscriptRevision(transcriptChannel, thread)
     this.threadContext.observeInbound({
       channel: transcriptChannel,
@@ -7668,7 +7653,8 @@ export class Daemon {
       sender: msg.sender.id,
       ...(recipient ? { recipient } : {}),
       kind: 'text',
-      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text
+      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
+      ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
     })
     const after = this.store.threadTranscriptRevision(transcriptChannel, thread)
     if (after > before)
@@ -7821,12 +7807,8 @@ export class Daemon {
     return (this.serialQueue.get(key) ?? []).filter((entry) => eventTs.has(transcriptCoords(entry.msg).ts))
   }
 
-  private observedQuoteKey(transcriptChannel: string, thread: string, ts: string): string {
-    return JSON.stringify([transcriptChannel, thread, ts])
-  }
-
   private observedQuoteBlock(event: TranscriptEntry, replayed: readonly TranscriptEntry[]): string | undefined {
-    const quoted = this.observedQuoteSidecars.get(this.observedQuoteKey(event.channel, event.thread, event.ts))
+    const quoted = transcriptQuoted(event)
     return quoted ? quotedSourceBlock({ quoted }, { replayed }) : undefined
   }
 

@@ -289,6 +289,98 @@ describe('TurnOutputWorkflow', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('restores an unrouted quoted observation as model context after daemon restart', async () => {
+    const root = scaffold()
+    let onFirstUpdate!: (sessionId: string, update: unknown) => void
+    const firstHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        onFirstUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'initial answer' }
+        })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const firstDaemon = new Daemon({
+      root,
+      hostFactory: (_agent, update) => {
+        onFirstUpdate = update
+        return firstHost as any
+      }
+    })
+    await firstDaemon.start()
+    connect(firstDaemon)
+    const firstMessage = msg('100.1', 'original request')
+    await expect((firstDaemon as any).dispatch('bot-a', firstMessage, 'int-a')).resolves.toBe('acp-1')
+
+    const unrouted = msg('100.2', 'apply this')
+    unrouted.transportScope = firstMessage.transportScope
+    unrouted.quoted = {
+      messageId: '99.9',
+      sender: 'U2',
+      text: 'durable quote: keep the compatibility branch'
+    }
+    ;(firstDaemon as any).recordObservedInbound(unrouted)
+    const transcriptChannel = transcriptChannelKey('C1', firstMessage.transportScope)
+    expect(
+      (firstDaemon as any).store
+        .transcriptSince(transcriptChannel, 'T1', '100.1')
+        .find((row: any) => row.ts === '100.2')
+    ).toMatchObject({ recipient: null, quoteJson: expect.stringContaining('durable quote') })
+    await firstDaemon.stop()
+
+    let onRestartedUpdate!: (sessionId: string, update: unknown) => void
+    const prompts: string[] = []
+    const restartedHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: vi.fn(() => false),
+      loadSupported: vi.fn(() => true),
+      loadSession: vi.fn(async () => {}),
+      prompt: vi.fn(async (sessionId: string, blocks: { text?: string }[]) => {
+        prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+        onRestartedUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'answer after restart' }
+        })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const restarted = new Daemon({
+      root,
+      hostFactory: (_agent, update) => {
+        onRestartedUpdate = update
+        return restartedHost as any
+      }
+    })
+    await restarted.start()
+    connect(restarted)
+    const next = msg('100.3', 'continue after restart')
+    next.transportScope = firstMessage.transportScope
+    await expect((restarted as any).dispatch('bot-a', next, 'int-a')).resolves.toBe('acp-1')
+
+    expect(restartedHost.loadSession).toHaveBeenCalledWith(
+      'acp-1',
+      expect.any(String),
+      expect.any(Array),
+      undefined,
+      undefined
+    )
+    expect(prompts).toHaveLength(1)
+    const durableQuote = prompts[0]!.indexOf('[U2] durable quote: keep the compatibility branch')
+    const unroutedReply = prompts[0]!.indexOf('[U1] apply this')
+    expect(durableQuote).toBeGreaterThanOrEqual(0)
+    expect(durableQuote).toBeLessThan(unroutedReply)
+    await restarted.stop()
+  }, 15_000)
+
   it('delivers context-churn exhaustion as non-recording chrome', async () => {
     const context = {} as { daemon: Daemon; firstMessage: NormalizedMessage }
     let onUpdate!: (sessionId: string, update: unknown) => void
