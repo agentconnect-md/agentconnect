@@ -144,11 +144,9 @@ the old name — keeps working.
 
 ```ts
 // Input: {
-//   to: {
-//     toAgent: string,          // From listAgents.
-//     channel?: string,         // Omit for a postless wake.
-//     thread?: string
-//   },
+//   toAgent: string,            // From listAgents. dm form: no channel.
+//   channel?: string,           // Channel-root form; + thread = in-thread form.
+//   thread?: string,
 //   message: string
 // }
 // Output: { delivered: boolean, targetSession: sessionKey }
@@ -377,8 +375,8 @@ Two properties of the membership key are load-bearing:
   org can reach, so treating it as known would reject every call naming it while
   protecting nothing.
 
-The same-daemon path needs this as much as the relay hop, not less: `to.channel` and
-`to.thread` reach `MessageAgentReq` from the **model**, so without the check a
+The same-daemon path needs this as much as the relay hop, not less: `channel` and
+`thread` reach `MessageAgentReq` from the **model**, so without the check a
 prompt-injected agent could name a channel it cannot reach and resume a co-located peer's
 session living there. Relative to the `hasMembers(caller, target)` membership check it
 replaced, the rule is weaker on the KNOWN row only (the **target** no longer has to be in

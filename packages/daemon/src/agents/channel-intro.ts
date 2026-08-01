@@ -78,9 +78,9 @@ export function introPrompt(channel: string, agentId: string): string {
     `1. Call \`listAgents\` with the exact shape \`{"channel":"${channel}"}\` — the channel filter is REQUIRED ` +
       `here, so you introduce yourself only to the agents in THIS channel — to see who else is here (ignore yourself).`,
     `2. For EACH other agent, call \`sendMessage\` with the exact shape ` +
-      `\`{"to":{"toAgent":"<their id>"},"message":"<short introduction>"}\` (no \`channel\`, so it is a ` +
+      `\`{"toAgent":"<their id>","message":"<short introduction>"}\` (dm form — no \`channel\`, so it is a ` +
       `silent wake). The introduction should contain your name, one line on what you do, and that they can reach ` +
-      `you with \`{"to":{"toAgent":"${agentId}"},"message":"..."}\` or an @mention. Ask them to note you in ` +
+      `you with \`{"toAgent":"${agentId}","message":"..."}\` or an @mention. Ask them to note you in ` +
       `their memory and tell them no reply is needed.`,
     ``,
     `Introduce yourself ONLY — do not post to the channel, do not @mention or ping any human, and ` +
@@ -92,7 +92,7 @@ export function introPrompt(channel: string, agentId: string): string {
  * Build the HEADLESS turn that runs the introduction. It reuses the proven cron-style
  * trigger shape (`source:'cron'`) but is dispatched directly (never a real cron, so it
  * emits no cron/report). `headless` suppresses all channel output — the agent introduces
- * itself purely through `sendMessage` (silent `to.toAgent` wakes), and (via the caller turn's
+ * itself purely through `sendMessage` (silent `toAgent` dm-form wakes), and (via the caller turn's
  * `deliverHeadless` callMeta) the woken peers run headless too, recording it silently.
  *
  * The turn is keyed to the REAL `channel` so `ctx.channel` drives the `sendMessage`

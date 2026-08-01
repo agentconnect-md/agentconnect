@@ -113,11 +113,14 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
       }
     ])
 
-    const out = await client.callTool({ name: 'sendMessage', arguments: { to: { channel: 'C9' }, message: 'e2e hi' } })
+    const out = await client.callTool({
+      name: 'sendMessage',
+      arguments: { toUser: 'U9', channel: 'C9', message: 'e2e hi' }
+    })
     expect(out.isError).toBeFalsy()
     // No `thread` ⇒ post to the channel ROOT (undefined), not the current thread.
-    expect(gw.postMessage).toHaveBeenCalledWith('C9', 'e2e hi', undefined, { agentAuthorId: 'bot-a' })
-    expect(recorded).toEqual([{ channel: 'C9', text: 'e2e hi', ts: 'ts-42' }])
+    expect(gw.postMessage).toHaveBeenCalledWith('C9', '<@U9> e2e hi', undefined, { agentAuthorId: 'bot-a' })
+    expect(recorded).toEqual([{ channel: 'C9', text: '<@U9> e2e hi', ts: 'ts-42' }])
   }, 20_000)
 
   it('does not expose private stdio MCP until its persistent UDS attach is ACKed', async () => {

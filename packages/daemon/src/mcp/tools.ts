@@ -11,7 +11,7 @@ import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 export interface ToolDescriptor {
   name: string
   description: string
-  inputSchema: ObjectToolSchema
+  inputSchema: ObjectToolSchema | ObjectUnionSchema
 }
 
 type ToolProperties = Record<string, JSONValue>
@@ -23,11 +23,24 @@ interface ObjectToolSchema extends Record<string, JSONValue> {
   additionalProperties: false
 }
 
+/** A root-level object schema that discriminates mutually exclusive call modes via `oneOf`
+ *  (used by sendMessage). Each branch is a full {@link ObjectToolSchema} that owns its fields
+ *  and enforces `additionalProperties`; the root itself declares no fields. */
+interface ObjectUnionSchema extends Record<string, JSONValue> {
+  type: 'object'
+  oneOf: ObjectToolSchema[]
+}
+
 const obj = (properties: ToolProperties, required: string[] = []): ObjectToolSchema => ({
   type: 'object',
   properties,
   required,
   additionalProperties: false
+})
+
+const unionOf = (oneOf: ObjectToolSchema[]): ObjectUnionSchema => ({
+  type: 'object',
+  oneOf
 })
 
 /**
@@ -67,21 +80,55 @@ export const SESSION_TOOLS: ToolDescriptor[] = [
  * agent) into one tool, and also carries SessionTarget replies. Sending is not bound to the
  * platform that triggered the session: an agent may post on its current platform OR any OTHER
  * platform it is connected to. The daemon holds every bot token and picks the connection from
- * `to.platform` (+ optional `to.integrationId`); the model never sees a token. The `platform`
+ * `platform` (+ optional `integrationId`); the model never sees a token. The `platform`
  * enum is narrowed at build time to the platforms this agent actually has (absent when the
  * agent has no platform integration — pure A2A / reply still work).
+ *
+ * The protocol has TWO addressing modes, each with THREE delivery forms (dm / channel root /
+ * in thread), selected by the coordinates: no `channel` ⇒ dm; `channel` without `thread` ⇒
+ * channel root; `channel` + `thread` ⇒ in thread. `sessionId` stays a separate reply branch.
  */
 function buildSendMessageTool(platforms: string[], collaboration = true): ToolDescriptor {
   const platform = {
     type: 'string',
     ...(platforms.length > 0 ? { enum: platforms } : {}),
-    description: 'Target platform for a visible channel post. Defaults to the current conversation’s platform.'
-  }
-  const agentTarget = {
-    title: 'Peer agent target',
     description:
-      'Wake exactly one AgentConnect peer directly. With no `channel` the wake is postless (nothing is left in any ' +
-      'channel). Add a `channel` to ALSO post one visible message there and land the peer in that post’s thread.',
+      'Target platform for a visible send. Defaults to the current conversation’s platform; a `toUser` DM (`toUser` ' +
+      'without `channel`) defaults to Slack.'
+  }
+  const integrationId = {
+    type: 'string',
+    minLength: 1,
+    description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
+  }
+  const message = {
+    type: 'string',
+    minLength: 1,
+    description: 'Message body, in standard Markdown (CommonMark/GFM).'
+  }
+  const channel = {
+    type: 'string',
+    minLength: 1,
+    description:
+      'Channel root / in-thread forms: the target channel / chat id (Slack `C0123ABC`, Telegram/Discord/Feishu chat id).'
+  }
+  const thread = {
+    type: 'string',
+    description:
+      'In-thread form: post into this thread. Omit (or use "") with `channel` to post at channel root — which opens ' +
+      'a new session on that post; pass an existing id to post into that thread instead.'
+  }
+
+  // Mode 1 — toAgent: wake one AgentConnect peer. Forms: dm (no channel, postless), channel
+  // root (channel, no thread), in thread (channel + thread).
+  const agentTarget = {
+    title: 'toAgent — send to an agent',
+    description:
+      'Wake exactly one AgentConnect peer, with three forms: dm (`{"toAgent":"<id>","message":"..."}`) delivers ' +
+      'directly to that agent with nothing posted anywhere; channel root ' +
+      '(`{"toAgent":"<id>","channel":"<C>","message":"..."}`) also posts one visible message at the channel root and ' +
+      'anchors the peer to it; in thread (`{"toAgent":"<id>","channel":"<C>","thread":"<T>","message":"..."}`) posts ' +
+      'into that thread and reuses it for the peer.',
     ...obj(
       {
         toAgent: {
@@ -123,59 +170,64 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
             }
           ]
         },
-        channel: {
-          type: 'string',
-          minLength: 1,
-          description:
-            'Optional. When given, post a visible message to this channel and land the peer’s session in that post’s ' +
-            'thread. Omit for a postless direct wake in the current conversation.'
-        },
-        thread: {
-          type: 'string',
-          description:
-            'Optional. With `channel`: post into this thread and reuse it for the peer’s session; omit (or "") to ' +
-            'post at channel root and anchor the peer to the new root message. Without `channel` (postless): omit ' +
-            'for the current thread, use "" for channel root.'
-        }
+        channel,
+        thread,
+        message
       },
-      ['toAgent']
+      ['toAgent', 'message']
     )
   }
-  const channelTarget = {
-    title: 'Channel target',
+
+  // Mode 2 — toUser: reach one human platform member. Forms: dm (no channel — Slack DM),
+  // channel root (channel, no thread — @-mention at root), in thread (channel + thread —
+  // @-mention inside the thread).
+  const userTarget = {
+    title: 'toUser — send to a platform user',
     description:
-      'Post one visible message to a platform channel, optionally addressing one human. A post at channel root ' +
-      'opens a NEW session of your own on that post; only an explicit `thread` continues an existing conversation.',
+      'Deliver to one human platform member, with three forms: dm (`{"toUser":"<id>","message":"..."}`) ' +
+      'direct-messages that user (Slack only for now); channel root ' +
+      '(`{"toUser":"<id>","channel":"<C>","message":"..."}`) posts at the channel root and @-mentions the user; in ' +
+      'thread (`{"toUser":"<id>","channel":"<C>","thread":"<T>","message":"..."}`) posts into that thread and ' +
+      '@-mentions the user there.',
     ...obj(
       {
-        channel: {
-          type: 'string',
-          minLength: 1,
-          description: 'Target channel / chat id (Slack `C0123ABC`, Telegram/Discord/Feishu chat id).'
-        },
-        platform,
         toUser: {
           type: 'string',
           minLength: 1,
-          description: 'Optional platform member id to @mention / DM a human in the post (Slack only for now).'
+          description: 'Platform member id to reach, such as Slack `U0123ABC`.'
         },
-        thread: {
-          type: 'string',
-          description:
-            'Optional thread / topic anchor. Omit (or use "") to post at channel root — which opens a new session ' +
-            'on that post; pass an existing id to post into that thread instead.'
-        },
-        integrationId: {
-          type: 'string',
-          minLength: 1,
-          description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
-        }
+        channel,
+        thread,
+        platform,
+        integrationId,
+        message
       },
-      ['channel']
+      ['toUser', 'message']
     )
   }
+
+  // Bare channel post: publish a visible message without waking an agent or addressing a human.
+  const channelTarget = {
+    title: 'Channel post (no recipient)',
+    description:
+      'Publish one visible message to a platform channel without waking an agent or @-mentioning a human. A post at ' +
+      'channel root opens a NEW session of your own on that post; only an explicit `thread` continues an existing ' +
+      'conversation.',
+    ...obj(
+      {
+        channel,
+        thread,
+        platform,
+        integrationId,
+        message
+      },
+      ['channel', 'message']
+    )
+  }
+
+  // Separate reply branch: inject directly into the parent/origin session (session-concept §5.2).
   const sessionTarget = {
-    title: 'Parent session target',
+    title: 'Parent session reply',
     description:
       'Reply directly into the parent/origin session that woke this session. This is how an answer reaches the ' +
       'conversation that asked for it — posting it at that conversation’s channel ROOT instead would start a new one.',
@@ -191,56 +243,51 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
           minLength: 1,
           description:
             'Optional advanced override. Normally omit it so the daemon inherits reply correlation automatically.'
-        }
+        },
+        message
       },
-      ['sessionId']
+      ['sessionId', 'message']
     )
   }
 
   return {
     name: 'sendMessage',
     description: collaboration
-      ? 'Send one message to exactly one target. Your own turn reply already reaches the conversation you are in, so ' +
-        'use this tool for what that reply cannot do: reach a DIFFERENT conversation — another channel or thread, a ' +
-        'session, or a peer agent — or @-mention a specific human with `toUser`, which may be right here. Choose one ' +
-        'form:\n' +
-        '- Peer agent (direct wake): `{"to":{"toAgent":"<agent id>"},"message":"..."}` is a postless wake. Add a ' +
-        '`channel` (and optional `thread`) to also post a visible message and thread the peer’s reply there. Get the ' +
-        'id from listAgents and send one call per peer; never substitute a platform member id. When the wake ' +
-        'opens a session for the peer, the result carries its `childSessionId` — pass that to `viewSessionStatus` to ' +
-        'check whether the peer is still working. Use ' +
-        '`{"to":{"toAgent":{"agentId":"<agent id>","needsReply":true}},"message":"..."}` to also instruct that ' +
-        'session to report back to you when it is done or has failed.\n' +
-        '- Channel or human (visible post): `{"to":{"channel":"<channel id>"},"message":"..."}`. Add `toUser` only ' +
-        'to address an actual human, or `platform` to use another connected platform. Without a `thread` this posts ' +
-        'at channel root, which opens a NEW session of your own on that post — it never continues an existing ' +
-        'conversation.\n' +
-        '- Parent session (direct reply): `{"to":{"sessionId":"<Parent session>"},"message":"..."}`. Use the id ' +
-        'from your `# Agent` block. Relay an answer back to whoever asked this way — never by posting it at their ' +
-        'channel root.\n' +
-        'Write `message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone or wake yourself.'
-      : 'Post one visible message to exactly one platform channel or human. Your own turn reply already reaches the ' +
-        'conversation you are in, so use this tool for what that reply cannot do: reach a DIFFERENT conversation — ' +
-        'another channel, or another thread in this one — or @-mention a specific human with `toUser`, which may be ' +
-        'right here. Use ' +
-        '`{"to":{"channel":"<channel id>"},"message":"..."}` and add `toUser`, `platform`, `thread`, or ' +
-        '`integrationId` only when needed. Without a `thread` this posts at channel root, which opens a NEW session ' +
-        'of your own on that post. Peer-agent and parent-session delivery are disabled for this run. Write ' +
-        '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone.',
-    inputSchema: obj(
-      {
-        to: {
-          type: 'object',
-          description: 'Choose exactly one target branch. Fields from different branches cannot be mixed.',
-          oneOf: collaboration ? [agentTarget, channelTarget, sessionTarget] : [channelTarget]
-        },
-        message: {
-          type: 'string',
-          minLength: 1,
-          description: 'Message body, in standard Markdown (CommonMark/GFM).'
-        }
-      },
-      ['to', 'message']
+      ? 'Send one message to exactly one target: a peer agent (`toAgent`), a human (`toUser`), a channel with no ' +
+        'recipient, or the parent-session reply. The two recipient modes each have three forms: dm / channel root / ' +
+        'in thread. Your own turn reply already reaches the conversation you are in, so use this tool only for what ' +
+        'that reply cannot do: a different conversation, a human, a peer agent, or a parent-session reply.\n' +
+        '- toAgent — wake exactly one peer agent (id from listAgents; never a platform member id):\n' +
+        '  • dm: `{"toAgent":"<agent id>","message":"..."}` — direct, postless wake: nothing is posted anywhere.\n' +
+        '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
+        'visible message at the channel root and anchors the peer to it.\n' +
+        '  • in thread: `{"toAgent":"<agent id>","channel":"<channel id>","thread":"<thread id>","message":"..."}` — ' +
+        'posts into that thread and reuses it for the peer.\n' +
+        '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` to have the peer report back ' +
+        'when it finishes or fails; pass the returned `childSessionId` to `viewSessionStatus` to check on it.\n' +
+        '- toUser — reach one human (Slack only for now):\n' +
+        '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
+        '  • channel root: `{"toUser":"<Slack user id>","channel":"<channel id>","message":"..."}` — posts at the ' +
+        'channel root and @-mentions the user.\n' +
+        '  • in thread: `{"toUser":"<Slack user id>","channel":"<channel id>","thread":"<thread id>","message":"..."}` — ' +
+        'posts into that thread and @-mentions the user there.\n' +
+        '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts to the channel ' +
+        'without waking anyone or @-mentioning anyone; add `platform`, `thread`, or `integrationId` only when needed.\n' +
+        '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
+        'asked this way, never by posting it at their channel root.\n' +
+        'A channel-root post (no `thread`) opens a NEW session of your own on that post; an explicit `thread` ' +
+        'continues the existing conversation. Write `message` as CommonMark/GFM. The daemon supplies your identity; ' +
+        'you cannot impersonate anyone or wake yourself.'
+      : 'Post one visible message to exactly one channel or human. Your own turn reply already reaches the ' +
+        'conversation you are in, so use this tool only for what that reply cannot do: a different conversation or a ' +
+        'human. Use `{"channel":"<channel id>","message":"..."}` for a bare channel post, ' +
+        '`{"toUser":"<Slack user id>","message":"..."}` for a DM, or `{"toUser":"<Slack user id>","channel":"<channel ' +
+        'id>","message":"..."}` for a channel-root post that @-mentions the user; add `"thread":"<thread id>"` to ' +
+        'post into that thread instead. A channel-root post opens a NEW session of your own on that post. Peer-agent ' +
+        'and parent-session delivery are disabled for this run. Write `message` as CommonMark/GFM. The daemon ' +
+        'supplies your identity; you cannot impersonate anyone.',
+    inputSchema: unionOf(
+      collaboration ? [agentTarget, userTarget, channelTarget, sessionTarget] : [userTarget, channelTarget]
     )
   }
 }
@@ -562,7 +609,7 @@ export const EXTERNAL_MEMORY_TOOL_NAMES = new Set(
  * (discovery is org-level, not platform- or channel-gated). `listAgents` asks the CP
  * which peers this agent may reach in its organization so it can find someone to work
  * with; channel membership is only an optional filter on that answer. Waking a peer is
- * no longer a separate tool: it is `sendMessage` with `to.toAgent` (session-concept §4).
+ * no longer a separate tool: it is `sendMessage` with `toAgent` (session-concept §4).
  * The requesting agent's identity is injected by the daemon from the session context —
  * it is NOT a tool input.
  */
@@ -582,7 +629,7 @@ const LIST_AGENTS_DESCRIPTION =
   'here": whenever you are asked to greet, message, collaborate with, or delegate to the agents/peers around you, ' +
   'discover them with THIS tool — NOT `listChannelMembers` (which lists platform user/bot accounts, not ' +
   'AgentConnect agents). Then reach each one with `sendMessage` using ' +
-  '`{"to":{"toAgent":"<agent id>"},"message":"..."}` (a direct, postless wake), rather than @mentioning member ids ' +
+  '`{"toAgent":"<agent id>","message":"..."}` (a direct, postless wake), rather than @mentioning member ids ' +
   'in a channel post. Pass `channel` only as a FILTER, to narrow the list to the agents present in that channel. ' +
   'Only agents you are allowed to reach are returned.'
 

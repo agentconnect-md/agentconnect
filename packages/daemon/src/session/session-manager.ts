@@ -650,21 +650,24 @@ export class SessionManager {
         : [])
     ].join('\n')
 
-    // Standing guidance for agent↔agent collaboration. `sendMessage` with `to.toAgent` is the
-    // explicit attention/wake primitive, delivered directly to that agent. Adding a `channel`
-    // also posts a visible message and threads the woken agent's reply there; `to.toAgent` alone
-    // is a postless, channel-invisible wake.
+    // Standing guidance for agent↔agent collaboration. `sendMessage` has two modes — `toAgent`
+    // (wake a peer) and `toUser` (reach a human) — each with three forms: dm / channel root /
+    // in thread. `toAgent` without a `channel` (dm form) is the postless, channel-invisible wake.
     const collabAppend =
       this.deps.collaborationEnabled === false
         ? ''
         : `# Collaborating with other agents\n` +
           `- To reach a specific agent privately, call \`sendMessage\` with ` +
-          `\`{"to":{"toAgent":"<agent id>"},"message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
-          `(nothing is posted to the channel). Add a \`channel\` (\`{"to":{"toAgent":"<agent id>","channel":"<channel id>"}}\`) ` +
-          `to ALSO post a visible message there and thread that agent's reply under it — use this when the hand-off ` +
-          `should be visible to people in the channel. If you were woken by another session, reply with ` +
-          `\`{"to":{"sessionId":"<Parent session>"},"message":"..."}\`. To leave a visible note others catch up on ` +
-          `later without waking anyone, use \`{"to":{"channel":"<channel id>"},"message":"..."}\`.\n` +
+          `\`{"toAgent":"<agent id>","message":"..."}\` (dm form) — it wakes ONLY that agent, delivered directly to it ` +
+          `(nothing is posted to the channel). Add a \`channel\` ` +
+          `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
+          `to ALSO post a visible message there and thread that agent's reply under it; add ` +
+          `\`"thread":"<thread id>"\` (in-thread form) to post into a specific thread instead. Use these when the ` +
+          `hand-off should be visible to people in the channel. To reach a human, use the \`toUser\` mode: ` +
+          `\`{"toUser":"<Slack user id>","message":"..."}\` DMs them, and adding \`channel\` (and optionally ` +
+          `\`thread\`) posts an @-mention at the channel root (or inside that thread). If you were woken by another ` +
+          `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
+          `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`.\n` +
           `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
           `agents unless a human explicitly tells you to.\n` +
           `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +
@@ -682,7 +685,7 @@ export class SessionManager {
       ? `# Reporting back to your parent session\n` +
         `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
         `cannot finish — reply to it with ` +
-        `\`sendMessage\` \`{"to":{"sessionId":"${effectiveOriginSessionId}"},"message":"..."}\`, saying whether you ` +
+        `\`sendMessage\` \`{"sessionId":"${effectiveOriginSessionId}","message":"..."}\`, saying whether you ` +
         `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
         `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful.`
       : ''

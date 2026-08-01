@@ -102,13 +102,13 @@ describe('McpControlServer IPC', () => {
       token,
       op: 'callTool',
       name: 'sendMessage',
-      args: { to: { channel: 'C1' }, message: 'hello' }
+      args: { toUser: 'U9', channel: 'C1', message: 'hello' }
     })
     expect(res.ok).toBe(true)
     // A deliberate sendMessage with no `thread` posts to the channel ROOT (undefined), not the
     // current thread — "reply here" is the agent's normal turn output.
-    expect(gw.postMessage).toHaveBeenCalledWith('C1', 'hello', undefined, { agentAuthorId: 'bot-a' })
-    expect(recorded).toEqual([{ channel: 'C1', text: 'hello', ts: 'ts-9' }])
+    expect(gw.postMessage).toHaveBeenCalledWith('C1', '<@U9> hello', undefined, { agentAuthorId: 'bot-a' })
+    expect(recorded).toEqual([{ channel: 'C1', text: '<@U9> hello', ts: 'ts-9' }])
   })
 
   it('rejects an unknown/expired token', async () => {
@@ -154,7 +154,7 @@ describe('McpControlServer IPC', () => {
       token,
       op: 'callTool',
       name: 'sendMessage',
-      args: { to: { channel: 'C1' }, message: 'x' }
+      args: { toUser: 'U9', channel: 'C1', message: 'x' }
     })
     expect(res.ok).toBe(false)
     expect(res.error).toMatch(/slack down/)
