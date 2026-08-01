@@ -23,13 +23,23 @@ export interface InvocationContext {
 }
 
 export interface ParsedInvocationMetadata {
-  method: 'tools/list' | 'tools/call'
+  /** The raw JSON-RPC method — classification is this module's job, not the caller's. */
+  method: string
   requestId?: string
   toolName?: string
 }
 
+/** Transport-level methods a grant may issue without an invocation identity. The MCP
+ *  handshake is MANDATORY (a client sends `initialize` before anything else and may
+ *  keep the connection warm with `ping`), so denying these denies the whole server:
+ *  the adapter never completes `initialize` and the session shows no admin tools at
+ *  all. They are answered inside the MCP handler, reach no tool, no nested REST call,
+ *  and no org-scoped data — but they still require a live, unrevoked grant, so an
+ *  expired credential learns nothing beyond the same 401. */
+const HANDSHAKE_METHODS = new Set(['initialize', 'notifications/initialized', 'ping'])
+
 export type RemoteGrantClaimResult =
-  { kind: 'execute'; context: InvocationContext } | { kind: 'denied'; reason: string }
+  { kind: 'execute'; context: InvocationContext } | { kind: 'handshake' } | { kind: 'denied'; reason: string }
 
 export interface RemoteGrantAuthenticatorDeps extends LiveWebchatMcpAuthorityDeps {
   clock: Pick<Clock, 'now'>
@@ -77,10 +87,12 @@ export class RemoteGrantAuthenticator {
     } catch {
       return { kind: 'denied', reason: 'metadata' }
     }
+    if (HANDSHAKE_METHODS.has(metadata.method)) return { kind: 'handshake' }
+    const method = metadata.method
     if (
-      (metadata.method !== 'tools/list' && metadata.method !== 'tools/call') ||
-      (metadata.method === 'tools/list' && metadata.toolName !== undefined) ||
-      (metadata.method === 'tools/call' && (!metadata.toolName || !this.deps.isCuratedTool(metadata.toolName)))
+      (method !== 'tools/list' && method !== 'tools/call') ||
+      (method === 'tools/list' && metadata.toolName !== undefined) ||
+      (method === 'tools/call' && (!metadata.toolName || !this.deps.isCuratedTool(metadata.toolName)))
     ) {
       return { kind: 'denied', reason: 'tool' }
     }
@@ -100,7 +112,7 @@ export class RemoteGrantAuthenticator {
         startedAt: now,
         ...(metadata.requestId ? { requestId: metadata.requestId } : {}),
         requestHash: createHash('sha256').update(input.requestBytes).digest('hex'),
-        method: metadata.method,
+        method,
         ...(metadata.toolName ? { toolName: metadata.toolName } : {})
       }
     }
