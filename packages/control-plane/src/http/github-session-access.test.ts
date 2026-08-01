@@ -30,6 +30,14 @@ const scope: ExternalScopeRecord = {
   revokedAt: null
 }
 
+function scopeAt(index: number): ExternalScopeRecord {
+  return {
+    ...scope,
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    resourceKey: String(index)
+  }
+}
+
 function make(privateRepo: boolean, permissionForUser = vi.fn()) {
   const clock = new FakeClock()
   const repoRefById = vi.fn().mockResolvedValue({
@@ -48,6 +56,17 @@ function make(privateRepo: boolean, permissionForUser = vi.fn()) {
 }
 
 describe('GithubSessionAccessService', () => {
+  it('resolves allowed scopes beyond the first 200', async () => {
+    const h = make(false)
+    const scopes = Array.from({ length: 201 }, (_, index) => scopeAt(index + 1))
+
+    const result = await h.service.resolve(scopes, 'user-1')
+
+    expect(result.degraded).toBe(false)
+    expect(result.allowedScopes).toHaveLength(201)
+    expect(result.allowedScopes.at(-1)).toEqual({ id: scopes[200]!.id, aclRevision: scopes[200]!.aclRevision })
+  })
+
   it('allows an org member to read a public repository session without a linked GitHub identity', async () => {
     const h = make(false)
 
