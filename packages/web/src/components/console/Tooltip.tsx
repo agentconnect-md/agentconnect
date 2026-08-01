@@ -164,6 +164,9 @@ export function TooltipLayer() {
     document.addEventListener('pointerover', onPointerOver, true)
     document.addEventListener('pointerout', onPointerOut, true)
     document.addEventListener('pointerdown', hide, true)
+    // Keyboard activation has no pointerdown. Release a parked title before the
+    // target's click handler can remove or replace its state-driven title.
+    document.addEventListener('click', hide, true)
     document.addEventListener('focusin', onFocusIn, true)
     document.addEventListener('focusout', hide, true)
     document.addEventListener('keydown', onKeyDown, true)
@@ -176,6 +179,7 @@ export function TooltipLayer() {
       document.removeEventListener('pointerover', onPointerOver, true)
       document.removeEventListener('pointerout', onPointerOut, true)
       document.removeEventListener('pointerdown', hide, true)
+      document.removeEventListener('click', hide, true)
       document.removeEventListener('focusin', onFocusIn, true)
       document.removeEventListener('focusout', hide, true)
       document.removeEventListener('keydown', onKeyDown, true)
