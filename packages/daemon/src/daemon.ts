@@ -1968,8 +1968,7 @@ export class Daemon {
         sandboxMechanism: this.sandboxMechanism,
         daemonRoot: root,
         agentsRoot: this.cfg.agentsDir,
-        mcpSocketPath: mcpSocketPath(root),
-        maskedReadRoots: undefined
+        mcpSocketPath: mcpSocketPath(root)
       }),
       onUpdated: (runtimeId) => {
         this.rebuildRuntimeCatalog(runtimeId)
@@ -3797,8 +3796,7 @@ export class Daemon {
             : undefined,
           explicitEnv: { ...runtimeEnv, ...env },
           sandboxMechanism: this.sandboxMechanism,
-          mcpSocketPath: mcpSocketPath(this.root),
-          maskedReadRoots: undefined
+          mcpSocketPath: mcpSocketPath(this.root)
         })
         launch = composed.launch
         launchRuntime = composed.runtime
@@ -15693,8 +15691,7 @@ export class Daemon {
                     ? runtimeSandboxReadRoots(runtime, process.env).readRoots
                     : undefined,
                 explicitEnv: Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value])),
-                sandboxMechanism: this.sandboxMechanism,
-                maskedReadRoots: undefined
+                sandboxMechanism: this.sandboxMechanism
               })
           })
         )
@@ -15710,7 +15707,6 @@ export class Daemon {
             agentsRoot: this.cfg.agentsDir,
             sandboxMechanism: this.sandboxMechanism,
             mcpSocketPath: mcpSocketPath(this.root),
-            maskedReadRoots: undefined,
             hostEnv: process.env
           })
         )

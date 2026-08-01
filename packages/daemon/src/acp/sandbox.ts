@@ -304,7 +304,6 @@ export function sandboxWrap(
     writable: string[]
     settingsPath?: string
     cwd?: string
-    maskedReadRoots?: string[]
   }
 ): { cmd: string; args: string[] } {
   if (!opts.settingsPath || !isAbsolute(opts.settingsPath)) {

@@ -36,7 +36,7 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
 }
 
 describe('Daemon (no Slack, injected ACP host)', () => {
-  it('keeps an optional unsandboxed host working on a sandbox-capable host without advertising a mask', async () => {
+  it('keeps an optional unsandboxed host working on a sandbox-capable host', async () => {
     const root = scaffold()
     const daemon = new Daemon({
       root,
