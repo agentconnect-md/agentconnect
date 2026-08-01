@@ -17,7 +17,7 @@ function fixture(): { root: string; hostHome: string; scopeDir: string } {
 }
 
 describe('private runtime HOME', () => {
-  it('seeds only small top-level runtime config and keeps generated state private', () => {
+  it('seeds only Claude global config and keeps host settings and credentials out', () => {
     const { hostHome, scopeDir } = fixture()
     writeFileSync(join(hostHome, '.claude', '.credentials.json'), '{"token":"host"}')
     writeFileSync(join(hostHome, '.claude', 'settings.json'), '{"theme":"dark"}')
@@ -26,8 +26,8 @@ describe('private runtime HOME', () => {
     writeFileSync(join(hostHome, '.claude.json'), '{"onboarded":true}')
 
     const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
-    expect(readFileSync(join(home, '.claude', '.credentials.json'), 'utf8')).toContain('host')
-    expect(existsSync(join(home, '.claude', 'settings.json'))).toBe(true)
+    expect(existsSync(join(home, '.claude', '.credentials.json'))).toBe(false)
+    expect(existsSync(join(home, '.claude', 'settings.json'))).toBe(false)
     expect(existsSync(join(home, '.claude.json'))).toBe(true)
     // Global config also lands in CLAUDE_CONFIG_DIR (<home>/.claude), which is
     // where a CLAUDE_CONFIG_DIR-pinned Claude Code actually reads it (the feature
