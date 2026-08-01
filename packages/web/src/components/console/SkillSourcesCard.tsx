@@ -11,7 +11,7 @@
 // dialogs in a scrim, like the MCP servers card).
 
 import { useRef, useState } from 'react'
-import useSWR from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
@@ -40,12 +40,14 @@ function parseSkills(raw: string): string[] {
 export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; canManage: boolean }) {
   const { skillSources, skillSourcesLoading } = useConsoleData()
   const { activeOrg } = useOrgs()
+  const { mutate: mutateSWR } = useSWRConfig()
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<SkillSourceDto | null>(null)
   const [deleting, setDeleting] = useState<SkillSourceDto | null>(null)
   const [includeArchived, setIncludeArchived] = useState(false)
   const [managedActionError, setManagedActionError] = useState<string | null>(null)
   const managedSkillsKey = consoleKeys.managedSkills(activeOrg?.id, includeArchived)
+  const activeManagedSkillsKey = consoleKeys.managedSkills(activeOrg?.id, false)
   const managedSkills = useSWR(managedSkillsKey, ([, orgId, , archiveMode]) =>
     listManagedSkills(archiveMode === 'include-archived', orgId)
   )
@@ -57,7 +59,10 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
     setManagedActionError(null)
     try {
       await setManagedSkillArchived(skill.id, !skill.archivedAt)
-      await managedSkills.mutate()
+      await Promise.all([
+        managedSkills.mutate(),
+        ...(includeArchived && activeManagedSkillsKey ? [mutateSWR(activeManagedSkillsKey)] : [])
+      ])
     } catch (cause) {
       setManagedActionError(cause instanceof Error ? cause.message : String(cause))
     }

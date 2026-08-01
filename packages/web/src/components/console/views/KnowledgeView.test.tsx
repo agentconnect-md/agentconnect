@@ -205,7 +205,8 @@ describe('organization suggestion review card', () => {
 describe('organization knowledge surface', () => {
   it('keeps managed skills out of Knowledge and never requests their library endpoint', async () => {
     const fetchMock = vi.fn(
-      async () => new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
+      async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
     )
     vi.stubGlobal('fetch', fetchMock)
 
@@ -249,7 +250,7 @@ describe('organization knowledge surface', () => {
     }
     let knowledgeCurrentRevision = 2
     const fetchMock = vi.fn(
-      async () =>
+      async (_input: RequestInfo | URL) =>
         new Response(
           JSON.stringify([
             {
