@@ -1,10 +1,10 @@
 // AgentConnect Control Plane — Persistence (C6).
 //
-// PostgreSQL via Prisma. METADATA-ONLY: there is no `text`/`content`/`messages`
-// column anywhere — the raw `session/update` stream and `NormalizedMessage.text`
-// live only in the daemon's local SQLite (body-locality invariant, protocol §12 /
-// design §1, §3). Every column here is control state, a fencing token, a digest,
-// or an opaque reference.
+// PostgreSQL is metadata-only for message, transcript, and agent-memory bodies.
+// Approved organization Knowledge Markdown and bounded immutable managed-skill
+// ZIP revisions are the explicit shared-content exception described in
+// docs/designs/organization-knowledge.md; pending suggestion bodies remain on
+// their source daemon.
 //
 // See docs/designs/control-plane-implementation.md §3.
 
@@ -61,6 +61,11 @@ model Org {
   webchatConversations      WebchatConversation[]
   webchatMcpDelegations     WebchatMcpDelegation[]
   presetAgents              PresetAgent[]
+  organizationKnowledge     OrganizationKnowledge[]
+  managedSkills             ManagedSkill[]
+  organizationSuggestions   OrganizationSuggestion[]
+  externalScopes            ExternalScope[]
+  sessionExternalAccess     SessionExternalAccessPolicy[]
 
   @@map("org")
 }
@@ -610,6 +615,7 @@ model Agent {
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
   runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[], skills[]} — NO secret values (those live in agent_secret)
+  managedSkills         String[]           @default([]) // centrally accepted managed_skill ids, explicitly enabled
   createdByUserId       String? // WebUI user who created the agent (immutable audit; null for daemon/CLI-created). Surfaced in the console "Created" row.
   ownerUserId           String? // Current resource owner for restricted visibility; transferred when its member leaves.
   // Last-modification audit (human edits only): stamped on create + PATCH. Kept
@@ -813,12 +819,26 @@ enum ActivityState {
 
 // Per-session visibility tier (docs/designs/session-visibility.md §1): 'org'
 // (default) = visible to every member who can view the owning agent; 'private'
-// = session owner (identity match) ONLY — no role override, org owners
-// included. Composes with agent visibility — it never widens it. Share-by-link
-// is deliberately NOT a member of this enum (§8).
+// = session owner (identity match) ONLY — no role override, org owners included;
+// 'external' = current provider audience. Composes with agent visibility — it
+// never widens it. Share-by-link is deliberately NOT a member of this enum (§8).
 enum SessionVisibility {
   private
   org
+  external
+}
+
+enum ExternalResolution {
+  pending
+  settled
+  invalid
+}
+
+enum ExternalAccessPolicyState {
+  disabled
+  enabling
+  enabled
+  degraded
 }
 
 // How a session's visibility was determined (session-visibility.md §3, §4.5).
@@ -833,51 +853,58 @@ enum VisibilitySource {
 }
 
 model SessionMeta {
-  id                 String            @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
-  parentSessionId    String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
-  agentId            String            @db.Uuid
-  launchId           String?           @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
-  platform           String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
-  channel            String?
-  thread             String?
-  phase              SessionPhase      @default(start)
-  link               String? // deep-link (NOT a body)
-  summary            String?           @db.Text // short milestone text (NOT the stream)
-  title              String?           @db.Text // daemon-derived display title (NOT a body)
-  status             String?
-  triggeredBy        String?
-  channelName        String?
-  triggeredByName    String?
-  threadUrl          String?           @db.Text
+  id                  String              @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
+  parentSessionId     String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
+  agentId             String              @db.Uuid
+  launchId            String?             @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
+  platform            String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
+  channel             String?
+  thread              String?
+  phase               SessionPhase        @default(start)
+  link                String? // deep-link (NOT a body)
+  summary             String?             @db.Text // short milestone text (NOT the stream)
+  title               String?             @db.Text // daemon-derived display title (NOT a body)
+  status              String?
+  triggeredBy         String?
+  channelName         String?
+  triggeredByName     String?
+  threadUrl           String?             @db.Text
   // ── execution-config snapshot (what the session actually ran with) ──
   // Daemon-reported via event/session (session override ?? agent config at run
   // time); null ⇒ never reported / the runtime's own default. Recorded so the
   // console shows what a session USED, not the agent's config at view time.
-  runtime            String?
-  model              String?
-  effort             String? // reasoning effort level (runtime-owned vocabulary)
-  fastMode           Boolean?
-  permissionMode     String? // runtime permission/approval mode
-  outputMode         String? // daemon-side output verbosity (low/medium/high)
-  daemonId           String?           @db.Uuid // daemon that reported the session — stamped by the CP from the authenticated WS conn, never daemon-echoed
-  activityState      ActivityState     @default(idle)
+  runtime             String?
+  model               String?
+  effort              String? // reasoning effort level (runtime-owned vocabulary)
+  fastMode            Boolean?
+  permissionMode      String? // runtime permission/approval mode
+  outputMode          String? // daemon-side output verbosity (low/medium/high)
+  daemonId            String?             @db.Uuid // daemon that reported the session — stamped by the CP from the authenticated WS conn, never daemon-echoed
+  activityState       ActivityState       @default(idle)
   // ── session visibility (docs/designs/session-visibility.md §3) ──
-  orgId              String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent
-  visibility         SessionVisibility @default(org)
-  ownerIdentity      String? // §2 namespaced identity (`user:<id>` | `<platform>:<scope>:<uid>`); null for automation/legacy/unresolved-owner rows (NOT a §2 owner-orphan, whose tuple is stored but unmatched)
-  visibilitySource   VisibilitySource  @default(default)
-  visibilityRev      Int               @default(0) // dedicated monotonic counter, bumped in the same tx as any visibility change (§5.1)
-  visibilityAckedRev Int               @default(-1) // daemon-ack watermark: 'applied' once >= visibilityRev; -1 = never acked (rev 0 is a real revision)
+  orgId               String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent
+  visibility          SessionVisibility   @default(org)
+  ownerIdentity       String? // §2 namespaced identity (`user:<id>` | `<platform>:<scope>:<uid>`); null for automation/legacy/unresolved-owner rows (NOT a §2 owner-orphan, whose tuple is stored but unmatched)
+  visibilitySource    VisibilitySource    @default(default)
+  visibilityRev       Int                 @default(0) // dedicated monotonic counter, bumped in the same tx as any visibility change (§5.1)
+  visibilityAckedRev  Int                 @default(-1) // daemon-ack watermark: 'applied' once >= visibilityRev; -1 = never acked (rev 0 is a real revision)
+  // Shared external input. The first trusted binding is immutable; ownerIdentity
+  // is provenance only and never authorizes an external row.
+  externalProvider    String?
+  externalScopeId     String?             @db.Uuid
+  externalResolution  ExternalResolution?
+  classifiedPolicyRev BigInt?             @db.BigInt
   // Cursor tokens pass through JavaScript Date (millisecond precision), so the
   // complete keyset tuple must use the same precision in Postgres.
-  lastActivityAt     DateTime          @db.Timestamptz(3)
-  startedAt          DateTime          @default(now()) @db.Timestamptz(3)
-  endedAt            DateTime?         @db.Timestamptz(6)
-  updatedAt          DateTime          @updatedAt @db.Timestamptz(6)
+  lastActivityAt      DateTime            @db.Timestamptz(3)
+  startedAt           DateTime            @default(now()) @db.Timestamptz(3)
+  endedAt             DateTime?           @db.Timestamptz(6)
+  updatedAt           DateTime            @updatedAt @db.Timestamptz(6)
 
-  agent  Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  launch AgentLaunch? @relation(fields: [launchId], references: [id], onDelete: SetNull)
-  daemon Daemon?      @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  launch        AgentLaunch?   @relation(fields: [launchId], references: [id], onDelete: SetNull)
+  daemon        Daemon?        @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  externalScope ExternalScope? @relation(fields: [externalScopeId, orgId, externalProvider], references: [id, orgId, provider], onDelete: Restrict, onUpdate: Restrict)
 
   webchatCurrentFor WebchatConversation[] @relation("WebchatCurrentSession")
 
@@ -892,7 +919,52 @@ model SessionMeta {
   @@index([platform, channel])
   @@index([launchId])
   @@index([daemonId])
+  @@index([orgId, externalProvider, externalScopeId])
   @@map("session_meta")
+}
+
+// Stable provider resource referenced by SessionMeta. Provider ACLs themselves
+// are never copied here; access is resolved at read time and only short-lived
+// decisions are cached in process memory.
+model ExternalScope {
+  id             String    @id @default(uuid()) @db.Uuid
+  orgId          String
+  provider       String
+  realmKey       String
+  resourceKind   String
+  resourceKey    String
+  credentialKind String?
+  credentialId   String?
+  aclRevision    BigInt    @default(0) @db.BigInt
+  revokedAt      DateTime? @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+
+  org      Org           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sessions SessionMeta[]
+
+  @@unique([id, orgId, provider])
+  @@unique([orgId, provider, realmKey, resourceKind, resourceKey])
+  @@index([credentialKind, credentialId])
+  @@map("external_scope")
+}
+
+// Organization/provider policy. Missing is never interpreted as disabled: the
+// ingest transaction ensures this row before creating a supported candidate.
+model SessionExternalAccessPolicy {
+  orgId           String
+  provider        String
+  state           ExternalAccessPolicyState @default(disabled)
+  currentRev      BigInt                    @default(0) @db.BigInt
+  readFenceRev    BigInt?                   @db.BigInt
+  migrationCursor String?
+  createdAt       DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime                  @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, provider])
+  @@map("session_external_access_policy")
 }
 
 // Durable ownership metadata for a browser webchat conversation. The message
@@ -2140,6 +2212,152 @@ model SkillSource {
   @@index([orgId])
   @@index([orgId, ownerUserId])
   @@map("skill_source")
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Organization Knowledge + managed Agent Skills bundles
+// (docs/designs/organization-knowledge.md).
+// Pending candidate bodies stay daemon-local; only their metadata is indexed
+// here. Accepted revisions are immutable product-owned shared content.
+// ───────────────────────────────────────────────────────────────────────
+
+enum OrganizationArtifactSource {
+  manual
+  dream
+}
+
+enum OrganizationSuggestionKind {
+  knowledge
+  skill
+}
+
+enum OrganizationSuggestionOperation {
+  create
+  update
+}
+
+enum OrganizationSuggestionState {
+  pending
+  accepted
+  rejected
+}
+
+model OrganizationKnowledge {
+  id               String    @id @default(uuid()) @db.Uuid
+  orgId            String
+  title            String
+  currentRevision  Int       @default(1)
+  archivedAt       DateTime? @db.Timestamptz(6)
+  archivedByUserId String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(6)
+
+  org       Org                             @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  revisions OrganizationKnowledgeRevision[]
+
+  @@index([orgId, archivedAt, updatedAt])
+  @@map("organization_knowledge")
+}
+
+model OrganizationKnowledgeRevision {
+  knowledgeId       String                     @db.Uuid
+  revision          Int
+  content           String                     @db.Text
+  summary           String?                    @db.Text
+  tags              String[]                   @default([])
+  digest            String
+  source            OrganizationArtifactSource
+  sourceAgentId     String?                    @db.Uuid
+  sourceDreamId     String?
+  sourceCandidateId String?                    @db.Uuid
+  sourceSessionIds  String[]                   @default([])
+  createdByUserId   String?
+  reviewedByUserId  String?
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(6)
+
+  knowledge OrganizationKnowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
+
+  @@id([knowledgeId, revision])
+  @@index([createdAt])
+  @@map("organization_knowledge_revision")
+}
+
+model ManagedSkill {
+  id               String    @id @default(uuid()) @db.Uuid
+  orgId            String
+  name             String
+  description      String
+  currentRevision  Int       @default(1)
+  archivedAt       DateTime? @db.Timestamptz(6)
+  archivedByUserId String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(6)
+
+  org       Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  revisions ManagedSkillRevision[]
+
+  @@unique([orgId, name])
+  @@index([orgId, archivedAt, updatedAt])
+  @@map("managed_skill")
+}
+
+model ManagedSkillRevision {
+  managedSkillId    String                     @db.Uuid
+  revision          Int
+  archive           Bytes
+  digest            String
+  compressedBytes   Int
+  expandedBytes     Int
+  fileCount         Int
+  manifest          Json                       @db.JsonB
+  source            OrganizationArtifactSource
+  sourceAgentId     String?                    @db.Uuid
+  sourceDreamId     String?
+  sourceCandidateId String?                    @db.Uuid
+  sourceSessionIds  String[]                   @default([])
+  createdByUserId   String?
+  reviewedByUserId  String?
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(6)
+
+  skill ManagedSkill @relation(fields: [managedSkillId], references: [id], onDelete: Cascade)
+
+  @@id([managedSkillId, revision])
+  @@index([createdAt])
+  @@map("managed_skill_revision")
+}
+
+model OrganizationSuggestion {
+  id                       String                          @id @default(uuid()) @db.Uuid
+  orgId                    String
+  sourceAgentId            String                          @db.Uuid
+  sourceDaemonId           String?                         @db.Uuid
+  dreamId                  String
+  candidateId              String                          @db.Uuid
+  kind                     OrganizationSuggestionKind
+  operation                OrganizationSuggestionOperation
+  targetArtifactId         String?                         @db.Uuid
+  targetRevision           Int?
+  title                    String
+  summary                  String?                         @db.Text
+  tags                     String[]                        @default([])
+  digest                   String
+  contentBytes             Int
+  sessionIds               String[]                        @default([])
+  state                    OrganizationSuggestionState     @default(pending)
+  reviewedByUserId         String?
+  reviewedAt               DateTime?                       @db.Timestamptz(6)
+  reviewReason             String?                         @db.Text
+  acceptedArtifactId       String?                         @db.Uuid
+  acceptedArtifactRevision Int?
+  createdAt                DateTime                        @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                        @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceAgentId, dreamId, candidateId])
+  @@index([orgId, state, createdAt])
+  @@index([sourceDaemonId, state])
+  @@map("organization_suggestion")
 }
 
 // ───────────────────────────────────────────────────────────────────────

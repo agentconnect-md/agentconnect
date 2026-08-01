@@ -21,10 +21,36 @@ import {
 } from '../agents/runtime-memory.js'
 import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../agents/memory-provider.js'
 import type { RuntimeDef } from '../config/config-schema.js'
+import { isClaudeRuntimeDef } from '../acp/claude-runtime.js'
+import { resolveCommandPath } from './probe.js'
+import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './read-roots.js'
 
 export interface ComposedRuntimeLaunch {
   runtime: RuntimeDef
   launch: PreparedRuntimeLaunch
+}
+
+export function runtimeSandboxReadRoots(
+  runtime: RuntimeDef,
+  stateSourceEnv: NodeJS.ProcessEnv = process.env
+): { readRoots: string[]; runtimeExecutable: string; claudeExecutable?: string } {
+  const trustedRuntimeEnv: NodeJS.ProcessEnv = {
+    ...stateSourceEnv,
+    ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+  }
+  const claudeCommand = isClaudeRuntimeDef(runtime)
+    ? trustedRuntimeEnv.CLAUDE_CODE_EXECUTABLE || resolveCommandPath('claude', trustedRuntimeEnv)
+    : undefined
+  const claudeExecutable = claudeCommand ? resolveTrustedExecutable(claudeCommand, trustedRuntimeEnv) : undefined
+  return {
+    readRoots: trustedRuntimeReadRoots({
+      runtime,
+      hostEnv: stateSourceEnv,
+      ...(claudeCommand ? { executableCommands: [claudeCommand] } : {})
+    }),
+    runtimeExecutable: resolveTrustedExecutable(runtime.command, trustedRuntimeEnv),
+    ...(claudeExecutable ? { claudeExecutable } : {})
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -121,6 +147,11 @@ export function composeRuntimeLaunch(opts: {
   hostEnv?: NodeJS.ProcessEnv
   isolateHome?: boolean
   runInSandbox: boolean
+  daemonRoot?: string
+  agentsRoot?: string
+  /** Additional daemon-owned code/socket/config paths required by trusted
+   * descendants such as the AgentConnect MCP bridge. */
+  runtimeReadRoots?: string[]
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
   maskedReadRoots?: string[]
@@ -136,20 +167,34 @@ export function composeRuntimeLaunch(opts: {
   }
 
   const protectedMemory = opts.provider !== 'native'
+  const stateSourceEnv = opts.stateSourceEnv ?? opts.hostEnv ?? process.env
+  const sandboxAccess = opts.runInSandbox ? runtimeSandboxReadRoots(opts.runtime, stateSourceEnv) : undefined
   const launch = prepareRuntimeLaunch({
     runtimeId: opts.runtimeId,
+    runtime: opts.runtime,
     scopeDir: opts.scopeDir,
     cwd: opts.cwd,
     runInSandbox: opts.runInSandbox,
     isolateHome: opts.isolateHome || (protectedMemory && policyId === 'hermes-agent'),
     explicitEnv: opts.explicitEnv,
-    stateSourceEnv: opts.stateSourceEnv,
+    stateSourceEnv,
     hostEnv: opts.hostEnv,
+    daemonRoot: opts.daemonRoot,
+    agentsRoot: opts.agentsRoot,
+    trustedRuntimeReadRoots: [...(sandboxAccess?.readRoots ?? []), ...(opts.runtimeReadRoots ?? [])],
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
     maskedReadRoots: opts.maskedReadRoots
   })
-  const composed: RuntimeDef = { ...opts.runtime, args: [...opts.runtime.args], env: [...opts.runtime.env] }
+  if (sandboxAccess?.claudeExecutable && !launch.env.CLAUDE_CODE_EXECUTABLE) {
+    launch.env.CLAUDE_CODE_EXECUTABLE = sandboxAccess.claudeExecutable
+  }
+  const composed: RuntimeDef = {
+    ...opts.runtime,
+    command: sandboxAccess?.runtimeExecutable ?? opts.runtime.command,
+    args: [...opts.runtime.args],
+    env: [...opts.runtime.env]
+  }
 
   if (!protectedMemory) return { runtime: composed, launch }
 

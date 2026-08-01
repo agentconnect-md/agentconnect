@@ -144,8 +144,9 @@ function state(source: string | undefined, destination: string, seedFiles?: read
  * per-agent runtime HOME. Sources honor host env overrides; destinations always use
  * the runtime's conventional layout under the private HOME.
  */
-/** Config + browser-login credential files a Qoder edition writes under its
- * config dir. `brand` is the credential-file prefix (`qoder-cli`/`qoder-cli-cn`). */
+/** Config + legacy browser-login files a Qoder edition writes under its config
+ * dir. Current `.auth/` login state is shared separately by runtime-credentials;
+ * `brand` is the legacy credential-file prefix (`qoder-cli`/`qoder-cli-cn`). */
 const QODER_SEED = (brand: string): readonly string[] => [
   'settings.json',
   'config.json',
@@ -157,7 +158,8 @@ const QODER_SEED = (brand: string): readonly string[] => [
 ]
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
-  // Anthropic Claude Code — ~/.claude state dir + ~/.claude.json global config.
+  // Anthropic Claude Code — $CLAUDE_CONFIG_DIR (or ~/.claude) state +
+  // ~/.claude.json global config.
   // The daemon pins CLAUDE_CONFIG_DIR=<private-home>/.claude (RUNTIME_PRIVATE_ENV),
   // and Claude Code then reads its global config — including the GrowthBook feature
   // cache that gates newer models (e.g. Fable 5) — from $CLAUDE_CONFIG_DIR/.claude.json,
@@ -165,6 +167,7 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // launch actually reads (without it the private home advertises a stale, reduced
   // model list); the HOME-root copy stays for Claude versions that ignore the env.
   'claude-acp': (env) => [
+    ...state(env.CLAUDE_CONFIG_DIR, '.claude'),
     ...state(join(home(env), '.claude'), '.claude'),
     ...state(join(home(env), '.claude.json'), '.claude.json'),
     ...state(join(home(env), '.claude.json'), join('.claude', '.claude.json'))
@@ -264,10 +267,11 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // together decrypt in the private HOME); sessions/workflows stay private.
   'qoder-cli': (env) => {
     const base = env.QODER_CLI_HOME || env.GEMINI_CLI_HOME
+    const name = (env.QODER_CONFIG_DIR_NAME || '.qoder').normalize('NFC')
     return [
       ...state(env.QODER_CONFIG_DIR, '.qoder', QODER_SEED('qoder-cli')),
-      ...state(base ? join(base, '.qoder') : undefined, '.qoder', QODER_SEED('qoder-cli')),
-      ...state(join(home(env), '.qoder'), '.qoder', QODER_SEED('qoder-cli'))
+      ...state(base ? join(base, name) : undefined, '.qoder', QODER_SEED('qoder-cli')),
+      ...state(join(home(env), name), '.qoder', QODER_SEED('qoder-cli'))
     ]
   },
 
@@ -275,10 +279,11 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // $QODERCN_CONFIG_DIR / $QODERCN_CLI_HOME (or the shared $GEMINI_CLI_HOME).
   'qoder-cli-cn': (env) => {
     const base = env.QODERCN_CLI_HOME || env.GEMINI_CLI_HOME
+    const name = (env.QODERCN_CONFIG_DIR_NAME || '.qoder-cn').normalize('NFC')
     return [
       ...state(env.QODERCN_CONFIG_DIR, '.qoder-cn', QODER_SEED('qoder-cli-cn')),
-      ...state(base ? join(base, '.qoder-cn') : undefined, '.qoder-cn', QODER_SEED('qoder-cli-cn')),
-      ...state(join(home(env), '.qoder-cn'), '.qoder-cn', QODER_SEED('qoder-cli-cn'))
+      ...state(base ? join(base, name) : undefined, '.qoder-cn', QODER_SEED('qoder-cli-cn')),
+      ...state(join(home(env), name), '.qoder-cn', QODER_SEED('qoder-cli-cn'))
     ]
   },
 

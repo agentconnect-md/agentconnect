@@ -39,6 +39,11 @@ import {
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantRevoke
 } from './webchat-mcp-grant.js'
+import {
+  handleKnowledgeSearch,
+  handleManagedSkillRead,
+  handleOrganizationSuggestionsSync
+} from './organization-knowledge.js'
 
 export type Handler = (frame: AnyFrame, conn: DaemonConnection, deps: DaemonWsDeps) => Promise<void>
 
@@ -68,6 +73,9 @@ export class FrameRouter {
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,
+      'knowledge/search': handleKnowledgeSearch,
+      'knowledge/suggestions/sync': handleOrganizationSuggestionsSync,
+      'managed-skill/read': handleManagedSkillRead,
       ...overrides
     }
   }
@@ -99,5 +107,8 @@ export {
   handleSessionActivity,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantAccept,
-  handleWebchatMcpGrantRevoke
+  handleWebchatMcpGrantRevoke,
+  handleKnowledgeSearch,
+  handleOrganizationSuggestionsSync,
+  handleManagedSkillRead
 }

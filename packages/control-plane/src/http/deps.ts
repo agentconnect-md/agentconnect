@@ -29,6 +29,7 @@ import type {
   McpProviderSecretStore,
   McpGrantRepo,
   SkillSourceRepo,
+  OrganizationKnowledgeRepo,
   MemoryPluginInstallationRepo,
   ExternalMemoryConnectionRepo,
   ExternalMemoryConnectionSecretStore,
@@ -84,6 +85,7 @@ import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
+import type { SlackSessionAccessResolver } from './slack-session-access.js'
 
 export interface HttpServerConfig extends HumanAuthConfig {
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
@@ -175,6 +177,8 @@ export interface HttpDeps {
     mcpGrant: McpGrantRepo
     /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
     skillSource: SkillSourceRepo
+    /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */
+    organizationKnowledge?: OrganizationKnowledgeRepo
     /** Owner-reviewed external-memory plugin installations (metadata only). */
     memoryPluginInstallation: MemoryPluginInstallationRepo
     /** Org external-memory connections and revision-fenced probe state. */
@@ -322,6 +326,8 @@ export interface HttpDeps {
   /** Server-side Logto identity management for the signed-in user's Profile.
    *  Absent ⇒ LOGTO_MGMT_* or real OIDC auth is not configured. */
   logtoIdentity?: LogtoIdentityService
+  /** Current Slack conversation membership for external Session reads. */
+  slackSessionAccess?: SlackSessionAccessResolver
   /** Uploaded-icon object store (docs/designs/icon-uploads.md); absent ⇒ S3_* unset,
    *  the icon upload/delete routes are not mounted and the console hides Upload. */
   iconStore?: IconStore

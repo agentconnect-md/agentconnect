@@ -20,7 +20,8 @@ import {
   type Shareable,
   type ViewCtx
 } from '../../authorization/policy.js'
-import { makeViewerIdentitySet } from '../viewer-identity.js'
+import type { SessionExternalAccessSnapshot } from '../../persistence/ports.js'
+import { makeSessionAccessResolver } from '../session-access.js'
 import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 
 const KEEPALIVE_MS = 25_000
@@ -43,9 +44,10 @@ export function canStreamAgent(agent: (Shareable & { orgId: OrgId }) | null, org
 export function canStreamSession(
   session: SessionViewable | null,
   ctx: ViewCtx,
-  identitySet: ReadonlySet<string>
+  identitySet: ReadonlySet<string>,
+  externalAccess?: SessionExternalAccessSnapshot
 ): boolean {
-  return !!session && canViewSession(session, ctx, identitySet)
+  return !!session && canViewSession(session, ctx, identitySet, externalAccess)
 }
 
 function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
@@ -59,7 +61,7 @@ function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
 
 export function streamRoutes(deps: HttpDeps) {
   return async function streamRoutesPlugin(app: FastifyInstance): Promise<void> {
-    const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity)
+    const sessionAccess = makeSessionAccessResolver(deps)
     app.get(
       '/stream',
       {
@@ -87,7 +89,7 @@ export function streamRoutes(deps: HttpDeps) {
         reply.hijack()
 
         const orgId = req.orgCtx!.orgId
-        const ctx = ctxOf(req)
+        const connectedCtx = ctxOf(req)
         // daemonId → belongs-to-this-org, memoized per connection (events arrive
         // in bursts from the same few daemons; one registry lookup each).
         const daemonOrg = new Map<string, boolean>()
@@ -99,17 +101,16 @@ export function streamRoutes(deps: HttpDeps) {
           daemonOrg.set(daemonId, ok)
           return ok
         }
-        // agentId → visible-to-this-caller, memoized per connection. The milestone's
-        // `summary` is content-derived, so a restricted agent the caller can't see is
-        // dropped WHOLE (§5.5 option 1: existence hidden).
-        const agentVisible = new Map<string, boolean>()
-        const canSeeAgent = async (agentId: string): Promise<boolean> => {
-          const cached = agentVisible.get(agentId)
-          if (cached !== undefined) return cached
+        // Membership and agent visibility are live authorization inputs. Do not
+        // pin either to connection-open state: a member removal or a sharing
+        // tighten must stop this already-open stream on its next event.
+        const currentCtx = async (): Promise<ViewCtx | null> => {
+          const role = await deps.repos.org.roleOf(orgId, connectedCtx.userId).catch(() => null)
+          return role ? { userId: connectedCtx.userId, role } : null
+        }
+        const canSeeAgent = async (agentId: string, ctx: ViewCtx): Promise<boolean> => {
           const agent = await deps.repos.agent.get(AgentId(agentId)).catch(() => null)
-          const ok = canStreamAgent(agent, orgId, ctx)
-          agentVisible.set(agentId, ok)
-          return ok
+          return canStreamAgent(agent, orgId, ctx)
         }
 
         // Session visibility is deliberately NOT memoized: a §4.3 tightening must
@@ -122,21 +123,22 @@ export function streamRoutes(deps: HttpDeps) {
         // read in the common case (LogtoIdentityService caches per subject,
         // single-flight) and the unlink path invalidates that cache, so the
         // revocation lands on the next event, not the next connection.
-        const canSeeSession = async (sessionId: string): Promise<boolean> => {
-          const [session, identitySet] = await Promise.all([
-            deps.repos.session.get(SessionId(sessionId)).catch(() => null),
-            identitySetFor(req)
-          ])
-          return canStreamSession(session, ctx, identitySet)
+        const canSeeSession = async (sessionId: string, ctx: ViewCtx): Promise<boolean> => {
+          const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
+          if (!session) return false
+          const access = await sessionAccess.forSessions(req, [session]).catch(() => null)
+          return !!access && canStreamSession(session, ctx, access.identitySet, access.externalAccess)
         }
 
         const unsubscribe = deps.events.subscribe((envelope) => {
           void (async () => {
             if (!(await inOrg(envelope.daemonId))) return
+            const ctx = await currentCtx()
+            if (!ctx) return
             const agentId = envelope.activity?.agentId ?? envelope.event?.agentId
-            if (!agentId || !(await canSeeAgent(agentId))) return
+            if (!agentId || !(await canSeeAgent(agentId, ctx))) return
             const sessionId = envelope.activity?.sessionId ?? envelope.event?.sessionId
-            if (!sessionId || !(await canSeeSession(sessionId))) return
+            if (!sessionId || !(await canSeeSession(sessionId, ctx))) return
             writeEvent(reply, envelope)
           })()
         })

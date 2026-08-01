@@ -60,6 +60,7 @@ import {
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
   PgSkillSourceRepo,
+  PgOrganizationKnowledgeRepo,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -161,6 +162,7 @@ import { verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 import { configureFeishuHttpApp } from './http/feishu-app-config.js'
+import { SlackSessionAccessService } from './http/slack-session-access.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -196,6 +198,8 @@ export interface ContainerOpts {
   fastify?: FastifyServerOptions
   /** GitHub REST fetch override — integration tests stub the API without network. */
   githubFetch?: FetchLike
+  /** Slack Web API fetch override for Session membership checks. */
+  slackFetch?: FetchLike
   /** npm dist-tags fetch override for the daemon "latest version" resolver — tests
    *  stub it (absent under NODE_ENV=test ⇒ the resolver is inert, no network). */
   daemonReleaseFetch?: FetchLike
@@ -259,6 +263,7 @@ export function buildContainer(
     mcpProviderSecret: new PgMcpProviderSecretStore(prisma, secretCipher),
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
     skillSource: new PgSkillSourceRepo(prisma),
+    organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
@@ -361,7 +366,12 @@ export function buildContainer(
   // The ONE assembler of CP→daemon AgentSpecs — owns secret loading (the only
   // AgentSecretStore VALUE reader) + icon bases, shared by every emission path:
   // reconcile roster, agent/upsert replicate, icon refresh, move activation.
-  const agentSpecs = new AgentSpecAssembler(repos.agentSecret, iconBases, repos.skillSource)
+  const agentSpecs = new AgentSpecAssembler(
+    repos.agentSecret,
+    iconBases,
+    repos.skillSource,
+    repos.organizationKnowledge
+  )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
   // {userId, user, agentId, orgId, conversationId}. The relay delegates verification
@@ -683,6 +693,12 @@ export function buildContainer(
           clock
         })
       : undefined
+  const slackSessionAccess = new SlackSessionAccessService({
+    bots: repos.bot,
+    botSecrets: repos.botSecret,
+    clock,
+    ...(opts.slackFetch ? { fetchImpl: opts.slackFetch } : {})
+  })
 
   const httpDeps: HttpDeps = {
     clock,
@@ -711,6 +727,7 @@ export function buildContainer(
       mcpProviderSecret: repos.mcpProviderSecret,
       mcpGrant: repos.mcpGrant,
       skillSource: repos.skillSource,
+      organizationKnowledge: repos.organizationKnowledge,
       memoryPluginInstallation: repos.memoryPluginInstallation,
       externalMemoryConnection: repos.externalMemoryConnection,
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,
@@ -773,6 +790,7 @@ export function buildContainer(
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
+    slackSessionAccess,
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     ...(slackPlatformApp ? { slackPlatformApp } : {}),
@@ -931,6 +949,7 @@ export function buildContainer(
     events,
     sessionUsage: repos.sessionUsage,
     integration: repos.integration,
+    bot: repos.bot,
     integrationChannel: repos.integrationChannel,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
@@ -938,6 +957,7 @@ export function buildContainer(
     cron: repos.cron,
     hook: repos.hook,
     agent: repos.agent,
+    organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
     ...(github ? { github } : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),

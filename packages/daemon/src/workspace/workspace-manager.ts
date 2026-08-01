@@ -21,7 +21,10 @@ import {
 import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
 import { installSkills } from '../skills/install-skills.js'
-import { materializeAcceptedDreamSkills } from '../skills/dream-skill-install.js'
+import {
+  materializeAcceptedDreamSkills,
+  type ManagedSkillMaterializationSource
+} from '../skills/dream-skill-install.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
@@ -46,7 +49,13 @@ const skillsLog = makeLogger('info')
  * no-skills path is a single stat. Kept out of the return expressions so both the
  * scratch and git-repo branches funnel through one install point.
  */
-async function withSkills(agent: Agent, acpCwd: string): Promise<string> {
+export interface PrepareWorkspaceOptions {
+  /** Resolve centrally accepted immutable bundles from the daemon cache. Dream
+   * skills and these sources are then reconciled in one ownership transaction. */
+  managedSkills?: (agent: Agent) => Promise<ManagedSkillMaterializationSource[]>
+}
+
+async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
   await installSkills(agent, acpCwd, {
     env: {
       ...gitEnvBase(),
@@ -62,8 +71,10 @@ async function withSkills(agent: Agent, acpCwd: string): Promise<string> {
   // `dir` is present on every discovered agent (LoadedAgent); a bare spec has none.
   const agentRoot = (agent as { dir?: string }).dir
   if (agentRoot) {
+    const managedSkills = await opts.managedSkills?.(agent)
     await materializeAcceptedDreamSkills({ dir: agentRoot, runtime: agent.runtime }, acpCwd, {
-      warn: (msg) => skillsLog.warn(msg)
+      warn: (msg) => skillsLog.warn(msg),
+      ...(managedSkills ? { managedSkills } : {})
     })
   }
   return acpCwd
@@ -231,7 +242,7 @@ function restoreWorkspaceMaterialization(agent: Agent, key: string | undefined):
   writeFileSync(file, JSON.stringify({ version: 1, key }, null, 2) + '\n')
 }
 
-export async function prepareWorkspace(agent: Agent): Promise<string> {
+export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptions = {}): Promise<string> {
   const cwd = agent.workspace.path
   // Fail unsafe config before using either a fresh or existing checkout.
   const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
@@ -242,7 +253,7 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
     // The agent's memory file lives at the agent ROOT (outside the workspace) and
     // is seeded separately (see agents/memory.ts `ensureMemory`), so from-scratch
     // just needs the (empty) workspace dir to exist.
-    return withSkills(agent, cwd)
+    return withSkills(agent, cwd, opts)
   }
 
   // git-repo, first session: no checkout yet → clone. Unlike pull, a clone has no
@@ -250,7 +261,7 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
   // surfaces) rather than silently proceeding with an empty dir (design §4.3).
   if (!existsSync(join(cwd, '.git'))) {
     await cloneRepo(agent)
-    return withSkills(agent, resolveAcpCwd(cwd, agentDir))
+    return withSkills(agent, resolveAcpCwd(cwd, agentDir), opts)
   }
 
   // git-repo, existing checkout: the repo-local helper pin may carry a previous
@@ -297,7 +308,7 @@ export async function prepareWorkspace(agent: Agent): Promise<string> {
       clearTimeout(timer)
     }
   }
-  return withSkills(agent, resolveAcpCwd(cwd, agentDir))
+  return withSkills(agent, resolveAcpCwd(cwd, agentDir), opts)
 }
 
 /** Resolve the checked path ACP receives, closing symlink and prefix-containment gaps. */

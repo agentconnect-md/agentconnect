@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 import {
   client as createClientApp,
@@ -137,6 +138,9 @@ export interface SessionConfigPrefs {
 export interface AcpSandboxLaunch {
   mechanism: SandboxMechanism
   writable: string[]
+  /** Common filesystem policy, consumed through SRT settings. */
+  denyReadRoots?: string[]
+  allowReadRoots?: string[]
   /** Trusted SRT policy for ordinary ACP hosts. */
   settingsPath?: string
   /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
@@ -574,7 +578,8 @@ export class AcpHost {
     // that spawn() would otherwise resolve only against CWD and miss the binary on
     // `$PATH`. Falls back to the raw command when resolution fails (spawn's own error
     // surface is clearer than a synthetic ours).
-    const resolved = resolveCommandPath(this.runtime.command, env) ?? this.runtime.command
+    const resolvedCommand = resolveCommandPath(this.runtime.command, env) ?? this.runtime.command
+    const resolved = this.opts.sandbox && existsSync(resolvedCommand) ? realpathSync(resolvedCommand) : resolvedCommand
     // appendArgs carries any account-app-isolation flags (e.g. Copilot's
     // --disable-builtin-mcps) that must reach the adapter as CLI args.
     const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]

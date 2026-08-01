@@ -22,7 +22,8 @@ import type {
   FeishuRegion,
   BindRule,
   AgentIcon,
-  AgentMemoryBinding
+  AgentMemoryBinding,
+  OrganizationSuggestionInfo
 } from '@agentconnect.md/protocol'
 import type {
   DaemonId,
@@ -75,7 +76,9 @@ export type SessionPhase = 'start' | 'plan' | 'problem' | 'end'
 export type ActivityState = 'thinking' | 'tool_call' | 'awaiting_permission' | 'idle'
 /** Per-session visibility tier (session-visibility.md §1). Distinct from
  *  `ResourceVisibility` — sessions have no `restricted`/`sharedWith` tier. */
-export type SessionVisibility = 'private' | 'org'
+export type SessionVisibility = 'private' | 'org' | 'external'
+export type ExternalResolution = 'pending' | 'settled' | 'invalid'
+export type ExternalAccessPolicyState = 'disabled' | 'enabling' | 'enabled' | 'degraded'
 /** How a session's visibility was determined — the §4.5 A2A reconciliation
  *  state marker; `explicit` pins the row against settlement (not cascades). */
 export type VisibilitySource = 'default' | 'inherited_pending' | 'inherited' | 'explicit'
@@ -524,6 +527,7 @@ export interface CreateAgentInput {
   // the AgentSecretStore seam (routes write them there after create).
   mcpServers?: string[] // daemon-configured MCP server names to attach at session/new (AgentSpec.mcpServers)
   skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
+  managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
   memory?: AgentMemoryBinding // memory backend
   icon?: AgentIcon // console avatar; absent ⇒ the repo assigns a random glyph+color combo
   daemonId?: DaemonId // the owning machine, if chosen at create time
@@ -575,6 +579,7 @@ export interface UpdateAgentInput {
   // them through the AgentSecretStore seam (key-by-key; see AgentSecretStore.merge).
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
+  managedSkills?: string[] | null // accepted managed_skill ids; replaced wholesale when provided; null clears
   memory?: AgentMemoryBinding | null // memory backend
   // Workspace repository identity is not a generic PATCH field. The dedicated
   // cold editor drains the daemon and reconciles its local materialization;
@@ -616,6 +621,7 @@ export interface AgentRecord {
   // values only from AgentSecretStore.get on the wire-projection paths.
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
+  managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
   status: 'active' | 'inactive' | 'paused'
   daemonId: DaemonId | null
@@ -838,6 +844,20 @@ export interface EventSessionInput {
   conversationKind?: SessionConversationKind
   transportScope?: string // durable tenant scope for ownerIdentity (§2), NOT the credential-derived hash
   launchCorrelationId?: string // Web API launch provenance (§4.4)
+  /** Validated supported shared input. Presence is the durable candidate marker;
+   *  an unresolved binding stays pending/invalid rather than falling back to a
+   *  direct session. */
+  externalCandidate?: {
+    provider: string
+    resolution: ExternalResolution
+    scope?: {
+      realmKey: string
+      resourceKind: string
+      resourceKey: string
+      credentialKind?: string
+      credentialId?: string
+    }
+  }
   /** The §4.2 verdict the ingest handler computed (its ownership lookups are
    *  already resolved). Absent ⇒ the row is classified `org` with no owner —
    *  the pre-visibility behavior, kept for internal callers and fixtures. */
@@ -875,7 +895,38 @@ export interface SessionVisibilityChange {
 export interface SessionVisibilityState {
   sessionId: SessionId
   visibility: SessionVisibility
+  sharedMemoryExcluded: boolean
   visibilityRev: number
+}
+
+export interface ExternalScopeRecord {
+  id: string
+  orgId: OrgId
+  provider: string
+  realmKey: string
+  resourceKind: string
+  resourceKey: string
+  credentialKind: string | null
+  credentialId: string | null
+  aclRevision: bigint
+  revokedAt: Date | null
+}
+
+export interface SessionExternalAccessPolicyRecord {
+  orgId: OrgId
+  provider: string
+  state: ExternalAccessPolicyState
+  currentRev: bigint
+  readFenceRev: bigint | null
+  migrationCursor: string | null
+}
+
+/** One request-local external authorization snapshot. Scope allows are tied to
+ *  the exact ACL revision observed during provider resolution. */
+export interface SessionExternalAccessSnapshot {
+  policies: Array<{ provider: string; readFenceRev: bigint | null }>
+  allowedScopes: Array<{ id: string; aclRevision: bigint }>
+  decisionAt: Date
 }
 
 export interface SessionMetaRecord {
@@ -911,6 +962,10 @@ export interface SessionMetaRecord {
   visibilitySource: VisibilitySource
   visibilityRev: number // bumped in the same tx as any visibility change (§5.1)
   visibilityAckedRev: number // daemon-ack watermark; 'applied' once >= visibilityRev
+  externalProvider: string | null
+  externalScopeId: string | null
+  externalResolution: ExternalResolution | null
+  classifiedPolicyRev: bigint | null
   startedAt: Date
   endedAt: Date | null
 }
@@ -934,10 +989,14 @@ export interface SessionFilterQuery extends SessionQuery {
   githubHookIds?: HookId[]
   hookTriggerIds?: HookId[]
   /** Session-visibility predicate inputs (session-visibility.md §5): human
-   *  viewers see `org` rows plus `private` rows whose ownerIdentity is in their
-   *  identity set. Absent ⇒ no session predicate — the internal fail-open,
-   *  mirroring `visibilityWhere(undefined)`. */
-  viewer?: { role: OrgMemberRole; identitySet: string[] }
+   *  viewers see baseline `org`, identity-owned `private`, and request-resolved
+   *  provider `external` rows. Absent ⇒ no session predicate — the internal
+   *  fail-open, mirroring `visibilityWhere(undefined)`. */
+  viewer?: {
+    role: OrgMemberRole
+    identitySet: string[]
+    externalAccess?: SessionExternalAccessSnapshot
+  }
 }
 
 export interface SessionPageQuery extends SessionFilterQuery {
@@ -995,13 +1054,31 @@ export interface SessionRepo {
   /** Fail-closed proof that the durable webchat session for this conversation
    * remains private before a remote administrative MCP invocation executes. */
   hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean>
+  /** Distinct settled scopes referenced by external rows matching the non-page
+   *  filters. Called before ORDER/LIMIT so membership filtering is pagination-safe. */
+  listExternalScopes(q: SessionFilterQuery): Promise<ExternalScopeRecord[]>
+  getExternalScopes(ids: string[]): Promise<ExternalScopeRecord[]>
+  getExternalAccessPolicy(orgId: OrgId, provider: string): Promise<SessionExternalAccessPolicyRecord | null>
+  countExternalUnresolved(orgId: OrgId, provider: string): Promise<number>
+  /** Owner-only HTTP route calls this transactional transition. Enabling places
+   *  the read fence before classifying legacy candidates; unresolved history is
+   *  retained as degraded and hidden. Disabling never widens historical rows. */
+  setExternalAccessEnabled(
+    orgId: OrgId,
+    provider: string,
+    enabled: boolean
+  ): Promise<{
+    policy: SessionExternalAccessPolicyRecord
+    hiddenSessions: number
+    affected: SessionMetaRecord[]
+  }>
   /** Visible-child lookup for the session detail page. Parent ids are opaque and
    *  deliberately not foreign-keyed, so this remains a metadata query. `viewer`
    *  applies the same session predicate as the list (absent ⇒ internal fail-open). */
   listChildren(
     parentSessionId: SessionId,
     agentIds: AgentId[],
-    viewer?: { role: OrgMemberRole; identitySet: string[] }
+    viewer?: SessionFilterQuery['viewer']
   ): Promise<SessionMetaRecord[]>
   /** §4.3 reclassification. Widening touches only the target row; tightening
    *  cascades to every descendant (transitively, `explicit` ones included —
@@ -1013,7 +1090,11 @@ export interface SessionRepo {
     /** Re-checked against the LOCKED row, closing the gap between the route's
      *  authorization read and this write: a concurrent ancestor cascade can
      *  re-own the session in between. Denied ⇒ `forbidden`, nothing written. */
-    authorize?: (row: { visibility: SessionVisibility; ownerIdentity: string | null }) => boolean
+    authorize?: (row: {
+      visibility: SessionVisibility
+      ownerIdentity: string | null
+      externalProvider: string | null
+    }) => boolean
   ): Promise<SessionVisibilityChange>
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
    *  revision never lowers it, so the tighten stays `applied`. */
@@ -1021,10 +1102,14 @@ export interface SessionRepo {
   /** The §5.1 register-time gate snapshot for one daemon: the current
    *  `(sessionId, visibility, visibilityRev)` set for the sessions it reported,
    *  newest first and bounded. A snapshot, not a diff. */
-  visibilitySnapshotForDaemon(daemonId: DaemonId, limit: number): Promise<SessionVisibilityState[]>
+  visibilitySnapshotForDaemon(
+    daemonId: DaemonId,
+    limit: number,
+    includeExternal?: boolean
+  ): Promise<SessionVisibilityState[]>
   /** How many of a daemon's sessions still owe an ack — used to report when a
    *  bounded snapshot could not carry them all (never a silent truncation). */
-  countUnackedVisibility(daemonId: DaemonId): Promise<number>
+  countUnackedVisibility(daemonId: DaemonId, includeExternal?: boolean): Promise<number>
   /** A session plus every descendant — the set a tightening cascade rewrote, so
    *  the detail view's cutover state covers the whole subtree, not just the root. */
   visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]>
@@ -1331,7 +1416,13 @@ export interface SessionUsageRepo {
    *  via the `agent` relation — undefined alone is unfiltered).
    *  `tzOffsetMin` (UTC − local, as `getTimezoneOffset()` reports) aligns the spend
    *  `series` buckets to the viewer's local day/hour; 0 (default) ⇒ UTC. */
-  aggregate(orgId: OrgId, since: Date, viewer?: ViewCtx, tzOffsetMin?: number): Promise<UsageAggregate>
+  aggregate(
+    orgId: OrgId,
+    since: Date,
+    viewer?: ViewCtx,
+    tzOffsetMin?: number,
+    sessionViewer?: SessionFilterQuery['viewer']
+  ): Promise<UsageAggregate>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -3564,6 +3655,207 @@ export interface SkillSourceRepo {
   ): Promise<SkillSourceRecord>
   update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
   delete(id: string): Promise<void>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Organization Knowledge + immutable managed Agent Skills revisions
+// (docs/designs/organization-knowledge.md)
+// ───────────────────────────────────────────────────────────────────────────
+
+export type OrganizationArtifactSource = 'manual' | 'dream'
+export type OrganizationSuggestionKind = 'knowledge' | 'skill'
+export type OrganizationSuggestionOperation = 'create' | 'update'
+export type OrganizationSuggestionState = 'pending' | 'accepted' | 'rejected'
+
+export interface OrganizationKnowledgeRecord {
+  id: string
+  orgId: OrgId
+  title: string
+  currentRevision: number
+  archivedAt: Date | null
+  archivedByUserId: string | null
+  createdAt: Date
+  updatedAt: Date
+  content: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  source: OrganizationArtifactSource
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceCandidateId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  revisionCreatedAt: Date
+}
+
+export interface OrganizationKnowledgeRevisionRecord {
+  knowledgeId: string
+  revision: number
+  content: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  source: OrganizationArtifactSource
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceCandidateId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: Date
+}
+
+export interface ManagedSkillRecord {
+  id: string
+  orgId: OrgId
+  name: string
+  description: string
+  currentRevision: number
+  archivedAt: Date | null
+  archivedByUserId: string | null
+  createdAt: Date
+  updatedAt: Date
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: Record<string, unknown>
+}
+
+export interface ManagedSkillRevisionRecord {
+  managedSkillId: string
+  revision: number
+  archive: Uint8Array
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: Record<string, unknown>
+  source: OrganizationArtifactSource
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceCandidateId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: Date
+}
+
+export interface OrganizationSuggestionRecord {
+  id: string
+  orgId: OrgId
+  sourceAgentId: string
+  sourceDaemonId: string | null
+  dreamId: string
+  candidateId: string
+  kind: OrganizationSuggestionKind
+  operation: OrganizationSuggestionOperation
+  targetArtifactId: string | null
+  targetRevision: number | null
+  title: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  contentBytes: number
+  sessionIds: string[]
+  state: OrganizationSuggestionState
+  reviewedByUserId: string | null
+  reviewedAt: Date | null
+  reviewReason: string | null
+  acceptedArtifactId: string | null
+  acceptedArtifactRevision: number | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface OrganizationArtifactProvenance {
+  source: OrganizationArtifactSource
+  sourceAgentId?: string
+  sourceDreamId?: string
+  sourceCandidateId?: string
+  sourceSessionIds?: string[]
+  createdByUserId?: string
+  reviewedByUserId?: string
+}
+
+export type AcceptOrganizationSuggestionResult =
+  | { outcome: 'accepted'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'not_pending'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'metadata_changed'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'stale_target'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'target_missing'; suggestion: OrganizationSuggestionRecord }
+  | { outcome: 'name_conflict'; suggestion: OrganizationSuggestionRecord }
+
+export interface OrganizationKnowledgeRepo {
+  listKnowledge(orgId: OrgId, includeArchived?: boolean): Promise<OrganizationKnowledgeRecord[]>
+  getKnowledge(id: string): Promise<OrganizationKnowledgeRecord | null>
+  listKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionRecord[]>
+  searchKnowledge(
+    orgId: OrgId,
+    input: { query: string; tags?: string[]; limit: number }
+  ): Promise<OrganizationKnowledgeRecord[]>
+  createKnowledge(
+    orgId: OrgId,
+    input: { title: string; content: string; summary?: string; tags?: string[] },
+    provenance: OrganizationArtifactProvenance
+  ): Promise<OrganizationKnowledgeRecord>
+  updateKnowledge(
+    id: string,
+    expectedRevision: number,
+    input: { title: string; content: string; summary?: string; tags?: string[] },
+    provenance: OrganizationArtifactProvenance
+  ): Promise<OrganizationKnowledgeRecord | null>
+  setKnowledgeArchived(id: string, archived: boolean, byUserId?: string): Promise<OrganizationKnowledgeRecord>
+
+  listManagedSkills(orgId: OrgId, includeArchived?: boolean): Promise<ManagedSkillRecord[]>
+  getManagedSkill(id: string): Promise<ManagedSkillRecord | null>
+  getManagedSkillRevision(id: string, revision: number): Promise<ManagedSkillRevisionRecord | null>
+  listManagedSkillRevisions(id: string): Promise<ManagedSkillRevisionRecord[]>
+  setManagedSkillArchived(id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord>
+
+  syncSuggestions(
+    orgId: OrgId,
+    sourceDaemonId: string,
+    suggestions: (OrganizationSuggestionInfo & { sourceAgentId: string; dreamId: string })[]
+  ): Promise<OrganizationSuggestionRecord[]>
+  listSuggestions(
+    orgId: OrgId,
+    filters?: { kind?: OrganizationSuggestionKind; state?: OrganizationSuggestionState; query?: string }
+  ): Promise<OrganizationSuggestionRecord[]>
+  getSuggestion(id: string): Promise<OrganizationSuggestionRecord | null>
+  rejectSuggestion(
+    id: string,
+    reviewedByUserId: string | undefined,
+    reason?: string
+  ): Promise<OrganizationSuggestionRecord>
+  acceptKnowledgeSuggestion(
+    id: string,
+    body: { title: string; content: string; summary: string | null; tags: string[] },
+    expectedSnapshotToken: string,
+    reviewedByUserId?: string
+  ): Promise<AcceptOrganizationSuggestionResult>
+  acceptSkillSuggestion(
+    id: string,
+    body: {
+      archive: Uint8Array
+      /** Digest advertised by the daemon for the staged candidate tree. */
+      candidateDigest: string
+      /** Digest of the canonical `.skill` ZIP persisted centrally. */
+      digest: string
+      compressedBytes: number
+      expandedBytes: number
+      fileCount: number
+      manifest: Record<string, unknown>
+      /** Manifest metadata read from the exact staged tree. Both fields fence a
+       * concurrent suggestion-inventory refresh before executable content lands. */
+      name: string
+      description: string
+    },
+    expectedSnapshotToken: string,
+    reviewedByUserId?: string
+  ): Promise<AcceptOrganizationSuggestionResult>
 }
 
 // ── External-memory plugin control plane (memory-evolution M-5A) ──

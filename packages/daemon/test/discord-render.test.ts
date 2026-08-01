@@ -19,6 +19,33 @@ describe('DiscordConverger modes', () => {
     const c = new DiscordConverger('medium')
     expect(kinds(c.onUpdate(toolCall({ toolCallId: 't1', title: 'Bash' })))).toEqual(['typing', 'progress'])
   })
+
+  it('idle-flushes only through the last paragraph break so a reply is never cut mid-sentence', () => {
+    const c = new DiscordConverger('medium')
+    c.onUpdate(chunk('First paragraph.\n\nStill streaming mid-wo'))
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'First paragraph.\n\n' }])
+    c.onUpdate(chunk('rd.'))
+    expect(c.onFinal()).toContainEqual({ kind: 'post', text: 'Still streaming mid-word.' })
+  })
+
+  it('idle-flushes nothing while the buffer holds no paragraph break yet', () => {
+    const c = new DiscordConverger('medium')
+    c.onUpdate(chunk('one long line so f'))
+    expect(c.flushBuffered()).toEqual([])
+    expect(c.hasBuffered()).toBe(true)
+  })
+
+  it('flushTerminal drains a boundary-less body and a held tail — the turn never reaches onFinal', () => {
+    const noBreak = new DiscordConverger('medium')
+    noBreak.onUpdate(chunk("You've hit your usage limit."))
+    expect(noBreak.flushTerminal()).toEqual([{ kind: 'post', text: "You've hit your usage limit." }])
+    expect(noBreak.hasBuffered()).toBe(false)
+
+    const withTail = new DiscordConverger('medium')
+    withTail.onUpdate(chunk('Quota exceeded.\n\nRetry after the reset at'))
+    expect(withTail.flushTerminal()).toEqual([{ kind: 'post', text: 'Quota exceeded.\n\nRetry after the reset at' }])
+    expect(withTail.hasBuffered()).toBe(false)
+  })
 })
 
 describe('DiscordConverger AC_NO_RESPONSE suppression', () => {

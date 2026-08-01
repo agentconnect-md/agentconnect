@@ -50,7 +50,8 @@ function assertNoDestinationSymlink(home: string, target: string): void {
   }
 }
 
-function copySeedFile(source: string, destination: string): void {
+function copySeedFile(source: string, destination: string, excludedDestinations: ReadonlySet<string>): void {
+  if (excludedDestinations.has(destination)) return
   if (existsSync(destination)) {
     if (lstatSync(destination).isSymbolicLink()) {
       throw new Error(`runtime HOME destination contains a symlink: ${destination}`)
@@ -89,7 +90,13 @@ function isConfigFile(name: string): boolean {
   )
 }
 
-function seedLocation(home: string, source: string, destination: string, seedFiles?: readonly string[]): void {
+function seedLocation(
+  home: string,
+  source: string,
+  destination: string,
+  excludedDestinations: ReadonlySet<string>,
+  seedFiles?: readonly string[]
+): void {
   let stat
   try {
     stat = lstatSync(source)
@@ -99,7 +106,7 @@ function seedLocation(home: string, source: string, destination: string, seedFil
   }
   if (stat.isSymbolicLink()) return
   if (stat.isFile()) {
-    copySeedFile(source, destination)
+    copySeedFile(source, destination, excludedDestinations)
     return
   }
   if (!stat.isDirectory()) return
@@ -110,13 +117,13 @@ function seedLocation(home: string, source: string, destination: string, seedFil
       const sourceFile = containedDestination(source, file)
       const destinationFile = containedDestination(destination, file)
       assertNoDestinationSymlink(home, destinationFile)
-      copySeedFile(sourceFile, destinationFile)
+      copySeedFile(sourceFile, destinationFile, excludedDestinations)
     }
     return
   }
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     if (!entry.isFile() || !isConfigFile(entry.name)) continue
-    copySeedFile(join(source, entry.name), join(destination, entry.name))
+    copySeedFile(join(source, entry.name), join(destination, entry.name), excludedDestinations)
   }
 }
 
@@ -126,10 +133,12 @@ export function prepareRuntimeHome(
   runtimeId: string,
   scopeDir: string,
   hostEnv: NodeJS.ProcessEnv = process.env,
-  targetHome?: string
+  targetHome?: string,
+  excludedDestinations: readonly string[] = []
 ): string {
   const home = targetHome ? resolve(targetHome) : runtimeHomePath(scopeDir)
   ensurePrivateDir(home)
+  const excluded = new Set(excludedDestinations.map((destination) => containedDestination(home, destination)))
   const locations = runtimeStateLocations(runtimeId, hostEnv)
   // rc.6-era native memory supported Claude and Codex and lived directly under
   // the agent root. Move only those historical paths before host seeding.
@@ -147,7 +156,7 @@ export function prepareRuntimeHome(
   for (const location of locations) {
     const destination = containedDestination(home, location.destination)
     assertNoDestinationSymlink(home, destination)
-    seedLocation(home, location.source, destination, location.seedFiles)
+    seedLocation(home, location.source, destination, excluded, location.seedFiles)
     if (runtimeId === 'omp') {
       extractOmpCredentials(join(location.source, 'agent.db'), join(destination, 'agent.db'))
     }
@@ -219,6 +228,11 @@ const RUNTIME_PRIVATE_ENV: Record<string, RuntimePrivateEnv> = {
     ZEROCLAW_CONFIG_DIR: join(home, '.zeroclaw'),
     ZEROCLAW_DATA_DIR: join(home, '.zeroclaw', 'data')
   }),
+  // Pin global state even when CONFIG_DIR_NAME is customized. That variable may
+  // still select the project-local directory, but auth always resolves through
+  // the reviewed private-HOME link prepared by runtime-credentials.
+  'qoder-cli': (home) => ({ QODER_CONFIG_DIR: join(home, '.qoder') }),
+  'qoder-cli-cn': (home) => ({ QODERCN_CONFIG_DIR: join(home, '.qoder-cn') }),
   omp: (home) => ({ PI_CODING_AGENT_DIR: join(home, '.omp', 'agent') }),
   'pi-acp': (home) => ({ PI_CODING_AGENT_DIR: join(home, '.pi', 'agent') }),
   cline: (home) => ({

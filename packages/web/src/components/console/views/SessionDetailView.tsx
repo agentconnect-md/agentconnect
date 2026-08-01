@@ -945,6 +945,8 @@ export default function SessionDetailView() {
         visibility={sessionDetail.visibility ?? undefined}
         state={sessionDetail.visibilityState}
         canChange={sessionDetail.canChangeVisibility === true}
+        externalProvider={sessionDetail.externalProvider}
+        externalResolution={sessionDetail.externalResolution}
         // Native runtime memory has no per-session gate, so the copy must not
         // promise a memory boundary this tier cannot deliver.
         nativeMemory={owner?.memoryProvider === 'native'}
@@ -1408,6 +1410,12 @@ export default function SessionDetailView() {
           <Icon name={copied ? 'check' : 'link'} size={12} />
         </button>
       </div>
+
+      {sessionDetail?.accessSyncDegraded && (
+        <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3">
+          Slack membership could not be verified. Related sessions remain hidden until access checks recover.
+        </div>
+      )}
 
       {/* MOBILE META STRIP — single-row 4-up, abbreviated labels tuned for 390px. */}
       <div className="grid grid-cols-[repeat(4,1fr)] border-b border-(--border-subtle) bg-(--surface-card) desktop:hidden">

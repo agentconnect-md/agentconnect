@@ -4,7 +4,7 @@
  * the sender, and the repos are all fakes, so no Docker and no socket.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { SESSION_VISIBILITY_FEATURE } from '@agentconnect.md/protocol'
+import { SESSION_VISIBILITY_FEATURE, SLACK_SESSION_AUDIENCE_FEATURE } from '@agentconnect.md/protocol'
 import { SessionVisibilityPushService, visibilityStateOf } from './visibilityPush.js'
 
 /** One past the cutover-state read cap (SUBTREE_LIMIT = 500). */
@@ -29,12 +29,19 @@ function session(over: Partial<SessionMetaRecord> = {}): SessionMetaRecord {
 }
 
 /** A registry holding one daemon, optionally advertising the feature. */
-function connReg(opts: { connected?: boolean; feature?: boolean } = {}) {
-  const { connected = true, feature = true } = opts
+function connReg(opts: { connected?: boolean; feature?: boolean; externalFeature?: boolean } = {}) {
+  const { connected = true, feature = true, externalFeature = true } = opts
   return {
     get: (id: string) =>
       connected && id === DAEMON
-        ? { capabilities: { features: feature ? [SESSION_VISIBILITY_FEATURE] : [] } }
+        ? {
+            capabilities: {
+              features: [
+                ...(feature ? [SESSION_VISIBILITY_FEATURE] : []),
+                ...(externalFeature ? [SLACK_SESSION_AUDIENCE_FEATURE] : [])
+              ]
+            }
+          }
         : undefined
   } as never
 }
@@ -45,7 +52,9 @@ function deps(
     sessionVisibility?: unknown
     daemonId?: string | null
     /** Successive snapshot pages the repo hands back, newest call first. */
-    snapshotPages?: Array<Array<{ sessionId: string; visibility: 'private' | 'org'; visibilityRev: number }>>
+    snapshotPages?: Array<
+      Array<{ sessionId: string; visibility: 'private' | 'org' | 'external'; visibilityRev: number }>
+    >
     unackedAfter?: number[]
   } = {}
 ) {
@@ -93,6 +102,7 @@ describe('notifySessions', () => {
     expect(sessionVisibility).toHaveBeenCalledWith(DAEMON, {
       sessionId: 'acp-1',
       visibility: 'private',
+      sharedMemoryExcluded: true,
       visibilityRev: 2
     })
     expect(recordVisibilityAck).toHaveBeenCalledWith('acp-1', 2)
@@ -103,6 +113,21 @@ describe('notifySessions', () => {
     const { push, recordVisibilityAck } = deps({ sessionVisibility })
     await push.notifySessions([session()])
     expect(recordVisibilityAck).toHaveBeenCalledWith('acp-1', 2)
+  })
+
+  it('does not send an external visibility value to a daemon with only the legacy feature', async () => {
+    const old = deps({ connReg: connReg({ externalFeature: false }) as never })
+    await old.push.notifySessions([session({ visibility: 'external', externalProvider: 'slack', ownerIdentity: null })])
+    expect(old.sessionVisibility).not.toHaveBeenCalled()
+
+    const current = deps()
+    await current.push.notifySessions([
+      session({ visibility: 'external', externalProvider: 'slack', ownerIdentity: null })
+    ])
+    expect(current.sessionVisibility).toHaveBeenCalledWith(
+      DAEMON,
+      expect.objectContaining({ visibility: 'external', sharedMemoryExcluded: true })
+    )
   })
 
   it('skips an unplaced agent, an offline daemon, and one too old to know the frame', async () => {
@@ -456,6 +481,13 @@ describe('isApplied — the §4.3 cutover state', () => {
     expect(
       await push.isApplied([session({ visibilitySource: 'default', visibilityRev: 0, visibilityAckedRev: -1 })])
     ).toBe(true)
+  })
+
+  it('waits for an ack after a policy cutover bumps a default-classified row', async () => {
+    const { push } = deps()
+    expect(
+      await push.isApplied([session({ visibilitySource: 'default', visibilityRev: 1, visibilityAckedRev: 0 })])
+    ).toBe(false)
   })
 
   it('is vacuously applied ONLY for an unplaced agent — nothing runs it, nothing captures', async () => {

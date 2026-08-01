@@ -11,7 +11,12 @@ const NameValueList = z.array(z.object({ name: z.string(), value: z.string() }))
 export const RuntimeDefSchema = z.object({
   command: z.string(),
   args: z.array(z.string()).default([]),
-  env: NameValueList
+  env: NameValueList,
+  // Operator/registry-owned read-only installation roots needed by a runtime
+  // whose executable or dependencies live below a host path hidden from the
+  // sandbox (most commonly HOME). Agent configuration can select a runtime but
+  // cannot add entries here.
+  readRoots: z.array(z.string()).optional()
 })
 export type RuntimeDef = z.infer<typeof RuntimeDefSchema>
 
@@ -26,6 +31,9 @@ export const McpServerDefSchema = z
     command: z.string().optional(),
     args: z.array(z.string()).default([]),
     env: NameValueList,
+    // Same trusted installation-root escape hatch as RuntimeDefSchema, for a
+    // daemon-configured stdio MCP child spawned by the runtime.
+    readRoots: z.array(z.string()).optional(),
     // http/sse transports: the server endpoint (required for http/sse).
     url: z.string().optional(),
     headers: NameValueList

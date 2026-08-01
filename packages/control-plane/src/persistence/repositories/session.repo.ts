@@ -6,7 +6,12 @@
  * `end` phase stamps `endedAt`. The launch tie (`launchId`) is set on create.
  */
 import type { Platform } from '@agentconnect.md/protocol'
-import { Prisma, type SessionMeta } from '../../generated/prisma/client.js'
+import {
+  Prisma,
+  type ExternalScope,
+  type SessionExternalAccessPolicy,
+  type SessionMeta
+} from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   SessionRepo,
@@ -27,9 +32,14 @@ import type {
   SessionPhase,
   ActivityState,
   SessionVisibility,
-  VisibilitySource
+  VisibilitySource,
+  ExternalResolution,
+  ExternalScopeRecord,
+  SessionExternalAccessPolicyRecord,
+  ExternalAccessPolicyState
 } from '../ports.js'
 import { AgentId, BotId, DaemonId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
+import { sessionViewerSql } from './session-access-sql.js'
 
 /** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
  *  never name a `webchat_conversation` row, so the fence path skips it. */
@@ -68,8 +78,38 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     visibilitySource: s.visibilitySource as VisibilitySource,
     visibilityRev: s.visibilityRev,
     visibilityAckedRev: s.visibilityAckedRev,
+    externalProvider: s.externalProvider,
+    externalScopeId: s.externalScopeId,
+    externalResolution: (s.externalResolution as ExternalResolution | null) ?? null,
+    classifiedPolicyRev: s.classifiedPolicyRev,
     startedAt: s.startedAt,
     endedAt: s.endedAt
+  }
+}
+
+function toExternalScopeRecord(scope: ExternalScope): ExternalScopeRecord {
+  return {
+    id: scope.id,
+    orgId: OrgId(scope.orgId),
+    provider: scope.provider,
+    realmKey: scope.realmKey,
+    resourceKind: scope.resourceKind,
+    resourceKey: scope.resourceKey,
+    credentialKind: scope.credentialKind,
+    credentialId: scope.credentialId,
+    aclRevision: scope.aclRevision,
+    revokedAt: scope.revokedAt
+  }
+}
+
+function toExternalPolicyRecord(policy: SessionExternalAccessPolicy): SessionExternalAccessPolicyRecord {
+  return {
+    orgId: OrgId(policy.orgId),
+    provider: policy.provider,
+    state: policy.state as ExternalAccessPolicyState,
+    currentRev: policy.currentRev,
+    readFenceRev: policy.readFenceRev,
+    migrationCursor: policy.migrationCursor
   }
 }
 
@@ -195,21 +235,6 @@ function integrationSql(q: SessionFilterQuery): Prisma.Sql | null {
   return platformSql(q.integration)
 }
 
-/**
- * The SQL mirror of `authorization/policy.ts#canViewSession` (session-visibility.md
- * §5). No role bypass — org owners included, every viewer sees `org` rows plus
- * `private` rows they own; only the internal/daemon-facing callers that pass no
- * viewer read unfiltered. `= ANY(array)` tolerates an empty identity set,
- * unlike the `IN (…)` list form used for agent ids.
- */
-function sessionViewerSql(viewer: SessionFilterQuery['viewer']): Prisma.Sql | null {
-  if (!viewer) return null
-  return Prisma.sql`(
-    s."visibility" = 'org'::"SessionVisibility"
-    OR (s."ownerIdentity" IS NOT NULL AND s."ownerIdentity" = ANY(${viewer.identitySet}::text[]))
-  )`
-}
-
 function pageWhereSql(q: SessionFilterQuery, includeCursor: boolean): Prisma.Sql {
   const filters: Prisma.Sql[] = [Prisma.sql`s."agentId" IN (${Prisma.join(queryAgentIds(q))})`]
   const viewerArm = sessionViewerSql(q.viewer)
@@ -263,6 +288,16 @@ type SessionFacetDbRow = {
 
 type SessionAgentFacetDbRow = { agentId: string }
 
+type ResolvedSessionClassification = {
+  visibility: SessionVisibility
+  ownerIdentity: string | null
+  source: VisibilitySource
+  externalProvider: string | null
+  externalScopeId: string | null
+  externalResolution: ExternalResolution | null
+  classifiedPolicyRev: bigint | null
+}
+
 function toFacetRecord(row: SessionFacetDbRow): SessionFacetRecord {
   return {
     ...row,
@@ -299,15 +334,107 @@ export class PgSessionRepo implements SessionRepo {
    */
   private async resolveClassification(
     tx: PrismaLike,
-    ev: EventSessionInput
-  ): Promise<{ visibility: SessionVisibility; ownerIdentity: string | null; source: VisibilitySource }> {
+    ev: EventSessionInput,
+    orgId: OrgId
+  ): Promise<ResolvedSessionClassification> {
     const classification = ev.classification
-    if (!classification) return { visibility: 'org', ownerIdentity: null, source: 'default' }
-    if (classification.inherit !== true) return classification
+    const direct =
+      !classification || classification.inherit === true
+        ? null
+        : {
+            ...classification,
+            externalProvider: null,
+            externalScopeId: null,
+            externalResolution: null,
+            classifiedPolicyRev: null
+          }
+    if (ev.externalCandidate) {
+      const candidate = ev.externalCandidate
+      await tx.sessionExternalAccessPolicy.upsert({
+        where: { orgId_provider: { orgId, provider: candidate.provider } },
+        create: { orgId, provider: candidate.provider },
+        update: {}
+      })
+      // Serialize candidate creation with owner enable/disable. If ingest wins,
+      // the transition's bulk UPDATE sees this row; if the transition wins,
+      // classification observes its committed revision and state. Without the
+      // lock a settled `org` row could land below an enable read fence forever.
+      const policies = await tx.$queryRaw<SessionExternalAccessPolicy[]>(Prisma.sql`
+        SELECT * FROM "session_external_access_policy"
+        WHERE "orgId" = ${orgId} AND "provider" = ${candidate.provider}
+        FOR UPDATE
+      `)
+      const policy = policies[0]!
+      let scopeId: string | null = null
+      let resolution = candidate.resolution
+      if (candidate.resolution === 'settled' && candidate.scope) {
+        const scope = candidate.scope
+        const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          INSERT INTO "external_scope" (
+            "orgId", "provider", "realmKey", "resourceKind", "resourceKey",
+            "credentialKind", "credentialId", "createdAt", "updatedAt"
+          ) VALUES (
+            ${orgId}, ${candidate.provider}, ${scope.realmKey}, ${scope.resourceKind},
+            ${scope.resourceKey}, ${scope.credentialKind ?? null},
+            ${scope.credentialId ?? null}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          )
+          ON CONFLICT ("orgId", "provider", "realmKey", "resourceKind", "resourceKey")
+          DO UPDATE SET
+            "aclRevision" = CASE
+              WHEN "external_scope"."credentialKind" IS DISTINCT FROM EXCLUDED."credentialKind"
+                OR "external_scope"."credentialId" IS DISTINCT FROM EXCLUDED."credentialId"
+              THEN "external_scope"."aclRevision" + 1
+              ELSE "external_scope"."aclRevision"
+            END,
+            "credentialKind" = EXCLUDED."credentialKind",
+            "credentialId" = EXCLUDED."credentialId",
+            "revokedAt" = NULL,
+            "updatedAt" = CURRENT_TIMESTAMP
+          RETURNING "id"
+        `)
+        scopeId = rows[0]?.id ?? null
+        if (!scopeId) resolution = 'invalid'
+      } else if (candidate.resolution === 'settled') {
+        resolution = 'invalid'
+      }
+      const base = direct ?? { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const }
+      return {
+        ...base,
+        visibility: policy.state === 'disabled' ? 'org' : 'external',
+        externalProvider: candidate.provider,
+        externalScopeId: scopeId,
+        externalResolution: resolution,
+        classifiedPolicyRev: policy.currentRev
+      }
+    }
+    if (direct) return direct
+    if (!classification) {
+      return {
+        visibility: 'org',
+        ownerIdentity: null,
+        source: 'default',
+        externalProvider: null,
+        externalScopeId: null,
+        externalResolution: null,
+        classifiedPolicyRev: null
+      }
+    }
     const parent = ev.parentSessionId
-      ? await tx.$queryRaw<Array<{ visibility: string; ownerIdentity: string | null; visibilitySource: string }>>(
+      ? await tx.$queryRaw<
+          Array<{
+            visibility: string
+            ownerIdentity: string | null
+            visibilitySource: string
+            externalProvider: string | null
+            externalScopeId: string | null
+            externalResolution: string | null
+            classifiedPolicyRev: bigint | null
+          }>
+        >(
           Prisma.sql`
-            SELECT "visibility", "ownerIdentity", "visibilitySource"
+            SELECT "visibility", "ownerIdentity", "visibilitySource",
+                   "externalProvider", "externalScopeId", "externalResolution",
+                   "classifiedPolicyRev"
             FROM "session_meta" WHERE "id" = ${ev.parentSessionId} FOR SHARE
           `
         )
@@ -321,11 +448,25 @@ export class PgSessionRepo implements SessionRepo {
     // root-last stuck private forever. Stay pending; the recursive settlement
     // below reaches us when the real ancestor lands.
     const unsettledParent = parent.length !== 1 || parent[0]!.visibilitySource === 'inherited_pending'
-    if (unsettledParent) return { visibility: 'private', ownerIdentity: null, source: 'inherited_pending' }
+    if (unsettledParent) {
+      return {
+        visibility: 'private',
+        ownerIdentity: null,
+        source: 'inherited_pending',
+        externalProvider: null,
+        externalScopeId: null,
+        externalResolution: null,
+        classifiedPolicyRev: null
+      }
+    }
     return {
       visibility: parent[0]!.visibility as SessionVisibility,
       ownerIdentity: parent[0]!.ownerIdentity,
-      source: 'inherited'
+      source: 'inherited',
+      externalProvider: parent[0]!.externalProvider,
+      externalScopeId: parent[0]!.externalScopeId,
+      externalResolution: parent[0]!.externalResolution as ExternalResolution | null,
+      classifiedPolicyRev: parent[0]!.classifiedPolicyRev
     }
   }
 
@@ -349,6 +490,10 @@ export class PgSessionRepo implements SessionRepo {
         UPDATE "session_meta" SET
           "visibility" = ${parent.visibility}::"SessionVisibility",
           "ownerIdentity" = ${parent.ownerIdentity},
+          "externalProvider" = ${parent.externalProvider},
+          "externalScopeId" = ${parent.externalScopeId}::uuid,
+          "externalResolution" = ${parent.externalResolution}::"ExternalResolution",
+          "classifiedPolicyRev" = ${parent.classifiedPolicyRev},
           "visibilitySource" = 'inherited'::"VisibilitySource",
           "visibilityRev" = "visibilityRev" + 1,
           "updatedAt" = CURRENT_TIMESTAMP
@@ -364,6 +509,45 @@ export class PgSessionRepo implements SessionRepo {
     return settled
   }
 
+  /** Settle migration-marked descendants when a legacy shared root supplies its
+   * first trusted scope after upgrade. Only pending rows from the same org and
+   * provider move; explicit/private or contradictory rows stay fail-closed. */
+  private async settleExternalDescendants(tx: PrismaLike, parent: SessionMetaRecord): Promise<SessionMetaRecord[]> {
+    if (
+      parent.externalProvider === null ||
+      parent.externalScopeId === null ||
+      parent.externalResolution !== 'settled'
+    ) {
+      return []
+    }
+    const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
+      WITH RECURSIVE descendants AS (
+        SELECT child."id"
+        FROM "session_meta" child
+        WHERE child."parentSessionId" = ${parent.id}
+        UNION
+        SELECT child."id"
+        FROM "session_meta" child
+        JOIN descendants prior ON child."parentSessionId" = prior."id"
+      )
+      UPDATE "session_meta" s SET
+        "visibility" = ${parent.visibility}::"SessionVisibility",
+        "ownerIdentity" = NULL,
+        "externalScopeId" = ${parent.externalScopeId}::uuid,
+        "externalResolution" = 'settled'::"ExternalResolution",
+        "classifiedPolicyRev" = ${parent.classifiedPolicyRev},
+        "visibilityRev" = s."visibilityRev" + 1,
+        "updatedAt" = CURRENT_TIMESTAMP
+      FROM descendants d
+      WHERE s."id" = d."id"
+        AND s."orgId" = ${parent.orgId}
+        AND s."externalProvider" = ${parent.externalProvider}
+        AND s."externalResolution" = 'pending'::"ExternalResolution"
+      RETURNING s.*
+    `)
+    return rows.map(toRecord)
+  }
+
   /**
    * The other half of settlement: a child whose parent commits between our own
    * classification read and our commit stays `inherited_pending` forever unless
@@ -372,11 +556,11 @@ export class PgSessionRepo implements SessionRepo {
    */
   private async settleFromParent(sessionId: SessionId, parentSessionId: SessionId): Promise<SessionMetaRecord[]> {
     return withAmbientTx(this.db, async (tx) => {
-      const parent = await tx.$queryRaw<
-        Array<{ visibility: string; ownerIdentity: string | null; visibilitySource: string }>
-      >(
+      const parent = await tx.$queryRaw<Array<ResolvedSessionClassification & { visibilitySource: string }>>(
         Prisma.sql`
-          SELECT "visibility", "ownerIdentity", "visibilitySource"
+          SELECT "visibility", "ownerIdentity", "visibilitySource",
+                 "externalProvider", "externalScopeId", "externalResolution",
+                 "classifiedPolicyRev"
           FROM "session_meta" WHERE "id" = ${parentSessionId} FOR SHARE
         `
       )
@@ -386,6 +570,10 @@ export class PgSessionRepo implements SessionRepo {
         UPDATE "session_meta" SET
           "visibility" = ${parent[0]!.visibility}::"SessionVisibility",
           "ownerIdentity" = ${parent[0]!.ownerIdentity},
+          "externalProvider" = ${parent[0]!.externalProvider},
+          "externalScopeId" = ${parent[0]!.externalScopeId}::uuid,
+          "externalResolution" = ${parent[0]!.externalResolution}::"ExternalResolution",
+          "classifiedPolicyRev" = ${parent[0]!.classifiedPolicyRev},
           "visibilitySource" = 'inherited'::"VisibilitySource",
           "visibilityRev" = "visibilityRev" + 1,
           "updatedAt" = CURRENT_TIMESTAMP
@@ -416,7 +604,6 @@ export class PgSessionRepo implements SessionRepo {
   private async upsertMilestone(tx: PrismaLike, ev: EventSessionInput): Promise<SessionMilestoneResult> {
     const endedAt = ev.phase === 'end' ? ev.at : undefined
     const lastActivityAt = ev.lastActivityAt ?? ev.at
-    const cls = await this.resolveClassification(tx, ev)
     // Webchat current-session fence: lock the durable conversation row BEFORE
     // the session upsert. Pointer maintenance (below), authorization reads
     // (which lock the same conversation row FOR UPDATE), and any concurrent
@@ -431,6 +618,48 @@ export class PgSessionRepo implements SessionRepo {
         FOR UPDATE
       `)
     }
+    const agent = await tx.agent.findUnique({ where: { id: ev.agentId }, select: { orgId: true } })
+    if (!agent) return { recorded: false, session: null, settled: [] }
+    const orgId = OrgId(agent.orgId)
+    const cls = await this.resolveClassification(tx, ev, orgId)
+    // A legacy daemon row has no durable source binding. The migration marks
+    // its Slack shape `pending`; a later trusted milestone may bind or settle it
+    // exactly once. An explicit DIRECT row remains immutable, while an already
+    // marked external candidate no longer treats its legacy visibility source as
+    // ownership authority.
+    const rebound = cls.externalProvider
+      ? (
+          await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+            UPDATE "session_meta" SET
+              "visibility" = ${cls.visibility}::"SessionVisibility",
+              "ownerIdentity" = NULL,
+              "externalProvider" = ${cls.externalProvider},
+              "externalScopeId" = ${cls.externalScopeId}::uuid,
+              "externalResolution" = ${cls.externalResolution}::"ExternalResolution",
+              "classifiedPolicyRev" = ${cls.classifiedPolicyRev},
+              "visibilityRev" = "visibilityRev" + 1,
+              "updatedAt" = CURRENT_TIMESTAMP
+            WHERE "id" = ${ev.sessionId}
+              AND "agentId" = ${ev.agentId}
+              AND ("channel" IS NULL OR "channel" = ${ev.channel ?? null})
+              AND (
+                (
+                  "externalProvider" IS NULL
+                  AND "visibilitySource" <> 'explicit'::"VisibilitySource"
+                  AND "visibility" = 'org'::"SessionVisibility"
+                )
+                OR (
+                  "externalProvider" = ${cls.externalProvider}
+                  AND "externalResolution" = 'pending'::"ExternalResolution"
+                  AND ${cls.externalResolution === 'settled'}
+                  AND ${cls.externalScopeId !== null}
+                  AND ("externalScopeId" IS NULL OR "externalScopeId" = ${cls.externalScopeId}::uuid)
+                )
+              )
+            RETURNING "id"
+          `)
+        ).length === 1
+      : false
     const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
       INSERT INTO "session_meta" (
         "id", "parentSessionId", "agentId", "launchId", "platform", "channel",
@@ -438,8 +667,9 @@ export class PgSessionRepo implements SessionRepo {
         "lastActivityAt", "triggeredBy", "channelName", "triggeredByName",
         "threadUrl", "runtime", "model", "effort", "fastMode",
         "permissionMode", "outputMode", "daemonId", "orgId", "visibility",
-        "ownerIdentity", "visibilitySource", "startedAt", "endedAt",
-        "updatedAt"
+        "ownerIdentity", "visibilitySource", "externalProvider",
+        "externalScopeId", "externalResolution", "classifiedPolicyRev",
+        "startedAt", "endedAt", "updatedAt"
       ) VALUES (
         ${ev.sessionId}, ${ev.parentSessionId ?? null}, ${ev.agentId},
         ${ev.launchId ?? null}, ${ev.platform ?? null}, ${ev.channel ?? null},
@@ -450,17 +680,15 @@ export class PgSessionRepo implements SessionRepo {
         ${ev.runtime ?? null}, ${ev.model ?? null}, ${ev.effort ?? null},
         ${ev.fastMode ?? null}, ${ev.permissionMode ?? null},
         ${ev.outputMode ?? null}, ${ev.daemonId ?? null},
-        -- Denormalized from the owning agent (§3) so the org-wide list predicate
-        -- never joins "agent". The agentId FK guarantees the subquery resolves.
-        (SELECT a."orgId" FROM "agent" a WHERE a."id" = ${ev.agentId}),
+        ${orgId},
         ${cls.visibility}::"SessionVisibility", ${cls.ownerIdentity},
-        ${cls.source}::"VisibilitySource", ${ev.at},
-        ${endedAt ?? null}, CURRENT_TIMESTAMP
+        ${cls.source}::"VisibilitySource", ${cls.externalProvider},
+        ${cls.externalScopeId}::uuid, ${cls.externalResolution}::"ExternalResolution",
+        ${cls.classifiedPolicyRev}, ${ev.at}, ${endedAt ?? null}, CURRENT_TIMESTAMP
       )
-      -- NOTE: the visibility columns are deliberately absent from this SET list.
-      -- Classification is FIRST-WINS (§4.2): a later milestone for the same
-      -- session must never re-classify it — that would undo a §4.3 decision and,
-      -- for a re-emit that lost its conversationKind, silently widen a private DM.
+      -- Visibility remains first-wins here. The narrow legacy pending → trusted
+      -- external transition, when applicable, happened in the guarded UPDATE
+      -- above and cannot overwrite an explicit or private row.
       ON CONFLICT ("id") DO UPDATE SET
         "parentSessionId" = COALESCE(
           "session_meta"."parentSessionId",
@@ -529,6 +757,29 @@ export class PgSessionRepo implements SessionRepo {
     // would drop it out of the scan when the real ancestor finally lands.
     const settled =
       session.visibilitySource === 'inherited_pending' ? [] : await this.settlePendingChildren(tx, session)
+    if (rebound) settled.push(...(await this.settleExternalDescendants(tx, session)))
+    // Keep the durable policy state aligned with the actual unresolved set.
+    // A trusted retry may settle the final historical candidate after enable;
+    // conversely, a new pending/invalid candidate must surface degradation.
+    // resolveClassification's policy upsert holds the policy row until this
+    // transaction commits, so a concurrent enable/disable cannot interleave.
+    if (
+      cls.externalProvider !== null &&
+      cls.visibility === 'external' &&
+      (cls.externalResolution !== 'settled' || rebound)
+    ) {
+      const unresolved = await tx.sessionMeta.count({
+        where: {
+          orgId,
+          externalProvider: cls.externalProvider,
+          externalResolution: { in: ['pending', 'invalid'] }
+        }
+      })
+      await tx.sessionExternalAccessPolicy.updateMany({
+        where: { orgId, provider: cls.externalProvider, state: { not: 'disabled' } },
+        data: { state: unresolved > 0 ? 'degraded' : 'enabled' }
+      })
+    }
     return { recorded: true, session, settled }
   }
 
@@ -685,23 +936,164 @@ export class PgSessionRepo implements SessionRepo {
     return rows[0]?.visibility === 'private'
   }
 
+  async listExternalScopes(q: SessionFilterQuery): Promise<ExternalScopeRecord[]> {
+    if (queryAgentIds(q).length === 0) return []
+    const unrestricted = { ...q }
+    delete unrestricted.viewer
+    delete unrestricted.cursor
+    const rows = await this.db.$queryRaw<ExternalScope[]>(Prisma.sql`
+      SELECT DISTINCT scope.*
+      FROM "session_meta" s
+      JOIN "external_scope" scope
+        ON scope."id" = s."externalScopeId"
+       AND scope."orgId" = s."orgId"
+       AND scope."provider" = s."externalProvider"
+      ${pageWhereSql(unrestricted, false)}
+        AND s."visibility" = 'external'::"SessionVisibility"
+        AND s."externalResolution" = 'settled'::"ExternalResolution"
+        AND scope."revokedAt" IS NULL
+      ORDER BY scope."id"
+    `)
+    return rows.map(toExternalScopeRecord)
+  }
+
+  async getExternalScopes(ids: string[]): Promise<ExternalScopeRecord[]> {
+    if (ids.length === 0) return []
+    const rows = await this.db.externalScope.findMany({ where: { id: { in: ids } } })
+    return rows.map(toExternalScopeRecord)
+  }
+
+  async getExternalAccessPolicy(orgId: OrgId, provider: string): Promise<SessionExternalAccessPolicyRecord | null> {
+    const policy = await this.db.sessionExternalAccessPolicy.findUnique({
+      where: { orgId_provider: { orgId, provider } }
+    })
+    return policy ? toExternalPolicyRecord(policy) : null
+  }
+
+  async countExternalUnresolved(orgId: OrgId, provider: string): Promise<number> {
+    return this.db.sessionMeta.count({
+      where: {
+        orgId,
+        externalProvider: provider,
+        visibility: 'external',
+        externalResolution: { in: ['pending', 'invalid'] }
+      }
+    })
+  }
+
+  async setExternalAccessEnabled(
+    orgId: OrgId,
+    provider: string,
+    enabled: boolean
+  ): Promise<{
+    policy: SessionExternalAccessPolicyRecord
+    hiddenSessions: number
+    affected: SessionMetaRecord[]
+  }> {
+    return withAmbientTx(this.db, async (tx) => {
+      await tx.sessionExternalAccessPolicy.upsert({
+        where: { orgId_provider: { orgId, provider } },
+        create: { orgId, provider },
+        update: {}
+      })
+      const locked = await tx.$queryRaw<SessionExternalAccessPolicy[]>(Prisma.sql`
+        SELECT * FROM "session_external_access_policy"
+        WHERE "orgId" = ${orgId} AND "provider" = ${provider}
+        FOR UPDATE
+      `)
+      const current = locked[0]!
+      const alreadyEnabled = current.state !== 'disabled'
+      if (enabled === alreadyEnabled) {
+        const hiddenSessions = await tx.sessionMeta.count({
+          where: {
+            orgId,
+            externalProvider: provider,
+            visibility: 'external',
+            externalResolution: { in: ['pending', 'invalid'] }
+          }
+        })
+        return { policy: toExternalPolicyRecord(current), hiddenSessions, affected: [] }
+      }
+      const targetRev = current.currentRev + 1n
+      if (!enabled) {
+        const policy = await tx.sessionExternalAccessPolicy.update({
+          where: { orgId_provider: { orgId, provider } },
+          data: { state: 'disabled', currentRev: targetRev }
+        })
+        const hiddenSessions = await tx.sessionMeta.count({
+          where: {
+            orgId,
+            externalProvider: provider,
+            visibility: 'external',
+            externalResolution: { in: ['pending', 'invalid'] }
+          }
+        })
+        return { policy: toExternalPolicyRecord(policy), hiddenSessions, affected: [] }
+      }
+
+      // Fence first in this transaction. Every supported candidate below is
+      // then classified at the target revision before the transition commits;
+      // unresolved legacy history remains external and therefore unreadable.
+      await tx.sessionExternalAccessPolicy.update({
+        where: { orgId_provider: { orgId, provider } },
+        data: {
+          state: 'enabling',
+          currentRev: targetRev,
+          readFenceRev: current.readFenceRev ?? targetRev
+        }
+      })
+      const affectedRows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
+        UPDATE "session_meta"
+        SET "visibility" = 'external'::"SessionVisibility",
+            "classifiedPolicyRev" = ${targetRev},
+            "visibilityRev" = "visibilityRev" + 1,
+            "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "orgId" = ${orgId}
+          AND "externalProvider" = ${provider}
+          AND (
+            "visibility" <> 'external'::"SessionVisibility"
+            OR "classifiedPolicyRev" IS DISTINCT FROM ${targetRev}
+          )
+        RETURNING *
+      `)
+      const hiddenSessions = await tx.sessionMeta.count({
+        where: {
+          orgId,
+          externalProvider: provider,
+          externalResolution: { in: ['pending', 'invalid'] }
+        }
+      })
+      const policy = await tx.sessionExternalAccessPolicy.update({
+        where: { orgId_provider: { orgId, provider } },
+        data: { state: hiddenSessions > 0 ? 'degraded' : 'enabled' }
+      })
+      return {
+        policy: toExternalPolicyRecord(policy),
+        hiddenSessions,
+        affected: affectedRows.map(toRecord)
+      }
+    })
+  }
+
   async listChildren(
     parentSessionId: SessionId,
     agentIds: AgentId[],
     viewer?: SessionFilterQuery['viewer']
   ): Promise<SessionMetaRecord[]> {
     if (agentIds.length === 0) return []
-    const rows = await this.db.sessionMeta.findMany({
-      where: {
-        parentSessionId,
-        agentId: { in: agentIds },
-        // The Prisma spelling of `sessionViewerSql` — the same predicate as the
-        // list (no org-owner bypass), so a private child never leaks its title
-        // through the detail page.
-        ...(viewer ? { OR: [{ visibility: 'org' as const }, { ownerIdentity: { in: viewer.identitySet } }] } : {})
-      },
-      orderBy: [{ startedAt: 'asc' }, { id: 'asc' }]
-    })
+    const viewerArm = sessionViewerSql(viewer)
+    const rows = viewerArm
+      ? await this.db.$queryRaw<SessionMeta[]>(Prisma.sql`
+          SELECT s.* FROM "session_meta" s
+          WHERE s."parentSessionId" = ${parentSessionId}
+            AND s."agentId" IN (${Prisma.join(agentIds)})
+            AND ${viewerArm}
+          ORDER BY s."startedAt" ASC, s."id" ASC
+        `)
+      : await this.db.sessionMeta.findMany({
+          where: { parentSessionId, agentId: { in: agentIds } },
+          orderBy: [{ startedAt: 'asc' }, { id: 'asc' }]
+        })
     return rows.map(toRecord)
   }
 
@@ -722,21 +1114,34 @@ export class PgSessionRepo implements SessionRepo {
   async setVisibility(
     sessionId: SessionId,
     visibility: SessionVisibility,
-    authorize?: (row: { visibility: SessionVisibility; ownerIdentity: string | null }) => boolean
+    authorize?: (row: {
+      visibility: SessionVisibility
+      ownerIdentity: string | null
+      externalProvider: string | null
+    }) => boolean
   ): Promise<SessionVisibilityChange> {
     return withAmbientTx(this.db, async (tx) => {
-      const locked = await tx.$queryRaw<Array<{ visibility: string; ownerIdentity: string | null }>>(Prisma.sql`
-        SELECT "visibility", "ownerIdentity" FROM "session_meta" WHERE "id" = ${sessionId} FOR UPDATE
+      const locked = await tx.$queryRaw<
+        Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
+      >(Prisma.sql`
+        SELECT "visibility", "ownerIdentity", "externalProvider"
+        FROM "session_meta" WHERE "id" = ${sessionId} FOR UPDATE
       `)
       if (locked.length !== 1) return { affected: [] }
       const current = {
         visibility: locked[0]!.visibility as SessionVisibility,
-        ownerIdentity: locked[0]!.ownerIdentity
+        ownerIdentity: locked[0]!.ownerIdentity,
+        externalProvider: locked[0]!.externalProvider
       }
       // Re-authorize against the LOCKED row, not the one the route read. An
       // ancestor cascade committing in between can re-own this session, and the
       // former owner's in-flight request must not still widen it.
       if (authorize && !authorize(current)) return { affected: [], forbidden: true }
+      // Shared inputs have no owner and their audience is immutable. Keep this
+      // repository guard even for internal callers that omit `authorize`.
+      if (current.externalProvider !== null || visibility === 'external') {
+        return { affected: [], forbidden: true }
+      }
       if (current.visibility === visibility) return { affected: [] } // no-op: no rev bump, no push
       const ownerIdentity = current.ownerIdentity
       const target = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
@@ -771,15 +1176,27 @@ export class PgSessionRepo implements SessionRepo {
         // keep that other owner's access to the tightened session's content.
         const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
           UPDATE "session_meta" SET
-            "visibility" = 'private'::"SessionVisibility",
-            "ownerIdentity" = ${ownerIdentity},
+            "visibility" = CASE
+              WHEN "externalProvider" IS NULL THEN 'private'::"SessionVisibility"
+              ELSE 'external'::"SessionVisibility"
+            END,
+            "ownerIdentity" = CASE
+              WHEN "externalProvider" IS NULL THEN ${ownerIdentity}
+              ELSE NULL
+            END,
+            "externalResolution" = CASE
+              WHEN "externalProvider" IS NULL THEN "externalResolution"
+              ELSE 'invalid'::"ExternalResolution"
+            END,
             "visibilitySource" = 'inherited'::"VisibilitySource",
             "visibilityRev" = "visibilityRev" + 1,
             "updatedAt" = CURRENT_TIMESTAMP
           WHERE "id" = ANY(${next}::text[])
             AND (
-              "visibility" <> 'private'::"SessionVisibility"
-              OR "ownerIdentity" IS DISTINCT FROM ${ownerIdentity}
+              ("externalProvider" IS NULL AND "visibility" <> 'private'::"SessionVisibility")
+              OR ("externalProvider" IS NULL AND "ownerIdentity" IS DISTINCT FROM ${ownerIdentity})
+              OR ("externalProvider" IS NOT NULL AND "visibility" <> 'external'::"SessionVisibility")
+              OR ("externalProvider" IS NOT NULL AND "externalResolution" <> 'invalid'::"ExternalResolution")
               OR "visibilitySource" <> 'inherited'::"VisibilitySource"
             )
           RETURNING *
@@ -799,15 +1216,22 @@ export class PgSessionRepo implements SessionRepo {
     `)
   }
 
-  async visibilitySnapshotForDaemon(daemonId: DaemonId, limit: number): Promise<SessionVisibilityState[]> {
+  async visibilitySnapshotForDaemon(
+    daemonId: DaemonId,
+    limit: number,
+    includeExternal = true
+  ): Promise<SessionVisibilityState[]> {
     // Unacknowledged revisions FIRST, newest-active after. A session tightened
     // while this daemon was offline is by definition unacked, so it replays no
     // matter how old it is — a plain newest-first window would drop it past the
     // cap and leave the daemon capturing with a stale `org` gate forever.
-    const rows = await this.db.$queryRaw<Array<{ id: string; visibility: string; visibilityRev: number }>>(Prisma.sql`
-      SELECT "id", "visibility", "visibilityRev"
+    const rows = await this.db.$queryRaw<
+      Array<{ id: string; visibility: string; externalProvider: string | null; visibilityRev: number }>
+    >(Prisma.sql`
+      SELECT "id", "visibility", "externalProvider", "visibilityRev"
       FROM "session_meta"
       WHERE "daemonId" = ${daemonId}::uuid
+        AND (${includeExternal} OR "externalProvider" IS NULL)
       ORDER BY ("visibilityAckedRev" < "visibilityRev") DESC,
                "lastActivityAt" DESC, "startedAt" DESC, "id" DESC
       LIMIT ${limit}
@@ -815,14 +1239,17 @@ export class PgSessionRepo implements SessionRepo {
     return rows.map((r) => ({
       sessionId: SessionId(r.id),
       visibility: r.visibility as SessionVisibility,
+      sharedMemoryExcluded: r.visibility !== 'org' || r.externalProvider !== null,
       visibilityRev: r.visibilityRev
     }))
   }
 
-  async countUnackedVisibility(daemonId: DaemonId): Promise<number> {
+  async countUnackedVisibility(daemonId: DaemonId, includeExternal = true): Promise<number> {
     const rows = await this.db.$queryRaw<Array<{ n: bigint }>>(Prisma.sql`
       SELECT COUNT(*)::bigint AS n FROM "session_meta"
-      WHERE "daemonId" = ${daemonId}::uuid AND "visibilityAckedRev" < "visibilityRev"
+      WHERE "daemonId" = ${daemonId}::uuid
+        AND (${includeExternal} OR "externalProvider" IS NULL)
+        AND "visibilityAckedRev" < "visibilityRev"
     `)
     return Number(rows[0]?.n ?? 0)
   }

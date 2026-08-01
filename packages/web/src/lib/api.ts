@@ -228,6 +228,7 @@ export interface AgentDto {
   capabilities: string[]
   mcpServers: string[] // daemon-configured MCP server names attached at session/new; empty ⇒ none
   skills: string[] // enabled shared-skills "<source>/<skill>" / "<source>/*"; empty ⇒ none
+  managedSkills?: string[] // enabled centrally accepted immutable skill ids; absent on older CPs
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   createdAt: string // ISO-8601
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
@@ -286,7 +287,8 @@ export interface SessionUsageDto {
 // Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
 // visible only to the session owner (no role override, org owners included); 'org' to every member who can view
 // the owning agent. Deliberately NOT ResourceVisibility ('org' | 'restricted').
-export type SessionVisibility = 'private' | 'org'
+export type SessionVisibility = 'private' | 'org' | 'external'
+export type MutableSessionVisibility = 'private' | 'org'
 
 export interface SessionDto {
   sessionId: string
@@ -299,6 +301,8 @@ export interface SessionDto {
   // Absent/null on a CP that predates session visibility — treated as 'org'
   // (matching the server-side backfill of legacy rows).
   visibility?: SessionVisibility | null
+  externalProvider?: string | null
+  externalResolution?: 'pending' | 'settled' | 'invalid' | null
   triggeredBy: string | null
   hookKind?: 'webhook' | 'github' | null
   // Daemon-resolved display names; null until the daemon has resolved them.
@@ -346,6 +350,7 @@ export interface SessionListPageDto {
   /** Org-level "any session exists" boolean (first page only) — a bare boolean so the
    *  getting-started conversation step can be org-wide without exposing hidden rows. */
   orgHasSessions?: boolean
+  accessSyncDegraded?: boolean
 }
 
 export interface SessionListFilters {
@@ -375,6 +380,7 @@ export interface SessionListPage {
   total: number | null
   nextCursor: string | null
   orgHasSessions?: boolean
+  accessSyncDegraded?: boolean
 }
 
 export interface SessionRelationDto {
@@ -416,6 +422,9 @@ export interface SessionDetailDto {
   visibility?: SessionVisibility | null
   visibilityState?: 'pending' | 'applied' | null
   canChangeVisibility?: boolean | null
+  externalProvider?: string | null
+  externalResolution?: 'pending' | 'settled' | 'invalid' | null
+  accessSyncDegraded?: boolean
 }
 
 // The full ACP tool body (protocol `ToolBody`), transported as a JSON STRING in
@@ -758,6 +767,8 @@ export interface UpdateAgentInput {
   mcpServers?: string[]
   /** Enabled shared-skills; replaced wholesale when provided; [] clears all. */
   skills?: string[]
+  /** Enabled centrally accepted managed skill ids; replaced wholesale. */
+  managedSkills?: string[]
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
 }
@@ -905,6 +916,8 @@ export interface CreateAgentInput {
   mcpServers?: string[]
   /** Enabled shared-skills "<source>/<skill>" / "<source>/*"; absent ⇒ none. */
   skills?: string[]
+  /** Enabled centrally accepted managed skill ids; absent ⇒ none. */
+  managedSkills?: string[]
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** Request an OS sandbox for this agent; absent ⇒ false unless daemon policy requires it. */
@@ -1788,7 +1801,8 @@ export async function fetchSessions(
     sessions: page.sessions.map(sessionFromDto),
     total: page.total,
     nextCursor: page.nextCursor,
-    ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {})
+    ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {}),
+    ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {})
   }
 }
 
@@ -1845,11 +1859,30 @@ export interface SessionVisibilityResultDto {
 // DTO); invisible sessions 404 — never 403 (no existence oracle).
 export async function putSessionVisibility(
   sessionId: string,
-  visibility: SessionVisibility
+  visibility: MutableSessionVisibility
 ): Promise<SessionVisibilityResultDto> {
   return apiPut<SessionVisibilityResultDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/visibility`, {
     visibility
   })
+}
+
+export interface SlackSessionAccessDto {
+  provider: 'slack'
+  available: boolean
+  enabled: boolean
+  state: 'disabled' | 'enabling' | 'enabled' | 'degraded'
+  currentRevision: string
+  readFenceRevision: string | null
+  /** Owner-only migration diagnostic. */
+  hiddenSessions?: number
+}
+
+export function fetchSlackSessionAccess(orgId?: string): Promise<SlackSessionAccessDto> {
+  return apiGet<SlackSessionAccessDto>(`${orgBase(orgId)}/session-access/slack`)
+}
+
+export function putSlackSessionAccess(enabled: boolean, orgId?: string): Promise<SlackSessionAccessDto> {
+  return apiPut<SlackSessionAccessDto>(`${orgBase(orgId)}/session-access/slack`, { enabled })
 }
 
 // One page of a session's transcript, proxied live from the owning daemon. The
@@ -2444,6 +2477,7 @@ export interface UsageAgentDto {
 
 export interface UsageDto {
   range: UsageRange
+  accessSyncDegraded?: boolean
   totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
   agents: UsageAgentDto[]
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
@@ -3968,4 +4002,210 @@ export async function fetchCronRuns(id: string, orgId?: string): Promise<CronRun
 // accepted, the outcome lands in the run history asynchronously.
 export async function runCronNow(id: string): Promise<void> {
   await apiPost<null>(`${orgBase()}/crons/${encodeURIComponent(id)}/run`, {})
+}
+
+// ── organization knowledge + managed skills ─────────────────────────────────
+
+export interface OrganizationKnowledgeDto {
+  id: string
+  title: string
+  content: string
+  summary: string | null
+  tags: string[]
+  currentRevision: number
+  digest: string
+  source: 'manual' | 'dream'
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  archivedAt: string | null
+  createdAt: string
+  updatedAt: string
+  revisionCreatedAt: string
+  canManage: boolean
+}
+
+export interface OrganizationKnowledgeRevisionDto {
+  knowledgeId: string
+  revision: number
+  content: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  source: 'manual' | 'dream'
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: string
+}
+
+export interface ManagedSkillDto {
+  id: string
+  name: string
+  description: string
+  currentRevision: number
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: {
+    name?: string
+    description?: string
+    files?: Array<{ path: string; bytes: number; digest: string }>
+    [key: string]: unknown
+  }
+  archivedAt: string | null
+  createdAt: string
+  updatedAt: string
+  canManage: boolean
+}
+
+export interface ManagedSkillRevisionDto {
+  managedSkillId: string
+  revision: number
+  digest: string
+  compressedBytes: number
+  expandedBytes: number
+  fileCount: number
+  manifest: ManagedSkillDto['manifest']
+  source: 'manual' | 'dream'
+  sourceAgentId: string | null
+  sourceDreamId: string | null
+  sourceSessionIds: string[]
+  createdByUserId: string | null
+  reviewedByUserId: string | null
+  createdAt: string
+}
+
+export interface OrganizationSuggestionDto {
+  id: string
+  sourceAgentId: string
+  sourceAgentName: string | null
+  sourceDaemonId: string | null
+  dreamId: string
+  candidateId: string
+  kind: 'knowledge' | 'skill'
+  operation: 'create' | 'update'
+  targetArtifactId: string | null
+  targetRevision: number | null
+  title: string
+  summary: string | null
+  tags: string[]
+  digest: string
+  contentBytes: number
+  sessionIds: string[]
+  state: 'pending' | 'accepted' | 'rejected'
+  contentAvailable: boolean
+  reviewedAt: string | null
+  reviewReason: string | null
+  acceptedArtifactId: string | null
+  acceptedArtifactRevision: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type OrganizationSuggestionContentDto =
+  | {
+      kind: 'knowledge'
+      digest: string
+      snapshotToken: string
+      content: string
+      summary: string | null
+      tags: string[]
+    }
+  | {
+      kind: 'skill'
+      digest: string
+      snapshotToken: string
+      files: Array<{ path: string; encoding: 'utf8' | 'base64'; content: string }>
+    }
+
+export function listOrganizationKnowledge(includeArchived = false): Promise<OrganizationKnowledgeDto[]> {
+  return apiGet<OrganizationKnowledgeDto[]>(
+    `${orgBase()}/knowledge?includeArchived=${includeArchived ? 'true' : 'false'}`
+  )
+}
+
+export function listOrganizationKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionDto[]> {
+  return apiGet<OrganizationKnowledgeRevisionDto[]>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/revisions`)
+}
+
+export function createOrganizationKnowledge(input: {
+  title: string
+  content: string
+  summary?: string
+  tags?: string[]
+}): Promise<OrganizationKnowledgeDto> {
+  return apiPost<OrganizationKnowledgeDto>(`${orgBase()}/knowledge`, input)
+}
+
+export function updateOrganizationKnowledge(
+  id: string,
+  input: { title: string; content: string; summary?: string; tags?: string[]; expectedRevision: number }
+): Promise<OrganizationKnowledgeDto> {
+  return apiPatch<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}`, input)
+}
+
+export function setOrganizationKnowledgeArchived(id: string, archived: boolean): Promise<OrganizationKnowledgeDto> {
+  return apiPost<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/archive`, { archived })
+}
+
+export function listManagedSkills(includeArchived = false, orgId?: string): Promise<ManagedSkillDto[]> {
+  return apiGet<ManagedSkillDto[]>(
+    `${orgBase(orgId)}/managed-skills?includeArchived=${includeArchived ? 'true' : 'false'}`
+  )
+}
+
+export function listManagedSkillRevisions(id: string): Promise<ManagedSkillRevisionDto[]> {
+  return apiGet<ManagedSkillRevisionDto[]>(`${orgBase()}/managed-skills/${encodeURIComponent(id)}/revisions`)
+}
+
+export function setManagedSkillArchived(id: string, archived: boolean): Promise<ManagedSkillDto> {
+  return apiPost<ManagedSkillDto>(`${orgBase()}/managed-skills/${encodeURIComponent(id)}/archive`, { archived })
+}
+
+export function listOrganizationSuggestions(
+  filters: {
+    kind?: 'knowledge' | 'skill'
+    state?: 'pending' | 'accepted' | 'rejected'
+    query?: string
+  } = {}
+): Promise<OrganizationSuggestionDto[]> {
+  const params = new URLSearchParams()
+  if (filters.kind) params.set('kind', filters.kind)
+  if (filters.state) params.set('state', filters.state)
+  if (filters.query?.trim()) params.set('query', filters.query.trim())
+  const query = params.toString()
+  return apiGet<OrganizationSuggestionDto[]>(`${orgBase()}/knowledge-suggestions${query ? `?${query}` : ''}`)
+}
+
+export function fetchOrganizationSuggestionContent(id: string): Promise<OrganizationSuggestionContentDto> {
+  return apiGet<OrganizationSuggestionContentDto>(
+    `${orgBase()}/knowledge-suggestions/${encodeURIComponent(id)}/content`
+  )
+}
+
+export function reviewOrganizationSuggestion(
+  id: string,
+  decision: 'accept',
+  snapshotToken: string
+): Promise<OrganizationSuggestionDto>
+export function reviewOrganizationSuggestion(
+  id: string,
+  decision: 'reject',
+  reason?: string
+): Promise<OrganizationSuggestionDto>
+export function reviewOrganizationSuggestion(
+  id: string,
+  decision: 'accept' | 'reject',
+  detail?: string
+): Promise<OrganizationSuggestionDto> {
+  return apiPost<OrganizationSuggestionDto>(`${orgBase()}/knowledge-suggestions/${encodeURIComponent(id)}/review`, {
+    decision,
+    ...(decision === 'accept' ? { snapshotToken: detail } : detail?.trim() ? { reason: detail.trim() } : {})
+  })
 }

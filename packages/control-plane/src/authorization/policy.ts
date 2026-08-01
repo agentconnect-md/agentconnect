@@ -12,7 +12,7 @@
  * ownership arm (`ownerUserId`, independent from immutable creation
  * attribution) and explicitly shared members.
  */
-import type { SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
+import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
 export type { Shareable, ViewCtx } from '../persistence/ports.js'
 
@@ -33,6 +33,10 @@ export type AuthorizationAction = (typeof AuthorizationAction)[keyof typeof Auth
 export interface SessionViewable {
   visibility: SessionVisibility
   ownerIdentity: string | null
+  externalProvider?: string | null
+  externalScopeId?: string | null
+  externalResolution?: 'pending' | 'settled' | 'invalid' | null
+  classifiedPolicyRev?: bigint | null
 }
 
 export type AuthorizationRequest =
@@ -54,6 +58,7 @@ export type AuthorizationRequest =
       action: typeof AuthorizationAction.SessionView | typeof AuthorizationAction.SessionChangeVisibility
       resource: SessionViewable
       identitySet: ReadonlySet<string>
+      externalAccess?: SessionExternalAccessSnapshot
     }
 
 function resourceIsVisible(resource: Shareable, principal: ViewCtx): boolean {
@@ -70,6 +75,29 @@ function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
 
 function identityOwnsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
   return resource.ownerIdentity !== null && identitySet.has(resource.ownerIdentity)
+}
+
+function externalSessionIsVisible(
+  resource: SessionViewable,
+  snapshot: SessionExternalAccessSnapshot | undefined
+): boolean {
+  const provider = resource.externalProvider
+  if (!provider || !snapshot) return false
+  const policy = snapshot.policies.find((candidate) => candidate.provider === provider)
+  // A supported candidate with no durable policy is never the disabled baseline.
+  if (!policy) return false
+  if (
+    resource.visibility === 'org' &&
+    policy.readFenceRev !== null &&
+    (resource.classifiedPolicyRev == null || resource.classifiedPolicyRev < policy.readFenceRev)
+  ) {
+    return false
+  }
+  if (resource.visibility === 'org') return true
+  if (resource.visibility !== 'external' || resource.externalResolution !== 'settled' || !resource.externalScopeId) {
+    return false
+  }
+  return snapshot.allowedScopes.some((scope) => scope.id === resource.externalScopeId)
 }
 
 /**
@@ -96,7 +124,9 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
       // pulled restricted: there is no identity that could later reopen them.
       return request.resource.ownerUserId !== null && resourceIsEditable(request.resource, principal)
     case AuthorizationAction.SessionView:
-      return request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
+      return request.resource.externalProvider
+        ? externalSessionIsVisible(request.resource, request.externalAccess)
+        : request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
     // Re-classification (§4.3) is owner-only: identity match with the recorded
     // owner, roles grant nothing in either direction — an org owner pulling
     // someone's published session back to private is as much an intrusion on
@@ -105,7 +135,7 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // one. Deliberately NOT the role-based edit guard: the grant follows
     // OWNERSHIP, so a viewer-role member keeps control of their own DM.
     case AuthorizationAction.SessionChangeVisibility:
-      return identityOwnsSession(request.resource, request.identitySet)
+      return !request.resource.externalProvider && identityOwnsSession(request.resource, request.identitySet)
   }
 }
 
@@ -133,9 +163,15 @@ export function identitySetOf(principal: ViewCtx): Set<string> {
 export function canViewSession(
   resource: SessionViewable,
   principal: ViewCtx,
-  identitySet: ReadonlySet<string>
+  identitySet: ReadonlySet<string>,
+  externalAccess?: SessionExternalAccessSnapshot
 ): boolean {
-  return can(principal, { action: AuthorizationAction.SessionView, resource, identitySet })
+  return can(principal, {
+    action: AuthorizationAction.SessionView,
+    resource,
+    identitySet,
+    ...(externalAccess ? { externalAccess } : {})
+  })
 }
 
 export function canChangeSessionVisibility(

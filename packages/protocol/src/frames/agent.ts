@@ -152,6 +152,19 @@ export const AgentSkillEntry = z.object({
 })
 export type AgentSkillEntry = z.infer<typeof AgentSkillEntry>
 
+/** One centrally accepted, immutable Agent Skills bundle enabled for an agent.
+ * Content is fetched separately in bounded chunks; AgentSpec carries metadata
+ * only so register/agent-upsert frames stay small. */
+export const ManagedSkillEntry = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+    revision: z.number().int().positive(),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/)
+  })
+  .strict()
+export type ManagedSkillEntry = z.infer<typeof ManagedSkillEntry>
+
 /**
  * The editable agent definition the CP owns and the daemon needs to run it:
  * prompt + runtime selection. The launch protocol carries this config and the
@@ -226,6 +239,16 @@ export const AgentSpec = z.object({
   // these are SELF-CONTAINED entries — the daemon needs nothing but agent.json to
   // run `npx skills`. Always shipped (even []) so removing the last skill replicates.
   skills: z.array(AgentSkillEntry).default([]),
+  // Centrally accepted `.skill` ZIP revisions. Unlike Git source entries above,
+  // these are digest-addressed metadata; the daemon downloads/cache-verifies the
+  // bundle through managed-skill/read before session start.
+  managedSkills: z
+    .array(ManagedSkillEntry)
+    .max(64)
+    .refine((entries) => new Set(entries.map((entry) => entry.id)).size === entries.length, {
+      message: 'managed skill ids must be unique'
+    })
+    .default([]),
   // Agent→agent call authorization (design §2.5). `callPolicy` gates who may wake
   // this agent via the `messageAgent` tool: 'all' ⇒ any peer in the org, 'selected'
   // ⇒ only agents in `allowedCallerAgentIds`. Replicated CP→daemon so the daemon can

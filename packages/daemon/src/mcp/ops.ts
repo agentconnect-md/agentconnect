@@ -1,7 +1,7 @@
 import type { ToolDescriptor } from './tools.js'
 import type { MemoryProvider } from '../agents/memory-provider.js'
 import { threadKeyForPost } from '../messages/normalized.js'
-import type { ChannelAgentsReq, ChannelAgentsOk, Platform } from '@agentconnect.md/protocol'
+import type { ChannelAgentsReq, ChannelAgentsOk, KnowledgeSearchOk, Platform } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
 import type {
@@ -274,12 +274,11 @@ export interface SubmitGithubReviewReq extends SubmitGithubReviewInput {
   transportScope?: string
 }
 
-/** Refusal surfaced to the model when a private session tries to write shared
- *  agent memory (session-visibility.md §5.1). Phrased so the agent stops
- *  retrying and does not paraphrase the content into its reply instead. */
-export const MEMORY_WRITE_BLOCKED =
-  'This session is private, so it cannot write to the agent memory shared with other users. Keep the information in ' +
-  'this conversation instead; do not retry.'
+/** Refusal surfaced to the model when an isolated session tries to access
+ *  agent memory shared with other users. Phrased so the agent stops retrying
+ *  instead of attempting to reconstruct or persist the content another way. */
+export const MEMORY_ACCESS_BLOCKED =
+  'Shared agent memory is unavailable in this session. Keep the information in this conversation instead; do not retry.'
 
 /**
  * A peer-discovery request, i.e. `ChannelAgentsReq` plus the caller's own session
@@ -320,6 +319,15 @@ export interface OpsDeps {
    *  channel. Rejects (throws) when the control plane isn't connected — discovery
    *  fails closed rather than returning a partial/empty roster. */
   channelAgents: (req: ChannelAgentsRequest) => Promise<ChannelAgentsOk>
+  /** Owner-approved organization knowledge search; requester identity is bound
+   * from the trusted session context. */
+  findKnowledge?: (req: {
+    requesterAgentId: string
+    query: string
+    limit: number
+    maxBytes: number
+    tags?: string[]
+  }) => Promise<KnowledgeSearchOk>
   /** Deliver a message into another agent's session (agent→agent wake). The daemon
    *  fills the trusted caller identity from the session context; this callback owns
    *  the same-daemon delivery (policy check, coord/integration resolution, dispatch)
@@ -414,13 +422,12 @@ export interface OpsDeps {
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
-  /** Session-visibility capture gate (session-visibility.md §5.1) for the tool
-   *  path. Automatic post-turn distillation is gated in the daemon, but an agent
-   *  can also write agent-scoped memory EXPLICITLY — and agent memory is shared
-   *  across users, so a private session must not be able to. Checked at CALL
-   *  time, not session/new, so a session tightened mid-life is covered too.
-   *  Absent ⇒ allowed (no gate wired, e.g. in unit fixtures). */
-  memoryWriteAllowed?: (ctx: SessionContext) => boolean
+  /** Session-isolation gate for the explicit memory-tool path. Agent memory is
+   *  shared across users, so an isolated session may neither recall nor mutate
+   *  it. Automatic recall, post-turn capture, and Dream selection are gated at
+   *  their own boundaries. Checked at CALL time so a mid-session policy change
+   *  takes effect immediately. Absent ⇒ allowed (e.g. in unit fixtures). */
+  memoryAccessAllowed?: (ctx: SessionContext) => boolean
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -550,8 +557,8 @@ export async function executeTool(
   // Memory tools are universal (every agent has memory) and daemon-local — handle
   // them before the platform-gateway gate so an agent with no platform integration works.
   if (name === 'readMemory' || name === 'writeMemory') {
+    if (deps.memoryAccessAllowed?.(ctx) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const scope = { agentId: ctx.agentId }
-    if (name === 'writeMemory' && deps.memoryWriteAllowed?.(ctx) === false) throw new Error(MEMORY_WRITE_BLOCKED)
     try {
       if (name === 'readMemory') {
         const path = optionalString(args, 'path') ?? 'MEMORY.md'
@@ -604,16 +611,12 @@ export async function executeTool(
   // provider on every call so a stale session tool cannot cross a provider or
   // capability change. The trusted agent scope is always ctx.agentId.
   if (['searchMemory', 'saveMemory', 'getMemory', 'updateMemory', 'deleteMemory'].includes(name)) {
+    if (deps.memoryAccessAllowed?.(ctx) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const surface = deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface()
     if (!surface || surface.shape !== 'records') throw new Error('record memory is not available for this agent')
     const scope = { agentId: ctx.agentId }
     const requireCapability = (operation: 'recall' | 'create' | 'get' | 'update' | 'delete'): void => {
       if (!surface.capabilities.has(operation)) throw new Error(`record memory does not support ${operation}`)
-      // Record memory is agent-scoped and shared just like the file kind, so the
-      // same gate applies to every MUTATION (reads stay available — recalling
-      // what the agent already knows is not a disclosure of THIS session).
-      const mutates = operation === 'create' || operation === 'update' || operation === 'delete'
-      if (mutates && deps.memoryWriteAllowed?.(ctx) === false) throw new Error(MEMORY_WRITE_BLOCKED)
     }
     if (name === 'searchMemory') {
       requireCapability('recall')
@@ -695,6 +698,28 @@ export async function executeTool(
       ...(res.channel !== undefined ? { channel: res.channel } : {}),
       agents: res.agents
     }
+  }
+
+  if (name === 'findKnowledge') {
+    if (!deps.findKnowledge) throw new Error('organization knowledge is not available in this session')
+    const query = requireString(args, 'query').trim()
+    if (!query) throw new Error('query must not be blank')
+    const rawLimit = args.limit
+    const limit = rawLimit === undefined ? 5 : Number(rawLimit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10) throw new Error('limit must be an integer from 1 to 10')
+    const rawTags = args.tags
+    if (rawTags !== undefined && (!Array.isArray(rawTags) || rawTags.some((tag) => typeof tag !== 'string'))) {
+      throw new Error('tags must be an array of strings')
+    }
+    const tags = rawTags as string[] | undefined
+    const result = await deps.findKnowledge({
+      requesterAgentId: ctx.agentId,
+      query,
+      limit,
+      maxBytes: 8192,
+      ...(tags?.length ? { tags } : {})
+    })
+    return { items: result.items }
   }
 
   // Unified outbound send (session-concept §3). One tool merges the old `sendPlatformMessage`

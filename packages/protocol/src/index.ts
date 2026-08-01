@@ -12,9 +12,11 @@ export {
   CP_SUBPROTOCOL,
   CP_WS_PATH,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  ORGANIZATION_KNOWLEDGE_FEATURE,
   RESERVED_RESTART_CODE,
   SESSION_LIVE_TAIL_FEATURE,
-  SESSION_VISIBILITY_FEATURE
+  SESSION_VISIBILITY_FEATURE,
+  SLACK_SESSION_AUDIENCE_FEATURE
 } from './consts.js'
 
 // ── normalized platform-message wire contract ──
@@ -40,6 +42,7 @@ export * from './frames/session.js'
 export * from './frames/channel.js'
 export * from './frames/workspace.js'
 export * from './frames/memory.js'
+export * from './frames/organization-knowledge.js'
 export * from './frames/telemetry.js'
 export * from './frames/error.js'
 export * from './frames/webchat.js'

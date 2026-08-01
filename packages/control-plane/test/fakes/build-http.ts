@@ -45,6 +45,7 @@ import {
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
   PgSkillSourceRepo,
+  PgOrganizationKnowledgeRepo,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -168,6 +169,8 @@ export function buildHttpApp(
   const webchatMcpAccessGrantRepo = new PgWebchatMcpAccessGrantRepo(prisma)
   const webchatMcpOperationRepo = new PgWebchatMcpOperationRepo(prisma)
   const sessionRepo = new PgSessionRepo(prisma)
+  const skillSourceRepo = new PgSkillSourceRepo(prisma)
+  const organizationKnowledgeRepo = new PgOrganizationKnowledgeRepo(prisma)
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
@@ -221,7 +224,8 @@ export function buildHttpApp(
       mcpProvider: new PgMcpProviderRepo(prisma),
       mcpProviderSecret: new PgMcpProviderSecretStore(prisma, cipher),
       mcpGrant: new PgMcpGrantRepo(prisma, cipher),
-      skillSource: new PgSkillSourceRepo(prisma),
+      skillSource: skillSourceRepo,
+      organizationKnowledge: organizationKnowledgeRepo,
       memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
       externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
       externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
@@ -237,7 +241,7 @@ export function buildHttpApp(
       oauth: oauthRepo
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
-    agentSpecs: new AgentSpecAssembler(agentSecretStore),
+    agentSpecs: new AgentSpecAssembler(agentSecretStore, {}, skillSourceRepo, organizationKnowledgeRepo),
     liveness,
     control: sender,
     relayControl,

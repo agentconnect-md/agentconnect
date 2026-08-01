@@ -48,6 +48,46 @@ describe('capture gate — local state', () => {
     store.setLocalCaptureGate('acp-early', true)
     expect(store.isCaptureExcluded('acp-early')).toBe(false)
   })
+
+  it('keeps a locally bound external session isolated despite an older org ack', () => {
+    const store = newStore()
+    store.upsertSession({
+      key: 'slack:C1:T1:bot-a',
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-external',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    store.setLocalCaptureGate('acp-external', false)
+    expect(store.applyCpCaptureGate('acp-external', false, 1)).toBe('applied')
+    store.setSessionClassification('slack:C1:T1:bot-a', {
+      externalProvider: 'slack',
+      externalRealmKey: 'W1',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'integration-old',
+      sourceBindingKind: 'external'
+    })
+    store.setSessionClassification('slack:C1:T1:bot-a', {
+      externalProvider: 'slack',
+      externalRealmKey: 'W2',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C2',
+      externalIntegrationId: 'integration-new',
+      sourceBindingKind: 'external'
+    })
+
+    expect(store.isCaptureExcluded('acp-external')).toBe(true)
+    expect(store.getSessionClassification('bot-a', 'acp-external')).toMatchObject({
+      externalRealmKey: 'W1',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'integration-new'
+    })
+  })
 })
 
 describe('capture gate — revision rule (§5.1 at-least-once)', () => {

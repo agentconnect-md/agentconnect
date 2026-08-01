@@ -426,6 +426,27 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
  *  uses the runtime's own memory instead). */
 export const MEMORY_TOOL_NAMES = new Set(MEMORY_TOOLS.map((t) => t.name))
 
+export const KNOWLEDGE_TOOLS: ToolDescriptor[] = [
+  {
+    name: 'findKnowledge',
+    description:
+      'Search owner-approved organization knowledge on demand. Use this for shared conventions, architecture, runbooks, and decisions that may apply across agents. Results are revisioned Markdown; no organization content is injected automatically.',
+    inputSchema: obj(
+      {
+        query: { type: 'string', minLength: 1, maxLength: 4096, description: 'What shared knowledge to find.' },
+        limit: { type: 'integer', minimum: 1, maximum: 10, description: 'Optional result count (default 5).' },
+        tags: {
+          type: 'array',
+          maxItems: 10,
+          items: { type: 'string', minLength: 1, maxLength: 64 },
+          description: 'Optional tags every result should match.'
+        }
+      },
+      ['query']
+    )
+  }
+]
+
 /**
  * Stable AgentConnect record tools for an external-memory provider. These names,
  * descriptions, and argument schemas are core-owned: raw plugin tools are never
@@ -718,6 +739,7 @@ export const ALL_TOOL_NAMES = [
       ...SLACK_FILE_TOOLS,
       ...TELEGRAM_FILE_TOOLS,
       ...MEMORY_TOOLS,
+      ...KNOWLEDGE_TOOLS,
       ...Object.values(EXTERNAL_MEMORY_TOOLS),
       ...COLLABORATION_TOOLS,
       ...GITHUB_REVIEW_TOOLS
@@ -734,7 +756,7 @@ export const ALL_TOOL_NAMES = [
  */
 export function toolsForIntegrations(
   integrations: Integration[],
-  options: { sessionTitle?: boolean; collaboration?: boolean } = {}
+  options: { sessionTitle?: boolean; collaboration?: boolean; organizationKnowledge?: boolean } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
@@ -747,6 +769,7 @@ export function toolsForIntegrations(
   }
   if (options.sessionTitle) add(SESSION_TOOLS)
   add(MEMORY_TOOLS)
+  if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
   const collaboration = options.collaboration !== false
   if (collaboration) add(COLLABORATION_TOOLS)
   // The unified `sendMessage` tool is ALWAYS present (session-concept §3): even a

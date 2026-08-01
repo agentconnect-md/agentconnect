@@ -912,6 +912,30 @@ describe('daemon durable inbox', () => {
       hostFactory: (agent) => (agent.id === 'bot-a' ? a.host : b.host) as any
     })
     await daemon.start()
+    for (const [agentId, integrationId] of [
+      ['bot-a', 'int-a'],
+      ['bot-b', 'int-b']
+    ] as const) {
+      ;(daemon as any).agents.get(agentId).integrations = [
+        {
+          id: integrationId,
+          platform: 'slack',
+          slack: {
+            mode: 'direct',
+            botToken: 'b',
+            appToken: 'p',
+            allowedUserIds: ['U1'],
+            bindRules: []
+          }
+        }
+      ]
+      ;(daemon as any).connByIntegration.set(integrationId, {
+        workspaceId: vi.fn(() => 'T1'),
+        setStatus: vi.fn(async () => {}),
+        postMessage: vi.fn(async () => undefined)
+      })
+    }
+    vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue(undefined)
     const echo = (n: number, thread = 'T1') => ({
       ...msg(String(n), `echo-${n}`, thread),
       isDm: false,

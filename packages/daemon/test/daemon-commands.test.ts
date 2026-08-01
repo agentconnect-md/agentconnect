@@ -26,6 +26,8 @@ const STATUS_BAR_POST_OPTIONS = {
 }
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 const SESSION_KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', TRANSPORT_SCOPE)
+const SHARED_TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0b').digest('hex').slice(0, 24)}`
+const SHARED_SESSION_KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', SHARED_TRANSPORT_SCOPE)
 const LOOP_SCOPE = `slack:C1:dm:${TRANSPORT_SCOPE}`
 
 function hasPending(daemon: Daemon, acpSessionId: string): boolean {
@@ -104,6 +106,7 @@ function makeRoutable(daemon: Daemon) {
     }
   ]
   const conn = {
+    workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
     postMessage: vi.fn(async () => {}),
     getChannelInfo: vi.fn(async (id: string) => ({ id })),
@@ -1196,6 +1199,7 @@ describe('Slack interactive status bar', () => {
     makeRoutable(daemon)
     let n = 0
     const conn = {
+      workspaceId: vi.fn(() => 'T1'),
       setStatus: vi.fn(async () => {}),
       postMessage: vi.fn(async () => `m${++n}`),
       updateMessage: vi.fn(async () => {}),
@@ -1294,6 +1298,7 @@ describe('Slack interactive status bar', () => {
     // identity just like native loading states and ordinary replies.
     const channelMessage = {
       ...dm('100', 'hi'),
+      transportScope: SHARED_TRANSPORT_SCOPE,
       isDm: false,
       trigger: 'mention' as const,
       mentionedBots: ['UBOTA']
@@ -1323,7 +1328,7 @@ describe('Slack interactive status bar', () => {
       v: 1,
       agentId: 'bot-a',
       integrationId: 'int-a',
-      sessionKey: SESSION_KEY
+      sessionKey: SHARED_SESSION_KEY
     })
     expect(call[4]).toEqual(STATUS_BAR_POST_OPTIONS)
 
@@ -1346,6 +1351,7 @@ describe('Slack interactive status bar', () => {
 
     const channelMessage = {
       ...dm('100', 'hi'),
+      transportScope: SHARED_TRANSPORT_SCOPE,
       isDm: false,
       trigger: 'mention' as const,
       mentionedBots: ['UBOTA']
@@ -1364,7 +1370,7 @@ describe('Slack interactive status bar', () => {
       v: 1,
       agentId: 'bot-a',
       integrationId: 'int-a',
-      sessionKey: SESSION_KEY
+      sessionKey: SHARED_SESSION_KEY
     })
     // Agent identity is preserved in HTTP mode, and the message remains marked as chrome.
     expect(call[4]).toEqual(STATUS_BAR_POST_OPTIONS)

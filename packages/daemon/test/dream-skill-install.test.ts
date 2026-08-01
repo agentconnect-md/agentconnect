@@ -96,6 +96,52 @@ describe('materializeAcceptedDreamSkills', () => {
     expect(await readFile(join(cwd, '.claude/skills', name, 'scripts', 'run.sh'), 'utf8')).toContain('echo go')
   })
 
+  it('copies complete nested Agent Skills trees', async () => {
+    const { dir, cwd, name } = await fixture()
+    await mkdir(join(dir, 'skills', name, 'references', 'nested'), { recursive: true })
+    await mkdir(join(dir, 'skills', name, 'assets'), { recursive: true })
+    await writeFile(join(dir, 'skills', name, 'references', 'nested', 'runbook.md'), '# Runbook\n', 'utf8')
+    await writeFile(join(dir, 'skills', name, 'assets', 'icon.bin'), Buffer.from([0, 1, 2, 255]))
+
+    const result = await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+
+    expect(result.errors).toEqual([])
+    expect(await readFile(join(cwd, '.claude/skills', name, 'references/nested/runbook.md'), 'utf8')).toContain(
+      'Runbook'
+    )
+    expect(await readFile(join(cwd, '.claude/skills', name, 'assets/icon.bin'))).toEqual(Buffer.from([0, 1, 2, 255]))
+  })
+
+  it('materializes managed sources, removes them when disabled, and lets an accepted Dream skill win', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-agent-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'ac-cwd-'))
+    const managed = await mkdtemp(join(tmpdir(), 'ac-managed-'))
+    await writeFile(join(managed, 'SKILL.md'), '# Managed\n', 'utf8')
+    await writeFile(join(managed, 'managed.txt'), 'managed', 'utf8')
+
+    await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd, {
+      managedSkills: [{ name: 'shared-skill', sourceDir: managed }]
+    })
+    expect(await readFile(join(cwd, '.claude/skills/shared-skill/managed.txt'), 'utf8')).toBe('managed')
+
+    await mkdir(join(dir, 'skills', 'shared-skill'), { recursive: true })
+    await writeFile(join(dir, 'skills/shared-skill/SKILL.md'), '# Local\n', 'utf8')
+    await writeFile(join(dir, 'skills/shared-skill/local.txt'), 'local', 'utf8')
+    const warnings: string[] = []
+    await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd, {
+      managedSkills: [{ name: 'shared-skill', sourceDir: managed }],
+      warn: (message) => warnings.push(message)
+    })
+    expect(await readFile(join(cwd, '.claude/skills/shared-skill/local.txt'), 'utf8')).toBe('local')
+    expect(existsSync(join(cwd, '.claude/skills/shared-skill/managed.txt'))).toBe(false)
+    expect(warnings.join(' ')).toContain('overrides')
+
+    await rm(join(dir, 'skills/shared-skill'), { recursive: true })
+    const disabled = await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+    expect(disabled.removed).toEqual(['.claude/skills/shared-skill'])
+    expect(existsSync(join(cwd, '.claude/skills/shared-skill'))).toBe(false)
+  })
+
   it('does not leak one agent’s accepted skill into another sharing the checkout', async () => {
     // Shared checkouts are supported: preparing agent A then agent B must not
     // leave A's executable instruction content in B's discovery root.
@@ -223,6 +269,38 @@ describe('materializeAcceptedDreamSkills', () => {
     expect(after.removed).toEqual(['.claude/skills/skill-a'])
     expect(existsSync(join(cwd, '.claude/skills/skill-a'))).toBe(false)
     void dirB
+  })
+
+  it('keeps ownership when reinstalling a still-desired skill is refused', async () => {
+    const { dir, cwd, name } = await fixture()
+    await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+
+    const outside = await mkdtemp(join(tmpdir(), 'ac-outside-'))
+    await rm(join(cwd, '.claude/skills', name), { recursive: true })
+    await symlink(outside, join(cwd, '.claude/skills', name), 'dir')
+    const refused = await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+    expect(refused.installed).toEqual([])
+
+    // Once the hostile link is gone, another agent that wants no skill must
+    // still know this destination was ours and reconcile the restored tree.
+    await rm(join(cwd, '.claude/skills', name))
+    await mkdir(join(cwd, '.claude/skills', name), { recursive: true })
+    await writeFile(join(cwd, '.claude/skills', name, 'SKILL.md'), '# restored\n', 'utf8')
+    const empty = await mkdtemp(join(tmpdir(), 'ac-agent-empty-'))
+    const cleaned = await materializeAcceptedDreamSkills({ dir: empty, runtime: 'claude' }, cwd)
+    expect(cleaned.removed).toEqual([`.claude/skills/${name}`])
+    expect(existsSync(join(cwd, '.claude/skills', name))).toBe(false)
+  })
+
+  it('rejects an individual canonical file over the accepted bundle cap', async () => {
+    const { dir, cwd, name } = await fixture()
+    await writeFile(join(dir, 'skills', name, 'assets.bin'), Buffer.alloc(512 * 1024 + 1))
+
+    const result = await materializeAcceptedDreamSkills({ dir, runtime: 'claude' }, cwd)
+
+    expect(result.installed).toEqual([])
+    expect(result.errors).toContainEqual({ skill: name, error: 'canonical skill contains a file over its size cap' })
+    expect(existsSync(join(cwd, '.claude/skills', name))).toBe(false)
   })
 
   it('skips a malformed accepted skill without failing the others', async () => {

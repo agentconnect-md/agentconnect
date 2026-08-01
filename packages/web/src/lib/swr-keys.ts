@@ -15,11 +15,14 @@ export const consoleKeys = {
   bots: (orgId: string | null | undefined) => consoleKey(orgId, 'bots'),
   mcpProviders: (orgId: string | null | undefined) => consoleKey(orgId, 'mcp-providers'),
   skillSources: (orgId: string | null | undefined) => consoleKey(orgId, 'skill-sources'),
+  managedSkills: (orgId: string | null | undefined, includeArchived: boolean) =>
+    consoleKey(orgId, 'managed-skills', includeArchived ? 'include-archived' : 'active'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),
   memoryPluginInstallations: (orgId: string | null | undefined) => consoleKey(orgId, 'memory-plugin-installations'),
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),
   members: (orgId: string | null | undefined) => consoleKey(orgId, 'members'),
   inviteLink: (orgId: string | null | undefined) => consoleKey(orgId, 'invite-link'),
+  slackSessionAccess: (orgId: string | null | undefined) => consoleKey(orgId, 'slack-session-access'),
   usage: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
     consoleKey(orgId, 'usage', range),
   sessions: (

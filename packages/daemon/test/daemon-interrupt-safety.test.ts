@@ -218,6 +218,9 @@ describe('Daemon interrupt safety gates', () => {
       await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
       t2 = (daemon as any).dispatch(AGENT_ID, t2Msg)
       await vi.waitFor(() => expect(hasPending(daemon, 'acp-2')).toBe(true))
+      // DMs start private. Model the CP publishing this unrelated session so
+      // the memory assertion below tests cancellation isolation, not privacy.
+      expect((daemon as any).store.applyCpCaptureGate('acp-2', false, 1)).toBe('applied')
       t2Queued = (daemon as any).dispatch(AGENT_ID, t2QueuedMsg)
       const t2Key = sessionKey('slack', 'C2', 'T2', AGENT_ID)
       expect((daemon as any).serialQueue.get(t2Key)).toHaveLength(1)
@@ -320,6 +323,19 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
     const standingContext = vi.fn(() => memoryBlocked)
     ;(daemon as any).memory.standingContextAtSessionStart = standingContext
+    const key = (daemon as any).webchatSessionKey(CONV_1, AGENT_ID)
+    ;(daemon as any).store.upsertSession({
+      key,
+      agentId: AGENT_ID,
+      platform: 'webchat',
+      channel: CONV_1,
+      thread: `webchat:${CONV_1}`,
+      acpSessionId: 'acp-memory',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    expect((daemon as any).store.applyCpCaptureGate('acp-memory', false, 1)).toBe('applied')
 
     const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold memory', 'alice', stream.sink)
     await vi.waitFor(() => expect(standingContext).toHaveBeenCalled())
@@ -579,6 +595,23 @@ describe('Daemon interrupt safety gates', () => {
     }
     const daemon = new Daemon({ root, hostFactory: () => host as any })
     await daemon.start()
+    for (const [agentId, integrationId] of [
+      [AGENT_ID, 'int-a'],
+      ['bot-b', 'int-b']
+    ] as const) {
+      ;(daemon as any).agents.get(agentId).integrations = [
+        {
+          id: integrationId,
+          platform: 'slack',
+          slack: { mode: 'direct', botToken: `b-${agentId}`, appToken: `p-${agentId}`, bindRules: [] }
+        }
+      ]
+      ;(daemon as any).connByIntegration.set(integrationId, {
+        workspaceId: vi.fn(() => 'T1'),
+        setStatus: vi.fn(async () => {}),
+        postMessage: vi.fn(async () => undefined)
+      })
+    }
 
     try {
       const topLevelMention = (n: number) => {

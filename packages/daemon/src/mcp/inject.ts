@@ -1,4 +1,6 @@
 import { RESERVED_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
+import { existsSync, realpathSync } from 'node:fs'
+import { canonicalNodeExecArgv } from '../runtimes/node-exec-argv.js'
 
 /** The stdio MCP-server spec we hand to ACP's `session/new` (`McpServerStdio`). */
 export interface McpStdioServer {
@@ -25,11 +27,12 @@ export function buildMcpServers(opts: {
   /** Private delegated brokers fetch tools dynamically so a CP outage does not kill the bridge. */
   lazyTools?: boolean
 }): McpStdioServer[] {
+  const cliEntry = existsSync(opts.cliEntry) ? realpathSync(opts.cliEntry) : opts.cliEntry
   return [
     {
       name: opts.name ?? RESERVED_MCP_SERVER_NAME,
-      command: process.execPath,
-      args: [...process.execArgv, opts.cliEntry, 'mcp-bridge', ...(opts.lazyTools ? ['--lazy-tools'] : [])],
+      command: realpathSync(process.execPath),
+      args: [...canonicalNodeExecArgv(), cliEntry, 'mcp-bridge', ...(opts.lazyTools ? ['--lazy-tools'] : [])],
       env: [
         { name: 'AC_MCP_ENDPOINT', value: opts.socketPath },
         { name: 'AC_MCP_TOKEN', value: opts.token }

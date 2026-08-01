@@ -171,6 +171,28 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0].originSessionId).toBe('acp-parent-1')
   })
 
+  it('forwards the caller daemon’s external source binding opaquely', async () => {
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+    const externalOrigin = {
+      provider: 'slack' as const,
+      realmKey: 'T1',
+      resourceKind: 'conversation' as const,
+      resourceKey: 'C1'
+    }
+
+    const ack = await route(D1, baseMsg({ externalOrigin }))
+
+    expect(ack.delivered).toBe(true)
+    expect(forwards[0].externalOrigin).toEqual(externalOrigin)
+  })
+
   it('leaves needsReply absent for an ordinary wake', async () => {
     const router = new CollaborationRouter()
     router.replace(snap())

@@ -74,14 +74,23 @@ import type {
   WebchatMcpGrantAccept,
   WebchatMcpGrantActivate,
   WebchatMcpGrantRevoke,
-  WebchatMcpGrantRevoked
+  WebchatMcpGrantRevoked,
+  KnowledgeSearchReq,
+  KnowledgeSearchOk,
+  OrganizationSuggestionsSyncReq,
+  OrganizationSuggestionsSyncOk,
+  ManagedSkillReadReq,
+  ManagedSkillChunk,
+  OrganizationSuggestionReadReq,
+  OrganizationSuggestionReviewReq
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
   decodeEnvelope,
   encode,
   MAX_FRAME_BYTES,
-  SESSION_LIVE_TAIL_FEATURE
+  SESSION_LIVE_TAIL_FEATURE,
+  ORGANIZATION_KNOWLEDGE_FEATURE
 } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
@@ -600,6 +609,40 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected session/child-status/ok, got ${rep.type}`, false)
     }
     return rep.payload as ChildSessionStatus
+  }
+
+  async knowledgeSearch(payload: KnowledgeSearchReq): Promise<KnowledgeSearchOk> {
+    this.requireReady('knowledge/search')
+    if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not support organization knowledge', false)
+    }
+    const rep = await this.request('knowledge/search', payload)
+    if (rep.type !== 'knowledge/search/ok') {
+      throw new WireError('INTERNAL', `expected knowledge/search/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as KnowledgeSearchOk
+  }
+
+  async syncOrganizationSuggestions(payload: OrganizationSuggestionsSyncReq): Promise<OrganizationSuggestionsSyncOk> {
+    this.requireReady('knowledge/suggestions/sync')
+    if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) return { decisions: [] }
+    const rep = await this.request('knowledge/suggestions/sync', payload)
+    if (rep.type !== 'knowledge/suggestions/sync/ok') {
+      throw new WireError('INTERNAL', `expected knowledge/suggestions/sync/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as OrganizationSuggestionsSyncOk
+  }
+
+  async readManagedSkill(payload: ManagedSkillReadReq): Promise<ManagedSkillChunk> {
+    this.requireReady('managed-skill/read')
+    if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not support managed skills', false)
+    }
+    const rep = await this.request('managed-skill/read', payload)
+    if (rep.type !== 'managed-skill/chunk') {
+      throw new WireError('INTERNAL', `expected managed-skill/chunk, got ${rep.type}`, false)
+    }
+    return rep.payload as ManagedSkillChunk
   }
 
   private async onText(text: string): Promise<void> {
@@ -1138,6 +1181,20 @@ export class CpClient {
           .skillDismiss(frame.payload as DreamSkillReviewReq)
           .then((state) => this.reply(frame, 'memory/dream/skill/dismiss/ok', state))
           .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/dismiss', err))
+        return
+      }
+      case 'knowledge/suggestion/read': {
+        this.deps.dreamReader
+          .organizationSuggestionRead(frame.payload as OrganizationSuggestionReadReq)
+          .then((content) => this.reply(frame, 'knowledge/suggestion/content', content))
+          .catch((err) => this.dreamError(frame.id, 'knowledge/suggestion/read', err))
+        return
+      }
+      case 'knowledge/suggestion/review': {
+        this.deps.dreamReader
+          .organizationSuggestionReview(frame.payload as OrganizationSuggestionReviewReq)
+          .then((ack) => this.reply(frame, 'ack', ack))
+          .catch((err) => this.dreamError(frame.id, 'knowledge/suggestion/review', err))
         return
       }
       // webchat content moved off this control WS (milestone A4) — it rides the relay's

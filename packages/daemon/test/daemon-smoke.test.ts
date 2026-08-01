@@ -116,7 +116,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:1',
       traceId: '1',
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '1',
@@ -147,7 +147,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:1',
       traceId: '1',
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '1',
@@ -187,7 +187,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const mk = (ts: string, text: string) => ({
       msgId: `slack:C1:${ts}`,
       traceId: ts,
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '100.1',
@@ -568,7 +568,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const message = (agentId: string) => ({
       msgId: `slack:${agentId}:1.1`,
       traceId: agentId,
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: agentId,
       thread: '1.1',
@@ -633,7 +633,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await (daemon as any).dispatch('bot-a', {
         msgId: 'slack:C1:201.1',
         traceId: 'title-skip',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel: 'C1',
         thread: '201.1',
@@ -704,7 +704,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await (daemon as any).dispatch('bot-a', {
         msgId: `slack:${channel}:202.1`,
         traceId: 'channel-username',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel,
         thread: '202.1',
@@ -765,7 +765,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         (daemon as any).dispatch('bot-a', {
           msgId: 'slack:C1:202.2',
           traceId: 'channel-username-failure',
-          source: 'user',
+          source: 'cron',
           platform: 'slack',
           channel: 'C1',
           thread: '202.2',
@@ -804,7 +804,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:300.1',
       traceId: 'names',
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '300.1',
@@ -917,7 +917,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       (daemon as any).dispatch('bot-a', {
         msgId: 'slack:C1:400.1',
         traceId: 'quota',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel: 'C1',
         thread: '400.1',
@@ -937,6 +937,66 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const agentRows = rows.filter((r: any) => r.sender === 'bot-a' && r.kind === 'text')
     expect(agentRows).toHaveLength(1)
     expect(agentRows[0]!.text).toContain("You've hit your usage limit")
+    await daemon.stop()
+  }, 15_000)
+
+  // Same path, but the narrated error is a single line with no trailing paragraph break —
+  // the idle flush would hold that back, so the terminal drain must not be the idle one.
+  it('flushes a runtime-streamed terminal error that has no paragraph break', async () => {
+    const root = scaffold()
+    let onUpdate!: (sid: string, update: unknown) => void
+    const fakeHost = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-quota-3'),
+      hasSession: (id: string) => id === 'acp-quota-3',
+      prompt: vi.fn(async (sid: string) => {
+        onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: USAGE_LIMIT_MSG } })
+        throw usageLimitError()
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    }
+    const daemon = new Daemon({
+      root,
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return fakeHost as any
+      }
+    })
+    await daemon.start()
+    const posts: string[] = []
+    vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue({
+      setStatus: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      postMessage: vi.fn(async (_c: string, text: string) => {
+        posts.push(text)
+        return undefined
+      }),
+      postContext: vi.fn(async () => {})
+    })
+
+    await expect(
+      (daemon as any).dispatch('bot-a', {
+        msgId: 'slack:C1:402.1',
+        traceId: 'quota-no-break',
+        source: 'cron',
+        platform: 'slack',
+        channel: 'C1',
+        thread: '402.1',
+        sender: { id: 'U1', isBot: false },
+        text: 'summarize the day',
+        mentionedBots: [],
+        isDm: false
+      })
+    ).rejects.toThrow('Internal error')
+
+    // Delivered verbatim exactly once, with no ⚠️ notice standing in for the lost body.
+    expect(posts).toEqual([USAGE_LIMIT_MSG])
+    const { rows } = (daemon as any).store.transcriptPage('C1', '402.1', null, 10)
+    const agentRows = rows.filter((r: any) => r.sender === 'bot-a' && r.kind === 'text')
+    expect(agentRows).toHaveLength(1)
+    expect(agentRows[0]!.text).toBe(USAGE_LIMIT_MSG)
     await daemon.stop()
   }, 15_000)
 
@@ -969,7 +1029,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       (daemon as any).dispatch('bot-a', {
         msgId: 'slack:C1:401.1',
         traceId: 'quota-bare',
-        source: 'user',
+        source: 'cron',
         platform: 'slack',
         channel: 'C1',
         thread: '401.1',

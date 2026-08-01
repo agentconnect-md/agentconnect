@@ -8,6 +8,8 @@ import { handleEventSession } from './event-session.js'
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const SESSION_ID = 'session-407'
+const INTEGRATION_ID = '11111111-1111-4111-8111-111111111111'
+const BOT_ID = '22222222-2222-4222-8222-222222222222'
 
 function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
@@ -110,6 +112,120 @@ describe('handleEventSession', () => {
         // never taken from the frame payload.
         daemonId: DAEMON_ID
       })
+    )
+  })
+
+  it('binds a Slack audience only after validating its integration and workspace', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      integration: {
+        get: vi.fn().mockResolvedValue({
+          id: INTEGRATION_ID,
+          agentId: AGENT_ID,
+          botId: BOT_ID,
+          orgId: 'org-1',
+          platform: 'slack',
+          status: 'active'
+        })
+      },
+      bot: {
+        get: vi.fn().mockResolvedValue({
+          id: BOT_ID,
+          orgId: 'org-1',
+          platform: 'slack',
+          workspaceId: 'T407',
+          teamId: null,
+          revokedAt: null
+        })
+      },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      externalOrigin: {
+        provider: 'slack',
+        realmKey: 'T407',
+        resourceKind: 'conversation',
+        resourceKey: 'C407',
+        integrationId: INTEGRATION_ID
+      }
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalCandidate: {
+          provider: 'slack',
+          resolution: 'settled',
+          scope: {
+            realmKey: 'T407',
+            resourceKind: 'conversation',
+            resourceKey: 'C407',
+            credentialKind: 'bot',
+            credentialId: BOT_ID
+          }
+        }
+      })
+    )
+  })
+
+  it('keeps a root shared Slack session from an older daemon as an unresolved candidate', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      events: { publish: vi.fn() }
+    })
+
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({ externalCandidate: { provider: 'slack', resolution: 'pending' } })
+    )
+  })
+
+  it('marks a forged Slack workspace binding invalid', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      integration: {
+        get: vi.fn().mockResolvedValue({
+          id: INTEGRATION_ID,
+          agentId: AGENT_ID,
+          botId: BOT_ID,
+          orgId: 'org-1',
+          platform: 'slack',
+          status: 'active'
+        })
+      },
+      bot: {
+        get: vi.fn().mockResolvedValue({
+          id: BOT_ID,
+          orgId: 'org-1',
+          platform: 'slack',
+          workspaceId: 'T407',
+          teamId: null,
+          revokedAt: null
+        })
+      },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      externalOrigin: {
+        provider: 'slack',
+        realmKey: 'T-FORGED',
+        resourceKind: 'conversation',
+        resourceKey: 'C407',
+        integrationId: INTEGRATION_ID
+      }
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({ externalCandidate: { provider: 'slack', resolution: 'invalid' } })
     )
   })
 

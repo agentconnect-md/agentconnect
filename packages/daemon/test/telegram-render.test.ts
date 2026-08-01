@@ -32,16 +32,38 @@ describe('TelegramConverger body buffering', () => {
   it('buffers message chunks and flushes them as plain-text post actions', () => {
     const c = new TelegramConverger('low')
     expect(c.onUpdate(chunk('hello '))).toEqual([])
-    expect(c.onUpdate(chunk('world'))).toEqual([])
+    expect(c.onUpdate(chunk('world\n\n'))).toEqual([])
     expect(c.hasBuffered()).toBe(true)
     const out = c.flushBuffered()
-    expect(out).toEqual([{ kind: 'post', text: 'hello world' }])
+    expect(out).toEqual([{ kind: 'post', text: 'hello world\n\n' }])
+  })
+
+  it('idle-flushes only through the last paragraph break, holding the streaming tail', () => {
+    const c = new TelegramConverger('low')
+    c.onUpdate(chunk('First paragraph.\n\nSecond one is still mid-wo'))
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'First paragraph.\n\n' }])
+    c.onUpdate(chunk('rd.'))
+    expect(
+      c.onFinal('https://example/session').some((a) => a.kind === 'post' && a.text === 'Second one is still mid-word.')
+    ).toBe(true)
+  })
+
+  it('flushTerminal drains a boundary-less body and a held tail — the turn never reaches onFinal', () => {
+    const noBreak = new TelegramConverger('medium')
+    noBreak.onUpdate(chunk("You've hit your usage limit."))
+    expect(noBreak.flushTerminal()).toEqual([{ kind: 'post', text: "You've hit your usage limit." }])
+    expect(noBreak.hasBuffered()).toBe(false)
+
+    const withTail = new TelegramConverger('medium')
+    withTail.onUpdate(chunk('Quota exceeded.\n\nRetry after the reset at'))
+    expect(withTail.flushTerminal()).toEqual([{ kind: 'post', text: 'Quota exceeded.\n\nRetry after the reset at' }])
+    expect(withTail.hasBuffered()).toBe(false)
   })
 
   it('splits an over-long body across posts at the 4096 cap', () => {
     const c = new TelegramConverger('low')
     const line = 'x'.repeat(3000)
-    c.onUpdate(chunk(`${line}\n${line}`))
+    c.onUpdate(chunk(`${line}\n${line}\n\n`))
     const out = c.flushBuffered()
     expect(out).toHaveLength(2)
     for (const a of out) {
@@ -92,7 +114,7 @@ describe('TelegramConverger modes', () => {
     const c = new TelegramConverger('high')
     c.onUpdate(thought('let me '))
     c.onUpdate(thought('consider'))
-    c.onUpdate(chunk('the answer'))
+    c.onUpdate(chunk('the answer\n\n'))
     const out = c.flushBuffered()
     expect(kinds(out)).toEqual(['reasoning', 'post'])
     const reasoning = out[0] as { text: string; parseMode: string }
@@ -229,8 +251,8 @@ describe('TelegramConverger continue hint', () => {
 
   it('annotates an idle-flushed reply the same way, and only once', () => {
     const c = new TelegramConverger('medium', { continueHint: true })
-    c.onUpdate(chunk('streamed answer'))
-    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'streamed answer' }])
+    c.onUpdate(chunk('streamed answer\n\n'))
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'streamed answer\n\n' }])
     const out = c.onFinal('https://app/s/1')
     expect(kinds(out)).toEqual(['continue-hint', 'notice'])
   })

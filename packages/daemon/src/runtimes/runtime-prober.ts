@@ -149,6 +149,8 @@ export interface ProbeOptions {
   /** Full host environment used for allowlisted credential seeding and redaction. */
   hostEnv?: NodeJS.ProcessEnv
   runInSandbox?: boolean
+  daemonRoot?: string
+  agentsRoot?: string
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
   maskedReadRoots?: string[]
@@ -449,6 +451,8 @@ export function preparedProbeLaunch(
     cwd,
     isolateHome: true,
     runInSandbox: opts.runInSandbox ?? false,
+    daemonRoot: opts.daemonRoot,
+    agentsRoot: opts.agentsRoot,
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
     maskedReadRoots: opts.maskedReadRoots,

@@ -787,6 +787,8 @@ export class RawAcpEvaluationRunner {
         scopeDir: agent.dir,
         cwd: agent.workspace.path,
         runInSandbox,
+        daemonRoot: prepared.root,
+        agentsRoot: cfg.agentsDir,
         explicitEnv: { ...runtimeEnv, ...baseEnv, ...memoryOffEnv },
         sandboxMechanism: mechanism
       })

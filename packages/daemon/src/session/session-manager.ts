@@ -164,6 +164,9 @@ export class SessionManager {
        *  it). When it's cold, the workspace + skills must be prepared before hostFor. */
       isHostRunning?: (agentId: string) => boolean
       agentById: (id: string) => LoadedAgent | undefined
+      /** Daemon seam for cache-backed managed skill materialization. Tests and
+       * the standalone chat CLI use the ordinary workspace preparer. */
+      prepareWorkspace?: (agent: Agent) => Promise<string>
       /** The agent memory provider — seeds the memory dir and supplies the index
        *  injected at the start of a fresh session. */
       memory: MemoryProvider
@@ -333,6 +336,10 @@ export class SessionManager {
       /** Extra descriptors bound to the exact overridden host (for example the
        * cell-private AgentConnect admin MCP bridge). */
       additionalMcpServers?: McpServer[]
+      /** Trusted source gate: this runtime must not read agent/org shared
+       * memory. Computed by the daemon before any transcript or prompt body is
+       * handed to this method. */
+      sharedMemoryExcluded?: boolean
     } = {}
   ): Promise<{
     sessionId: string
@@ -454,7 +461,9 @@ export class SessionManager {
     // would mutate a checkout the running ACP process is using — the per-branch
     // prepareWorkspace below handles the warm-host new-session/resume cases instead.
     const hostCold = options.host ? false : !(this.deps.isHostRunning?.(agentId) ?? false)
-    const preparedCwd = hostCold ? await abortable(() => prepareWorkspace(agent), signal) : undefined
+    const preparedCwd = hostCold
+      ? await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal)
+      : undefined
     const host = options.host ?? (await abortable(() => this.deps.hostFor(agentId), signal))
     // The sticky per-session effort override rides session `_meta` on new/load so the
     // `ultracode` sentinel (rejected by the `thought_level` select) takes effect.
@@ -497,9 +506,10 @@ export class SessionManager {
     // a fresh session (a resumed session already carries it from its first turn).
     // Routed to exactly one place: Claude carries it via `_meta.systemPrompt` (metaContext,
     // passed to newSession); other runtimes get it folded into the inline system block below.
-    const memoryIndex = memoryEnabled
-      ? (await abortable(() => this.deps.memory.standingContextAtSessionStart({ agentId }), signal)).trim()
-      : ''
+    const memoryIndex =
+      memoryEnabled && options.sharedMemoryExcluded !== true
+        ? (await abortable(() => this.deps.memory.standingContextAtSessionStart({ agentId }), signal)).trim()
+        : ''
     const memoryAppend = memoryIndex
       ? `# Persistent memory\n` +
         `You keep a persistent memory across sessions. Your context is periodically ` +
@@ -665,7 +675,8 @@ export class SessionManager {
     if (!rec || !rec.acpSessionId) {
       // brand-new session; use the pre-host preparation when the host was cold, else
       // prepare now (warm host — ordering vs spawn is moot).
-      const cwd = preparedCwd ?? (await abortable(() => prepareWorkspace(agent), signal))
+      const cwd =
+        preparedCwd ?? (await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal))
       const mcpServers = [
         ...(this.deps.mcpServersFor?.({
           agent,
@@ -713,7 +724,8 @@ export class SessionManager {
       // a fresh session and replay the whole thread as context (lastDeliveredTs=null).
       // Resume: use the pre-host preparation when the host cold-started here (persisted
       // session after restart/eviction — skills must precede spawn), else prepare now.
-      const cwd = preparedCwd ?? (await abortable(() => prepareWorkspace(agent), signal))
+      const cwd =
+        preparedCwd ?? (await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal))
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.
@@ -946,7 +958,7 @@ export class SessionManager {
     const turnId = stableTurnId(agentId, msg)
     const recallScope = { agentId, sessionId: rec.acpSessionId! }
     const recallPolicy = memoryEnabled ? this.deps.memory.recallPolicy(recallScope) : undefined
-    if (captureInput && recallPolicy?.mode === 'auto') {
+    if (captureInput && options.sharedMemoryExcluded !== true && recallPolicy?.mode === 'auto') {
       const recallAbort = new AbortController()
       const recallReq = {
         turnId,

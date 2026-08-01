@@ -4,6 +4,7 @@ import {
   EventSession,
   FRAME_SCHEMAS,
   SESSION_VISIBILITY_FEATURE,
+  SLACK_SESSION_AUDIENCE_FEATURE,
   SessionVisibilityOk,
   SessionVisibilityPush,
   SessionVisibilitySnapshot,
@@ -82,6 +83,7 @@ describe('session/visibility frames (session-visibility.md §5.1)', () => {
 
   it('exports the feature flag the daemon advertises and the CP gates pushes on', () => {
     expect(SESSION_VISIBILITY_FEATURE).toBe('session-visibility-v1')
+    expect(SLACK_SESSION_AUDIENCE_FEATURE).toBe('slack-session-audience-v1')
   })
 })
 

@@ -5,7 +5,9 @@ import {
   fetchAgentDto,
   fetchAgentSkillSources,
   fetchSkillSourceSkills,
+  listManagedSkills,
   type AgentSkillSourceDto,
+  type ManagedSkillDto,
   type SkillSourceSkillsDto
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -43,6 +45,8 @@ function selectionFor(enabled: string[], name: string): { all: boolean; skills: 
 export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
   const { updateAgent, skillSources, skillSourcesLoading } = useConsoleData()
   const [enabled, setEnabled] = useState<string[] | null>(null) // saved refs; null ⇒ not loaded
+  const [managedEnabled, setManagedEnabled] = useState<string[] | null>(null)
+  const [managedLibrary, setManagedLibrary] = useState<ManagedSkillDto[] | null>(null)
   const [own, setOwn] = useState<AgentSkillSourceDto[] | null>(null) // sources this agent enables
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -55,21 +59,37 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
     // Demo agents (canEdit false) have no spec to fetch — mock mode seeds a selection
     // so both tile states (whole source vs a picked subset) are visible.
     if (!canEdit) {
-      if (MOCK_MODE) setEnabled(['example-ai-kit/*', 'internal-runbooks/safe-deploy'])
-      return
+      if (MOCK_MODE) {
+        setEnabled(['example-ai-kit/*', 'internal-runbooks/safe-deploy'])
+        setManagedEnabled([])
+        setManagedLibrary([])
+        return
+      }
     }
     fetched.current = true
     fetchAgentDto(agentId).then(
-      (dto) => setEnabled(dto.skills ?? []),
+      (dto) => {
+        setEnabled(dto.skills ?? [])
+        setManagedEnabled(dto.managedSkills ?? [])
+      },
       (e) => setErr(e instanceof Error ? e.message : String(e))
+    )
+    listManagedSkills(true).then(
+      (rows) => setManagedLibrary(rows),
+      (e) => {
+        setManagedLibrary([])
+        setErr(e instanceof Error ? e.message : String(e))
+      }
     )
     // Resolving the agent's own refs is best-effort decoration: it only ADDS tiles
     // for sources missing from the registry list, so a failure degrades to the
     // registry view rather than blocking the toggles.
-    fetchAgentSkillSources(agentId).then(
-      (rows) => setOwn(rows),
-      () => setOwn([])
-    )
+    if (canEdit) {
+      fetchAgentSkillSources(agentId).then(
+        (rows) => setOwn(rows),
+        () => setOwn([])
+      )
+    }
   }, [agentId, canEdit])
 
   const save = async (next: string[]) => {
@@ -82,6 +102,24 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
       await updateAgent(agentId, { skills: next })
     } catch (e) {
       setEnabled(prev) // revert so the toggles never lie about what's saved
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const saveManaged = async (next: string[]) => {
+    if (managedEnabled === null || saving) return
+    const prev = managedEnabled
+    const activeIds = new Set((managedLibrary ?? []).filter((skill) => !skill.archivedAt).map((skill) => skill.id))
+    const valid = next.filter((id) => activeIds.has(id))
+    setManagedEnabled(valid)
+    setSaving(true)
+    setErr(null)
+    try {
+      await updateAgent(agentId, { managedSkills: valid })
+    } catch (e) {
+      setManagedEnabled(prev)
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
@@ -151,6 +189,65 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
     <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
       <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
         Skills
+      </div>
+
+      <div className="border-b border-(--border-subtle)">
+        <div className="flex items-baseline justify-between px-4 pt-3 pb-2">
+          <span className="font-sans text-[12.5px] font-semibold text-(--text-secondary)">
+            Managed organization skills
+          </span>
+          <span className="font-sans text-[10.5px] text-(--text-tertiary)">owner-approved · pinned revision</span>
+        </div>
+        {managedLibrary === null || managedEnabled === null ? (
+          <div className="px-4 pb-3 font-sans text-[12px] text-(--text-tertiary)">Loading managed skills…</div>
+        ) : managedLibrary.length === 0 ? (
+          <div className="px-4 pb-3 font-sans text-[12px] text-(--text-tertiary)">
+            No approved managed skills are available yet.
+          </div>
+        ) : (
+          <ToolTileGrid columns={2}>
+            {managedLibrary.map((skill) => {
+              const checked = managedEnabled.includes(skill.id) && !skill.archivedAt
+              return (
+                <ToolTile
+                  key={skill.id}
+                  mark={<SkillMark />}
+                  name={skill.name}
+                  badge={
+                    <span
+                      className={`badge flex-none text-[9.5px] ${skill.archivedAt ? 'bg-(--surface-sunken) text-(--text-disabled)' : 'bg-(--status-online-soft) text-(--status-online)'}`}
+                    >
+                      {skill.archivedAt ? 'archived' : `rev ${skill.currentRevision}`}
+                    </span>
+                  }
+                  subtitle={skill.description}
+                  footer={
+                    <span className="mono text-[10.5px] text-(--text-disabled)">
+                      {skill.fileCount} file{skill.fileCount === 1 ? '' : 's'} · immutable bundle
+                    </span>
+                  }
+                  action={
+                    <Toggle
+                      checked={checked}
+                      disabled={!canEdit || saving || !!skill.archivedAt}
+                      onChange={(next) =>
+                        void saveManaged(
+                          next
+                            ? [...managedEnabled.filter((id) => id !== skill.id), skill.id]
+                            : managedEnabled.filter((id) => id !== skill.id)
+                        )
+                      }
+                    />
+                  }
+                />
+              )
+            })}
+          </ToolTileGrid>
+        )}
+      </div>
+
+      <div className="px-4 pt-3 pb-2 font-sans text-[12.5px] font-semibold text-(--text-secondary)">
+        Git skill sources
       </div>
 
       {tiles.length === 0 ? (

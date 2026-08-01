@@ -173,6 +173,8 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         mcpServers: ['github', 'metrics'],
         // Skills enable-list resolves to inline entries; none enabled here ⇒ always shipped [].
         skills: [],
+        // Managed organization skills are a distinct explicit enable-list.
+        managedSkills: [],
         // Agent→agent call policy (§2.5) — always shipped so a policy/allow-list change replicates.
         callPolicy: 'all',
         allowedCallerAgentIds: [],
@@ -329,7 +331,14 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     await expect(
       offline.agentUpsert(DAEMON, {
         agentId,
-        spec: { name: 'x', mcpServers: [], skills: [], allowedCallerAgentIds: [], allowedTargetAgentIds: [] }
+        spec: {
+          name: 'x',
+          mcpServers: [],
+          skills: [],
+          managedSkills: [],
+          allowedCallerAgentIds: [],
+          allowedTargetAgentIds: []
+        }
       })
     ).rejects.toBeInstanceOf(NoConnection)
 

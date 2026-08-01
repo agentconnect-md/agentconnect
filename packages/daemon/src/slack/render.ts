@@ -15,6 +15,7 @@ export {
   encodePermValue
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
+import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { splitIntoSections } from './formatter.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -845,17 +846,30 @@ export class OutputConverger {
    *  block is first-posted ABOVE the reply: thinking precedes the answer (§9.1), so the
    *  Thinking block must sit above it, not below.
    *
-   *  minimal: no per-window `post`s — just refresh the single in-place `live-reply` with the
-   *  current segment (display only; the transcript record happens at segment boundaries). */
+   *  minimal: no per-window `post`s — just the `live-reply` refresh. */
   flushBuffered(): SlackAction[] {
-    if (this.mode === 'minimal') {
-      const trimmed = this.buf.trim()
-      // Hold the live reply while the body could still be the bare response-control marker, so a
-      // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
-      if (!trimmed || isNoResponsePrefix(trimmed)) return []
-      return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
-    }
+    if (this.mode === 'minimal') return this.liveRefresh()
+    return [...this.drainReasoning(), ...this.flushStreaming()]
+  }
+
+  /** Drain everything for a turn that is ending abnormally: the runtime narrated its terminal
+   *  error into the message stream and then rejected the prompt, so `onFinal` never runs and
+   *  there is no later flush to hold a partial paragraph for. Unlike the idle flush this takes
+   *  the whole buffer, paragraph break or not — otherwise the runtime's own error text is
+   *  dropped and replaced by the generic failure notice. */
+  flushTerminal(): SlackAction[] {
+    if (this.mode === 'minimal') return this.liveRefresh()
     return [...this.drainReasoning(), ...this.flush()]
+  }
+
+  /** minimal: refresh the single in-place `live-reply` with the current segment (display only;
+   *  the transcript record happens at segment boundaries). */
+  private liveRefresh(): SlackAction[] {
+    const trimmed = this.buf.trim()
+    // Hold the live reply while the body could still be the bare response-control marker, so a
+    // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
+    if (!trimmed || isNoResponsePrefix(trimmed)) return []
+    return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
   }
 
   /** minimal: the single live message can hold one Block Kit `markdown` block (≤12000
@@ -907,6 +921,23 @@ export class OutputConverger {
     if (isNoResponsePrefix(trimmed)) return []
     const text = this.buf
     this.buf = ''
+    return this.emitBody(text)
+  }
+
+  /** The idle timer's body flush. Unlike a semantic boundary (tool call / plan / thinking,
+   *  where the model really did finish a text block) this fires on a mere pause in the ACP
+   *  stream, so it posts only up to the last paragraph break and re-buffers the rest —
+   *  otherwise one reply is split across two messages mid-sentence (§stream-boundary). */
+  private flushStreaming(): SlackAction[] {
+    const trimmed = this.buf.trim()
+    if (!trimmed || isNoResponsePrefix(trimmed)) return []
+    const { ready, tail } = splitAtParagraphBoundary(this.buf)
+    if (!ready) return []
+    this.buf = tail
+    return this.emitBody(ready)
+  }
+
+  private emitBody(text: string): SlackAction[] {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` is handled
     // before the connection check on every platform, so it lands even though replyConn is unset.
     const recordOnly = this.mode === 'none'
