@@ -21,6 +21,7 @@ import {
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { LoadingState } from '@/components/marks'
+import { MemoryConnectionsCard } from '@/components/console/MemoryConnectionsCard'
 import { Button, Icon, Toggle } from '@/components/ui'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), { ssr: false })
@@ -521,14 +522,15 @@ export default function KnowledgeView() {
   const { activeOrg, myRole, orgPath } = useOrgs()
   const router = useRouter()
   const search = useSearchParams()
-  const tab = search.get('tab') === 'suggestions' ? 'suggestions' : 'organization'
+  const requestedTab = search.get('tab')
+  const tab = requestedTab === 'suggestions' || requestedTab === 'memory' ? requestedTab : 'organization'
   const [includeArchived, setIncludeArchived] = useState(false)
   const [suggestionState, setSuggestionState] = useState<SuggestionState>('pending')
   const [editor, setEditor] = useState<OrganizationKnowledgeDto | null | undefined>(undefined)
   const [actionError, setActionError] = useState<string | null>(null)
   const canManage = myRole === 'owner'
 
-  const knowledgeKey = activeOrg ? ['organization-knowledge', activeOrg.id, includeArchived] : null
+  const knowledgeKey = activeOrg && tab !== 'memory' ? ['organization-knowledge', activeOrg.id, includeArchived] : null
   const suggestionsKey =
     activeOrg && canManage && tab === 'suggestions' ? ['organization-suggestions', activeOrg.id, suggestionState] : null
   const knowledge = useSWR(knowledgeKey, () => listOrganizationKnowledge(includeArchived))
@@ -540,8 +542,8 @@ export default function KnowledgeView() {
   const reviewed = async () => {
     await Promise.all([suggestions.mutate(), knowledge.mutate()])
   }
-  const changeTab = (next: 'organization' | 'suggestions') => {
-    router.replace(orgPath(`/knowledge${next === 'suggestions' ? '?tab=suggestions' : ''}`))
+  const changeTab = (next: 'organization' | 'suggestions' | 'memory') => {
+    router.replace(orgPath(`/knowledge${next === 'organization' ? '' : `?tab=${next}`}`))
   }
   const archiveKnowledge = async (record: OrganizationKnowledgeDto) => {
     setActionError(null)
@@ -561,7 +563,9 @@ export default function KnowledgeView() {
     <div className="wrap max-desktop:p-4">
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <p className="psub mt-0 min-w-[240px] flex-1">
-          Owner-approved, revisioned knowledge shared across your organization and discovered by agents on demand.
+          {tab === 'memory'
+            ? 'Manage organization-wide memory services and account connections.'
+            : 'Owner-approved, revisioned knowledge shared across your organization and discovered by agents on demand.'}
         </p>
         {tab === 'organization' && canManage && (
           <Button variant="primary" size="sm" onClick={() => setEditor(null)}>
@@ -579,6 +583,9 @@ export default function KnowledgeView() {
           <button className={tab === 'suggestions' ? 'tab on' : 'tab'} onClick={() => changeTab('suggestions')}>
             Suggestions
           </button>
+          <button className={tab === 'memory' ? 'tab on' : 'tab'} onClick={() => changeTab('memory')}>
+            Memory
+          </button>
         </div>
         {tab === 'organization' && (
           <label className="flex items-center gap-2 pb-2 font-sans text-[11.5px] text-(--text-tertiary)">
@@ -594,7 +601,9 @@ export default function KnowledgeView() {
         </div>
       )}
 
-      {tab === 'organization' ? (
+      {tab === 'memory' ? (
+        <MemoryConnectionsCard canManage={canManage} />
+      ) : tab === 'organization' ? (
         <section className="card overflow-hidden">
           <div className="cardhead justify-between">
             <span className="cardtitle">Knowledge library</span>

@@ -40,8 +40,8 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
   { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
   { href: '/daemons', label: 'Daemons', icon: 'server' },
-  { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'library-big' },
+  { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
+  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
 ]
 
@@ -62,8 +62,8 @@ const MOBILE_NAV: NavItem[] = [
 const MORE_ROWS: NavItem[] = [
   { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
-  { href: '/tools', label: 'Tools & Skills', icon: 'book-open' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'library-big' },
+  { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
+  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 

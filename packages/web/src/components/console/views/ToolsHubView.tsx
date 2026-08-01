@@ -4,19 +4,14 @@ import useSWR from 'swr'
 import { MOCK_MODE } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { fetchExternalMemoryConnections, listManagedSkills } from '@/lib/api'
+import { listManagedSkills } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { McpServersCard } from '@/components/console/McpServersCard'
 import { SkillSourcesCard } from '@/components/console/SkillSourcesCard'
-import { MemoryConnectionsCard } from '@/components/console/MemoryConnectionsCard'
 
 export default function ToolsHubView() {
   const { mcpProviders, skillSources } = useConsoleData()
   const { activeOrg, myRole } = useOrgs()
-  const memoryConnectionKey = consoleKeys.externalMemoryConnections(activeOrg?.id)
-  const { data: memoryConnections = [] } = useSWR(memoryConnectionKey, ([, orgId]) =>
-    fetchExternalMemoryConnections(orgId)
-  )
   const managedSkillsKey = consoleKeys.managedSkills(activeOrg?.id, false)
   const { data: managedSkills = [] } = useSWR(managedSkillsKey, ([, orgId]) => listManagedSkills(false, orgId))
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
@@ -37,8 +32,8 @@ export default function ToolsHubView() {
       <div
         className={
           MOCK_MODE
-            ? 'mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-4'
-            : 'mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-3'
+            ? 'mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-3'
+            : 'mb-[18px] grid grid-cols-2 gap-[14px]'
         }
       >
         <div className="card stat">
@@ -48,10 +43,6 @@ export default function ToolsHubView() {
         <div className="card stat">
           <div className="statlbl">Skills library</div>
           <div className="statval">{skillSources.length + managedSkills.length}</div>
-        </div>
-        <div className="card stat">
-          <div className="statlbl">External memory</div>
-          <div className="statval">{memoryConnections.length}</div>
         </div>
         {/* Tool-call metering has no backend yet — the design's demo stat renders
             only in mock mode with its demo value. */}
@@ -64,7 +55,6 @@ export default function ToolsHubView() {
       </div>
       <McpServersCard canWrite={canWrite} />
       <SkillSourcesCard canWrite={canWrite} canManage={canManageOwnerResources} />
-      <MemoryConnectionsCard canManage={canManageOwnerResources} />
     </div>
   )
 }
