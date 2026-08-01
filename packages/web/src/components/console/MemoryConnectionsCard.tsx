@@ -136,7 +136,7 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
 
   const loading = installationsLoading || connectionsLoading
   return (
-    <div className="card">
+    <div id="external-memory" className="card mt-[18px]">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 border-b border-(--border-subtle) px-4 py-[14px] desktop:items-center">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="cardtitle">External memory</span>

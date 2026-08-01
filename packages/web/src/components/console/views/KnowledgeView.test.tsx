@@ -6,11 +6,9 @@ import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setApiOrgId, type OrganizationKnowledgeDto, type OrganizationSuggestionDto } from '@/lib/api'
 
-const navigation = vi.hoisted(() => ({ search: '' }))
-
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(navigation.search)
+  useSearchParams: () => new URLSearchParams()
 }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: 'owner', orgPath: (path: string) => path })
@@ -83,7 +81,6 @@ async function settleUntil(done: () => boolean): Promise<void> {
 }
 
 beforeEach(() => {
-  navigation.search = ''
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   host = document.createElement('div')
   document.body.append(host)
@@ -206,7 +203,7 @@ describe('organization suggestion review card', () => {
 })
 
 describe('organization knowledge surface', () => {
-  it('keeps managed skills out of Knowledge and never requests their library endpoint', async () => {
+  it('renders knowledge above external memory without loading managed skills', async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL) =>
         new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -222,37 +219,16 @@ describe('organization knowledge surface', () => {
     })
     await settleUntil(() => host.textContent?.includes('No organization knowledge has been published yet.') === true)
 
-    expect(host.textContent).toContain('Knowledge library')
-    expect(host.textContent).not.toContain('Managed skills')
-    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
-      expect.stringContaining('/knowledge?includeArchived=false')
-    ])
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/managed-skills'))).toBe(false)
-  })
-
-  it('hosts external memory under the Memory tab without loading the knowledge library', async () => {
-    navigation.search = 'tab=memory'
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL) =>
-        new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    await act(async () => {
-      root.render(
-        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <KnowledgeView />
-        </SWRConfig>
-      )
-    })
-    await settleUntil(() => host.textContent?.includes('No external-memory connections yet') === true)
-
-    expect(host.textContent).toContain('External memory')
-    expect(host.textContent).not.toContain('Knowledge library')
+    const content = host.textContent ?? ''
+    expect(content).toContain('Knowledge library')
+    expect(content).toContain('External memory')
+    expect(content.indexOf('Knowledge library')).toBeLessThan(content.indexOf('External memory'))
+    expect(content).not.toContain('Managed skills')
     const urls = fetchMock.mock.calls.map(([input]) => String(input))
+    expect(urls.some((url) => url.includes('/knowledge?includeArchived=false'))).toBe(true)
     expect(urls.some((url) => url.includes('/memory-plugin-installations'))).toBe(true)
     expect(urls.some((url) => url.includes('/external-memory-connections'))).toBe(true)
-    expect(urls.some((url) => url.includes('/knowledge?'))).toBe(false)
+    expect(urls.some((url) => url.includes('/managed-skills'))).toBe(false)
   })
 
   it('loads and selects historical knowledge content, then refreshes an open entry for a new revision', async () => {
