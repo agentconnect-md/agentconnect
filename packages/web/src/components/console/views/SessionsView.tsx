@@ -461,11 +461,8 @@ export default function SessionsView() {
   // bottom sheet rendered at the end of the tree.
   return (
     <div className="wrap max-desktop:pb-24">
-      <div className="mb-4 hidden min-h-[34px] items-center gap-4 desktop:flex">
-        <div className="flex-1">
-          <p className="psub mt-0">Every agent run across your workspace. Open one to replay the full conversation.</p>
-        </div>
-      </div>
+      {/* No description row (design v2): the filter bar states what this page is
+          better than a sentence does, and the list starts at the top of the page. */}
       {/* Desktop filter bar — four custom dropdowns, each showing the selected face. */}
       <div className="mb-4 hidden flex-wrap items-center gap-[10px] desktop:flex">
         <span className="eyebrow mr-[2px]">Filter</span>
