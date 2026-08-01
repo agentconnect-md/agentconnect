@@ -24,6 +24,7 @@ import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
+import { NoConnection } from '../../src/orchestrator/outbound.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import type { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import type { AnyFrame, CollabRoutesSnapshot, IntegrationUpsert, IntegrationChannel } from '@agentconnect.md/protocol'
@@ -58,8 +59,15 @@ class SpyControl {
     this.leaves.push({ daemonId, l })
     return this.leaveVerdict
   }
-  async integrationForget(daemonId: string, f: { integrationId: string; channels: string[] }): Promise<void> {
+  /** Set to simulate an unreachable daemon — the suppression then cannot be made durable. */
+  forgetThrows: Error | null = null
+  async integrationForget(
+    daemonId: string,
+    f: { integrationId: string; channels: string[] }
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (this.forgetThrows) throw this.forgetThrows
     this.forgets.push({ daemonId, f })
+    return { ok: true }
   }
   async integrationRemove(): Promise<void> {}
   async collaborationRoutes(daemonId: string, snapshot: CollabRoutesSnapshot): Promise<void> {
@@ -1120,6 +1128,38 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     } finally {
       releaseMove()
     }
+  })
+
+  // §14.3 gives each gated install its OWN DM row, so fanning a forget across the bot
+  // would let an editor of one agent silently drop another agent's direct message.
+  it('forgets a DM row on this install only, never across the bot', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/D1` })
+
+    expect(res.statusCode).toBe(204)
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  // The suppression is what makes the removal stick, so a daemon that never got it
+  // WILL list the conversation again — reporting 204 would be a lie found out later.
+  it('refuses to forget when the suppression cannot reach the daemon', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    spy.forgetThrows = new NoConnection(DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+
+    const res = await running.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}/channels/C1` })
+
+    expect(res.statusCode).toBe(502)
+    expect((res.json() as { message: string }).message).toContain('offline')
   })
 
   it('refuses a server-scoped leave on a platform that has no server', async () => {

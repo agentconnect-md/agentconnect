@@ -1012,6 +1012,50 @@ describe('Daemon.leaveConversation', () => {
     expect((daemon as any).store.retractedConversations('tg-int').has('-100123')).toBe(false)
   })
 
+  // A Discord observation is a THREAD id; only the collapse turns it into the channel
+  // the tombstone names. Filtering the raw ids matches nothing and the thread folds
+  // straight back onto the channel that was just left.
+  it('a Discord thread observation cannot fold back onto the server channel that was left', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).agents = new Map([
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+    ])
+    ;(daemon as any).channelSnapshots.set('dc-int', {
+      channels: [{ id: 'C1', spaceId: 'G1' }],
+      authoritative: false
+    })
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(DiscordConnection.prototype), { leaveSpace: vi.fn().mockResolvedValue(undefined) })
+    await (daemon as any).leaveConversation({ integrationId: 'dc-int', target: { kind: 'space', spaceId: 'G1' } })
+
+    // Session history holds the THREAD, which collapses onto the left channel C1.
+    vi.spyOn((daemon as any).store, 'observedChannels').mockReturnValue([{ id: 'T-in-C1' }])
+    vi.spyOn(daemon as any, 'collapseObserved').mockReturnValue([{ id: 'C1', spaceId: 'G1' }])
+    emit.mockClear()
+    ;(daemon as any).refreshObservedChannels()
+
+    expect((daemon as any).channelSnapshots.get('dc-int').channels).toEqual([])
+  })
+
+  it('replays the tombstones on reconnect, so a retraction lost while the CP was down still lands', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    telegramAgent(daemon)
+    // Retract while the CP link is DOWN: the EVT is fire-and-forget and simply lost.
+    ;(daemon as any).cpClient = undefined
+    ;(daemon as any).channelSnapshots.set('tg-int', { channels: [{ id: '-100123' }], authoritative: false })
+    ;(daemon as any).retractChannels('tg-int', ['-100123'])
+
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).replayChannelSnapshots()
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'tg-int', removed: ['-100123'] }))
+  })
+
   it('refuses a conversation-scoped leave on Discord, where a bot can only leave a server', async () => {
     const { daemon } = makeStubDaemon(root1())
     await daemon.start()

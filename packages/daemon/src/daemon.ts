@@ -3274,13 +3274,16 @@ export class Daemon {
           // A conversation the bot left is still all over session history, so the
           // retracted set is subtracted from BOTH sources — the fresh observations and
           // the cached rows carried forward — or the rebuild would resurrect it.
+          //
+          // Subtracted AFTER the collapse, never before: a Discord observation is a
+          // THREAD id, and only the collapse turns it into the channel the tombstone
+          // names. Filtering the raw ids would match nothing and let the thread fold
+          // straight back onto the channel that was just left.
           const retracted = this.store.retractedConversations(integ.id)
           const observed = this.collapseObserved(
-            this.store
-              .observedChannels(agent.id, platform, this.transportScopeForIntegration(integ))
-              .filter((c) => !retracted.has(c.id)),
+            this.store.observedChannels(agent.id, platform, this.transportScopeForIntegration(integ)),
             platform
-          )
+          ).filter((c) => !retracted.has(c.id))
           const prior = (this.channelSnapshots.get(integ.id)?.channels ?? []).filter((c) => !retracted.has(c.id))
           if (observed.length === 0 && prior.length === 0) continue
           const priorById = new Map(prior.map((c) => [c.id, c]))
@@ -13557,10 +13560,16 @@ export class Daemon {
    *  observation (including Slack gated-conversation discovery) to a full snapshot. */
   private replayChannelSnapshots(): void {
     for (const [integrationId, snapshot] of this.channelSnapshots) {
+      // Replay the tombstones too. A retraction emitted while the CP was unreachable
+      // is simply lost — it is a fire-and-forget EVT — so without carrying it here the
+      // reconnect would re-assert what remains and leave the departed conversation
+      // listed forever, which is the exact failure this whole mechanism exists to end.
+      const removed = [...this.store.retractedConversations(integrationId)]
       this.cpClient?.emitIntegrationChannels({
         integrationId,
         channels: snapshot.channels,
-        ...(snapshot.authoritative ? {} : { authoritative: false })
+        ...(snapshot.authoritative ? {} : { authoritative: false }),
+        ...(removed.length > 0 ? { removed } : {})
       })
     }
   }

@@ -27,6 +27,7 @@ import { denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { pickChannelOwner } from '../../orchestrator/httpBot.js'
+import { isDirectConversationKind } from '../../persistence/ports.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { installNewFeishuBot } from '../install-feishu.js'
@@ -803,13 +804,27 @@ export function integrationRoutes(deps: HttpDeps) {
       integration: IntegrationRecord,
       agent: AgentRecord,
       channels: string[]
-    ): Promise<void> => {
-      if (!agent.daemonId || channels.length === 0) return
+    ): Promise<{ ok: true } | { ok: false; body: { error: string; statusCode: number; message: string } }> => {
+      if (channels.length === 0) return { ok: true }
+      const undeliverable = {
+        ok: false as const,
+        body: {
+          error: 'Bad Gateway',
+          statusCode: 502,
+          message: 'the daemon is offline, so this conversation would be listed again — retry once it reconnects'
+        }
+      }
+      if (!agent.daemonId) return undeliverable
       try {
-        await deps.control.integrationForget(agent.daemonId, { integrationId: integration.id, channels })
+        const ack = await deps.control.integrationForget(agent.daemonId, { integrationId: integration.id, channels })
+        if (ack.ok) return { ok: true }
+        return {
+          ok: false,
+          body: { error: 'Bad Gateway', statusCode: 502, message: ack.reason ?? 'the daemon refused' }
+        }
       } catch (err) {
-        if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ integrationId: integration.id }, 'integration/forget skipped: daemon offline')
+        if (err instanceof NoConnection) return undeliverable
+        throw err
       }
     }
 
@@ -820,34 +835,47 @@ export function integrationRoutes(deps: HttpDeps) {
      * edit rights on the effective owner — instead of only on this integration's agent.
      * Returns an error envelope to send, or null when the action may proceed.
      */
-    const admitBotScopedChannel = async (
+    const resolveBotScopedChannel = async (
       req: { params: { id: string; channelId?: string } },
+      integration: IntegrationRecord,
       bot: BotRecord,
       channelId: string
-    ): Promise<{ code: 403 | 409; body: { error: string; statusCode: number; message: string } } | null> => {
-      if (bot.transport !== 'http') return null
+    ): Promise<
+      | { ok: true; botScoped: boolean; ownerAgentId?: string }
+      | { ok: false; code: 403 | 409; body: { error: string; statusCode: number; message: string } }
+    > => {
+      const rows = await deps.repos.integrationChannel.listForIntegration(integration.id)
+      const row = rows.find((candidate) => candidate.channelId === channelId)
+      // A DIRECT row is per-agent even on a shared bot (§14.3: each gated install gets
+      // its own DM row), so it is never fanned out and needs no owner check — sharing
+      // one would let an editor of one agent silently drop another agent's DM.
+      if (bot.transport !== 'http' || (row && isDirectConversationKind(row.kind))) {
+        return { ok: true, botScoped: false }
+      }
       const [installs, channelRows] = await Promise.all([
         deps.repos.integration.listForBot(bot.id),
         deps.repos.integrationChannel.listForBot(bot.id)
       ])
       const owner = pickChannelOwner(
         installs,
-        channelRows.filter((row) => row.kind === 'channel' && row.channelId === channelId)
+        channelRows.filter((candidate) => candidate.kind === 'channel' && candidate.channelId === channelId)
       )
       const ownerAgent = owner ? await deps.repos.agent.get(owner.agentId) : null
       if (!ownerAgent) {
         return {
+          ok: false,
           code: 409,
           body: { error: 'Conflict', statusCode: 409, message: 'channel owner changed; refresh and retry' }
         }
       }
       if (!canEdit(ownerAgent, ctxOf(req as never))) {
         return {
+          ok: false,
           code: 403,
           body: { error: 'Forbidden', statusCode: 403, message: 'cannot edit this channel’s owning agent' }
         }
       }
-      return null
+      return { ok: true, botScoped: true, ownerAgentId: ownerAgent.id }
     }
 
     // Per-channel trigger choice (@-mention vs any message). Persist, then push the
@@ -1037,7 +1065,7 @@ export function integrationRoutes(deps: HttpDeps) {
             'Remove a conversation row from AgentConnect without touching the platform. Intended for a conversation the bot has already left where the platform cannot report its own departure. The row returns on the next authoritative listing if the bot is still a member.',
           operationId: 'deleteIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
-          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -1045,19 +1073,32 @@ export function integrationRoutes(deps: HttpDeps) {
         const admitted = await admitChannelAction(req, reply)
         if (!admitted) return
         const { integration, agent, bot } = admitted
-        const release = deps.agentMutations.tryBeginMutation(agent.id)
+        const scope = await resolveBotScopedChannel(req, integration, bot, req.params.channelId)
+        if (!scope.ok) return reply.code(scope.code).send(scope.body)
+        // The owner joins the lease, not just the authorization: a bot-wide action
+        // decided against one owner must not commit while a move re-places that owner.
+        const leased = [...new Set([agent.id, ...(scope.ownerAgentId ? [scope.ownerAgentId] : [])])]
+        const release = deps.agentMutations.tryBeginMutation(leased)
         if (!release) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'agent move is in progress; retry the removal' })
         }
         try {
-          const denied = await admitBotScopedChannel(req, bot, req.params.channelId)
-          if (denied) return reply.code(denied.code).send(denied.body)
-          // A shared bot's channel state is bot-scoped — ownership and trigger are
+          // Ownership can change between resolving it and holding the lease, so the
+          // verdict is re-taken under the lease and must still name the same owner.
+          const fenced = await resolveBotScopedChannel(req, integration, bot, req.params.channelId)
+          if (!fenced.ok) return reply.code(fenced.code).send(fenced.body)
+          if (fenced.ownerAgentId !== scope.ownerAgentId) {
+            return reply
+              .code(409)
+              .send({ error: 'Conflict', statusCode: 409, message: 'channel owner changed; refresh and retry' })
+          }
+          // A shared bot's CHANNEL state is bot-scoped — ownership and trigger are
           // replicated across every install — so forgetting it on one install alone
-          // would leave siblings listing it and let the compiler resurrect the row.
-          const installs = bot.transport === 'http' ? await deps.repos.integration.listForBot(bot.id) : [integration]
+          // would leave siblings listing it and let the compiler resurrect the row. A
+          // direct row is per-agent and stays on this install only (§14.3).
+          const installs = scope.botScoped ? await deps.repos.integration.listForBot(bot.id) : [integration]
           let removed = false
           for (const install of installs) {
             if (await deps.repos.integrationChannel.deleteChannel(install.id, req.params.channelId)) removed = true
@@ -1067,7 +1108,8 @@ export function integrationRoutes(deps: HttpDeps) {
           }
           // Suppress it at the source too, or the daemon's next observed refresh
           // rebuilds the row from session history and quietly undoes this.
-          await pushForget(integration, agent, [req.params.channelId])
+          const suppressed = await pushForget(integration, agent, [req.params.channelId])
+          if (!suppressed.ok) return reply.code(502).send(suppressed.body)
           await republishChannels(integration, bot, agent)
           return reply.code(204).send(null)
         } finally {
@@ -1123,13 +1165,21 @@ export function integrationRoutes(deps: HttpDeps) {
             message: 'a Discord bot joins servers, not channels; leave the server instead'
           })
         }
+        const scope =
+          target.kind === 'conversation'
+            ? await resolveBotScopedChannel(req, integration, bot, target.channel)
+            : ({ ok: true, botScoped: false, ownerAgentId: undefined } as const)
+        if (!scope.ok) return reply.code(scope.code).send(scope.body)
         // Held across the whole request, not just the row writes. A cold move
         // re-places the agent on another daemon and rebuilds its channel state
         // there; without the lease this could dispatch the platform call to the
         // PRE-move daemon and then delete rows the move has already rewritten —
         // leaving the new daemon believing it is still in a channel the bot has
-        // actually left. The forget route takes the same lease for the same reason.
-        const release = deps.agentMutations.tryBeginMutation(agent.id)
+        // actually left. The effective owner joins the lease for the same reason the
+        // forget route takes it: a bot-wide action decided against one owner must not
+        // commit while a move re-places that owner.
+        const leased = [...new Set([agent.id, ...(scope.ownerAgentId ? [scope.ownerAgentId] : [])])]
+        const release = deps.agentMutations.tryBeginMutation(leased)
         if (!release) {
           return reply
             .code(409)
@@ -1137,8 +1187,13 @@ export function integrationRoutes(deps: HttpDeps) {
         }
         try {
           if (target.kind === 'conversation') {
-            const denied = await admitBotScopedChannel(req, bot, target.channel)
-            if (denied) return reply.code(denied.code).send(denied.body)
+            const fenced = await resolveBotScopedChannel(req, integration, bot, target.channel)
+            if (!fenced.ok) return reply.code(fenced.code).send(fenced.body)
+            if (fenced.ownerAgentId !== scope.ownerAgentId) {
+              return reply
+                .code(409)
+                .send({ error: 'Conflict', statusCode: 409, message: 'channel owner changed; refresh and retry' })
+            }
           }
           // Placement may have changed between admission and taking the lease, so the
           // daemon this dispatches to is re-read under it rather than trusted.
@@ -1176,7 +1231,7 @@ export function integrationRoutes(deps: HttpDeps) {
           // The daemon retires the affected rows itself (an authoritative re-list on
           // Slack, an explicit retraction elsewhere). Forgetting them here too makes
           // the console consistent the moment this returns, and is idempotent.
-          const installs = bot.transport === 'http' ? await deps.repos.integration.listForBot(bot.id) : [integration]
+          const installs = scope.botScoped ? await deps.repos.integration.listForBot(bot.id) : [integration]
           const rows = await deps.repos.integrationChannel.listForIntegration(integration.id)
           const gone =
             target.kind === 'space'

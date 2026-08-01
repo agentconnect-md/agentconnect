@@ -289,15 +289,16 @@ export const IntegrationLeave = z.object({
 export type IntegrationLeave = z.infer<typeof IntegrationLeave>
 
 /**
- * C→D EVT — stop REPORTING these conversations; the platform is not touched.
+ * C→D REQ → `ack` — stop REPORTING these conversations; the platform is not touched.
  *
  * The console's Forget needs this for the same reason a leave does. A non-enumerating
  * platform's observed set is rebuilt from session history, so deleting the row in the
  * CP alone lasts only until the daemon's next refresh pushes it back. The daemon holds
  * the suppression durably and lifts it when the conversation talks to it again.
  *
- * Fire-and-forget: a daemon that misses this re-reports the conversation, which is the
- * pre-existing annoyance rather than a new failure, and the operator can forget again.
+ * Acknowledged rather than fire-and-forget: the suppression is what makes the removal
+ * stick, so a daemon that never received it WILL list the conversation again. Reporting
+ * that as success would be a lie the operator only discovers later.
  */
 export const IntegrationForget = z.object({
   integrationId: z.string().uuid(),
