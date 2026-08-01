@@ -744,7 +744,14 @@ describe('GithubRunReporter', () => {
     const [renameUrl, renameInit] = fetchImpl.mock.calls[1]!
     expect(renameUrl).toBe('https://api.github.com/repos/acme/repo/check-runs/90071992547409931')
     expect(renameInit?.method).toBe('PATCH')
-    expect(JSON.parse(String(renameInit?.body))).toEqual({ name: CHECK_NAME_FOR_TEST, actions: [] })
+    // The display write re-asserts the whole payload, not the name alone:
+    // GitHub replaces `actions` on every update.
+    expect(JSON.parse(String(renameInit?.body))).toMatchObject({
+      name: CHECK_NAME_FOR_TEST,
+      actions: [],
+      status: 'queued',
+      output: { title: 'Waiting for review' }
+    })
     expect(hooks.completeProjectionWrite.mock.invocationCallOrder[0]).toBeLessThan(
       fetchImpl.mock.invocationCallOrder[1]!
     )
@@ -775,7 +782,7 @@ describe('GithubRunReporter', () => {
 
       await reporter.tick()
 
-      expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toEqual({
+      expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toMatchObject({
         name: `AgentConnect PR Review: ${agentName}`,
         actions: []
       })
@@ -1096,10 +1103,43 @@ describe('GithubRunReporter', () => {
 
     const renameInit = fetchImpl.mock.calls.at(-1)![1]
     expect(renameInit?.method).toBe('PATCH')
-    expect(JSON.parse(String(renameInit?.body))).toEqual({
+    expect(JSON.parse(String(renameInit?.body))).toMatchObject({
       name: CHECK_NAME_FOR_TEST,
+      conclusion: 'skipped',
       actions: [{ label: 'Request review', description: 'Start AgentConnect review', identifier: 'request_review' }]
     })
+  })
+
+  it('drops the post-create display write when a newer generation already owns the Check', async () => {
+    // The display write mutates presentation, so it takes the projection write
+    // mutex. Losing that race means generation N+1 owns the Check; its own
+    // PATCH carries the readable name and its own actions, and this stale write
+    // must not restore N's Request review button over it.
+    const p = projection({ desiredState: 'skipped', observedState: null, checkRunId: null })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
+      if (init?.method === 'POST') return Response.json({ id: '90071992547409934', external_id: p.externalId })
+      return Response.json({ id: '90071992547409934' })
+    })
+    // First call fences the create; the second is the display write, by which
+    // point the row has advanced past this generation.
+    const beginProjectionWrite = vi.fn(async () => beginProjectionWrite.mock.calls.length === 1)
+    const { reporter } = worker(p, fetchImpl, {
+      beginProjectionWrite,
+      getRunById: vi.fn(async () =>
+        run({
+          status: 'failed',
+          completedAt: new Date(NOW),
+          reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED
+        })
+      )
+    })
+
+    await reporter.tick()
+
+    expect(beginProjectionWrite).toHaveBeenCalledTimes(2)
+    const patches = fetchImpl.mock.calls.filter(([, init]) => init?.method === 'PATCH')
+    expect(patches).toHaveLength(0)
   })
 
   it('retries before writing when skipped presentation metadata is temporarily unavailable', async () => {

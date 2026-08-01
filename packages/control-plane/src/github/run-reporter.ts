@@ -609,7 +609,11 @@ export class GithubRunReporter {
             token,
             owner,
             repo,
-            payload.actions as readonly CheckAction[]
+            installationId,
+            subjects,
+            effectiveState,
+            associationError,
+            presentation
           )
         }
       }
@@ -791,7 +795,9 @@ export class GithubRunReporter {
           (await this.finish(projection, marker, checkRunId, installationId, recoveredState, associationError)) &&
           recoveringCreate
         ) {
-          await this.renameCreatedCheck(projection, checkRunId, token, owner, repo)
+          // Recovery knows only what GitHub observed and must not invent
+          // presentation, so it installs the readable name and nothing else.
+          await this.patchCheckName(projection, checkRunId, token, owner, repo)
         }
         return
       }
@@ -869,32 +875,23 @@ export class GithubRunReporter {
     return true
   }
 
-  private async renameCreatedCheck(
+  /** Install the readable display name and nothing else. Generation-invariant
+   * and idempotent, so it needs no write mutex: every later state PATCH carries
+   * the same label. */
+  private async patchCheckName(
     projection: HookReviewProjectionRecord,
     checkRunId: string,
     token: string,
     owner: string,
-    repo: string,
-    actions?: readonly CheckAction[]
+    repo: string
   ): Promise<void> {
-    // This cosmetic write happens only after checkRunId is durable. It does not
-    // need the projection write mutex: an ambiguous outcome cannot regress the
-    // Check state, and every later state PATCH also carries the readable name.
-    //
-    // It must re-assert `actions`, though. A projection whose first write is
-    // already terminal — an external PR parked on `review_request_required` —
-    // never receives a later state PATCH, so this is the last request GitHub
-    // sees for that Check. Sending name alone would leave the buttons of the
-    // create POST as an unrepeated claim. Callers that recover an ambiguous
-    // create pass nothing here: that path knows only what GitHub observed and
-    // must not invent presentation.
     try {
       await githubRequest<CheckRunResponse>(
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${encodeURIComponent(checkRunId)}`,
         {
           method: 'PATCH',
           auth: token,
-          body: { name: checkName(projection), ...(actions ? { actions } : {}) },
+          body: { name: checkName(projection) },
           fetchImpl: this.deps.fetchImpl,
           baseUrl: this.deps.baseUrl,
           bigIdsAsStrings: true
@@ -906,6 +903,83 @@ export class GithubRunReporter {
         'github-run-reporter: check rename failed'
       )
     }
+  }
+
+  private async renameCreatedCheck(
+    projection: HookReviewProjectionRecord,
+    checkRunId: string,
+    token: string,
+    owner: string,
+    repo: string,
+    installationId: bigint,
+    subjects: readonly HookReviewSubjectRecord[],
+    effectiveState: ProjectionDesiredState,
+    associationError: SubjectAssociationErrorCode | null,
+    presentation: CheckPresentation
+  ): Promise<void> {
+    // The create POST publishes the legacy recovery name, so a second write has
+    // to install the readable one. It re-asserts the whole payload rather than
+    // the name alone: GitHub replaces `actions` on every update, and a
+    // projection whose first write is already terminal — an external PR parked
+    // on `review_request_required` — never receives another state PATCH, so
+    // this is the last request GitHub sees for that Check. A name-only write
+    // would strip the buttons the create just published.
+    //
+    // Re-asserting presentation makes this a state write, so it takes the
+    // projection write mutex like any other. Losing that race means a newer
+    // generation owns the Check; that generation's own PATCH carries both the
+    // readable name and its own actions, so dropping this write is correct.
+    const marker = randomUUID()
+    if (
+      !(await this.deps.hooks.beginProjectionWrite(
+        projection.id,
+        projection.generation,
+        this.workerId,
+        marker,
+        'update',
+        new Date(this.deps.clock.now())
+      ))
+    ) {
+      this.deps.log?.info(
+        { projectionId: projection.id, checkRunId },
+        'github-run-reporter: display-name write skipped — generation advanced'
+      )
+      return
+    }
+    try {
+      await githubRequest<CheckRunResponse>(
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${encodeURIComponent(checkRunId)}`,
+        {
+          method: 'PATCH',
+          auth: token,
+          body: {
+            name: checkName(projection),
+            ...checkPayload(
+              projection,
+              marker,
+              new Date(this.deps.clock.now()),
+              subjects,
+              effectiveState,
+              associationError,
+              presentation
+            )
+          },
+          fetchImpl: this.deps.fetchImpl,
+          baseUrl: this.deps.baseUrl,
+          bigIdsAsStrings: true
+        }
+      )
+    } catch (err) {
+      this.deps.log?.warn?.(
+        { projectionId: projection.id, checkRunId, err: errorLabel(err, 'check_rename_failed') },
+        'github-run-reporter: check rename failed'
+      )
+    }
+    // Landed or not, the Check's settled *state* is the one the create already
+    // wrote — this request differs from it only in name and actions. Release
+    // the fence with that observed value instead of leaving a presentation-only
+    // write to be reconciled as an ambiguous state mutation.
+    await this.finish(projection, marker, checkRunId, installationId, effectiveState, associationError)
   }
 
   private async advancePending(projection: HookReviewProjectionRecord): Promise<void> {
