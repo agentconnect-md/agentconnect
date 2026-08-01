@@ -123,8 +123,10 @@ desktop:grid-cols-4`. The hack rules stay in globals.css (harmless — they
     The layer only restyles hints that were already doing tooltip work — it is
     not a reason to add `title` to something that had none. Where a `title`
     exists for another purpose and would only repeat text the user can already
-    read, mark the subtree `data-no-tooltip`: the nav rail does this, since its
-    `title`s are the collapsed rail's fallback labels, not hints.
+    read, omit it in that state. The nav rail, for example, sets `title` only
+    while collapsed, so icon-only controls use the themed tooltip and expanded
+    labels stay silent. Mark a whole subtree `data-no-tooltip` only when its
+    titles must remain available to the browser without entering this layer.
 
 15. **JSX whitespace after an inline element (SWC gotcha).** Turbopack/SWC
     drops the space in `</span> long text…` when that text run wraps to the

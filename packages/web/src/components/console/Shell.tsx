@@ -198,7 +198,7 @@ function OrgSwitcher({ collapsed, canCreateOrg }: { collapsed: boolean; canCreat
     <div className={`relative pt-[10px] pb-[2px] ${collapsed ? 'px-2' : 'px-3'}`}>
       <button
         onClick={() => setOpen((v) => !v)}
-        title={activeOrg.name ?? activeOrg.slug}
+        title={collapsed ? (activeOrg.name ?? activeOrg.slug) : undefined}
         className={`flex w-full cursor-pointer items-center rounded-[7px] border border-(--border-inverse) bg-[rgba(255,255,255,.05)] py-[6px] text-left ${collapsed ? 'justify-center px-0' : 'gap-[9px] px-[9px]'}`}
       >
         {square(activeOrg)}
@@ -516,10 +516,9 @@ function ShellChrome({ children }: { children: ReactNode }) {
       <CrumbContext.Provider value={{ register: setCrumbSlot }}>
         <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
           {/* ===== RAIL =====
-          No tooltips in here. The `title`s below exist as the collapsed rail's
-          fallback labels, not as hints — surfacing them would just repeat the
-          label already sitting next to the icon. */}
-          <aside data-no-tooltip className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
+          Only collapsed, icon-only controls get titles; the global layer turns
+          those titles into the console's themed tooltips. */}
+          <aside className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
             <div className="railbrand">
               <Link
                 href={orgPath('/home')}
@@ -535,7 +534,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 type="button"
                 onClick={toggleRail}
                 className="railtoggle"
-                title={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                title={railCollapsed ? 'Expand sidebar' : undefined}
                 aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
                 <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={17} />
@@ -558,7 +557,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 <Link
                   key={item.href}
                   href={orgPath(item.href)}
-                  title={item.label}
+                  title={railCollapsed ? item.label : undefined}
                   className={on ? 'navitem on' : 'navitem'}
                 >
                   <Icon name={item.icon} size={18} color={on ? '#fff' : undefined} />
@@ -575,7 +574,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
               {authOn && (
                 <Link
                   href={orgPath('/settings')}
-                  title="Settings"
+                  title={railCollapsed ? 'Settings' : undefined}
                   className={`${isActive(barePath, '/settings') ? 'navitem on' : 'navitem'} my-0 rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full justify-center px-0' : 'flex-1 px-3'}`}
                 >
                   <Icon
@@ -591,7 +590,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
                   type="button"
                   onClick={() => setHelpMenu((v) => !v)}
                   className={`navitem justify-center rounded-[6px] border-l-0 py-[9px] ${railCollapsed ? 'w-full px-0' : 'w-auto flex-none px-[11px]'}`}
-                  title="Help & resources"
+                  title={railCollapsed ? 'Help & resources' : undefined}
                   aria-label="Help & resources"
                 >
                   <Icon name="circle-question-mark" size={18} color={helpMenu ? 'var(--brand)' : undefined} />
