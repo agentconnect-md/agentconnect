@@ -14,6 +14,7 @@ import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
 import { ApiError, getMyAccess, type OrgDto } from '@/lib/api'
 import { agentLabel, status } from '@/lib/data'
+import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import ConnectAiModal from './ConnectAiModal'
@@ -152,17 +153,11 @@ const MobileFilterContext = createContext<{
 }>({ filter: null, register: () => {} })
 export const useMobileFilterSlot = () => useContext(MobileFilterContext)
 
-// The same slot idea for the desktop crumb's status badge. The shell can't derive it
-// itself: `allSessions` holds only the cursor pages the list has loaded, while the
-// detail view hydrates a deep-linked or relationship-linked session through
-// `fetchSessionDetail`. So the view — which owns the authoritative merged session —
-// registers its status here while mounted, and the crumb just paints it.
-export interface CrumbStatusSlot {
-  status: string
-  label: string
-}
-const CrumbStatusContext = createContext<{ register: (s: CrumbStatusSlot | null) => void }>({ register: () => {} })
-export const useCrumbStatusSlot = () => useContext(CrumbStatusContext)
+// The same slot idea for the detail crumb: the view that hydrates its own row publishes
+// title + status here while mounted, and the shell's crumb prefers it over the list
+// lookup. See lib/crumb.ts for why the lists can't carry this on their own.
+const CrumbContext = createContext<{ register: (s: CrumbSlot | null) => void }>({ register: () => {} })
+export const useCrumbSlot = () => useContext(CrumbContext)
 
 export default function ConsoleShell({ children }: { children: ReactNode }) {
   return (
@@ -281,7 +276,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // Filter slot the current view (Sessions) registers so the app bar can trigger it.
   const [mobileFilter, setMobileFilter] = useState<MobileFilterSlot | null>(null)
   // Status slot the session detail view registers so the crumb can badge it.
-  const [crumbStatus, setCrumbStatus] = useState<CrumbStatusSlot | null>(null)
+  const [crumbSlot, setCrumbSlot] = useState<CrumbSlot | null>(null)
   // Active/crumb matching runs on the console path WITHOUT the org segment
   // (`/acme/agents` → `/agents`); hrefs go the other way via orgPath().
   const barePath = subPath(pathname, typeof params.slug === 'string' ? decodeURIComponent(params.slug) : '-')
@@ -472,23 +467,27 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // the design), falling back to the section crumb for top-level push pages
   // (Profile / Analytics / Tools & Skills / Settings) or before the entity has loaded.
   const seg = barePath.split('/').filter(Boolean)
-  const pushTitle = (() => {
-    if (seg.length < 2) return crumb
+  const listTitle = (() => {
+    if (seg.length < 2) return undefined
     const [section, id] = seg
-    if (section === 'agents')
-      return agents.find((a) => a.id === id) ? agentLabel(agents.find((a) => a.id === id)!) : crumb
-    if (section === 'daemons') return daemons.find((d) => d.daemonId === id)?.name ?? crumb
-    if (section === 'sessions') return allSessions.find((s) => s.id === id)?.title ?? crumb
-    if (section === 'crons') return crons.find((c) => c.id === id)?.name ?? crumb
-    return crumb
+    if (section === 'agents') {
+      const agent = agents.find((a) => a.id === id)
+      return agent ? agentLabel(agent) : undefined
+    }
+    if (section === 'daemons') return daemons.find((d) => d.daemonId === id)?.name
+    if (section === 'sessions') return allSessions.find((s) => s.id === id)?.title
+    if (section === 'crons') return crons.find((c) => c.id === id)?.name
+    return undefined
   })()
+  // The slot beats the list lookup — see lib/crumb.ts for why the list alone isn't enough.
+  const { title: pushTitle, show: titleResolved } = detailCrumb(crumb, listTitle ?? undefined, crumbSlot?.title)
 
   // Back from a push screen: pop in-app history when there is any, else (deep-link /
   // hard refresh — no history) route to the parent list so "back" never leaves the app.
   const hasParentList = LIST_ROUTES.includes(`/${seg[0] ?? ''}`)
   const parentList = hasParentList ? `/${seg[0]}` : '/home'
   const parentListHref = orgPath(parentList + (seg[0] === 'sessions' ? sessionFilterSearch(locationSearch) : ''))
-  const showDetailCrumb = hasParentList && seg.length >= 2 && crumb !== '' && pushTitle !== crumb
+  const showDetailCrumb = hasParentList && seg.length >= 2 && crumb !== '' && titleResolved
   const goBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) router.back()
     else router.push(parentListHref)
@@ -510,7 +509,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
 
   return (
     <MobileFilterContext.Provider value={{ filter: mobileFilter, register: setMobileFilter }}>
-      <CrumbStatusContext.Provider value={{ register: setCrumbStatus }}>
+      <CrumbContext.Provider value={{ register: setCrumbSlot }}>
         <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
           {/* ===== RAIL =====
           No tooltips in here. The `title`s below exist as the collapsed rail's
@@ -663,19 +662,19 @@ function ShellChrome({ children }: { children: ReactNode }) {
                     </Link>
                     <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="flex-none" />
                     <b className="min-w-0 truncate">{pushTitle}</b>
-                    {crumbStatus && (
+                    {crumbSlot && (
                       <span
                         className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-full px-2 py-[1px] font-sans text-[12px] font-semibold leading-normal"
                         style={{
-                          background: status(crumbStatus.status).bg,
-                          color: status(crumbStatus.status).text
+                          background: status(crumbSlot.status).bg,
+                          color: status(crumbSlot.status).text
                         }}
                       >
                         <span
                           className="h-[6px] w-[6px] flex-none rounded-full"
-                          style={{ background: status(crumbStatus.status).dot }}
+                          style={{ background: status(crumbSlot.status).dot }}
                         />
-                        {crumbStatus.label}
+                        {crumbSlot.statusLabel}
                       </span>
                     )}
                   </>
@@ -811,7 +810,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
           <TooltipLayer />
         </div>
-      </CrumbStatusContext.Provider>
+      </CrumbContext.Provider>
     </MobileFilterContext.Provider>
   )
 }
