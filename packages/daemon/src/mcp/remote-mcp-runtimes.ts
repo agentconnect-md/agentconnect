@@ -40,6 +40,14 @@ import type { ResolvedRuntimeEntry } from '../runtimes/registry.js'
  * not merely per process — a conversation-lifetime JSON-RPC id is therefore
  * never a durable operation identity, matching the §8 requirement that every
  * transport receipt be scoped to its access grant.
+ *
+ * The harness has since been extended beyond that run: descriptor-free
+ * sessions now complete a prompted probe-tool turn, real `tools/call` traffic
+ * with §13's higher-level fresh-id retry is exercised, and the leak sweeps run
+ * only after adapter teardown. The entries below therefore carry evidence for
+ * the original property set only — re-run the harness against each launch to
+ * refresh this record before relying on the added properties or extending the
+ * table.
  */
 const VALIDATED_REMOTE_MCP_LAUNCHES: Readonly<
   Record<string, ReadonlyArray<{ command: string; args: readonly string[] }>>

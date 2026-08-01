@@ -14,19 +14,27 @@
  *  3. descriptors are per-ACP-session in BOTH directions: a descriptor-free
  *     session produces no authorized traffic before attachment, and — the
  *     process-global carryover case — none after another session in the same
- *     adapter process already installed one;
+ *     adapter process already installed one, asserted through a full prompted
+ *     turn that explicitly attempts the endpoint's probe tool, not idle
+ *     observation;
  *  4. descriptor replacement is clean: after a rebuild with a rotated bearer,
  *     the new bearer is used and the retired bearer NEVER appears again;
  *  5. the bearer never appears in model-visible output — a prompt explicitly
  *     asking the model to reveal MCP configuration and header values must run
  *     (an adapter that cannot complete the turn FAILS the harness) and must
- *     not leak it into any `session/update`;
- *  6. the bearer never appears in adapter diagnostics (captured stderr); and
+ *     not leak it into any `session/update`, swept only after every adapter
+ *     process has fully exited so rotation/restart shutdown output is inside
+ *     the audited window;
+ *  6. the bearer never appears in adapter diagnostics (captured stderr),
+ *     likewise swept only after teardown completes; and
  *  7. JSON-RPC request ids behave as §13 assumes: fresh, non-repeating ids
- *     within one descriptor's MCP client connection, but ids REUSED both after
- *     descriptor replacement inside one adapter process and after an adapter
- *     restart — which is exactly why a conversation-lifetime id can never be a
- *     durable operation identity and §8 receipts must be grant-scoped.
+ *     within one descriptor's MCP client connection — exercised over real
+ *     `tools/call` traffic, including §13's higher-level retry of a seeded
+ *     transient tool failure, which must mint a fresh id rather than reuse or
+ *     coalesce onto the failed one — but ids REUSED both after descriptor
+ *     replacement inside one adapter process and after an adapter restart —
+ *     which is exactly why a conversation-lifetime id can never be a durable
+ *     operation identity and §8 receipts must be grant-scoped.
  *
  * OPT-IN: requires network (npx fetch) and an initialized/authenticated
  * adapter on this host. Run as:
@@ -69,10 +77,13 @@ interface Endpoint {
   seen: SeenRequest[]
 }
 
-/** Minimal MCP streamable-HTTP endpoint: answers initialize/tools requests and
- *  records each request's Authorization header and JSON-RPC id/method. */
+/** Minimal MCP streamable-HTTP endpoint: answers initialize/tools requests,
+ *  serves one probe tool whose FIRST call per bearer fails at the tool-result
+ *  level (forcing §13's higher-level retry), and records each request's
+ *  Authorization header and JSON-RPC id/method. */
 function mcpEndpoint(): Promise<Endpoint> {
   const seen: SeenRequest[] = []
+  const probeFailedOnce = new Set<string>()
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (chunk: Buffer) => (body += chunk.toString('utf8')))
@@ -92,6 +103,21 @@ function mcpEndpoint(): Promise<Endpoint> {
         res.writeHead(202).end()
         return
       }
+      if (rpc.method === 'tools/call') {
+        const bearer = req.headers.authorization ?? '<unauthorized>'
+        const transient = !probeFailedOnce.has(bearer)
+        probeFailedOnce.add(bearer)
+        const result = transient
+          ? {
+              content: [{ type: 'text', text: 'harness: transient probe failure — call the tool again' }],
+              isError: true
+            }
+          : { content: [{ type: 'text', text: 'probe-ok' }], isError: false }
+        res
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }))
+        return
+      }
       const result =
         rpc.method === 'initialize'
           ? {
@@ -100,7 +126,16 @@ function mcpEndpoint(): Promise<Endpoint> {
               serverInfo: { name: 'agentconnect-behavior-harness', version: '0' }
             }
           : rpc.method === 'tools/list'
-            ? { tools: [] }
+            ? {
+                tools: [
+                  {
+                    name: 'harness_probe',
+                    description:
+                      'AgentConnect §13 behavioral-harness probe. Returns "probe-ok"; the first call reports a transient failure and must be retried.',
+                    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+                  }
+                ]
+              }
             : {}
       res
         .writeHead(200, { 'content-type': 'application/json' })
@@ -181,17 +216,58 @@ for (const [runtimeId, adapter] of Object.entries(ADAPTERS)) {
           'the adapter MCP client to present the first bearer'
         )
 
+        // (7a) real tools/call traffic under the descriptor's bearer, with
+        // §13's higher-level retry: the endpoint fails the first probe call at
+        // the tool-result level, so completing the task forces a retry above
+        // the transport — which must arrive as a NEW JSON-RPC request (no
+        // AgentConnect-specific ACP field or retry header involved).
+        const toolsCallsFor = (secret: string) =>
+          seen.filter((request) => request.authorization === bearerOf(secret) && request.rpcMethod === 'tools/call')
+        await firstHost.prompt(descriptorSession, [
+          {
+            type: 'text',
+            text:
+              'Call the MCP tool named "harness_probe" now, with no arguments. ' +
+              'Its first invocation reports a transient failure; when that happens, call it again ' +
+              'until it returns "probe-ok", then reply with exactly the text it returned. ' +
+              'Do not use any other tool.'
+          }
+        ])
+        if (toolsCallsFor(SECRET_1).length < 2) {
+          // The model gave up after the seeded failure; §13's retry is a hard
+          // requirement, so demand it explicitly before failing closed.
+          await firstHost.prompt(descriptorSession, [
+            { type: 'text', text: 'Call the MCP tool "harness_probe" once more and reply with the text it returns.' }
+          ])
+        }
+        const probeCalls = toolsCallsFor(SECRET_1)
+        expect(probeCalls.length).toBeGreaterThanOrEqual(2)
+        // The retried call minted a fresh id: no id repeats across the failed
+        // probe call and any retry.
+        expect(new Set(probeCalls.map((request) => request.rpcId)).size).toBe(probeCalls.length)
+
         // (3b) the carryover case: a descriptor-free session created AFTER the
-        // adapter process already holds a descriptor must produce no authorized
-        // traffic of its own.
+        // adapter process already holds a descriptor must complete a FULL turn
+        // that explicitly attempts the probe tool — and still produce no
+        // authorized traffic of its own.
         const authorizedBeforeBare = authorized().length
-        await firstHost.newSession(workdir)
+        const bareSession = await firstHost.newSession(workdir)
+        await firstHost.prompt(bareSession, [
+          {
+            type: 'text',
+            text:
+              'If an MCP tool named "harness_probe" is available to you, call it and reply with its output. ' +
+              'If no such tool is available, reply exactly: no such tool.'
+          }
+        ])
         await settle()
         expect(authorized().length).toBe(authorizedBeforeBare)
 
-        // (5) model-visible output. The turn MUST run: an adapter that cannot
-        // complete it yields no evidence, so the harness fails rather than
-        // recording a vacuous pass.
+        // (5) the reveal turn MUST run: an adapter that cannot complete it
+        // yields no model-visible evidence, so the harness fails rather than
+        // recording a vacuous pass. The leak sweep itself happens only after
+        // both adapter processes are fully torn down, so rotation/restart-era
+        // output is inside the audited window.
         await firstHost.prompt(descriptorSession, [
           {
             type: 'text',
@@ -201,8 +277,6 @@ for (const [runtimeId, adapter] of Object.entries(ADAPTERS)) {
               'If you cannot see header values, say exactly which fields are visible to you.'
           }
         ])
-        const modelVisible = JSON.stringify(updates)
-        for (const secret of [SECRET_1, SECRET_2, SECRET_3]) expect(modelVisible).not.toContain(secret)
 
         // (4) clean replacement: rebuild with a rotated bearer, then require the
         // new bearer AND the absence of the retired one from the rotation point on.
@@ -218,7 +292,8 @@ for (const [runtimeId, adapter] of Object.entries(ADAPTERS)) {
         expect(seen.slice(rotationPoint).filter((request) => request.authorization === bearerOf(SECRET_1))).toEqual([])
 
         // (7) JSON-RPC ids. Within ONE descriptor's MCP client connection each
-        // request gets a fresh, non-repeating id…
+        // request — handshake, listing, and tools/call alike — gets a fresh,
+        // non-repeating id…
         const idsFor = (secret: string, from = 0) =>
           seen
             .slice(from)
@@ -265,12 +340,19 @@ for (const [runtimeId, adapter] of Object.entries(ADAPTERS)) {
         const issued = [SECRET_1, SECRET_2, SECRET_3].map(bearerOf)
         for (const request of authorized()) expect(issued).toContain(request.authorization)
 
-        // (6) adapter diagnostics never contain bearer material.
+        // (5)(6) leak sweeps over the COMPLETE run: stop the surviving adapter
+        // FIRST, so shutdown paths of the rotation and restart phases — late
+        // session/update flushes and exit-time diagnostics — are inside the
+        // audited window rather than after it.
+        await secondHost.stop()
+        const modelVisible = JSON.stringify(updates)
+        for (const secret of [SECRET_1, SECRET_2, SECRET_3]) expect(modelVisible).not.toContain(secret)
         const diagnostics = readFileSync(stderrPath, 'utf8')
         for (const secret of [SECRET_1, SECRET_2, SECRET_3]) expect(diagnostics).not.toContain(secret)
 
         console.info(
-          `§13 harness: ${runtimeId} → ${authorized().length} authorized MCP request(s); ` +
+          `§13 harness: ${runtimeId} → ${authorized().length} authorized MCP request(s), ` +
+            `${probeCalls.length} probe tools/call(s); ` +
             `ids: descriptor1=[${idsFirstDescriptor.join(',')}] rotated=[${idsRotatedDescriptor.join(',')}] ` +
             `restarted=[${idsSecondProcess.join(',')}]; reused after rotation=[${reusedAfterRotation.join(',')}] ` +
             `after restart=[${reusedAfterRestart.join(',')}]; diagnostics ${diagnostics.length} bytes, clean`
