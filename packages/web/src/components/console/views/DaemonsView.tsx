@@ -6,7 +6,6 @@ import { presentedDaemonStatus, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
-import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -194,13 +193,13 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
           </div>
           {/* Version meta — mobile appends the host (when it differs from the name); desktop shows
-              version only. A pending lifecycle operation replaces the available-upgrade hint. */}
+              version only. During a lifecycle operation the status badge already says restarting or
+              upgrading, so hide the available-upgrade hint instead of repeating the operation here. */}
           <div className="flex min-w-0 items-center gap-[7px]">
             <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5] desktop:tabular-nums">
               {m.version}
               {m.host && m.host !== m.name && <span className="desktop:hidden">{` · ${m.host}`}</span>}
             </span>
-            <DaemonLifecycleBadge op={m.lifecycleOp} />
             <DaemonUpgradeBadge
               show={!pending && m.upgradeAvailable}
               latest={m.latestVersion}
