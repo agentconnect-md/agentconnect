@@ -341,6 +341,17 @@ describe('PUT /agents/:id/daemon', () => {
     expect((recovered.json() as { daemonId: string }).daemonId).toBe(TARGET)
     expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(TARGET)
     expect(control.calls).toEqual([`detach:${SOURCE}`, `detach:${TARGET}`, `activate:${TARGET}`])
+
+    const retried = await attempt(true)
+    expect(retried.statusCode, retried.body).toBe(200)
+    expect((retried.json() as { daemonId: string }).daemonId).toBe(TARGET)
+    expect(control.calls).toEqual([
+      `detach:${SOURCE}`,
+      `detach:${TARGET}`,
+      `activate:${TARGET}`,
+      `detach:${TARGET}`,
+      `activate:${TARGET}`
+    ])
   })
 
   it('places an unplaced runtime-less preset only after its runtime is set', async () => {

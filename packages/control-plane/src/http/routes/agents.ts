@@ -1805,23 +1805,28 @@ export function agentRoutes(deps: HttpDeps) {
           return conflict('target daemon is at agent capacity')
         }
 
-        if (existing.daemonId) {
-          const source = await deps.registry.get(existing.daemonId)
-          const sourceLive = source ? deps.liveness.get(source.daemonId) : undefined
-          const sourceReady = sourceLive?.reachable === true && sourceLive.state === 'READY'
-          if (emergency) {
-            if (sourceReady) return conflict('source daemon is ready; use a safe move')
-            if (sourceLive?.reachable === true) {
-              return conflict('source daemon is reconnecting; wait until it is ready')
+        // A same-target retry is an idempotent repair after placement already
+        // committed, not a second handoff. Target admission above still applies,
+        // but there is no separate source to gate before ensureActive below.
+        if (existing.daemonId !== target.daemonId) {
+          if (existing.daemonId) {
+            const source = await deps.registry.get(existing.daemonId)
+            const sourceLive = source ? deps.liveness.get(source.daemonId) : undefined
+            const sourceReady = sourceLive?.reachable === true && sourceLive.state === 'READY'
+            if (emergency) {
+              if (sourceReady) return conflict('source daemon is ready; use a safe move')
+              if (sourceLive?.reachable === true) {
+                return conflict('source daemon is reconnecting; wait until it is ready')
+              }
+            } else {
+              if (!source || !moveReady(source.daemonId)) return conflict('source daemon is not ready')
+              if (!source.capabilities.features.includes(MOVE_FEATURE)) {
+                return conflict('source daemon does not support agent moves')
+              }
             }
-          } else {
-            if (!source || !moveReady(source.daemonId)) return conflict('source daemon is not ready')
-            if (!source.capabilities.features.includes(MOVE_FEATURE)) {
-              return conflict('source daemon does not support agent moves')
-            }
+          } else if (emergency) {
+            return conflict('emergency reassign requires an unavailable source daemon')
           }
-        } else if (emergency) {
-          return conflict('emergency reassign requires an unavailable source daemon')
         }
 
         // A move takes NO external-memory mutation scope: its connection work is
