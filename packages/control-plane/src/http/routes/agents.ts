@@ -1714,10 +1714,10 @@ export function agentRoutes(deps: HttpDeps) {
     )
 
     // Cold-reprovision an agent on another daemon. The explicit action keeps
-    // destructive/local-state semantics out of generic spec PATCH: source and
-    // target must both advertise the move protocol and be READY; the source
-    // archives its local root before the CAS placement change, then the target
-    // receives the complete CP-owned definition and activates last.
+    // destructive/local-state semantics out of generic spec PATCH. A safe move
+    // requires both source and target READY; an explicit force reassign may
+    // bypass only the unavailable source ACK. The target always receives the
+    // complete CP-owned definition and activates last.
     r.put(
       '/agents/:id/daemon',
       {
@@ -1725,7 +1725,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Move an agent to another daemon',
           description:
-            'Cold-reprovision an agent on another READY daemon. The active turn is drained; daemon-local workspace, memory, and transcript data are not migrated.',
+            'Cold-reprovision an agent on another READY daemon. The active turn is drained for a safe move; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated.',
           operationId: 'moveAgentDaemon',
           params: IdParam,
           body: SetAgentDaemonBody,
@@ -1746,6 +1746,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
 
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
+        const force = req.body.force === true
         // Deferred exec config (preset-agents.md §3.2): placement is where a
         // runtime becomes mandatory — an unplaced preset carries none until the
         // user (or M1 auto-placement) chooses one.
@@ -1804,11 +1805,27 @@ export function agentRoutes(deps: HttpDeps) {
           return conflict('target daemon is at agent capacity')
         }
 
-        if (existing.daemonId) {
-          const source = await deps.registry.get(existing.daemonId)
-          if (!source || !moveReady(source.daemonId)) return conflict('source daemon is not ready')
-          if (!source.capabilities.features.includes(MOVE_FEATURE)) {
-            return conflict('source daemon does not support agent moves')
+        // A same-target retry is an idempotent repair after placement already
+        // committed, not a second handoff. Target admission above still applies,
+        // but there is no separate source to gate before ensureActive below.
+        if (existing.daemonId !== target.daemonId) {
+          if (existing.daemonId) {
+            const source = await deps.registry.get(existing.daemonId)
+            const sourceLive = source ? deps.liveness.get(source.daemonId) : undefined
+            const sourceReady = sourceLive?.reachable === true && sourceLive.state === 'READY'
+            if (force) {
+              if (sourceReady) return conflict('source daemon is ready; use a safe move')
+              if (sourceLive?.reachable === true) {
+                return conflict('source daemon is reconnecting; wait until it is ready')
+              }
+            } else {
+              if (!source || !moveReady(source.daemonId)) return conflict('source daemon is not ready')
+              if (!source.capabilities.features.includes(MOVE_FEATURE)) {
+                return conflict('source daemon does not support agent moves')
+              }
+            }
+          } else if (force) {
+            return conflict('force reassign requires an unavailable source daemon')
           }
         }
 
@@ -1869,7 +1886,20 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
 
-          const moved = await agentMoves.move(existing, target.daemonId, req.principal?.userId)
+          if (force) {
+            req.log.warn(
+              {
+                agentId: existing.id,
+                sourceDaemonId: existing.daemonId,
+                targetDaemonId: target.daemonId,
+                userId: req.principal?.userId
+              },
+              'agent force reassign requested while source daemon is unavailable'
+            )
+          }
+          const moved = force
+            ? await agentMoves.forceReassign(existing, target.daemonId, req.principal?.userId)
+            : await agentMoves.move(existing, target.daemonId, req.principal?.userId)
           // The pre-activation probe fact can arrive before the placement CAS and
           // is correctly rejected by the daemon-ownership check. Re-send the
           // idempotent definition after commit so the daemon re-emits its current

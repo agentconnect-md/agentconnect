@@ -788,6 +788,29 @@ export default function AgentDetailView() {
                     <span className="mono text-[12.5px]">{daemonLine}</span>
                   )}
                 </div>
+                {owningDaemon?.status === 'offline' && (
+                  <div className="flex items-start gap-[9px] border-b border-(--amber-500) bg-(--status-paused-soft) px-4 py-3">
+                    <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[1px] flex-none" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                        Safe move unavailable
+                      </div>
+                      <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                        Bring <span className="font-semibold text-(--text-primary)">{owningDaemon.name}</span> online
+                        before moving this agent safely.
+                      </div>
+                      {!da.name.startsWith(MOCK_PREFIX) && da.canEdit && (
+                        <button
+                          type="button"
+                          className="mt-[6px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold leading-normal text-(--brand-soft-text) hover:underline"
+                          onClick={() => openModal('editAgent', da, { focusSection: 'basics' })}
+                        >
+                          Open recovery options
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                     Runtime

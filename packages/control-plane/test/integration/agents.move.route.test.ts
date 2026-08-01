@@ -32,11 +32,13 @@ afterEach(async () => {
 
 class MoveControlSpy {
   failMemoryUpsertAfterApply = false
+  failSourceDetach = false
   readonly calls: string[] = []
   readonly activations: AgentActivate[] = []
 
   async agentDetach(daemonId: string): Promise<Ack> {
     this.calls.push(`detach:${daemonId}`)
+    if (daemonId === SOURCE && this.failSourceDetach) throw new Error('source is unavailable')
     return { ok: true }
   }
   async agentActivate(daemonId: string, value: AgentActivate): Promise<Ack> {
@@ -301,6 +303,55 @@ describe('PUT /agents/:id/daemon', () => {
     await prisma.daemon.update({ where: { id: TARGET }, data: { load: { agents: 4, cpu: 0, mem: 0 }, maxAgents: 4 } })
     expect((await attempt(live)).json()).toMatchObject({ message: 'target daemon is at agent capacity' })
     expect(control.calls).toEqual([])
+  })
+
+  it('requires an explicit force reassign before continuing without a source detach ACK', async () => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy()
+    let sourceReachable = true
+    const sourceCanDisappear: DaemonLiveness = {
+      get: (id) =>
+        [SOURCE, TARGET].includes(id)
+          ? { state: 'READY', reachable: id === TARGET || sourceReachable, sessionEpoch: 1 }
+          : undefined
+    }
+    running = buildHttpApp(prisma, undefined, sourceCanDisappear, control as unknown as ControlSender)
+    const attempt = (force = false) =>
+      running!.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${agentId}/daemon`,
+        payload: { daemonId: TARGET, ...(force ? { force: true } : {}) }
+      })
+
+    const forcedWhileReady = await attempt(true)
+    expect(forcedWhileReady.statusCode).toBe(409)
+    expect(forcedWhileReady.json()).toMatchObject({ message: 'source daemon is ready; use a safe move' })
+
+    sourceReachable = false
+    const safe = await attempt()
+    expect(safe.statusCode).toBe(409)
+    expect(safe.json()).toMatchObject({ message: 'source daemon is not ready' })
+    expect(control.calls).toEqual([])
+
+    control.failSourceDetach = true
+    const recovered = await attempt(true)
+    expect(recovered.statusCode, recovered.body).toBe(200)
+    expect((recovered.json() as { daemonId: string }).daemonId).toBe(TARGET)
+    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(TARGET)
+    expect(control.calls).toEqual([`detach:${SOURCE}`, `detach:${TARGET}`, `activate:${TARGET}`])
+
+    const retried = await attempt(true)
+    expect(retried.statusCode, retried.body).toBe(200)
+    expect((retried.json() as { daemonId: string }).daemonId).toBe(TARGET)
+    expect(control.calls).toEqual([
+      `detach:${SOURCE}`,
+      `detach:${TARGET}`,
+      `activate:${TARGET}`,
+      `detach:${TARGET}`,
+      `activate:${TARGET}`
+    ])
   })
 
   it('places an unplaced runtime-less preset only after its runtime is set', async () => {

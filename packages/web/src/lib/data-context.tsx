@@ -184,8 +184,8 @@ interface ConsoleData {
   deleteAgent: (agentId: string) => Promise<void>
   /** Edit an agent's spec (PATCH), then re-pull. */
   updateAgent: (agentId: string, patch: UpdateAgentInput) => Promise<void>
-  /** Cold-move an agent to another daemon, then refresh placement-derived views. */
-  moveAgent: (agentId: string, daemonId: string) => Promise<void>
+  /** Cold-move or explicitly recover an agent, then refresh placement-derived views. */
+  moveAgent: (agentId: string, daemonId: string, options?: { force?: boolean }) => Promise<void>
   /** Install a Slack integration (POST /integrations), then re-pull. */
   createIntegration: (input: CreateIntegrationInput) => Promise<void>
   /** Finalize the config-token auto-install (§Tier B), then re-pull. Socket passes the
@@ -951,8 +951,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // A placement move changes the agent row, both daemons' hosted-agent counts,
   // and where live session bodies resolve. Refresh all three projections.
   const moveAgent = useCallback(
-    async (agentId: string, daemonId: string) => {
-      await apiMoveAgent(agentId, daemonId)
+    async (agentId: string, daemonId: string, options?: { force?: boolean }) => {
+      await apiMoveAgent(agentId, daemonId, options)
       settleInBackground(mutateAgents(), mutateDaemons(), revalidateSessionLists())
     },
     [mutateAgents, mutateDaemons, revalidateSessionLists]

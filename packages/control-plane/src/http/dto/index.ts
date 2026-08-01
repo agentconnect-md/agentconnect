@@ -535,8 +535,10 @@ export const UpdateAgentBody = z
   .refine((b) => Object.values(b).some((v) => v !== undefined), { message: 'no fields to update' })
 
 /** Explicit cold placement move. Kept separate from spec PATCH because it
- * drains one daemon, reprovisions another, and does not migrate local state. */
-export const SetAgentDaemonBody = z.object({ daemonId: z.string().uuid() }).strict()
+ * drains one daemon, reprovisions another, and does not migrate local state.
+ * `force` is the explicit disaster-recovery path for a source that cannot ACK
+ * its detach; every target-side admission check still applies. */
+export const SetAgentDaemonBody = z.object({ daemonId: z.string().uuid(), force: z.boolean().optional() }).strict()
 
 /** Full desired workspace definition for the acknowledged cold edit path. */
 export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
