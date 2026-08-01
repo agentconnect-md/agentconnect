@@ -288,6 +288,14 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
   // bootstraps from OTEL_* such as OTEL_EXPORTER_OTLP_ENDPOINT and sends OTLP directly.
   "logging": { "level": "info" },
 
+  // ---------- Staged feature rollout ----------
+  "features": {
+    // Default false during rollout. When enabled, interactive IM answer text is
+    // staged until a turn-final thread refresh accepts it; changed context causes
+    // bounded regeneration in the same ACP session.
+    "turnFinalContextRefresh": false
+  },
+
   // ---------- Local capacity/limits ----------
   "limits": {
     "maxAgents": 32,
