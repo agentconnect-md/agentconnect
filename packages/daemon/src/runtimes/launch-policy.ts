@@ -46,7 +46,7 @@ export function runtimeSandboxReadRoots(
     readRoots: trustedRuntimeReadRoots({
       runtime,
       hostEnv: stateSourceEnv,
-      ...(claudeExecutable ? { executableCommands: [claudeExecutable] } : {})
+      ...(claudeCommand ? { executableCommands: [claudeCommand] } : {})
     }),
     runtimeExecutable: resolveTrustedExecutable(runtime.command, trustedRuntimeEnv),
     ...(claudeExecutable ? { claudeExecutable } : {})
