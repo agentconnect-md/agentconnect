@@ -18,8 +18,9 @@ const CLAUDE_PROVIDER_CREDENTIAL_FILE_ENV = [
   'GOOGLE_APPLICATION_CREDENTIALS'
 ] as const
 
-/** Anthropic profile selectors are unsupported for sandboxed Claude launches.
- * Profile JSON may be agent-writable and must never choose host exceptions. */
+/** Anthropic profile selectors from operator/agent input are unsupported for
+ * sandboxed Claude launches. The config root is replaced with a daemon-owned
+ * empty directory, while the profile name is removed. */
 export const CLAUDE_PROFILE_ENV = ['ANTHROPIC_CONFIG_DIR', 'ANTHROPIC_PROFILE'] as const
 
 /** Claude provider credentials the parent runtime may consume but the native

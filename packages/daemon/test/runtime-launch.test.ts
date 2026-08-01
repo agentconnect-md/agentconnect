@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -144,8 +145,14 @@ describe('prepareRuntimeLaunch', () => {
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
 
-    expect(launch.env.ANTHROPIC_CONFIG_DIR).toBeUndefined()
+    const disabledProfileRoot = realpathSync(
+      join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+    )
+    expect(launch.env.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
     expect(launch.env.ANTHROPIC_PROFILE).toBeUndefined()
+    expect(readdirSync(disabledProfileRoot)).toEqual([])
+    expect(coveredBy(launch.sandbox!.allowReadRoots, disabledProfileRoot)).toBe(true)
+    expect(launch.sandbox?.writable).not.toContain(disabledProfileRoot)
     expect(launch.sandbox?.allowReadRoots).not.toContain(realpathSync(profileRoot))
     expect(launch.sandbox?.writable).not.toContain('/etc')
     expect(launch.sandbox?.protectedCredentialRoots).not.toContain('/etc')
@@ -155,6 +162,7 @@ describe('prepareRuntimeLaunch', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const privateProfileDir = join(scopeDir, 'home', '.config', 'anthropic', 'configs')
     mkdirSync(privateProfileDir, { recursive: true })
+    writeFileSync(join(dirname(privateProfileDir), 'active_config'), 'default')
     writeFileSync(
       join(privateProfileDir, 'default.json'),
       JSON.stringify({ authentication: { credentials_path: '/etc/agentconnect-oauth.json' } })
@@ -171,6 +179,12 @@ describe('prepareRuntimeLaunch', () => {
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
 
+    const discoveredProfileRoot = launch.env.ANTHROPIC_CONFIG_DIR ?? join(launch.env.XDG_CONFIG_HOME!, 'anthropic')
+    expect(discoveredProfileRoot).toBe(
+      realpathSync(join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled'))
+    )
+    expect(readdirSync(discoveredProfileRoot)).toEqual([])
+    expect(discoveredProfileRoot).not.toBe(join(scopeDir, 'home', '.config', 'anthropic'))
     expect(launch.sandbox?.writable).not.toContain('/etc')
     expect(launch.sandbox?.allowReadRoots).not.toContain('/etc/agentconnect-oauth.json')
     expect(launch.sandbox?.protectedCredentialRoots).not.toContain('/etc')
@@ -264,7 +278,7 @@ describe('prepareRuntimeLaunch', () => {
 const runtime = (command: string, args: string[] = ['acp']): RuntimeDef => ({ command, args, env: [] })
 
 describe('composeRuntimeLaunch', () => {
-  it('removes Anthropic profile selectors from the actual sandboxed child environment', () => {
+  it('pins Anthropic profile discovery away from the actual sandboxed child HOME', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const composed = composeRuntimeLaunch({
       runtimeId: 'claude-acp',
@@ -291,8 +305,12 @@ describe('composeRuntimeLaunch', () => {
     }
 
     expect(composed.launch.inheritProcessEnv).toBe(false)
-    expect(childEnv.ANTHROPIC_CONFIG_DIR).toBeUndefined()
+    const disabledProfileRoot = realpathSync(
+      join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+    )
+    expect(childEnv.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
     expect(childEnv.ANTHROPIC_PROFILE).toBeUndefined()
+    expect(readdirSync(disabledProfileRoot)).toEqual([])
     expect(childEnv.SAFE_VALUE).toBe('kept')
   })
 

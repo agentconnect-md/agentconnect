@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from './sandbox.js'
@@ -8,6 +8,28 @@ import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials
 import { prepareRuntimeHome, runtimeHomeEnvironment, runtimeHomePath } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
 import { CLAUDE_PROFILE_ENV, claudeProviderCredentialFiles, isClaudeRuntimeDef } from './claude-runtime.js'
+
+function disabledClaudeProfileRoot(scopeDir: string): string {
+  const root = realpathSync(resolve(scopeDir))
+  const target = join(root, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+  let current = root
+  for (const part of relative(root, target).split(sep).filter(Boolean)) {
+    current = join(current, part)
+    if (existsSync(current)) {
+      const stat = lstatSync(current)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new Error(`disabled Claude profile path is not a real directory: ${current}`)
+      }
+      continue
+    }
+    mkdirSync(current, { mode: 0o700 })
+  }
+  if (readdirSync(target).length > 0) {
+    throw new Error(`disabled Claude profile directory is not empty: ${target}`)
+  }
+  chmodSync(target, 0o500)
+  return realpathSync(target)
+}
 
 export interface PreparedRuntimeLaunch {
   env: Record<string, string>
@@ -193,9 +215,11 @@ export function prepareRuntimeLaunch(opts: {
   if (claudeRuntime) {
     // Anthropic profile JSON may live in the agent-writable private HOME and may
     // reference arbitrary host paths. Fail closed instead of letting that mutable
-    // input influence the outer sandbox. Shared Claude /login uses the separate
-    // daemon-managed secure-storage directory prepared above.
+    // input influence the trusted parent or outer sandbox. The fixed empty root is
+    // daemon-owned and only read-exposed by sandboxBoundary; shared Claude /login
+    // uses the separate daemon-managed secure-storage directory prepared above.
     for (const name of CLAUDE_PROFILE_ENV) delete env[name]
+    env.ANTHROPIC_CONFIG_DIR = disabledClaudeProfileRoot(opts.scopeDir)
   }
   const providerCredentialFiles = claudeRuntime ? claudeProviderCredentialFiles(env, opts.cwd) : []
   const providerCredentialReadRoots = compactReadRoots(
