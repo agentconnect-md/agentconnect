@@ -42,8 +42,7 @@ function Ring({ ring, size, track }: { ring: string; size: number; track: number
 }
 
 export default function GettingStarted() {
-  const { agents, daemons, integrations, allSessions, orgHasSessions, members, agentsLoading, daemonsLoading } =
-    useConsoleData()
+  const { agents, daemons, integrations, allSessions, orgHasSessions, members, loading } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { runAction, firstAgent } = useGsActions()
   const pathname = usePathname()
@@ -63,7 +62,10 @@ export default function GettingStarted() {
   // /onboarding wizard is a separate route (AgentsView redirects an empty org there);
   // the pill only steps aside for that route, not for the empty-org state itself.
   const onOnboardingRoute = pathname?.includes('/onboarding')
-  const loading = agentsLoading || daemonsLoading
+  // Gate on the aggregate `loading`, not just agents+daemons: the checklist reads
+  // integrations, sessions and members too, so a partial first paint showed the pill
+  // with a too-low count that then jumped (and could even flash for an org that is
+  // already allDone). One transition, once everything has landed.
   if (loading || gs.allDone || onOnboardingRoute) return null
 
   const shortLabel = `${gs.done}/${gs.total}`

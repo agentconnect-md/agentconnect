@@ -24,7 +24,6 @@ import {
   sessionChannelDisplay,
   sessionPlatform,
   speaker,
-  status,
   type Agent,
   type SessionImage,
   type SessionStep
@@ -934,7 +933,6 @@ export default function SessionDetailView() {
     )
   }
 
-  const ss = status(session.status)
   // Session visibility (session-visibility.md §4.3/§6). Rendered in the desktop
   // header and the mobile meta strip; null when there is nothing to show (an org
   // session the caller cannot re-classify, or a mock/legacy row).
@@ -1257,9 +1255,9 @@ export default function SessionDetailView() {
     (pgModel === session.model ? session.fastModeAvailable : undefined) ??
     fastModeAvailableFor(agentRuntime, selectedModelCapability)
   // Run facts for the desktop header's "Details" popover — the stats that used to
-  // live in the header cards (status, duration, usage) plus the run's identity rows.
+  // live in the header cards (duration, usage) plus the run's identity rows. Status
+  // is not here: it rides the top-bar crumb as a pill next to the session name.
   const headerFacts: { icon: string; label: string; value: string }[] = [
-    { icon: 'activity', label: 'Status', value: session.statusLabel || ss.label },
     { icon: 'clock', label: 'Duration', value: displayDuration },
     { icon: 'coins', label: 'Tokens', value: session.tokens },
     { icon: 'circle-dollar-sign', label: 'Cost', value: session.cost },
@@ -1346,8 +1344,11 @@ export default function SessionDetailView() {
           </span>
         )}
         {visibilityControl}
+        {/* `flex` on the wrapper: an inline-flex button in a block div sits on a text
+            baseline, and the descender gap under it pushed the button off the row's
+            centre line. */}
         <div
-          className="relative ml-[-3px] flex-none"
+          className="relative ml-[-3px] flex flex-none items-center"
           onKeyDown={(event) => {
             if (event.key !== 'Escape' || !detailOpen) return
             event.stopPropagation()

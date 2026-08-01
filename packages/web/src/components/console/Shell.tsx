@@ -13,7 +13,7 @@ import { useParams, usePathname, useRouter } from 'next/navigation'
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
 import { ApiError, getMyAccess, type OrgDto } from '@/lib/api'
-import { agentLabel } from '@/lib/data'
+import { agentLabel, status } from '@/lib/data'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import ConnectAiModal from './ConnectAiModal'
@@ -484,6 +484,9 @@ function ShellChrome({ children }: { children: ReactNode }) {
   // org-scoped URL, matching the desktop "Copy link" button, and flash the icon
   // to a check for ~1.6s.
   const isSessionDetail = seg[0] === 'sessions' && seg.length === 2
+  // Session status rides the crumb as a pill next to the title (same badge as the
+  // Sessions list), so the detail header row doesn't have to carry it.
+  const crumbSession = isSessionDetail ? allSessions.find((s) => s.id === seg[1]) : undefined
   const copyLink = () => {
     try {
       void navigator.clipboard?.writeText?.(window.location.origin + orgPath(barePath))?.catch?.(() => {})
@@ -640,6 +643,21 @@ function ShellChrome({ children }: { children: ReactNode }) {
                   </Link>
                   <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="flex-none" />
                   <b className="min-w-0 truncate">{pushTitle}</b>
+                  {crumbSession && (
+                    <span
+                      className="inline-flex flex-none items-center gap-[5px] whitespace-nowrap rounded-full px-2 py-[1px] font-sans text-[12px] font-semibold leading-normal"
+                      style={{
+                        background: status(crumbSession.status).bg,
+                        color: status(crumbSession.status).text
+                      }}
+                    >
+                      <span
+                        className="h-[6px] w-[6px] flex-none rounded-full"
+                        style={{ background: status(crumbSession.status).dot }}
+                      />
+                      {crumbSession.statusLabel || status(crumbSession.status).label}
+                    </span>
+                  )}
                 </>
               ) : (
                 crumb
