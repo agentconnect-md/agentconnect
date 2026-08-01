@@ -19,7 +19,7 @@ const CONV = '88888888-8888-4888-8888-888888888888'
 const AUTHORITY = '11111111-1111-4111-8111-111111111111'
 const GRANT = '33333333-3333-4333-8333-333333333333'
 
-function scaffold(): string {
+function scaffold(runtimeId = 'claude-acp'): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-rmcp-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -39,7 +39,7 @@ function scaffold(): string {
       id: AGENT_ID,
       name: AGENT_ID,
       status: 'active',
-      runtime: 'claude-acp',
+      runtime: runtimeId,
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
       integrations: [],
       output: { mode: 'medium' }
@@ -85,25 +85,33 @@ function fakeGrantClient() {
   }
 }
 
-async function runTurn(source: 'user' | 'registry') {
+async function runTurn(
+  source: 'user' | 'registry',
+  opts: { runtimeId?: 'claude-acp' | 'opencode'; probedVersion?: string } = {}
+) {
+  const runtimeId = opts.runtimeId ?? 'claude-acp'
   const { factory, host } = fakeHost()
-  const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+  const daemon = new Daemon({ root: scaffold(runtimeId), hostFactory: factory })
   await daemon.start()
   const client = fakeGrantClient()
   const anyDaemon = daemon as never as Record<string, any>
   anyDaemon.remoteWebchatGrants = new RemoteWebchatGrantManager(client as never)
-  anyDaemon.runtimeMcpCaps.set('claude-acp', { http: true, sse: false })
+  anyDaemon.runtimeMcpCaps.set(runtimeId, { http: true, sse: false })
+  if (opts.probedVersion) anyDaemon.runtimeProbedVersions.set(runtimeId, opts.probedVersion)
   // Inject the resolved catalog state deterministically: installed-runtime
   // discovery on a clean host may drop the config-defined entry entirely, and
   // the gate must be exercised against an explicit registry-shaped definition
   // (the validated npx artifact), not whatever this host happens to have.
   const runtime =
-    source === 'registry'
-      ? { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'], env: [] }
-      : { command: 'node', args: ['unused'], env: [] }
-  anyDaemon.runtimeCatalog.entries['claude-acp'] = { runtime, source, name: 'Claude Agent', version: '0.64.0' }
-  anyDaemon.runtimeCatalog.runtimes['claude-acp'] = runtime
-  anyDaemon.runtimes['claude-acp'] = runtime
+    source === 'user'
+      ? { command: 'node', args: ['unused'], env: [] }
+      : runtimeId === 'opencode'
+        ? { command: './opencode', args: ['acp'], env: [] }
+        : { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'], env: [] }
+  const version = runtimeId === 'opencode' ? '1.18.10' : '0.64.0'
+  anyDaemon.runtimeCatalog.entries[runtimeId] = { runtime, source, name: runtimeId, version }
+  anyDaemon.runtimeCatalog.runtimes[runtimeId] = runtime
+  anyDaemon.runtimes[runtimeId] = runtime
 
   const outputs: WebchatOutput[] = []
   const dones: WebchatDone[] = []
@@ -159,5 +167,16 @@ describe('remote MCP admission through the webchat dispatch path (§13)', () => 
     // session — never prompt text (the fake host records the prompt input).
     const promptArgs = JSON.stringify(host.prompt.mock.calls)
     expect(promptArgs).not.toContain('secret-token-that-is-longer-than-thirty-two-bytes')
+  }, 20_000)
+
+  it('refuses OpenCode when the executed ACP version differs from the validated registry release', async () => {
+    const { client, host, dones } = await runTurn('registry', {
+      runtimeId: 'opencode',
+      probedVersion: '1.17.18'
+    })
+    expect(dones.length).toBe(1)
+    expect(client.issueWebchatMcpGrant).not.toHaveBeenCalled()
+    const mcpServers = (host.newSession.mock.calls[0]?.[1] ?? []) as Array<{ name?: string }>
+    expect(mcpServers.some((server) => server.name === 'agentconnect-admin')).toBe(false)
   }, 20_000)
 })

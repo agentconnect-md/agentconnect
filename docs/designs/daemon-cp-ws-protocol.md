@@ -194,6 +194,21 @@ defined in `packages/protocol/src/frames/register.ts`.
 
 **Reconcile contract:** `register/ok` is the **source of truth**. On receipt the daemon: (1) starts/keeps every assignment & cron in the snapshot, (2) releases everything in `drop`, (3) adopts `routingEpoch` as its current routing fence. **CP wins all conflicts.** This makes reconnect convergence idempotent — re-issuing the same snapshot is a no-op.
 
+### 3.3a `capabilities/update` (EVT, D→C)
+
+A fire-and-forget full-replace of the connection's registered
+`RegisterReq.capabilities`. `register` computes the daemon's feature set
+_before_ the reconcile roster is applied and _before_ the background runtime
+probe sweep runs, so a feature derived from either — e.g.
+`webchat_remote_mcp_v1`, gated on the synced builtin preset agent or on probed
+MCP transport — would otherwise stay hidden until the next reconnect. The
+daemon re-announces whenever its computed capability set changes
+mid-connection (after an agent reconcile or a probe sweep; suppressed when
+nothing changed); the CP replaces its live-index copy and the durable C4 row,
+exactly like the register value it refreshes. An older CP answers
+`error{UNKNOWN_FRAME}`, which the daemon ignores — the feature then simply
+waits for the next register.
+
 ---
 
 ## 4. Fencing and delivery locality

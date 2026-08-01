@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 import { AuthReq, AuthOk } from './frames/auth.js'
-import { RegisterReq, RegisterOk, RelayRosterUpdate } from './frames/register.js'
+import { RegisterReq, RegisterOk, RelayRosterUpdate, CapabilitiesUpdate } from './frames/register.js'
 import { CollabRoutesSnapshot } from './frames/collab.js'
 import { RouteAssign, RouteAssignAck, RouteUpdate, Drain, DrainProgress, DrainDone } from './frames/route.js'
 import {
@@ -166,6 +166,8 @@ export const FRAME_SCHEMAS = {
   // ── register / reconcile ──
   register: RegisterReq,
   'register/ok': RegisterOk,
+  // ── capability refresh (D→C hot update of register.capabilities) ──
+  'capabilities/update': CapabilitiesUpdate,
   // ── relay roster (C→D hot update of register/ok.relays) ──
   'relay/roster': RelayRosterUpdate,
   // ── collaboration routing snapshot (C→D hot push; baseline in register/ok) ──
@@ -386,6 +388,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('auth/ok', FRAME_SCHEMAS['auth/ok']),
   frame('register', FRAME_SCHEMAS['register']),
   frame('register/ok', FRAME_SCHEMAS['register/ok']),
+  frame('capabilities/update', FRAME_SCHEMAS['capabilities/update']),
   frame('relay/roster', FRAME_SCHEMAS['relay/roster']),
   frame('collaboration/routes', FRAME_SCHEMAS['collaboration/routes']),
   frame('heartbeat', FRAME_SCHEMAS['heartbeat']),

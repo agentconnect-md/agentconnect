@@ -202,7 +202,6 @@ high-entropy API credentials. Database compromise alone must not yield a usable 
 
 The CP may issue a grant only when all of the following hold:
 
-- `WEBCHAT_PRESET_MCP_ENABLED=true`;
 - the request is for the built-in `agentconnect` preset;
 - the authenticated user owns the durable webchat conversation;
 - the conversation maps immutably to the same user, organization, and agent;
@@ -633,7 +632,25 @@ Rename the wire capability from the implementation-specific
 that the daemon can attach a private, session-scoped HTTPS MCP descriptor to the
 selected runtime. It does not attest to an OS sandbox or hostile-process isolation.
 
-The CP feature gate remains default-off. Enablement requires:
+The daemon advertises the capability when a validated remote-MCP launch is
+available through either evidence path: a completed runtime probe proving HTTP
+MCP transport, or a synced **builtin preset agent** whose runtime resolves to a
+validated launch under daemon-owned catalog provenance. The static builtin path
+exists because `register` precedes both the reconcile roster and the probe
+sweep — without it a freshly started daemon never advertises the capability on
+its first connection. A capability set that changes mid-connection (roster
+applied, probe completed) is re-announced via the `capabilities/update` frame
+(daemon-cp-ws-protocol.md §3.3a). Advertisement is only an establishment
+prerequisite: the turn-time attachment gate still independently requires the
+probed HTTP transport and exact launch validation before any descriptor
+attaches. Binary launches whose command does not pin an artifact also require
+the probe's actual ACP `agentInfo.version` to match the validated release.
+
+There is no CP-side rollout flag: the feature is on by default, and enablement
+is gated entirely on the daemon advertising `webchat_remote_mcp_v1` (the
+capability paths above). A deployment that must not offer the feature simply
+runs daemons without a validated remote-MCP runtime. Production enablement
+still requires:
 
 1. deployed CP support for grants, authentication, revocation, CP-owned operations, and
    redaction;

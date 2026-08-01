@@ -46,6 +46,23 @@ export const RegisterReq = z.object({
 export type RegisterReq = z.infer<typeof RegisterReq>
 
 /**
+ * D→C EVT (`capabilities/update`) — hot full-replace of the connection's
+ * `RegisterReq.capabilities`. `register` computes the feature set before the
+ * reconcile roster lands and before the runtime probe sweep runs, so a feature
+ * derived from either (e.g. `webchat_remote_mcp_v1`, which needs the synced
+ * builtin agent / probed MCP transport) would otherwise stay hidden until the
+ * next reconnect. The daemon re-announces whenever its computed capability set
+ * changes mid-connection; the CP treats it exactly like the register value it
+ * refreshes. An older CP replies `error{UNKNOWN_FRAME}`, which the daemon
+ * ignores — the feature then simply waits for the next register, the pre-frame
+ * behavior.
+ */
+export const CapabilitiesUpdate = z.object({
+  capabilities: RegisterReq.shape.capabilities
+})
+export type CapabilitiesUpdate = z.infer<typeof CapabilitiesUpdate>
+
+/**
  * One relay the daemon SHOULD hold an outbound WS to (shared-bot-relay.md §5).
  * The roster is all-to-all by design: a webchat/webhook landing on ANY relay
  * instance must find this daemon's connection without cross-instance forwarding.

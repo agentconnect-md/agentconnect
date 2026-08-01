@@ -183,7 +183,6 @@ export function buildHttpApp(
     depsOverrides?.remoteGrantAuth ??
     new RemoteGrantAuthenticator({
       clock,
-      featureEnabled: () => true,
       tokenCodec: new WebchatMcpGrantTokenCodec(TEST_API_KEY_PEPPER),
       conversations: webchatConversationRepo,
       orgs: orgRepo,

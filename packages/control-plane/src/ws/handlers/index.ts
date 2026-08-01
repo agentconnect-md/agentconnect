@@ -18,6 +18,7 @@ import type { DaemonWsDeps } from '../deps.js'
 import type { DaemonConnection } from '../connection.js'
 import { handleAuth } from './auth.js'
 import { handleRegister } from './register.js'
+import { handleCapabilitiesUpdate } from './capabilities-update.js'
 import { handleHeartbeat } from './heartbeat.js'
 import { handleRuntimeProfile } from './runtime-profile.js'
 import { handleDaemonRuntimes } from './daemon-runtimes.js'
@@ -54,6 +55,7 @@ export class FrameRouter {
     this.table = {
       auth: handleAuth,
       register: handleRegister,
+      'capabilities/update': handleCapabilitiesUpdate,
       heartbeat: handleHeartbeat,
       'facts/runtime-profile': handleRuntimeProfile,
       'facts/daemon-runtimes': handleDaemonRuntimes,
@@ -90,6 +92,7 @@ export class FrameRouter {
 export {
   handleAuth,
   handleRegister,
+  handleCapabilitiesUpdate,
   handleHeartbeat,
   handleRuntimeProfile,
   handleDaemonRuntimes,

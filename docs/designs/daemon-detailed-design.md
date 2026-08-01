@@ -1078,13 +1078,12 @@ WebSocket drop -> CP-Client enters DEGRADED and reconnects with backoff. Daemon 
 
 ### 10.5 Delegated Admin-MCP Operations
 
-This feature is operator opt-in and the CP gate defaults off. Before setting
-`WEBCHAT_PRESET_MCP_ENABLED=true`, deploy compatible CP, relay, daemon, and runtime
-builds; verify private webchat session enforcement, credential redaction, exact
-grant revocation, revision-fenced descriptor activation, and CP-owned operation
-idempotency; then confirm live
-registration advertises both `session-visibility-v1` and
-`webchat_remote_mcp_v1`.
+This feature is on by default on the CP; enablement is gated on the daemon
+advertising `webchat_remote_mcp_v1`. Before deploying, ship compatible CP,
+relay, daemon, and runtime builds; verify private webchat session enforcement,
+credential redaction, exact grant revocation, revision-fenced descriptor
+activation, and CP-owned operation idempotency; then confirm live registration
+advertises both `session-visibility-v1` and `webchat_remote_mcp_v1`.
 
 No OS sandbox package, Linux kernel setting, private ACP field, or runtime-generated
 idempotency header is a feature prerequisite. Runtime integration coverage verifies
@@ -1096,10 +1095,11 @@ confirmation metrics. Labels are closed outcomes/reasons only; they exclude user
 organization, agent, conversation, grant, operation, token, Authorization header,
 request body, tool arguments, response body, and transcript values.
 
-Rollback sets `WEBCHAT_PRESET_MCP_ENABLED=false`, stops issuance, and invokes the
-bounded active-grant revocation path. Ordinary webchat continues. Emergency
-containment can revoke one grant, conversation, user, agent, organization, or all
-feature grants without isolating a daemon.
+Rollback rolls the daemon back to a build that does not advertise
+`webchat_remote_mcp_v1` (stopping new establishment) and invokes the bounded
+active-grant revocation path. Ordinary webchat continues. Emergency containment
+can revoke one grant, conversation, user, agent, organization, or all feature
+grants without isolating a daemon.
 
 The complete staged procedure and stable metric labels are in
 [`webchat-preset-agentconnect-mcp.md` §13](webchat-preset-agentconnect-mcp.md#13-capability-and-rollout)

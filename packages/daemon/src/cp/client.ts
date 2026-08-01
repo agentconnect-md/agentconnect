@@ -200,6 +200,10 @@ export class CpClient {
   // Per-connection monotonic ordinal for `facts/daemon-runtimes` snapshots
   // (reset at each register; the CP nulls its stored value then too).
   private runtimesSeq = 0
+  // What this connection's CP currently believes our capabilities are (the
+  // register value, refreshed by `capabilities/update`). Serialized for the
+  // change check in updateCapabilities(); reset on each register.
+  private lastSentCapabilities?: string
 
   constructor(private readonly deps: CpClientDeps) {
     this.correlator = new ReqRep<AnyFrame>(deps.clock, ACK_TIMEOUT_MS)
@@ -300,9 +304,11 @@ export class CpClient {
 
     // ── register ──
     this.state = 'REGISTERING'
+    const registerCapabilities = this.deps.capabilities()
+    this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const regOk = await this.request('register', {
       host: this.deps.host,
-      capabilities: this.deps.capabilities(),
+      capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()
     })
@@ -313,6 +319,11 @@ export class CpClient {
     this.deps.configApply.applyReconcileSnapshot(snap)
 
     this.state = 'READY'
+    // Reconcile runs synchronously while REGISTERING and may change the daemon's
+    // computed capability set (for example by installing the builtin preset
+    // agent). updateCapabilities() deliberately cannot send before READY, so
+    // recheck once after the state transition to avoid dropping that mutation.
+    this.updateCapabilities()
     this.heartbeatMs = ok.heartbeatSec > 0 ? ok.heartbeatSec * 1000 : this.deps.heartbeatDefaultMs
     this.armHeartbeat()
     this.deps.log.info(`cp: READY (epoch=${this.sessionEpoch}, routingEpoch=${this.routingEpoch})`)
@@ -331,6 +342,27 @@ export class CpClient {
     // arrive later as another `facts/daemon-runtimes` snapshot that replaces
     // the one just sent.
     this.deps.onReady?.()
+  }
+
+  /**
+   * Re-announce `RegisterReq.capabilities` when the daemon's computed set has
+   * changed since this connection's register (D→C `capabilities/update` EVT,
+   * fire-and-forget, full-replace on the CP). Register runs before the agent
+   * roster is applied and before the runtime probe sweep, so features derived
+   * from either (e.g. `webchat_remote_mcp_v1`) appear only via this refresh on
+   * a fresh connection. Cheap when nothing changed (serialized compare ⇒
+   * no-op), so callers fire it after every agent reconcile / probe sweep. An
+   * older CP answers `error{UNKNOWN_FRAME}`, which lands in dispatchControl's
+   * default no-op — the feature then simply waits for the next register.
+   * No-op unless READY/DRAINING.
+   */
+  updateCapabilities(): void {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return
+    const capabilities = this.deps.capabilities()
+    const serialized = JSON.stringify(capabilities)
+    if (serialized === this.lastSentCapabilities) return
+    this.lastSentCapabilities = serialized
+    this.transport?.send(encode(buildEnvelope('capabilities/update', { capabilities })))
   }
 
   /**

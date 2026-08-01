@@ -108,6 +108,10 @@ export class DaemonRegistryService implements DaemonRegistry {
     })
   }
 
+  async updateCapabilities(daemonId: DaemonId, capabilities: RegisterReq['capabilities']): Promise<void> {
+    await this.daemons.setCapabilities(daemonId, capabilities)
+  }
+
   /**
    * Close any pending restart/upgrade op for a daemon that has *actually* reached READY
    * (cli-daemon-split.md §7). This is deliberately SEPARATE from {@link upsertOnRegister}

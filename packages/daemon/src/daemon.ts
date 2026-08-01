@@ -2643,6 +2643,11 @@ export class Daemon {
       await this.reconcileDiscordConnections()
       await this.reconcileFeishuConnections()
     }
+    // The live roster just changed shape — re-announce register capabilities if
+    // the agent-derived feature set moved (e.g. the builtin preset agent landed,
+    // flipping `webchat_remote_mcp_v1`). No-op when nothing changed. Optional
+    // call: tests inject partial cpClient fakes (same as emitDaemonRuntimes).
+    this.cpClient?.updateCapabilities?.()
   }
 
   /**
@@ -3881,7 +3886,28 @@ export class Daemon {
     // transport): the capability bit alone proves descriptor transport, not that
     // the runtime keeps the Authorization bearer out of model-visible context (§13).
     const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.entries()].some(
-      ([runtimeId, caps]) => caps.http && isValidatedRemoteMcpRuntime(runtimeId, this.runtimeCatalog.entries[runtimeId])
+      ([runtimeId, caps]) =>
+        caps.http &&
+        isValidatedRemoteMcpRuntime(
+          runtimeId,
+          this.runtimeCatalog.entries[runtimeId],
+          this.runtimeProbedVersions.get(runtimeId)
+        )
+    )
+    // Static sibling of the probe path: a synced builtin (preset) agent on a
+    // validated launch advertises the feature without waiting for a probe round.
+    // The first register of a fresh process runs before the probe sweep, so the
+    // probed path alone would hide the feature until a reconnect; grant
+    // establishment stays safe because the turn-time gate (webchat dispatch)
+    // still requires the probed HTTP transport before any descriptor attaches.
+    const hasBuiltinRemoteMcpAgent = [...this.agents.values()].some(
+      (agent) =>
+        agent.builtin &&
+        isValidatedRemoteMcpRuntime(
+          agent.runtime,
+          this.runtimeCatalog.entries[agent.runtime],
+          this.runtimeProbedVersions.get(agent.runtime)
+        )
     )
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -3894,7 +3920,9 @@ export class Daemon {
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,
-      ...(this.remoteWebchatGrants && hasRemoteMcpRuntime ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
+      ...(this.remoteWebchatGrants && (hasRemoteMcpRuntime || hasBuiltinRemoteMcpAgent)
+        ? [WEBCHAT_REMOTE_MCP_FEATURE]
+        : [])
     ]
   }
 
@@ -9456,7 +9484,11 @@ export class Daemon {
         webchat?.remoteMcp &&
         this.remoteWebchatGrants &&
         remoteCaps?.http &&
-        isValidatedRemoteMcpRuntime(agent.runtime, this.runtimeCatalog.entries[agent.runtime])
+        isValidatedRemoteMcpRuntime(
+          agent.runtime,
+          this.runtimeCatalog.entries[agent.runtime],
+          this.runtimeProbedVersions.get(agent.runtime)
+        )
       ) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
@@ -15870,6 +15902,9 @@ export class Daemon {
         ids.map((id) => this.runtimeProfileFor(id)),
         this.mcpServerFactsFromDefs()
       )
+      // Probe results feed registrationFeatures (`runtimeMcpCaps` → the remote-MCP
+      // bit), and register ran before this sweep — re-announce if the set moved.
+      this.cpClient?.updateCapabilities?.()
     } catch (err) {
       this.log.warn(`probe: sweep failed: ${formatErr(err)}`)
     } finally {

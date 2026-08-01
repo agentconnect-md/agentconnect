@@ -415,7 +415,6 @@ export function buildContainer(
   const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
   const webchatRemoteMcp = new WebchatRemoteMcpService({
     clock,
-    featureEnabled: () => config.WEBCHAT_PRESET_MCP_ENABLED,
     tokenCodec: webchatMcpGrantToken,
     conversations: repos.webchatConversation,
     orgs: repos.org,
@@ -428,7 +427,6 @@ export function buildContainer(
   })
   const remoteGrantAuth = new RemoteGrantAuthenticator({
     clock,
-    featureEnabled: () => config.WEBCHAT_PRESET_MCP_ENABLED,
     tokenCodec: webchatMcpGrantToken,
     conversations: repos.webchatConversation,
     orgs: repos.org,
@@ -1005,7 +1003,6 @@ export function buildContainer(
     // rc/verify(webchat-token): validate the token, then re-resolve the agent's CURRENT
     // placement (agent.daemonId + connReg READY) — placement can move between mint + dial.
     verifyWebchatToken: createWebchatTokenVerifier({
-      enabled: config.WEBCHAT_PRESET_MCP_ENABLED,
       tokens: webchatTokens,
       agents: repos.agent,
       daemons: connReg,

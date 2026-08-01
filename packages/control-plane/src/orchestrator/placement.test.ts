@@ -208,6 +208,10 @@ describe('agentRecordToSpec runtime overrides', () => {
     expect(agentRecordToSpec(agent, {})).toHaveProperty('displayName', 'Deploy Bot')
     expect(agentRecordToSpec({ ...agent, displayName: null }, {})).toHaveProperty('displayName', null)
     expect(agentRecordToSpec(agent, {}).workspace).toEqual({ mode: 'scratch', gitCredential: 'github-app' })
+    // The preset marker always ships (definite record field) so the daemon can
+    // gate preset-only capabilities (webchat_remote_mcp_v1) as soon as it syncs.
+    expect(agentRecordToSpec(agent, {})).toHaveProperty('builtin', false)
+    expect(agentRecordToSpec({ ...agent, builtin: true }, {})).toHaveProperty('builtin', true)
   })
 
   it('carries permissionMode to the daemon spec', () => {

@@ -139,6 +139,13 @@ export class PgDaemonRepo implements DaemonRepo {
     return toRecord(daemon)
   }
 
+  async setCapabilities(daemonId: DaemonId, capabilities: RegisterReqInput['capabilities']): Promise<void> {
+    await this.db.daemon.update({
+      where: { id: daemonId },
+      data: { capabilities: capabilities as Prisma.InputJsonValue }
+    })
+  }
+
   async setMcpServers(daemonId: DaemonId, servers: FactsMcpServer[]): Promise<void> {
     // Wholesale replace — the frame carries the daemon's full MCP-server list,
     // so an empty array clears every previously reported server.

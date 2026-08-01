@@ -276,7 +276,13 @@ export const AgentSpec = z.object({
   // host has bwrap/sandbox-exec; daemon `security.requireSandbox` forces it on and
   // prevents daemon startup when no mechanism exists. Optional means leave the
   // on-disk agent.json value alone; a brand-new agent defaults to false.
-  restrictFileAccess: z.boolean().optional()
+  restrictFileAccess: z.boolean().optional(),
+  // True when this agent is an org built-in preset (preset-agents.md §3.1): a
+  // `preset_agent` row references it. Replicated so the daemon can gate
+  // preset-only capabilities locally (e.g. advertising `webchat_remote_mcp_v1`
+  // without waiting for a runtime probe). Optional so an older CP's spec leaves
+  // the on-disk value alone; a current CP always ships it.
+  builtin: z.boolean().optional()
 })
 export type AgentSpec = z.infer<typeof AgentSpec>
 

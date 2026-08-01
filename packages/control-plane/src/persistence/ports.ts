@@ -180,6 +180,8 @@ export interface DaemonRepo {
    */
   upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }>
   applyRegister(daemonId: DaemonId, reg: RegisterReqInput): Promise<DaemonRecord>
+  /** Full-replace the stored capabilities from a mid-connection `capabilities/update`. */
+  setCapabilities(daemonId: DaemonId, capabilities: RegisterReqInput['capabilities']): Promise<void>
   /** Replace the daemon-level MCP-server list (`facts/daemon-runtimes.mcpServers`) wholesale. */
   setMcpServers(daemonId: DaemonId, servers: FactsMcpServer[]): Promise<void>
   touchHeartbeat(daemonId: DaemonId, hb: Heartbeat, at: Date): Promise<void>

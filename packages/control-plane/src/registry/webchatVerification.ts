@@ -9,7 +9,6 @@ interface VerificationDaemon {
 }
 
 export interface WebchatVerificationDeps {
-  enabled: boolean
   tokens: Pick<WebchatTokenService, 'verify'>
   agents: { get(agentId: AgentId): Promise<{ orgId: string; daemonId: string | null } | null> }
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
@@ -41,7 +40,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       orgId: claims.orgId,
       conversationId: claims.conversationId
     }
-    if (!deps.enabled || !daemon.capabilities?.features.includes(WEBCHAT_REMOTE_MCP_FEATURE)) {
+    if (!daemon.capabilities?.features.includes(WEBCHAT_REMOTE_MCP_FEATURE)) {
       return verified
     }
 

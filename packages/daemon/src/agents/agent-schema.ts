@@ -232,6 +232,11 @@ export const AgentSchema = z.object({
   // Request an OS sandbox for this agent (issue #312). Daemon policy may force it
   // on; an unavailable optional sandbox is ineffective. New agents default off.
   restrictFileAccess: z.boolean().default(false),
+  // Org built-in preset marker (preset-agents.md §3.1), replicated from the CP via
+  // AgentSpec.builtin. Gates preset-only capabilities locally — e.g. advertising
+  // `webchat_remote_mcp_v1` without waiting for a runtime probe round. Never set
+  // by hand: the CP re-asserts it on every roster/upsert.
+  builtin: z.boolean().default(false),
   // Which memory backend this agent uses (see agents/memory-provider.ts). Absent ⇒
   // managed (the default). External keeps only connection id + bounded policy on
   // disk; endpoint/grant/config live in the daemon-private CP registry.
