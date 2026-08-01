@@ -7,79 +7,125 @@
 // ≤768px navigates sessions through the Shell app bar's back affordance.
 //
 // Rows carry the owning integration's platform mark (Slack / Telegram / … ),
-// the title, and the relative time. Hovering a row swaps the time for a pin
-// toggle; pinned sessions group above a divider, pin lit in the brand color.
-// Pins live in localStorage — see lib/session-pins.ts for why they are not CP state.
+// the title, and the relative time. Hovering (or focusing) a row swaps the time
+// for a pin toggle; pinned sessions group above a divider, pin lit in the brand
+// color. Pins live in localStorage — see lib/session-pins.ts for why they are not
+// CP state.
+//
+// The caller's rows are the agent-filtered FIRST PAGE, so two kinds of row would
+// otherwise be missing from a long-running agent's rail: the open session itself
+// (a deep link to session 51+), and pinned runs that newer runs pushed off page
+// one. Both are the rail's whole point, so `current` is merged in and this agent's
+// off-page pins are fetched individually (bounded by SESSION_PIN_HYDRATE_MAX).
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import useSWR from 'swr'
 import { sessionChannelDisplay, type Session } from '@/lib/data'
+import { fetchSessionDetail, sessionFromDetailDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { PlatformMark } from '@/components/marks'
 import {
   partitionPinned,
-  pruneSessionPins,
+  pinnedIdsForAgent,
   readSessionPins,
+  SESSION_PIN_HYDRATE_MAX,
   toggleSessionPin,
-  writeSessionPins
+  writeSessionPins,
+  type SessionPin
 } from '@/lib/session-pins'
 
 export function SessionRail({
   sessions,
-  currentId,
+  current,
+  total,
   agentId
 }: {
-  /** The current agent's sessions, newest first. */
+  /** The agent-filtered first page of sessions, newest first. */
   sessions: Session[]
-  currentId: string
-  /** Target of the footer link — the global list pre-filtered to this agent. */
+  /** The open session — merged in when it is not on the loaded page. */
+  current: Session
+  /** The agent's full session count (CP `total`); 0 when unknown (mock). */
+  total: number
+  /** Owning agent — scopes the pins and the footer link. */
   agentId: string | undefined
 }) {
-  const { orgPath } = useOrgs()
+  const { orgPath, activeOrg } = useOrgs()
   // Schedule-triggered rows show the schedule's name, so the rail needs the crons
   // list — read here rather than taken as a prop (a function prop on a 'use client'
   // module trips the Next TS plugin's Server-Action serializability check).
   const { crons } = useConsoleData()
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
+
   // Hydration: the server has no localStorage, so the first client paint must match
   // the SSR markup (every row unpinned) and the stored pins land in an effect.
-  const [pins, setPins] = useState<string[]>([])
+  const [pins, setPins] = useState<SessionPin[]>([])
   useEffect(() => {
     setPins(readSessionPins())
   }, [])
 
-  const togglePin = useCallback((sessionId: string) => {
-    setPins((prev) => {
-      const next = toggleSessionPin(prev, sessionId)
-      writeSessionPins(next)
-      return next
-    })
-  }, [])
+  const togglePin = useCallback(
+    (sessionId: string) => {
+      setPins((prev) => {
+        const next = toggleSessionPin(prev, sessionId, agentId ?? '')
+        writeSessionPins(next)
+        return next
+      })
+    },
+    [agentId]
+  )
 
-  // Forget stale ids only once the list is over its cap (see pruneSessionPins:
-  // a session outside the loaded page is unknown, not deleted).
-  useEffect(() => {
-    setPins((prev) => {
-      const next = pruneSessionPins(
-        prev,
-        sessions.map((s) => s.id)
+  // Pinned rows for THIS agent that the loaded page does not carry. Fetched by id
+  // because the list endpoint cannot filter by id; a rail holds a handful of pins,
+  // and the cap only bounds a pathological list. A row that fails to load is simply
+  // not rendered — a 404 here means "missing or not authorized", which is not proof
+  // of deletion, so the pin is left alone (see lib/session-pins.ts).
+  const loadedIds = useMemo(() => new Set([...sessions.map((s) => s.id), current.id]), [sessions, current.id])
+  const missingPinIds = useMemo(
+    () =>
+      pinnedIdsForAgent(pins, agentId ?? '')
+        .filter((id) => !loadedIds.has(id))
+        .slice(0, SESSION_PIN_HYDRATE_MAX),
+    [pins, agentId, loadedIds]
+  )
+  const { data: hydratedPins } = useSWR(
+    missingPinIds.length > 0 ? ['session-rail-pins', activeOrg?.id ?? '', missingPinIds.join(',')] : null,
+    async () => {
+      const rows = await Promise.all(
+        missingPinIds.map((id) =>
+          fetchSessionDetail(id, activeOrg?.id)
+            .then(sessionFromDetailDto)
+            .catch(() => null)
+        )
       )
-      if (next.length === prev.length) return prev
-      writeSessionPins(next)
-      return next
-    })
-  }, [sessions])
+      return rows.filter((row): row is Session => row !== null)
+    },
+    { revalidateOnFocus: false }
+  )
 
-  const { pinned, rest } = useMemo(() => partitionPinned(sessions, pins), [sessions, pins])
+  // One de-duplicated list ordered newest-first. The CP already orders its page by
+  // `lastActivityAt`, so this only decides where the merged rows land.
+  const rows = useMemo(() => {
+    const byId = new Map<string, Session>()
+    for (const s of [...sessions, current, ...(hydratedPins ?? [])]) if (!byId.has(s.id)) byId.set(s.id, s)
+    return [...byId.values()].sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''))
+  }, [sessions, current, hydratedPins])
+
+  const { pinned, rest } = useMemo(() => partitionPinned(rows, pins), [rows, pins])
+
+  // The agent's real session count, not the loaded-page length — a 60-session agent
+  // must not read "50". This also gates the rail, so it does not blink into view
+  // once page one lands.
+  const count = Math.max(total, rows.length)
 
   // A rail that would only show the session already on screen is noise.
-  if (sessions.length < 2) return null
+  if (count < 2) return null
 
   const row = (s: Session, isPinned: boolean) => {
     const channel = sessionChannelDisplay(s, cronName)
-    const on = s.id === currentId
+    const on = s.id === current.id
     return (
       <div
         key={s.id}
@@ -106,9 +152,11 @@ export function SessionRail({
           >
             {s.title}
           </span>
+          {/* The time yields the slot to the pin toggle on hover AND on focus —
+              keyboard focus has to reveal it too, or Tab can never reach it. */}
           <span
             className={`mono flex-none text-[10.5px] font-medium text-(--text-tertiary) ${
-              isPinned ? 'hidden' : 'group-hover:hidden'
+              isPinned ? 'hidden' : 'group-hover:hidden group-focus-within:hidden'
             }`}
           >
             {s.time}
@@ -119,8 +167,8 @@ export function SessionRail({
           onClick={() => togglePin(s.id)}
           aria-pressed={isPinned}
           title={isPinned ? 'Unpin session' : 'Pin session'}
-          className={`-my-[2px] h-[19px] w-[19px] flex-none items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) ${
-            isPinned ? 'flex text-(--brand)' : 'hidden text-(--text-tertiary) group-hover:flex'
+          className={`-my-[2px] h-[19px] w-[19px] flex-none items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
+            isPinned ? 'flex text-(--brand)' : 'hidden text-(--text-tertiary) group-hover:flex group-focus-within:flex'
           }`}
         >
           <Icon name="pin" size={12} />
@@ -136,7 +184,7 @@ export function SessionRail({
           <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] font-semibold leading-normal tracking-[0.08em] text-(--text-tertiary) uppercase">
             Sessions
           </span>
-          <span className="mono flex-none text-[11px] text-(--text-tertiary)">{sessions.length}</span>
+          <span className="mono flex-none text-[11px] text-(--text-tertiary)">{count}</span>
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto">
           {pinned.map((s) => row(s, true))}

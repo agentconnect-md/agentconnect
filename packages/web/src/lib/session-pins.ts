@@ -13,73 +13,90 @@
 // If cross-device pins are ever wanted, this module is the whole seam: swap the
 // reads/writes for a CP-backed hook and the rail is unchanged.
 //
-// Pins are stored as one flat id list (not keyed by agent) — the rail is already
-// agent-filtered, so an id only ever surfaces on the agent it belongs to. Ids of
-// deleted sessions therefore never match anything; `pruneSessionPins` keeps the
-// list from growing without bound.
+// The list is GLOBAL across agents, so each entry records its owning agent. That
+// is what lets the rail tell "this pin belongs to another agent" apart from "this
+// pin is gone", and what lets it fetch the handful of pinned rows that are not on
+// the loaded page (see SESSION_PIN_HYDRATE_MAX).
+//
+// Forgetting is by RECENCY ONLY: `writeSessionPins` keeps the newest
+// SESSION_PINS_MAX entries and drops the tail. Nothing here ever infers that a
+// session was deleted — a pin absent from a loaded page is unknown, not stale, and
+// the console has no cheap proof of deletion (the detail endpoint answers 404 for
+// unauthorized as well as missing). Growth is bounded by the cap instead.
 
-/** localStorage key holding the pinned session ids, newest pin first. */
+/** One pinned session and the agent whose rail it belongs to. */
+export interface SessionPin {
+  id: string
+  /** Owning agent id; '' for entries written before the agent was recorded. */
+  agentId: string
+}
+
+/** localStorage key holding the pinned sessions, newest pin first. */
 export const SESSION_PINS_KEY = 'ac.pinned-sessions'
 
-/** Hard cap on stored ids. Older pins fall off the end rather than accumulating
+/** Hard cap on stored pins. Older pins fall off the end rather than accumulating
  *  forever in a browser that never revisits the sessions they belong to. */
 export const SESSION_PINS_MAX = 200
 
-/** The stored ids, newest pin first. `[]` on SSR, malformed JSON, or blocked storage. */
-export function readSessionPins(): string[] {
+/** How many of one agent's pinned rows the rail will fetch individually when they
+ *  are not on the loaded page. A rail holds a handful of pins in practice; the cap
+ *  only stops a pathological list from fanning out into hundreds of requests.
+ *  Pins beyond it still persist — they render once they are on the loaded page. */
+export const SESSION_PIN_HYDRATE_MAX = 12
+
+/** The stored pins, newest first. `[]` on SSR, malformed JSON, or blocked storage.
+ *  Accepts the legacy flat `string[]` shape, attributing those to no agent. */
+export function readSessionPins(): SessionPin[] {
   if (typeof window === 'undefined') return []
   try {
     const raw = window.localStorage.getItem(SESSION_PINS_KEY)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    // Tolerate anything a past version (or another tab) wrote: keep the strings,
-    // drop the rest, and de-duplicate so a corrupted list still renders once.
-    return dedupe(parsed.filter((id): id is string => typeof id === 'string' && id !== ''))
+    // Tolerate anything a past version (or another tab) wrote: keep what parses as
+    // a pin, drop the rest, and de-duplicate so a corrupted list renders once.
+    return dedupe(parsed.map(asPin).filter((pin): pin is SessionPin => pin !== null))
   } catch {
     return []
   }
 }
 
-/** Persist `ids` (newest first, capped). Silently no-ops when storage is blocked. */
-export function writeSessionPins(ids: string[]): void {
+/** Persist `pins` (newest first, capped). Silently no-ops when storage is blocked. */
+export function writeSessionPins(pins: SessionPin[]): void {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(SESSION_PINS_KEY, JSON.stringify(dedupe(ids).slice(0, SESSION_PINS_MAX)))
+    window.localStorage.setItem(SESSION_PINS_KEY, JSON.stringify(dedupe(pins).slice(0, SESSION_PINS_MAX)))
   } catch {
     /* private mode / storage disabled — the pin still applies for this page view */
   }
 }
 
-/** `ids` with `sessionId` pinned (newest first) or unpinned. Pure — persist via
+/** `pins` with `sessionId` pinned (newest first) or unpinned. Pure — persist via
  *  `writeSessionPins`, so the caller can update React state from the same value. */
-export function toggleSessionPin(ids: string[], sessionId: string): string[] {
-  return ids.includes(sessionId) ? ids.filter((id) => id !== sessionId) : [sessionId, ...ids]
+export function toggleSessionPin(pins: SessionPin[], sessionId: string, agentId: string): SessionPin[] {
+  return pins.some((p) => p.id === sessionId)
+    ? pins.filter((p) => p.id !== sessionId)
+    : [{ id: sessionId, agentId }, ...pins]
 }
 
-/** Drop stored ids that are not in `knownIds`, but ONLY when the list is over the
- *  cap. Sessions outside the currently loaded page are legitimately unknown, so
- *  pruning eagerly would silently unpin a session the moment it fell off the
- *  first page — the cap is what makes forgetting safe. */
-export function pruneSessionPins(ids: string[], knownIds: Iterable<string>): string[] {
-  if (ids.length <= SESSION_PINS_MAX) return ids
-  const known = new Set(knownIds)
-  const kept = ids.filter((id) => known.has(id))
-  // Never let pruning empty the list: if none of the stored ids are on this page,
-  // keep the newest cap-worth instead of discarding every pin the user made.
-  return (kept.length > 0 ? kept : ids).slice(0, SESSION_PINS_MAX)
+/** Ids pinned on `agentId`'s rail, newest pin first. Only exact matches — an entry
+ *  with no recorded agent is not claimed here (it would otherwise be fetched on
+ *  every agent's rail); `partitionPinned` still lifts it once it is on the page. */
+export function pinnedIdsForAgent(pins: SessionPin[], agentId: string): string[] {
+  return agentId ? pins.filter((p) => p.agentId === agentId).map((p) => p.id) : []
 }
 
 /** Split `sessions` into the pinned ones (in pin order, newest pin first) and the
- *  rest (input order preserved). */
+ *  rest (input order preserved). Matches on id alone, so a pin whose agent was
+ *  never recorded still groups correctly on the rail it appears in. */
 export function partitionPinned<T extends { id: string }>(
   sessions: T[],
-  pinnedIds: string[]
+  pins: SessionPin[]
 ): { pinned: T[]; rest: T[] } {
   const byId = new Map(sessions.map((s) => [s.id, s]))
   const pinned: T[] = []
   const seen = new Set<string>()
-  for (const id of pinnedIds) {
+  for (const { id } of pins) {
     const hit = byId.get(id)
     if (hit && !seen.has(id)) {
       pinned.push(hit)
@@ -89,6 +106,15 @@ export function partitionPinned<T extends { id: string }>(
   return { pinned, rest: sessions.filter((s) => !seen.has(s.id)) }
 }
 
-function dedupe(ids: string[]): string[] {
-  return [...new Set(ids)]
+function asPin(entry: unknown): SessionPin | null {
+  if (typeof entry === 'string') return entry ? { id: entry, agentId: '' } : null
+  if (!entry || typeof entry !== 'object') return null
+  const { id, agentId } = entry as { id?: unknown; agentId?: unknown }
+  if (typeof id !== 'string' || !id) return null
+  return { id, agentId: typeof agentId === 'string' ? agentId : '' }
+}
+
+function dedupe(pins: SessionPin[]): SessionPin[] {
+  const seen = new Set<string>()
+  return pins.filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true)))
 }

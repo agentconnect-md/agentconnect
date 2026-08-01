@@ -787,9 +787,10 @@ export default function SessionDetailView() {
   // rail on an agent that has plenty of runs. The org key stays null until the
   // agent is known so no unfiltered page is fetched on the way there.
   const railAgentId = session?.agentId ?? ''
-  const { sessions: railSessionRows } = useSessionList(MOCK_MODE || !railAgentId ? null : activeOrg?.id, {
-    agentId: railAgentId
-  })
+  const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
+    MOCK_MODE || !railAgentId ? null : activeOrg?.id,
+    { agentId: railAgentId }
+  )
   const railSessions = useMemo(
     () => (MOCK_MODE ? (railAgentId ? getSessions(railAgentId) : []) : railSessionRows),
     [getSessions, railAgentId, railSessionRows]
@@ -1386,7 +1387,7 @@ export default function SessionDetailView() {
     // the 880px body. With no rail the body is still an 880px block centred in that
     // track — geometrically identical to when it was the wrap itself.
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
-      <SessionRail sessions={railSessions} currentId={session.id} agentId={session.agentId} />
+      <SessionRail sessions={railSessions} current={session} total={railSessionTotal} agentId={session.agentId} />
       <div className="mx-auto flex min-h-full min-w-0 flex-1 flex-col max-w-[880px] max-desktop:pb-6">
         {/* DESKTOP HEADER — slim single row (design): agent · channel · participants ·
           visibility · Details popover · copy-link. The title lives in the top-bar
