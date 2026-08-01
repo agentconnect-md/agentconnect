@@ -128,9 +128,8 @@ bot stays in the channel, the channel keeps its row and its owner, past sessions
 their transcripts, and an agent may still post there when something else — a scheduled
 task, another agent's hand-off — directs it to.
 
-Off is therefore the Console's answer to "stop responding here", and the only one it
-has. Removing the bot from a channel or group is a platform action, done in Slack,
-Telegram, Discord, or Lark; the Console reflects that membership but never changes it.
+Off is therefore the Console's answer to "stop responding here" while the bot stays put.
+Actually removing it is a separate action — see "Leaving and forgetting a conversation".
 
 A restricted agent expresses the same choice through its conversation gate, which is
 independently fail-closed: a conversation it has never been enabled in stays unroutable
@@ -142,6 +141,35 @@ once, telling the person to ask an admin — the bot must not look broken to som
 had no way to know it was private. A channel switched Off says nothing at all: an
 operator already decided, and pointing the room at an admin would be both wrong and
 noise. Off is silence; the gate is a closed door with a sign on it.
+
+## Leaving and forgetting a conversation
+
+Three different things can end a conversation, and the Console must not blur them:
+
+- **Off** — the bot stays and goes quiet. Reversible in one click.
+- **Leave** — the bot is removed at the platform. It requires the bot to still be
+  there, and undoing it means re-inviting.
+- **Forget** — the row stops being listed. Nothing outside AgentConnect changes.
+
+Forget exists because departure is not always observable. Only Slack reports its own
+membership authoritatively; a Telegram, Discord, or Lark report can only ever add, so
+a conversation the bot has already left would otherwise be listed forever with no way
+to clear it. Forget is that way. It follows that a forgotten row REAPPEARS on the next
+authoritative listing if the bot is in fact still a member — which is the correct
+answer to "why did it come back", not a bug: it never left, and Forget never claimed
+to make it.
+
+What Leave can mean differs by platform, and the difference is real rather than
+cosmetic. Slack and Telegram can withdraw from one conversation. A Discord bot has no
+per-channel membership at all — it joins a server and sees that server's channels
+through permissions — so the smallest thing it can leave is the whole server, taking
+every channel of it along. That action therefore belongs to the server, is confirmed
+as such, and is never offered on a channel row as though it were smaller than it is.
+Where a platform cannot leave at all, the Console offers only Off and Forget.
+
+A platform's refusal is shown as the platform worded it. A missing scope, a
+last-member channel, or a lost right is usually something the operator can act on, and
+collapsing it into a generic failure would throw away the only useful part.
 
 ## Shared-bot channel ownership
 

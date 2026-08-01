@@ -893,7 +893,10 @@ identities.
 `'channel'` for wire compatibility). Slack channel rows keep coming from
 authoritative membership events. Platforms that cannot enumerate every
 conversation send `authoritative: false`; these reports upsert observed rows
-without deleting absent ones. An explicitly addressed Off group is reported
+without deleting absent ones — so such a reporter names what it has LEFT in
+`removed`, the only way it can retire a row at all (its omissions carry no
+meaning). A named removal deletes whatever the row's kind, including a DM row
+that no authoritative snapshot could ever drop. An explicitly addressed Off group is reported
 before routing, because it deliberately creates no session. DM rows are likewise
 reported on first inbound DM to a gated integration, carrying the counterpart's
 display name. An optional boot-time sweep (`conversations.list types=im`) can

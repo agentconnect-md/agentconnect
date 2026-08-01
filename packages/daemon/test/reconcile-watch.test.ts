@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { SlackConnection } from '../src/slack/connection.js'
+import { TelegramConnection } from '../src/telegram/connection.js'
+import { DiscordConnection } from '../src/discord/connection.js'
 
 // A SlackConnection backed by an inert fake Bolt app (no network), with a fixed
 // bot user id, so reconcileSlackConnections' existing-socket branch can be exercised.
@@ -888,6 +890,126 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       integrationId: 'slack-int',
       channels,
       authoritative: false
+    })
+    await daemon.stop()
+  })
+})
+
+/**
+ * Leaving is the only channel control that reaches outside AgentConnect, so these
+ * pin the two things that make it safe: the platforms' differing notions of what can
+ * be left, and the retraction that a non-enumerating platform needs afterwards
+ * (nothing else will ever remove the row).
+ */
+describe('Daemon.leaveConversation', () => {
+  const telegramAgent = (daemon: unknown) => {
+    const integration = { id: 'tg-int', platform: 'telegram', telegram: { botToken: 'tg' } }
+    ;(daemon as any).agents = new Map([['bot-tg', { id: 'bot-tg', integrations: [integration] }]])
+    return integration
+  }
+
+  it('leaves a Telegram chat and RETRACTS the row — nothing else ever would', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    telegramAgent(daemon)
+    ;(daemon as any).channelSnapshots.set('tg-int', {
+      channels: [{ id: '-100123', name: 'Team Chat' }, { id: '-100456' }],
+      authoritative: false
+    })
+    const leaveChannel = vi.fn().mockResolvedValue(undefined)
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(TelegramConnection.prototype), { leaveChannel })
+
+    const verdict = await (daemon as any).leaveConversation({
+      integrationId: 'tg-int',
+      target: { kind: 'conversation', channel: '-100123' }
+    })
+
+    expect(verdict).toEqual({ ok: true })
+    expect(leaveChannel).toHaveBeenCalledWith('-100123')
+    // The row is named as removed: an omission would mean nothing on this platform.
+    expect(emit).toHaveBeenCalledWith({
+      integrationId: 'tg-int',
+      channels: [{ id: '-100456' }],
+      authoritative: false,
+      removed: ['-100123']
+    })
+    await daemon.stop()
+  })
+
+  it("reports the platform's refusal instead of throwing, and leaves the row alone", async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    telegramAgent(daemon)
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(TelegramConnection.prototype), {
+        leaveChannel: vi.fn().mockRejectedValue(new Error('CHAT_ADMIN_REQUIRED'))
+      })
+
+    const verdict = await (daemon as any).leaveConversation({
+      integrationId: 'tg-int',
+      target: { kind: 'conversation', channel: '-100123' }
+    })
+
+    expect(verdict).toEqual({ ok: false, error: 'CHAT_ADMIN_REQUIRED' })
+    expect(emit).not.toHaveBeenCalled() // still a member, so the row must stay
+    await daemon.stop()
+  })
+
+  it('refuses a conversation-scoped leave on Discord, where a bot can only leave a server', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    ;(daemon as any).agents = new Map([
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+    ])
+    const leaveSpace = vi.fn()
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(DiscordConnection.prototype), { leaveSpace })
+
+    const verdict = await (daemon as any).leaveConversation({
+      integrationId: 'dc-int',
+      target: { kind: 'conversation', channel: 'C9' }
+    })
+
+    expect(verdict.ok).toBe(false)
+    expect(leaveSpace).not.toHaveBeenCalled() // never silently escalates to the server
+    await daemon.stop()
+  })
+
+  it('leaving a Discord server retracts every row of that server, and no others', async () => {
+    const { daemon } = makeStubDaemon(root1())
+    await daemon.start()
+    const emit = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).agents = new Map([
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+    ])
+    ;(daemon as any).channelSnapshots.set('dc-int', {
+      channels: [
+        { id: 'C1', spaceId: 'G1' },
+        { id: 'C2', spaceId: 'G1' },
+        { id: 'C3', spaceId: 'G2' }
+      ],
+      authoritative: false
+    })
+    ;(daemon as any).connForIntegration = () =>
+      Object.assign(Object.create(DiscordConnection.prototype), { leaveSpace: vi.fn().mockResolvedValue(undefined) })
+
+    const verdict = await (daemon as any).leaveConversation({
+      integrationId: 'dc-int',
+      target: { kind: 'space', spaceId: 'G1' }
+    })
+
+    expect(verdict).toEqual({ ok: true })
+    expect(emit).toHaveBeenCalledWith({
+      integrationId: 'dc-int',
+      channels: [{ id: 'C3', spaceId: 'G2' }],
+      authoritative: false,
+      removed: ['C1', 'C2']
     })
     await daemon.stop()
   })
