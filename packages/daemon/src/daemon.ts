@@ -179,6 +179,7 @@ import {
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   effectiveMemoryDreamingPolicy,
@@ -3861,6 +3862,7 @@ export class Daemon {
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       ORGANIZATION_KNOWLEDGE_FEATURE,
+      ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,
       ...(this.remoteWebchatGrants && hasRemoteMcpRuntime ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
@@ -4383,11 +4385,15 @@ export class Daemon {
   /** The daemon's single dream-job engine, built on first use (the local store
    *  must exist for the boot-time crash-recovery sweep). */
   private async syncOrganizationSuggestions(): Promise<void> {
-    if (!this.dreamOperationsAllowed()) return
     const client = this.cpClient
-    const runner = this.dreamRunnerInstance
-    if (!client || !runner || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
+    if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return
+    const runner = this.dreamRunner()
     const reply = await client.syncOrganizationSuggestions({ suggestions: runner.organizationSuggestionInventory() })
+    // The inventory is metadata-only and remains safe to converge during the
+    // production hold. Returned decisions are different: applying one changes
+    // local review state and can delete/sweep historical staged bytes, so the
+    // held path is intentionally publish-only.
+    if (!this.dreamOperationsAllowed()) return
     for (const decision of reply.decisions) await runner.organizationSuggestionReview(decision)
   }
 

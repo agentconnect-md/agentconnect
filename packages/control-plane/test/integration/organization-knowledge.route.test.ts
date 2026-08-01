@@ -6,7 +6,11 @@ import type {
   OrganizationSuggestionReadReq,
   OrganizationSuggestionReviewReq
 } from '@agentconnect.md/protocol'
-import { ORGANIZATION_KNOWLEDGE_FEATURE, organizationSuggestionCanonical } from '@agentconnect.md/protocol'
+import {
+  ORGANIZATION_KNOWLEDGE_FEATURE,
+  ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
+  organizationSuggestionCanonical
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { DEF_ORG, seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -205,7 +209,7 @@ describe('Dream organization suggestion review', () => {
         platforms: [],
         runtimes: ['claude'],
         acp: true,
-        features: [ORGANIZATION_KNOWLEDGE_FEATURE]
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
       }
     })
     await seedAgent(prisma, sourceAgentId, { name: 'dreamer', daemonId: DAEMON })
@@ -328,7 +332,7 @@ describe('Dream organization suggestion review', () => {
         platforms: [],
         runtimes: ['claude'],
         acp: true,
-        features: [ORGANIZATION_KNOWLEDGE_FEATURE]
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
       }
     })
     await seedAgent(prisma, sourceAgentId, { name: 'concurrent-dreamer', daemonId: DAEMON })
@@ -387,7 +391,7 @@ describe('Dream organization suggestion review', () => {
         platforms: [],
         runtimes: ['claude'],
         acp: true,
-        features: [ORGANIZATION_KNOWLEDGE_FEATURE]
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
       }
     })
     await seedAgent(prisma, sourceAgentId, { name: 'mutated-dreamer', daemonId: DAEMON })
@@ -439,7 +443,7 @@ describe('Dream organization suggestion review', () => {
         platforms: [],
         runtimes: ['claude'],
         acp: true,
-        features: [ORGANIZATION_KNOWLEDGE_FEATURE]
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
       }
     })
     await seedAgent(prisma, sourceAgentId, { name: 'metadata-race-dreamer', daemonId: DAEMON })
@@ -499,7 +503,7 @@ describe('Dream organization suggestion review', () => {
         platforms: [],
         runtimes: ['claude'],
         acp: true,
-        features: [ORGANIZATION_KNOWLEDGE_FEATURE]
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
       }
     })
     await seedAgent(prisma, sourceAgentId, { name: 'stale-dreamer', daemonId: DAEMON })
@@ -559,7 +563,63 @@ describe('Dream organization suggestion review', () => {
     expect(control.reviews).toEqual([])
   })
 
-  it('retains a rejection reason and fails closed while the source daemon is offline', async () => {
+  it('retains a rejection reason when the source review surface is ready', async () => {
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: {
+        platforms: [],
+        runtimes: ['claude'],
+        acp: true,
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
+      }
+    })
+    const sourceAgentId = randomUUID()
+    await seedAgent(prisma, sourceAgentId, { name: 'reviewable-dreamer', daemonId: DAEMON })
+    const candidateId = randomUUID()
+    const control = new KnowledgeControl()
+    const owner = app({ control, connected: true })
+    const repo = owner.deps.repos.organizationKnowledge!
+    const [pending] = await repo.syncSuggestions(DEF_ORG, DAEMON, [
+      {
+        sourceAgentId,
+        dreamId: 'dream-reject-ready',
+        candidateId,
+        kind: 'knowledge',
+        operation: 'create',
+        title: 'Unsafe draft',
+        digest: digest('unsafe'),
+        contentBytes: 6,
+        state: 'proposed',
+        sessionIds: ['session-3'],
+        createdAt: '2026-07-31T12:00:00.000Z'
+      }
+    ])
+
+    const rejected = await owner.app.inject({
+      method: 'POST',
+      url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
+      payload: { decision: 'reject', reason: 'Conflicts with the approved runbook' }
+    })
+
+    expect(rejected.statusCode).toBe(200)
+    expect(rejected.json()).toMatchObject({
+      state: 'rejected',
+      reviewReason: 'Conflicts with the approved runbook',
+      contentAvailable: false
+    })
+    expect(control.reviews).toEqual([
+      {
+        daemonId: DAEMON,
+        request: {
+          sourceAgentId,
+          dreamId: 'dream-reject-ready',
+          candidateId,
+          state: 'rejected'
+        }
+      }
+    ])
+  })
+
+  it('keeps a rejection pending while the source daemon is offline', async () => {
     const sourceAgentId = randomUUID()
     await seedAgent(prisma, sourceAgentId, { name: 'offline-dreamer' })
     const candidateId = randomUUID()
@@ -593,11 +653,14 @@ describe('Dream organization suggestion review', () => {
       url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
       payload: { decision: 'reject', reason: 'Conflicts with the approved runbook' }
     })
-    expect(rejected.statusCode).toBe(200)
-    expect(rejected.json()).toMatchObject({
-      state: 'rejected',
-      reviewReason: 'Conflicts with the approved runbook',
-      contentAvailable: false
+    expect(rejected.statusCode).toBe(503)
+    expect(await owner.deps.repos.organizationKnowledge!.getSuggestion(pending!.id)).toMatchObject({
+      state: 'pending',
+      reviewedAt: null,
+      reviewedByUserId: null,
+      reviewReason: null,
+      acceptedArtifactId: null,
+      acceptedArtifactRevision: null
     })
 
     const viewerId = await makeUser('suggestion-viewer', 'viewer')
@@ -606,15 +669,19 @@ describe('Dream organization suggestion review', () => {
     ).toBe(403)
   })
 
-  it('does not send suggestion controls to a connected daemon that omitted the feature', async () => {
+  it('keeps review read-only when a connected daemon advertises metadata but not staged review', async () => {
     await seedDaemon(prisma, DAEMON, {
-      capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: [] }
+      capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: [ORGANIZATION_KNOWLEDGE_FEATURE] }
     })
     const sourceAgentId = randomUUID()
     await seedAgent(prisma, sourceAgentId, { name: 'old-dreamer', daemonId: DAEMON })
     const candidateId = randomUUID()
     const content = '# Draft'
     const control = new KnowledgeControl()
+    let readCalls = 0
+    control.onRead = async () => {
+      readCalls += 1
+    }
     control.contents.set(candidateId, {
       sourceAgentId,
       dreamId: 'dream-old-daemon',
@@ -651,6 +718,35 @@ describe('Dream organization suggestion review', () => {
         })
       ).statusCode
     ).toBe(503)
+    expect(
+      (
+        await owner.app.inject({
+          method: 'POST',
+          url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
+          payload: { decision: 'accept', snapshotToken: organizationSuggestionSnapshotToken(pending!) }
+        })
+      ).statusCode
+    ).toBe(503)
+    expect(
+      (
+        await owner.app.inject({
+          method: 'POST',
+          url: `${ORG}/knowledge-suggestions/${pending!.id}/review`,
+          payload: { decision: 'reject', reason: 'must remain pending during the hold' }
+        })
+      ).statusCode
+    ).toBe(503)
+    expect(await owner.deps.repos.organizationKnowledge!.getSuggestion(pending!.id)).toMatchObject({
+      state: 'pending',
+      reviewedAt: null,
+      reviewedByUserId: null,
+      reviewReason: null,
+      acceptedArtifactId: null,
+      acceptedArtifactRevision: null
+    })
+    expect(readCalls).toBe(0)
+    expect(await owner.deps.repos.organizationKnowledge!.listKnowledge(DEF_ORG)).toEqual([])
+    expect(control.reviews).toEqual([])
   })
 })
 
@@ -662,7 +758,7 @@ describe('managed organization skills', () => {
         platforms: [],
         runtimes: ['claude'],
         acp: true,
-        features: [ORGANIZATION_KNOWLEDGE_FEATURE]
+        features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE]
       }
     })
     await seedAgent(prisma, sourceAgentId, { name: 'skill-dreamer', daemonId: DAEMON })

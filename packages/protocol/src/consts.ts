@@ -32,6 +32,10 @@ export const WEBCHAT_REMOTE_MCP_FEATURE = 'webchat_remote_mcp_v1'
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'
 
+/** Daemon currently admits staged Dream suggestion content reads and owner
+ * review decisions. Omitted while the staged-content security hold is active. */
+export const ORGANIZATION_SUGGESTION_REVIEW_FEATURE = 'organization-suggestion-review-v1'
+
 /** Daemon understands externally-bound Slack session audiences, including the
  * `external` visibility value and the stricter shared-memory exclusion bit. */
 export const SLACK_SESSION_AUDIENCE_FEATURE = 'slack-session-audience-v1'

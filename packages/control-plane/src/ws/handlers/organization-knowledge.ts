@@ -1,4 +1,8 @@
-import { isFrame, ORGANIZATION_KNOWLEDGE_FEATURE } from '@agentconnect.md/protocol'
+import {
+  isFrame,
+  ORGANIZATION_KNOWLEDGE_FEATURE,
+  ORGANIZATION_SUGGESTION_REVIEW_FEATURE
+} from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { DaemonView } from '../../ports.js'
 import type { Handler } from './index.js'
@@ -86,14 +90,16 @@ export const handleOrganizationSuggestionsSync: Handler = async (frame, conn, de
   )
   const records = await repo.syncSuggestions(daemon.orgId, conn.daemonId, proposed)
   conn.replyTo(frame, 'knowledge/suggestions/sync/ok', {
-    decisions: records
-      .filter((row) => row.state !== 'pending')
-      .map((row) => ({
-        sourceAgentId: row.sourceAgentId,
-        dreamId: row.dreamId,
-        candidateId: row.candidateId,
-        state: row.state as 'accepted' | 'rejected'
-      }))
+    decisions: daemon.capabilities.features.includes(ORGANIZATION_SUGGESTION_REVIEW_FEATURE)
+      ? records
+          .filter((row) => row.state !== 'pending')
+          .map((row) => ({
+            sourceAgentId: row.sourceAgentId,
+            dreamId: row.dreamId,
+            candidateId: row.candidateId,
+            state: row.state as 'accepted' | 'rejected'
+          }))
+      : []
   })
 }
 
