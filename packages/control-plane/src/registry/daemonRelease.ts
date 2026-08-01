@@ -21,7 +21,8 @@ const NPM_PKG = '@agentconnect.md/daemon'
 // The lightweight dist-tags document (a `{ tag: version }` map) rather than the
 // full packument — a few bytes, cache-friendly, and all we need.
 const DIST_TAGS_URL = `https://registry.npmjs.org/-/package/${encodeURIComponent(NPM_PKG)}/dist-tags`
-const DEFAULT_TTL_MS = 30 * 60_000 // 30 min — daemon releases are infrequent
+const STABLE_TTL_MS = 30 * 60_000 // 30 min — stable daemon releases are infrequent
+const RC_TTL_MS = 2 * 60_000 // RC publishes are frequent; surface them promptly in the console
 const FETCH_TIMEOUT_MS = 4_000
 
 // Same shape as the github `FetchLike` seam: the real `fetch` is assignable to it,
@@ -51,7 +52,7 @@ export class DaemonReleaseResolver {
     private readonly channel: string,
     private readonly clock: Clock,
     private readonly fetchImpl: Fetcher = fetch,
-    private readonly ttlMs: number = DEFAULT_TTL_MS
+    private readonly ttlMs: number = channel === 'rc' ? RC_TTL_MS : STABLE_TTL_MS
   ) {}
 
   /** The current best-known release for the channel. Triggers a background
