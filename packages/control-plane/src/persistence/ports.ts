@@ -543,11 +543,11 @@ export interface CreateAgentInput {
   visibility?: ResourceVisibility
   /** Initial share set (app_user.id); only meaningful with visibility='restricted'. */
   sharedWith?: string[]
-  /** Initial agent-call policy (absent ⇒ DB default 'all', any org peer may call it). */
+  /** Initial agent-call policy (absent ⇒ the organization's default). */
   callPolicy?: AgentCallPolicy
   /** Initial caller allow-list (agent.id set); only meaningful with callPolicy='selected'. */
   allowedCallerAgentIds?: string[]
-  /** Initial outbound policy (absent ⇒ DB default 'all', it may call any org peer). */
+  /** Initial outbound policy (absent ⇒ the organization's default). */
   outboundPolicy?: AgentCallPolicy
   /** Initial target allow-list (agent.id set); only meaningful with outboundPolicy='selected'. */
   allowedTargetAgentIds?: string[]
@@ -3203,6 +3203,8 @@ export interface OrgRecord {
   slug: string
   /** Console avatar descriptor (protocol AgentIcon); null ⇒ generated default. */
   icon: AgentIcon | null
+  /** Default applied to both directional policies of newly created agents. */
+  defaultAgentVisibility: AgentCallPolicy
   /** The asking user's role in it. */
   role: OrgMemberRole
   memberCount: number
@@ -3328,10 +3330,15 @@ export interface OrgRepo {
   listForUser(userId: string): Promise<OrgRecord[]>
   /** Create an org with `ownerUserId` as its first owner (one transaction). */
   create(input: { name: string | null; slug: string; ownerUserId: string }): Promise<OrgRecord>
-  /** Rename / re-slug / re-icon an org. Throws P2025 when absent, P2002 on a slug collision. */
+  /** Update org settings. Throws P2025 when absent, P2002 on a slug collision. */
   update(
     orgId: string,
-    patch: { name?: string | null; slug?: string; icon?: AgentIcon | null }
+    patch: {
+      name?: string | null
+      slug?: string
+      icon?: AgentIcon | null
+      defaultAgentVisibility?: AgentCallPolicy
+    }
   ): Promise<{ id: string; name: string | null; slug: string }>
   /** Set the org's console icon descriptor (the upload/delete path). Bumps `updatedAt`
    *  so the icon endpoint's `?v=` cache-buster changes. Throws P2025 when absent. */
@@ -3341,6 +3348,9 @@ export interface OrgRepo {
   iconById(orgId: string): Promise<{ icon: AgentIcon | null; updatedAt: Date } | null>
   /** The user's role in the org; null when not a member. */
   roleOf(orgId: string, userId: string): Promise<OrgMemberRole | null>
+
+  /** Default directional policy for newly created agents; null when the org is absent. */
+  defaultAgentVisibility(orgId: string): Promise<AgentCallPolicy | null>
 
   /** The org's slug (its URL segment in the console), or null when the org is absent.
    *  Used to build org-scoped session deep links (`<webAppUrl>/<slug>/sessions/<id>`). */

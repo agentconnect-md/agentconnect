@@ -9,7 +9,7 @@
  *
  * Org surface (mounted under `/orgs/:orgId` behind the org-scope guard):
  *   GET    / → the org itself, from the caller's perspective
- *   PATCH  / → rename / re-slug (owner-only)
+ *   PATCH  / → update identity / new-agent visibility default (owner-only)
  *   DELETE / → delete the org (owner-only; refused while it still has
  *              daemons — physical machines are detached explicitly first;
  *              everything else cascades)
@@ -38,6 +38,7 @@ function toDto(o: OrgRecord, deps: HttpDeps): OrgDtoT {
     name: o.name,
     slug: o.slug,
     icon: o.icon,
+    defaultAgentVisibility: o.defaultAgentVisibility,
     // Only `image` org icons resolve to a URL (object-store public URL); glyph/default
     // render locally in the console. Cache-busted by the org's updatedAt.
     iconUrl: o.icon?.kind === 'image' ? resolveOrgIconUrl(o.id, o.icon, bases, o.updatedAt.getTime()) : null,
@@ -140,7 +141,7 @@ export function orgScopedRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Organizations],
           summary: 'Get the organization',
-          description: 'The organization from the caller’s perspective (id, name, slug, their role, member count).',
+          description: 'The organization from the caller’s perspective, including its new-agent visibility default.',
           operationId: 'getOrganization',
           response: { 200: OrgDto, 404: ErrorDto }
         }
@@ -160,7 +161,8 @@ export function orgScopedRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Organizations],
           summary: 'Update the organization',
-          description: 'Rename or re-slug the organization (owner only). A slug collision returns 409.',
+          description:
+            'Update organization identity or the default visibility policy for newly created agents (owner only). A slug collision returns 409.',
           operationId: 'updateOrganization',
           body: UpdateOrgBody,
           response: { 200: OrgDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }

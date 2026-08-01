@@ -31,17 +31,20 @@ datasource db {
 // ───────────────────────────────────────────────────────────────────────────
 
 model Org {
-  id        String   @id @default(cuid())
+  id                     String          @id @default(cuid())
   // Optional display name; when absent the console falls back to `slug`.
-  name      String?
-  slug      String   @unique
+  name                   String?
+  slug                   String          @unique
   // Console avatar descriptor (protocol AgentIcon): {kind:'runtime'} | {kind:'glyph',glyph,color}
   // | {kind:'image'}. Null ⇒ generated default (glyph plate keyed off the org id). An `image`
   // icon's bytes live in the object store (docs/designs/icon-uploads.md), served by GET
   // /v1/orgs/:id/icon. Org icons are console-only — never fed to Slack.
-  icon      Json?    @db.JsonB
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  icon                   Json?           @db.JsonB
+  // Applied to both call directions when a new agent does not explicitly choose
+  // a policy. Existing agents keep their persisted directional policies.
+  defaultAgentVisibility AgentCallPolicy @default(selected)
+  createdAt              DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime        @updatedAt @db.Timestamptz(6)
 
   members                   Membership[]
   daemons                   Daemon[]
@@ -626,10 +629,10 @@ model Agent {
   visibility            ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
   sharedWith            String[]           @default([]) // app_user.id set granted view when visibility='restricted'
   // ── inbound agent-call policy (UI: Agent visibility) ──
-  callPolicy            AgentCallPolicy    @default(all) // 'all' = any org peer agent may call this as a sub-agent
+  callPolicy            AgentCallPolicy    @default(selected) // selected + [] = no org peer may call by default
   allowedCallerAgentIds String[]           @default([]) // agent.id set used when callPolicy='selected'
   // ── outbound agent-call policy (UI: Agent visibility) ──
-  outboundPolicy        AgentCallPolicy    @default(all) // 'all' = this agent may discover/call any otherwise-callable org peer
+  outboundPolicy        AgentCallPolicy    @default(selected) // selected + [] = no peer discovery/calls by default
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
   restrictFileAccess    Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on

@@ -1005,12 +1005,15 @@ export function agentRoutes(deps: HttpDeps) {
           // with visible same-org peers (same rule as PUT /call-policy). The new
           // agent isn't a peer yet, so `agentId` self-exclusion is a harmless no-op.
           const agentId = AgentId(randomUUID())
+          const defaultAgentVisibility = (await deps.repos.org.defaultAgentVisibility(orgOf(req))) ?? 'selected'
+          const callPolicy = req.body.callPolicy ?? defaultAgentVisibility
+          const outboundPolicy = req.body.outboundPolicy ?? defaultAgentVisibility
           const initialAllowedCallers =
-            req.body.callPolicy === 'selected'
+            callPolicy === 'selected'
               ? await resolvePolicyAgentIds(req, agentId, req.body.allowedCallerAgentIds ?? [], [])
               : undefined
           const initialAllowedTargets =
-            req.body.outboundPolicy === 'selected'
+            outboundPolicy === 'selected'
               ? await resolvePolicyAgentIds(req, agentId, req.body.allowedTargetAgentIds ?? [], [])
               : undefined
           // One transaction for the agent row + its initial secret rows (sealing
@@ -1060,10 +1063,10 @@ export function agentRoutes(deps: HttpDeps) {
                     ...(req.principal ? { createdByUserId: req.principal.userId } : {}),
                     ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
                     ...(initialSharedWith ? { sharedWith: initialSharedWith } : {}),
-                    ...(req.body.callPolicy ? { callPolicy: req.body.callPolicy } : {}),
-                    ...(initialAllowedCallers ? { allowedCallerAgentIds: initialAllowedCallers } : {}),
-                    ...(req.body.outboundPolicy ? { outboundPolicy: req.body.outboundPolicy } : {}),
-                    ...(initialAllowedTargets ? { allowedTargetAgentIds: initialAllowedTargets } : {}),
+                    callPolicy,
+                    allowedCallerAgentIds: initialAllowedCallers ?? [],
+                    outboundPolicy,
+                    allowedTargetAgentIds: initialAllowedTargets ?? [],
                     capabilities: req.body.capabilities
                   },
                   // Initial write-only secrets — same transaction, so the first

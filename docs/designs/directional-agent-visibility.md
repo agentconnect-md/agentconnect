@@ -55,10 +55,18 @@ This is an intersection, not an override. Selecting B on A never grants A access
 B's inbound restriction, and selecting A on B never expands A's outbound scope. Self-call
 and hop-limit guards remain independent and unchanged.
 
-Both directions default to `all`, preserving the pre-migration graph. Under `all`, the
-associated id array is stored empty; under `selected`, an empty array means no peers.
+Each organization has a `defaultAgentVisibility` policy that seeds both directions of a
+new agent. It defaults to `selected`, so a new agent neither discovers peers nor accepts
+peer calls until configured; an owner may instead choose `all` for future agents. A create
+request can explicitly override either direction. Changing the organization setting never
+rewrites existing agents. Under `all`, the associated id array is stored empty; under
+`selected`, an empty array means no peers. The Agent table keeps `selected` as its database
+default so writes outside the repository creation seam remain fail-closed.
 
 ## Control plane and console
+
+Organization owners edit the creation default in organization settings. The Add Agent
+form initializes both directional controls from it while retaining per-direction overrides.
 
 The existing `PUT /agents/:id/call-policy` endpoint updates both directions atomically.
 The outbound fields are optional on input so an older client updating only the inbound
@@ -129,22 +137,24 @@ closed. A new direct wake of A still requires B → A authorization.
 
 ## Compatibility and failure behavior
 
-On a fresh agent, the new policy defaults to `all`. When a newer daemon decodes an older
-control-plane payload, both outbound fields remain absent so the daemon preserves the
-complete on-disk outbound half instead of retaining `selected` while clearing its list.
-Once a `selected` outbound policy is received, enforcement is fail-closed: missing targets
-are denied. Local and cross-daemon delivery both fail closed when the collaboration
-snapshot does not contain **both** the caller and the target in one organization.
+On a fresh agent, both policies default to `selected` with empty lists. A missing policy in
+local configuration or a collaboration snapshot also defaults to `selected`, so incomplete
+state cannot create an edge. When a newer daemon decodes an older control-plane agent
+payload, both outbound fields remain absent so the daemon preserves the complete on-disk
+outbound half instead of retaining `selected` while clearing its list. Local and
+cross-daemon delivery both fail closed when the collaboration snapshot does not contain
+**both** the caller and the target in one organization.
 Consequently, a local-only daemon that has never received a control-plane collaboration
 snapshot cannot authorize same-daemon direct agent calls.
 
 Rolling upgrade: the flat org directory arrives only from a control plane that advertises
 `agent-directory-org-scope-v1`. Against an older control plane, relay and daemon derive the
-directory from the channel-keyed rows they do receive, so integration-backed pairs keep
-resolving; an integration-less agent stays invisible until the flat list arrives, which is
-exactly the pre-change behavior. A daemon likewise keeps sending the caller's current
-channel with a discovery request until the feature appears.
+directory from the channel-keyed rows they do receive. A missing directional policy in
+those rows defaults to `selected` with an empty list, so it cannot create an implicit edge;
+an integration-less agent also stays invisible until the flat list arrives. A daemon
+likewise keeps sending the caller's current channel with a discovery request until the
+feature appears.
 
 A data-plane consumer from before this design ignores the new fields and therefore keeps
-the historical unrestricted outbound behavior. A selected outbound restriction is fully
-effective only on daemon and relay versions that understand the directional policy.
+the historical unrestricted outbound behavior. The private default is fully effective only
+on daemon and relay versions that understand the directional policy.

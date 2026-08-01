@@ -2,11 +2,11 @@
  * PgOrgRepo — the org read/write surface behind the console picker + Settings
  * (design §3.2). Personal orgs are created by `PgUserRepo.provisionOidcUser` at
  * signup; this repo covers everything after: listing the caller's orgs, creating
- * additional ones, and owner-gated rename/re-slug.
+ * additional ones, and owner-gated settings updates.
  */
 import type { PrismaLike } from '../prisma.js'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
-import type { OrgRepo, OrgRecord, OrgMemberRole } from '../ports.js'
+import type { AgentCallPolicy, OrgRepo, OrgRecord, OrgMemberRole } from '../ports.js'
 import type { AgentIcon } from '@agentconnect.md/protocol'
 import { OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
@@ -37,6 +37,7 @@ export class PgOrgRepo implements OrgRepo {
       name: m.org.name,
       slug: m.org.slug,
       icon: parseAgentIcon(m.org.icon),
+      defaultAgentVisibility: m.org.defaultAgentVisibility as AgentCallPolicy,
       role: m.role as OrgMemberRole,
       memberCount: m.org._count.members,
       daemonCount: m.org._count.daemons,
@@ -67,6 +68,7 @@ export class PgOrgRepo implements OrgRepo {
       name: org.name,
       slug: org.slug,
       icon: parseAgentIcon(org.icon),
+      defaultAgentVisibility: org.defaultAgentVisibility as AgentCallPolicy,
       role: 'owner',
       memberCount: 1,
       daemonCount: 0,
@@ -77,7 +79,12 @@ export class PgOrgRepo implements OrgRepo {
 
   async update(
     orgId: string,
-    patch: { name?: string | null; slug?: string; icon?: AgentIcon | null }
+    patch: {
+      name?: string | null
+      slug?: string
+      icon?: AgentIcon | null
+      defaultAgentVisibility?: AgentCallPolicy
+    }
   ): Promise<{ id: string; name: string | null; slug: string }> {
     const org = await this.db.org.update({
       where: { id: orgId },
@@ -86,7 +93,8 @@ export class PgOrgRepo implements OrgRepo {
         ...(patch.slug !== undefined ? { slug: patch.slug } : {}),
         ...(patch.icon !== undefined
           ? { icon: patch.icon === null ? Prisma.JsonNull : (patch.icon as Prisma.InputJsonValue) }
-          : {})
+          : {}),
+        ...(patch.defaultAgentVisibility !== undefined ? { defaultAgentVisibility: patch.defaultAgentVisibility } : {})
       }
     })
     return { id: org.id, name: org.name, slug: org.slug }
@@ -108,6 +116,11 @@ export class PgOrgRepo implements OrgRepo {
   async roleOf(orgId: string, userId: string): Promise<OrgMemberRole | null> {
     const m = await this.db.membership.findUnique({ where: { orgId_userId: { orgId, userId } } })
     return m ? (m.role as OrgMemberRole) : null
+  }
+
+  async defaultAgentVisibility(orgId: string): Promise<AgentCallPolicy | null> {
+    const org = await this.db.org.findUnique({ where: { id: orgId }, select: { defaultAgentVisibility: true } })
+    return (org?.defaultAgentVisibility as AgentCallPolicy | undefined) ?? null
   }
 
   async slugById(orgId: string): Promise<string | null> {

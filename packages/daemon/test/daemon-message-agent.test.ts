@@ -18,7 +18,7 @@ const REMOTE_PEERS = ['bot-a', 'bot-b', 'bot-c', 'main', 'worker', 'third', 'pee
  * wake, coords, and trusted workflow metadata without running a real ACP turn.
  */
 
-/** Scaffold a daemon root with local agents carrying either direction of call policy. */
+/** Scaffold explicitly connected peers; AgentSchema's isolated defaults are tested separately. */
 function scaffold(
   agents: {
     id: string
@@ -50,10 +50,10 @@ function scaffold(
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
         integrations: [],
         output: { mode: 'low' },
-        ...(a.callPolicy ? { callPolicy: a.callPolicy } : {}),
-        ...(a.allowedCallerAgentIds ? { allowedCallerAgentIds: a.allowedCallerAgentIds } : {}),
-        ...(a.outboundPolicy ? { outboundPolicy: a.outboundPolicy } : {}),
-        ...(a.allowedTargetAgentIds ? { allowedTargetAgentIds: a.allowedTargetAgentIds } : {})
+        callPolicy: a.callPolicy ?? 'all',
+        allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
+        outboundPolicy: a.outboundPolicy ?? 'all',
+        allowedTargetAgentIds: a.allowedTargetAgentIds ?? []
       })
     )
   }

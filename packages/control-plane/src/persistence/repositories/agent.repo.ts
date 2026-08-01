@@ -216,6 +216,16 @@ export class PgAgentRepo implements AgentRepo {
       // Close organization deletion's no-agent-row enumeration window without
       // taking a parent-row lock in the reverse order of Hook CRUD.
       await lockHookReviewOrgProducerScope(tx, input.orgId)
+      const orgDefault =
+        input.callPolicy === undefined || input.outboundPolicy === undefined
+          ? await tx.org.findUnique({
+              where: { id: input.orgId },
+              select: { defaultAgentVisibility: true }
+            })
+          : null
+      const defaultAgentVisibility = (orgDefault?.defaultAgentVisibility as AgentCallPolicy | undefined) ?? 'selected'
+      const callPolicy = input.callPolicy ?? defaultAgentVisibility
+      const outboundPolicy = input.outboundPolicy ?? defaultAgentVisibility
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: input.orgId,
         visibility: input.visibility ?? 'org',
@@ -289,13 +299,13 @@ export class PgAgentRepo implements AgentRepo {
           // when restricted; a stray set under 'org' is inert (the predicate ignores it).
           ...(input.visibility ? { visibility: input.visibility } : {}),
           ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
-          // Initial call policy (absent ⇒ DB default 'all'). allowedCallerAgentIds
-          // only bites when 'selected'; the route intersects it with visible peers.
-          ...(input.callPolicy ? { callPolicy: input.callPolicy } : {}),
-          ...(input.allowedCallerAgentIds ? { allowedCallerAgentIds: input.allowedCallerAgentIds } : {}),
-          // Same for the outbound half (which peers this agent may call).
-          ...(input.outboundPolicy ? { outboundPolicy: input.outboundPolicy } : {}),
-          ...(input.allowedTargetAgentIds ? { allowedTargetAgentIds: input.allowedTargetAgentIds } : {})
+          // Both directions inherit the organization's creation default unless
+          // explicitly chosen. The database's own selected default remains the
+          // fail-closed fallback for writes outside this repository seam.
+          callPolicy,
+          allowedCallerAgentIds: callPolicy === 'selected' ? (input.allowedCallerAgentIds ?? []) : [],
+          outboundPolicy,
+          allowedTargetAgentIds: outboundPolicy === 'selected' ? (input.allowedTargetAgentIds ?? []) : []
         },
         include: withUsers
       })

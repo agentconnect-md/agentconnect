@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
+import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
   agentSlugFinalize,
@@ -181,6 +182,8 @@ async function searchPublicGithubRepos(query: string, signal?: AbortSignal): Pro
 export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const { createAgent, daemons, agents } = useConsoleData()
   const { me } = useProfile()
+  const { activeOrg } = useOrgs()
+  const defaultAgentVisibility = activeOrg?.defaultAgentVisibility ?? 'selected'
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   // New agents default to a random glyph+color (product default — not runtime-branded).
@@ -247,13 +250,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [ghExactRepoState, setGhExactRepoState] = useState<RepoCheckState>('idle')
   const [ghManualPublicRepo, setGhManualPublicRepo] = useState<GithubRepoDto | null>(null)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
-  // Agent-call visibility: which peer agents may call this one as a sub-agent.
-  // Default 'all' (the CP's default); selected callers are picked from peers.
-  const [callPolicy, setCallPolicy] = useState<AgentCallPolicy>('all')
+  // The org default seeds both directions; this form can still override either one.
+  const [callPolicy, setCallPolicy] = useState<AgentCallPolicy>(defaultAgentVisibility)
   const [allowedCallers, setAllowedCallers] = useState<string[]>([])
-  // Outbound half — which peers this agent may call. Same default ('all') and the
-  // same server-side intersection as inbound.
-  const [outboundPolicy, setOutboundPolicy] = useState<AgentCallPolicy>('all')
+  const [outboundPolicy, setOutboundPolicy] = useState<AgentCallPolicy>(defaultAgentVisibility)
   const [allowedTargets, setAllowedTargets] = useState<string[]>([])
   // Optional env vars + write-only secrets to seed at create (createAgent accepts
   // both). Shared "Secrets and variables" editor with the Edit-agent modal.
@@ -801,14 +801,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ...(sharing.visibility === 'restricted'
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
           : {}),
-        // Selected-callers-create: send only when restricting (default 'all' is
-        // implicit). The CP intersects the allow-list with visible org peers.
-        ...(callPolicy === 'selected'
-          ? { callPolicy: 'selected' as const, allowedCallerAgentIds: allowedCallers }
-          : {}),
-        ...(outboundPolicy === 'selected'
-          ? { outboundPolicy: 'selected' as const, allowedTargetAgentIds: allowedTargets }
-          : {})
+        // Send both modes explicitly: omission now means isolated, while `all` is
+        // an intentional opt-in. The CP intersects selected lists with visible peers.
+        callPolicy,
+        allowedCallerAgentIds: callPolicy === 'selected' ? allowedCallers : [],
+        outboundPolicy,
+        allowedTargetAgentIds: outboundPolicy === 'selected' ? allowedTargets : []
       })
       onClose()
     } catch (e) {

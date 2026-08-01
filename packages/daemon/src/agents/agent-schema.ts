@@ -214,14 +214,13 @@ export const AgentSchema = z.object({
   managedSkills: z.array(ManagedSkillEntry).default([]),
   // Agent→agent call authorization (design §2.5), replicated from the CP so the
   // daemon enforces it LOCALLY when another agent uses `messageAgent` to wake this
-  // one. `all` (the default) ⇒ any org peer may call; `selected` ⇒ only agents in
-  // `allowedCallerAgentIds`. Absent callPolicy ⇒ treated as `all` (backward-compat;
-  // see §6.5 for the fail-closed alternative — noted as a P1 gap).
-  callPolicy: z.enum(['all', 'selected']).default('all'),
+  // one. `all` ⇒ any org peer may call; `selected` ⇒ only agents in
+  // `allowedCallerAgentIds`. Missing policy fails closed to an empty selection.
+  callPolicy: z.enum(['all', 'selected']).default('selected'),
   allowedCallerAgentIds: z.array(z.string()).default([]),
-  // Caller-side half of collaboration authorization. Defaults preserve the
-  // historical unrestricted behavior for existing agent.json files.
-  outboundPolicy: z.enum(['all', 'selected']).default('all'),
+  // Caller-side half of collaboration authorization. Missing policy likewise
+  // discovers and calls no peer until targets are explicitly selected.
+  outboundPolicy: z.enum(['all', 'selected']).default('selected'),
   allowedTargetAgentIds: z.array(z.string()).default([]),
   // Opt-in (issue #536): when true, on a GENUINE new channel join the agent
   // proactively introduces itself to the other agents already there (via
