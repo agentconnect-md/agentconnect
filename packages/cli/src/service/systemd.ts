@@ -35,6 +35,10 @@ export function buildSystemdUnit(a: {
   // through the user's login shell (fresh terminal-equivalent env) and handles
   // the reserved restart code itself; the daemon entry is still resolved via
   // <root>/current at every (re)spawn, so upgrades keep working unit-untouched.
+  // KillMode=mixed: stop delivers SIGTERM to the main process ONLY (the run
+  // shell forwards exactly one TERM to the daemon — control-group would TERM
+  // both and the daemon's second-signal handler force-exits mid-drain), while
+  // the final KILL escalation still sweeps the whole cgroup.
   const entry = a.cliEntry ?? currentDistEntry(a.root)
   return `[Unit]
 Description=AgentConnect daemon
@@ -46,6 +50,7 @@ Type=simple
 ExecStart=${a.execPath} ${entry} run
 Restart=always
 RestartSec=3
+KillMode=mixed
 Environment=AGENTCONNECT_SUPERVISOR=service
 ${pathEnv}${rootEnv}
 [Install]

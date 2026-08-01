@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { chmodSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnDaemonViaLoginShell } from '../src/service-spawn.js'
@@ -76,6 +76,37 @@ describe('spawnDaemonViaLoginShell', () => {
     const result = await done
     expect(result.ready).toBe(false)
     expect(result.signal).toBe('SIGKILL')
+  })
+
+  it('group-kills a profile hanging in a child command — no stray survivors', async () => {
+    const root = dir()
+    const pidFile = join(root, 'stray.pid')
+    const { done } = spawnDaemonViaLoginShell(
+      root,
+      fakeDaemonEntry(root),
+      [],
+      {},
+      {
+        // profile hang in a CHILD command (no exec): the hanging command does
+        // not share the shell pid, so only a process-group kill reaps it.
+        shell: fakePosixShell(root, `sleep 60 &\necho $! > "${pidFile}"\nwait`),
+        pollMs: 25,
+        readyTimeoutMs: 400
+      }
+    )
+    const result = await done
+    expect(result.ready).toBe(false)
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    expect(await waitFor(() => existsSync(pidFile), 2000)).toBe(true)
+    const stray = Number.parseInt(readFileSync(pidFile, 'utf8').trim(), 10)
+    expect(await waitFor(() => !alive(stray), 3000)).toBe(true)
   })
 
   it('reports not-ready when the shell dies before reaching the daemon (profile error)', async () => {

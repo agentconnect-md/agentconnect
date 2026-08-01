@@ -27,6 +27,9 @@ describe('buildSystemdUnit', () => {
     // ExecStart runs the stable current-symlink path, not a versioned dist.
     expect(unit).toContain('ExecStart=/usr/bin/node /home/u/.agentconnect/current/dist/index.js run')
     expect(unit).toContain('Restart=always')
+    // TERM goes to the main process only (the run shell forwards exactly one
+    // TERM to the daemon); KILL escalation still sweeps the cgroup.
+    expect(unit).toContain('KillMode=mixed')
     expect(unit).toContain('Environment=AGENTCONNECT_SUPERVISOR=service')
     expect(unit).toContain('WantedBy=default.target')
     expect(unit).not.toContain('AGENTCONNECT_ROOT')

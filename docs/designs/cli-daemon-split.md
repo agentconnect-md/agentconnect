@@ -211,9 +211,14 @@ and tracks profile edits at every service restart.
 Readiness is watched via the daemon's `<root>/daemon.lock` (lock content ==
 child pid, valid because `exec` preserves the pid). If the login shell never
 reaches the daemon before the deadline — a hanging or `exec`-hijacking profile
-(`tmux`), or a profile error — the run shell kills it and falls back to plain
-direct spawns for the rest of the process's life, so a broken profile degrades
-the environment rather than the service. Hosts whose login shell has no safe
+(`tmux`), or a profile error — the run shell SIGKILLs the attempt's **whole
+process group** (the launch is `detached`, so a profile blocking in a child
+command is reaped too, not just the shell pid) and falls back to plain direct
+spawns for the rest of the process's life, so a broken profile degrades the
+environment rather than the service. On systemd the unit sets `KillMode=mixed`
+so a stop delivers `SIGTERM` to the run shell only — which forwards exactly one
+`TERM` to the daemon, preserving graceful drain — while the final `KILL`
+escalation still sweeps the whole cgroup. Hosts whose login shell has no safe
 exec template (tcsh &c.) use the direct spawn from the start. The unit also
 bakes in an install-time `PATH` snapshot as a floor for the CLI itself and the
 direct-spawn fallback, and the daemon prepends its own Node bin dir on startup

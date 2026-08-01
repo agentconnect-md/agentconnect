@@ -42,9 +42,16 @@ export function spawnDaemonViaLoginShell(
     return { child: direct.child, done: direct.done.then((r) => ({ ...r, ready: true })) }
   }
 
+  // detached: the login-shell attempt gets its own process group, so the
+  // watchdog can SIGKILL the WHOLE group — a profile hanging in a child
+  // command (sleep, credential helper, network call) does not share the shell
+  // pid, and killing only the shell would leak that command alongside the
+  // fallback daemon. The ready daemon's normal signal path is untouched:
+  // runShell keeps sending pid-targeted signals to the exec-ed child.
   const child = spawn(wrapped[0]!, wrapped.slice(1), {
     stdio: 'inherit',
-    env: { ...process.env, ...extraEnv }
+    env: { ...process.env, ...extraEnv },
+    detached: true
   })
 
   let ready = false
@@ -69,9 +76,15 @@ export function spawnDaemonViaLoginShell(
       `agentconnect: daemon did not come up within ${Math.round((opts.readyTimeoutMs ?? READY_TIMEOUT_MS) / 1000)}s ` +
         `of a login-shell launch via ${shell} — a shell profile is likely hanging or exec-ing another program; killing it`
     )
-    // SIGKILL: whatever the shell turned into (tmux, a stuck profile) may
-    // ignore SIGTERM, and pid is still the direct child either way.
-    child.kill('SIGKILL')
+    // SIGKILL the whole process group (child is its own group leader via
+    // detached): whatever the profile turned into or spawned — tmux, a stuck
+    // credential helper, a background command — must not outlive the attempt.
+    try {
+      if (child.pid) process.kill(-child.pid, 'SIGKILL')
+      else child.kill('SIGKILL')
+    } catch {
+      child.kill('SIGKILL')
+    }
   }, opts.readyTimeoutMs ?? READY_TIMEOUT_MS)
 
   const done = new Promise<ServiceChildResult>((resolve) => {
