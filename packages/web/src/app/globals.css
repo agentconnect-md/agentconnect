@@ -469,8 +469,8 @@
   }
   /* Collapsed: the toggle overlays the centered logo, invisible but still in the tab
      order (opacity, not display:none) so a keyboard-only user can Tab to it and
-     re-expand. It reveals on brand hover, or on keyboard focus via the global
-     `.railtoggle:focus-visible` rule above. The logo hides on hover, or when the
+     re-expand. It reveals while the rail is hovered, or on keyboard focus via the
+     global rules above. The logo hides for that same rail-wide hover, or when the
      toggle itself is focused — keyed off `:has(.railtoggle:focus-visible)` (not
      `:focus-within`) so Tabbing to the logo link never hides the focused link. */
   .rail.collapsed .railtoggle {
@@ -480,10 +480,7 @@
     height: auto;
     margin: 0;
   }
-  .rail.collapsed .railbrand:hover .railtoggle {
-    opacity: 1;
-  }
-  .rail.collapsed .railbrand:hover .railbrand-logo,
+  .rail.collapsed:hover .railbrand-logo,
   .rail.collapsed .railbrand:has(.railtoggle:focus-visible) .railbrand-logo {
     opacity: 0;
   }
