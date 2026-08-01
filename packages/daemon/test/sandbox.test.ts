@@ -2,8 +2,19 @@ import { describe, it, expect } from 'vitest'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
 import { sandboxWrap, sandboxBoundary, SandboxError, detectSandbox, writeSandboxSettings } from '../src/acp/sandbox.js'
+import { claudeInnerSandboxSettings } from '../src/acp/claude-runtime.js'
 
 // Ordinary ACP hosts launch through one SRT provider process with an immutable,
 // daemon-written policy rather than assembling bwrap arguments themselves.
@@ -183,5 +194,99 @@ describe('bwrap PID isolation', () => {
     })
     const out = execFileSync(cmd, args, { encoding: 'utf8', env: { ...process.env, HOME: home } }).trim()
     expect(out).toBe('OK')
+  })
+})
+
+// The trusted Claude parent needs provider credentials to reach the model, but
+// model-authored Bash must not inherit any supported direct/cloud auth secret.
+describe('Claude credential environment isolation', () => {
+  const hasBwrap = detectSandbox() === 'bwrap'
+
+  it.skipIf(!hasBwrap)('hides protected provider credential env and files from sandboxed commands', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-claude-credential-env-'))
+    const workspace = join(root, 'workspace')
+    const identityTokenFile = join(root, 'identity.jwt')
+    const identityToken = 'trusted-parent-identity-token'
+    const awsWebIdentityTokenFile = join(root, 'aws-web-identity.jwt')
+    const awsWebIdentityToken = 'trusted-parent-aws-token'
+    const privateClaudeConfig = join(root, 'private-home', '.claude')
+    const privateClaudeSettings = join(privateClaudeConfig, 'settings.json')
+    const seededCredentialEnvironment = {
+      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'trusted-parent-container-token',
+      AWS_WEB_IDENTITY_TOKEN_FILE: awsWebIdentityTokenFile
+    }
+    mkdirSync(workspace)
+    mkdirSync(privateClaudeConfig, { recursive: true })
+    writeFileSync(identityTokenFile, identityToken, { mode: 0o600 })
+    writeFileSync(awsWebIdentityTokenFile, awsWebIdentityToken, { mode: 0o600 })
+    writeFileSync(
+      privateClaudeSettings,
+      JSON.stringify({ env: { ANTHROPIC_API_KEY: 'trusted-parent-settings-token' } }),
+      { mode: 0o600 }
+    )
+    const settings = claudeInnerSandboxSettings([identityTokenFile, awsWebIdentityTokenFile, privateClaudeConfig])
+    const names = settings.credentials.envVars.map(({ name }) => name)
+    const restoredNames = new Set([...names, ...Object.keys(seededCredentialEnvironment)])
+    const previous = new Map([...restoredNames].map((name) => [name, process.env[name]]))
+
+    for (const name of names) process.env[name] = `secret-for-${name}`
+    Object.assign(process.env, seededCredentialEnvironment)
+
+    try {
+      const config = SandboxRuntimeConfigSchema.parse({
+        network: { allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true },
+        filesystem: { ...settings.filesystem, allowWrite: [workspace] },
+        credentials: settings.credentials
+      })
+      await SandboxManager.initialize(config, async () => false)
+      expect(readFileSync(identityTokenFile, 'utf8')).toBe(identityToken)
+      expect(readFileSync(awsWebIdentityTokenFile, 'utf8')).toBe(awsWebIdentityToken)
+      expect(readFileSync(privateClaudeSettings, 'utf8')).toContain('trusted-parent-settings-token')
+      const wrapped = await SandboxManager.wrapWithSandboxArgv(
+        '/usr/bin/env',
+        undefined,
+        undefined,
+        undefined,
+        workspace
+      )
+      const output = execFileSync(wrapped.argv[0]!, wrapped.argv.slice(1), {
+        cwd: workspace,
+        env: wrapped.env,
+        encoding: 'utf8'
+      })
+      const visible = new Set(
+        output
+          .split('\n')
+          .map((line) => line.split('=', 1)[0])
+          .filter(Boolean)
+      )
+      for (const name of names) expect(visible).not.toContain(name)
+      for (const value of Object.values(seededCredentialEnvironment)) expect(output).not.toContain(value)
+
+      for (const credentialFile of [identityTokenFile, awsWebIdentityTokenFile, privateClaudeSettings]) {
+        const fileRead = await SandboxManager.wrapWithSandboxArgv(
+          `/usr/bin/cat ${credentialFile}`,
+          undefined,
+          undefined,
+          undefined,
+          workspace
+        )
+        expect(() =>
+          execFileSync(fileRead.argv[0]!, fileRead.argv.slice(1), {
+            cwd: workspace,
+            env: fileRead.env,
+            stdio: ['ignore', 'pipe', 'pipe']
+          })
+        ).toThrow()
+      }
+    } finally {
+      SandboxManager.cleanupAfterCommand()
+      await SandboxManager.reset()
+      for (const [name, value] of previous) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

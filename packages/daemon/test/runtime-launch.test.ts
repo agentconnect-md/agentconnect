@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -42,6 +43,7 @@ describe('prepareRuntimeLaunch', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const launch = prepareRuntimeLaunch({
       runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
       scopeDir,
       cwd,
       runInSandbox: false,
@@ -56,15 +58,29 @@ describe('prepareRuntimeLaunch', () => {
   it('uses a private HOME only for an effective sandboxed launch', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const customClaudeConfig = join(dirname(hostHome), 'host-claude-config')
+    const identityTokenFile = join(hostHome, 'identity.jwt')
+    const awsWebIdentityTokenFile = join(hostHome, 'aws-web-identity.jwt')
     mkdirSync(customClaudeConfig)
+    writeFileSync(
+      join(customClaudeConfig, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_API_KEY: 'seeded-settings-secret' } })
+    )
+    writeFileSync(join(hostHome, '.claude.json'), JSON.stringify({ mcpToken: 'seeded-global-secret' }))
+    writeFileSync(identityTokenFile, 'trusted-parent-identity-token')
+    writeFileSync(awsWebIdentityTokenFile, 'trusted-parent-aws-token')
     const launch = prepareRuntimeLaunch({
       runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
       scopeDir,
       cwd,
       runInSandbox: true,
       daemonRoot: dirname(scopeDir),
       sandboxMechanism: 'bwrap',
-      explicitEnv: { AGENT_VALUE: 'yes' },
+      explicitEnv: {
+        AGENT_VALUE: 'yes',
+        ANTHROPIC_IDENTITY_TOKEN_FILE: identityTokenFile,
+        AWS_WEB_IDENTITY_TOKEN_FILE: awsWebIdentityTokenFile
+      },
       hostEnv: { HOME: hostHome, CLAUDE_CONFIG_DIR: customClaudeConfig, PATH: '/usr/bin' }
     })
 
@@ -73,15 +89,125 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
     expect(launch.env.AGENT_VALUE).toBe('yes')
     expect(launch.sandbox?.mechanism).toBe('bwrap')
+    expect(statSync(join(cwd, '.claude')).isDirectory()).toBe(true)
+    expect(existsSync(join(cwd, '.claude', 'settings.json'))).toBe(false)
     expect(existsSync(launch.sandbox!.settingsPath)).toBe(true)
     const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
     const canonicalHostHome = realpathSync(hostHome)
+    const canonicalIdentityToken = realpathSync(identityTokenFile)
+    const canonicalAwsWebIdentityToken = realpathSync(awsWebIdentityTokenFile)
+    const privateClaudeConfig = realpathSync(join(scopeDir, 'home', '.claude'))
+    const privateClaudeGlobal = realpathSync(join(scopeDir, 'home', '.claude.json'))
+    expect(readFileSync(join(privateClaudeConfig, 'settings.json'), 'utf8')).toContain('seeded-settings-secret')
+    expect(readFileSync(privateClaudeGlobal, 'utf8')).toContain('seeded-global-secret')
+    expect(launch.env.ANTHROPIC_IDENTITY_TOKEN_FILE).toBe(canonicalIdentityToken)
+    expect(launch.env.AWS_WEB_IDENTITY_TOKEN_FILE).toBe(canonicalAwsWebIdentityToken)
     expect(coveredBy(settings.filesystem.denyRead, canonicalHostHome)).toBe(true)
     expect(coveredBy(settings.filesystem.denyRead, realpathSync(customClaudeConfig))).toBe(true)
     expect(coveredBy(settings.filesystem.denyRead, realpathSync(dirname(scopeDir)))).toBe(true)
     expect(settings.filesystem.allowRead).toEqual(
-      expect.arrayContaining([realpathSync(cwd), realpathSync(join(scopeDir, 'home'))])
+      expect.arrayContaining([
+        realpathSync(cwd),
+        realpathSync(join(scopeDir, 'home')),
+        canonicalIdentityToken,
+        canonicalAwsWebIdentityToken
+      ])
     )
+    expect(launch.sandbox?.protectedCredentialRoots).toEqual(
+      expect.arrayContaining([
+        canonicalIdentityToken,
+        canonicalAwsWebIdentityToken,
+        privateClaudeConfig,
+        privateClaudeGlobal
+      ])
+    )
+  })
+
+  it('drops host Anthropic profile auth instead of deriving outer exceptions from its JSON', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const profileRoot = join(hostHome, 'anthropic-profiles')
+    const profileConfigDir = join(profileRoot, 'configs')
+    mkdirSync(profileConfigDir, { recursive: true })
+    writeFileSync(
+      join(profileConfigDir, 'corp.json'),
+      JSON.stringify({ authentication: { type: 'user_oauth', credentials_path: '/etc/agentconnect-oauth.json' } })
+    )
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      explicitEnv: {
+        ANTHROPIC_CONFIG_DIR: profileRoot,
+        ANTHROPIC_PROFILE: 'corp',
+        CLAUDE_MODEL_CONFIG: JSON.stringify({
+          modelOverrides: { sonnet: 'bedrock/sonnet' },
+          availableModels: ['sonnet'],
+          ignored: 'not an adapter model setting'
+        })
+      },
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const disabledProfileRoot = realpathSync(
+      join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+    )
+    expect(launch.env.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
+    expect(launch.env.ANTHROPIC_PROFILE).toBeUndefined()
+    expect(launch.sandbox?.claudeProtectedSettings).toEqual({
+      modelOverrides: { sonnet: 'bedrock/sonnet' },
+      availableModels: ['sonnet'],
+      env: {
+        ANTHROPIC_CONFIG_DIR: disabledProfileRoot,
+        ANTHROPIC_PROFILE: 'agentconnect-disabled'
+      }
+    })
+    expect(readdirSync(disabledProfileRoot)).toEqual([])
+    expect(coveredBy(launch.sandbox!.allowReadRoots, disabledProfileRoot)).toBe(true)
+    expect(launch.sandbox?.writable).not.toContain(disabledProfileRoot)
+    expect(launch.sandbox?.allowReadRoots).not.toContain(realpathSync(profileRoot))
+    expect(launch.sandbox?.writable).not.toContain('/etc')
+    expect(launch.sandbox?.protectedCredentialRoots).not.toContain('/etc')
+  })
+
+  it('never trusts an Anthropic profile planted in the private runtime HOME', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const privateProfileDir = join(scopeDir, 'home', '.config', 'anthropic', 'configs')
+    mkdirSync(privateProfileDir, { recursive: true })
+    writeFileSync(join(dirname(privateProfileDir), 'active_config'), 'default')
+    writeFileSync(
+      join(privateProfileDir, 'default.json'),
+      JSON.stringify({ authentication: { credentials_path: '/etc/agentconnect-oauth.json' } })
+    )
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const discoveredProfileRoot = launch.env.ANTHROPIC_CONFIG_DIR ?? join(launch.env.XDG_CONFIG_HOME!, 'anthropic')
+    expect(discoveredProfileRoot).toBe(
+      realpathSync(join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled'))
+    )
+    expect(launch.sandbox?.claudeProtectedSettings?.env).toEqual({
+      ANTHROPIC_CONFIG_DIR: discoveredProfileRoot,
+      ANTHROPIC_PROFILE: 'agentconnect-disabled'
+    })
+    expect(readdirSync(discoveredProfileRoot)).toEqual([])
+    expect(discoveredProfileRoot).not.toBe(join(scopeDir, 'home', '.config', 'anthropic'))
+    expect(launch.sandbox?.writable).not.toContain('/etc')
+    expect(launch.sandbox?.allowReadRoots).not.toContain('/etc/agentconnect-oauth.json')
+    expect(launch.sandbox?.protectedCredentialRoots).not.toContain('/etc')
   })
 
   it('resolves version-manager PATH links before hiding the host HOME', () => {
@@ -172,6 +298,46 @@ describe('prepareRuntimeLaunch', () => {
 const runtime = (command: string, args: string[] = ['acp']): RuntimeDef => ({ command, args, env: [] })
 
 describe('composeRuntimeLaunch', () => {
+  it('pins Anthropic profile discovery away from the actual sandboxed child HOME', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const composed = composeRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: {
+        command: process.execPath,
+        args: ['claude-agent-acp'],
+        env: [
+          { name: 'ANTHROPIC_CONFIG_DIR', value: '/etc/anthropic' },
+          { name: 'ANTHROPIC_PROFILE', value: 'corp' },
+          { name: 'SAFE_VALUE', value: 'kept' }
+        ]
+      },
+      provider: 'managed',
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      hostEnv: { HOME: hostHome, PATH: dirname(process.execPath) }
+    })
+    const childEnv = {
+      ...Object.fromEntries(composed.runtime.env.map(({ name, value }) => [name, value])),
+      ...composed.launch.env
+    }
+
+    expect(composed.launch.inheritProcessEnv).toBe(false)
+    const disabledProfileRoot = realpathSync(
+      join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+    )
+    expect(childEnv.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
+    expect(childEnv.ANTHROPIC_PROFILE).toBeUndefined()
+    expect(composed.launch.sandbox?.claudeProtectedSettings?.env).toEqual({
+      ANTHROPIC_CONFIG_DIR: disabledProfileRoot,
+      ANTHROPIC_PROFILE: 'agentconnect-disabled'
+    })
+    expect(readdirSync(disabledProfileRoot)).toEqual([])
+    expect(childEnv.SAFE_VALUE).toBe('kept')
+  })
+
   it('keeps a Claude launcher symlink under the host HOME readable', () => {
     const testRoot = mkdtempSync(join(tmpdir(), 'ac-claude-launch-roots-'))
     const hostHome = join(testRoot, 'home')

@@ -1,12 +1,41 @@
-import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from './sandbox.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment, runtimeHomePath } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
+import {
+  CLAUDE_PROFILE_ENV,
+  claudeProtectedSettings,
+  claudeProviderCredentialFiles,
+  isClaudeRuntimeDef,
+  type ClaudeProtectedSettings
+} from './claude-runtime.js'
+
+function disabledClaudeProfileRoot(scopeDir: string): string {
+  const root = realpathSync(resolve(scopeDir))
+  const target = join(root, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+  let current = root
+  for (const part of relative(root, target).split(sep).filter(Boolean)) {
+    current = join(current, part)
+    if (existsSync(current)) {
+      const stat = lstatSync(current)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new Error(`disabled Claude profile path is not a real directory: ${current}`)
+      }
+      continue
+    }
+    mkdirSync(current, { mode: 0o700 })
+  }
+  if (readdirSync(target).length > 0) {
+    throw new Error(`disabled Claude profile directory is not empty: ${target}`)
+  }
+  chmodSync(target, 0o500)
+  return realpathSync(target)
+}
 
 export interface PreparedRuntimeLaunch {
   env: Record<string, string>
@@ -20,6 +49,12 @@ export interface PreparedRuntimeLaunch {
     cwd: string
     denyReadRoots: string[]
     allowReadRoots: string[]
+    /** Credential paths deliberately exposed to the trusted runtime parent but
+     * denied again inside a runtime-native tool sandbox. */
+    protectedCredentialRoots: string[]
+    /** Highest-precedence Claude settings that keep project/local settings from
+     * redirecting the trusted parent to an attacker-selected credential profile. */
+    claudeProtectedSettings?: ClaudeProtectedSettings
   }
 }
 
@@ -185,19 +220,56 @@ export function prepareRuntimeLaunch(opts: {
   const credentialWritableRoots = compactReadRoots(
     (credentials?.writablePaths ?? []).map((path) => validateException(path, 'shared credential write root'))
   )
+  const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
+  if (claudeRuntime) {
+    // Anthropic profile JSON may live in the agent-writable private HOME and may
+    // reference arbitrary host paths. Fail closed instead of letting that mutable
+    // input influence the trusted parent or outer sandbox. The fixed empty root is
+    // daemon-owned and only read-exposed by sandboxBoundary; shared Claude /login
+    // uses the separate daemon-managed secure-storage directory prepared above.
+    for (const name of CLAUDE_PROFILE_ENV) delete env[name]
+    env.ANTHROPIC_CONFIG_DIR = disabledClaudeProfileRoot(opts.scopeDir)
+  }
+  const protectedClaudeSettings = claudeRuntime ? claudeProtectedSettings(env) : undefined
+  const providerCredentialFiles = claudeRuntime ? claudeProviderCredentialFiles(env, opts.cwd) : []
+  const providerCredentialReadRoots = compactReadRoots(
+    providerCredentialFiles.map(({ envName, path }) => {
+      const canonical = validateException(path, 'Claude provider credential file')
+      // The exception is canonical; point the trusted parent at that same path so
+      // a credential symlink below a hidden HOME cannot become unreadable.
+      if (envName) env[envName] = canonical
+      return canonical
+    })
+  )
+  // Claude user state is copied into the private HOME for the trusted parent.
+  // It may contain settings.env secrets or MCP credentials, so deny every seeded
+  // Claude state surface to the inner Bash sandbox without changing outer access.
+  const privateClaudeStateRoots = claudeRuntime
+    ? [join(runtimeHome, '.claude'), join(runtimeHome, '.claude.json')]
+        .filter(existsSync)
+        .map((path) => realpathSync(path))
+    : []
 
   const boundary = sandboxBoundary({
     agentDir: opts.scopeDir,
     cwd: opts.cwd,
     runtimeHome,
     mcpSocketPath: opts.mcpSocketPath,
-    trustedReadRoots: trustedRuntimeReadRoots,
+    trustedReadRoots: [...trustedRuntimeReadRoots, ...providerCredentialReadRoots],
     trustedWriteRoots: credentialWritableRoots
   })
   // SRT write roots must exist before spawn.
   // This also initializes workspace/memory for a newly-created agent.
   for (const path of boundary.writable) {
     if (!existsSync(path)) mkdirSync(path, { recursive: true })
+  }
+  if (opts.runtime && isClaudeRuntimeDef(opts.runtime)) {
+    // Both layers use SRT. If `.claude` itself is absent, the outer layer masks
+    // that first missing component read-only while protecting nested Claude
+    // config paths; Claude's inner bwrap can then no longer create its own
+    // settings mountpoint. An empty directory is enough and produces no Git diff.
+    const projectClaudeDir = join(boundary.gitSafeDirectories[0]!, '.claude')
+    if (!existsSync(projectClaudeDir)) mkdirSync(projectClaudeDir, { mode: 0o700 })
   }
   const settingsPath = writeSandboxSettings(opts.scopeDir, {
     writable: boundary.writable,
@@ -217,7 +289,13 @@ export function prepareRuntimeLaunch(opts: {
       settingsPath,
       cwd: boundary.gitSafeDirectories[0]!,
       denyReadRoots,
-      allowReadRoots: boundary.allowRead
+      allowReadRoots: boundary.allowRead,
+      protectedCredentialRoots: compactReadRoots([
+        ...credentialWritableRoots,
+        ...providerCredentialReadRoots,
+        ...privateClaudeStateRoots
+      ]),
+      ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {})
     }
   }
 }

@@ -24,7 +24,14 @@ import {
 } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
-import { augmentClaudeEfforts, isClaudeRuntimeDef, ULTRACODE_EFFORT } from './claude-runtime.js'
+import {
+  augmentClaudeEfforts,
+  claudeInnerSandboxSettings,
+  isClaudeRuntimeDef,
+  type ClaudeInnerSandboxSettings,
+  type ClaudeProtectedSettings,
+  ULTRACODE_EFFORT
+} from './claude-runtime.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
@@ -145,6 +152,12 @@ export interface AcpSandboxLaunch {
   settingsPath?: string
   /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
   cwd?: string
+  /** Credential paths available to the trusted ACP runtime itself but denied to
+   * model-authored commands by a runtime-native nested sandbox. */
+  protectedCredentialRoots?: string[]
+  /** SDK flag settings that pin protected parent-only profile selection after
+   * Claude merges workspace-controlled settings. */
+  claudeProtectedSettings?: ClaudeProtectedSettings
 }
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
@@ -285,18 +298,20 @@ export { ULTRACODE_EFFORT }
 
 /** The session `_meta` sent to a Claude runtime on session/new and session/load
  *  (`_meta.claudeCode.options` is spread into the SDK `query()` options layer), or
- *  undefined off Claude runtimes. Three things ride on it:
+ *  undefined off Claude runtimes. Four things ride on it:
  *
  *  - `thinking`: recent models default `thinking.display` to "omitted" — thinking
  *    blocks stream signature-only with empty text, so the ACP wrapper never emits
  *    `agent_thought_chunk` and the transcript loses its reasoning rows. Request
  *    "summarized" (the fullest display the API offers) so thoughts reach the stream.
- *  - `settings.ultracode` (effort "ultracode" only): a session-scoped flag setting
- *    the effort select can't reach — the runtime rejects effort="ultracode".
- *    `enableWorkflows` rides along so the "pro" plan default (workflows off) doesn't
- *    silently drop the orchestration half. Best-effort: on a non-xhigh-capable model
- *    or with workflows unavailable the runtime reports `applied.ultracode=false` and
- *    the session still runs on its default effort — nothing to fail on our side.
+ *  - `settings`: for a sandboxed parent, the SDK's highest-precedence flag tier
+ *    reasserts protected Anthropic profile selection after workspace settings merge;
+ *    effort "ultracode" additionally carries the session-scoped flags the effort
+ *    select can't reach. The adapter's CLAUDE_MODEL_CONFIG fallback is preserved in
+ *    the protected settings because supplying `options.settings` replaces it.
+ *  - `options.sandbox` (only when the ACP runtime already has an outer
+ *    AgentConnect sandbox): enables Claude's native Bash sandbox fail-closed and
+ *    denies its sandboxed commands the provider credentials the parent can read.
  *  - `systemPrompt` (top-level, sibling of `claudeCode`): the agent's system-prompt
  *    seed PLUS, on a fresh session, the agent's memory index (standing context, not a
  *    user turn — see SessionManager). We send it as `{ append }` so it layers ON TOP
@@ -317,17 +332,28 @@ export const SDK_LIFECYCLE_FILTERS = [
   { type: 'system', subtype: 'task_notification' }
 ] as const
 
+interface ClaudeSessionSettings {
+  env?: ClaudeProtectedSettings['env']
+  modelOverrides?: unknown
+  availableModels?: unknown
+  ultracode?: true
+  enableWorkflows?: true
+}
+
 export function claudeSessionMeta(
   reasoningEffort: string | undefined,
   isClaudeRuntime: boolean,
   systemPrompt?: string,
-  memoryAppend?: string
+  memoryAppend?: string,
+  protectedCredentialRoots?: readonly string[],
+  protectedSettings?: ClaudeProtectedSettings
 ):
   | {
       claudeCode: {
         options: {
           thinking: { type: 'adaptive'; display: 'summarized' }
-          settings?: { ultracode: true; enableWorkflows: true }
+          settings?: ClaudeSessionSettings
+          sandbox?: ClaudeInnerSandboxSettings
         }
         emitRawSDKMessages: ReadonlyArray<{ type: string; subtype: string }>
       }
@@ -338,13 +364,17 @@ export function claudeSessionMeta(
   // The seed and the memory index ride the SAME append (seed first, blank line, then
   // memory). Either/both/neither — an empty result omits `systemPrompt` entirely.
   const append = [systemPrompt, memoryAppend].filter(Boolean).join('\n\n')
+  const ultracode = reasoningEffort === ULTRACODE_EFFORT
+  const settings: ClaudeSessionSettings = {
+    ...(protectedSettings ?? {}),
+    ...(ultracode ? { ultracode: true, enableWorkflows: true } : {})
+  }
   return {
     claudeCode: {
       options: {
         thinking: { type: 'adaptive', display: 'summarized' },
-        ...(reasoningEffort === ULTRACODE_EFFORT
-          ? { settings: { ultracode: true as const, enableWorkflows: true as const } }
-          : {})
+        ...(protectedCredentialRoots ? { sandbox: claudeInnerSandboxSettings(protectedCredentialRoots) } : {}),
+        ...(protectedSettings || ultracode ? { settings } : {})
       },
       emitRawSDKMessages: SDK_LIFECYCLE_FILTERS
     },
@@ -772,7 +802,9 @@ export class AcpHost {
       effortOverride ?? this.opts.configPrefs?.reasoningEffort,
       this.isClaudeRuntime(),
       this.opts.configPrefs?.systemPrompt,
-      systemAppend
+      systemAppend,
+      this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
+      this.opts.sandbox?.claudeProtectedSettings
     )
     const res = await this.conn!.agent.request(methods.agent.session.new, {
       cwd,
@@ -987,7 +1019,10 @@ export class AcpHost {
       const _meta = claudeSessionMeta(
         effortOverride ?? this.opts.configPrefs?.reasoningEffort,
         this.isClaudeRuntime(),
-        systemAppend ?? this.opts.configPrefs?.systemPrompt
+        systemAppend ?? this.opts.configPrefs?.systemPrompt,
+        undefined,
+        this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
+        this.opts.sandbox?.claudeProtectedSettings
       )
       const res = await this.conn!.agent.request(methods.agent.session.load, {
         sessionId,
