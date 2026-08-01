@@ -9144,8 +9144,8 @@ export class Daemon {
       const conn = this.replyConnFor(agentId, integrationId)
       const reason =
         sourceBinding === 'unavailable'
-          ? 'This conversation could not be assigned a stable external audience. Reconnect the integration and try again.'
-          : 'This thread already belongs to a session created from another source. Start a new thread and try again.'
+          ? 'This Slack conversation could not be assigned a stable workspace audience. Reconnect the Slack integration and try again.'
+          : 'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.'
       // Only a human ingress gets a visible repair instruction. A2A delivery is
       // intentionally postless; turning a rejected internal wake into a Slack
       // message would leak workflow state and create unsolicited channel noise.

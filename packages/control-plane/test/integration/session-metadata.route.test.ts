@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedLaunch } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { PgAgentRepo, PgSessionRepo } from '../../src/persistence/index.js'
+import { PgAgentRepo, PgHookRepo, PgSessionRepo } from '../../src/persistence/index.js'
 import { handleEventSession } from '../../src/ws/handlers/index.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
@@ -46,6 +46,7 @@ async function reportSession(payload: Record<string, unknown>, daemonId = DAEMON
   const deps = {
     agent: new PgAgentRepo(prisma),
     agentMutations: new AgentMutationGate(),
+    hook: new PgHookRepo(prisma),
     session: new PgSessionRepo(prisma),
     events: new InMemorySessionEventSink()
   } as unknown as DaemonWsDeps
