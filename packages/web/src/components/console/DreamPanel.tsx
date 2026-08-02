@@ -128,7 +128,7 @@ export function DreamPanel({
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
-  const [confirmAdopt, setConfirmAdopt] = useState<string | null>(null)
+  const [confirmAdopt, setConfirmAdopt] = useState<{ dreamId: string; reviewToken?: string } | null>(null)
   const listRequest = useRef(0)
 
   const refresh = useCallback(async () => {
@@ -379,7 +379,7 @@ export function DreamPanel({
             dreamId={reviewing}
             canEdit={canEdit}
             busy={busy}
-            onAdopt={() => setConfirmAdopt(reviewing)}
+            onAdopt={(reviewToken) => setConfirmAdopt({ dreamId: reviewing, reviewToken })}
             onDiscard={() => discard(reviewing)}
           />
         ) : null}
@@ -447,10 +447,10 @@ export function DreamPanel({
             confirmLabel="Adopt"
             onClose={() => setConfirmAdopt(null)}
             onConfirm={() => {
-              const dreamId = confirmAdopt
+              const { dreamId, reviewToken } = confirmAdopt
               setConfirmAdopt(null)
               void run(async () => {
-                await adoptDream(agentId, dreamId)
+                await adoptDream(agentId, dreamId, false, reviewToken)
                 setReviewing(null)
                 setActionNotice('Memory adopted. Outdated proposals were moved to History.')
               })
@@ -478,7 +478,7 @@ function DreamReview({
   dreamId: string
   canEdit: boolean
   busy: boolean
-  onAdopt: () => void
+  onAdopt: (reviewToken?: string) => void
   onDiscard: () => void
 }) {
   // The UNION of live and staged paths, not just the staged tree. Adoption swaps
@@ -491,6 +491,9 @@ function DreamReview({
   const [live, setLive] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Same-bytes review fence token from the staged listing; echoed on Adopt so the
+  // daemon binds adoption to exactly the bytes shown here (task #36 Phase B).
+  const [reviewToken, setReviewToken] = useState<string | undefined>(undefined)
   const request = useRef(0)
 
   useEffect(() => {
@@ -498,10 +501,12 @@ function DreamReview({
     setPaths(null)
     setSelected(null)
     setError(null)
+    setReviewToken(undefined)
     void (async () => {
       try {
         const [stagedPage, livePage] = await Promise.all([listDreamFiles(agentId, dreamId), listAgentMemory(agentId)])
         if (!alive) return
+        setReviewToken(stagedPage.reviewToken)
         const stagedNames = new Set(stagedPage.files.map((f: MemoryFileEntry) => f.name))
         const liveNames = new Set(livePage.exists ? livePage.files.map((f: MemoryFileEntry) => f.name) : [])
         const merged = [...new Set([...stagedNames, ...liveNames])]
