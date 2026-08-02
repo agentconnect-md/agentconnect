@@ -28,7 +28,8 @@ export interface SlackMessageLike {
   user?: string
   bot_id?: string
   app_id?: string
-  bot_profile?: { app_id?: string }
+  bot_profile?: { app_id?: string; icons?: { image_72?: string } }
+  user_profile?: { image_72?: string }
   hidden?: boolean
   message?: unknown
   text?: string
@@ -74,6 +75,7 @@ export function normalizeSlackMessage(
     .map(toSlackAttachment)
     .filter((attachment): attachment is PlatformAttachment => attachment !== null)
   const appId = message.app_id ?? message.bot_profile?.app_id
+  const avatarUrl = message.user_profile?.image_72 ?? message.bot_profile?.icons?.image_72
   const msgId = `slack:${message.channel}:${message.ts}`
 
   return {
@@ -86,7 +88,8 @@ export function normalizeSlackMessage(
     sender: {
       id: message.user ?? message.bot_id ?? 'unknown',
       isBot: Boolean(message.bot_id || appId),
-      ...(appId ? { appId } : {})
+      ...(appId ? { appId } : {}),
+      ...(avatarUrl ? { avatarUrl } : {})
     },
     text,
     mentionedBots,

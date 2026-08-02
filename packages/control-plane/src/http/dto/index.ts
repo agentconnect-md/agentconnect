@@ -2463,6 +2463,7 @@ export const SessionMessageDto = z.object({
   seq: z.number(),
   sender: z.string(),
   senderName: z.string().optional(), // daemon-resolved display name; absent if unknown
+  senderAvatarUrl: z.string().url().optional(), // public provider-hosted profile image
   trustedAgentBot: z.boolean().optional(), // daemon-verified AgentConnect Slack bot provenance
   ts: z.string(),
   kind: z.string(),

@@ -292,6 +292,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
   const initialSessionTitle = githubSessionTitle(msg)
   const sessionTriggerId = `hook:${msg.hookId}`
   const senderId = githubEventActor(msg) ?? sessionTriggerId
+  const senderAvatarUrl = msg.context?.source === 'github' ? msg.context.senderAvatarUrl : undefined
   // `msgId` is the collision-free delivery identity but is not a timestamp. Keep
   // the display/order key in epoch milliseconds and append the complete identity
   // so distinct same-millisecond deliveries cannot share a transcript primary key.
@@ -310,7 +311,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       platform: target.platform,
       channel: target.channel,
       thread: msg.msgId,
-      sender: { id: senderId, isBot: false },
+      sender: { id: senderId, isBot: false, ...(senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}) },
       sessionTriggerId,
       text: buildHookText(msg),
       ...(initialSessionTitle ? { initialSessionTitle } : {}),
@@ -331,7 +332,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
     // repository id here creates a clean runtime after upgrade instead of
     // letting a mutable hook id claim legacy context from another repository.
     ...(msg.github ? { transportScope: `github:${msg.github.repoId}` } : {}),
-    sender: { id: senderId, isBot: false },
+    sender: { id: senderId, isBot: false, ...(senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}) },
     sessionTriggerId,
     text: buildHookText(msg),
     ...(initialSessionTitle ? { initialSessionTitle } : {}),

@@ -522,12 +522,14 @@ function ParticipantAvatar({
   agent,
   avatarUrl,
   avatarInitials,
+  platformMark,
   sp,
   isCron
 }: {
   agent: Agent | null
   avatarUrl?: string | null
   avatarInitials?: string
+  platformMark?: string
   sp: ReturnType<typeof speaker>
   isCron: boolean
 }) {
@@ -542,6 +544,13 @@ function ParticipantAvatar({
         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
       ) : isCron ? (
         <Icon name="calendar-clock" size={14} color="var(--text-secondary)" />
+      ) : platformMark && !avatarUrl && !avatarInitials ? (
+        <span
+          className="flex h-full w-full items-center justify-center rounded-[inherit]"
+          style={{ background: sp.avBg, color: sp.avText }}
+        >
+          <PlatformMark platform={platformMark} />
+        </span>
       ) : (
         <Avatar
           src={avatarUrl}
@@ -1247,7 +1256,7 @@ export default function SessionDetailView() {
           kind: 'user',
           sp: participant,
           agent: senderAgent ?? null,
-          avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(m.sender),
+          avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : memberPictureByIdentity.get(m.sender)),
           avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
           time: formatTranscriptTime(m.ts),
@@ -1812,6 +1821,7 @@ export default function SessionDetailView() {
                       agent={turn.agent}
                       avatarUrl={turn.avatarUrl}
                       avatarInitials={turn.avatarInitials}
+                      platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
                       sp={turn.sp}
                       isCron={turn.isCron}
                     />

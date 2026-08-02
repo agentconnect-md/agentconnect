@@ -84,7 +84,7 @@ interface GithubPayload {
   action?: string
   installation?: { id?: number }
   repository?: { id?: number; full_name?: string }
-  sender?: { login?: string; type?: string }
+  sender?: { login?: string; type?: string; avatar_url?: string }
   requested_reviewer?: { login?: string; type?: string }
   requested_action?: { identifier?: string }
   issue?: GithubSubject
@@ -344,6 +344,7 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     ...(subject?.number !== undefined ? { number: subject.number } : {}),
     ...(subject?.title ? { title: sanitizeTitle(subject.title) } : {}),
     ...(payload.sender?.login ? { senderLogin: payload.sender.login } : {}),
+    ...(payload.sender?.avatar_url ? { senderAvatarUrl: payload.sender.avatar_url } : {}),
     ...((payload.comment?.author_association ?? subject?.author_association)
       ? { authorAssociation: payload.comment?.author_association ?? subject?.author_association }
       : {}),

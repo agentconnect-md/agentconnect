@@ -218,7 +218,7 @@ type SlackUserResult = {
   name?: string
   real_name?: string
   is_bot?: boolean
-  profile?: { real_name?: string; display_name?: string }
+  profile?: { real_name?: string; display_name?: string; image_48?: string; image_72?: string }
 }
 
 /** The subset of a Block Kit `block_actions` payload we read: the interacted element
@@ -1210,10 +1210,18 @@ export class SlackConnection {
     this.deps.log?.debug(`slack: left channel ${channel}`)
   }
 
-  async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {
+  async getUserProfile(
+    user: string
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
     const res = await this.app.client.users.info({ user })
     const u = res.user ?? {}
-    return { id: u.id ?? user, name: u.name, realName: u.real_name ?? u.profile?.real_name, isBot: u.is_bot }
+    return {
+      id: u.id ?? user,
+      name: u.name,
+      realName: u.real_name ?? u.profile?.real_name,
+      isBot: u.is_bot,
+      avatarUrl: u.profile?.image_72 ?? u.profile?.image_48
+    }
   }
 
   /**

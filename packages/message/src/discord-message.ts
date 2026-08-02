@@ -18,6 +18,7 @@ export interface DiscordMessageLike {
   content: string
   authorId: string
   authorIsBot: boolean
+  authorAvatarUrl?: string
   /** False when the message is a DM with no guild. */
   inGuild: boolean
   /** True when `channelId` is itself a Discord thread channel. */
@@ -76,7 +77,11 @@ export function normalizeDiscordMessage(
     // Discord thread channels are conversations, so the channel itself is the
     // stable session/thread coordinate.
     thread: message.channelId,
-    sender: { id: message.authorId, isBot: message.authorIsBot },
+    sender: {
+      id: message.authorId,
+      isBot: message.authorIsBot,
+      ...(message.authorAvatarUrl ? { avatarUrl: message.authorAvatarUrl } : {})
+    },
     text: humanizeDiscordText(message.content, message.mentionUserNames),
     mentionedBots: message.mentionUserIds,
     ...(attachments.length ? { attachments } : {}),

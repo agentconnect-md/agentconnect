@@ -1672,6 +1672,7 @@ describe('buildHookMessage', () => {
           number: 42,
           title: 'db down',
           senderLogin: 'mallory',
+          senderAvatarUrl: 'https://avatars.example.test/mallory.png',
           authorAssociation: 'NONE',
           labels: ['bug', 'p0'],
           htmlUrl: 'https://github.com/acme/infra/issues/42',
@@ -1700,7 +1701,7 @@ describe('buildHookMessage', () => {
 
     it('attributes the message to the GitHub actor while retaining the hook trigger', () => {
       expect(buildHookMessage(ghFire(), 'trace-actor')).toMatchObject({
-        sender: { id: 'mallory' },
+        sender: { id: 'mallory', avatarUrl: 'https://avatars.example.test/mallory.png' },
         sessionTriggerId: `hook:${HOOK_ID}`
       })
     })

@@ -40,7 +40,9 @@ export const NormalizedPlatformMessageSchema = z.object({
   sender: z.object({
     id: z.string(),
     isBot: z.boolean(),
-    appId: z.string().optional()
+    appId: z.string().optional(),
+    /** Public provider-hosted profile image. Auth-gated file URLs must not be exposed here. */
+    avatarUrl: z.string().url().optional()
   }),
   text: z.string(),
   mentionedBots: z.array(z.string()),

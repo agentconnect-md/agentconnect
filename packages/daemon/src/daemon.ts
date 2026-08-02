@@ -2170,10 +2170,18 @@ export class Daemon {
     })
     // Off-hot-path Slack id → display-name resolution, cached into the store so
     // session read-back can label channels/senders without a live Slack call.
-    this.nameResolver = new SlackNameResolver((id, name) => {
-      this.store.setDisplayName(id, name, Date.now())
-      this.emitSessionMetadataSnapshotsForDisplayName(id)
-    }, this.log)
+    this.nameResolver = new SlackNameResolver(
+      (id, name) => {
+        this.store.setDisplayName(id, name, Date.now())
+        this.emitSessionMetadataSnapshotsForDisplayName(id)
+      },
+      this.log,
+      Date.now,
+      (conn, id, avatarUrl) => {
+        const scope = this.transportScopeForIntegrationIds(this.srcIntegrationIds(conn))
+        if (scope) this.store.setProfileAvatar(scope, id, avatarUrl, Date.now())
+      }
+    )
     // Same cache-then-emit sink for Discord/Telegram/Feishu channel and user names.
     this.channelNameResolver = new ChannelNameResolver(
       (id, name) => {
@@ -2190,6 +2198,10 @@ export class Daemon {
         saveScope: (id, scope) => {
           this.store.setChannelScope(id, scope, Date.now())
           this.refreshObservedChannels()
+        },
+        saveAvatar: (source, id, avatarUrl) => {
+          const scope = this.transportScopeForIntegrationIds(this.srcIntegrationIds(source))
+          if (scope) this.store.setProfileAvatar(scope, id, avatarUrl, Date.now())
         },
         log: this.log
       }
@@ -4993,6 +5005,8 @@ export class Daemon {
     }
     this.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
+    if (msg.sender.avatarUrl && msg.transportScope)
+      this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
     // A mention in a watched Slack channel can arrive via both `message.*` and
     // `app_mention`; both share channel:ts, so dedup the double-fire from ONE bot
     // connection. Do not dedup across bot connections: several Slack apps receive
@@ -9536,6 +9550,8 @@ export class Daemon {
     if (integrationId !== undefined) {
       msg.transportScope ??= this.transportScopeForIntegrationIds([integrationId])
     }
+    if (msg.sender.avatarUrl && msg.transportScope)
+      this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
     if (
       this.cfg.features.turnFinalContextRefresh &&
       (msg.platform === 'slack' ||

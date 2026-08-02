@@ -27,7 +27,8 @@ export class SlackNameResolver {
   constructor(
     private save: (id: string, name: string) => void,
     private log?: Logger,
-    private now: () => number = Date.now
+    private now: () => number = Date.now,
+    private saveAvatar?: (conn: SlackConnection, id: string, avatarUrl: string) => void
   ) {}
 
   /** Kick off (cached) resolution for a message's channel, human sender, and any
@@ -74,6 +75,7 @@ export class SlackNameResolver {
         const p = await conn.getUserProfile(info.user)
         const name = p.realName || p.name
         if (name) this.save(channel, `@${name}`)
+        if (p.avatarUrl) this.saveAvatar?.(conn, info.user, p.avatarUrl)
       }
     } catch (err) {
       this.nextAttemptAt.set(channel, this.now() + FAIL_TTL_MS)
@@ -87,6 +89,7 @@ export class SlackNameResolver {
       const p = await conn.getUserProfile(user)
       const name = p.realName || p.name
       if (name) this.save(user, name)
+      if (p.avatarUrl) this.saveAvatar?.(conn, user, p.avatarUrl)
     } catch (err) {
       this.nextAttemptAt.set(user, this.now() + FAIL_TTL_MS)
       this.log?.debug(`slack: name lookup failed for user ${user}: ${(err as Error).message}`)
