@@ -14,6 +14,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { GithubMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { agentLabel, type Agent } from '@/lib/data'
+import { useOrgs } from '@/lib/org-context'
+import { GithubPrivateReposNotice } from '@/components/console/WorkspaceFormFields'
 import {
   ApiError,
   createAgentRepo,
@@ -69,15 +71,16 @@ export default function AddAgentRepoModal({
   onClose: () => void
   onCreated: (row: AgentRepoAuthDto) => void
 }) {
+  const { orgPath } = useOrgs()
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
   // Repos merged across every installation; partial pages render immediately
   // and each row remembers which installation owns its preflight.
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)
   // At least one installation's roster failed to load — the list may be
-  // incomplete, which must not read as "no repositories". `denied` = the
-  // per-user identity gate refused the caller; `failed` = upstream trouble.
-  const [reposError, setReposError] = useState<'failed' | 'denied' | null>(null)
+  // incomplete, which must not read as "no repositories".
+  const [reposError, setReposError] = useState<'failed' | null>(null)
+  const [privateReposHidden, setPrivateReposHidden] = useState(false)
   const [reposNonce, setReposNonce] = useState(0)
   const [pick, setPick] = useState(fixedRepo ?? initialRepo ?? '')
   const [pickOpen, setPickOpen] = useState(false)
@@ -124,14 +127,15 @@ export default function AddAgentRepoModal({
     if (!gh?.enabled || gh.installations.length === 0) return
     let alive = true
     const ctrl = new AbortController()
+    setPrivateReposHidden(false)
     void fetchGithubRepoRoster(gh.installations, ctrl.signal, (partial) => {
       if (alive) setRepos(partial)
-    }).then(({ repos, denied, failed }) => {
+    }).then(({ repos, privateReposHidden, failed }) => {
       if (!alive) return
       // A failed roster read (GitHub outage) must not render as an empty
       // list — keep the pages that loaded and surface the gap with a retry.
-      // An identity denial outranks a generic failure for messaging.
-      setReposError(denied ? 'denied' : failed ? 'failed' : null)
+      setReposError(failed ? 'failed' : null)
+      setPrivateReposHidden(privateReposHidden)
       setRepos(repos)
     })
     return () => {
@@ -153,6 +157,7 @@ export default function AddAgentRepoModal({
       const installations = await syncGithubInstallations()
       setGh({ enabled: true, installations })
       setReposError(null)
+      setPrivateReposHidden(false)
       setRepos(null) // fresh install set ⇒ re-pull the repo list
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -194,8 +199,8 @@ export default function AddAgentRepoModal({
   const needWrite = access === 'write'
   const probeDenies = !!probe?.gated && (needWrite ? !probe.canWrite : !probe.canRead)
   const probeNote = probeDenies
-    ? probe?.denied === 'GITHUB_IDENTITY_REQUIRED'
-      ? 'Your GitHub identity could not be verified — sign in with GitHub, then retry.'
+    ? probe?.identityRequired || probe?.denied === 'GITHUB_IDENTITY_REQUIRED'
+      ? 'Link your GitHub profile to verify repository access, then retry.'
       : needWrite && probe?.canRead
         ? 'You need write access to this repository on GitHub to grant the write tier.'
         : 'You don’t have access to this repository on GitHub.'
@@ -221,7 +226,7 @@ export default function AddAgentRepoModal({
       onCreated(row)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED') {
-        setErr('Your GitHub identity could not be verified — sign in with GitHub, then retry.')
+        setErr('Link your GitHub profile to verify repository access, then retry.')
       } else if (e instanceof ApiError && e.code === 'USER_NO_ACCESS') {
         setErr(
           needWrite
@@ -337,6 +342,9 @@ export default function AddAgentRepoModal({
                   </span>
                   {!fixedRepo && <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />}
                 </div>
+                {privateReposHidden ? (
+                  <GithubPrivateReposNotice profileHref={orgPath('/profile#sign-in-methods')} />
+                ) : null}
                 {!fixedRepo && pickOpen && (
                   <>
                     <div className="fscrim" onClick={() => setPickOpen(false)} />
@@ -348,12 +356,10 @@ export default function AddAgentRepoModal({
                         placeholder="Search or type owner/repo…"
                         autoFocus
                       />
-                      {reposError && (
+                      {reposError === 'failed' && (
                         <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                           <span className="min-w-0 flex-1">
-                            {reposError === 'denied'
-                              ? 'Your GitHub identity could not be verified — sign in with GitHub, then retry.'
-                              : 'Couldn’t load repositories from GitHub — the list may be incomplete.'}
+                            Couldn’t load repositories from GitHub — the list may be incomplete.
                           </span>
                           <button
                             type="button"
@@ -361,6 +367,7 @@ export default function AddAgentRepoModal({
                             onClick={() => {
                               invalidateGithubRepoRosterCache()
                               setReposError(null)
+                              setPrivateReposHidden(false)
                               setRepos(null)
                               setReposNonce((n) => n + 1)
                             }}

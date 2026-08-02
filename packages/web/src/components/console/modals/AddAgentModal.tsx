@@ -74,6 +74,7 @@ import type { MemoryProviderChoice } from '@/components/console/memory-settings'
 import {
   GithubConnectedBanner,
   GithubInstallPrompt,
+  GithubPrivateReposNotice,
   GithubRepositoryField,
   GithubRepositoryOption,
   RepositoryAccessField,
@@ -188,7 +189,7 @@ async function searchPublicGithubRepos(query: string, signal?: AbortSignal): Pro
 export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const { createAgent, daemons, agents } = useConsoleData()
   const { me } = useProfile()
-  const { activeOrg } = useOrgs()
+  const { activeOrg, orgPath } = useOrgs()
   const defaultAgentVisibility = activeOrg?.defaultAgentVisibility ?? 'all'
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -231,10 +232,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // identity-assertion gate). null = unknown/loading — never blocks the UI;
   // the CP re-checks at create either way.
   const [ghAccess, setGhAccess] = useState<GithubRepoAccess | null>(null)
-  // Set when the REPO LIST itself was denied (per-user gate): the account has
-  // no GitHub identity to assert — show the sign-in note instead of an
-  // inexplicably empty picker.
-  const [ghListDenied, setGhListDenied] = useState(false)
+  // Public repositories remain available without a linked GitHub identity;
+  // this only records that the private subset is intentionally hidden.
+  const [ghPrivateReposHidden, setGhPrivateReposHidden] = useState(false)
   const [ghLoading, setGhLoading] = useState(false)
   // At least one installation's roster failed to load (e.g. a GitHub outage) —
   // the list may be incomplete, which must not read as "no repositories".
@@ -441,7 +441,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     let alive = true
     const ctrl = new AbortController()
     setGhLoading(true)
-    setGhListDenied(false)
+    setGhPrivateReposHidden(false)
     setGhReposFailed(false)
     const applyRoster = (refreshed: Array<GithubRepoDto & { installationId: string }>) => {
       if (!alive) return
@@ -465,9 +465,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       })
     }
     void fetchGithubRepoRoster(ghInstalls, ctrl.signal, applyRoster)
-      .then(({ repos, denied, failed }) => {
+      .then(({ repos, privateReposHidden, failed }) => {
         if (!alive) return
-        setGhListDenied(denied)
+        setGhPrivateReposHidden(privateReposHidden)
         // A failed roster read (GitHub outage) must not render as an empty
         // list — keep the pages that loaded and surface the gap with a retry.
         setGhReposFailed(failed)
@@ -735,7 +735,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     if (usingPicker && ghDenied) {
       setErr(
         ghDenied.denied === 'GITHUB_IDENTITY_REQUIRED'
-          ? 'Your GitHub identity could not be verified — sign in with GitHub, then retry.'
+          ? 'Link your GitHub profile to verify repository access, then retry.'
           : 'You don’t have access to this repository on GitHub.'
       )
       return
@@ -1200,16 +1200,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                           <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--red-500)">
                             <Icon name="triangle-alert" size={13} className="mt-[1px] flex-none" />
                             {ghDenied.denied === 'GITHUB_IDENTITY_REQUIRED'
-                              ? 'Your GitHub identity could not be verified — sign in with GitHub, then retry.'
+                              ? 'Link your GitHub profile to verify repository access, then retry.'
                               : 'You don’t have access to this repository on GitHub, so it can’t be attached to an agent.'}
                           </span>
                         )}
-                        {ghListDenied && (
-                          <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--red-500)">
-                            <Icon name="triangle-alert" size={13} className="mt-[1px] flex-none" />
-                            Your GitHub identity could not be verified — synced repositories are hidden. Sign in with
-                            GitHub, then reopen this dialog.
-                          </span>
+                        {ghPrivateReposHidden && (
+                          <GithubPrivateReposNotice profileHref={orgPath('/profile#sign-in-methods')} />
                         )}
                       </>
                     }
@@ -1301,7 +1297,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                           <Icon name="info" size={13} className="mt-[1px] flex-none" />
                           {manualPublicRepo
                             ? 'Public repository — read-only clone.'
-                            : 'You have read-only access to this repository on GitHub.'}
+                            : ghAccess?.identityRequired
+                              ? 'Link your GitHub profile to verify write access.'
+                              : 'You have read-only access to this repository on GitHub.'}
                         </span>
                       ) : undefined
                     }

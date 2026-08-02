@@ -42,7 +42,7 @@ function appAs(
     userId?: string
     githubStatus?: number
     githubFetch?: (url: string, init?: RequestInit) => Promise<Response>
-    githubUserAuthz?: Pick<GithubUserAuthzService, 'assertAccess'>
+    githubUserAuthz?: Partial<Pick<GithubUserAuthzService, 'assertAccess' | 'filterReposForUser'>>
   } = {}
 ) {
   const calls: GithubCall[] = []
@@ -89,6 +89,77 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
   await users.addMemberByEmail(DEFAULT_ORG_ID, email, role)
   return userId
 }
+
+describe('GET /orgs/:orgId/github/installations/:id/repositories', () => {
+  it('returns public repositories while explicitly marking private repositories hidden', async () => {
+    const row = await seedInstallation()
+    let filterCalls = 0
+    const filterReposForUser: GithubUserAuthzService['filterReposForUser'] = async (_userId, _installation, repos) => {
+      filterCalls += 1
+      return {
+        repos: repos.filter((repo) => !repo.private),
+        privateReposHidden: true
+      }
+    }
+    const h = appAs({
+      githubFetch: async (url) => {
+        if (url.endsWith(`/app/installations/${INSTALLATION}/access_tokens`)) {
+          return Response.json(
+            { token: 'ghs_metadata', expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+            { status: 201 }
+          )
+        }
+        if (url.includes('/installation/repositories?')) {
+          return Response.json({
+            total_count: 2,
+            repositories: [
+              {
+                id: 41,
+                full_name: 'acme/public-repository',
+                private: false,
+                default_branch: 'main',
+                description: 'Public',
+                pushed_at: '2026-08-01T00:00:00.000Z'
+              },
+              {
+                id: 42,
+                full_name: 'acme/private-repository',
+                private: true,
+                default_branch: 'main',
+                description: 'Private',
+                pushed_at: '2026-08-01T00:00:00.000Z'
+              }
+            ]
+          })
+        }
+        throw new Error(`unexpected github call: ${url}`)
+      },
+      githubUserAuthz: { filterReposForUser }
+    })
+
+    const res = await h.app.app.inject({
+      method: 'GET',
+      url: `${ORG}/github/installations/${row.id}/repositories?page=1&perPage=100`
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({
+      repos: [
+        {
+          repoId: '41',
+          fullName: 'acme/public-repository',
+          private: false,
+          defaultBranch: 'main',
+          description: 'Public',
+          updatedAt: '2026-08-01T00:00:00.000Z'
+        }
+      ],
+      totalCount: 2,
+      privateReposHidden: true
+    })
+    expect(filterCalls).toBe(1)
+  })
+})
 
 describe('GET /orgs/:orgId/github/installations/:id/repositories/:owner/:repo', () => {
   it('resolves an authorized private repository outside the initial picker page', async () => {

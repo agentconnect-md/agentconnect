@@ -151,6 +151,21 @@ export function GithubConnectedBanner({ onManage }: { onManage: () => void }) {
   )
 }
 
+export function GithubPrivateReposNotice({ profileHref }: { profileHref: string }) {
+  return (
+    <div className="mt-[6px] flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-secondary)">
+      <Icon name="info" size={13} className="mt-[1px] flex-none" />
+      <span>
+        Public repositories are shown.{' '}
+        <a className="lnk font-medium" href={profileHref}>
+          Link your GitHub profile
+        </a>
+        &#32;to see private repositories.
+      </span>
+    </div>
+  )
+}
+
 export function GithubRepositoryField({
   value,
   icon = 'lock',

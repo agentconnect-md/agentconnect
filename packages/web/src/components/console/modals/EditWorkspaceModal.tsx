@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { GithubMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { agentLabel, type Agent } from '@/lib/data'
+import { useOrgs } from '@/lib/org-context'
 import {
   ApiError,
   setAgentWorkspace,
@@ -28,6 +29,7 @@ import { agentDirInputValue, normalizeAgentDir } from '@/lib/repo-subdir'
 import {
   GithubConnectedBanner,
   GithubInstallPrompt,
+  GithubPrivateReposNotice,
   GithubRepositoryField,
   GithubRepositoryOption,
   RepositoryAccessField,
@@ -52,6 +54,7 @@ export default function EditWorkspaceModal({
   onClose: () => void
   onChanged: () => void
 }) {
+  const { orgPath } = useOrgs()
   const githubWorkspace = agent.workspace.mode === 'github' ? agent.workspace : null
   const currentWrite = githubWorkspace ? !!githubWorkspace.installationId && githubWorkspace.gitAccess !== 'read' : null
   const currentAgentDir = agentDirInputValue(githubWorkspace?.agentDir)
@@ -59,7 +62,8 @@ export default function EditWorkspaceModal({
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)
-  const [reposError, setReposError] = useState<'failed' | 'denied' | null>(null)
+  const [reposError, setReposError] = useState<'failed' | null>(null)
+  const [privateReposHidden, setPrivateReposHidden] = useState(false)
   const [reposNonce, setReposNonce] = useState(0)
   const [pick, setPick] = useState(githubWorkspace?.repo ?? authorized[0]?.repoFullName ?? '')
   const [pickOpen, setPickOpen] = useState(false)
@@ -110,13 +114,15 @@ export default function EditWorkspaceModal({
     if (!gh?.enabled || gh.installations.length === 0) return
     let alive = true
     const ctrl = new AbortController()
+    setPrivateReposHidden(false)
     void fetchGithubRepoRoster(gh.installations, ctrl.signal, (partial) => {
       if (alive) setRepos(partial)
-    }).then(({ repos, denied, failed }) => {
+    }).then(({ repos, privateReposHidden, failed }) => {
       if (!alive) return
       // A failed roster read (GitHub outage) must not render as an empty
       // list — keep the pages that loaded and surface the gap with a retry.
-      setReposError(denied ? 'denied' : failed ? 'failed' : null)
+      setReposError(failed ? 'failed' : null)
+      setPrivateReposHidden(privateReposHidden)
       setRepos(repos)
     })
     return () => {
@@ -138,6 +144,7 @@ export default function EditWorkspaceModal({
       const installations = await syncGithubInstallations()
       setGh({ enabled: true, installations })
       setReposError(null)
+      setPrivateReposHidden(false)
       setRepos(null) // fresh install set ⇒ re-pull the repo list
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -195,8 +202,8 @@ export default function EditWorkspaceModal({
 
   const probeDenies = !!probe?.gated && (write ? !probe.canWrite : !probe.canRead)
   const probeNote = probeDenies
-    ? probe?.denied === 'GITHUB_IDENTITY_REQUIRED'
-      ? 'Your GitHub identity could not be verified — sign in with GitHub, then retry.'
+    ? probe?.identityRequired || probe?.denied === 'GITHUB_IDENTITY_REQUIRED'
+      ? 'Link your GitHub profile to verify repository access, then retry.'
       : write && probe?.canRead
         ? 'You need write access to this repository on GitHub to enable push access.'
         : 'You don’t have access to this repository on GitHub.'
@@ -276,7 +283,7 @@ export default function EditWorkspaceModal({
       onChanged()
     } catch (error) {
       if (error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED') {
-        setErr('Your GitHub identity could not be verified — sign in with GitHub, then retry.')
+        setErr('Link your GitHub profile to verify repository access, then retry.')
       } else if (error instanceof ApiError && error.code === 'USER_NO_ACCESS') {
         setErr(
           write
@@ -378,18 +385,22 @@ export default function EditWorkspaceModal({
                   onClose={() => setPickOpen(false)}
                   onQueryChange={setQ}
                   error={
-                    reposError === 'denied'
-                      ? 'Your GitHub identity could not be verified — sign in with GitHub, then retry.'
-                      : reposError === 'failed'
-                        ? 'Couldn’t load repositories from GitHub — the list may be incomplete.'
-                        : undefined
+                    reposError === 'failed'
+                      ? 'Couldn’t load repositories from GitHub — the list may be incomplete.'
+                      : undefined
                   }
                   onRetry={() => {
                     invalidateGithubRepoRosterCache()
                     setReposError(null)
+                    setPrivateReposHidden(false)
                     setRepos(null)
                     setReposNonce((value) => value + 1)
                   }}
+                  note={
+                    privateReposHidden ? (
+                      <GithubPrivateReposNotice profileHref={orgPath('/profile#sign-in-methods')} />
+                    ) : undefined
+                  }
                 >
                   {matches.map((repo) => {
                     const grant = grantOf(repo.fullName)

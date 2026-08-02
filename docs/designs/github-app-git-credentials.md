@@ -1125,8 +1125,16 @@ the cache and stops requesting.
    `GET /repos/{owner}/{repo}/collaborators/{username}/permission`, which
    includes team- and organization-derived access. Read operations accept an
    effective permission or a public repository; write operations require
-   write/admin. Missing identity metadata requires the user to refresh their
-   GitHub sign-in and never silently grants access.
+   write/admin. Missing identity metadata does not remove public read access;
+   private repositories and write operations still require the user to link a
+   GitHub profile and never silently gain access.
+
+   Installing the GitHub App is not a human-identity assertion. The setup
+   callback proves an organization-bound installation claim, but it does not
+   identify the person who completed an organization install. AgentConnect
+   therefore never infers a Profile link from an installation account or
+   callback. Profile linking remains an explicit social authorization through
+   the existing sign-in-method flow.
 
    **Remaining limits:**
 
@@ -1164,8 +1172,9 @@ the cache and stops requesting.
      accept any effective permission **or a public repository**. For
      need=write, require write/admin. GitHub folds maintain into write and
      triage into read; a public repository alone does not confer write.
-     Missing GitHub identity, such as Google sign-in, returns
-     `GITHUB_IDENTITY_REQUIRED` and never silently permits access.
+     Missing GitHub identity, such as Google sign-in, still permits public
+     reads. Identity-dependent checks return `GITHUB_IDENTITY_REQUIRED` and
+     never silently permit private access or writes.
    - **Enforcement points:** (1)
      `GET …/repositories/:owner/:repo/access` provides picker preflight and is
      registered only when the gateway is enabled. The web interprets 404 as
@@ -1194,10 +1203,10 @@ the cache and stops requesting.
      `Repository.collaborators(login:)`: installation tokens can return an
      empty collaborator connection for a user whose REST effective permission
      is non-`none`.
-     An account without a GitHub identity receives
-     `GITHUB_IDENTITY_REQUIRED` for the list as well, with a machine-coded 403
-     and an explicit console prompt, consistent with all other checks. Access
-     is never silently granted.
+     An account without a GitHub identity receives the public subset with
+     `privateReposHidden: true`. The console presents that as an informational
+     state and links to Profile -> Sign-in methods; it does not render a failed
+     or empty picker. Private names remain undisclosed.
 
      API-key principals are covered through
      key->userId->oidcSubject, with no browser session required. The
@@ -1206,7 +1215,7 @@ the cache and stops requesting.
    - **Web:** preflight `/access` as soon as a repository is selected. No read
      access shows a red inline error under the field and blocks submission.
      Read without write pins "Allow push" to read-only and submits
-     `gitAccess: 'read'`. `GITHUB_IDENTITY_REQUIRED` prompts "Sign in with
-     GitHub and retry."
+     `gitAccess: 'read'`. `GITHUB_IDENTITY_REQUIRED` points to the existing
+     Profile GitHub-linking action.
    - Identity-provider application IDs and `LOGTO_MGMT_*` values are supplied
      through runtime configuration.

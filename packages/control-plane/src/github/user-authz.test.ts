@@ -240,6 +240,19 @@ describe('GithubUserAuthzService', () => {
     })
   })
 
+  it('allows public read without a GitHub identity but keeps write identity-gated', async () => {
+    const { svc, calls } = authz({ login: null, repo: { private: false } })
+    await expect(svc.assertAccess('u1', INS, 'o', 'public', 'read')).resolves.toMatchObject({
+      canRead: true,
+      canWrite: false,
+      identityRequired: true
+    })
+    await expect(svc.assertAccess('u1', INS, 'o', 'public', 'write')).rejects.toMatchObject({
+      code: 'GITHUB_IDENTITY_REQUIRED'
+    })
+    expect(calls.permission).toBe(0)
+  })
+
   it('private + none ⇒ no read; public + none ⇒ read but never write', async () => {
     const closed = authz({ login: 'me', repo: { private: true }, permission: 'none' })
     await expect(closed.svc.assertAccess('u1', INS, 'o', 'r', 'read')).rejects.toMatchObject({
@@ -303,7 +316,8 @@ describe('GithubUserAuthzService', () => {
       { fullName: 'o/secret', private: true }
     ]
     const visible = await svc.filterReposForUser('u1', INS, page)
-    expect(visible.map((r) => r.fullName)).toEqual(['o/pub', 'o/readable'])
+    expect(visible.repos.map((r) => r.fullName)).toEqual(['o/pub', 'o/readable'])
+    expect(visible.privateReposHidden).toBe(false)
     expect(calls.permission).toBe(2) // public repos are never probed
   })
 
@@ -314,10 +328,16 @@ describe('GithubUserAuthzService', () => {
     expect(calls.permission).toBe(1)
   })
 
-  it('list filter denies GITHUB_IDENTITY_REQUIRED like every other check', async () => {
+  it('list filter keeps public rows and marks private rows hidden without a GitHub identity', async () => {
     const { svc } = authz({ login: null })
-    await expect(svc.filterReposForUser('u1', INS, [{ fullName: 'o/pub', private: false }])).rejects.toMatchObject({
-      code: 'GITHUB_IDENTITY_REQUIRED'
+    await expect(
+      svc.filterReposForUser('u1', INS, [
+        { fullName: 'o/pub', private: false },
+        { fullName: 'o/private', private: true }
+      ])
+    ).resolves.toEqual({
+      repos: [{ fullName: 'o/pub', private: false }],
+      privateReposHidden: true
     })
   })
 

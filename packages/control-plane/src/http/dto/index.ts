@@ -1694,7 +1694,10 @@ export const GithubRepoDto = z.object({
 export const GithubRepoPageDto = z.object({
   repos: z.array(GithubRepoDto),
   /** Total the installation can reach (GitHub `total_count`) — drives pager UI. */
-  totalCount: z.number()
+  totalCount: z.number(),
+  /** Public rows are still returned; this tells the picker why private rows
+   *  are absent and lets it offer the explicit Profile-linking action. */
+  privateReposHidden: z.boolean()
 })
 
 export const GithubBranchListDto = z.array(z.object({ name: z.string() }))
@@ -1705,7 +1708,10 @@ export const GithubBranchListDto = z.array(z.object({ name: z.string() }))
 export const GithubRepoAccessDto = z.object({
   permission: z.enum(['admin', 'write', 'read', 'none']),
   canRead: z.boolean(),
-  canWrite: z.boolean()
+  canWrite: z.boolean(),
+  /** Public read may succeed without a linked GitHub identity. This remains
+   *  true so write controls can explain what the caller must link. */
+  identityRequired: z.boolean()
 })
 
 export const GithubRepoPageQuery = z.object({
