@@ -228,28 +228,30 @@ There is no server-side text parsing: mentions are structural facts from the
 composer, matching the "explicit platform @mention is a trusted routing fact"
 rule in [product-conventions.md](../product-conventions.md).
 
-### 4.2 The webchat ladder is computed client-side, validated server-side
+### 4.2 Membership is a standing mention
 
-IM needs server-side arbitration (`packages/relay/src/bot-arbitration.ts:116`)
-because many humans type free text into a shared channel across many ingress
-pods. A webchat conversation has exactly one composer, owned by the one human
-owner, with structured mentions. The routing ladder therefore runs **in the
-composer** and its result travels explicitly as `targets`:
+The Slack mental model, applied literally: pulling agents into a conversation
+is equivalent to having @-mentioned them all in its first message. From then
+on, **every user message activates the whole roster** unless it explicitly
+@-mentions someone — a mention narrows the turn to the named participants:
 
 1. **Mentions** — `targets = mentions` when non-empty.
-2. **Conversation affinity** — no mention: target the last agent that posted
-   in the conversation (the client renders the transcript, so it knows).
-   This mirrors relay thread affinity without needing the 3-leg
-   `rc/thread-assign` dance — there is no cross-pod ambiguity to resolve.
-3. **Primary agent** — a fresh conversation with no agent post yet.
+2. **Everyone** — no mention: every participant is activated. Each agent runs
+   the standing response-choice contract
+   ([product-conventions.md](../product-conventions.md) §No-response control
+   marker) and silently declines with `AC_NO_RESPONSE` when the message is
+   plainly for someone else; the daemon holds the live stream while the body
+   could still be the bare sentinel, so a decline never flashes into the
+   browser and commits no canonical post. Turn-final context refresh
+   (section 5.4) keeps the concurrent answers coherent — a slower participant
+   sees the faster ones' replies before committing.
 
-The relay does not arbitrate; it **validates and fans out**:
-
-- `targets ⊄ roster` → the turn is refused with a new ack reason
-  `not_participant` (per offending target).
-- `targets` absent or empty → the relay substitutes the primary agent, which
-  makes an old browser build indistinguishable from a one-participant
-  conversation.
+The relay applies the same default itself (`targets` absent or empty ⇒ the
+whole roster), so a resumed conversation with no client-side roster — or an
+older browser build — still reaches everyone; the browser admits stream lanes
+lazily from the per-agent acks. `targets ⊄ roster` is refused with the
+`not_participant` ack reason per offending target. A one-participant roster
+makes every rule above collapse to today's single-agent behavior.
 
 Trusting the client for _targeting_ is sound because it is a UX choice, not an
 authorization boundary: the roster is CP-validated, every target is
@@ -747,9 +749,12 @@ user-facing product ("talk to several agents in one Playground conversation").
 
 ## 12. Alternatives considered
 
-- **Broadcast every turn to every participant** (all agents answer, decline
-  via `AC_NO_RESPONSE`) — rejected: N-fold token cost and noise for no
-  addressing value; IM already solved this with mention-first ladders.
+- **Mention-first ladder with a single default target** (mention → last
+  responder → primary) — the original v1 shape, replaced by the standing-
+  mention model of section 4.2: a roster the owner explicitly assembled IS the
+  addressing, so activating all of it is not indiscriminate broadcast, and the
+  no-response contract plus turn-final refresh absorb the noise the original
+  rejection feared. Cost stays bounded by the roster cap the owner chose.
 - **Server-side arbitration at the relay** (mirror `bot-arbitration.ts` with
   durable affinity) — deferred: with one composer, structured mentions, and a
   single owner, client-computed targeting is strictly simpler and equally
@@ -797,10 +802,15 @@ Questions resolved during design review:
    mirroring the IM answer workflow; the browser stream stays live and a
    superseded generation is replaced in place. Single-participant
    conversations keep today's behavior (section 5.4).
-8. **Primary is invisible** — no "default" marker anywhere; during assembly
+8. **Membership is a standing mention (revised targeting)** — an unmentioned
+   user message activates the whole roster (as if every participant had been
+   @'d when it joined), with explicit mentions narrowing the turn; the
+   last-responder/primary default ladder is retired, and `AC_NO_RESPONSE` +
+   turn-final refresh keep all-respond coherent (section 4.2).
+9. **Primary is invisible** — no "default" marker anywhere; during assembly
    every chip is removable and the primary is re-derived as the first agent
    of the final list (section 9.1).
-9. **No runtime controls in multi-agent conversations** — the Model / Effort /
-   Permission pills and per-agent overrides disappear when the roster has two
-   or more agents; each participant runs its configured runtime defaults, and
-   the `set_*` ops stay single-agent-only (sections 9.1, 9.3).
+10. **No runtime controls in multi-agent conversations** — the Model / Effort /
+    Permission pills and per-agent overrides disappear when the roster has two
+    or more agents; each participant runs its configured runtime defaults, and
+    the `set_*` ops stay single-agent-only (sections 9.1, 9.3).

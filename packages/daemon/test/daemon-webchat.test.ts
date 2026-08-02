@@ -1195,6 +1195,57 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     ...over
   })
 
+  it('suppresses a silent decline: the streamed sentinel never reaches the browser, no post, no reply row', async () => {
+    const { factory } = streamingHost([text('AC_NO_'), text('RESPONSE')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const events: RdChatEvent[] = []
+    const posts: unknown[] = []
+    const ack = (daemon as any).handleRelayMsg(
+      rd({ op: 'turn', text: 'anyone?', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
+      (event: RdChatEvent) => events.push(event),
+      (post: unknown) => posts.push(post)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+
+    const messages = events.flatMap((e) =>
+      e.kind === 'output' && e.output.event?.kind === 'message' ? [e.output.event.text] : []
+    )
+    expect(messages).toEqual([]) // the sentinel was held and dropped
+    expect(posts).toEqual([]) // no canonical post fan-out
+    const replies = (daemon as any).store
+      .transcriptSince(`${CONV}`, `webchat:${CONV}`, null)
+      .filter((row: { sender: string }) => row.sender === AGENT_ID)
+    expect(replies).toEqual([]) // no transcript reply row
+    await daemon.stop()
+  })
+
+  it('releases held text the instant the body diverges from the sentinel prefix', async () => {
+    const { factory } = streamingHost([text('AC_NO'), text(' — actually, here is the answer')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const events: RdChatEvent[] = []
+    const ack = (daemon as any).handleRelayMsg(
+      rd({ op: 'turn', text: 'anyone?', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
+      (event: RdChatEvent) => events.push(event)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+
+    const messages = events.flatMap((e) =>
+      e.kind === 'output' && e.output.event?.kind === 'message' ? [e.output.event.text] : []
+    )
+    expect(messages.join('')).toBe('AC_NO — actually, here is the answer')
+    await daemon.stop()
+  })
+
   it('a turn op preserves the browser turnId and streams rd/chat output→done', async () => {
     const { factory } = streamingHost([text('hi from agent')])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
