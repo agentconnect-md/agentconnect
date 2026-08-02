@@ -2191,12 +2191,11 @@ model McpGrant {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// Shared skills registry (docs/designs/shared-skills.md). The CP records only
-// the SOURCE (a repo / git URL / tree path) plus an optional ref + skill
-// filter — skill CONTENT never touches the CP. The daemon installs enabled
-// skills via `npx skills` after clone and before the ACP host spawns. There is
-// no secret side-table or grant: skills are plain content, and private-repo
-// reads reuse the existing GitHub App short-lived token path on the daemon.
+// Shared skills registry (docs/designs/shared-skills.md). The CP records only a
+// bounded public GitHub SOURCE, its numeric repository identity, and optional
+// ref/subdir/skill filter — skill CONTENT never touches the CP. The daemon
+// acquires a commit-bound local snapshot and installs it with its bundled exact
+// CLI before the ACP host spawns. There is no secret side-table or repo grant.
 //
 // The per-agent enable-list is NOT a relation here; like mcpServers it lives as
 // a string[] of "<sourceName>/<skillName>" (or "<sourceName>/*") inside the
@@ -2206,8 +2205,8 @@ model SkillSource {
   id              String             @id @default(uuid()) @db.Uuid
   orgId           String
   name            String // reference key; the agent enable-list keys on it. @@unique([orgId, name])
-  source          String // fed to `npx skills add` (owner/repo | git URL | tree/<ref>/<subdir>)
-  githubRepoId    BigInt? // GitHub numeric id — survives rename/re-create (mirrors AgentRepoAuthorization)
+  source          String // bounded GitHub acquisition input; the CLI sees only a local snapshot
+  githubRepoId    BigInt? // nullable for migration; unbound rows never project to AgentSpec
   ref             String? // optional branch/tag/commit; composed into the source (design §5)
   subDir          String? // optional repo-relative install dir
   skills          String[]           @default([]) // empty ⇒ install every skill; else only these (passed as -s)

@@ -38,16 +38,19 @@ function isAncestorProcess(ownerPid: number): boolean {
  * process, while AgentConnect needs a different filesystem/socket policy per
  * agent and may run many hosts concurrently.
  */
-export async function runSandboxRuntimeProvider(argv: string[]): Promise<number> {
-  if (process.platform !== 'linux') {
-    console.error('agentconnect sandbox-runtime: Linux is the only supported platform')
+export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?: boolean } = {}): Promise<number> {
+  if (process.platform !== 'linux' && !(opts.offline && process.platform === 'darwin')) {
+    console.error(
+      `agentconnect sandbox-runtime: ${opts.offline ? 'offline helpers require Linux or macOS' : 'Linux is the only supported platform'}`
+    )
     return 1
   }
   const separator = argv.indexOf('--')
+  const startGated = argv[3] === '--start-gated'
   const ownerPid = Number(argv[1])
   const requestedCwd = argv[2]
   if (
-    separator !== 3 ||
+    separator !== (startGated ? 4 : 3) ||
     argv.length < 5 ||
     !Number.isSafeInteger(ownerPid) ||
     ownerPid <= 0 ||
@@ -59,6 +62,10 @@ export async function runSandboxRuntimeProvider(argv: string[]): Promise<number>
   }
 
   try {
+    if (startGated && !(await waitForStartGate())) {
+      console.error('agentconnect sandbox-runtime: start gate closed before GO')
+      return 1
+    }
     const config = SandboxRuntimeConfigSchema.parse(JSON.parse(readFileSync(argv[0]!, 'utf8')))
     const sandboxCwd = realpathSync(requestedCwd)
     const writeRoots = config.filesystem.allowWrite.map((path) => resolve(path))
@@ -97,7 +104,7 @@ export async function runSandboxRuntimeProvider(argv: string[]): Promise<number>
     // domain through its callback. This preserves proxy-aware web egress; SRT's
     // network namespace still has documented local-port/client compatibility
     // gaps tracked in issue #312.
-    await SandboxManager.initialize(config, async () => true)
+    await SandboxManager.initialize(config, async () => opts.offline !== true)
 
     const command = argv
       .slice(separator + 1)
@@ -117,7 +124,18 @@ export async function runSandboxRuntimeProvider(argv: string[]): Promise<number>
     // the detached ACP process group.
     let escalation: NodeJS.Timeout | undefined
     const ownerWatch = setInterval(() => {
-      if (isAncestorProcess(ownerPid)) return
+      const ownerAlive =
+        process.platform === 'linux'
+          ? isAncestorProcess(ownerPid)
+          : (() => {
+              try {
+                process.kill(ownerPid, 0)
+                return true
+              } catch {
+                return false
+              }
+            })()
+      if (ownerAlive) return
       clearInterval(ownerWatch)
       child.kill('SIGTERM')
       escalation = setTimeout(() => child.kill('SIGKILL'), 2_000)
@@ -143,4 +161,29 @@ export async function runSandboxRuntimeProvider(argv: string[]): Promise<number>
     await SandboxManager.reset().catch(() => undefined)
     return 1
   }
+}
+
+async function waitForStartGate(): Promise<boolean> {
+  return new Promise((resolveGate) => {
+    let body = ''
+    let settled = false
+    const finish = (allowed: boolean): void => {
+      if (settled) return
+      settled = true
+      process.stdin.pause()
+      process.stdin.removeAllListeners('data')
+      process.stdin.removeAllListeners('end')
+      process.stdin.removeAllListeners('error')
+      resolveGate(allowed)
+    }
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', (chunk: string) => {
+      body += chunk
+      if (body.length > 16) finish(false)
+      else if (body.includes('\n')) finish(body === 'GO\n')
+    })
+    process.stdin.once('end', () => finish(false))
+    process.stdin.once('error', () => finish(false))
+    process.stdin.resume()
+  })
 }

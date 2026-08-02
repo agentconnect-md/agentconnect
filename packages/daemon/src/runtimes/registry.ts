@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import type { RuntimeDef, Config } from '../config/config-schema.js'
 import { registryPath, registryCachePath } from '../paths.js'
 import { CURATED_RUNTIME_CATALOG } from './curated.js'
+import { skillsAgentIdForRuntime } from './skills-capability.js'
 
 const PackageDistSchema = z.object({ package: z.string(), args: z.array(z.string()).default([]) })
 const BinaryPlatformSchema = z.object({
@@ -40,6 +41,9 @@ export interface ResolvedRuntimeEntry {
   source: RuntimeSource
   name: string
   version: string
+  /** Audited skills CLI identity; absent means this harness has not passed the
+   * skill-discovery compatibility admission. */
+  skillsAgentId: string | null
 }
 
 export interface ResolvedRuntimeCatalog {
@@ -219,7 +223,7 @@ export async function resolveRuntimeCatalog(
   const entries: Record<string, ResolvedRuntimeEntry> = Object.fromEntries(
     Object.entries(CURATED_RUNTIME_CATALOG).map(([id, entry]) => [
       id,
-      { runtime: entry.runtime, source: 'curated' as const, name: entry.name, version: '' }
+      resolvedRuntimeEntry(id, entry.runtime, 'curated', entry.name, '')
     ])
   )
   const userRuntimes = cfg.runtimes ?? {}
@@ -232,15 +236,10 @@ export async function resolveRuntimeCatalog(
   for (const [id, entry] of Object.entries(registry.agents)) {
     const runtime = toRuntimeDef(entry)
     if (!runtime) continue
-    entries[id] = {
-      runtime,
-      source: 'registry',
-      name: entry.name || id,
-      version: entry.version
-    }
+    entries[id] = resolvedRuntimeEntry(id, runtime, 'registry', entry.name || id, entry.version)
   }
   for (const [id, runtime] of Object.entries(userRuntimes)) {
-    entries[id] = { runtime, source: 'user', name: id, version: '' }
+    entries[id] = resolvedRuntimeEntry(id, runtime, 'user', id, '')
   }
 
   // The legacy explicit id is an operator override for the canonical automatic
@@ -248,6 +247,23 @@ export async function resolveRuntimeCatalog(
   if (userRuntimes.hermes && !userRuntimes['hermes-agent']) delete entries['hermes-agent']
 
   return { entries, runtimes: runtimeMap(entries) }
+}
+
+function resolvedRuntimeEntry(
+  id: string,
+  runtime: RuntimeDef,
+  source: RuntimeSource,
+  name: string,
+  version: string
+): ResolvedRuntimeEntry {
+  // A user runtime overrides the command/args as well as the id's semantics.
+  // Never inherit an audited built-in capability from the reused id: operators
+  // must explicitly admit their replacement harness with skillsAgentId.
+  const skillsAgentId =
+    source === 'user' && !Object.prototype.hasOwnProperty.call(runtime, 'skillsAgentId')
+      ? undefined
+      : skillsAgentIdForRuntime(id, runtime)
+  return { runtime, source, name, version, skillsAgentId: skillsAgentId ?? null }
 }
 
 export async function resolveRuntimes(

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
+import { detectSandbox } from '../src/acp/sandbox.js'
 import {
   AtifTrajectorySchema,
   EvaluationEventEmitter,
@@ -216,6 +217,11 @@ describe('EvaluationRunner', () => {
       turns: [{ agentId: AGENT_ID, text: 'hello' }]
     })
 
+    if (!detectSandbox()) {
+      expect(result.status).toBe('infra_error')
+      expect(result.error?.message).toMatch(/sandbox/i)
+      return
+    }
     expect(result.status).toBe('passed')
     expect(result.output).toContain('perm:{"outcome":"selected","optionId":"allow"}')
     expect(result.output).toContain('echo:hello')

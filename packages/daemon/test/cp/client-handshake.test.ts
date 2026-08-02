@@ -114,6 +114,182 @@ describe('CpClient handshake', () => {
     expect(applied).toHaveLength(1)
   })
 
+  it('joins a blocked reconcile snapshot on stop and never transitions that connection to READY', async () => {
+    const t = new FakeTransport()
+    let releaseSnapshot!: () => void
+    const blocked = new Promise<void>((resolve) => (releaseSnapshot = resolve))
+    let markSnapshotEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markSnapshotEntered = resolve))
+    let ready = false
+    const client = new CpClient(
+      makeDeps(t, {
+        configApply: {
+          applyConfigPush() {},
+          async applyReconcileSnapshot() {
+            markSnapshotEntered()
+            await blocked
+          },
+          upsertCron() {},
+          removeCron() {},
+          applyRouteAssign() {},
+          applyRouteUpdate() {}
+        },
+        onReady: () => {
+          ready = true
+        }
+      })
+    )
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          { daemonId: DAEMON_ID, sessionEpoch: 7, heartbeatSec: 20, serverTime: '2026-06-26T00:00:00.000Z' },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    const reg = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'register/ok',
+          { routingEpoch: 3, assignments: [], crons: [], leases: [], drop: { assignments: [], crons: [] } },
+          { corr: reg.id }
+        )
+      )
+    )
+    await entered
+
+    let stopped = false
+    const stopping = client.stop().then(() => {
+      stopped = true
+    })
+    await tick()
+    expect(stopped).toBe(false)
+
+    releaseSnapshot()
+    await stopping
+    expect(client.state).toBe('CLOSED')
+    expect(ready).toBe(false)
+    expect(t.sent.map((value) => JSON.parse(value)).some((frame) => frame.type === 'facts/daemon-runtimes')).toBe(false)
+  })
+
+  it('queues controls after register/ok until snapshot convergence and drains them FIFO before READY', async () => {
+    const t = new FakeTransport()
+    const prematureAgentId = '33333333-3333-4333-8333-333333333333'
+    const removedAgentIds = ['44444444-4444-4444-8444-444444444444', '55555555-5555-4555-8555-555555555555']
+    let releaseSnapshot!: () => void
+    const blocked = new Promise<void>((resolve) => (releaseSnapshot = resolve))
+    let markSnapshotEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markSnapshotEntered = resolve))
+    const events: string[] = []
+    const client = new CpClient(
+      makeDeps(t, {
+        configApply: {
+          applyConfigPush() {},
+          async applyReconcileSnapshot() {
+            events.push('snapshot:start')
+            markSnapshotEntered()
+            await blocked
+            events.push('snapshot:end')
+          },
+          applyAgentRemove(agentId: string) {
+            events.push(`remove:${agentId}`)
+          },
+          async applyAgentUpsert(upsert: { agentId: string }) {
+            events.push(`upsert:${upsert.agentId}`)
+            return { ok: true }
+          },
+          upsertCron() {},
+          removeCron() {},
+          applyRouteAssign() {},
+          applyRouteUpdate() {}
+        },
+        onReady: () => events.push('ready')
+      })
+    )
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          { daemonId: DAEMON_ID, sessionEpoch: 7, heartbeatSec: 20, serverTime: '2026-06-26T00:00:00.000Z' },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    const reg = t.lastSent()
+
+    // Merely sending register is not enough to open the barrier: controls before
+    // the correlated register/ok remain protocol errors and never reach config.
+    const prematureRemove = buildEnvelope(
+      'agent/remove',
+      { agentId: prematureAgentId },
+      { epoch: 7, agentId: prematureAgentId }
+    )
+    t.pushInbound(JSON.stringify(prematureRemove))
+    expect(events).toEqual([])
+    expect(t.sent.map((value) => JSON.parse(value))).toContainEqual(
+      expect.objectContaining({
+        type: 'error',
+        corr: prematureRemove.id,
+        payload: expect.objectContaining({ code: 'PROTOCOL_STATE' })
+      })
+    )
+
+    // Deliver register/ok and the first controls in one JS turn. The handshake
+    // continuation has not started snapshot convergence yet, so this exercises
+    // the exact CP-ready/daemon-REGISTERING race.
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'register/ok',
+          { routingEpoch: 3, assignments: [], crons: [], leases: [], drop: { assignments: [], crons: [] } },
+          { corr: reg.id }
+        )
+      )
+    )
+    const queuedControls = [
+      buildEnvelope('agent/remove', { agentId: removedAgentIds[0] }, { epoch: 7, agentId: removedAgentIds[0] }),
+      buildEnvelope(
+        'agent/upsert',
+        { agentId: removedAgentIds[0], spec: { name: 'restored-after-remove' } },
+        { epoch: 7, agentId: removedAgentIds[0] }
+      ),
+      buildEnvelope('agent/remove', { agentId: removedAgentIds[1] }, { epoch: 7, agentId: removedAgentIds[1] })
+    ]
+    for (const control of queuedControls) t.pushInbound(JSON.stringify(control))
+    await entered
+    await tick()
+
+    expect(client.state).toBe('REGISTERING')
+    expect(events).toEqual(['snapshot:start'])
+    for (const control of queuedControls) {
+      expect(t.sent.map((value) => JSON.parse(value))).not.toContainEqual(
+        expect.objectContaining({ type: 'error', corr: control.id })
+      )
+    }
+
+    releaseSnapshot()
+    await tick()
+    expect(client.state).toBe('READY')
+    expect(events).toEqual([
+      'snapshot:start',
+      'snapshot:end',
+      `remove:${removedAgentIds[0]}`,
+      `upsert:${removedAgentIds[0]}`,
+      `remove:${removedAgentIds[1]}`,
+      'ready'
+    ])
+  })
+
   it('fails a malformed correlated register/ok immediately instead of timing out', async () => {
     const t = new FakeTransport()
     const warnings: string[] = []

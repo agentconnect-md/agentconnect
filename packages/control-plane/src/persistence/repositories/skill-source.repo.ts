@@ -2,11 +2,11 @@
  * PgSkillSourceRepo (docs/designs/shared-skills.md §4).
  *
  * The org-level registry of skills sources. Metadata-only: the CP stores just the
- * source string (+ optional ref/subDir/skill filter) and never fetches or holds
- * skill content — the daemon installs enabled skills via `npx skills`. Unlike the
- * MCP provider registry there is NO secret side-table and NO grant: skills carry
- * no upstream credential, and private-repo reads reuse the daemon's GitHub App
- * token path. A Shareable, so the same visibility policy as agents/MCP applies.
+ * bounded public GitHub source and numeric repository identity (+ optional
+ * ref/subDir/skill filter) and never fetches or holds skill content — the daemon
+ * acquires and installs it from a local snapshot. Unlike the MCP provider
+ * registry there is NO secret side-table and NO repository grant. A Shareable,
+ * so the same visibility policy as agents/MCP applies.
  */
 import type { Prisma, SkillSource } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'

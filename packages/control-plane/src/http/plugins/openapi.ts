@@ -97,7 +97,8 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   },
   {
     name: Tag.Skills,
-    description: 'Org-level shared-skills sources — GitHub/git repos the daemon installs via `npx skills`.'
+    description:
+      'Org-level public GitHub skill sources — metadata the daemon binds to a numeric repository identity, acquires as a bounded snapshot, and installs with its bundled exact CLI.'
   },
   {
     name: Tag.Knowledge,

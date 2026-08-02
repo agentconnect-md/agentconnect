@@ -26,6 +26,7 @@ import {
   memoryDir,
   type MemoryHistoryRecord
 } from '../src/agents/memory.js'
+import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 
 const silent = { info() {}, warn() {} }
 
@@ -102,6 +103,7 @@ async function setup(opts: {
   findOrganizationKnowledge?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['findOrganizationKnowledge']>
   managedSkillsFor?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['managedSkillsFor']>
   onOrganizationSuggestions?: () => void | Promise<void>
+  withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   operationPolicy?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['operationPolicy']>
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
@@ -124,10 +126,17 @@ async function setup(opts: {
     ...(opts.findOrganizationKnowledge ? { findOrganizationKnowledge: opts.findOrganizationKnowledge } : {}),
     ...(opts.managedSkillsFor ? { managedSkillsFor: opts.managedSkillsFor } : {}),
     ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
+    ...(opts.withSkillAcceptance ? { withSkillAcceptance: opts.withSkillAcceptance } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
     log: silent
   })
   return { dir, store, runner, prompts }
+}
+
+async function acceptedSkillBody(dir: string, name: string): Promise<string> {
+  const source = (await acceptedDreamSkillSources({ dir })).find((entry) => entry.name === name)
+  if (!source) throw new Error(`accepted skill ${name} is missing`)
+  return readFile(join(source.sourceDir, 'SKILL.md'), 'utf8')
 }
 
 async function settle(store: FakeStore, dreamId: string): Promise<DreamInfo> {
@@ -1378,7 +1387,8 @@ describe('DreamRunner skill mining (D-3)', () => {
   async function mining(
     proposal: string,
     store = new TwoSessionStore(),
-    onEvent?: (event: DreamLifecycleEvent) => void
+    onEvent?: (event: DreamLifecycleEvent) => void,
+    withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   ) {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     ensureMemory(dir, 'bot')
@@ -1389,6 +1399,7 @@ describe('DreamRunner skill mining (D-3)', () => {
       store,
       extract: async () => ({ output: proposal }),
       ...(onEvent ? { onEvent } : {}),
+      ...(withSkillAcceptance ? { withSkillAcceptance } : {}),
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
@@ -1439,11 +1450,19 @@ describe('DreamRunner skill mining (D-3)', () => {
     expect(done.skills).toBeUndefined()
   })
 
-  it('accept copies the skill into the agent-owned tree and marks it accepted', async () => {
+  it('accept publishes the immutable source, evicts the warm host, and marks it accepted', async () => {
     const events: DreamLifecycleEvent[] = []
-    const { dir, runner, dreamId } = await mining(grounded, new TwoSessionStore(), (event) => events.push(event))
+    const withSkillAcceptance = vi.fn(async (_agentId: string, publish: () => Promise<void>) => publish())
+    const { dir, runner, dreamId } = await mining(
+      grounded,
+      new TwoSessionStore(),
+      (event) => events.push(event),
+      withSkillAcceptance
+    )
     const after = await runner.skillAccept('a1', dreamId, 'deploy-staging')
     expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
+    expect(withSkillAcceptance).toHaveBeenCalledOnce()
+    expect(withSkillAcceptance.mock.calls[0]?.[0]).toBe('a1')
     expect(events.at(-1)).toMatchObject({
       type: 'memory.dream.skill_accepted',
       dream: { dreamId, skills: [{ name: 'deploy-staging', state: 'accepted' }] },
@@ -1452,11 +1471,12 @@ describe('DreamRunner skill mining (D-3)', () => {
 
     // The canonical copy lands under the agent root — daemon-owned, outside the
     // workspace. Session prep materializes it into the runtime's skill root
-    // under symlink containment (see dream-skill-install.test.ts).
-    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('name: deploy-staging')
+    // through the unified isolated installer under symlink containment.
+    expect(await acceptedSkillBody(dir, 'deploy-staging')).toContain('name: deploy-staging')
     // Idempotent — no duplicate lifecycle decision.
     await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
     expect(events.filter((event) => event.type === 'memory.dream.skill_accepted')).toHaveLength(1)
+    expect(withSkillAcceptance).toHaveBeenCalledOnce()
   })
 
   it('an accepted skill survives discarding the dream it came from', async () => {
@@ -1465,7 +1485,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     const { dir, runner, dreamId } = await mining(grounded)
     await runner.skillAccept('a1', dreamId, 'deploy-staging')
     await runner.discard('a1', dreamId)
-    expect(await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')).toContain('name: deploy-staging')
+    expect(await acceptedSkillBody(dir, 'deploy-staging')).toContain('name: deploy-staging')
   })
 
   it('dismiss drops the staging and blocks a later accept; both are idempotent', async () => {
@@ -1558,7 +1578,7 @@ describe('DreamRunner skill mining — review findings', () => {
   it('accepts the generated skill with its validated frontmatter intact', async () => {
     const { dir, runner, dreamId } = await mine()
     await runner.skillAccept('a1', dreamId, 'deploy-staging')
-    const body = await readFile(join(dir, 'skills', 'deploy-staging', 'SKILL.md'), 'utf8')
+    const body = await acceptedSkillBody(dir, 'deploy-staging')
     // Frontmatter is daemon-generated from the VALIDATED name/description, so
     // what ships is exactly what the reviewer saw.
     expect(parseYaml(body.split('---')[1] ?? '')).toMatchObject({ name: 'deploy-staging' })

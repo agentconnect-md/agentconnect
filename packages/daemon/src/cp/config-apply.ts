@@ -41,11 +41,11 @@ export interface ConfigApply {
   /** Merge whitelisted non-secret config keys (config/push EVT). */
   applyConfigPush(keys: Record<string, unknown>): void
   /** Converge crons + agent specs (+ record leases) from the register/ok reconcile snapshot. */
-  applyReconcileSnapshot(snap: RegisterOk): void
+  applyReconcileSnapshot(snap: RegisterOk): void | Promise<void>
   /** Apply a CP agent spec and resolve after disk + live reconcile converge. */
   applyAgentUpsert(upsert: AgentUpsert): Promise<Ack>
   /** Drop a CP agent spec (agent/remove EVT). */
-  applyAgentRemove(agentId: string): void
+  applyAgentRemove(agentId: string): void | Promise<void>
   /** Quiesce + archive an agent for a safe cold move (agent/detach REQ). */
   applyAgentDetach(detach: AgentDetach): Promise<Ack>
   /** Restore/reconcile an agent and verify it is servable (agent/activate REQ). */

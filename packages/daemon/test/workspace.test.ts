@@ -305,15 +305,10 @@ describe('prepareWorkspaceForActivation', () => {
     expect(cloneTarget).not.toBe(path)
     expect(existsSync(join(path, '.git'))).toBe(true)
     expect(existsSync(cloneTarget)).toBe(false)
-    const skillsMarker = join(dirname(path), '.agentconnect', 'skills-install.json')
-    const activatedGeneration = (JSON.parse(readFileSync(skillsMarker, 'utf8')) as { generation: string }).generation
 
     await rollback()
     expect(existsSync(path)).toBe(true)
     expect(readdirSync(path)).toEqual([])
-    expect((JSON.parse(readFileSync(skillsMarker, 'utf8')) as { generation: string }).generation).not.toBe(
-      activatedGeneration
-    )
   })
 
   it('refuses a non-empty scratch directory without starting a clone', async () => {

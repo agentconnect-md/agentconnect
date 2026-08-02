@@ -22,6 +22,7 @@ import { memoryProviderFor } from '../agents/memory-provider.js'
 import { loadConfig } from '../config/load-config.js'
 import { Daemon, type DaemonEvaluationOptions, type DaemonEvaluationTurnResult } from '../daemon.js'
 import { composeRuntimeLaunch } from '../runtimes/launch-policy.js'
+import { persistSkillSandboxRequirement } from '../skills/skill-sandbox-policy.js'
 import { DAEMON_VERSION } from '../version.js'
 import {
   EVALUATION_RUN_SCHEMA_VERSION,
@@ -771,7 +772,9 @@ export class RawAcpEvaluationRunner {
       const runtime = cfg.runtimes?.[agent.runtime]
       if (!runtime) throw new Error(`raw ACP subject runtime "${agent.runtime}" must be explicit in config.json`)
       const mechanism = detectSandbox()
-      const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, mechanism)
+      await persistSkillSandboxRequirement(prepared.root)
+      if (!mechanism) throw new Error('raw ACP evaluation requires a supported Linux SRT/bwrap sandbox')
+      const runInSandbox = effectiveRunInSandbox(true, agent.runInSandbox, mechanism)
       const baseEnv = agentChildEnv(agent)
       const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
       const memoryOffEnv = memoryProviderFor(

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { AgentMemoryBinding } from './memory-connection.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
+import { normalizeGitHubSkillSource } from '../git-url.js'
 
 /**
  * Agent lifecycle (protocol §4.4, §7.4, §8).
@@ -120,37 +121,108 @@ export const AgentIcon = z.discriminatedUnion('kind', [
 export type AgentIcon = z.infer<typeof AgentIcon>
 
 /**
- * A self-contained skill source the daemon installs via `npx skills` after the
- * workspace is ready and before the ACP host spawns (design: shared-skills.md §4).
+ * A self-contained Git skill definition the daemon acquires into a private
+ * snapshot and installs through its exact `skills` dependency after the
+ * workspace is ready and before the ACP host spawns (shared-skills.md §4/§6).
  * The source definition rides INLINE on the AgentSpec (and lands in agent.json,
  * like mcpServers) — there is no separate skillsource frame or daemon-side def
  * cache. The CP resolves each agent's enabled org-level `SkillSource` rows into
  * these entries when it builds the spec.
  */
-// These strings become positional/`-s` arguments to `npx skills`, so a leading
-// "-" would be read as a flag rather than a value. Reject option-looking values at
+// Skill selections become `-s` arguments to the isolated CLI, while the source
+// is parsed by the Git acquisition boundary. Reject option-looking values at
 // the wire boundary — the daemon validates again in depth.
-const SkillArg = z
+const SkillSelectionArg = z.string().regex(/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9_])?$/, {
+  message: 'must be a canonical lowercase skills CLI name without a trailing dot or hyphen'
+})
+
+const SkillRef = z
+  .string()
+  .max(256)
+  .refine((s) => s.length > 0 && !/[\0\r\n]/.test(s), { message: 'must be a non-empty single-line ref' })
+
+const SkillSubDir = z
+  .string()
+  .max(1_024)
+  .refine(
+    (s) =>
+      s.length > 0 &&
+      !s.startsWith('/') &&
+      !s.includes('\\') &&
+      !/[\0\r\n]/.test(s) &&
+      s.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..'),
+    { message: 'must be a safe relative subdirectory' }
+  )
+
+const GitHubRepositoryId = z
+  .string()
+  .regex(/^[1-9]\d{0,19}$/, { message: 'must be a canonical positive GitHub repository id' })
+
+export const AgentSkillEntry = z.object({
+  // Display/log label — the org-level source name. NOT passed to the CLI.
+  name: z.string().min(1).max(64),
+  // Credential-free Git acquisition input (owner/repo, clone URL, or a
+  // tree/<ref>/<subdir> path). The CLI sees only the resulting local snapshot.
+  source: z
+    .string()
+    .min(1)
+    .max(512)
+    .refine((s) => !s.startsWith('-'), { message: 'must not start with "-"' })
+    .refine(
+      (s) => {
+        try {
+          normalizeGitHubSkillSource(s)
+          return true
+        } catch {
+          return false
+        }
+      },
+      { message: 'must be a bounded GitHub repository source' }
+    ),
+  // Rename-proof GitHub identity. Current CP projections must carry this exact
+  // decimal id; the daemon verifies it through the numeric endpoint before any
+  // name-based fetch.
+  githubRepoId: GitHubRepositoryId,
+  // Optional branch/tag/commit. The daemon composes it into the source when set;
+  // a tag/commit pins content, a branch/absent tracks the head (design §5).
+  ref: SkillRef.optional(),
+  // Optional repo-relative install directory.
+  subDir: SkillSubDir.optional(),
+  // Which skills from the source to install (passed as repeated `-s`). Empty ⇒
+  // install every skill the source exposes (no `-s`).
+  skills: z
+    .array(SkillSelectionArg)
+    .max(64)
+    .refine((skills) => new Set(skills).size === skills.length, { message: 'skill selections must be unique' })
+    .default([])
+})
+export type AgentSkillEntry = z.infer<typeof AgentSkillEntry>
+
+/** Current-CP projection boundary. Kept separate from the rolling-compatible
+ * wire decoder below: a new daemon may briefly receive an old CP's previously
+ * legal rows, and one such row must not reject the entire register snapshot. */
+export const InstallableAgentSkills = z
+  .array(AgentSkillEntry)
+  .max(64)
+  .refine((entries) => new Set(entries.map((entry) => entry.name)).size === entries.length, {
+    message: 'skill source names must be unique'
+  })
+
+const LegacySkillArg = z
   .string()
   .min(1)
   .refine((s) => !s.startsWith('-'), { message: 'must not start with "-"' })
 
-export const AgentSkillEntry = z.object({
-  // Display/log label — the org-level source name. NOT passed to the CLI.
+export const CompatibleAgentSkillEntry = z.object({
   name: z.string(),
-  // The source string fed straight to `npx skills add` (owner/repo, a full git
-  // URL, or a tree/<ref>/<subdir> path). Everything else here is optional.
-  source: SkillArg,
-  // Optional branch/tag/commit. The daemon composes it into the source when set;
-  // a tag/commit pins content, a branch/absent tracks the head (design §5).
+  source: LegacySkillArg,
+  // Optional only for CP-first rolling upgrades and previously persisted
+  // agent.json files. Strict daemon admission drops unbound legacy entries.
+  githubRepoId: z.string().optional(),
   ref: z.string().optional(),
-  // Optional repo-relative install directory.
   subDir: z.string().optional(),
-  // Which skills from the source to install (passed as repeated `-s`). Empty ⇒
-  // install every skill the source exposes (no `-s`).
-  skills: z.array(SkillArg).default([])
+  skills: z.array(LegacySkillArg).default([])
 })
-export type AgentSkillEntry = z.infer<typeof AgentSkillEntry>
 
 /** One centrally accepted, immutable Agent Skills bundle enabled for an agent.
  * Content is fetched separately in bounded chunks; AgentSpec carries metadata
@@ -238,8 +310,12 @@ export const AgentSpec = z.object({
   // Skill sources to install into the workspace before the ACP host spawns
   // (design: shared-skills.md). Unlike mcpServers (names resolved daemon-side),
   // these are SELF-CONTAINED entries — the daemon needs nothing but agent.json to
-  // run `npx skills`. Always shipped (even []) so removing the last skill replicates.
-  skills: z.array(AgentSkillEntry).default([]),
+  // acquire bounded snapshots and invoke its bundled CLI. Always shipped (even
+  // []) so removing the last skill replicates.
+  // Decode the previous wire vocabulary during CP-first rolling upgrades. The
+  // current CP projects only `InstallableAgentSkills`; the daemon independently
+  // applies the same strict acquisition/size admission before any host starts.
+  skills: z.array(CompatibleAgentSkillEntry).default([]),
   // Centrally accepted `.skill` ZIP revisions. Unlike Git source entries above,
   // these are digest-addressed metadata; the daemon downloads/cache-verifies the
   // bundle through managed-skill/read before session start.

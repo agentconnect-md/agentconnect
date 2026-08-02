@@ -20,16 +20,12 @@ import {
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import { makeLogger } from '../log.js'
-import { installSkills, rotateSkillsWorkspaceGeneration } from '../skills/install-skills.js'
-import {
-  materializeAcceptedDreamSkills,
-  type ManagedSkillMaterializationSource
-} from '../skills/dream-skill-install.js'
+import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
+import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
   gitCredentialEnv,
-  gitEnvBase,
   gitFor,
   preWarmGitCred,
   pullWorkspaceRef,
@@ -44,54 +40,44 @@ const skillsLog = makeLogger('info')
 
 /**
  * Post-clone skills step (docs/designs/shared-skills.md §6). Installs the agent's
- * enabled skills into its resolved ACP cwd via the daemon-bundled CLI, then returns that cwd.
- * Best-effort and non-blocking: `installSkills` never throws, and the common
- * no-skills path is a single stat. Kept out of the return expressions so both the
- * scratch and git-repo branches funnel through one install point.
+ * enabled Git/managed/accepted-local skills into its resolved ACP cwd through
+ * one exact pinned CLI + trusted receipt/reconcile wrapper, then returns that cwd.
  */
 export interface PrepareWorkspaceOptions {
   /** Resolve centrally accepted immutable bundles from the daemon cache. Dream
    * skills and these sources are then reconciled in one ownership transaction. */
-  managedSkills?: (agent: Agent) => Promise<ManagedSkillMaterializationSource[]>
-}
-
-function trustedAgentRoot(agent: Agent): string | undefined {
-  return (agent as { dir?: string }).dir
-}
-
-async function rotateWorkspaceSkillsGeneration(agent: Agent): Promise<void> {
-  const agentRoot = trustedAgentRoot(agent)
-  if (agentRoot) await rotateSkillsWorkspaceGeneration(agentRoot)
+  managedSkills?: (agent: Agent) => Promise<LocalSkillSource[]>
+  /** Trusted daemon-owned state root shared across agents/workspaces. */
+  skillsStateDir?: string
+  /** Audited `skills` CLI identity for the selected runtime. */
+  skillsAgentId?: string | null
 }
 
 async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
-  // `dir` is present on every discovered agent (LoadedAgent). Never fall back to
-  // cwd for installer state: cwd remains agent-writable across sandboxed runs.
-  const agentRoot = trustedAgentRoot(agent)
-  if (agentRoot) {
-    await installSkills(agent, acpCwd, {
-      stateDir: agentRoot,
-      env: {
-        ...gitEnvBase(),
-        GIT_TERMINAL_PROMPT: '0',
-        ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {})
-      },
-      warn: (msg) => skillsLog.warn(msg)
-    })
-  } else if ((agent.skills?.length ?? 0) > 0) {
-    skillsLog.warn(`skills: agent "${agent.id}" has no trusted state directory; skipping install`)
+  // Resolving local sources (managed cache + accepted Dream) is best-effort: a
+  // failure to read/validate them means we install none of THOSE sources, not
+  // that the workspace fails to come up (git + messaging still have to work).
+  let managedSkills: LocalSkillSource[] = []
+  let acceptedSkills: LocalSkillSource[] = []
+  const agentRoot = (agent as { dir?: string }).dir
+  try {
+    managedSkills = (await opts.managedSkills?.(agent)) ?? []
+    acceptedSkills = agentRoot ? await acceptedDreamSkillSources({ dir: agentRoot }) : []
+  } catch (err) {
+    skillsLog.warn(`skills: local source resolution failed for "${agent.id}": ${(err as Error).message}`)
   }
-  // Skills the user ACCEPTED from a dream are daemon-owned (they live under the
-  // agent root, not in `agent.skills`), so they get their own materialization
-  // pass — one that treats every path in the agent-writable cwd as hostile.
-  // Runs AFTER installSkills so its reconciliation cannot remove these copies.
-  if (agentRoot) {
-    const managedSkills = await opts.managedSkills?.(agent)
-    await materializeAcceptedDreamSkills({ dir: agentRoot, runtime: agent.runtime }, acpCwd, {
-      warn: (msg) => skillsLog.warn(msg),
-      ...(managedSkills ? { managedSkills } : {})
-    })
-  }
+  // installSkills fails closed: it degrades acquisition/CLI failures into
+  // result.errors but THROWS a safety error when stale executable content cannot
+  // be removed or the ledger cannot be proven coherent. Those must block host
+  // startup rather than launch ACP with stale/incoherent executable skills, so
+  // let them propagate (design: docs/designs/shared-skills.md §2).
+  await installSkills(agent, acpCwd, {
+    ...(opts.skillsStateDir ? { stateDir: opts.skillsStateDir } : {}),
+    ...(opts.skillsAgentId === undefined ? {} : { skillsAgentId: opts.skillsAgentId }),
+    localSkills: [...managedSkills, ...acceptedSkills],
+    useGitCredential: usesGithubApp(agent),
+    warn: (msg) => skillsLog.warn(msg)
+  })
   return acpCwd
 }
 
@@ -326,6 +312,15 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
   return withSkills(agent, resolveAcpCwd(cwd, agentDir), opts)
 }
 
+/** Resolve the already-prepared ACP cwd without pulling, acquiring sources, or
+ * reconciling skills. The daemon cold-host gate calls prepareWorkspace before
+ * spawn; SessionManager uses this pure follow-up to consume that same result
+ * instead of triggering a second preparation after the host starts. */
+export function resolvePreparedWorkspaceCwd(agent: Agent): string {
+  const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
+  return resolveAcpCwd(agent.workspace.path, agentDir)
+}
+
 /** Resolve the checked path ACP receives, closing symlink and prefix-containment gaps. */
 function resolveAcpCwd(workspaceRoot: string, agentDir: string | undefined): string {
   const canonicalRoot = realpathSync(workspaceRoot)
@@ -392,7 +387,7 @@ export async function prepareWorkspaceForActivation(
     allowExistingCheckout = true,
     reconcileMaterialization = false
   }: { allowExistingCheckout?: boolean; reconcileMaterialization?: boolean } = {}
-): Promise<() => Promise<void>> {
+): Promise<() => void> {
   const cwd = agent.workspace.path
   mkdirSync(cwd, { recursive: true })
   const previousMaterialization = reconcileMaterialization ? readMaterialization(agent) : undefined
@@ -404,14 +399,12 @@ export async function prepareWorkspaceForActivation(
 
   if (agent.workspace.mode === 'from-scratch') {
     if (replace) {
-      await rotateWorkspaceSkillsGeneration(agent)
       rmSync(cwd, { recursive: true, force: true })
       mkdirSync(cwd, { recursive: true })
     }
     if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
-    return async () => {
+    return () => {
       if (replace) {
-        await rotateWorkspaceSkillsGeneration(agent)
         rmSync(cwd, { recursive: true, force: true })
         mkdirSync(cwd, { recursive: true })
       }
@@ -435,9 +428,7 @@ export async function prepareWorkspaceForActivation(
       if (!replace) {
         resolveAcpCwd(cwd, normalizeRepoSubdir(agent.workspace.agentDir))
         if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
-        return async () => {
-          restoreMarker()
-        }
+        return restoreMarker
       }
     }
     // A different repo/branch is cloned below before the old checkout is
@@ -453,7 +444,6 @@ export async function prepareWorkspaceForActivation(
     await cloneRepoAt(agent, staged)
     resolveAcpCwd(staged, normalizeRepoSubdir(agent.workspace.agentDir))
     if (replace) {
-      await rotateWorkspaceSkillsGeneration(agent)
       rmSync(cwd, { recursive: true, force: true })
       renameSync(staged, cwd)
       try {
@@ -464,8 +454,7 @@ export async function prepareWorkspaceForActivation(
         restoreMarker()
         throw err
       }
-      return async () => {
-        await rotateWorkspaceSkillsGeneration(agent)
+      return () => {
         rmSync(cwd, { recursive: true, force: true })
         mkdirSync(cwd, { recursive: true })
         restoreMarker()
@@ -476,7 +465,6 @@ export async function prepareWorkspaceForActivation(
     if (!isWorkspaceEmpty(agent)) {
       throw new Error('workspace changed while conversion was cloning; retry after making it empty')
     }
-    await rotateWorkspaceSkillsGeneration(agent)
     try {
       // POSIX directory replacement is atomic when the destination is still
       // empty. If an operator writes into cwd after the check above, rename
@@ -497,8 +485,7 @@ export async function prepareWorkspaceForActivation(
 
   if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
 
-  return async () => {
-    await rotateWorkspaceSkillsGeneration(agent)
+  return () => {
     rmSync(cwd, { recursive: true, force: true })
     mkdirSync(cwd, { recursive: true })
     restoreMarker()

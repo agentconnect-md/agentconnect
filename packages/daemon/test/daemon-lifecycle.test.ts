@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { configFilesDir } from '../src/agents/config-file-env.js'
+import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
 
@@ -160,6 +161,319 @@ function pendingFor(daemon: Daemon, acpSessionId: string): any {
 }
 
 describe('Daemon session lifecycle (#118)', () => {
+  it('prepares the workspace before every direct cold-host lifecycle start', async () => {
+    const root = scaffold()
+    const workspace = join(root, 'agents', 'bot-a', 'workspace')
+    const host = quietHost()
+    const factory = vi.fn(() => {
+      // ensureHostAsync is shared by memory/Dream extraction, activation proof,
+      // CP launch, and ordinary session startup. Construction itself must not
+      // happen until the complete workspace preparation gate has settled.
+      expect(existsSync(workspace)).toBe(true)
+      return host as any
+    })
+    const daemon = new Daemon({ root, hostFactory: factory })
+    await daemon.start()
+    expect(existsSync(workspace)).toBe(false)
+
+    await (daemon as any).ensureHostAsync('bot-a')
+
+    expect(factory).toHaveBeenCalledOnce()
+    expect(host.start).toHaveBeenCalledOnce()
+    await daemon.stop()
+  }, 15_000)
+
+  it('does not construct or start a cold host when workspace preparation fails', async () => {
+    const root = scaffold()
+    const workspace = join(root, 'agents', 'bot-a', 'workspace')
+    writeFileSync(workspace, 'not a directory')
+    const factory = vi.fn(() => quietHost() as any)
+    const daemon = new Daemon({ root, hostFactory: factory })
+    await daemon.start()
+
+    await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow()
+
+    expect(factory).not.toHaveBeenCalled()
+    expect((daemon as any).hosts.has('bot-a')).toBe(false)
+    await daemon.stop()
+  }, 15_000)
+
+  it('shares one cold preparation between host start and session creation', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace')
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'cold'), 'int-a')
+    expect(prepare).toHaveBeenCalledTimes(1)
+
+    // A different logical session on the already-running host still performs
+    // its one warm new-session preparation.
+    await (daemon as any).dispatch('bot-a', dm('200', 'warm', 'T2'), 'int-a')
+    expect(prepare).toHaveBeenCalledTimes(2)
+    await daemon.stop()
+  }, 20_000)
+
+  it('re-runs the workspace receipt gate before every fresh host retry', async () => {
+    const root = scaffold({ agentStartAttempts: 2, agentStartBackoffMs: 0 })
+    const workspace = join(root, 'agents', 'bot-a', 'workspace')
+    const sentinel = join(workspace, 'tampered-by-failed-host')
+    const first = quietHost()
+    first.start.mockImplementation(async () => {
+      writeFileSync(sentinel, 'tampered')
+      throw new Error('initialize failed')
+    })
+    const second = quietHost()
+    const factory = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+    const daemon = new Daemon({ root, hostFactory: factory })
+    await daemon.start()
+    const realPrepare = (daemon as any).prepareAgentWorkspace.bind(daemon)
+    let preparations = 0
+    vi.spyOn(daemon as any, 'prepareAgentWorkspace').mockImplementation(async (agent: unknown) => {
+      preparations += 1
+      if (preparations === 2 && existsSync(sentinel)) throw new Error('skill receipt changed after failed host')
+      return realPrepare(agent)
+    })
+
+    await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow('skill receipt changed')
+
+    expect(preparations).toBe(2)
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(first.stop).toHaveBeenCalledOnce()
+    expect(second.start).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('drains a superseded cold preparation before reconcile admits the next generation', async () => {
+    const root = scaffold()
+    const host = quietHost()
+    const factory = vi.fn(() => host as any)
+    const daemon = new Daemon({ root, hostFactory: factory })
+    await daemon.start()
+
+    const realPrepare = (daemon as any).prepareAgentWorkspace.bind(daemon)
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>((resolve) => (releaseFirst = resolve))
+    let markFirstEntered!: () => void
+    const firstEntered = new Promise<void>((resolve) => (markFirstEntered = resolve))
+    const preparedModels: Array<string | undefined> = []
+    let preparations = 0
+    vi.spyOn(daemon as any, 'prepareAgentWorkspace').mockImplementation(async (agent: any) => {
+      preparations += 1
+      preparedModels.push(agent.runtimeOverrides?.model)
+      if (preparations === 1) {
+        markFirstEntered()
+        await firstBlocked
+      }
+      return realPrepare(agent)
+    })
+
+    const firstStart = (daemon as any).ensureHostAsync('bot-a') as Promise<unknown>
+    const firstRejected = expect(firstStart).rejects.toThrow(
+      /host start superseded|workspace preparation blocked while agent authority is draining/
+    )
+    await firstEntered
+
+    const agentPath = join(root, 'agents', 'bot-a', 'agent.json')
+    const agent = JSON.parse(readFileSync(agentPath, 'utf8')) as Record<string, unknown>
+    writeFileSync(agentPath, JSON.stringify({ ...agent, runtimeOverrides: { model: 'opus' } }))
+    let reconciled = false
+    const reconciling = daemon.reconcile().then(() => {
+      reconciled = true
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(reconciled).toBe(false)
+    expect(factory).not.toHaveBeenCalled()
+    releaseFirst()
+    await firstRejected
+    await reconciling
+
+    await (daemon as any).ensureHostAsync('bot-a')
+    expect(preparedModels).toEqual([undefined, 'opus'])
+    expect(factory).toHaveBeenCalledOnce()
+    expect(host.start).toHaveBeenCalledOnce()
+    await daemon.stop()
+  }, 20_000)
+
+  it('serializes an aborted warm preparation before the reconciled host prepares and starts', async () => {
+    const root = scaffold()
+    const configPath = join(root, 'config.json')
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, any>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        ...config,
+        runtimes: { ...config.runtimes, codex: { command: 'node', args: ['unused'] } }
+      })
+    )
+    const firstHost = quietHost()
+    const secondHost = quietHost()
+    const factory = vi.fn().mockReturnValueOnce(firstHost).mockReturnValueOnce(secondHost)
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root, hostFactory: factory, clock })
+    await daemon.start()
+    makeRoutable(daemon)
+    await (daemon as any).ensureHostAsync('bot-a')
+
+    const realRunPreparation = (daemon as any).runAgentWorkspacePreparation.bind(daemon)
+    let releaseWarm!: () => void
+    const warmBlocked = new Promise<void>((resolve) => (releaseWarm = resolve))
+    let markWarmEntered!: () => void
+    const warmEntered = new Promise<void>((resolve) => (markWarmEntered = resolve))
+    const preparedRuntimes: string[] = []
+    let preparations = 0
+    vi.spyOn(daemon as any, 'runAgentWorkspacePreparation').mockImplementation(async (agent: any) => {
+      preparations += 1
+      preparedRuntimes.push(agent.runtime)
+      if (preparations === 1) {
+        markWarmEntered()
+        await warmBlocked
+      }
+      return realRunPreparation(agent)
+    })
+
+    const warmDispatch = (daemon as any).dispatch('bot-a', dm('200', 'warm', 'T2'), 'int-a') as Promise<unknown>
+    await warmEntered
+
+    const agentPath = join(root, 'agents', 'bot-a', 'agent.json')
+    const agent = JSON.parse(readFileSync(agentPath, 'utf8')) as Record<string, unknown>
+    writeFileSync(agentPath, JSON.stringify({ ...agent, runtime: 'codex' }))
+    await daemon.reconcile()
+
+    // Reconcile interrupted the pre-session turn and stopped its warm host. The
+    // cold backstop aborts only SessionManager's caller; the helper remains live.
+    clock.advance(30_000)
+    await expect(warmDispatch).resolves.toBeNull()
+    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
+
+    const replacement = (daemon as any).ensureHostAsync('bot-a') as Promise<unknown>
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(preparedRuntimes).toEqual(['claude'])
+
+    releaseWarm()
+    await replacement
+
+    expect(preparedRuntimes).toEqual(['claude', 'codex'])
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(secondHost.start).toHaveBeenCalledOnce()
+    const workspace = join(root, 'agents', 'bot-a', 'workspace')
+    const ledger = await readSkillLedger(await skillLedgerLocation(workspace, join(root, 'skill-installs')))
+    expect(ledger).toMatchObject({ phase: 'ready', agentId: 'bot-a', runtime: 'codex' })
+    await daemon.stop()
+  }, 20_000)
+
+  it('rejects a late warm preparation after its host generation was stopped', async () => {
+    const firstHost = quietHost()
+    const secondHost = quietHost()
+    const factory = vi.fn().mockReturnValueOnce(firstHost).mockReturnValueOnce(secondHost)
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    await (daemon as any).ensureHostAsync('bot-a')
+    const capturedAgent = (daemon as any).agents.get('bot-a')
+    const preparation = vi.spyOn(daemon as any, 'runAgentWorkspacePreparation')
+
+    await (daemon as any).stopHost('bot-a')
+    await (daemon as any).ensureHostAsync('bot-a')
+    expect(preparation).toHaveBeenCalledOnce()
+    expect(factory).toHaveBeenCalledTimes(2)
+
+    expect(() => (daemon as any).prepareAgentWorkspace(capturedAgent, firstHost)).toThrow(/superseded warm host/)
+    expect(preparation).toHaveBeenCalledOnce()
+    expect((daemon as any).hosts.get('bot-a')).toBe(secondHost)
+    await daemon.stop()
+  }, 20_000)
+
+  it('keeps stopAgent fenced until an aborted warm preparation quiesces', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    await (daemon as any).ensureHostAsync('bot-a')
+
+    const realRunPreparation = (daemon as any).runAgentWorkspacePreparation.bind(daemon)
+    let releaseWarm!: () => void
+    const warmBlocked = new Promise<void>((resolve) => (releaseWarm = resolve))
+    let markWarmEntered!: () => void
+    const warmEntered = new Promise<void>((resolve) => (markWarmEntered = resolve))
+    vi.spyOn(daemon as any, 'runAgentWorkspacePreparation').mockImplementationOnce(async (agent: any) => {
+      markWarmEntered()
+      await warmBlocked
+      return realRunPreparation(agent)
+    })
+
+    const warmTurn = (daemon as any).dispatch('bot-a', dm('200', 'warm', 'T2'), 'int-a') as Promise<unknown>
+    await warmEntered
+    let stopped = false
+    const stop = ((daemon as any).stopAgent('bot-a') as Promise<void>).then(() => {
+      stopped = true
+    })
+    await expect(warmTurn).resolves.toBeNull()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(stopped).toBe(false)
+    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
+
+    releaseWarm()
+    await stop
+    expect(stopped).toBe(true)
+    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
+    await daemon.stop()
+  }, 20_000)
+
+  it('serializes workspace preparation and file publication in both admission orders', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const agent = (daemon as any).agents.get('bot-a')
+
+    let releasePreparation!: () => void
+    const preparationBlocked = new Promise<void>((resolve) => (releasePreparation = resolve))
+    let markPreparationEntered!: () => void
+    const preparationEntered = new Promise<void>((resolve) => (markPreparationEntered = resolve))
+    const preparing = (daemon as any).enqueueAgentWorkspacePreparation(agent, async () => {
+      markPreparationEntered()
+      await preparationBlocked
+    }) as Promise<void>
+    await preparationEntered
+
+    let publicationEntered = false
+    const publishingAfterPreparation = (daemon as any).withWorkspaceFileWrite('bot-a', async () => {
+      publicationEntered = true
+    }) as Promise<void>
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(publicationEntered).toBe(false)
+
+    releasePreparation()
+    await preparing
+    await publishingAfterPreparation
+    expect(publicationEntered).toBe(true)
+
+    let releasePublication!: () => void
+    const publicationBlocked = new Promise<void>((resolve) => (releasePublication = resolve))
+    let markPublicationEntered!: () => void
+    const publicationStarted = new Promise<void>((resolve) => (markPublicationEntered = resolve))
+    const publishing = (daemon as any).withWorkspaceFileWrite('bot-a', async () => {
+      markPublicationEntered()
+      await publicationBlocked
+    }) as Promise<void>
+    await publicationStarted
+
+    let laterPreparationEntered = false
+    const preparingAfterPublication = (daemon as any).enqueueAgentWorkspacePreparation(agent, async () => {
+      laterPreparationEntered = true
+    }) as Promise<void>
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(laterPreparationEntered).toBe(false)
+
+    releasePublication()
+    await publishing
+    await preparingAfterPublication
+    expect(laterPreparationEntered).toBe(true)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
+    expect((daemon as any).workspaceFileWrites.has('bot-a')).toBe(false)
+    await daemon.stop()
+  }, 20_000)
+
   it('writes the session back to idle once a turn finishes (no longer stuck prompting)', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
     await daemon.start()
@@ -1100,6 +1414,38 @@ describe('Daemon graceful shutdown drain (#109)', () => {
     expect(stopped).toBe(true)
     expect(blocked.host.cancel).not.toHaveBeenCalled() // drained gracefully, not cancelled
     expect(blocked.host.stop).toHaveBeenCalled()
+  }, 15_000)
+
+  it('keeps the store alive until an admitted workspace file write settles', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const store = (daemon as any).store
+    const close = vi.spyOn(store, 'close')
+
+    let releaseWrite!: () => void
+    const blocked = new Promise<void>((resolve) => (releaseWrite = resolve))
+    let markWriteEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markWriteEntered = resolve))
+    const writing = (daemon as any).withWorkspaceFileWrite('bot-a', async () => {
+      markWriteEntered()
+      await blocked
+    }) as Promise<void>
+    await entered
+
+    let stopped = false
+    const stopping = daemon.stop().then(() => {
+      stopped = true
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(stopped).toBe(false)
+    expect(close).not.toHaveBeenCalled()
+    expect((daemon as any).workspaceFileWrites.has('bot-a')).toBe(true)
+
+    releaseWrite()
+    await writing
+    await stopping
+    expect(close).toHaveBeenCalledOnce()
+    expect((daemon as any).workspaceFileWrites.has('bot-a')).toBe(false)
   }, 15_000)
 })
 

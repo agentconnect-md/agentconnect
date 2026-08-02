@@ -6,6 +6,7 @@
  * row the relay opened.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1216,7 +1217,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('does not mint a long-lived GH_TOKEN when spawning a github-app workspace', async () => {
+  it('uses only a bounded preparation pull credential when spawning a github-app workspace', async () => {
     const { factory, host } = streamingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
@@ -1229,10 +1230,17 @@ describe('Daemon rd/msg hook fires', () => {
       branch: 'main',
       gitCredential: 'github-app'
     }
+    mkdirSync(agent.workspace.path, { recursive: true })
+    execFileSync('git', ['init'], { cwd: agent.workspace.path, stdio: 'ignore' })
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/infra'], {
+      cwd: agent.workspace.path,
+      stdio: 'ignore'
+    })
     const spawned = await (daemon as any).ensureHostAsync(AGENT_ID)
     expect(spawned).toBeTruthy()
     expect(host.start).toHaveBeenCalled()
-    expect(getCredential).not.toHaveBeenCalled()
+    expect(getCredential).toHaveBeenCalledTimes(1)
+    expect(getCredential).toHaveBeenCalledWith(AGENT_ID, 'pull')
     await daemon.stop()
   }, 15_000)
 

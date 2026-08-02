@@ -3665,10 +3665,10 @@ export interface McpGrantRepo {
 
 // ───────────────────────────────────────────────────────────────────────────
 // Shared skills registry (docs/designs/shared-skills.md)
-//   SkillSource = the org-level record of a skills source (repo / git URL / tree
-//   path). The CP stores ONLY the source metadata; content is fetched daemon-side
-//   by `npx skills`. One port (no secret store / no grant — skills carry no
-//   upstream credential). Shareable, so the same visibility policy as agents/MCP.
+//   SkillSource = the org-level record of a bounded public GitHub source. The CP
+//   stores ONLY source metadata and the numeric repository binding; content is
+//   acquired and installed daemon-side. One port (no secret store / no grant).
+//   Shareable, so the same visibility policy as agents/MCP.
 // ───────────────────────────────────────────────────────────────────────────
 
 /** Domain view of a `skill_source` row. Shareable (owner + visibility +
@@ -3677,8 +3677,8 @@ export interface SkillSourceRecord extends Shareable {
   id: string
   orgId: OrgId
   name: string // reference key (unique per org); the agent enable-list keys on it
-  source: string // fed to `npx skills add`
-  githubRepoId: bigint | null
+  source: string // bounded GitHub acquisition input; never handed remotely to the CLI
+  githubRepoId: bigint | null // nullable only for rolling migration; unbound rows do not project
   ref: string | null
   subDir: string | null
   skills: string[] // empty ⇒ install every skill; else only these

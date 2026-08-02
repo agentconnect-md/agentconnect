@@ -362,7 +362,26 @@ describe('CpClient dispatch', () => {
   it('applies agent/remove (EVT, no reply)', async () => {
     const { t, configApply } = await readyClient()
     t.pushInbound(frame('agent/remove', { agentId: DAEMON_ID }, { epoch: 5, agentId: DAEMON_ID }))
+    await tick()
     expect(configApply.applyAgentRemove).toHaveBeenCalledWith(DAEMON_ID)
+    expect(t.sent).toHaveLength(0)
+  })
+
+  it('contains a synchronous agent/remove admission failure in the EVT rejection path', async () => {
+    const error = vi.fn()
+    const applyAgentRemove = vi.fn(() => {
+      throw new Error('marker write failed')
+    })
+    const { t } = await readyClient({
+      configApply: { applyAgentRemove } as any,
+      log: { ...silent, error }
+    })
+
+    t.pushInbound(frame('agent/remove', { agentId: DAEMON_ID }, { epoch: 5, agentId: DAEMON_ID }))
+    await tick()
+
+    expect(applyAgentRemove).toHaveBeenCalledWith(DAEMON_ID)
+    expect(error).toHaveBeenCalledWith('cp: agent/remove failed closed: marker write failed')
     expect(t.sent).toHaveLength(0)
   })
 

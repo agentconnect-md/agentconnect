@@ -40,7 +40,10 @@ export function startDaemonOpenTelemetry(opts: DaemonOpenTelemetryOptions = {}):
     }),
     serviceName: env.OTEL_SERVICE_NAME || 'agentconnect-daemon',
     logRecordProcessors: [],
-    instrumentations: [new HttpInstrumentation(), new UndiciInstrumentation()]
+    instrumentations: [
+      new HttpInstrumentation(),
+      new UndiciInstrumentation({ ignoreRequestHook: ignoreSensitiveUndiciRequest })
+    ]
   })
 
   try {
@@ -56,6 +59,19 @@ export function startDaemonOpenTelemetry(opts: DaemonOpenTelemetryOptions = {}):
     shutdown: () => (shutdown ??= sdk.shutdown())
   }
   return activeTelemetry
+}
+
+/** GitHub private archive redirects carry a short-lived capability in the
+ * codeload query string. Undici's default semantic attributes export both
+ * url.full and url.query, so suppress this exact host at instrumentation time;
+ * application-level log redaction is too late. */
+export function ignoreSensitiveUndiciRequest(request: { origin?: string; path?: string }): boolean {
+  try {
+    const url = new URL(request.path ?? '', request.origin)
+    return url.protocol === 'https:' && url.hostname.toLowerCase().replace(/\.+$/, '') === 'codeload.github.com'
+  } catch {
+    return false
+  }
 }
 
 function shouldStartOpenTelemetry(env: NodeJS.ProcessEnv): boolean {

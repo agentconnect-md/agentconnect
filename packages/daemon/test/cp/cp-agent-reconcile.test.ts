@@ -1,10 +1,19 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../../src/daemon.js'
-import { detachedAgentDir, readAgentMoveStage, stageAgentMove, stagedAgentDir } from '../../src/agents/write-agent.js'
+import {
+  agentRemovalTombstones,
+  detachedAgentDir,
+  findAgentFileById,
+  markAgentRemoval,
+  readAgentMoveStage,
+  stageAgentMove,
+  stagedAgentDir
+} from '../../src/agents/write-agent.js'
 import { RegisterReq, type AgentSpec } from '@agentconnect.md/protocol'
+import { agentRemovalObligationsDir } from '../../src/paths.js'
 
 const MOVE_ID = '77777777-7777-4777-8777-777777777777'
 const MOVE_ID_2 = '88888888-8888-4888-8888-888888888888'
@@ -156,7 +165,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect((daemon as any).cpDegradedScopes()).not.toContain('ghost')
 
     // agent/remove deletes the on-disk dir → reconcile drops it from the live set.
-    seam(daemon).applyAgentRemove('ghost')
+    await seam(daemon).applyAgentRemove('ghost')
     await daemon.reconcile()
     expect(existsSync(join(root, 'agents', 'ghost'))).toBe(false)
     expect((daemon as any).agents.has('ghost')).toBe(false)
@@ -209,7 +218,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await seam(daemon).applyAgentUpsert({ agentId: 'bot-a', spec: { name: 'stale', runtime: 'claude' } as AgentSpec })
     seam(daemon).applyIntegrationUpsert(staleIntegration)
     seam(daemon).upsertCron(staleCron)
-    seam(daemon).applyReconcileSnapshot({
+    await seam(daemon).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
       agents: [{ agentId: 'bot-a', name: 'stale', runtime: 'claude' }],
@@ -384,6 +393,46 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect(duplicateActivation).toBe(firstActivation)
     await expect(firstActivation).resolves.toEqual({ ok: true })
     expect((daemon as any).drainingAgents.has('ghost')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('keeps a newer removal gate latched while an older activation is preparing', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+
+    const realPreparation = (daemon as any).runAgentWorkspacePreparation.bind(daemon)
+    let releasePreparation!: () => void
+    const blocked = new Promise<void>((resolve) => (releasePreparation = resolve))
+    let markPreparationEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markPreparationEntered = resolve))
+    vi.spyOn(daemon as any, 'runAgentWorkspacePreparation').mockImplementationOnce(async (agent: unknown) => {
+      markPreparationEntered()
+      await blocked
+      return realPreparation(agent)
+    })
+
+    const activating = seam(daemon).applyAgentActivate({
+      agentId: 'bot-a',
+      moveId: MOVE_ID,
+      spec: { name: 'bot-a', runtime: 'claude' },
+      integrations: [],
+      crons: []
+    })
+    await entered
+    const removing = Promise.resolve(seam(daemon).applyAgentRemove('bot-a'))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect((daemon as any).agentRemovalPending('bot-a')).toBe(true)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+
+    releasePreparation()
+    await expect(activating).resolves.toEqual({ ok: false, reason: 'agent/activate: superseded by agent removal' })
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    await removing
+    expect(existsSync(join(root, 'agents', 'bot-a'))).toBe(false)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
     await daemon.stop()
   })
 
@@ -579,7 +628,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
       leases: [],
       drop: { assignments: [], crons: [] }
     }
-    seam(daemon).applyReconcileSnapshot(snap)
+    await seam(daemon).applyReconcileSnapshot(snap)
     await daemon.reconcile()
 
     expect((daemon as any).agents.get('bot-a').runtimeOverrides.model).toBe('opus')
@@ -607,7 +656,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await (daemon as any).ensureHostAsync('stale-cp')
     const staleHost = hosts.at(-1)!
 
-    seam(daemon).applyReconcileSnapshot({
+    await seam(daemon).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
       agents: [],
@@ -638,6 +687,731 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await daemon.stop()
   })
 
+  it('does not revive archived CP crons after detach, restart, and roster re-add', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const file = join(root, 'agents', 'bot-a', 'agent.json')
+    const seeded = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    seeded.crons = [
+      { id: 'stale-cp', schedule: '0 * * * *', trigger: 'stale', enabled: true, origin: 'cp' },
+      { id: 'local', schedule: '0 0 * * *', trigger: 'keep', enabled: true }
+    ]
+    writeFileSync(file, JSON.stringify(seeded))
+
+    const first = makeDaemon(root).daemon
+    await first.start()
+    await seam(first).applyReconcileSnapshot({
+      routingEpoch: 1,
+      assignments: [],
+      agents: [],
+      integrations: [],
+      crons: [],
+      leases: [],
+      drop: {
+        assignments: [],
+        crons: [],
+        agents: [{ agentId: 'bot-a', action: 'detach' }],
+        integrations: []
+      }
+    })
+    await first.stop()
+
+    const reborn = makeDaemon(root).daemon
+    await reborn.start()
+    await seam(reborn).applyReconcileSnapshot({
+      routingEpoch: 2,
+      assignments: [],
+      agents: [{ agentId: 'bot-a', name: 'bot-a', runtime: 'claude' }],
+      integrations: [],
+      crons: [],
+      leases: [],
+      drop: { assignments: [], crons: [], agents: [], integrations: [] }
+    })
+
+    const restored = findAgentFileById(join(root, 'agents'), 'bot-a')
+    expect(restored).toBe(file)
+    const crons = (JSON.parse(readFileSync(restored!, 'utf8')) as { crons: Array<{ id: string; origin?: string }> })
+      .crons
+    expect(crons.map((cron) => cron.id)).toEqual(['local'])
+    expect(crons[0]?.origin).toBeUndefined()
+    await reborn.stop()
+  })
+
+  it('admits agent drops before an unrelated fallible snapshot convergence step', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    vi.spyOn((daemon as any).cpIntegrations, 'remove').mockImplementationOnce(() => {
+      throw new Error('integration drop failed')
+    })
+
+    await expect(
+      seam(daemon).applyReconcileSnapshot({
+        routingEpoch: 1,
+        assignments: [],
+        agents: [],
+        integrations: [],
+        crons: [],
+        leases: [],
+        drop: {
+          assignments: [],
+          crons: [],
+          agents: [{ agentId: 'bot-a', action: 'remove' }],
+          integrations: ['stale-integration']
+        }
+      })
+    ).rejects.toThrow('integration drop failed')
+
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).cpDroppedAgents.has('bot-a')).toBe(true)
+    await daemon.stop()
+  })
+
+  it('does not archive a reconnect-dropped agent while workspace preparation is still running', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
+    await (daemon as any).ensureHostAsync('bot-a')
+    const host = hosts.at(-1)!
+    const current = (daemon as any).agents.get('bot-a')
+
+    const realPreparation = (daemon as any).runAgentWorkspacePreparation.bind(daemon)
+    let releasePreparation!: () => void
+    const blocked = new Promise<void>((resolve) => (releasePreparation = resolve))
+    let markPreparationEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markPreparationEntered = resolve))
+    vi.spyOn(daemon as any, 'runAgentWorkspacePreparation').mockImplementationOnce(async (agent: unknown) => {
+      markPreparationEntered()
+      await blocked
+      return realPreparation(agent)
+    })
+    const preparing = (daemon as any).prepareAgentWorkspace(current, host) as Promise<string>
+    await entered
+
+    let applied = false
+    const applying = Promise.resolve(
+      seam(daemon).applyReconcileSnapshot({
+        routingEpoch: 1,
+        assignments: [],
+        agents: [],
+        integrations: [],
+        crons: [],
+        leases: [],
+        drop: {
+          assignments: [],
+          crons: [],
+          agents: [{ agentId: 'bot-a', action: 'detach' }],
+          integrations: []
+        }
+      })
+    ).then(() => {
+      applied = true
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(applied).toBe(false)
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+    expect(existsSync(detachedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(false)
+
+    releasePreparation()
+    await preparing
+    await applying
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
+    expect(existsSync(join(detachedAgentDir(join(root, 'agents'), 'bot-a'), 'agent', 'agent.json'))).toBe(true)
+    await daemon.reconcile()
+    await daemon.stop()
+  })
+
+  it('does not remove an agent while an eager workspace prefetch is still running', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
+    const current = (daemon as any).agents.get('bot-a')
+    const removeAgent = vi.spyOn((daemon as any).cpAgents, 'remove')
+    const workspace = join(root, 'agents', 'bot-a', 'ws')
+
+    let releasePrefetch!: () => void
+    const blocked = new Promise<void>((resolve) => (releasePrefetch = resolve))
+    let markPrefetchEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markPrefetchEntered = resolve))
+    vi.spyOn(daemon as any, 'runAgentWorkspacePrefetch').mockImplementationOnce(async () => {
+      mkdirSync(workspace, { recursive: true })
+      writeFileSync(join(workspace, 'early-prefetch'), 'cloning')
+      markPrefetchEntered()
+      await blocked
+      mkdirSync(workspace, { recursive: true })
+      writeFileSync(join(workspace, 'late-prefetch'), 'cloned')
+    })
+    const prefetchClone = (daemon as any).prefetchClone.bind(daemon)
+    prefetchClone(current)
+    await entered
+
+    let removed = false
+    const removing = Promise.resolve(seam(daemon).applyAgentRemove('bot-a')).then(() => {
+      removed = true
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(removed).toBe(false)
+    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
+    expect(existsSync(join(workspace, 'early-prefetch'))).toBe(true)
+    expect(removeAgent).not.toHaveBeenCalled()
+
+    releasePrefetch()
+    await removing
+    expect(removeAgent).toHaveBeenCalledOnce()
+    expect(existsSync(join(root, 'agents', 'bot-a'))).toBe(false)
+    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
+    await daemon.reconcile()
+    await daemon.stop()
+  })
+
+  it('does not remove an agent while an accepted Dream skill publication owns the workspace write fence', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
+    const removeAgent = vi.spyOn((daemon as any).cpAgents, 'remove')
+
+    let releasePublication!: () => void
+    const blocked = new Promise<void>((resolve) => (releasePublication = resolve))
+    let markPublicationEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markPublicationEntered = resolve))
+    const agentDir = join(root, 'agents', 'bot-a')
+    const publishing = (daemon as any).withWorkspaceFileWrite('bot-a', async () => {
+      mkdirSync(join(agentDir, 'skills'), { recursive: true })
+      writeFileSync(join(agentDir, 'skills', 'early-publication'), 'accepted')
+      markPublicationEntered()
+      await blocked
+      // Accepted Dream publication writes several daemon-owned files under the
+      // agent root. This late marker makes a missing fence deterministically
+      // recreate the released path after agent/remove has already returned.
+      mkdirSync(join(agentDir, 'skills'), { recursive: true })
+      writeFileSync(join(agentDir, 'skills', 'late-publication'), 'accepted')
+    }) as Promise<void>
+    await entered
+
+    let removed = false
+    const removing = Promise.resolve(seam(daemon).applyAgentRemove('bot-a')).then(() => {
+      removed = true
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(removed).toBe(false)
+    expect(existsSync(join(agentDir, 'agent.json'))).toBe(true)
+    expect(existsSync(join(agentDir, 'skills', 'early-publication'))).toBe(true)
+    expect(removeAgent).not.toHaveBeenCalled()
+
+    releasePublication()
+    await publishing
+    await removing
+    expect(removeAgent).toHaveBeenCalledOnce()
+    expect(existsSync(agentDir)).toBe(false)
+    await daemon.reconcile()
+    await daemon.stop()
+  })
+
+  it('serializes a newer agent upsert behind a blocked removal and preserves the new root', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'old', runtime: 'claude' } as AgentSpec
+    })
+
+    let releaseWrite!: () => void
+    const blocked = new Promise<void>((resolve) => (releaseWrite = resolve))
+    let markWriteEntered!: () => void
+    const entered = new Promise<void>((resolve) => (markWriteEntered = resolve))
+    const writing = (daemon as any).withWorkspaceFileWrite('bot-a', async () => {
+      markWriteEntered()
+      await blocked
+    }) as Promise<void>
+    await entered
+
+    let removed = false
+    const removing = Promise.resolve(seam(daemon).applyAgentRemove('bot-a')).then(() => {
+      removed = true
+    })
+    let upserted = false
+    const upserting = seam(daemon)
+      .applyAgentUpsert({
+        agentId: 'bot-a',
+        spec: { name: 'new', runtime: 'claude' } as AgentSpec
+      })
+      .then((ack: { ok: boolean }) => {
+        upserted = true
+        return ack
+      })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(removed).toBe(false)
+    expect(upserted).toBe(false)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+
+    releaseWrite()
+    await writing
+    await removing
+    await expect(upserting).resolves.toEqual({ ok: true })
+    const newRoot = findAgentFileById(join(root, 'agents'), 'bot-a')
+    expect(newRoot).toBe(join(root, 'agents', 'new', 'agent.json'))
+    expect(JSON.parse(readFileSync(newRoot!, 'utf8')).name).toBe('new')
+    expect((daemon as any).agents.get('bot-a')?.name).toBe('new')
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
+    expect((daemon as any).cpDroppedAgents.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('retains the crash tombstone when a newer removal supersedes an intervening upsert', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+
+    const registry = (daemon as any).cpAgents
+    const realRemove = registry.remove.bind(registry)
+    vi.spyOn(registry, 'remove')
+      .mockImplementationOnce(() => {})
+      .mockImplementation(realRemove)
+    const realQuiesce = (daemon as any).quiesceAgentWorkspaceAuthority.bind(daemon)
+    let quiesceCalls = 0
+    let releaseSecond!: () => void
+    const secondBlocked = new Promise<void>((resolve) => (releaseSecond = resolve))
+    let markSecondEntered!: () => void
+    const secondEntered = new Promise<void>((resolve) => (markSecondEntered = resolve))
+    vi.spyOn(daemon as any, 'quiesceAgentWorkspaceAuthority').mockImplementation(async (agentId: string) => {
+      quiesceCalls += 1
+      if (quiesceCalls === 2) {
+        markSecondEntered()
+        await secondBlocked
+      }
+      await realQuiesce(agentId)
+    })
+
+    const firstRemoval = Promise.resolve(seam(daemon).applyAgentRemove('bot-a'))
+    const interveningUpsert = seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'new', runtime: 'claude' } as AgentSpec
+    })
+    const secondRemoval = Promise.resolve(seam(daemon).applyAgentRemove('bot-a'))
+
+    await firstRemoval
+    await expect(interveningUpsert).resolves.toEqual({ ok: false, reason: 'agent is pending removal' })
+    await secondEntered
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+    expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set(['bot-a']))
+
+    // Model the exact crash image while removal #2 is admitted but has not run:
+    // a stale root plus the still-owned durable marker must restart dark.
+    const crashRoot = root1()
+    writeAgent(crashRoot, 'bot-a')
+    cpSync(join(root, 'agents', '.removed'), join(crashRoot, 'agents', '.removed'), { recursive: true })
+    const reborn = makeDaemon(crashRoot).daemon
+    await reborn.start()
+    expect((reborn as any).agents.has('bot-a')).toBe(false)
+    expect((reborn as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((reborn as any).cpLocalState().agents).toContainEqual({ agentId: 'bot-a', origin: 'cp' })
+    await reborn.stop()
+
+    releaseSecond()
+    await secondRemoval
+    expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set())
+    await daemon.stop()
+  })
+
+  it('keeps a newer stop gate closed when an older queued launch reaches the lifecycle lane', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+
+    let releaseOlder!: () => void
+    const olderBlocked = new Promise<void>((resolve) => (releaseOlder = resolve))
+    let markOlderEntered!: () => void
+    const olderEntered = new Promise<void>((resolve) => (markOlderEntered = resolve))
+    const older = (daemon as any).queueAgentLifecycle('bot-a', async () => {
+      markOlderEntered()
+      await olderBlocked
+    }) as Promise<void>
+    await olderEntered
+
+    const launching = seam(daemon).applyAgentLaunch({
+      agentId: 'bot-a',
+      runtime: 'claude',
+      workspaceId: 'workspace-a',
+      capabilities: [],
+      spec: { name: 'bot-a' },
+      mode: 'long_lived'
+    })
+    const stopping = seam(daemon).applyAgentStop({
+      agentId: 'bot-a',
+      launchId: 'launch-a',
+      reason: 'rebalance'
+    })
+
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).pendingAgentDrains.get('bot-a')?.count).toBe(1)
+    releaseOlder()
+    await older
+    await expect(launching).rejects.toThrow(/superseded by a newer agent drain/)
+    await expect(stopping).resolves.toEqual({ ok: true })
+    expect(hosts).toHaveLength(0)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).pendingAgentDrains.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('keeps later upserts fail-closed after destructive removal cleanup fails', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'old', runtime: 'claude' } as AgentSpec
+    })
+    vi.spyOn(daemon as any, 'quiesceAgentWorkspaceAuthority').mockRejectedValueOnce(new Error('cleanup failed'))
+
+    await expect(seam(daemon).applyAgentRemove('bot-a')).rejects.toThrow('cleanup failed')
+    await expect(
+      seam(daemon).applyAgentUpsert({
+        agentId: 'bot-a',
+        spec: { name: 'must-not-land', runtime: 'claude' } as AgentSpec
+      })
+    ).rejects.toThrow(/blocked by an earlier failed remove cleanup/)
+    await expect(
+      seam(daemon).applyAgentStop({ agentId: 'bot-a', launchId: 'launch-a', reason: 'rebalance' })
+    ).rejects.toThrow(/blocked by an earlier failed remove cleanup/)
+
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).cpDroppedAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).agentLifecycleFailures.get('bot-a')?.owner).toBe('remove')
+    expect(JSON.parse(readFileSync(join(root, 'agents', 'bot-a', 'agent.json'), 'utf8')).name).toBe('old')
+    // A later destructive retry is the explicit recovery path.
+    await expect(seam(daemon).applyAgentRemove('bot-a')).resolves.toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('uses the daemon-root mirror when the agentsDir marker store is unavailable', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    await (daemon as any).ensureHostAsync('bot-a')
+    expect(hosts).toHaveLength(1)
+    // Make the tombstone parent a regular file so its hashed child cannot be created.
+    writeFileSync(join(root, 'agents', '.removed'), 'blocked')
+
+    await expect(seam(daemon).applyAgentRemove('bot-a')).resolves.toBeUndefined()
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).cpDroppedAgents.has('bot-a')).toBe(true)
+    // The daemon-root mirror admitted removal, so cleanup can delete the root
+    // and the reserved local path need not weaken the durable fence.
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
+    expect(hosts[0]!.stop).toHaveBeenCalledOnce()
+    expect((daemon as any).hosts.has('bot-a')).toBe(false)
+    expect((daemon as any).agentLifecycleFailures.has('bot-a')).toBe(false)
+    await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow(/draining/)
+    await daemon.stop()
+  })
+
+  it('recovers a stale root from the daemon-root mirror when the local store is blocked', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const first = makeDaemon(root).daemon
+    await first.start()
+    writeFileSync(join(root, 'agents', '.removed'), 'blocked')
+    vi.spyOn(first as any, 'quiesceAgentWorkspaceAuthority').mockRejectedValueOnce(new Error('cleanup failed'))
+
+    await expect(seam(first).applyAgentRemove('bot-a')).rejects.toThrow('cleanup failed')
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+    await first.stop()
+
+    const reborn = makeDaemon(root).daemon
+    await expect(reborn.start()).resolves.toBeUndefined()
+    expect((reborn as any).agents.has('bot-a')).toBe(false)
+    expect((reborn as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((reborn as any).removedAgentTombstones.has('bot-a')).toBe(true)
+    await reborn.stop()
+  })
+
+  it('uses a durable root delete as the fence when both marker stores fail', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    await (daemon as any).ensureHostAsync('bot-a')
+    expect(hosts).toHaveLength(1)
+    // Both reserved marker paths are regular files, so neither mirror can
+    // publish. agentsDir itself remains writable, allowing the fsynced root
+    // deletion to become the durable removal fence.
+    writeFileSync(join(root, 'agents', '.removed'), 'blocked')
+    writeFileSync(agentRemovalObligationsDir(root), 'blocked')
+
+    await expect(seam(daemon).applyAgentRemove('bot-a')).resolves.toBeUndefined()
+    expect(hosts[0]!.stop).toHaveBeenCalledOnce()
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).agentLifecycleFailures.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps restart dark when the daemon-root mirror is read-only but the agentsDir mirror succeeds',
+    async () => {
+      const root = root1()
+      writeAgent(root, 'bot-a')
+      const obligationDir = agentRemovalObligationsDir(root)
+      mkdirSync(obligationDir, { recursive: true })
+      chmodSync(obligationDir, 0o555)
+      try {
+        const first = makeDaemon(root).daemon
+        await first.start()
+        vi.spyOn(first as any, 'quiesceAgentWorkspaceAuthority').mockRejectedValueOnce(new Error('cleanup failed'))
+
+        await expect(seam(first).applyAgentRemove('bot-a')).rejects.toThrow('cleanup failed')
+        expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set(['bot-a']))
+        expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+        await first.stop()
+
+        const reborn = makeDaemon(root).daemon
+        await reborn.start()
+        expect((reborn as any).agents.has('bot-a')).toBe(false)
+        expect((reborn as any).drainingAgents.has('bot-a')).toBe(true)
+        await reborn.stop()
+      } finally {
+        chmodSync(obligationDir, 0o700)
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps a read-only custom agentsDir removal dark across restart via the daemon-root obligation',
+    async () => {
+      const root = root1()
+      writeAgent(root, 'bot-a')
+      const agentsDir = join(root, 'agents')
+      const { daemon, hosts } = makeDaemon(root)
+      await daemon.start()
+      await (daemon as any).ensureHostAsync('bot-a')
+      expect(hosts).toHaveLength(1)
+      vi.spyOn((daemon as any).cpAgents, 'remove').mockImplementationOnce(() => {
+        throw new Error('EACCES: agentsDir is read-only')
+      })
+
+      chmodSync(agentsDir, 0o555)
+      try {
+        await expect(seam(daemon).applyAgentRemove('bot-a')).rejects.toThrow()
+        expect(hosts[0]!.stop).toHaveBeenCalledOnce()
+        expect(existsSync(join(agentsDir, 'bot-a', 'agent.json'))).toBe(true)
+        expect(agentRemovalTombstones(agentsDir, agentRemovalObligationsDir(root))).toEqual(new Set(['bot-a']))
+        await daemon.stop()
+
+        const reborn = makeDaemon(root).daemon
+        await reborn.start()
+        expect((reborn as any).agents.has('bot-a')).toBe(false)
+        expect((reborn as any).drainingAgents.has('bot-a')).toBe(true)
+        expect((reborn as any).cpLocalState().agents).toContainEqual({ agentId: 'bot-a', origin: 'cp' })
+        await reborn.stop()
+      } finally {
+        chmodSync(agentsDir, 0o700)
+      }
+    }
+  )
+
+  it('keeps opaque snapshot drop ids confined outside recursive lifecycle paths', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const outside = join(root, 'outside')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'sentinel'), 'keep')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    const hostileId = '../outside'
+
+    await expect(
+      seam(daemon).applyReconcileSnapshot({
+        routingEpoch: 1,
+        assignments: [],
+        agents: [],
+        integrations: [],
+        crons: [],
+        leases: [],
+        drop: {
+          assignments: [],
+          crons: [],
+          agents: [{ agentId: hostileId, action: 'remove' }],
+          integrations: []
+        }
+      })
+    ).rejects.toThrow(/agent id is unsafe/)
+
+    expect(readFileSync(join(outside, 'sentinel'), 'utf8')).toBe('keep')
+    expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set([hostileId]))
+    expect((daemon as any).drainingAgents.has(hostileId)).toBe(true)
+    await daemon.stop()
+  })
+
+  it('keeps a failed CP removal tombstoned across restart until authoritative re-add', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const first = makeDaemon(root).daemon
+    await first.start()
+    vi.spyOn(first as any, 'quiesceAgentWorkspaceAuthority').mockRejectedValueOnce(new Error('cleanup failed'))
+
+    await expect(seam(first).applyAgentRemove('bot-a')).rejects.toThrow('cleanup failed')
+    expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set(['bot-a']))
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+    await first.stop()
+
+    // Model bytes left by the failed cleanup. Tombstoned localState deliberately
+    // omits these dependents, so authoritative re-add must scrub them as an
+    // exact empty set before reopening the agent.
+    const file = join(root, 'agents', 'bot-a', 'agent.json')
+    const stale = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    stale.integrations = [
+      {
+        id: 'stale-int',
+        origin: 'cp',
+        platform: 'slack',
+        slack: {
+          mode: 'direct',
+          botToken: 'must-not-revive',
+          appToken: 'xapp-stale',
+          allowedUserIds: [],
+          bindRules: []
+        }
+      }
+    ]
+    stale.crons = [{ id: 'stale-cron', origin: 'cp', schedule: '0 * * * *', trigger: 'stale', enabled: true }]
+    writeFileSync(file, JSON.stringify(stale))
+
+    const reborn = makeDaemon(root).daemon
+    await reborn.start()
+    expect((reborn as any).agents.has('bot-a')).toBe(false)
+    expect((reborn as any).drainingAgents.has('bot-a')).toBe(true)
+    await expect((reborn as any).ensureHostAsync('bot-a')).rejects.toThrow(/draining/)
+
+    await expect(
+      seam(reborn).applyAgentUpsert({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+      })
+    ).resolves.toEqual({ ok: true })
+    expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set())
+    expect((reborn as any).agents.has('bot-a')).toBe(true)
+    expect((reborn as any).drainingAgents.has('bot-a')).toBe(false)
+    const revived = JSON.parse(readFileSync(file, 'utf8')) as { integrations?: unknown[]; crons?: unknown[] }
+    expect(revived.integrations).toEqual([])
+    expect(revived.crons).toEqual([])
+    expect(readFileSync(file, 'utf8')).not.toContain('must-not-revive')
+    await reborn.stop()
+  })
+
+  it('does not reopen a tombstoned agent when any marker mirror has an ambiguous clear', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    markAgentRemoval(join(root, 'agents'), 'bot-a', agentRemovalObligationsDir(root))
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+
+    const localStore = join(root, 'agents', '.removed')
+    rmSync(localStore, { recursive: true })
+    writeFileSync(localStore, 'ambiguous')
+    await expect(
+      seam(daemon).applyAgentUpsert({
+        agentId: 'bot-a',
+        spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+      })
+    ).rejects.toThrow(/cannot clear agent .* removal tombstone for re-add/)
+
+    expect((daemon as any).removedAgentTombstones.has('bot-a')).toBe(true)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
+    expect((daemon as any).agents.has('bot-a')).toBe(false)
+    await daemon.stop()
+
+    // The failed clear must retain the canonical restart fence.
+    const reborn = makeDaemon(root).daemon
+    await expect(reborn.start()).resolves.toBeUndefined()
+    expect((reborn as any).removedAgentTombstones.has('bot-a')).toBe(true)
+    expect((reborn as any).agents.has('bot-a')).toBe(false)
+    await reborn.stop()
+  })
+
+  it('lets the matching stop retry clear its failure latch before a later launch', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    vi.spyOn(daemon as any, 'stopAgent')
+      .mockRejectedValueOnce(new Error('stop failed'))
+      .mockResolvedValueOnce(undefined)
+
+    const stop = { agentId: 'bot-a', launchId: 'launch-a', reason: 'rebalance' }
+    await expect(seam(daemon).applyAgentStop(stop)).rejects.toThrow('stop failed')
+    expect((daemon as any).agentLifecycleFailures.get('bot-a')?.owner).toBe('stop')
+    await expect(seam(daemon).applyAgentStop(stop)).resolves.toEqual({ ok: true })
+    expect((daemon as any).agentLifecycleFailures.has('bot-a')).toBe(false)
+
+    await expect(
+      seam(daemon).applyAgentLaunch({
+        agentId: 'bot-a',
+        runtime: 'claude',
+        workspaceId: 'workspace-a',
+        capabilities: [],
+        spec: { name: 'bot-a' },
+        mode: 'long_lived'
+      })
+    ).resolves.toMatchObject({ agentId: 'bot-a', runtime: 'claude' })
+    expect(hosts).toHaveLength(1)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('lets stronger removal recover a failed stop without leaking its admission reservation', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    vi.spyOn(daemon as any, 'stopAgent')
+      .mockRejectedValueOnce(new Error('stop failed'))
+      .mockResolvedValue(undefined)
+
+    await expect(
+      seam(daemon).applyAgentStop({ agentId: 'bot-a', launchId: 'launch-a', reason: 'rebalance' })
+    ).rejects.toThrow('stop failed')
+    expect((daemon as any).agentLifecycleFailures.get('bot-a')?.owner).toBe('stop')
+
+    await expect(seam(daemon).applyAgentRemove('bot-a')).resolves.toBeUndefined()
+    expect((daemon as any).pendingAgentRemovals.has('bot-a')).toBe(false)
+    expect((daemon as any).agentLifecycleFailures.has('bot-a')).toBe(false)
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
+
+    // An ACK-loss retry remains idempotent and must not accumulate a phantom
+    // reservation that permanently blocks a future authoritative re-add.
+    await expect(seam(daemon).applyAgentRemove('bot-a')).resolves.toBeUndefined()
+    expect((daemon as any).pendingAgentRemovals.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
   it('revives a reconnect-dropped agent when a later roster re-adds it', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
@@ -645,7 +1419,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await daemon.start()
     const clearDenied = vi.spyOn((daemon as any).gitCreds, 'clearDenied')
 
-    seam(daemon).applyReconcileSnapshot({
+    await seam(daemon).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
       agents: [],
@@ -663,7 +1437,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
     await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow('agent is draining')
 
-    seam(daemon).applyReconcileSnapshot({
+    await seam(daemon).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
       agents: [{ agentId: 'bot-a', name: 'bot-a', runtime: 'claude' }],
@@ -687,7 +1461,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await daemon.start()
     const clearDenied = vi.spyOn((daemon as any).gitCreds, 'clearDenied')
 
-    seam(daemon).applyReconcileSnapshot({
+    await seam(daemon).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
       agents: [],

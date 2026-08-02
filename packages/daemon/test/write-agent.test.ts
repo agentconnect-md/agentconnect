@@ -1,13 +1,27 @@
-import { describe, it, expect } from 'vitest'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, vi } from 'vitest'
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentSpec, CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
 import {
+  agentRemovalTombstones,
   archiveAgent,
+  clearAgentRemoval,
   commitAgentMove,
   detachedAgentDir,
   findAgentFileById,
+  markAgentRemoval,
   pruneMovedAgentDependents,
   removeAgent,
   readAgentMoveStage,
@@ -38,6 +52,61 @@ const baseSpec = (over: Partial<AgentSpec> = {}): AgentSpec => ({
   runtime: 'claude',
   env: {},
   ...over
+})
+
+describe('durable agent removal tombstones', () => {
+  it('hashes arbitrary CP ids instead of using them as filesystem paths', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ac-remove-marker-'))
+    const agentsDir = join(parent, 'agents')
+    const outside = join(parent, 'outside')
+    mkdirSync(agentsDir, { recursive: true })
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'sentinel'), 'keep')
+    const hostileId = '../../outside'
+
+    markAgentRemoval(agentsDir, hostileId)
+    expect(agentRemovalTombstones(agentsDir)).toEqual(new Set([hostileId]))
+    expect(readdirSync(join(agentsDir, '.removed'))).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/)])
+
+    clearAgentRemoval(agentsDir, hostileId)
+    expect(agentRemovalTombstones(agentsDir)).toEqual(new Set())
+    expect(readFileSync(join(outside, 'sentinel'), 'utf8')).toBe('keep')
+  })
+
+  it('mirrors the marker into daemon-root obligations and clears both stores', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ac-remove-marker-'))
+    const agentsDir = join(parent, 'agents')
+    const obligationDir = join(parent, 'state', 'agent-removals')
+    mkdirSync(agentsDir, { recursive: true })
+
+    markAgentRemoval(agentsDir, 'bot-a', obligationDir)
+    expect(agentRemovalTombstones(agentsDir, obligationDir)).toEqual(new Set(['bot-a']))
+    expect(readdirSync(join(agentsDir, '.removed'))).toHaveLength(1)
+    expect(readdirSync(obligationDir)).toHaveLength(1)
+
+    clearAgentRemoval(agentsDir, 'bot-a', obligationDir)
+    expect(agentRemovalTombstones(agentsDir, obligationDir)).toEqual(new Set())
+    expect(readdirSync(join(agentsDir, '.removed'))).toEqual([])
+    expect(readdirSync(obligationDir)).toEqual([])
+  })
+
+  it('fails startup when a marker store root is replaced by a symlink', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ac-remove-marker-'))
+    const agentsDir = join(parent, 'agents')
+    const obligationDir = join(parent, 'state', 'agent-removals')
+    mkdirSync(agentsDir, { recursive: true })
+    markAgentRemoval(agentsDir, 'bot-a', obligationDir)
+
+    const localStore = join(agentsDir, '.removed')
+    const redirected = join(parent, 'redirected-markers')
+    mkdirSync(redirected)
+    rmSync(localStore, { recursive: true })
+    symlinkSync(redirected, localStore, 'dir')
+
+    expect(() => agentRemovalTombstones(agentsDir, obligationDir)).toThrow(
+      'cannot enumerate durable agent removal tombstones'
+    )
+  })
 })
 
 describe('writeAgentSpec — merge (agent.json exists)', () => {
@@ -551,6 +620,23 @@ describe('writeAgentSpec — create (no agent.json)', () => {
     expect(readJson(file!).runtime).toBe('claude')
   })
 
+  it('never uses an arbitrary CP name as a filesystem path segment', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const dir = join(parent, 'agents')
+    const outside = join(parent, 'outside')
+    const warn = vi.fn()
+    mkdirSync(dir, { recursive: true })
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'sentinel'), 'keep')
+
+    writeAgentSpec(dir, 'bot-new', baseSpec({ name: '../outside' }), { ...deps, warn })
+
+    const file = findAgentFileById(dir, 'bot-new')
+    expect(file).toMatch(new RegExp(`^${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/agent-[a-f0-9]{32}/agent\\.json$`))
+    expect(readFileSync(join(outside, 'sentinel'), 'utf8')).toBe('keep')
+    expect(warn).toHaveBeenCalledOnce()
+  })
+
   it.skipIf(process.platform === 'win32')('repairs legacy modes when an integration rewrites agent.json', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {
@@ -742,15 +828,27 @@ describe('cold-move archive', () => {
     const archivedJson = readFileSync(archivedAgentFile, 'utf8')
     expect(archivedJson).not.toContain('old-secret')
     expect((JSON.parse(archivedJson) as { integrations: unknown[] }).integrations).toEqual([])
+    expect((JSON.parse(archivedJson) as { crons: unknown[] }).crons).toEqual([])
     // Simulate an archive from an older/interrupted version and prove a repeated
     // detach security-converges it before returning already-detached.
     const legacy = JSON.parse(archivedJson) as Record<string, unknown>
-    legacy.integrations = [
-      { id: 'legacy', platform: 'slack', slack: { mode: 'direct', botToken: 'legacy-secret', appToken: 'legacy' } }
+    // Malformed/legacy shapes must not bypass detach's credential erasure.
+    legacy.integrations = {
+      id: 'legacy',
+      platform: 'slack',
+      slack: { mode: 'direct', botToken: 'legacy-secret', appToken: 'legacy' }
+    }
+    legacy.crons = [
+      { id: 'legacy-cp', schedule: '* * * * *', trigger: 'stale', origin: 'cp' },
+      { id: 'legacy-local', schedule: '* * * * *', trigger: 'keep' }
     ]
     writeFileSync(archivedAgentFile, JSON.stringify(legacy))
     expect(archiveAgent(dir, 'bot-a')).toBe('already-detached')
-    expect(readFileSync(archivedAgentFile, 'utf8')).not.toContain('legacy-secret')
+    const rescrubbed = readFileSync(archivedAgentFile, 'utf8')
+    expect(rescrubbed).not.toContain('legacy-secret')
+    expect((JSON.parse(rescrubbed) as { crons: Array<{ id: string }> }).crons).toEqual([
+      expect.objectContaining({ id: 'legacy-local' })
+    ])
     // AgentActivate's bundle writes the agent spec first; this restores the old
     // archive while it is still hidden behind the daemon's staging gate.
     writeAgentSpec(dir, 'bot-a', baseSpec({ name: 'bot-a', runtime: 'claude' }), deps)
@@ -778,6 +876,11 @@ describe('cold-move archive', () => {
       }
     ])
     expect(raw.crons).toEqual([
+      {
+        id: 'legacy-local',
+        schedule: '* * * * *',
+        trigger: 'keep'
+      },
       {
         id: 'cron-current',
         schedule: '0 * * * *',

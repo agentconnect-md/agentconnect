@@ -1,4 +1,5 @@
 import { createInterface } from 'node:readline'
+import { join } from 'node:path'
 import type { ContentBlock, SessionUpdate } from '@agentclientprotocol/sdk'
 import { loadConfig } from '../config/load-config.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from '../runtimes/registry.js'
@@ -18,6 +19,7 @@ import { probeAllRuntimes, type ProbeOptions, type RuntimeProbeResult } from '..
 import { CuratedRuntimeAdmission } from '../runtimes/curated-admission.js'
 import { composeRuntimeLaunch } from '../runtimes/launch-policy.js'
 import type { RuntimeDef } from '../config/config-schema.js'
+import { persistSkillSandboxRequirement } from '../skills/skill-sandbox-policy.js'
 
 export function renderUpdate(out: NodeJS.WritableStream) {
   return (_sessionId: string, update: SessionUpdate): void => {
@@ -57,6 +59,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   })
   configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
   const agent = selectAgent(cfg.agentsDir!, opts.agentName)
+  await persistSkillSandboxRequirement(root)
 
   const catalog = opts.resolveCatalog
     ? await opts.resolveCatalog()
@@ -73,7 +76,17 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
 
   const sandboxMechanism = detectSandbox()
-  const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, sandboxMechanism)
+  const enforceSkillSandbox = opts.hostFactory === undefined
+  if (enforceSkillSandbox && !sandboxMechanism) {
+    throw new Error(
+      'AgentConnect skill authority requires every real ACP host to use a supported Linux SRT/bwrap sandbox'
+    )
+  }
+  const runInSandbox = effectiveRunInSandbox(
+    cfg.security.requireSandbox || enforceSkillSandbox,
+    agent.runInSandbox,
+    sandboxMechanism
+  )
   if (entry?.source === 'curated') {
     const admission = new CuratedRuntimeAdmission()
     const probe = opts.probeRuntimes ?? probeAllRuntimes
@@ -160,8 +173,13 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
   process.once('SIGINT', onSigint)
   try {
+    const cwd = await prepareWorkspace(agent, {
+      skillsStateDir: join(root, 'skill-installs'),
+      skillsAgentId: entry?.skillsAgentId ?? null
+    })
+    // Runtime adapters may discover skills only during initialization. Finish the
+    // complete clone/pull + unified-skill reconciliation before the child starts.
     await host.start()
-    const cwd = await prepareWorkspace(agent)
     const sessionId = await host.newSession(cwd)
 
     const send = async (text: string) => {

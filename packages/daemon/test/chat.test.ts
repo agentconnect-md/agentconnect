@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Writable } from 'node:stream'
 import { runChat } from '../src/cli/chat.js'
+import { detectSandbox } from '../src/acp/sandbox.js'
 import type { AcpHost } from '../src/acp/acp-host.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 
@@ -71,7 +72,7 @@ function curatedScaffold(runtimeId: string): ReturnType<typeof scaffold> {
 function catalog(runtimeId: string, command = runtimeId): ResolvedRuntimeCatalog {
   const runtime = { command, args: ['acp'], env: [] }
   return {
-    entries: { [runtimeId]: { runtime, source: 'curated', name: runtimeId, version: '' } },
+    entries: { [runtimeId]: { runtime, source: 'curated', name: runtimeId, version: '', skillsAgentId: null } },
     runtimes: { [runtimeId]: runtime }
   }
 }
@@ -89,9 +90,45 @@ describe('runChat', () => {
   it('single-shot: discovers the lone agent, spawns runtime, streams the echoed reply', async () => {
     const { agentsDir, configPath, root } = scaffold()
     const out = capture()
-    await runChat({ agentsDir, message: 'hi', configPath, root, out: out.stream })
+    const run = runChat({ agentsDir, message: 'hi', configPath, root, out: out.stream })
+    if (!detectSandbox()) {
+      await expect(run).rejects.toThrow(/requires every real ACP host.*sandbox/)
+      return
+    }
+    await run
     expect(out.text()).toContain('echo:hi')
   }, 20_000)
+
+  it('finishes workspace preparation before starting the runtime host', async () => {
+    const files = scaffold()
+    const workspace = join(files.agentsDir, 'ws')
+    const runtime = { command: process.execPath, args: [], env: [] }
+    const host = quietHost()
+    host.start = vi.fn(async () => {
+      expect(existsSync(workspace)).toBe(true)
+    })
+    host.newSession = vi.fn(async (cwd: string) => {
+      expect(cwd).toBe(workspace)
+      return 'session'
+    })
+
+    await runChat({
+      ...files,
+      message: 'hi',
+      out: capture().stream,
+      resolveCatalog: async () => ({
+        entries: {
+          fake: { runtime, source: 'user', name: 'fake', version: '', skillsAgentId: null }
+        },
+        runtimes: { fake: runtime }
+      }),
+      installed: (runtimes) => runtimes,
+      hostFactory: () => host
+    })
+
+    expect(host.start).toHaveBeenCalledOnce()
+    expect(host.newSession).toHaveBeenCalledOnce()
+  })
 
   it('errors clearly when the runtime name is unknown', async () => {
     const { agentsDir, configPath, root } = scaffold()

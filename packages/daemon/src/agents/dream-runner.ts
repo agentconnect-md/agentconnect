@@ -46,6 +46,7 @@ import {
   type DreamTranscriptSource,
   type TrustedOrganizationSkillTarget
 } from './memory-dreamer.js'
+import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
 
 /**
  * `DreamRunner` — the daemon's dream-job engine (design:
@@ -186,6 +187,10 @@ export interface DreamRunnerDeps {
   managedSkillsFor?(agentId: string): TrustedOrganizationSkillTarget[]
   /** Best-effort inventory convergence after completion/review. */
   onOrganizationSuggestions?(): void | Promise<void>
+  /** Fence a warm runtime after a new accepted local source becomes active. */
+  /** Hold the daemon's per-agent host/admission gate while accepted source
+   * publication runs. Tests without a live host may omit this seam. */
+  withSkillAcceptance?(agentId: string, publish: () => Promise<void>): Promise<void>
   log: { info(msg: string): void; warn(msg: string): void }
   now?(): Date
   /** Grace period after a cancel before the runner ABANDONS the extraction and
@@ -201,9 +206,6 @@ const DEFAULT_SESSION_WINDOW = 20
 const TRANSCRIPT_ROWS_PER_SESSION = 200
 const DREAMS_DIRNAME = 'memory-dreams'
 const BACKUPS_DIRNAME = 'memory-backups'
-/** Where an ACCEPTED mined skill is installed, under the agent root. */
-const AGENT_SKILLS_DIRNAME = 'skills'
-
 /** Staged file names are the validator's own outputs; anything else is a violation. */
 const STAGED_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
 
@@ -1112,20 +1114,9 @@ export class DreamRunner {
     }
   }
 
-  /**
-   * Accepting a mined skill is NOT AVAILABLE in this phase.
-   *
-   * "Accepted" must mean the skill can steer future sessions, and that requires
-   * materializing it where the runtime looks — under the agent-writable ACP cwd.
-   * Every daemon-authority write there is escapable (see skills/dream-skills.ts:
-   * the parent can be swapped for a symlink mid-operation and Node has no
-   * `openat` family), so the containment-safe registration step is deliberately
-   * deferred rather than shipped subtly unsafe.
-   *
-   * Failing loudly is the point: a terminal `accepted` whose effect does not
-   * exist would be a worse outcome than an explicit refusal. Mining, staging,
-   * review metadata, and dismissal all work; only acceptance waits.
-   */
+  /** Accept a mined skill by publishing an immutable bounded local-source
+   * revision under the daemon-owned agent root. Workspace materialization is
+   * deferred to the unified installer and the warm host is fenced first. */
   async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
     this.assertStagedContentAllowed()
     const dir = this.dirFor(agentId)
@@ -1134,15 +1125,12 @@ export class DreamRunner {
       if (skill.state === 'accepted') return dream // idempotent
       if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was already dismissed')
 
-      // COPY into the agent's own skills tree rather than referencing the dream
-      // staging, so discarding the dream later cannot uninstall a skill the user
-      // already accepted. Session prep materializes it into the runtime's skill
-      // root (skills/dream-skill-install.ts) under symlink-safe containment.
       const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
-      const target = join(dir, AGENT_SKILLS_DIRNAME, name)
-      await fsp.mkdir(join(dir, AGENT_SKILLS_DIRNAME), { recursive: true })
-      await fsp.rm(target, { recursive: true, force: true })
-      await fsp.cp(staged, target, { recursive: true, dereference: false, errorOnExist: false })
+      const publish = async (): Promise<void> => {
+        await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged, name })
+      }
+      if (this.deps.withSkillAcceptance) await this.deps.withSkillAcceptance(agentId, publish)
+      else await publish()
 
       const next = this.setSkillState(agentId, dreamId, name, 'accepted')
       this.emitLifecycle({ type: 'memory.dream.skill_accepted', dream: next, skillName: name })

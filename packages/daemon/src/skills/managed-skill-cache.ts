@@ -14,7 +14,7 @@ import { basename, dirname, join, posix } from 'node:path'
 import { unzipSync, type UnzipFileInfo } from 'fflate'
 import { parse as parseYaml } from 'yaml'
 import type { ManagedSkillChunk, ManagedSkillEntry } from '@agentconnect.md/protocol'
-import type { ManagedSkillMaterializationSource } from './dream-skill-install.js'
+import type { LocalSkillSource } from './install-skills.js'
 
 const MAX_ARCHIVE_BYTES = 512 * 1024
 const MAX_EXPANDED_BYTES = 4 * 1024 * 1024
@@ -338,14 +338,17 @@ export class ManagedSkillCache {
     private readonly deps: ManagedSkillCacheDeps
   ) {}
 
-  async resolve(agent: {
-    id: string
-    managedSkills: ManagedSkillEntry[]
-  }): Promise<ManagedSkillMaterializationSource[]> {
-    const resolved: ManagedSkillMaterializationSource[] = []
+  async resolve(agent: { id: string; managedSkills: ManagedSkillEntry[] }): Promise<LocalSkillSource[]> {
+    const resolved: LocalSkillSource[] = []
     for (const binding of agent.managedSkills) {
       try {
-        resolved.push({ name: binding.name, sourceDir: await this.ensure(agent.id, binding) })
+        resolved.push({
+          kind: 'managed',
+          key: `managed:${binding.id}:${binding.revision}:${binding.digest}`,
+          name: binding.name,
+          sourceDir: await this.ensure(agent.id, binding),
+          contentDigest: binding.digest
+        })
       } catch (err) {
         this.deps.warn?.(
           `skills: managed skill "${binding.name}" revision ${binding.revision} unavailable; skipping (${err instanceof Error ? err.message : 'unknown error'})`

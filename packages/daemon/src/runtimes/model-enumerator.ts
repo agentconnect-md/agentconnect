@@ -45,6 +45,10 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 
 export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
   return async (runtimeId, rt, modelIds, budget) => {
+    if (!deps.sandboxMechanism && !deps.hostFactory) {
+      deps.log?.debug(`catalog: ${runtimeId} skipped because no supported OS sandbox is available`)
+      return undefined
+    }
     const scope = mkdtempSync(join(tmpdir(), 'ac-catalog-'))
     const cwd = join(scope, 'workspace')
     mkdirSync(cwd, { recursive: true })

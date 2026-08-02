@@ -19,7 +19,21 @@
  * without the key leaves the local value alone — hand-authored agent.json keeps
  * working).
  */
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, renameSync, readdirSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
+import type { Dirent, Stats } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname, relative, resolve, isAbsolute, sep } from 'node:path'
 import {
   normalizeGitCloneUrl,
@@ -41,14 +55,22 @@ export interface WriteAgentDeps {
 
 const DETACHED_DIR = '.detached'
 const STAGED_DIR = '.staged'
+const REMOVED_DIR = '.removed'
 const DETACHED_DATA_DIR = 'agent'
 const DETACHED_META_FILE = 'metadata.json'
 const MOVE_META_FILE = 'metadata.json'
+const REMOVED_META_FILE = 'metadata.json'
 
 interface DetachedAgentMetadata {
   agentId: string
   /** Original agent-root path, relative to agentsDir. */
   relativePath: string
+}
+
+function assertSafeAgentStorageId(agentId: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(agentId) || agentId === '.' || agentId === '..') {
+    throw new Error('agent id is unsafe for daemon-local lifecycle storage')
+  }
 }
 
 export interface AgentMoveStageMetadata {
@@ -60,10 +82,12 @@ export interface AgentMoveStageMetadata {
 
 /** Stable cold-move archive root. It is hidden, so agent discovery ignores it. */
 export function detachedAgentDir(agentsDir: string, agentId: string): string {
+  assertSafeAgentStorageId(agentId)
   return join(agentsDir, DETACHED_DIR, agentId)
 }
 
 export function stagedAgentDir(agentsDir: string, agentId: string): string {
+  assertSafeAgentStorageId(agentId)
   return join(agentsDir, STAGED_DIR, agentId)
 }
 
@@ -149,17 +173,277 @@ export function stagedAgentIds(agentsDir: string): string[] {
     .map(([agentId]) => agentId)
 }
 
+function removalMarkerDir(storeDir: string, agentId: string): string {
+  // RegisterOk drop ids are rolling-compatible strings rather than UUID-only.
+  // Never use CP-controlled bytes as a path segment; the exact id lives only in
+  // private metadata and a fixed-width digest names the containment directory.
+  const key = createHash('sha256').update(agentId).digest('hex')
+  return join(storeDir, key)
+}
+
+function localRemovalStore(agentsDir: string): string {
+  return join(agentsDir, REMOVED_DIR)
+}
+
+function syncPath(path: string): void {
+  // Windows does not expose the POSIX directory-fsync durability primitive.
+  // The daemon's production sandbox target is Linux; macOS also supports this
+  // for the local development/test path.
+  if (process.platform === 'win32') return
+  const fd = openSync(path, 'r')
+  try {
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+function syncPathIfExists(path: string): void {
+  if (existsSync(path)) syncPath(path)
+}
+
+function publishRemovalMarker(storeDir: string, agentId: string): void {
+  const root = removalMarkerDir(storeDir, agentId)
+  const file = join(root, REMOVED_META_FILE)
+  const temp = join(root, `${REMOVED_META_FILE}.tmp`)
+  ensurePrivateAgentDirectory(root)
+  try {
+    writeFileSync(temp, JSON.stringify({ agentId }, null, 2) + '\n', { mode: 0o600 })
+    syncPath(temp)
+    renameSync(temp, file)
+    syncPath(root)
+    syncPath(storeDir)
+    syncPath(dirname(storeDir))
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
+  }
+}
+
+/** Persist removal admission before asynchronous quiesce begins. If the daemon
+ * crashes after that point but before deleting the active root, startup keeps
+ * the replica outside the effective roster until CP removes or re-adds it. */
+export interface AgentRemovalMarkResult {
+  /** A mirror failed, but at least one independently durable marker landed. */
+  degraded: Error[]
+}
+
+export function markAgentRemoval(agentsDir: string, agentId: string, obligationDir?: string): AgentRemovalMarkResult {
+  // The two stores are independent failure domains. Try both even when the
+  // first fails; one successfully-fsynced marker is sufficient to keep restart
+  // fail-closed. A later retry repairs the missing mirror.
+  const stores = obligationDir ? [obligationDir, localRemovalStore(agentsDir)] : [localRemovalStore(agentsDir)]
+  const degraded: Error[] = []
+  let published = 0
+  for (const store of stores) {
+    try {
+      publishRemovalMarker(store, agentId)
+      published += 1
+    } catch (error) {
+      degraded.push(error instanceof Error ? error : new Error('agent removal tombstone publication failed'))
+    }
+  }
+  if (published === 0) {
+    throw new AggregateError(degraded, `cannot durably publish agent removal for "${agentId}"`)
+  }
+  return { degraded }
+}
+
+function clearRemovalMarker(storeDir: string, agentId: string): void {
+  if (!existsSync(storeDir)) return
+  rmSync(removalMarkerDir(storeDir, agentId), { recursive: true, force: true })
+  // Persist marker deletion. Callers clear only after the active-root delete,
+  // archive rename, or authoritative re-add bytes have themselves been fsynced.
+  syncPath(storeDir)
+  syncPathIfExists(dirname(storeDir))
+}
+
+export interface AgentRemovalClearResult {
+  /** A mirror could not clear. Its retained/ambiguous marker remains fail-closed. */
+  degraded: Error[]
+}
+
+export function clearAgentRemoval(agentsDir: string, agentId: string, obligationDir?: string): AgentRemovalClearResult {
+  // Attempt both mirrors independently. After a durable delete/archive, a
+  // retained marker is availability-only and must not invalidate the stronger
+  // destructive fence. Re-add callers instead reject any degraded result before
+  // reopening authority.
+  const stores = [localRemovalStore(agentsDir), ...(obligationDir ? [obligationDir] : [])]
+  const degraded: Error[] = []
+  for (const store of stores) {
+    try {
+      clearRemovalMarker(store, agentId)
+    } catch (error) {
+      degraded.push(error instanceof Error ? error : new Error('agent removal tombstone clear failed'))
+    }
+  }
+  return { degraded }
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined
+}
+
+function removalStoreRoots(agentsDir: string, obligationDir?: string): string[] {
+  return [localRemovalStore(agentsDir), ...(obligationDir ? [obligationDir] : [])]
+}
+
+interface RemovalStoreRead {
+  valid: Map<string, string>
+  corrupt: Map<string, Error>
+  /** A regular file/symlink cannot hide marker children, but this mirror is not healthy. */
+  knownEmptyDegraded?: Error
+  /** Enumeration failed, so this mirror may hide marker identities we cannot recover. */
+  unknown?: Error
+}
+
+/** Read one mirror without letting its failure suppress a healthy peer. Corrupt
+ * marker identities are resolved only after both mirrors have been inspected. */
+function readRemovalStore(root: string): RemovalStoreRead {
+  const result: RemovalStoreRead = { valid: new Map(), corrupt: new Map() }
+  let rootStat: Stats
+  try {
+    rootStat = lstatSync(root)
+  } catch (error) {
+    if (nodeErrorCode(error) === 'ENOENT') return result
+    result.unknown = new Error('cannot inspect durable agent removal tombstone store', { cause: error })
+    return result
+  }
+  if (rootStat.isSymbolicLink()) {
+    result.unknown = new Error('durable agent removal tombstone store must not be a symbolic link')
+    return result
+  }
+  if (!rootStat.isDirectory()) {
+    result.knownEmptyDegraded = new Error('durable agent removal tombstone store is not a directory')
+    return result
+  }
+
+  let entries: Dirent[]
+  try {
+    entries = readdirSync(root, { withFileTypes: true })
+  } catch (error) {
+    result.unknown = new Error('cannot enumerate durable agent removal tombstones', { cause: error })
+    return result
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      // A hash-shaped file/symlink occupies a real marker identity. It is not
+      // safe to skip unless the peer supplies valid metadata for that digest.
+      if (/^[0-9a-f]{64}$/.test(entry.name)) {
+        result.corrupt.set(entry.name, new Error(`corrupt agent removal tombstone "${entry.name}"`))
+      }
+      continue
+    }
+    try {
+      const metadata = JSON.parse(readFileSync(join(root, entry.name, REMOVED_META_FILE), 'utf8')) as {
+        agentId?: unknown
+      }
+      if (typeof metadata.agentId !== 'string') throw new Error('agent id is missing')
+      const expected = createHash('sha256').update(metadata.agentId).digest('hex')
+      if (expected !== entry.name) throw new Error('metadata digest mismatch')
+      result.valid.set(expected, metadata.agentId)
+    } catch (error) {
+      result.corrupt.set(entry.name, new Error(`corrupt agent removal tombstone "${entry.name}"`, { cause: error }))
+    }
+  }
+  return result
+}
+
+export function agentRemovalTombstones(agentsDir: string, obligationDir?: string): Set<string> {
+  const reads = removalStoreRoots(agentsDir, obligationDir).map(readRemovalStore)
+  const unknown = reads.flatMap((read) => (read.unknown ? [read.unknown] : []))
+  if (unknown.length > 0) {
+    throw new AggregateError(unknown, 'cannot enumerate durable agent removal tombstones')
+  }
+  if (reads.every((read) => read.knownEmptyDegraded)) {
+    throw new AggregateError(
+      reads.flatMap((read) => (read.knownEmptyDegraded ? [read.knownEmptyDegraded] : [])),
+      'all durable agent removal tombstone stores are unavailable'
+    )
+  }
+
+  const valid = new Map<string, string>()
+  for (const read of reads) {
+    for (const [digest, agentId] of read.valid) {
+      const previous = valid.get(digest)
+      if (previous !== undefined && previous !== agentId) {
+        throw new Error(`conflicting agent removal tombstone "${digest}"`)
+      }
+      valid.set(digest, agentId)
+    }
+  }
+  for (const read of reads) {
+    for (const [digest, error] of read.corrupt) {
+      // A valid peer with the same digest recovers the exact fenced identity.
+      // Otherwise startup cannot know which authority this marker excluded.
+      if (!valid.has(digest)) throw error
+    }
+  }
+  return new Set(valid.values())
+}
+
+/** Re-add must not remove the last restart fence and then report failure. Check
+ * every store first, clear one redundant marker at a time, and keep an anchor
+ * until the final operation. If a delete/fsync races with a new failure, re-arm
+ * at least one durable mirror before returning the degradation. */
+export function clearAgentRemovalForReadd(
+  agentsDir: string,
+  agentId: string,
+  obligationDir?: string
+): AgentRemovalClearResult {
+  const stores = removalStoreRoots(agentsDir, obligationDir)
+  const marker = createHash('sha256').update(agentId).digest('hex')
+  const present: string[] = []
+  const degraded: Error[] = []
+  for (const store of stores) {
+    try {
+      const storeStat = lstatSync(store)
+      if (!storeStat.isDirectory()) {
+        degraded.push(new Error(`durable agent removal tombstone store is not a directory: ${store}`))
+        continue
+      }
+      try {
+        lstatSync(join(store, marker))
+        present.push(store)
+      } catch (error) {
+        if (nodeErrorCode(error) !== 'ENOENT') throw error
+      }
+    } catch (error) {
+      if (nodeErrorCode(error) !== 'ENOENT') {
+        degraded.push(error instanceof Error ? error : new Error('agent removal tombstone preflight failed'))
+      }
+    }
+  }
+  if (degraded.length > 0) return { degraded }
+
+  for (const store of present) {
+    try {
+      // obligationDir is last, so when both mirrors exist it remains the anchor
+      // until the local mirror has been durably cleared.
+      clearRemovalMarker(store, agentId)
+    } catch (error) {
+      degraded.push(error instanceof Error ? error : new Error('agent removal tombstone clear failed'))
+      try {
+        const rearmed = markAgentRemoval(agentsDir, agentId, obligationDir)
+        degraded.push(...rearmed.degraded)
+      } catch (rearmError) {
+        degraded.push(rearmError instanceof Error ? rearmError : new Error('agent removal tombstone re-arm failed'))
+      }
+      return { degraded }
+    }
+  }
+  return { degraded }
+}
+
 function detachedDataDir(agentsDir: string, agentId: string): string {
   return join(detachedAgentDir(agentsDir, agentId), DETACHED_DATA_DIR)
 }
 
-function scrubAgentIntegrations(file: string): string {
-  protectAgentJson(file)
+function scrubAgentDependents(file: string, agentId: string): string {
   const original = readFileSync(file, 'utf8')
-  const raw = JSON.parse(original) as Record<string, unknown>
-  if (Array.isArray(raw.integrations) && raw.integrations.length === 0) return original
-  raw.integrations = []
-  writeAgentJson(file, JSON.stringify(raw, null, 2) + '\n')
+  pruneAgentDependents(file, agentId, { integrationIds: [], cronIds: [] })
   return original
 }
 
@@ -178,7 +462,9 @@ export function archiveAgent(agentsDir: string, agentId: string): 'archived' | '
     if (!archivedFile) throw new Error(`cannot detach agent "${agentId}": detached archive is incomplete`)
     // Idempotent security convergence: an archive produced by an interrupted or
     // older detach must also be scrubbed before a repeated detach can ACK.
-    scrubAgentIntegrations(archivedFile)
+    scrubAgentDependents(archivedFile, agentId)
+    syncPath(archivedFile)
+    syncPath(dirname(archivedFile))
     return 'already-detached'
   }
 
@@ -200,21 +486,40 @@ export function archiveAgent(agentsDir: string, agentId: string): 'archived' | '
   }
   const metadata: DetachedAgentMetadata = { agentId, relativePath }
   const originalAgentJson = readFileSync(file, 'utf8')
+  let renamed = false
   try {
-    // The archive keeps workspace/memory/local files, but bot credentials are CP
-    // authority and must not remain forever on the historical source daemon.
+    // The archive keeps workspace/memory/local files, but integrations and CP
+    // crons are authority that must not revive after a restart and later re-add.
     ensurePrivateAgentDirectory(archiveRoot)
-    scrubAgentIntegrations(file)
-    writeFileSync(join(archiveRoot, DETACHED_META_FILE), JSON.stringify(metadata, null, 2) + '\n')
+    scrubAgentDependents(file, agentId)
+    syncPath(file)
+    const metadataFile = join(archiveRoot, DETACHED_META_FILE)
+    writeFileSync(metadataFile, JSON.stringify(metadata, null, 2) + '\n')
+    syncPath(metadataFile)
+    syncPath(archiveRoot)
+    syncPath(dirname(archiveRoot))
+    syncPath(agentsDir)
     renameSync(activeDir, archived)
+    renamed = true
+    // The removal marker is cleared only after this function returns. Persist
+    // both sides of the rename first so a power loss cannot roll the active
+    // authority back into the discovery tree after that marker is gone.
+    syncPath(dirname(activeDir))
+    syncPath(archiveRoot)
   } catch (err) {
     // Do not strand an empty/metadata-only state that makes every retry look
     // like a conflicting archive. The active directory is still intact when
     // either metadata write or rename fails, so rolling this root back is safe.
     // rename is atomic: on failure the active file remains at `file`, so put its
     // exact original text (including local formatting/templates) back.
-    if (existsSync(file)) writeAgentJson(file, originalAgentJson)
-    rmSync(archiveRoot, { recursive: true, force: true })
+    if (!renamed) {
+      if (existsSync(file)) {
+        writeAgentJson(file, originalAgentJson)
+        syncPath(file)
+      }
+      rmSync(archiveRoot, { recursive: true, force: true })
+      syncPathIfExists(dirname(archiveRoot))
+    }
     throw err
   }
   return 'archived'
@@ -252,8 +557,14 @@ export function restoreArchivedAgent(agentsDir: string, agentId: string): boolea
 
   mkdirSync(dirname(target), { recursive: true })
   renameSync(archived, target)
+  // Authoritative re-add clears the removal obligation after writeAgentSpec
+  // returns. Persist the restored root and both rename parents before then.
+  syncPath(dirname(archived))
+  syncPath(dirname(target))
   // Only metadata/empty parents remain after the data directory moved out.
   rmSync(archiveRoot, { recursive: true, force: true })
+  syncPathIfExists(dirname(archiveRoot))
+  syncPath(agentsDir)
   return true
 }
 
@@ -266,19 +577,22 @@ export function restoreArchivedAgent(agentsDir: string, agentId: string): boolea
  * integration. Retaining an unknown stale bot credential is the less safe
  * ambiguity during an explicit move.
  */
-export function pruneMovedAgentDependents(
-  agentsDir: string,
+function pruneAgentDependents(
+  file: string,
   agentId: string,
   desired: { integrationIds: string[]; cronIds: string[] }
 ): boolean {
-  const file = findAgentFileById(agentsDir, agentId)
-  if (!file) return false
   const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
   const integrationIds = new Set(desired.integrationIds)
   const cronIds = new Set(desired.cronIds)
   let changed = false
 
-  if (Array.isArray(raw.integrations)) {
+  if (!Array.isArray(raw.integrations)) {
+    // Archive/detach historically erased this field unconditionally. Preserve
+    // that credential boundary for malformed/legacy non-array values too.
+    raw.integrations = []
+    changed = true
+  } else {
     const seen = new Set<string>()
     const next = raw.integrations.filter((integration) => {
       if (typeof integration !== 'object' || integration === null) return false
@@ -340,6 +654,15 @@ export function pruneMovedAgentDependents(
   return changed
 }
 
+export function pruneMovedAgentDependents(
+  agentsDir: string,
+  agentId: string,
+  desired: { integrationIds: string[]; cronIds: string[] }
+): boolean {
+  const file = findAgentFileById(agentsDir, agentId)
+  return file ? pruneAgentDependents(file, agentId, desired) : false
+}
+
 /** Map a CP workspace mode onto the daemon's AgentSchema workspace mode. */
 function mapWorkspaceMode(mode: 'scratch' | 'github'): 'from-scratch' | 'git-repo' {
   return mode === 'scratch' ? 'from-scratch' : 'git-repo'
@@ -363,6 +686,15 @@ export function findAgentFileById(agentsDir: string, agentId: string): string | 
     }
   }
   return undefined
+}
+
+/** Persist the complete active replica before a removal obligation can clear. */
+export function syncAgentReplica(agentsDir: string, agentId: string): void {
+  const file = findAgentFileById(agentsDir, agentId)
+  if (!file) throw new Error(`cannot persist agent "${agentId}": active replica is missing`)
+  syncPath(file)
+  syncPath(dirname(file))
+  syncPath(agentsDir)
 }
 
 /**
@@ -547,12 +879,24 @@ export function writeAgentSpec(agentsDir: string, agentId: string, spec: AgentSp
     const raw = JSON.parse(readFileSync(existingFile, 'utf8')) as Record<string, unknown>
     applySpecFields(raw, spec, { agentId, agentDir: dirname(existingFile), creating: false })
     writeAgentJson(existingFile, JSON.stringify(raw, null, 2) + '\n')
+    syncAgentReplica(agentsDir, agentId)
     return
   }
 
   // CREATE — no agent with this id exists anywhere; make a fresh dedicated dir
   // named by the agent's slug (spec.name, unique per org), not its opaque id.
-  const agentDir = join(agentsDir, spec.name)
+  // Mixed-version wire schemas accept arbitrary names, so never trust one as a
+  // path segment. A collision or unsafe name gets a stable opaque fallback.
+  const safeName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(spec.name) && spec.name !== '.' && spec.name !== '..'
+  const namedDir = safeName ? join(agentsDir, spec.name) : undefined
+  const fallbackName = `agent-${createHash('sha256').update(agentId).digest('hex').slice(0, 32)}`
+  const agentDir = namedDir && !existsSync(namedDir) ? namedDir : join(agentsDir, fallbackName)
+  if (agentDir !== namedDir) {
+    deps.warn?.(`cp: agent "${agentId}" name cannot be used as a unique local directory; using "${fallbackName}"`)
+  }
+  if (existsSync(agentDir)) {
+    throw new Error(`cannot create agent "${agentId}": local directory "${fallbackName}" is already occupied`)
+  }
   const file = join(agentDir, 'agent.json')
   let runtime = spec.runtime
   if (!runtime) {
@@ -571,6 +915,7 @@ export function writeAgentSpec(agentsDir: string, agentId: string, spec: AgentSp
   applySpecFields(raw, spec, { agentId, agentDir, creating: true })
 
   writeAgentJson(file, JSON.stringify(raw, null, 2) + '\n')
+  syncAgentReplica(agentsDir, agentId)
 }
 
 /**
@@ -582,9 +927,24 @@ export function writeAgentSpec(agentsDir: string, agentId: string, spec: AgentSp
  */
 export function removeAgent(agentsDir: string, agentId: string): void {
   const existingFile = findAgentFileById(agentsDir, agentId)
-  const agentDir = existingFile ? dirname(existingFile) : join(agentsDir, agentId)
-  rmSync(agentDir, { recursive: true, force: true })
+  if (existingFile) {
+    const base = resolve(agentsDir)
+    const activeDir = resolve(dirname(existingFile))
+    const relativePath = relative(base, activeDir)
+    if (!relativePath || isAbsolute(relativePath) || relativePath === '..' || relativePath.startsWith(`..${sep}`)) {
+      throw new Error(`cannot remove agent "${agentId}": its root is not a child of agentsDir`)
+    }
+    const parent = dirname(activeDir)
+    rmSync(activeDir, { recursive: true, force: true })
+    // The caller clears the fail-closed marker next. Persist the unlink first.
+    syncPath(parent)
+    syncPath(agentsDir)
+  }
   // `agent/remove` is actual deletion, not detach: purge any cold-move archive too.
-  rmSync(detachedAgentDir(agentsDir, agentId), { recursive: true, force: true })
+  const detached = detachedAgentDir(agentsDir, agentId)
+  rmSync(detached, { recursive: true, force: true })
+  syncPathIfExists(dirname(detached))
   clearAgentMoveStage(agentsDir, agentId)
+  syncPathIfExists(join(agentsDir, STAGED_DIR))
+  syncPath(agentsDir)
 }

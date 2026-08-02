@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { turnFailureCode } from '../../src/acp/acp-host.js'
+import { detectSandbox } from '../../src/acp/sandbox.js'
 import { PROFILES, profileById } from './profiles.js'
 import { verdictFor } from './support-matrix.js'
 import { bootHost, runDaemonTurn } from './harness.js'
@@ -315,7 +316,7 @@ describe('ACP host: stop() escalation', () => {
   )
 })
 
-describe('daemon end-to-end: webchat turn through a real ACP subprocess', () => {
+describe.skipIf(!detectSandbox())('daemon end-to-end: webchat turn through a real ACP subprocess', () => {
   // A representative slice: full-featured, no-loadSession, and bare-minimum agents.
   it.each([profileById('claude'), profileById('codex'), profileById('pi')])(
     'streams the reply and closes the turn ($id)',
