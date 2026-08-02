@@ -1304,24 +1304,34 @@ export default function SessionDetailView() {
       const run = (async () => {
         const state = conversationSourcesRef.current
         const repRows: SessionMessageDto[] = []
+        // Per-source isolation, mirroring the initial fan-out: one member's
+        // daemon going offline mid-conversation must degrade THAT source to
+        // the partial-merge notice, never stall the whole tail round.
+        let failed = 0
         for (const src of sources) {
-          let cursor = state.cursors.get(src.sessionId) ?? null
-          for (let pageNo = 0; pageNo < 20; pageNo++) {
-            const page = await fetchSessionMessages(src.sessionId, {
-              ...(cursor !== null ? { after: cursor } : {}),
-              limit: 200
-            })
-            if (tailSessionRef.current !== sid) return
-            const current = state.rows.get(src.sessionId) ?? []
-            state.rows.set(src.sessionId, mergeSessionMessages(current, page.messages, src.platform))
-            if (src.sessionId === sid) repRows.push(...page.messages)
-            if (page.liveCursor !== null) {
-              cursor = page.liveCursor
-              state.cursors.set(src.sessionId, cursor)
+          try {
+            let cursor = state.cursors.get(src.sessionId) ?? null
+            for (let pageNo = 0; pageNo < 20; pageNo++) {
+              const page = await fetchSessionMessages(src.sessionId, {
+                ...(cursor !== null ? { after: cursor } : {}),
+                limit: 200
+              })
+              if (tailSessionRef.current !== sid) return
+              const current = state.rows.get(src.sessionId) ?? []
+              state.rows.set(src.sessionId, mergeSessionMessages(current, page.messages, src.platform))
+              if (src.sessionId === sid) repRows.push(...page.messages)
+              if (page.liveCursor !== null) {
+                cursor = page.liveCursor
+                state.cursors.set(src.sessionId, cursor)
+              }
+              if (!page.liveMore || page.liveCursor === null) break
             }
-            if (!page.liveMore || page.liveCursor === null) break
+          } catch {
+            failed += 1
           }
         }
+        if (tailSessionRef.current !== sid) return
+        setConversationOffline(failed)
         setMsgs(mergeConversationRows(sources, state.rows))
         if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
           reconcileLiveSteps(sid, repRows, aid)

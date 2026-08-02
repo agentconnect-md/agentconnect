@@ -111,7 +111,9 @@ export function duplicateIdentity(platform: string, row: SessionMessageDto): str
 export function mergeConversation(sources: MergeSource[]): MergedRow[] {
   type Decorated = MergedRow & { us: number; order: number }
   const kept: Decorated[] = []
-  const byIdentity = new Map<string, Decorated>()
+  // Identity → index into `kept`, so the author-copy replacement is O(1)
+  // instead of an indexOf scan per duplicate.
+  const byIdentity = new Map<string, { at: number; entry: Decorated }>()
   let order = 0
   for (const source of sources) {
     for (const row of source.rows) {
@@ -130,15 +132,14 @@ export function mergeConversation(sources: MergeSource[]): MergedRow[] {
       }
       const previous = byIdentity.get(identity)
       if (!previous) {
-        byIdentity.set(identity, candidate)
+        byIdentity.set(identity, { at: kept.length, entry: candidate })
         kept.push(candidate)
-      } else if (!previous.authorCopy && candidate.authorCopy) {
+      } else if (!previous.entry.authorCopy && candidate.authorCopy) {
         // The author copy is the full-fidelity one — replace the recipient
         // copy IN PLACE (keeping its coordinates is wrong: the author's
         // canonical position wins for placement).
-        const at = kept.indexOf(previous)
-        kept[at] = candidate
-        byIdentity.set(identity, candidate)
+        kept[previous.at] = candidate
+        byIdentity.set(identity, { at: previous.at, entry: candidate })
       }
     }
   }

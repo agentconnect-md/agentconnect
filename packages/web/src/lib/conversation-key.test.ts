@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { encodeConversationKey, isWebchatConversationKey } from './conversation-key'
+import { encodeConversationKey } from './conversation-key'
 
 describe('conversation key (browser port)', () => {
   it('matches the CP codec byte-for-byte', () => {
@@ -20,8 +20,6 @@ describe('conversation key (browser port)', () => {
   it('uses the bare conversation id for webchat and refuses singletons', () => {
     const id = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
     expect(encodeConversationKey({ platform: 'webchat', tenantScope: null, channel: id, thread: id })).toBe(id)
-    expect(isWebchatConversationKey(id)).toBe(true)
-    expect(isWebchatConversationKey('not-a-uuid')).toBe(false)
     expect(encodeConversationKey({ platform: 'slack', tenantScope: null, channel: null, thread: 'T' })).toBeNull()
     expect(encodeConversationKey({ platform: 'slack', tenantScope: null, channel: 'C', thread: null })).toBeNull()
   })

@@ -10,7 +10,6 @@ export interface ConversationKeyParts {
   thread: string | null
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SEP = '\u0000'
 
 export function encodeConversationKey(key: ConversationKeyParts): string | null {
@@ -21,8 +20,4 @@ export function encodeConversationKey(key: ConversationKeyParts): string | null 
   let binary = ''
   for (const b of bytes) binary += String.fromCharCode(b)
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
-}
-
-export function isWebchatConversationKey(key: string): boolean {
-  return UUID_RE.test(key)
 }
