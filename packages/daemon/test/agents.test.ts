@@ -172,7 +172,7 @@ describe('AgentSchema defaults', () => {
     expect(parsed.output.showFooter).toBe(true)
     expect(parsed.output.showStatusBar).toBe(true)
     expect(parsed.allowRuntimeChangesInChat).toBe(false)
-    expect(parsed.restrictFileAccess).toBe(false)
+    expect(parsed.runInSandbox).toBe(false)
     expect(parsed.callPolicy).toBe('all')
     expect(parsed.allowedCallerAgentIds).toEqual([])
     expect(parsed.outboundPolicy).toBe('all')

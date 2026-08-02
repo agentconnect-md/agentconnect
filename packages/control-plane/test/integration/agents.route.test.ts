@@ -165,7 +165,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     })
     expect(unsupported.statusCode).toBe(201)
     expect(unsupported.json()).toMatchObject({
-      restrictFileAccess: false,
+      runInSandbox: false,
       sandboxSupported: false,
       sandboxRequired: false
     })
@@ -178,7 +178,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(optional.statusCode).toBe(201)
     const optionalBody = optional.json() as { id: string }
     expect(optional.json()).toMatchObject({
-      restrictFileAccess: false,
+      runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false
     })
@@ -186,10 +186,10 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const enable = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${optionalBody.id}`,
-      payload: { restrictFileAccess: true }
+      payload: { runInSandbox: true }
     })
     expect(enable.statusCode).toBe(200)
-    expect(enable.json()).toMatchObject({ restrictFileAccess: true })
+    expect(enable.json()).toMatchObject({ runInSandbox: true })
 
     const required = await app.app.inject({
       method: 'POST',
@@ -199,7 +199,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(required.statusCode).toBe(201)
     const requiredBody = required.json() as { id: string }
     expect(required.json()).toMatchObject({
-      restrictFileAccess: true,
+      runInSandbox: true,
       sandboxSupported: true,
       sandboxRequired: true
     })
@@ -207,7 +207,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const disable = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${requiredBody.id}`,
-      payload: { restrictFileAccess: false }
+      payload: { runInSandbox: false }
     })
     expect(disable.statusCode).toBe(409)
     expect(disable.json()).toMatchObject({ message: 'Run in sandbox is required by this daemon' })

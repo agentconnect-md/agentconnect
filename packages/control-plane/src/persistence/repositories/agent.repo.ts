@@ -250,7 +250,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     outboundPolicy: a.outboundPolicy as AgentCallPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    restrictFileAccess: a.restrictFileAccess,
+    runInSandbox: a.runInSandbox,
     lastModifiedAt: a.lastModifiedAt,
     lastModifiedBy: a.lastModifiedBy
       ? { userId: a.lastModifiedBy.id, displayName: a.lastModifiedBy.displayName, email: a.lastModifiedBy.email }
@@ -361,7 +361,7 @@ export class PgAgentRepo implements AgentRepo {
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
           // #642 sandbox preference (dedicated column; absent ⇒ DB default false).
-          ...(input.restrictFileAccess !== undefined ? { restrictFileAccess: input.restrictFileAccess } : {}),
+          ...(input.runInSandbox !== undefined ? { runInSandbox: input.runInSandbox } : {}),
           // Initial visibility (absent ⇒ DB default 'org'). sharedWith only bites
           // when restricted; a stray set under 'org' is inert (the predicate ignores it).
           ...(input.visibility ? { visibility: input.visibility } : {}),
@@ -510,7 +510,7 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
         ...(patch.capabilities !== undefined ? { capabilities: patch.capabilities } : {}),
         ...(patch.introduceOnJoin !== undefined ? { introduceOnJoin: patch.introduceOnJoin } : {}),
-        ...(patch.restrictFileAccess !== undefined ? { restrictFileAccess: patch.restrictFileAccess } : {}),
+        ...(patch.runInSandbox !== undefined ? { runInSandbox: patch.runInSandbox } : {}),
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),
         ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
         ...(patch.managedSkills !== undefined ? { managedSkills: patch.managedSkills ?? [] } : {}),

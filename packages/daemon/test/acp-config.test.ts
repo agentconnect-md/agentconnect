@@ -262,6 +262,9 @@ describe('claudeSessionMeta', () => {
       failIfUnavailable: true,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
+      network: {
+        allowAllUnixSockets: false
+      },
       filesystem: {
         denyRead: [credentialRoot],
         denyWrite: [credentialRoot]
@@ -302,6 +305,10 @@ describe('claudeSessionMeta', () => {
     expect(claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], protectedSettings)).toEqual(
       cc({ thinking: THINKING, sandbox, settings: protectedSettings })
     )
+    expect(
+      claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], protectedSettings, true)?.claudeCode
+        .options.sandbox?.network.allowAllUnixSockets
+    ).toBe(true)
     expect(claudeSessionMeta('ultracode', true, undefined, undefined, [credentialRoot], protectedSettings)).toEqual(
       cc({
         thinking: THINKING,

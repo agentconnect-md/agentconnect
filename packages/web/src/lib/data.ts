@@ -312,7 +312,7 @@ export interface Agent {
   /** #536: when true, the agent introduces itself to peers on a genuine channel join. */
   introduceOnJoin: boolean
   /** #642: persisted per-agent Run in sandbox preference. */
-  restrictFileAccess: boolean
+  runInSandbox: boolean
   /** #642: whether the placed daemon can provide the sandbox (else the toggle is disabled). */
   sandboxSupported: boolean
   /** #642: whether daemon policy forces the effective value on and locks the toggle. */
@@ -902,7 +902,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      restrictFileAccess: false,
+      runInSandbox: false,
       sandboxSupported: false,
       sandboxRequired: false,
       name: 'agentconnect',
@@ -954,7 +954,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: false,
-      restrictFileAccess: false,
+      runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,
       name: 'deploy-bot',
@@ -1048,7 +1048,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'all',
       allowedTargetAgentIds: [],
       introduceOnJoin: true,
-      restrictFileAccess: false,
+      runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,
       name: 'review-bot',
@@ -1125,7 +1125,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'selected',
       allowedTargetAgentIds: ['deploy'],
       introduceOnJoin: false,
-      restrictFileAccess: false,
+      runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,
       name: 'oncall-bot',
@@ -1191,7 +1191,7 @@ export const AGENTS: Agent[] = (
       outboundPolicy: 'selected',
       allowedTargetAgentIds: ['review'],
       introduceOnJoin: false,
-      restrictFileAccess: false,
+      runInSandbox: false,
       sandboxSupported: true,
       sandboxRequired: false,
       name: 'docs-bot',

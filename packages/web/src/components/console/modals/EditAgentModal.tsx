@@ -114,8 +114,8 @@ export default function EditAgentModal({
   const initialAllowRuntimeChangesInChat = useRef(agent.allowRuntimeChangesInChat)
   const [introduceOnJoin, setIntroduceOnJoin] = useState(agent.introduceOnJoin)
   const initialIntroduceOnJoin = useRef(agent.introduceOnJoin)
-  const [restrictFileAccess, setRestrictFileAccess] = useState(agent.restrictFileAccess)
-  const initialRestrictFileAccess = useRef(agent.restrictFileAccess)
+  const [runInSandbox, setRunInSandbox] = useState(agent.runInSandbox)
+  const initialRunInSandbox = useRef(agent.runInSandbox)
   // Agent-call visibility (both directions) — prefilled from the list `Agent`
   // (which already carries the policy), edited here, and saved on the modal's
   // Save alongside the spec/sharing diffs rather than immediately per change.
@@ -186,8 +186,8 @@ export default function EditAgentModal({
         initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
         initialIntroduceOnJoin.current = dto.introduceOnJoin ?? false
-        setRestrictFileAccess(dto.restrictFileAccess ?? false)
-        initialRestrictFileAccess.current = dto.restrictFileAccess ?? false
+        setRunInSandbox(dto.runInSandbox ?? false)
+        initialRunInSandbox.current = dto.runInSandbox ?? false
         setSandboxSupported(dto.sandboxSupported ?? false)
         setSandboxRequired(dto.sandboxRequired ?? false)
         const fresh: SharingValue = { visibility: dto.visibility, sharedWith: dto.sharedWith }
@@ -299,7 +299,7 @@ export default function EditAgentModal({
   const selectedSandboxSupported = daemonChanged
     ? selectedSandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
     : sandboxSupported
-  const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && restrictFileAccess)
+  const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && runInSandbox)
   const moveReady = (d: (typeof daemons)[number] | undefined) =>
     !!d && d.status === 'online' && d.caps.features.includes('agent-move-v1')
   const daemonLabel = daemon?.name ?? (daemonId ? `Current daemon (${daemonId.slice(0, 8)})` : 'No daemon')
@@ -424,7 +424,7 @@ export default function EditAgentModal({
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
     ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
-    ...(restrictFileAccess !== initialRestrictFileAccess.current ? { restrictFileAccess } : {}),
+    ...(runInSandbox !== initialRunInSandbox.current ? { runInSandbox } : {}),
     ...(envChanged ? { env: envRecord } : {}),
     ...(secretsChanged ? { secrets: secretsPatch } : {})
   }
@@ -854,7 +854,7 @@ export default function EditAgentModal({
                   required={selectedSandboxRequired}
                   disabled={placementRequested}
                   disabledDetail="Save the computer change before adjusting sandboxing."
-                  onChange={setRestrictFileAccess}
+                  onChange={setRunInSandbox}
                 />
                 <OutputModeField
                   className="desktop:col-span-2"

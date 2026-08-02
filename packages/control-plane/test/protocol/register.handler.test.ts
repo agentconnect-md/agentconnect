@@ -224,7 +224,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
       introduceOnJoin: false,
       // #642: sandbox preference — always shipped (definite column); default false.
-      restrictFileAccess: false,
+      runInSandbox: false,
       // Preset marker — always shipped so the daemon can gate preset-only capabilities.
       builtin: false,
       workspace: { mode: 'scratch', gitCredential: 'github-app' }

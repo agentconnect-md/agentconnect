@@ -155,6 +155,9 @@ export interface AcpSandboxLaunch {
   /** Credential paths available to the trusted ACP runtime itself but denied to
    * model-authored commands by a runtime-native nested sandbox. */
   protectedCredentialRoots?: string[]
+  /** A deliberately exposed model-side Unix channel, currently gitcred.sock for
+   * GitHub App workspaces. Linux SRT cannot allow AF_UNIX by pathname. */
+  allowModelToolUnixSockets?: boolean
   /** SDK flag settings that pin protected parent-only profile selection after
    * Claude merges workspace-controlled settings. */
   claudeProtectedSettings?: ClaudeProtectedSettings
@@ -346,7 +349,8 @@ export function claudeSessionMeta(
   systemPrompt?: string,
   memoryAppend?: string,
   protectedCredentialRoots?: readonly string[],
-  protectedSettings?: ClaudeProtectedSettings
+  protectedSettings?: ClaudeProtectedSettings,
+  allowModelToolUnixSockets = false
 ):
   | {
       claudeCode: {
@@ -373,7 +377,9 @@ export function claudeSessionMeta(
     claudeCode: {
       options: {
         thinking: { type: 'adaptive', display: 'summarized' },
-        ...(protectedCredentialRoots ? { sandbox: claudeInnerSandboxSettings(protectedCredentialRoots) } : {}),
+        ...(protectedCredentialRoots
+          ? { sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets) }
+          : {}),
         ...(protectedSettings || ultracode ? { settings } : {})
       },
       emitRawSDKMessages: SDK_LIFECYCLE_FILTERS
@@ -804,7 +810,8 @@ export class AcpHost {
       this.opts.configPrefs?.systemPrompt,
       systemAppend,
       this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
-      this.opts.sandbox?.claudeProtectedSettings
+      this.opts.sandbox?.claudeProtectedSettings,
+      this.opts.sandbox?.allowModelToolUnixSockets
     )
     const res = await this.conn!.agent.request(methods.agent.session.new, {
       cwd,
@@ -1022,7 +1029,8 @@ export class AcpHost {
         systemAppend ?? this.opts.configPrefs?.systemPrompt,
         undefined,
         this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
-        this.opts.sandbox?.claudeProtectedSettings
+        this.opts.sandbox?.claudeProtectedSettings,
+        this.opts.sandbox?.allowModelToolUnixSockets
       )
       const res = await this.conn!.agent.request(methods.agent.session.load, {
         sessionId,

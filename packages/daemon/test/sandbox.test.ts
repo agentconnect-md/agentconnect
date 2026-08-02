@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { createServer } from 'node:net'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import {
   mkdirSync,
   mkdtempSync,
@@ -211,12 +214,33 @@ describe('Claude credential environment isolation', () => {
     const awsWebIdentityToken = 'trusted-parent-aws-token'
     const privateClaudeConfig = join(root, 'private-home', '.claude')
     const privateClaudeSettings = join(privateClaudeConfig, 'settings.json')
+    const credentialSocket = join(root, 'run', 'gitcred.sock')
+    let credentialRequest: Record<string, unknown> | undefined
+    const credentialServer = createServer((socket) => {
+      let input = ''
+      socket.setEncoding('utf8')
+      socket.on('data', (chunk) => {
+        input += chunk
+        const newline = input.indexOf('\n')
+        if (newline === -1) return
+        credentialRequest = JSON.parse(input.slice(0, newline)) as Record<string, unknown>
+        socket.end(
+          `${JSON.stringify({
+            ok: true,
+            username: 'x-access-token',
+            password: 'test-installation-token',
+            repoFullName: 'owner/repo'
+          })}\n`
+        )
+      })
+    })
     const seededCredentialEnvironment = {
       AWS_CONTAINER_AUTHORIZATION_TOKEN: 'trusted-parent-container-token',
       AWS_WEB_IDENTITY_TOKEN_FILE: awsWebIdentityTokenFile
     }
     mkdirSync(workspace)
     mkdirSync(privateClaudeConfig, { recursive: true })
+    mkdirSync(join(root, 'run'))
     writeFileSync(identityTokenFile, identityToken, { mode: 0o600 })
     writeFileSync(awsWebIdentityTokenFile, awsWebIdentityToken, { mode: 0o600 })
     writeFileSync(
@@ -224,7 +248,7 @@ describe('Claude credential environment isolation', () => {
       JSON.stringify({ env: { ANTHROPIC_API_KEY: 'trusted-parent-settings-token' } }),
       { mode: 0o600 }
     )
-    const settings = claudeInnerSandboxSettings([identityTokenFile, awsWebIdentityTokenFile, privateClaudeConfig])
+    const settings = claudeInnerSandboxSettings([identityTokenFile, awsWebIdentityTokenFile, privateClaudeConfig], true)
     const names = settings.credentials.envVars.map(({ name }) => name)
     const restoredNames = new Set([...names, ...Object.keys(seededCredentialEnvironment)])
     const previous = new Map([...restoredNames].map((name) => [name, process.env[name]]))
@@ -233,8 +257,12 @@ describe('Claude credential environment isolation', () => {
     Object.assign(process.env, seededCredentialEnvironment)
 
     try {
+      await new Promise<void>((resolve, reject) => {
+        credentialServer.once('error', reject)
+        credentialServer.listen(credentialSocket, resolve)
+      })
       const config = SandboxRuntimeConfigSchema.parse({
-        network: { allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true },
+        network: { allowedDomains: [], deniedDomains: [], ...settings.network },
         filesystem: { ...settings.filesystem, allowWrite: [workspace] },
         credentials: settings.credentials
       })
@@ -279,7 +307,58 @@ describe('Claude credential environment isolation', () => {
           })
         ).toThrow()
       }
+
+      // GitHub App workspaces deliberately keep one model-side Unix channel:
+      // exercise the real helper, not just a generic socket connect.
+      const req = createRequire(import.meta.url)
+      const daemonEntry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
+      const helperCommand = [process.execPath, req.resolve('tsx/cli'), daemonEntry, 'git-credential', 'agent-1', 'get']
+        .map(JSON.stringify)
+        .join(' ')
+      const socketAttempt = await SandboxManager.wrapWithSandboxArgv(
+        helperCommand,
+        undefined,
+        undefined,
+        undefined,
+        workspace
+      )
+      const socketResult = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+        (resolve, reject) => {
+          const child = spawn(socketAttempt.argv[0]!, socketAttempt.argv.slice(1), {
+            cwd: workspace,
+            env: {
+              ...socketAttempt.env,
+              AGENTCONNECT_ROOT: root,
+              AC_GITCRED_AGENT: 'agent-1',
+              AC_GITCRED_CAPABILITY: 'test-capability'
+            },
+            stdio: ['pipe', 'pipe', 'pipe']
+          })
+          let stdout = ''
+          let stderr = ''
+          const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000)
+          child.stdout.setEncoding('utf8').on('data', (chunk) => (stdout += chunk))
+          child.stderr.setEncoding('utf8').on('data', (chunk) => (stderr += chunk))
+          child.once('error', reject)
+          child.once('close', (code) => {
+            clearTimeout(timeout)
+            resolve({ code, stdout, stderr })
+          })
+          child.stdin.end('protocol=https\nhost=github.com\npath=owner/repo.git\n\n')
+        }
+      )
+      expect(socketResult.code, socketResult.stderr).toBe(0)
+      expect(socketResult.stdout).toBe('username=x-access-token\npassword=test-installation-token\n')
+      expect(credentialRequest).toMatchObject({
+        op: 'get',
+        agentId: 'agent-1',
+        capability: 'test-capability',
+        repoFullName: 'owner/repo'
+      })
     } finally {
+      if (credentialServer.listening) {
+        await new Promise<void>((resolve) => credentialServer.close(() => resolve()))
+      }
       SandboxManager.cleanupAfterCommand()
       await SandboxManager.reset()
       for (const [name, value] of previous) {

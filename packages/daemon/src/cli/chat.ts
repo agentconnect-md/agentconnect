@@ -73,7 +73,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
 
   const sandboxMechanism = detectSandbox()
-  const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.restrictFileAccess, sandboxMechanism)
+  const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, sandboxMechanism)
   if (entry?.source === 'curated') {
     const admission = new CuratedRuntimeAdmission()
     const probe = opts.probeRuntimes ?? probeAllRuntimes

@@ -245,7 +245,7 @@ export interface AgentDto {
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
   allowedTargetAgentIds: string[] // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
-  restrictFileAccess: boolean // #642: persisted per-agent Run in sandbox preference
+  runInSandbox: boolean // #642: persisted per-agent Run in sandbox preference
   sandboxSupported: boolean // #642: whether the placed daemon can provide an OS sandbox
   sandboxRequired: boolean // #642: whether daemon policy forces the effective value on
   hookKinds: ('webhook' | 'github')[] // distinct kinds of enabled inbound triggers (list-view marks)
@@ -753,8 +753,8 @@ export interface UpdateAgentInput {
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
   introduceOnJoin?: boolean
-  /** #642: confine the agent process to its agent dir via an OS sandbox (default on). */
-  restrictFileAccess?: boolean
+  /** #642: confine the agent process to its agent dir via an OS sandbox (default off). */
+  runInSandbox?: boolean
   /** Widen an existing App-backed GitHub workspace from read to write. */
   gitAccess?: 'write'
   /** Repository-relative ACP working directory; null selects the repository root. */
@@ -924,7 +924,7 @@ export interface CreateAgentInput {
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** Request an OS sandbox for this agent; absent ⇒ false unless daemon policy requires it. */
-  restrictFileAccess?: boolean
+  runInSandbox?: boolean
   /** Initial visibility (absent ⇒ 'org'); sharedWith is intersected with org members. */
   visibility?: ResourceVisibility
   sharedWith?: string[]
@@ -1557,8 +1557,8 @@ export function agentFromDto(d: AgentDto): Agent {
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
-    // Older CPs omit the policy fields; the safe UI fallback is unavailable/off.
-    restrictFileAccess: d.restrictFileAccess ?? false,
+    // Missing policy fields fail closed; the removed legacy field is not read.
+    runInSandbox: d.runInSandbox ?? false,
     sandboxSupported: d.sandboxSupported ?? false,
     sandboxRequired: d.sandboxRequired ?? false,
     hookKinds: d.hookKinds ?? [],
