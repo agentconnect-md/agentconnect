@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cursorKeyFor, laneAgentId, laneKey, lanesOf } from './webchat-lanes'
+import { admitsLane, cursorKeyFor, laneAgentId, laneKey, lanesOf } from './webchat-lanes'
 
 const ID = 'pg_agent-a_x'
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -32,6 +32,21 @@ describe('webchat stream lanes', () => {
     // With several lanes an untagged frame is ambiguous — dropped, not guessed.
     lanes.set(laneKey(ID, B), {})
     expect(cursorKeyFor(lanes, ID)).toBeUndefined()
+  })
+
+  it('admits a lane from ANY tagged frame of the in-flight turn — not just the ack', () => {
+    // The resumed-conversation wedge: on a warm session the daemon emits its
+    // first stream frame synchronously inside turn admission, so output#0 can
+    // reach the browser BEFORE the participant's ack. That frame must admit
+    // the lane; dropping it strands the ordered cursor at index 0 forever
+    // (nothing renders, done is held back, busy never clears).
+    const turn = 'turn-1'
+    expect(admitsLane(B, turn, turn)).toBe(true)
+    // Not for a different (stale) turn, an untagged frame, or with no send in flight.
+    expect(admitsLane(B, 'turn-0', turn)).toBe(false)
+    expect(admitsLane(undefined, turn, turn)).toBe(false)
+    expect(admitsLane(B, turn, undefined)).toBe(false)
+    expect(admitsLane(B, undefined, turn)).toBe(false)
   })
 
   it('after lazy admission, both participants resolve independently', () => {
