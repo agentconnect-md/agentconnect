@@ -73,7 +73,7 @@ import type {
   SubmitGithubReviewReq
 } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
-import { cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
+import { CONFIG_FILE_CONVENTIONS, cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { gitCredentialEnv, initGitInjection, probeGitVersion, sessionGitEnv } from './workspace/git-injection.js'
@@ -4233,9 +4233,20 @@ export class Daemon {
     // explicit pointer var configured anywhere wins and skips materialization.
     // The pre-strip merged env is snapshotted so the idle sweep can delete the
     // files and rematerializeConfigFiles() can re-write them before a later turn.
-    // Skipped entirely for a dream host — it needs none of these tool secrets and
-    // has no config-file cleanup path.
-    if (!excludeAgentToolCredentials) {
+    if (excludeAgentToolCredentials) {
+      // A dream host needs none of these tool secrets. Do NOT materialize (it has
+      // no cleanup path), and crucially DELETE the raw `*_DATA` source vars — they
+      // were copied into the child env by agentChildEnv, and skipping the
+      // materialize block below would otherwise leak the raw values to the
+      // attacker-controlled extraction (task #36 A2). Strip every convention name
+      // (data var + legacy aliases) whether or not it would have been planned.
+      for (const convention of CONFIG_FILE_CONVENTIONS) {
+        for (const name of [convention.dataVar, ...(convention.aliases ?? [])]) {
+          delete env[name]
+          delete runtimeEnv[name]
+        }
+      }
+    } else {
       const configFileSourceEnv = { ...runtimeEnv, ...env }
       const configFiles = materializeConfigFiles(agent.dir, configFileSourceEnv)
       for (const name of configFiles.strip) {
@@ -4791,7 +4802,10 @@ export class Daemon {
       this.memoryExtractionQuarantines.delete(key)
       this.memoryExtractionCollectors.set(key, collector)
       try {
-        this.rematerializeConfigFiles(agentId)
+        // No rematerializeConfigFiles here: the dedicated dream host deliberately
+        // materializes no agent tool config files (excludeAgentToolCredentials),
+        // and re-creating the warm host's `*_DATA` secret files on disk would
+        // re-expose them to the attacker-controlled extraction (task #36 A2).
         const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
         this.store.appendTranscript({
           channel: 'memory',
