@@ -225,6 +225,17 @@ falls. The scan itself still pages on the existing
 `session_meta_org_visibility_page_idx`, so grouped cost ≈ the flat scan + one
 index probe per scanned row + one member-backfill batch per page.
 
+Direct loads of `/conversations/:key` need the reverse lookup — key in hand,
+members unknown. The activity-paginated grouped list cannot serve that
+(scanning pages for a key is unbounded and misses idle conversations), so C1
+also defines a **key-addressed resolver**: `GET /sessions?conversationKey=…`,
+a bounded metadata-only query on the same C1 index — every row matching
+`(orgId, platform, tenantScope, channel, thread)` under the same
+org/visibility predicate, collapsed to the current session per agent (§6),
+returned in the grouped row shape. Transcript bodies still flow through the
+existing per-session endpoints; the resolver reads the same `SessionMeta`
+rows the list reads, so no content-plane surface is added.
+
 Single-agent conversations (the overwhelming majority) come back as
 1-participant rows — the web renders those exactly like today's session rows,
 so grouped simply IS the list, with no toggle in the default UI.
@@ -273,8 +284,11 @@ session (`sessionId`, `agentId`).
    message across copies only when the coordinate was minted once for all of
    them: webchat rows always qualify (origin-minted canonical `at`,
    probe-and-bump guarantees distinct posts got distinct `ts`); Slack rows
-   qualify only when `ts` is the provider-native decimal-seconds form
-   (`\d+.\d+` — the platform message id, identical in every delivery).
+   qualify only when `ts` is the provider-native decimal-seconds form —
+   exactly `^\d+\.\d+$`, anchored with the dot escaped, so an integer
+   `monotonicTs()` millisecond value can never match (the merge tests carry
+   integer-local vs decimal-provider fixtures for this predicate). The
+   matched value is the platform message id, identical in every delivery.
    Daemon-local text rows — a2a report-backs and other silent deliveries
    stamped with process-local millisecond `monotonicTs()` — exist in exactly
    one source transcript and are NEVER deduped across sources: two daemons
@@ -427,6 +441,7 @@ how divergence starts.
 
 - **C1 — grouped sessions list.** CP grouped-by-default list with the
   `view=flat` escape hatch (emit-at-max scan + member backfill, §5.2), the
+  key-addressed member resolver (`conversationKey=…`, §5.2), the
   `(orgId, platform, tenantScope, channel, thread, lastActivityAt, startedAt, id)`
   index, persistence of the already-reported durable tenant scope as
   `SessionMeta.tenantScope` (§5.1), grouped rendering (participant avatar
