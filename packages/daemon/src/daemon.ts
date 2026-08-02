@@ -5441,6 +5441,11 @@ export class Daemon {
         {
           sender: user,
           recipient: result.agentId,
+          // The canonical identity must ride the ADMISSION write too — without
+          // it the probe falls back to (sender, text) and a distinct same-ms
+          // same-text post from another tab would reuse this row instead of
+          // bumping (§6).
+          postId: post.postId,
           text: observedMention ? `${text}\n${observedMention}`.trim() : text
         }
       )

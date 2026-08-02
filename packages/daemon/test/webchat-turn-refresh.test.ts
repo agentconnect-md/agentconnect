@@ -429,4 +429,56 @@ describe('webchat turn-final context refresh', () => {
     ])
     await daemon.stop()
   })
+  it('turn ADMISSION writes carry the canonical id — distinct same-text turns bump, not merge', async () => {
+    // The pre-queue observed-inbound write must be identity-aware too: two
+    // tabs can mint distinct turn posts on one millisecond with the same user
+    // and text. Without the id on the admission append, the second turn would
+    // reuse the first row — no new revision, nothing for the in-flight
+    // generation to coalesce, and a lost post if its queued activation never
+    // runs.
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>((resolve) => (releaseFirst = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-wc-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await firstBlocked
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const turnPost = (n: number) => ({ postId: `0000000${n}-2222-4000-8000-00000000000${n}`, at: 9_000 })
+    const t1 = '11111111-aaaa-4aaa-8aaa-111111111111'
+    const t2 = '22222222-bbbb-4bbb-8bbb-222222222222'
+    expect(
+      (daemon as any).handleRelayMsg(
+        rd({ op: 'turn', text: 'same words', user: 'owner', turnId: t1, post: turnPost(1) }),
+        () => {}
+      )
+    ).toMatchObject({ accepted: true })
+    expect(
+      (daemon as any).handleRelayMsg(
+        rd({ op: 'turn', text: 'same words', user: 'owner', turnId: t2, post: turnPost(2) }, { msgId: 'm-2' }),
+        () => {}
+      )
+    ).toMatchObject({ accepted: true })
+
+    const rows = (daemon as any).store.transcriptSince(
+      transcriptChannelKey(CONV, undefined),
+      `webchat:${CONV}`,
+      null
+    ) as { ts: string; postId?: string | null; text: string }[]
+    expect(rows.filter((r) => r.text === 'same words').map((r) => [r.ts, r.postId])).toEqual([
+      ['9000', turnPost(1).postId],
+      ['9001', turnPost(2).postId]
+    ])
+    releaseFirst()
+    await daemon.stop()
+  })
 })
