@@ -6,10 +6,10 @@
  * `$update-model-pricing` skill and keep the focused tests in sync.
  *
  * Source: https://developers.openai.com/api/docs/pricing
- * Verified: 2026-07-29
+ * Verified: 2026-08-02
  */
 
-export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-07-29'
+export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-08-02'
 export const OPENAI_PUBLIC_PRICING_SOURCE = 'https://developers.openai.com/api/docs/pricing'
 
 const TOKENS_PER_MILLION = 1_000_000
@@ -39,12 +39,12 @@ const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     longContext: { input: 10, cachedInput: 1, cacheWrite: 12.5, output: 45 }
   },
   'gpt-5.6-terra': {
-    standard: { input: 2.5, cachedInput: 0.25, cacheWrite: 3.125, output: 15 },
-    longContext: { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 22.5 }
+    standard: { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
+    longContext: { input: 4, cachedInput: 0.4, cacheWrite: 5, output: 18 }
   },
   'gpt-5.6-luna': {
-    standard: { input: 1, cachedInput: 0.1, cacheWrite: 1.25, output: 6 },
-    longContext: { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 9 }
+    standard: { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 },
+    longContext: { input: 0.4, cachedInput: 0.04, cacheWrite: 0.5, output: 1.8 }
   },
   'gpt-5.5': {
     standard: { input: 5, cachedInput: 0.5, output: 30 },
@@ -98,6 +98,13 @@ export interface OpenAiTurnUsage {
   outputTokens?: number
   cachedReadTokens?: number | null
   cachedWriteTokens?: number | null
+  /**
+   * Total cached + uncached input size for the single provider request
+   * represented by these buckets.
+   * Omit for ACP turn aggregates that span multiple requests; their sum cannot
+   * determine whether any individual request crossed a pricing-tier boundary.
+   */
+  tierInputTokens?: number | null
 }
 
 export type PublicCostEstimate =
@@ -122,8 +129,12 @@ function validCount(value: number | null | undefined): value is number {
 /**
  * Estimate one Codex turn at public OpenAI Standard API token rates.
  *
- * codex-acp maps provider usage into disjoint ACP buckets: `inputTokens` is
- * non-cached input and `cachedReadTokens` is the cached subset it removed.
+ * AgentConnect's managed `@agentconnect.md/codex-acp@agentconnect` runtime maps
+ * provider usage into disjoint ACP buckets: `inputTokens` is non-cached input
+ * and `cachedReadTokens` is the cached subset it removed. Unlike upstream
+ * codex-acp, its PromptResponse is the total-token delta across every provider
+ * request in the ACP prompt. That aggregate cannot select a per-request pricing
+ * tier, so use standard rates unless request-level tier input is explicit.
  * `thoughtTokens` is intentionally absent: reasoning is already a subset of output
  * and charging it again would double-count. The current adapter does not expose
  * GPT-5.6 cache writes, so those tokens remain in input at the regular input rate;
@@ -142,12 +153,12 @@ export function estimateOpenAiTurnCost(model: string | undefined, usage: OpenAiT
   if (!validCount(usage.inputTokens) || !validCount(usage.outputTokens)) return { ok: false, reason: 'usage_invalid' }
   const cachedRead = usage.cachedReadTokens ?? 0
   const cachedWrite = usage.cachedWriteTokens ?? 0
-  if (!validCount(cachedRead) || !validCount(cachedWrite)) {
+  const tierInput = usage.tierInputTokens
+  if (!validCount(cachedRead) || !validCount(cachedWrite) || (tierInput != null && !validCount(tierInput))) {
     return { ok: false, reason: 'usage_invalid' }
   }
 
-  const requestInput = usage.inputTokens + cachedRead + cachedWrite
-  const isLongContext = requestInput > LONG_CONTEXT_THRESHOLD && pricing.longContext !== undefined
+  const isLongContext = tierInput != null && tierInput > LONG_CONTEXT_THRESHOLD && pricing.longContext !== undefined
   const rates = isLongContext ? pricing.longContext! : pricing.standard
 
   const amount =
