@@ -200,6 +200,10 @@ describe('Daemon evaluation surface', () => {
       evaluation: { observer: collector, runId: 'eval-run-dream' }
     })
     await daemon.start()
+    // Dreaming now runs on a dedicated sandboxed host to isolate provider
+    // credentials from the mined transcript (task #36 A2); simulate a host that
+    // has an OS sandbox mechanism so the extraction is admitted.
+    ;(daemon as any).sandboxMechanism = 'bwrap'
     const usageReports: any[] = []
     ;(daemon as any).cpClient = {
       emitEventSession: vi.fn(),
@@ -360,6 +364,8 @@ describe('Daemon evaluation surface', () => {
       evaluation: { observer: collector, runId: 'eval-run-dream-default-model' }
     })
     await daemon.start()
+    // A dedicated sandboxed dream host isolates credentials (task #36 A2).
+    ;(daemon as any).sandboxMechanism = 'bwrap'
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
     let dream
@@ -414,6 +420,8 @@ describe('Daemon evaluation surface', () => {
       evaluation: { observer: collector, runId: 'eval-run-dream-ignored-cancel' }
     })
     await daemon.start()
+    // A dedicated sandboxed dream host isolates credentials (task #36 A2).
+    ;(daemon as any).sandboxMechanism = 'bwrap'
 
     try {
       vi.useFakeTimers()
