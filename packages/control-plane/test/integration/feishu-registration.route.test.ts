@@ -173,7 +173,7 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     expect(addons).toMatchObject({
       scopes: {
-        tenant: expect.arrayContaining(['application:application:patch'])
+        tenant: expect.arrayContaining(['application:application:patch', 'im:chat.members:read'])
       }
     })
     await first.close()

@@ -1,5 +1,5 @@
 // Logto auth for the console (opt-in). When the Logto endpoint + app id are set,
-// "Continue with GitHub/Google/Slack" runs a real Authorization-Code + PKCE sign-in
+// "Continue with …" runs a real Authorization-Code + PKCE social sign-in
 // against Logto and the console sends the resulting bearer token to the Control
 // Plane. When UNSET, auth is disabled and the app stays in the CP's zero-config
 // no-auth mode (the buttons just enter the app) — the default for OSS self-hosters.
@@ -9,9 +9,9 @@
 // at any tenant via plain container env — no rebuild. The NEXT_PUBLIC_* statics
 // remain a build-time fallback for local dev (.env.local) and SSR.
 //
-// The supported provider targets (GitHub/Google/Slack) are a shared static UI list;
-// their credentials and connectors remain configured inside Logto. The buttons
-// use Logto's `direct_sign_in` to jump straight to a connector.
+// Supported provider targets are a shared static UI list; their credentials and
+// connectors remain configured inside Logto. The buttons use Logto's
+// `direct_sign_in` to jump straight to a connector.
 //
 // Token audience: the CP is an OIDC resource server, so it needs a JWT access
 // token scoped to an API *resource*. Set the Logto API resource indicator and

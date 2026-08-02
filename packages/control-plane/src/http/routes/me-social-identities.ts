@@ -134,9 +134,9 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     // Shape only. WHICH methods a deployment offers is the console's call
     // (SOCIAL_PROVIDERS, web lib/social-login-providers) and duplicating that
-    // decision here is what made the two sides disagree: the console falls back
-    // to its full catalog on an unrecognizable setting, and any second
-    // implementation of that rule drifts from it. The real gate is the tenant —
+    // decision here is what made the two sides disagree: the console owns its
+    // safe fallback for an unrecognizable setting, and any second implementation
+    // of that rule drifts from it. The real gate is the tenant —
     // socialConnectorIdFor 404s unless the admin configured that connector — so
     // this route can never reject a method the console legitimately offers.
     const SocialTarget = z
