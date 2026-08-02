@@ -22,6 +22,23 @@ describe('makeViewerIdentitySet', () => {
     expect(slackIdentityFor).toHaveBeenCalledWith('logto-sub')
   })
 
+  it('adds an app-qualified Lark identity only for the configured matching app', async () => {
+    const resolve = makeViewerIdentitySet(
+      { feishuIdentitiesFor: async () => [{ region: 'lark', openId: 'ou_member' }] },
+      { lark: { appId: 'cli_platform', appSecret: 'secret' } }
+    )
+    expect(await resolve(reqOf({ userId: 'u-1', oidcSubject: 'logto-sub' }))).toEqual(
+      new Set(['user:u-1', 'feishu:lark:cli_platform:ou_member'])
+    )
+  })
+
+  it('does not admit a Lark open_id without its configured app domain', async () => {
+    const resolve = makeViewerIdentitySet({
+      feishuIdentitiesFor: async () => [{ region: 'lark', openId: 'ou_member' }]
+    })
+    expect(await resolve(reqOf({ userId: 'u-1', oidcSubject: 'logto-sub' }))).toEqual(new Set(['user:u-1']))
+  })
+
   it('stays console-only without an OIDC subject (devAuth / API key)', async () => {
     const slackIdentityFor = vi.fn(async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' }))
     const resolve = makeViewerIdentitySet({ slackIdentityFor })

@@ -139,6 +139,19 @@ describe('EventSession visibility-classification fields (session-visibility.md Â
     ).toBe(false)
   })
 
+  it('carries a Feishu/Lark conversation source with its app-qualified realm', () => {
+    const externalOrigin = {
+      provider: 'feishu' as const,
+      realmKey: 'lark:cli_platform',
+      resourceKind: 'conversation' as const,
+      resourceKey: 'oc_chat',
+      integrationId: '88888888-8888-4888-8888-888888888888'
+    }
+    expect(
+      EventSession.parse({ ...legacyMilestone, platform: 'feishu', channel: 'oc_chat', externalOrigin }).externalOrigin
+    ).toEqual(externalOrigin)
+  })
+
   it('rejects an unknown conversationKind, an empty scope, and a non-uuid correlation id', () => {
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'thread' }).success).toBe(false)
     expect(EventSession.safeParse({ ...legacyMilestone, transportScope: '' }).success).toBe(false)

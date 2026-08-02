@@ -1,7 +1,7 @@
 # Session Visibility
 
-> **Status:** Implemented for direct `private` / `org` visibility, Slack
-> conversation audiences, GitHub repository audiences, and their Console
+> **Status:** Implemented for direct `private` / `org` visibility, Slack and
+> Feishu/Lark conversation audiences, GitHub repository audiences, and their Console
 > settings/profile-linking surfaces. Share-by-link and additional providers remain
 > future work.
 >
@@ -37,6 +37,8 @@ This design gives every session its own visibility:
   sessions store the rename-proof numeric repository id: public repositories
   require no linked identity; private repositories require the viewer's
   currently linked GitHub account to retain read access.
+  Feishu/Lark group sessions created through the deployment's matching
+  platform app require current chat membership; DMs remain owner-only.
 - **Share-by-link ("public")** — future work; a session with an active share
   link is readable by anyone holding the link. Deliberately **not** a member of
   the visibility enum; see §8.
@@ -84,14 +86,15 @@ matches the same three-part tuple.
 
 Matching is set membership: at request time the BFF computes the viewer's
 **identity set** — `{ user:<userId> }` for every caller, plus the caller's
-verified Slack identity (`slack:<teamId>:<userId>`) when they signed in with
-or linked Slack (§7, `http/viewer-identity.ts`) — and a `private` session is
+verified Slack identity (`slack:<teamId>:<userId>`) or a same-app Feishu/Lark
+identity (`feishu:<region>:<appId>:<openId>`) when linked (§7,
+`http/viewer-identity.ts`) — and a `private` session is
 visible when `ownerIdentity ∈ identitySet`.
 
 Consequences:
 
-- Before the identity mapping exists for a platform (today: everything except
-  Slack), a `private` IM DM session is an **owner-orphan**: no console user
+- Before the identity mapping exists for a platform (today: Telegram and
+  Discord), a `private` IM DM session is an **owner-orphan**: no console user
   matches the stored tuple, so no one sees it. This is accepted — it errs
   toward hiding a DM rather than exposing it.
 - When identity linking ships for a platform, those sessions become visible
@@ -153,8 +156,8 @@ enum VisibilitySource {
   share-by-link (§8) covers the near-term "share this session" ask.
 - `ExternalScope` stores only the stable provider resource identity and the
   credential locator needed to ask the provider. It never stores provider ACLs.
-  Slack channel-access and GitHub repository-access decisions are bounded,
-  short-lived in-process cache entries. Linked Slack and GitHub identities
+  Slack/Feishu/Lark conversation-access and GitHub repository-access decisions are bounded,
+  short-lived in-process cache entries. Linked Slack, Feishu/Lark, and GitHub identities
   remain provider-owned and are resolved from Logto rather than copied into the
   AgentConnect database.
 - `SessionExternalAccessPolicy` is per organization and provider. Its revision
@@ -221,6 +224,12 @@ GitHub direct ingress reports:
 }
 ```
 
+Feishu/Lark direct ingress uses provider `feishu`, a `conversation` resource,
+and realm `<region>:<appId>`. The CP accepts the candidate only when that App ID
+matches `FEISHU_PLATFORM_APP_ID` or `LARK_PLATFORM_APP_ID`; user-built apps stay
+on the ordinary organization visibility model because their `open_id` domain
+cannot be compared with the platform Logto connector.
+
 The daemon pins that tuple on first use. A later input from a different source
 is rejected rather than silently reusing the session. A2A descendants carry
 only the audience identity (without Slack integration ids or GitHub delivery
@@ -248,16 +257,16 @@ The CP classifies once, in the `event/session` ingest path
 (`ws/handlers/event-session.ts` → `session.recordMilestone`), first-wins like
 the other origin scalars:
 
-| Origin (how detected)                                  | `visibility`        | `ownerIdentity`                                                                                                                       |
-| ------------------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Webchat / Playground (`platform === 'webchat'`)        | `private`           | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
-| Web API session launch (§4.4 correlation)              | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
-| IM DM (`conversationKind` = `dm`)                      | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Slack group DM / channel with trusted `externalOrigin` | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
-| GitHub hook with an accepted delivery snapshot         | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                       |
-| Other IM group DM / channel (or absent kind)           | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Agent-to-agent child (`triggeredBy` is an agent UUID)  | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
-| Automation without a trusted external destination      | `org`               | `null`                                                                                                                                |
+| Origin (how detected)                                                      | `visibility`        | `ownerIdentity`                                                                                                                       |
+| -------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Webchat / Playground (`platform === 'webchat'`)                            | `private`           | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
+| Web API session launch (§4.4 correlation)                                  | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
+| IM DM (`conversationKind` = `dm`)                                          | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Slack or matching-app Feishu/Lark group chat with trusted `externalOrigin` | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
+| GitHub hook with an accepted delivery snapshot                             | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                       |
+| Other IM group DM / channel (or absent kind)                               | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
+| Agent-to-agent child (`triggeredBy` is an agent UUID)                      | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
+| Automation without a trusted external destination                          | `org`               | `null`                                                                                                                                |
 
 Notes:
 
@@ -547,8 +556,9 @@ learned from it"); silence is not an option.
   owners allowed to use it.
 - Settings exposes owner-only provider access-sync switches, disabled by
   default. Slack follows current channel access (workspace access for public
-  channels; conversation membership for restricted audiences); GitHub follows
-  current repository visibility and user access. Provider-bound visibility is
+  channels; conversation membership for restricted audiences); Feishu/Lark
+  follows current chat membership; GitHub follows current repository visibility
+  and user access. Provider-bound visibility is
   read-only; unresolved history and transient provider failures are surfaced
   without widening access.
 - Session links emitted into Slack and GitHub carry a non-authoritative provider
@@ -583,19 +593,19 @@ login from Logto and asks GitHub for that user's current effective repository
 permission. AgentConnect stores neither the GitHub login nor a copied provider
 ACL; only bounded allow/deny/error verdicts are cached in process.
 
-**Other platform session access (future, separate design).** A user may link a
-Lark or Feishu social identity through a configured Logto connector. Feishu uses
-Logto's built-in connector; Lark uses its generic OAuth connector pointed at the
-Lark passport endpoints. That alone cannot authorize messaging sessions: the
-message-side `open_id` is scoped to one app, and the social connector may be a
-different app. Telegram, Discord, Lark, and Feishu therefore still need an
-explicit verified binding before their identities can enter the session identity
-set. One option is a `UserIdentity`
-table (`userId`, `platform`, `workspace`, `platformUserId`, verified-at, unique
-on the `(platform, workspace, platformUserId)` tuple — matching the three-part
-identity format of §2) populated by a bot-mediated code flow. Once it exists,
-the same identity-set computation reads it; the Slack read-through can fold
-into that table then.
+**Feishu/Lark (shipped for the platform apps).** Logto stores the connector's
+raw `open_id`; the BFF reads it without exposing it to the browser and qualifies
+it with the connector region plus deployment App ID. The daemon independently
+reports the messaging App ID in its trusted source realm. The two values enter
+the same identity set only when those App IDs match, which is required because
+`open_id` is app-scoped. Group sessions then page the live chat-members endpoint
+with the corresponding platform app credential. DMs use the same qualified
+identity tuple and remain private. Provider failures fail closed; only bounded
+allow/deny/error verdicts and tenant tokens are cached in process.
+
+**Other platform session access (future, separate design).** Telegram and
+Discord still need an explicit verified identity binding before their platform
+identities can enter the session identity set.
 
 ## 8. Share-by-link (future, separate design)
 
@@ -647,3 +657,7 @@ link ends public access without touching the session row.
   validation; numeric repository identity across rename; public, private-linked,
   no-access, and provider-error decisions; ambiguous-history hiding; A2A scope
   inheritance; owner-role non-bypass; and parity across every session read path.
+- **Feishu/Lark external audience:** same-app Logto identity qualification;
+  platform-app source validation; paginated current-chat membership; regional
+  gateway selection; definitive denial versus degraded provider failure; and
+  custom-app non-participation.

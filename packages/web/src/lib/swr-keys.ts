@@ -22,8 +22,10 @@ export const consoleKeys = {
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),
   members: (orgId: string | null | undefined) => consoleKey(orgId, 'members'),
   inviteLink: (orgId: string | null | undefined) => consoleKey(orgId, 'invite-link'),
-  sessionAccess: <const Provider extends 'slack' | 'github'>(orgId: string | null | undefined, provider: Provider) =>
-    consoleKey(orgId, 'session-access', provider),
+  sessionAccess: <const Provider extends 'slack' | 'github' | 'feishu'>(
+    orgId: string | null | undefined,
+    provider: Provider
+  ) => consoleKey(orgId, 'session-access', provider),
   usage: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
     consoleKey(orgId, 'usage', range),
   sessions: (

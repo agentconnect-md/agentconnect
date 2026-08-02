@@ -81,7 +81,14 @@ export function SessionVisibilityControl({
 
   if (effective === 'external') {
     const github = externalProvider === 'github'
-    const provider = externalProvider === 'slack' ? 'Slack' : github ? 'GitHub' : 'External'
+    const provider =
+      externalProvider === 'slack'
+        ? 'Slack'
+        : github
+          ? 'GitHub'
+          : externalProvider === 'feishu'
+            ? 'Feishu / Lark'
+            : 'External'
     const title =
       externalResolution === 'settled'
         ? github

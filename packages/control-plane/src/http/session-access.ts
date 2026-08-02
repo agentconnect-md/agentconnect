@@ -19,29 +19,33 @@ export interface ResolvedSessionAccess {
  * identity or provider grant; only the adapter's bounded decision cache lives
  * beyond this call. */
 export function makeSessionAccessResolver(deps: HttpDeps) {
-  const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity)
+  const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity, deps.feishuPlatformApps)
 
   const forScopes = async (
     req: FastifyRequest,
     scopes: readonly ExternalScopeRecord[]
   ): Promise<ResolvedSessionAccess> => {
     const orgId = orgOf(req)
-    const providers = ['slack', 'github'] as const
+    const providers = ['slack', 'github', 'feishu'] as const
     const [identitySet, initialPolicies] = await Promise.all([
       identitySetFor(req),
       Promise.all(providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider)))
     ])
     const slackScopes = scopes.filter((scope) => scope.provider === 'slack' && scope.orgId === orgId)
     const githubScopes = scopes.filter((scope) => scope.provider === 'github' && scope.orgId === orgId)
-    const [slackResult, githubResult] = await Promise.all([
+    const feishuScopes = scopes.filter((scope) => scope.provider === 'feishu' && scope.orgId === orgId)
+    const [slackResult, githubResult, feishuResult] = await Promise.all([
       deps.slackSessionAccess
         ? deps.slackSessionAccess.resolve(slackScopes, identitySet)
         : Promise.resolve({ allowedScopes: [], degraded: slackScopes.length > 0 }),
       deps.githubSessionAccess
         ? deps.githubSessionAccess.resolve(githubScopes, ctxOf(req).userId)
-        : Promise.resolve({ allowedScopes: [], degraded: githubScopes.length > 0 })
+        : Promise.resolve({ allowedScopes: [], degraded: githubScopes.length > 0 }),
+      deps.feishuSessionAccess
+        ? deps.feishuSessionAccess.resolve(feishuScopes, identitySet)
+        : Promise.resolve({ allowedScopes: [], degraded: feishuScopes.length > 0 })
     ])
-    const resolvedScopes = [...slackResult.allowedScopes, ...githubResult.allowedScopes]
+    const resolvedScopes = [...slackResult.allowedScopes, ...githubResult.allowedScopes, ...feishuResult.allowedScopes]
     // Provider lookup can take multiple round trips. Re-read the durable fence
     // afterwards so a concurrent enable cannot authorize with an old disabled
     // snapshot. SQL repeats the current-policy check for list reads.
@@ -74,7 +78,11 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
       // migration degradation (for example an unrelated historical pending
       // row) stays on the owner-only settings surface and must not make every
       // member-facing list/detail claim that a provider itself is unavailable.
-      degraded: slackResult.degraded || githubResult.degraded || allowedScopes.length !== resolvedScopes.length
+      degraded:
+        slackResult.degraded ||
+        githubResult.degraded ||
+        feishuResult.degraded ||
+        allowedScopes.length !== resolvedScopes.length
     }
   }
 

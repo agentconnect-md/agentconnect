@@ -19,6 +19,7 @@ import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/p
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
+import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
@@ -166,6 +167,7 @@ import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 import { SlackSessionAccessService } from './http/slack-session-access.js'
 import { GithubSessionAccessService } from './http/github-session-access.js'
+import { FeishuSessionAccessService } from './http/feishu-session-access.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -203,6 +205,8 @@ export interface ContainerOpts {
   githubFetch?: FetchLike
   /** Slack Web API fetch override for Session membership checks. */
   slackFetch?: FetchLike
+  /** Feishu/Lark Open Platform fetch override for Session membership checks. */
+  feishuFetch?: FetchLike
   /** npm dist-tags fetch override for the daemon "latest version" resolver — tests
    *  stub it (absent under NODE_ENV=test ⇒ the resolver is inert, no network). */
   daemonReleaseFetch?: FetchLike
@@ -470,6 +474,7 @@ export function buildContainer(
   // Platform-published Slack app (preset-agents.md §5.3) — undefined ⇒ feature
   // absent (routes 404, console hides "Add to Slack"); partial set ⇒ fail-fast.
   const slackPlatformApp = resolveSlackPlatformAppConfig(config)
+  const feishuPlatformApps = resolveFeishuPlatformApps(config)
 
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
@@ -724,6 +729,12 @@ export function buildContainer(
         clock
       })
     : undefined
+  const feishuSessionAccess = new FeishuSessionAccessService({
+    bots: repos.bot,
+    apps: feishuPlatformApps,
+    clock,
+    ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {})
+  })
 
   const httpDeps: HttpDeps = {
     clock,
@@ -819,6 +830,8 @@ export function buildContainer(
     ...(logtoIdentity ? { logtoIdentity } : {}),
     slackSessionAccess,
     ...(githubSessionAccess ? { githubSessionAccess } : {}),
+    feishuSessionAccess,
+    feishuPlatformApps,
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     ...(slackPlatformApp ? { slackPlatformApp } : {}),
@@ -979,6 +992,7 @@ export function buildContainer(
     integration: repos.integration,
     bot: repos.bot,
     githubInstallation: repos.githubInstallation,
+    feishuPlatformApps,
     integrationChannel: repos.integrationChannel,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),

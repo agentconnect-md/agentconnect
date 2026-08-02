@@ -115,6 +115,13 @@ export const AppConfigSchema = z.object({
   SLACK_PLATFORM_CLIENT_ID: z.string().optional(),
   SLACK_PLATFORM_CLIENT_SECRET: z.string().optional(),
   SLACK_PLATFORM_SIGNING_SECRET: z.string().optional(),
+  // Platform-owned Feishu/Lark apps. Each region is independently all-or-none;
+  // the same app id must back its Logto social connector so app-scoped open_id
+  // values can be compared safely during Session membership checks.
+  FEISHU_PLATFORM_APP_ID: z.string().optional(),
+  FEISHU_PLATFORM_APP_SECRET: z.string().optional(),
+  LARK_PLATFORM_APP_ID: z.string().optional(),
+  LARK_PLATFORM_APP_SECRET: z.string().optional(),
   // The MCP endpoint's dedicated public origin (agent-assistant.md §6.1), e.g.
   // https://mcp.example.test. Set ⇒ the canonical MCP resource URL IS this origin (root resource;
   // the URL users paste is just the host) and auth discovery uses the origin-root

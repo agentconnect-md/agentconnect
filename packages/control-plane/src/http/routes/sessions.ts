@@ -327,11 +327,16 @@ export function sessionRoutes(deps: HttpDeps) {
       return agent ? { session, agent, access } : null
     }
 
-    const externalAccessAvailable = (provider: 'slack' | 'github') =>
+    type ExternalAccessProvider = 'slack' | 'github' | 'feishu'
+    const externalAccessAvailable = (provider: ExternalAccessProvider) =>
       deps.logtoIdentity !== undefined &&
-      (provider === 'slack' ? deps.slackSessionAccess !== undefined : deps.githubSessionAccess !== undefined)
+      (provider === 'slack'
+        ? deps.slackSessionAccess !== undefined
+        : provider === 'github'
+          ? deps.githubSessionAccess !== undefined
+          : deps.feishuSessionAccess !== undefined && Object.keys(deps.feishuPlatformApps ?? {}).length > 0)
 
-    const externalAccessDto = async (orgId: OrgId, provider: 'slack' | 'github', includeDiagnostics: boolean) => {
+    const externalAccessDto = async (orgId: OrgId, provider: ExternalAccessProvider, includeDiagnostics: boolean) => {
       const [policy, hiddenSessions] = await Promise.all([
         deps.repos.session.getExternalAccessPolicy(orgId, provider),
         includeDiagnostics ? deps.repos.session.countExternalUnresolved(orgId, provider) : Promise.resolve(undefined)
@@ -347,8 +352,9 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     }
 
-    const registerExternalAccessRoutes = (provider: 'slack' | 'github') => {
-      const label = provider === 'slack' ? 'Slack' : 'GitHub'
+    const registerExternalAccessRoutes = (provider: ExternalAccessProvider) => {
+      const label = provider === 'slack' ? 'Slack' : provider === 'github' ? 'GitHub' : 'Feishu/Lark'
+      const operationLabel = provider === 'feishu' ? 'FeishuLark' : label
       r.get(
         `/session-access/${provider}`,
         {
@@ -356,7 +362,7 @@ export function sessionRoutes(deps: HttpDeps) {
             tags: [Tag.Sessions],
             summary: `Get ${label} session access sync`,
             description: `Returns whether ${label} sessions use the provider's current audience for console access.`,
-            operationId: `get${label}SessionAccess`,
+            operationId: `get${operationLabel}SessionAccess`,
             response: { 200: SessionExternalAccessDto }
           }
         },
@@ -370,7 +376,7 @@ export function sessionRoutes(deps: HttpDeps) {
             tags: [Tag.Sessions],
             summary: `Set ${label} session access sync`,
             description: `Owner-only setting. When enabled, ${label} sessions follow the provider's current audience; unresolved history remains hidden.`,
-            operationId: `set${label}SessionAccess`,
+            operationId: `set${operationLabel}SessionAccess`,
             body: SetSessionExternalAccessBody,
             response: { 200: SessionExternalAccessDto, 403: ErrorDto, 409: ErrorDto }
           }
@@ -401,6 +407,7 @@ export function sessionRoutes(deps: HttpDeps) {
 
     registerExternalAccessRoutes('slack')
     registerExternalAccessRoutes('github')
+    registerExternalAccessRoutes('feishu')
 
     r.get(
       '/sessions/facets',

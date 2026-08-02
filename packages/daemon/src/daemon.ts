@@ -10468,7 +10468,7 @@ export class Daemon {
                 msg.isDm ||
                 msg.platform === 'webchat' ||
                 this.pendingLaunchCorrelation.has(agentId) ||
-                this.slackExternalSource(agentId, msg, callMeta !== undefined) !== undefined),
+                this.conversationExternalSource(agentId, msg, callMeta !== undefined) !== undefined),
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {})
         }
       )
@@ -12489,14 +12489,14 @@ export class Daemon {
     // integration as if it belonged to the child agent.
     if (classification?.externalOrigin) event.externalOrigin = classification.externalOrigin
     else if (
-      classification?.externalProvider === 'slack' &&
+      (classification?.externalProvider === 'slack' || classification?.externalProvider === 'feishu') &&
       classification.externalResourceKey &&
       classification.externalIntegrationId
     ) {
-      // Rolling compatibility for a Slack row created before direct-origin
+      // Rolling compatibility for a conversation row created before direct-origin
       // proof was persisted as one object.
       event.externalOrigin = {
-        provider: 'slack',
+        provider: classification.externalProvider,
         resourceKind: 'conversation',
         resourceKey: classification.externalResourceKey,
         ...(classification.externalRealmKey ? { realmKey: classification.externalRealmKey } : {}),
@@ -14343,9 +14343,13 @@ export class Daemon {
     // lookup to the trusted caller agent so another runtime cannot lend this
     // A2A wake its external audience by accident.
     const rec = this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
-    if (rec?.externalProvider === 'slack' && rec.externalResourceKind === 'conversation' && rec.externalResourceKey) {
+    if (
+      (rec?.externalProvider === 'slack' || rec?.externalProvider === 'feishu') &&
+      rec.externalResourceKind === 'conversation' &&
+      rec.externalResourceKey
+    ) {
       return {
-        provider: 'slack',
+        provider: rec.externalProvider,
         ...(rec.externalRealmKey ? { realmKey: rec.externalRealmKey } : {}),
         resourceKind: 'conversation',
         resourceKey: rec.externalResourceKey
@@ -14390,30 +14394,38 @@ export class Daemon {
     }
   }
 
-  private slackExternalSource(
+  private conversationExternalSource(
     agentId: string,
     msg: NormalizedMessage,
     isA2aChild: boolean
   ):
     | {
-        externalProvider: 'slack'
+        externalProvider: 'slack' | 'feishu'
         externalRealmKey?: string
         externalResourceKind: 'conversation'
         externalResourceKey: string
         externalIntegrationId?: string
       }
     | undefined {
-    if (msg.platform !== 'slack' || msg.isDm || isA2aChild) return undefined
+    if ((msg.platform !== 'slack' && msg.platform !== 'feishu') || msg.isDm || isA2aChild) return undefined
     const integrationId = this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
-    const realmKey = integrationId ? this.connByIntegration.get(integrationId)?.workspaceId?.() : undefined
-    // Cron and daemon-owned continuation turns can create or resume a real Slack
-    // thread, but synthetic/headless callers may use Slack-shaped coordinates with
-    // no connection. Bind those trusted system turns only when the destination is
-    // attributable. Human ingress must keep the incomplete tuple so the caller
-    // below fails closed instead of silently treating an unverified Slack turn as local.
+    const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
+    const realmKey =
+      msg.platform === 'slack'
+        ? integrationId
+          ? this.connByIntegration.get(integrationId)?.workspaceId?.()
+          : undefined
+        : integration?.platform === 'feishu'
+          ? this.tenantScopeForIntegration(integration)
+          : undefined
+    // Cron and daemon-owned continuation turns can create or resume a real shared
+    // conversation, while synthetic/headless callers may use platform-shaped
+    // coordinates with no connection. Bind those trusted system turns only when
+    // the destination is attributable. Human ingress keeps the incomplete tuple
+    // so the caller below fails closed instead of treating an unverified turn as local.
     if (msg.source !== 'user' && (!integrationId || !realmKey)) return undefined
     return {
-      externalProvider: 'slack',
+      externalProvider: msg.platform,
       ...(realmKey ? { externalRealmKey: realmKey } : {}),
       externalResourceKind: 'conversation',
       externalResourceKey: msg.channel,
@@ -14434,8 +14446,11 @@ export class Daemon {
     hookContext: HookDispatchContext | undefined
   ): 'unchanged' | 'mismatch' | 'unavailable' {
     const direct =
-      this.githubExternalSource(hookContext) ?? this.slackExternalSource(agentId, msg, callMeta !== undefined)
-    if (direct?.externalProvider === 'slack' && (!direct.externalRealmKey || !direct.externalIntegrationId)) {
+      this.githubExternalSource(hookContext) ?? this.conversationExternalSource(agentId, msg, callMeta !== undefined)
+    if (
+      (direct?.externalProvider === 'slack' || direct?.externalProvider === 'feishu') &&
+      (!direct.externalRealmKey || !direct.externalIntegrationId)
+    ) {
       return 'unavailable'
     }
     const inherited = callMeta?.externalOrigin
@@ -14494,7 +14509,7 @@ export class Daemon {
     const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
     const tenantScope = integration ? this.tenantScopeForIntegration(integration) : undefined
     const directExternalSource =
-      this.githubExternalSource(hookContext) ?? this.slackExternalSource(agentId, msg, isA2aChild)
+      this.githubExternalSource(hookContext) ?? this.conversationExternalSource(agentId, msg, isA2aChild)
     const inheritedExternalSource = callMeta?.externalOrigin
       ? {
           externalProvider: callMeta.externalOrigin.provider,

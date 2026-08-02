@@ -114,6 +114,20 @@ const SESSION_ACCESS_COPY: Record<
     disabled: 'New sessions are visible to everyone who can view the agent.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted repository scope.`,
     degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
+  },
+  feishu: {
+    title: 'Follow Feishu / Lark access',
+    details: [
+      'Group sessions created through the matching AgentConnect app follow current chat membership.',
+      'DMs stay private, and agent memory learned earlier is not erased.',
+      'User-built apps with a different App ID keep the ordinary organization visibility model.',
+      'Turning this off leaves already-synced sessions following Feishu / Lark.'
+    ].join('\n'),
+    unavailable: 'Needs OIDC sign-in, a linked Feishu / Lark profile, and the matching platform app.',
+    enabled: 'Session visibility follows Feishu / Lark chat membership.',
+    disabled: 'New sessions are visible to everyone who can view the agent.',
+    unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted chat scope.`,
+    degraded: 'Feishu / Lark scopes stopped resolving — new sessions are being hidden.'
   }
 }
 
@@ -833,6 +847,7 @@ export default function SettingsView() {
         </div>
         <SessionAccessRow provider="slack" orgId={activeOrg?.id} isOwner={isOwner} />
         <SessionAccessRow provider="github" orgId={activeOrg?.id} isOwner={isOwner} bordered />
+        <SessionAccessRow provider="feishu" orgId={activeOrg?.id} isOwner={isOwner} bordered />
       </div>
 
       <div className="card mt-[18px]">

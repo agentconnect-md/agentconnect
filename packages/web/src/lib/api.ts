@@ -2015,7 +2015,7 @@ export async function putSessionVisibility(
   })
 }
 
-export type SessionAccessProvider = 'slack' | 'github'
+export type SessionAccessProvider = 'slack' | 'github' | 'feishu'
 
 export interface SessionExternalAccessDto {
   provider: SessionAccessProvider
