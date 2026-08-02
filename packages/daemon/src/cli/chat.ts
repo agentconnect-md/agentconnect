@@ -153,6 +153,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     configPrefs: {
       model: agent.runtimeOverrides?.model,
       permissionMode: agent.permissionMode,
+      approvalsReviewer: agent.approvalsReviewer,
       reasoningEffort: agent.reasoningEffort,
       fastMode: agent.fastMode
     }

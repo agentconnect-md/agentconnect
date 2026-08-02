@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import {
+  approvalsReviewerLabel,
   agentEffortDisplay,
   agentLabel,
   agentModelDisplay,
@@ -17,6 +18,7 @@ import {
   MOCK_PREFIX,
   runtimeLabel,
   status,
+  supportsApprovalsReviewer,
   supportsModes,
   workspaceStatus
 } from '@/lib/data'
@@ -896,6 +898,16 @@ export default function AgentDetailView() {
                         {agentPermissionDisplay(owningDaemon, da.runtime, da.permissionMode)}
                       </span>
                     </div>
+                    {supportsApprovalsReviewer(da.runtime) && (
+                      <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                        <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
+                          Approval reviewer
+                        </span>
+                        <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
+                          {approvalsReviewerLabel(da.approvalsReviewer)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                       <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                         {effortField(da.runtime).label}

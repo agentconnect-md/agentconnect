@@ -21,6 +21,8 @@ const modelList = (process.env.AC_MODELS ?? '')
   .map((s) => s.trim())
   .filter(Boolean)
 const sessionModels = new Map()
+const reviewerEnabled = process.env.AC_APPROVALS_REVIEWER === '1'
+const sessionReviewers = new Map()
 
 // Optional MCP transport capabilities advertised at initialize. `AC_MCP_CAPS`
 // (comma list) turns them on; unset ⇒ no mcpCapabilities key at all.
@@ -39,18 +41,31 @@ const agentCapabilities = () => ({
     : {}),
   ...(process.env.AC_LOAD_UPDATES ? { loadSession: true } : {})
 })
-const configOptions = (sessionId) =>
-  modelList.length
-    ? [
-        {
-          id: 'model',
-          category: 'model',
-          type: 'select',
-          currentValue: sessionModels.get(sessionId) ?? modelList[0],
-          options: modelList.map((value) => ({ value, name: value }))
-        }
+const configOptions = (sessionId) => {
+  const options = []
+  if (modelList.length) {
+    options.push({
+      id: 'model',
+      category: 'model',
+      type: 'select',
+      currentValue: sessionModels.get(sessionId) ?? modelList[0],
+      options: modelList.map((value) => ({ value, name: value }))
+    })
+  }
+  if (reviewerEnabled) {
+    options.push({
+      id: 'approvals_reviewer',
+      category: '_approvals_reviewer',
+      type: 'select',
+      currentValue: sessionReviewers.get(sessionId) ?? 'user',
+      options: [
+        { value: 'user', name: 'User' },
+        { value: 'auto_review', name: 'Auto-review' }
       ]
-    : undefined
+    })
+  }
+  return options.length ? options : undefined
+}
 
 rl.on('line', async (line) => {
   if (!line.trim()) return
@@ -61,10 +76,13 @@ rl.on('line', async (line) => {
   } else if (method === 'session/new') {
     const sessionId = `s${++sessionCounter}`
     sessionModels.set(sessionId, modelList[0])
+    sessionReviewers.set(sessionId, 'user')
     send({ jsonrpc: '2.0', id, result: { sessionId, configOptions: configOptions(sessionId) } })
   } else if (method === 'session/set_config_option') {
     if (params.configId === 'model' && modelList.includes(params.value))
       sessionModels.set(params.sessionId, params.value)
+    if (params.configId === 'approvals_reviewer' && ['user', 'auto_review'].includes(params.value))
+      sessionReviewers.set(params.sessionId, params.value)
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })
   } else if (method === 'session/load') {
     if (process.env.AC_LOAD_UPDATES) {

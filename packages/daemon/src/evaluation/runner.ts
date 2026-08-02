@@ -466,6 +466,7 @@ function prepareSubject(options: EvaluationRunnerOptions, agentIds: readonly str
         ...(typeof agent.runtimeOverrides?.model === 'string' ? { model: agent.runtimeOverrides.model } : {}),
         settings: {
           ...(typeof agent.permissionMode === 'string' ? { permissionMode: agent.permissionMode } : {}),
+          ...(typeof agent.approvalsReviewer === 'string' ? { approvalsReviewer: agent.approvalsReviewer } : {}),
           ...(typeof agent.reasoningEffort === 'string' ? { reasoningEffort: agent.reasoningEffort } : {}),
           ...(typeof agent.fastMode === 'boolean' ? { fastMode: agent.fastMode } : {}),
           ...(typeof agent.runInSandbox === 'boolean' ? { runInSandbox: agent.runInSandbox } : {}),
@@ -861,6 +862,7 @@ export class RawAcpEvaluationRunner {
         configPrefs: {
           model: agent.runtimeOverrides?.model,
           permissionMode: agent.permissionMode,
+          approvalsReviewer: agent.approvalsReviewer,
           reasoningEffort: agent.reasoningEffort,
           fastMode: agent.fastMode
         }

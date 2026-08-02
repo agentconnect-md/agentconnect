@@ -42,6 +42,7 @@ import { accountAppIsolation } from './account-apps.js'
 export type { SessionConfigOption, SessionConfigSelectGroup, SessionConfigSelectOption } from '@agentclientprotocol/sdk'
 
 const PROTOCOL_VERSION = 1
+export const APPROVALS_REVIEWER_CATEGORY = '_approvals_reviewer'
 
 /** A session/load may replay the historical conversation stream. Keep that off
  *  platform transports, but preserve latest-wins metadata needed to converge the
@@ -135,6 +136,9 @@ export interface SessionConfigPrefs {
    *  `category: "mode"`. Values are runtime-owned (`default` / `plan` on
    *  claude-acp, `agent` / `read-only` on codex-acp, etc.). */
   permissionMode?: string
+  /** Who reviews eligible approval requests, matched against codex-acp's
+   *  `_approvals_reviewer` select. Independent from permissionMode. */
+  approvalsReviewer?: 'user' | 'auto_review'
   /** Optional host-level system-prompt seed, layered ahead of any per-session append
    *  on Claude runtimes (see {@link claudeSessionMeta}). Left unset by default: the
    *  agent's identity + description now travel per-session in the agent meta object
@@ -826,13 +830,12 @@ export class AcpHost {
   }
 
   /**
-   * Apply the desired model / reasoning effort / fast mode to a fresh session
-   * via ACP `session/set_config_option`. Model first — the effort and fast-mode
-   * vocabularies depend on the selected model, and each response returns the
-   * reconciled option set the next step plans against. Best-effort by design: a
-   * runtime without the selector, an unoffered value, or a failed request logs
-   * and moves on — the session still runs on the runtime's defaults. Returns the
-   * final option set.
+   * Apply the desired session preferences to a fresh or restored session via ACP
+   * `session/set_config_option`. Model first — the effort and fast-mode vocabularies
+   * depend on the selected model, and each response returns the reconciled option set
+   * the next step plans against. Best-effort by design: a runtime without the selector,
+   * an unoffered value, or a failed request logs and moves on — the session still runs
+   * on the runtime's defaults. Returns the final option set.
    */
   private async applySessionConfig(
     sessionId: string,
@@ -848,6 +851,7 @@ export class AcpHost {
     const prefs: Array<[category: string, desired: string | undefined]> = [
       ['model', this.opts.configPrefs?.model],
       ['mode', this.opts.configPrefs?.permissionMode],
+      [APPROVALS_REVIEWER_CATEGORY, this.opts.configPrefs?.approvalsReviewer],
       ['thought_level', ultracode ? undefined : this.opts.configPrefs?.reasoningEffort],
       // Fast mode comes AFTER model: the option is only advertised (and the
       // reconciled option set only carries it) once a fast-capable model is set.
@@ -875,7 +879,7 @@ export class AcpHost {
     return options
   }
 
-  /** Re-derive the model / effort / fast selector caches from a reconciled option set. */
+  /** Re-derive the model / effort / mode / fast selector caches from a reconciled option set. */
   private refreshOptionCaches(configOptions: SessionConfigOption[] | null | undefined): void {
     this.lastModelOptions = modelOptionsFrom(configOptions)
     this.lastEffortOptions = effortOptionsFrom(configOptions, this.isClaudeRuntime())

@@ -65,7 +65,7 @@ describe('diffAgents', () => {
     })
   })
 
-  it('classifies model / description / reasoningEffort / executionMode / fastMode / env as host-spawn changes', () => {
+  it('classifies runtime session preferences and child inputs as host-spawn changes', () => {
     const cases: Array<Partial<Agent>> = [
       { runtimeOverrides: { model: 'opus', env: [] } },
       { description: 'be terse' },
@@ -74,6 +74,7 @@ describe('diffAgents', () => {
       // fastMode is baked into the host's configPrefs at construction, so an edit
       // must evict the host (unlike output.mode, which is read live per dispatch).
       { fastMode: true },
+      { approvalsReviewer: 'auto_review' },
       { runtimeOverrides: { model: undefined as any, env: [{ name: 'FOO', value: 'bar' }] } },
       // Secrets are baked into the child env (and materialized as config files)
       // at spawn — a value rotation must evict the host or the child keeps the

@@ -164,6 +164,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         // Always shipped as null when unset (per-runtime override): a runtime switch
         // must be able to CLEAR it, so the spec carries the clear rather than omitting it.
         permissionMode: null,
+        approvalsReviewer: null,
         outputMode: 'medium',
         showFooter: true,
         showStatusBar: true,

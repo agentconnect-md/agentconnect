@@ -17,6 +17,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { ApprovalsReviewer } from '@agentconnect.md/protocol'
 
 /** What a tool needs to execute: the caller's org and credentialed requests
  *  against the versioned REST surface (`/api/v1`-relative paths). */
@@ -275,6 +276,7 @@ export const MCP_TOOLS: McpToolDef[] = [
         outputMode: OutputMode.optional(),
         fastMode: z.boolean().optional(),
         permissionMode: z.string().min(1).optional(),
+        approvalsReviewer: ApprovalsReviewer.optional(),
         daemonId: z.string().min(1).optional().describe('Pin to a daemon (from listDaemons); omit to leave unplaced'),
         pause: z.boolean().optional()
       })
@@ -297,6 +299,7 @@ export const MCP_TOOLS: McpToolDef[] = [
         outputMode: OutputMode.nullable().optional(),
         fastMode: z.boolean().nullable().optional(),
         permissionMode: z.string().min(1).nullable().optional(),
+        approvalsReviewer: ApprovalsReviewer.nullable().optional(),
         pause: z.boolean().optional().describe('true pauses the agent; false resumes it')
       })
       .strict(),

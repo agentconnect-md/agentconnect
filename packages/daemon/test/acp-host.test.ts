@@ -34,6 +34,22 @@ describe('AcpHost (against a fake ACP agent)', () => {
     expect(updates).toContainEqual({ sessionId, text: 'echo:hi' })
     await host.stop()
   }, 15_000)
+
+  it('applies Auto-review through the independent approvals reviewer selector', async () => {
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: { AC_APPROVALS_REVIEWER: '1' },
+        configPrefs: { permissionMode: 'agent', approvalsReviewer: 'auto_review' }
+      }
+    )
+    await host.start()
+    const sessionId = await host.newSession('/tmp')
+    const reviewer = host.sessionConfigOptions(sessionId)?.find((option) => option.category === '_approvals_reviewer')
+    expect(reviewer?.currentValue).toBe('auto_review')
+    await host.stop()
+  }, 15_000)
 })
 
 describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {

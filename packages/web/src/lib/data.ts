@@ -7,6 +7,7 @@ import type { MemoryDreamingConfig } from '@/lib/api'
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
 export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
 export type StatusKey = ConnectionStatusKey | LifecycleStatusKey
+export type ApprovalsReviewer = 'user' | 'auto_review'
 
 export interface StatusInfo {
   dot: string
@@ -270,6 +271,8 @@ export interface Agent {
   memoryCaptureMode?: 'turn' | 'manual'
   /** Runtime permission/approval mode; 'default' means the runtime default. */
   permissionMode: string
+  /** Who reviews eligible Codex approval requests; absent means the runtime default (`user`). */
+  approvalsReviewer?: ApprovalsReviewer
   /** Explicit opt-in for chat-side runtime changes and approval controls. */
   allowRuntimeChangesInChat: boolean
   /** Extra env injected into the runtime, in display order. */
@@ -448,8 +451,8 @@ export function permissionModeOptions(runtime: string): { v: string; l: string }
     // console can't misrepresent them. Values are codex-acp's runtime-owned ids (probed
     // from session/new): `agent` is Codex's default, labeled "Ask for approval"
     // (on-request + workspace-write); `agent-full-access` is danger-full-access —
-    // out-of-workspace + network. (Codex's "Approve for me" preset has no codex-acp mode,
-    // so it isn't offered.)
+    // out-of-workspace + network. Codex's "Approve for me" behavior is exposed
+    // separately through approvalsReviewer; it is not a fourth permission mode.
     return [
       { v: 'read-only', l: 'Read Only' },
       { v: 'agent', l: 'Ask for approval' },
@@ -477,6 +480,30 @@ export function permissionModeLabel(runtime: string, v: string): string {
   const mode = v || permissionModeDefault(runtime)
   const o = permissionModeOptions(runtime).find((x) => x.v === mode)
   return o?.l ?? mode
+}
+
+export function supportsApprovalsReviewer(runtime: string): boolean {
+  return runtimeLabel(runtime) === 'Codex'
+}
+
+export function approvalsReviewerOptions(runtime: string): Array<{
+  v: ApprovalsReviewer
+  l: string
+  description: string
+}> {
+  if (!supportsApprovalsReviewer(runtime)) return []
+  return [
+    { v: 'user', l: 'User', description: 'Ask an agent editor to approve or deny requests' },
+    { v: 'auto_review', l: 'Auto-review', description: 'Use a reviewer agent for eligible requests' }
+  ]
+}
+
+export function approvalsReviewerDefault(runtime: string): ApprovalsReviewer | '' {
+  return supportsApprovalsReviewer(runtime) ? 'user' : ''
+}
+
+export function approvalsReviewerLabel(value: ApprovalsReviewer | null | undefined): string {
+  return value === 'auto_review' ? 'Auto-review' : 'User'
 }
 
 // ── dynamic model catalog (runtime-model-catalog.md §7) ─────────────────────

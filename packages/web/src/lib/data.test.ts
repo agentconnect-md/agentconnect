@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  approvalsReviewerDefault,
+  approvalsReviewerLabel,
+  approvalsReviewerOptions,
   agentEffortDisplay,
   agentModelDisplay,
   agentPermissionDisplay,
@@ -270,6 +273,20 @@ describe('permissionModeChoicesFor', () => {
       { v: 'acceptEdits', l: 'Accept Edits' },
       { v: 'yolo', l: 'Yolo' }
     ])
+  })
+})
+
+describe('Auto-review options', () => {
+  it('keeps the reviewer separate from Codex permission modes', () => {
+    expect(permissionModeOptions('codex').map((option) => option.v)).toEqual([
+      'read-only',
+      'agent',
+      'agent-full-access'
+    ])
+    expect(approvalsReviewerOptions('codex').map((option) => option.v)).toEqual(['user', 'auto_review'])
+    expect(approvalsReviewerDefault('codex')).toBe('user')
+    expect(approvalsReviewerDefault('claude')).toBe('')
+    expect(approvalsReviewerLabel('auto_review')).toBe('Auto-review')
   })
 })
 

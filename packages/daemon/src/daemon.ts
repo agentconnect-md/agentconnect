@@ -4246,6 +4246,7 @@ export class Daemon {
         configPrefs: {
           model: agent.runtimeOverrides?.model,
           permissionMode: agent.permissionMode,
+          approvalsReviewer: agent.approvalsReviewer,
           reasoningEffort: agent.reasoningEffort,
           fastMode: agent.fastMode
         },

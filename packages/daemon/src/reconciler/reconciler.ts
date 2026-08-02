@@ -16,9 +16,9 @@ function signature(a: Agent): string {
  *  must be materialized before it starts — the spawn binary (`runtime`), workspace
  *  skills, and the knobs baked into the host at construction: child env /
  *  system-prompt seed (agentChildEnv + cpRuntimeEnv), session config prefs (model /
- *  reasoningEffort / fastMode, applied per session via ACP set_config_option), and
- *  the OS sandbox wrapper. A change here means the cached host must be evicted so
- *  the next session respawns it fresh. */
+ *  reasoningEffort / fastMode / permissionMode / approvalsReviewer, applied per
+ *  session via ACP set_config_option), and the OS sandbox wrapper. A change here
+ *  means the cached host must be evicted so the next session respawns it fresh. */
 function hostSpawnSig(a: Agent): string {
   return JSON.stringify({
     runtime: a.runtime,
@@ -29,6 +29,7 @@ function hostSpawnSig(a: Agent): string {
     executionMode: a.executionMode,
     fastMode: a.fastMode,
     permissionMode: a.permissionMode,
+    approvalsReviewer: a.approvalsReviewer,
     // Memory backend bakes env into the child (disable vs redirect the runtime's own
     // memory — see memoryProviderFor), so a provider change must respawn the host.
     // An external connection switch also changes the trusted scope/client captured

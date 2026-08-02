@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  approvalsReviewerDefault,
+  approvalsReviewerOptions,
   effortChoicesFor,
   effortField,
   effortLabel,
@@ -17,10 +19,12 @@ import {
   permissionModeDefault,
   permissionModeLabel,
   runtimeLabel,
+  supportsApprovalsReviewer,
   supportsModes,
   agentLabel,
   type Agent,
-  type AgentCallPolicy
+  type AgentCallPolicy,
+  type ApprovalsReviewer
 } from '@/lib/data'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { fetchAgentDto, type AgentCallPolicyInput, type UpdateAgentInput } from '@/lib/api'
@@ -110,6 +114,12 @@ export default function EditAgentModal({
   const initialFastMode = useRef(agent.fastMode)
   const [permissionMode, setPermissionMode] = useState(permissionModeDefault(agent.runtime))
   const initialPermissionMode = useRef(permissionModeDefault(agent.runtime))
+  const [approvalsReviewer, setApprovalsReviewer] = useState<ApprovalsReviewer | ''>(
+    agent.approvalsReviewer ?? approvalsReviewerDefault(agent.runtime)
+  )
+  const initialApprovalsReviewer = useRef<ApprovalsReviewer | ''>(
+    agent.approvalsReviewer ?? approvalsReviewerDefault(agent.runtime)
+  )
   const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(agent.allowRuntimeChangesInChat)
   const initialAllowRuntimeChangesInChat = useRef(agent.allowRuntimeChangesInChat)
   const [introduceOnJoin, setIntroduceOnJoin] = useState(agent.introduceOnJoin)
@@ -182,6 +192,9 @@ export default function EditAgentModal({
         initialFastMode.current = dto.fastMode ?? false
         setPermissionMode(dto.permissionMode ?? permissionModeDefault(dto.runtime ?? ''))
         initialPermissionMode.current = dto.permissionMode ?? permissionModeDefault(dto.runtime ?? '')
+        const nextApprovalsReviewer = dto.approvalsReviewer ?? approvalsReviewerDefault(dto.runtime ?? '')
+        setApprovalsReviewer(nextApprovalsReviewer)
+        initialApprovalsReviewer.current = nextApprovalsReviewer
         setAllowRuntimeChangesInChat(dto.allowRuntimeChangesInChat ?? false)
         initialAllowRuntimeChangesInChat.current = dto.allowRuntimeChangesInChat ?? false
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
@@ -363,6 +376,8 @@ export default function EditAgentModal({
           { v: permissionMode, l: `${permissionModeLabel(runtime, permissionMode)} (unavailable)` }
         ]
       : permissionChoices
+  const showApprovalsReviewer = supportsApprovalsReviewer(runtime)
+  const approvalsReviewerChoices = approvalsReviewerOptions(runtime)
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
@@ -399,6 +414,7 @@ export default function EditAgentModal({
     setModel('')
     setEffort('')
     setPermissionMode(permissionModeDefault(nextRuntime))
+    setApprovalsReviewer(approvalsReviewerDefault(nextRuntime))
   }
 
   const normalizedDisplayName = displayName.trim() ? displayName.trim() : null
@@ -422,6 +438,7 @@ export default function EditAgentModal({
     ...(showStatusBar !== initialShowStatusBar.current ? { showStatusBar } : {}),
     ...(fastMode !== initialFastMode.current ? { fastMode } : {}),
     ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
+    ...(approvalsReviewer !== initialApprovalsReviewer.current ? { approvalsReviewer: approvalsReviewer || null } : {}),
     ...(allowRuntimeChangesInChat !== initialAllowRuntimeChangesInChat.current ? { allowRuntimeChangesInChat } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
     ...(runInSandbox !== initialRunInSandbox.current ? { runInSandbox } : {}),
@@ -772,7 +789,7 @@ export default function EditAgentModal({
             <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
               <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                {(showEffort || fastModeAvailable || showPermission) && (
+                {(showEffort || fastModeAvailable || showPermission || showApprovalsReviewer) && (
                   <div className="fld desktop:col-span-2">
                     <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
                       {showEffort && (
@@ -837,6 +854,28 @@ export default function EditAgentModal({
                                     : 'pill px-[10px] py-1 text-[12px]'
                                 }
                                 onClick={() => setPermissionMode(o.v)}
+                              >
+                                {o.l}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {showApprovalsReviewer && (
+                        <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
+                          <span className="fldlbl">Approval reviewer</span>
+                          <div className="pillbar self-start">
+                            {approvalsReviewerChoices.map((o) => (
+                              <button
+                                key={o.v}
+                                type="button"
+                                title={o.description}
+                                className={
+                                  approvalsReviewer === o.v
+                                    ? 'pill on px-[10px] py-1 text-[12px]'
+                                    : 'pill px-[10px] py-1 text-[12px]'
+                                }
+                                onClick={() => setApprovalsReviewer(o.v)}
                               >
                                 {o.l}
                               </button>
