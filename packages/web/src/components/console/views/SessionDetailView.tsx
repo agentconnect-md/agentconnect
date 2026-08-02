@@ -848,11 +848,12 @@ function MobileSessionFamilyLinks({
 }
 
 /**
- * The pre-session states (waiting on the conversation roster, on the sessions list,
- * on a self-conversation redirect) drawn on the SAME track the loaded page uses:
- * the 1180px wrap, the rail's held-open column, then the 880px body. Centring the
- * spinner in the bare wrap instead would place it where the body only sits when
- * there is no rail, so the transcript would land 125px to its right.
+ * Every state this view can render that is not the session itself — loading, and
+ * both not-found bodies — drawn on the SAME track the loaded page uses: the 1180px
+ * wrap, the rail's column, then the 880px body. The route has one body position and
+ * this is how the states that have no rail to draw still honour it; centring them in
+ * the bare wrap instead would put each of them 125px left of the transcript that
+ * replaces them.
  */
 function SessionDetailFrame({ children }: { children: ReactNode }) {
   return (
@@ -1293,17 +1294,10 @@ export default function SessionDetailView() {
   // org key stays null and no page is fetched to be thrown away.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentId = railQuery?.agentId ?? ''
-  const {
-    sessions: railSessionRows,
-    total: railSessionTotal,
-    isLoading: railSessionsLoading
-  } = useSessionList(MOCK_MODE || !railQuery ? null : activeOrg?.id, railQuery ?? {})
-  // "No rail" and "the rail has not answered yet" look identical from its rows, and
-  // only the second one may not move the page — see SessionRail's `pending`. Gated
-  // on a live query so a session with no agent (nothing to fetch, so `isLoading`
-  // never flips) cannot hold an empty column open forever. Mock rows are
-  // synchronous, so mock mode is never pending.
-  const railPending = !MOCK_MODE && railQuery !== null && railSessionsLoading
+  const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
+    MOCK_MODE || !railQuery ? null : activeOrg?.id,
+    railQuery ?? {}
+  )
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
@@ -1775,7 +1769,7 @@ export default function SessionDetailView() {
   if (conversationKey && (conversationError || !conversationRoster || conversationRoster.sessions.length === 0)) {
     // conversationError, a grace-expired null, or a resolved-but-empty roster.
     return (
-      <div className="wrap max-w-[880px] max-desktop:p-4">
+      <SessionDetailFrame>
         <NotFound
           icon="message-square-off"
           kind="CONVERSATION"
@@ -1786,7 +1780,7 @@ export default function SessionDetailView() {
           actionLabel="Back to sessions"
           actionHref={orgPath('/sessions')}
         />
-      </div>
+      </SessionDetailFrame>
     )
   }
 
@@ -1801,9 +1795,8 @@ export default function SessionDetailView() {
         </SessionDetailFrame>
       )
     }
-    // A dead end grows no rail, so this one centres in the bare wrap.
     return (
-      <div className="wrap max-w-[880px] max-desktop:p-4">
+      <SessionDetailFrame>
         <NotFound
           icon="message-square-off"
           kind="SESSION"
@@ -1824,7 +1817,7 @@ export default function SessionDetailView() {
           }
           showSearch={false}
         />
-      </div>
+      </SessionDetailFrame>
     )
   }
 
@@ -2343,10 +2336,10 @@ export default function SessionDetailView() {
   // max-desktop:), never JS-forked.
   return (
     // `.wrap` (1180px) is the outer track so the sibling-session rail can sit beside
-    // the 880px body. With no rail the body is still an 880px block centred in that
-    // track — geometrically identical to when it was the wrap itself. Keep this row
-    // in step with SessionDetailFrame: the loading states draw the same two columns
-    // so nothing moves when the session lands.
+    // the 880px body. The rail always occupies its column above the breakpoint, even
+    // with no rows to show, so this is the one position the body ever takes. Keep the
+    // row in step with SessionDetailFrame, which draws the same two columns for every
+    // state that precedes or replaces a session.
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
       <SessionRail
         sessions={railSessions}
@@ -2358,7 +2351,6 @@ export default function SessionDetailView() {
         family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
         conversation={conversationMode}
         childOriginById={conversationLineage?.childOriginById}
-        pending={railPending}
         onSelect={setRouteSession}
       />
       <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
