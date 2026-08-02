@@ -14,6 +14,7 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId } from '../../domain/ids.js'
@@ -32,6 +33,18 @@ const WebchatTokenDto = z.object({
   relayUrl: z.string(),
   conversationId: z.string()
 })
+
+const ConversationParams = z.object({ orgId: z.string() })
+// Exactly one of the two: `agentIds` creates (roster fixed at creation, first
+// entry = primary, webchat-multi-agents.md §3.1), `conversationId` resumes.
+const ConversationBody = z
+  .object({
+    conversationId: z.string().uuid().optional(),
+    agentIds: z.array(z.string().uuid()).min(1).max(8).optional()
+  })
+  .refine((b) => (b.conversationId === undefined) !== (b.agentIds === undefined), {
+    message: 'provide exactly one of conversationId (resume) or agentIds (create)'
+  })
 
 export function webchatTokenRoutes(deps: HttpDeps) {
   return async function webchatTokenRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -79,6 +92,97 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           user: req.principal!.email ?? userId,
           agentId: agent.id,
           orgId: agent.orgId,
+          conversationId
+        })
+        return reply.send({ token, relayUrl, conversationId })
+      }
+    )
+
+    // Conversation-scoped mint (webchat-multi-agents.md §6.2): creates a
+    // conversation with its full roster in one call, or resumes an existing one
+    // by id alone. The token claims stay primary-shaped — the relay resolves the
+    // roster at verification time from the durable participant rows.
+    r.post(
+      '/webchat/conversations/token',
+      {
+        preHandler: app.humanAuth,
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Mint a conversation webchat token',
+          description:
+            'Mints a short-lived token the browser presents to the relay pool. Pass `agentIds` (first entry is the primary) to create a conversation — the roster is fixed at creation — or `conversationId` to resume one owned by the authenticated user. Creating with more than one agent requires every selected agent to be placed on a daemon that supports multi-agent webchat.',
+          operationId: 'mintWebchatConversationToken',
+          params: ConversationParams,
+          body: ConversationBody,
+          response: { 200: WebchatTokenDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const relayUrl = deps.config.PUBLIC_RELAY_URL
+        if (!relayUrl) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'webchat relay pool not configured' })
+        }
+        const userId = req.principal!.userId
+        const orgId = req.orgCtx!.orgId
+
+        if (req.body.conversationId) {
+          const conversationId = req.body.conversationId.toLowerCase()
+          const owned = await deps.repos.webchatConversation.ownedBy(conversationId, orgId, userId)
+          if (!owned) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+          }
+          // The primary must still be viewable — losing access to a restricted
+          // agent revokes resume, exactly like the legacy per-agent path.
+          const primary = await deps.repos.agent.get(owned.primaryAgentId)
+          if (!primary || primary.orgId !== orgId || !canView(primary, ctxOf(req))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+          }
+          const token = await deps.webchatTokens.mint({
+            userId,
+            user: req.principal!.email ?? userId,
+            agentId: primary.id,
+            orgId,
+            conversationId
+          })
+          return reply.send({ token, relayUrl, conversationId })
+        }
+
+        const agentIds = [...new Set(req.body.agentIds!)]
+        const agents = []
+        for (const id of agentIds) {
+          const agent = await deps.repos.agent.get(AgentId(id))
+          if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+          }
+          agents.push(agent)
+        }
+        if (agents.length > 1) {
+          // Capability gate at creation (webchat-multi-agents.md §6.3): every
+          // selected agent's daemon must advertise multi-agent webchat support.
+          for (const agent of agents) {
+            const daemon = agent.daemonId ? deps.daemonConns.get(agent.daemonId) : undefined
+            if (!daemon?.capabilities?.features?.includes(WEBCHAT_MULTI_AGENT_FEATURE)) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: `agent ${agent.id} is not on a daemon that supports multi-agent conversations`
+              })
+            }
+          }
+        }
+        const conversationId = randomUUID()
+        const [primary, ...members] = agents
+        await deps.repos.webchatConversation.create(
+          { conversationId, userId, agentId: primary!.id, orgId },
+          members.map((a) => a.id)
+        )
+        const token = await deps.webchatTokens.mint({
+          userId,
+          user: req.principal!.email ?? userId,
+          agentId: primary!.id,
+          orgId,
           conversationId
         })
         return reply.send({ token, relayUrl, conversationId })

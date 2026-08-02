@@ -243,6 +243,9 @@ export function buildHttpApp(
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
     agentSpecs: new AgentSpecAssembler(agentSecretStore, {}, skillSourceRepo, organizationKnowledgeRepo),
     liveness,
+    // Capability reads share the liveness fake: a test that needs a capable
+    // daemon overrides `liveness` with one whose entries carry `capabilities`.
+    daemonConns: liveness as HttpDeps['daemonConns'],
     control: sender,
     relayControl,
     httpBot: new HttpBotOrchestrator(

@@ -209,6 +209,9 @@ function buildWebchatVerifier(
       tokens: { verify },
       agents: { get: getAgent },
       daemons: { get: getDaemon },
+      // Pre-participant conversation: the empty roster degrades to the token's
+      // primary (single-agent shape), keeping the remote-MCP gate reachable.
+      conversations: { participants: async () => [] },
       remoteMcp: { establish }
     })
   }

@@ -224,6 +224,11 @@ export interface HttpDeps {
   daemonRelease?: DaemonReleaseResolver
   /** Live connection index the daemon read model overlays for real-time status. */
   liveness: DaemonLiveness
+  /** Live daemon connection reads (state + advertised feature capabilities) —
+   *  gates multi-agent webchat conversation CREATION on every selected agent's
+   *  daemon advertising `webchat_multi_agent_v1` (webchat-multi-agents.md §6.3).
+   *  Backed by the ConnectionRegistry. */
+  daemonConns: { get(daemonId: string): { state: string; capabilities?: { features: string[] } } | undefined }
   /** The fencing site for C→D control. REST agent CRUD pushes `agent/upsert`/
    *  `agent/remove` through it to replicate config to the owning daemon. */
   control: ControlSender

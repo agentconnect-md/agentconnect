@@ -1175,15 +1175,32 @@ export interface WebchatConversationBinding {
   userId: string
 }
 
+/** One roster row of a (possibly multi-agent) webchat conversation, in pick order. */
+export interface WebchatParticipant {
+  agentId: AgentId
+  role: 'primary' | 'member'
+}
+
 export interface WebchatConversationRepo {
-  /** Register a server-allocated conversation before its first relay dial. */
-  create(binding: WebchatConversationBinding): Promise<void>
+  /** Register a server-allocated conversation before its first relay dial.
+   *  `binding.agentId` is the PRIMARY; `memberAgentIds` are the remaining
+   *  roster picks in order (webchat-multi-agents.md §3.1 — the roster is fixed
+   *  at creation). Conversation + participant rows commit atomically. */
+  create(binding: WebchatConversationBinding, memberAgentIds?: AgentId[]): Promise<void>
+  /** The conversation's full roster (primary first, then pick order). Empty
+   *  for an unknown conversation — callers fail closed. */
+  participants(conversationId: string): Promise<WebchatParticipant[]>
   /** The owning console user of a conversation, for session-visibility ingest
-   *  (§4.2). Scoped to the agent the conversation was minted against; unknown
-   *  and foreign bindings both return null (the caller fails closed). */
+   *  (§4.2). Scoped to a PARTICIPANT agent (any roster role); unknown and
+   *  foreign bindings both return null (the caller fails closed). */
   findOwner(conversationId: string, agentId: AgentId): Promise<string | null>
-  /** Exact owner check for resume. Unknown and foreign bindings both return false. */
+  /** Exact owner check for resume via the legacy per-agent mint path (the
+   *  asserted agent must be the conversation's primary). Unknown and foreign
+   *  bindings both return false. */
   owns(binding: WebchatConversationBinding): Promise<boolean>
+  /** Owner check for the conversation-scoped mint path: returns the primary
+   *  agent when (conversationId, orgId, userId) matches, else null. */
+  ownedBy(conversationId: string, orgId: OrgId, userId: string): Promise<{ primaryAgentId: AgentId } | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
