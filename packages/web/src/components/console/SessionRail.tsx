@@ -162,10 +162,19 @@ export function SessionRail({
   // no server pass whose clock could disagree.
   const groups = useMemo(() => groupSessionsByAge(rest, new Date()), [rest])
 
-  // The agent's real session count, not the loaded-page length — a 60-session agent
-  // must not read "50". This also gates the rail, so it does not blink into view
-  // once page one lands.
-  const count = Math.max(total, rows.length, relatedIds.size)
+  // Start with the owning agent's real count, not the loaded-page length — a
+  // 60-session agent must not read "50". Related sessions from that agent are
+  // already included in `total`; cross-agent relatives are not, so add that
+  // distinct visible set to make the badge match the rail's navigable union.
+  const currentAgentId = agentId ?? current.agentId
+  const crossAgentRelatedCount = useMemo(() => {
+    const ids = new Set<string>()
+    for (const relation of [...(parent ? [parent] : []), ...siblings, ...children]) {
+      if (relation.agentId !== currentAgentId) ids.add(relation.id)
+    }
+    return ids.size
+  }, [children, currentAgentId, parent, siblings])
+  const count = Math.max(total, rows.length) + crossAgentRelatedCount
 
   // A rail that would only show the session already on screen is noise. Direct
   // lineage still makes it useful when the current agent itself has one session.
