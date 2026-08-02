@@ -18,7 +18,8 @@ import {
   runtimeLabel,
   status,
   supportsModes,
-  workspaceStatus
+  workspaceStatus,
+  type IntegrationRow
 } from '@/lib/data'
 import {
   creatorLabel,
@@ -107,6 +108,15 @@ const INTEGRATION_BLURB: Record<Platform, string> = {
   webhook: 'Trigger by posting a URL'
 }
 const HOOK_RUN_REFRESH_MS = 10_000
+
+function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 'platform' | 'region'> }) {
+  if (integration.platform !== 'feishu') return null
+  return (
+    <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
+      {integration.region === 'lark' ? 'Lark' : 'Feishu'}
+    </span>
+  )
+}
 
 interface GithubReviewSettingsDraft {
   hookId: string
@@ -1156,8 +1166,11 @@ export default function AgentDetailView() {
                             <PlatformMark platform={g.platform} />
                           </span>
                           <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                            <span className="truncate font-sans text-[14px] font-semibold leading-normal group-hover:underline">
-                              {g.name}
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate font-sans text-[14px] font-semibold leading-normal group-hover:underline">
+                                {g.name}
+                              </span>
+                              <FeishuRegionBadge integration={g} />
                             </span>
                             {g.channels[0] && (
                               <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
@@ -1272,6 +1285,7 @@ export default function AgentDetailView() {
                               <span className="truncate font-sans text-[13.5px] font-semibold leading-normal group-hover:underline">
                                 {g.name}
                               </span>
+                              <FeishuRegionBadge integration={g} />
                               <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
                                 <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
                                 connected

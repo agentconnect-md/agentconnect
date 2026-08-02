@@ -361,13 +361,20 @@ const MEMBER_GRID = 'grid-cols-[2fr_1.4fr_auto]'
 // actions. The 100px action track fits refresh + platform link + delete and stays
 // identical across rows; below 480px "Created by" is dropped to preserve space.
 const BOT_GRID = 'grid-cols-[3fr_1.1fr_1fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_100px]'
-const BOT_PLATFORMS = [
-  { platform: 'slack', label: 'Slack', noun: 'app' },
-  { platform: 'discord', label: 'Discord', noun: 'bot' },
-  { platform: 'telegram', label: 'Telegram', noun: 'bot' },
-  { platform: 'feishu', label: 'Lark', noun: 'bot' }
+const BOT_PLATFORM_TABS = [
+  { key: 'slack', platform: 'slack', feishuRegion: null, label: 'Slack', noun: 'app' },
+  { key: 'discord', platform: 'discord', feishuRegion: null, label: 'Discord', noun: 'bot' },
+  { key: 'telegram', platform: 'telegram', feishuRegion: null, label: 'Telegram', noun: 'bot' },
+  { key: 'lark', platform: 'feishu', feishuRegion: 'lark', label: 'Lark', noun: 'bot' },
+  { key: 'feishu', platform: 'feishu', feishuRegion: 'feishu', label: 'Feishu', noun: 'bot' }
 ] as const
-type BotPlatform = (typeof BOT_PLATFORMS)[number]['platform']
+type BotPlatformTab = (typeof BOT_PLATFORM_TABS)[number]
+type BotPlatformTabKey = BotPlatformTab['key']
+
+function botMatchesPlatformTab(bot: BotDto, tab: BotPlatformTab): boolean {
+  if (bot.platform !== tab.platform) return false
+  return tab.feishuRegion === null || (bot.feishuRegion ?? 'feishu') === tab.feishuRegion
+}
 
 type BotRosterRow = { kind: 'workspace'; key: string; label: string } | { kind: 'bot'; key: string; bot: BotDto }
 
@@ -970,7 +977,7 @@ function BotsCard({
     refresh,
     loading: dataLoading
   } = useConsoleData()
-  const [platform, setPlatform] = useState<BotPlatform>('slack')
+  const [platformTabKey, setPlatformTabKey] = useState<BotPlatformTabKey>('slack')
   // Bot row expanded to its channel roster (one at a time), the bot whose
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
   // 409s with a reason: no relay connected / still shared by several agents).
@@ -981,18 +988,20 @@ function BotsCard({
   const [slackRefresh, setSlackRefresh] = useState<Record<string, { result?: SlackBotRefreshDto; error?: string }>>({})
   const [slackReinstall, setSlackReinstall] = useState<{ botId: string; installId: string } | null>(null)
 
-  const targetBotPlatform = BOT_PLATFORMS.find(
-    (item) => item.platform === bots.find((bot) => bot.id === targetBotId)?.platform
-  )?.platform
-  const { label, noun } = BOT_PLATFORMS.find((item) => item.platform === platform)!
-  const platformBots = bots.filter((b) => b.platform === platform)
+  const targetBot = bots.find((bot) => bot.id === targetBotId)
+  const targetBotPlatformTabKey = targetBot
+    ? BOT_PLATFORM_TABS.find((tab) => botMatchesPlatformTab(targetBot, tab))?.key
+    : undefined
+  const platformTab = BOT_PLATFORM_TABS.find((tab) => tab.key === platformTabKey)!
+  const { label, noun } = platformTab
+  const platformBots = bots.filter((bot) => botMatchesPlatformTab(bot, platformTab))
   const rosterRows = botRosterRows(platformBots)
 
   useEffect(() => {
-    if (!targetBotId || !targetBotPlatform) return
-    setPlatform(targetBotPlatform)
+    if (!targetBotId || !targetBotPlatformTabKey) return
+    setPlatformTabKey(targetBotPlatformTabKey)
     setOpenBotId(targetBotId)
-  }, [targetBotId, targetBotPlatform])
+  }, [targetBotId, targetBotPlatformTabKey])
 
   useEffect(() => {
     if (!targetBotId || openBotId !== targetBotId) return
@@ -1119,17 +1128,17 @@ function BotsCard({
         role="tablist"
         aria-label="Bot platform"
       >
-        {BOT_PLATFORMS.map((item) => {
-          const selected = item.platform === platform
+        {BOT_PLATFORM_TABS.map((item) => {
+          const selected = item.key === platformTabKey
           return (
             <button
-              key={item.platform}
+              key={item.key}
               type="button"
               role="tab"
               aria-selected={selected}
               className={`${selected ? 'tab on' : 'tab'} mr-[5px] flex items-center gap-[5px] whitespace-nowrap last:mr-0 desktop:mr-[22px] desktop:gap-[6px]`}
               onClick={() => {
-                setPlatform(item.platform)
+                setPlatformTabKey(item.key)
                 setOpenBotId(null)
               }}
             >
@@ -1221,7 +1230,7 @@ function BotsCard({
                 )}
                 {/* Transport tag (Slack) — makes the Sharable column's disabled state
                     self-explanatory: only an http bot may be shared. */}
-                {platform === 'slack' && (
+                {platformTab.platform === 'slack' && (
                   <span className="badge bg-(--surface-active) text-(--text-tertiary) max-[479px]:hidden">
                     {b.transport ?? 'socket'}
                   </span>
@@ -1271,7 +1280,7 @@ function BotsCard({
                 {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'}
               </span>
               <span className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                {platform === 'slack' && b.slackAppId && canWrite && (
+                {platformTab.platform === 'slack' && b.slackAppId && canWrite && (
                   <button
                     className={`iconbtn h-7 w-7 flex-none ${
                       slackNeedsAttention ? 'border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)' : ''
@@ -1288,7 +1297,7 @@ function BotsCard({
                     />
                   </button>
                 )}
-                {platform === 'slack' && b.slackAppId && (
+                {platformTab.platform === 'slack' && b.slackAppId && (
                   <a
                     href={slackAppSettingsUrl(b.slackAppId)}
                     target="_blank"
@@ -1301,7 +1310,7 @@ function BotsCard({
                     <Icon name="external-link" size={12} />
                   </a>
                 )}
-                {platform === 'discord' && b.discordAppId && (
+                {platformTab.platform === 'discord' && b.discordAppId && (
                   <a
                     href={discordBotInviteUrl(b.discordAppId)}
                     target="_blank"
@@ -1314,7 +1323,7 @@ function BotsCard({
                     <Icon name="external-link" size={12} />
                   </a>
                 )}
-                {platform === 'feishu' && (
+                {platformTab.platform === 'feishu' && (
                   <a
                     href={feishuAppSettingsUrl(b.feishuAppId, feishuRegion)}
                     target="_blank"
