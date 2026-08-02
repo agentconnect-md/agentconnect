@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
+import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
@@ -1320,11 +1321,11 @@ export default function SessionDetailView() {
         // resolve its display name at RENDER time from the org agent list —
         // stream-time `who` can be missing (the socket closure predates the
         // session state) and adopted sessions never had a roster.
-        const stepAgent = stp.agentId ? agents.find((a) => a.id === stp.agentId) : undefined
+        const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
         if (stp.agentId || stp.who) speakers.set(stp.agentId ?? stepAgentName, stepAgentName)
         let last = turns[turns.length - 1]
-        if (!last || last.kind !== 'bot' || last.agentName !== stepAgentName) {
+        if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
             agentName: stepAgentName,
@@ -1334,6 +1335,9 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+        } else if (stp.agentId && last.agentId === undefined) {
+          // A tagged step continuing an untagged block names its author retroactively.
+          last.agentId = stp.agentId
         }
         const step = fmtStep(stp)
         last.steps.push(step)
@@ -1367,11 +1371,11 @@ export default function SessionDetailView() {
           cronId: null
         })
       } else {
-        const stepAgent = stp.agentId ? agents.find((a) => a.id === stp.agentId) : undefined
+        const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
         if (stp.agentId || stp.who) speakers.set(stp.agentId ?? stepAgentName, stepAgentName)
         let last = turns[turns.length - 1]
-        if (!last || last.kind !== 'bot' || last.agentName !== stepAgentName) {
+        if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
             agentName: stepAgentName,
@@ -1381,6 +1385,9 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+        } else if (stp.agentId && last.agentId === undefined) {
+          // A tagged step continuing an untagged block names its author retroactively.
+          last.agentId = stp.agentId
         }
         const step = fmtStep(stp)
         last.steps.push(step)
@@ -1884,11 +1891,9 @@ export default function SessionDetailView() {
                       <div key={`${session.id}:${ti}`} className="flex items-start gap-[9px]">
                         <span className="av h-[26px] w-[26px] flex-none rounded-md">
                           <AgentIconView
-                            icon={
-                              (turn.agentId ? agents.find((a) => a.id === turn.agentId) : owner)?.icon ?? owner?.icon
-                            }
+                            icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
                             runtime={
-                              (turn.agentId ? agents.find((a) => a.id === turn.agentId)?.runtime : undefined) ??
+                              (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
                               (agentRuntime || turn.model)
                             }
                             size={26}
