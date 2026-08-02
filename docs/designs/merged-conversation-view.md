@@ -62,9 +62,10 @@ Non-goals (v1):
 - **No conversation-level ACL.** There is no new shareable object; each
   transcript source is authorized independently by the existing session read
   policy (§7).
-- **No removal of per-agent session pages.** They remain the drill-down/debug
-  view (and the only view for single-agent sessions, which are the vast
-  majority). The merged view links to them and back.
+- **Per-agent session pages survive only where they are the conversation.**
+  Single-agent sessions (the vast majority) keep today's page. For
+  multi-participant conversations the per-agent page is no longer surfaced
+  anywhere; existing deep links redirect to the merged page (§5.3).
 - **No Telegram/Discord/Feishu adapters yet.** They are shaped like the Slack
   adapter (platform-assigned ordering coordinate, emergent roster) and can
   follow it mechanically once it exists.
@@ -147,12 +148,18 @@ that model (and its theoretical cross-workspace channel-id collision, which is
 pre-existing and unobserved) rather than inventing a stricter identity only on
 the read side.
 
-### 5.2 Grouped sessions list
+### 5.2 Grouped list is the default
 
-`GET /sessions` gains `group=conversation`. Instead of raw session rows it
-returns one row per conversation, aggregated over the same visibility-filtered
-row set the flat list uses (a session invisible to the caller is absent from
-the aggregate too):
+`GET /sessions` returns **conversations by default**; `?view=flat` returns
+today's raw session rows. The console passes the same parameter through (a
+list-mode switch, defaulting to grouped). This deliberately changes the
+default response shape of a public REST operation — accepted by product
+decision: console and CP ship on the same train, external consumers pin
+`view=flat`, and the OpenAPI doc describes both shapes on the operation.
+
+The default response is one row per conversation, computed over the same
+visibility-filtered row set the flat list uses (a session invisible to the
+caller never contributes):
 
 ```
 {
@@ -169,11 +176,20 @@ the aggregate too):
 }
 ```
 
-Pagination is by `lastActivityAt` over the aggregate, matching the flat list's
-order. Single-agent conversations (the overwhelming majority) come back as
+Pagination stays newest-first by `lastActivityAt`, and the implementation
+needs **no aggregate query and no new page index** (verified against the
+schema): on the same descending scan the flat list already pages with
+(`session_meta_org_visibility_page_idx`), the FIRST row seen for a conversation
+key is that conversation's `max(lastActivityAt)` — so the grouped page is a
+streaming dedupe over the flat scan until N distinct keys fill the page. The
+page's remaining members then backfill with one `(platform, channel, thread)`
+lookup batch; the existing `@@index([platform, channel])` covers it, extended
+with `thread` at C1 so a busy Slack channel doesn't post-filter thousands of
+rows per lookup.
+
+Single-agent conversations (the overwhelming majority) come back as
 1-participant rows — the web renders those exactly like today's session rows,
-so the grouped mode can simply replace the default list rendering rather than
-adding a toggle.
+so grouped simply IS the list, with no toggle in the default UI.
 
 `hiddenParticipants` requires care: the aggregate must count members that
 exist but are invisible **without leaking which agent** — a bare count is the
@@ -181,15 +197,22 @@ same information the partial-merge notice shows (§7).
 
 ### 5.3 Routes and cross-links
 
-- `/conversations/:key` — the merged page.
+- `/conversations/:key` — the merged page, and **the only surfaced page for a
+  multi-participant conversation**.
 - Sessions list rows link here when `participants.length > 1`, to the
-  per-agent session page otherwise (no behavior change for the common case).
-- The per-agent session page gains a "View conversation" link when its
-  `(platform, channel, thread)` groups more than one session; the merged page
-  links each participant chip to its per-agent session (drill-down).
-- Webchat Playground adoption: when a live multi-agent playground session is
-  reopened after refresh, land on `/conversations/:conversationId` instead of
-  the primary's session page — this is what closes the live/persisted gap.
+  per-agent session page otherwise (for a single-agent session that page IS
+  the conversation page — no change for the common case).
+- Existing `/sessions/:id` deep links (GitHub check footers, shared URLs,
+  crumbs) whose session belongs to a multi-participant conversation
+  **redirect** to `/conversations/:key?focus=<agentId>` — the focus preserves
+  "whose perspective was linked" as scroll/highlight rather than as a
+  different page. Per-agent pages for such conversations are reachable only
+  as this redirect; nothing links to them (product decision).
+- Participant chips link to the agent's page (`/agents/:id`); session-level
+  lineage navigation lifts to the conversation level (§9).
+- Webchat Playground adoption: a live multi-agent playground session reopened
+  after refresh lands on `/conversations/:conversationId` instead of the
+  primary's session page — this is what closes the live/persisted gap.
 
 ## 6. The merge algorithm
 
@@ -267,26 +290,80 @@ session read policy; the merge renders what comes back:
 | Live        | On resume the existing relay socket streams all lanes into the merged canvas — identical to the live Playground (which this page effectively replaces post-refresh) | SWR revalidate / poll, like the session detail today. Streaming deferred to the ACP gateway track.                                                                                               |
 | Typing/busy | per-participant, from existing lane state                                                                                                                           | activity dot from `activityState`, as today                                                                                                                                                      |
 
-## 9. Milestones
+## 9. Conversations and session lineage (parent/child)
+
+Sessions carry a second graph besides the conversation: **lineage** —
+`parentSessionId` edges recorded when one session wakes another via
+`sendMessage`, plus the sibling/child links the session detail route derives
+from them. The two graphs are orthogonal by construction:
+
+- a **conversation groups by location** — sessions sharing a thread ("who is
+  in the room");
+- **lineage links by causation** — who woke whom, freely crossing rooms.
+
+The design connects them at three points:
+
+### 9.1 In-thread wakes are intra-conversation edges
+
+A `sendMessage` in channel/thread form posts into a thread, so the woken
+agent's session shares `(platform, channel, thread)` with the waker — same
+conversation. The merged view already shows both parties in full; the lineage
+edge contributes **attribution, not navigation**: the woken agent's first turn
+can carry a "woken by <agent>" affordance (C3 chrome). Membership neither
+grows nor splits because of the edge.
+
+### 9.2 Cross-conversation edges lift to conversation-level navigation
+
+A DM-form (channel-free) wake creates the child session on its own a2a
+coordinate — its own, usually single-member, conversation. That edge crosses
+conversations, and its navigation today lives on the per-agent session detail
+page (parent/sibling/child links) — a page this design stops surfacing for
+multi-participant conversations. The merged page therefore inherits it at
+conversation level: the union of member sessions' lineage links, each mapped
+to the conversation its target session belongs to, rendered as **"Parent
+conversation"** and **"Delegations"** (child conversations, grouped by the
+waking member). No new CP surface — the member detail DTOs already carry the
+links, and mapping a session to its conversation key is a metadata lookup.
+(C2 ships the links; grouping delegations by waking turn is C3.)
+
+One invariant stays absolute: **lineage never changes membership**. A child
+spawned elsewhere is linked, never merged in — merging by causation would
+break the location-pure dedupe (§6) and blur the structural guarantees around
+context delivery (context frames never activate; a delegation is not a
+participant).
+
+### 9.3 Report-backs surface naturally
+
+A child's `sessionId`-form reply to its parent is delivered only into the
+parent session's transcript. In the merged view it appears exactly once (it
+exists in exactly one source), attributed to the child agent inside the
+parent's conversation — the union needs no special casing. Cron / hook /
+headless sessions are ordinary single-member conversations and keep their
+lineage links unchanged.
+
+## 10. Milestones
 
 Per the product decision, **webchat and Slack ship together in each milestone**
 — the platform-neutral core is the point, and building webchat-only first is
 how divergence starts.
 
-- **C1 — grouped sessions list.** CP `group=conversation` aggregate +
-  grouped list rendering (participant avatar stack, single row per
-  conversation, both platforms). Cheapest milestone, fixes the most visible
-  confusion (N rows per conversation).
+- **C1 — grouped sessions list.** CP grouped-by-default list with the
+  `view=flat` escape hatch (desc-scan dedupe + member backfill, §5.2), the
+  `(platform, channel)` index extended with `thread`, grouped rendering
+  (participant avatar stack, single row per conversation, both platforms).
+  Cheapest milestone, fixes the most visible confusion (N rows per
+  conversation).
 - **C2 — merged page.** `conversation-merge.ts` (union/dedupe/order, unit
   tests over both adapters' fixtures), `/conversations/:key` route, renderer
-  reuse, partial-merge notices, cross-links from/to per-agent pages. Webchat
+  reuse, partial-merge notices, session→conversation deep-link redirects
+  (`?focus=<agentId>`), conversation-level lineage links (§9.2). Webchat
   composer wired through the existing adoption path; Slack read-only with
   deep link. Playground refresh lands here.
 - **C3 — polish.** Conversation-level usage roll-up (sum of member sessions),
   "load earlier" cross-source paging, mobile pass, default-collapsed work
   lanes for non-focused participants.
 
-## 10. Alternatives considered
+## 11. Alternatives considered
 
 - **CP-side merge endpoint** — rejected in v1 (§4): moves the CP toward the
   content plane and duplicates per-source authorization. Revisit only if
@@ -303,14 +380,23 @@ how divergence starts.
   adapters are what keep the core honest; Slack is also the higher-value
   debugging surface (multi-bot ops threads).
 
-## 11. Open questions
+## 12. Decision log
 
-1. Should the grouped list become the only list mode (single-participant rows
-   render as today), or ship behind a toggle first? (Design assumes: replace,
-   no toggle — §5.2.)
-2. `group=conversation` aggregate cost on large orgs — needs an index over
-   `(orgId, platform, channel, thread, lastActivityAt)`; verify against the
-   existing list indexes before C1.
-3. Does the per-agent page's composer stay on multi-agent webchat
-   conversations, or point users to the merged page? (Design assumes: stays —
-   it already routes correctly post-#409/#414.)
+1. **Grouped list replaces the flat list as the default.** `GET /sessions`
+   returns conversations; `view=flat` (a UI parameter passed through to the
+   CP) returns raw session rows. Accepted as a deliberate change to the
+   operation's default response shape.
+2. **Index question resolved — no new aggregate index.** Newest-first
+   conversation paging falls out of the existing
+   `session_meta_org_visibility_page_idx` descending scan (first occurrence
+   of a key = the conversation's max activity); member backfill extends
+   `@@index([platform, channel])` with `thread` at C1.
+3. **Per-agent session pages are not surfaced for multi-participant
+   conversations.** Every entry point leads to the merged page; existing
+   session deep links redirect with `?focus=<agentId>`; the conversation
+   composer exists only on the merged page.
+4. **Webchat and Slack adapters ship together** in every milestone — the
+   platform-neutral core is the point.
+5. **Lineage never changes conversation membership** — parent/child edges are
+   linked (attribution in-thread, navigation across conversations), never
+   merged (§9).
