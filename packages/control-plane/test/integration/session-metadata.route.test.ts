@@ -225,7 +225,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect((res.json() as { endedAt: string | null }).endedAt).not.toBeNull()
   })
 
-  it('returns parent and child session links from daemon-reported lineage', async () => {
+  it('returns parent, sibling, and child session links from daemon-reported lineage', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     running = buildHttpApp(prisma)
@@ -263,6 +263,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       (
         parentRes.json() as {
           parentSession: unknown
+          siblingSessions: unknown[]
           childSessions: Array<{ id: string; platform: string; title: string | null }>
         }
       ).childSessions
@@ -271,6 +272,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       { id: secondChild, agentId: AGENT, platform: 'discord', title: 'Check the API' }
     ])
     expect((parentRes.json() as { parentSession: unknown }).parentSession).toBeNull()
+    expect((parentRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([])
 
     const childRes = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${firstChild}` })
     expect(childRes.statusCode).toBe(200)
@@ -283,6 +285,9 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       platform: 'slack',
       title: 'Coordinate the rollout'
     })
+    expect((childRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([
+      { id: secondChild, agentId: AGENT, platform: 'discord', title: 'Check the API' }
+    ])
     expect((childRes.json() as { childSessions: unknown[] }).childSessions).toEqual([])
   })
 
