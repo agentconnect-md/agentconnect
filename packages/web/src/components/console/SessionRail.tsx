@@ -1,10 +1,20 @@
 // The session detail page's left rail: the open session's direct family (parent,
 // siblings, and children), globally pinned shortcuts, then the other sessions of
 // the CURRENT agent. Family rows stay in their tree even when pinned and are
-// removed from the ordinary list below, so lineage never appears twice. The rail
-// only appears when there is another session to navigate to and only on desktop —
+// removed from the ordinary list below, so lineage never appears twice. Rows only
+// appear when there is another session to navigate to, and only on desktop —
 // ≤768px uses the relation card in SessionDetailView plus the Shell app bar's back
 // affordance.
+//
+// The COLUMN, though, is unconditional above the breakpoint (SessionRailSlot). The
+// detail body is centred in whatever horizontal space the rail leaves it, so any
+// state-dependent column is a layout shift waiting for its trigger: the rail's list
+// is a round-trip behind the session, so an emptiable column collapses on first
+// paint and shoves the transcript 125px sideways when the rows land — and the same
+// jump fires again on every rail click that crosses from a busy agent to a quiet
+// one, since this view survives navigation rather than remounting. Holding the
+// column costs a rail-less session an empty gutter; it buys a body whose position
+// is a constant of the route.
 //
 // A row is the owning integration's platform mark (Slack / Telegram / … ) plus the
 // title, and nothing else: at 224px a per-row timestamp crowds out the one thing
@@ -67,6 +77,15 @@ interface RailRow {
 }
 
 const EMPTY_RELATIONS: SessionRelationDto[] = []
+
+/**
+ * The rail's footprint with nothing in it — the shape every session detail state
+ * holds so the body beside it never moves. Used by the loading and not-found
+ * branches, which have no rail to draw, and by a rail with no rows worth drawing.
+ */
+export function SessionRailSlot() {
+  return <div aria-hidden="true" className="hidden w-[224px] flex-none desktop:block" />
+}
 
 export function SessionRail({
   sessions,
@@ -196,14 +215,20 @@ export function SessionRail({
   // no server pass whose clock could disagree.
   const groups = useMemo(() => groupSessionsByAge(rest, new Date()), [rest])
 
-  // A rail that would only show the session already on screen is noise. Direct
-  // lineage still makes it useful when the current agent itself has one session.
-  // A filter the reader chose is the exception: hiding the rail would take the
-  // filter control away with it, leaving no way back to a wider list. That has to
-  // come from `filterTouched` and not from comparing `agentIds` against the open
-  // session — filtering to agent B and then opening B's only session lands on a
-  // filter that LOOKS like the default while still being the reader's own.
-  if (Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched) return null
+  // A rail that would only show the session already on screen is noise, so it draws
+  // nothing — but it still holds its column, because a body that re-centres is worse
+  // noise than an empty gutter (see the header). Direct lineage keeps the rows worth
+  // drawing when the current agent itself has one session. A filter the reader chose
+  // is the exception: emptying the rail would take the filter control away with it,
+  // leaving no way back to a wider list. That has to come from `filterTouched` and
+  // not from comparing `agentIds` against the open session — filtering to agent B
+  // and then opening B's only session lands on a filter that LOOKS like the default
+  // while still being the reader's own.
+  //
+  // This test is also true while the rail's page is still in flight, since `rows` is
+  // the open session alone until it lands. Same answer either way: hold the column,
+  // fill it when there is something to fill it with.
+  if (Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched) return <SessionRailSlot />
 
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)

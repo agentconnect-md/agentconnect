@@ -7,7 +7,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
 } from 'react'
 import Link from 'next/link'
 import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
@@ -83,7 +84,7 @@ import { WORK_LANES, toggleWorkPanel, workCounts, workPanelOpen, workSummary } f
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { useCrumbSlot } from '@/components/console/Shell'
-import { SessionRail } from '@/components/console/SessionRail'
+import { SessionRail, SessionRailSlot } from '@/components/console/SessionRail'
 import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
@@ -842,6 +843,23 @@ function MobileSessionFamilyLinks({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Every state this view can render that is not the session itself — loading, and
+ * both not-found bodies — drawn on the SAME track the loaded page uses: the 1180px
+ * wrap, the rail's column, then the 880px body. The route has one body position and
+ * this is how the states that have no rail to draw still honour it; centring them in
+ * the bare wrap instead would put each of them 125px left of the transcript that
+ * replaces them.
+ */
+function SessionDetailFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="wrap flex min-h-full items-stretch gap-[26px]">
+      <SessionRailSlot />
+      <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:p-4">{children}</div>
     </div>
   )
 }
@@ -1725,9 +1743,9 @@ export default function SessionDetailView() {
   // preserving whose perspective was linked as ?focus.
   if (!conversationKey && selfConversationRedirect) {
     return (
-      <div className="wrap max-w-[880px] max-desktop:p-4">
+      <SessionDetailFrame>
         <LoadingState fill />
-      </div>
+      </SessionDetailFrame>
     )
   }
   // `undefined` = first fetch in flight; `null` = the resolver ANSWERED empty
@@ -1743,15 +1761,15 @@ export default function SessionDetailView() {
       (conversationRoster === null && !conversationUnresolved))
   ) {
     return (
-      <div className="wrap max-w-[880px] max-desktop:p-4">
+      <SessionDetailFrame>
         <LoadingState fill />
-      </div>
+      </SessionDetailFrame>
     )
   }
   if (conversationKey && (conversationError || !conversationRoster || conversationRoster.sessions.length === 0)) {
     // conversationError, a grace-expired null, or a resolved-but-empty roster.
     return (
-      <div className="wrap max-w-[880px] max-desktop:p-4">
+      <SessionDetailFrame>
         <NotFound
           icon="message-square-off"
           kind="CONVERSATION"
@@ -1762,41 +1780,44 @@ export default function SessionDetailView() {
           actionLabel="Back to sessions"
           actionHref={orgPath('/sessions')}
         />
-      </div>
+      </SessionDetailFrame>
     )
   }
 
   if (!session) {
     // Shell owns detail navigation at both breakpoints; this branch only renders the
     // loading or not-found body.
-    return (
-      <div className="wrap max-w-[880px] max-desktop:p-4">
-        {/* Still pulling the sessions list — it's not "not found" until that settles. */}
-        {sessionsLoading || (detailId !== null && sessionDetailLoading) ? (
+    // Still pulling the sessions list — it's not "not found" until that settles.
+    if (sessionsLoading || (detailId !== null && sessionDetailLoading)) {
+      return (
+        <SessionDetailFrame>
           <LoadingState fill />
-        ) : (
-          <NotFound
-            icon="message-square-off"
-            kind="SESSION"
-            title="Session not found"
-            pre="No session "
-            chip={id}
-            post=" in this organization. It may have expired or been deleted."
-            actionLabel="Back to sessions"
-            actionHref={orgPath('/sessions')}
-            secondaryAction={
-              showProfileLink && profileLinkProviderName
-                ? {
-                    label: `Link ${profileLinkProviderName} profile`,
-                    href: orgPath('/profile#sign-in-methods'),
-                    icon: 'link'
-                  }
-                : undefined
-            }
-            showSearch={false}
-          />
-        )}
-      </div>
+        </SessionDetailFrame>
+      )
+    }
+    return (
+      <SessionDetailFrame>
+        <NotFound
+          icon="message-square-off"
+          kind="SESSION"
+          title="Session not found"
+          pre="No session "
+          chip={id}
+          post=" in this organization. It may have expired or been deleted."
+          actionLabel="Back to sessions"
+          actionHref={orgPath('/sessions')}
+          secondaryAction={
+            showProfileLink && profileLinkProviderName
+              ? {
+                  label: `Link ${profileLinkProviderName} profile`,
+                  href: orgPath('/profile#sign-in-methods'),
+                  icon: 'link'
+                }
+              : undefined
+          }
+          showSearch={false}
+        />
+      </SessionDetailFrame>
     )
   }
 
@@ -2315,8 +2336,10 @@ export default function SessionDetailView() {
   // max-desktop:), never JS-forked.
   return (
     // `.wrap` (1180px) is the outer track so the sibling-session rail can sit beside
-    // the 880px body. With no rail the body is still an 880px block centred in that
-    // track — geometrically identical to when it was the wrap itself.
+    // the 880px body. The rail always occupies its column above the breakpoint, even
+    // with no rows to show, so this is the one position the body ever takes. Keep the
+    // row in step with SessionDetailFrame, which draws the same two columns for every
+    // state that precedes or replaces a session.
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
       <SessionRail
         sessions={railSessions}
