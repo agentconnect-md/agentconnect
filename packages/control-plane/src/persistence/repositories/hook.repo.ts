@@ -2299,12 +2299,23 @@ export class PgHookRepo implements HookRepo {
         )
       }
       const nextGeneration = current.generation + 1n
+      const detachCompletedCheck =
+        input.currentHookRunId !== undefined &&
+        input.currentHookRunId !== null &&
+        current.observedState !== null &&
+        isTerminalProjectionState(current.observedState)
       return toProjectionRecord(
         await tx.hookReviewProjection.update({
           where: { id: current.id },
           data: {
             generation: nextGeneration,
             currentHookRunId: input.currentHookRunId ?? null,
+            // GitHub keeps a completed Check Run terminal even when a later
+            // PATCH asks for queued/in_progress. A new HookRun therefore owns
+            // a fresh Check Run after a terminal result. An overlapping active
+            // generation keeps its incomplete run instead of orphaning it;
+            // tombstone-only generations also keep the id for cleanup.
+            ...(detachCompletedCheck ? { checkRunId: null } : {}),
             agentName: input.agentName,
             repoFullName: input.repoFullName,
             headSha: input.headSha,
@@ -2656,11 +2667,17 @@ export class PgHookRepo implements HookRepo {
           })
         : null
       const nextGeneration = generation + 1n
+      const detachCompletedCheck =
+        currentHookRunId !== null && current.observedState !== null && isTerminalProjectionState(current.observedState)
       const next = await tx.hookReviewProjection.updateMany({
         where: { id: projectionId, generation, writePhase: null, writeMarker: null },
         data: {
           generation: nextGeneration,
           desiredState,
+          // A pending HookRun after a terminal write needs a fresh GitHub
+          // lifecycle. Active supersession and cleanup intents continue
+          // updating the existing incomplete/cleanup Check instead.
+          ...(detachCompletedCheck ? { checkRunId: null } : {}),
           ...(isTerminalProjectionState(desiredState) ? { sealedThrough: nextGeneration } : {}),
           observedState: null,
           nextAttemptAt,

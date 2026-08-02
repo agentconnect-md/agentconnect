@@ -599,6 +599,7 @@ describe('R1/R2a persistence foundation', () => {
     ).toMatchObject({
       generation: pending.generation + 1n,
       desiredState: 'failure',
+      checkRunId: '90071992547409936',
       nextAttemptAt: failedAt,
       tombstonedAt: neutralAt
     })
@@ -757,6 +758,10 @@ describe('R1/R2a persistence foundation', () => {
     expect(new Set(projections.map((projection) => projection.id)).size).toBe(1)
     expect(projections.map((projection) => projection.generation)).toEqual(Array<bigint>(8).fill(1n))
     expect(await prisma.hookReviewProjection.count({ where: { hookId, repoId: input.repoId, reportSha } })).toBe(1)
+    await prisma.hookReviewProjection.update({
+      where: { id: projections[0]!.id },
+      data: { checkRunId: '90071992547409931', observedState: 'skipped' }
+    })
 
     expect(
       await repo.recordDelivery(hookId, {
@@ -767,15 +772,80 @@ describe('R1/R2a persistence foundation', () => {
     ).toBe(true)
     const newerRun = await repo.getRun(hookId, 'concurrent-delivery-2')
     expect(newerRun).not.toBeNull()
+    const newerProjection = await repo.upsertReviewProjection({
+      ...input,
+      currentHookRunId: newerRun!.id
+    })
+    expect(newerProjection).toMatchObject({
+      id: projections[0]!.id,
+      generation: 2n,
+      currentHookRunId: newerRun!.id,
+      checkRunId: null
+    })
+
+    // The same detach happens when the next rerun arrived while an older
+    // generation still had a GitHub write in flight.
+    const leaseOwner = 'concurrent-worker'
+    const marker = randomUUID()
+    await prisma.hookReviewProjection.update({
+      where: { id: newerProjection.id },
+      data: {
+        checkRunId: '90071992547409932',
+        observedState: 'skipped',
+        leaseOwner,
+        leaseUntil: new Date('2026-07-11T00:01:00.000Z')
+      }
+    })
+    expect(
+      await repo.beginProjectionWrite(
+        newerProjection.id,
+        newerProjection.generation,
+        leaseOwner,
+        marker,
+        'update',
+        new Date('2026-07-11T00:00:02.000Z')
+      )
+    ).toBe(true)
+    expect(
+      await repo.recordDelivery(hookId, {
+        ...accepted,
+        deliveryKey: 'concurrent-delivery-3',
+        firedAt: new Date('2026-07-11T00:00:03.000Z')
+      })
+    ).toBe(true)
+    const pendingRun = await repo.getRun(hookId, 'concurrent-delivery-3')
+    expect(pendingRun).not.toBeNull()
     expect(
       await repo.upsertReviewProjection({
         ...input,
-        currentHookRunId: newerRun!.id
+        currentHookRunId: pendingRun!.id,
+        nextAttemptAt: new Date('2026-07-11T00:00:03.000Z')
       })
     ).toMatchObject({
-      id: projections[0]!.id,
-      generation: 2n,
-      currentHookRunId: newerRun!.id
+      generation: newerProjection.generation,
+      checkRunId: '90071992547409932',
+      pendingIntent: expect.objectContaining({ currentHookRunId: pendingRun!.id })
+    })
+    expect(
+      await repo.completeProjectionWrite({
+        projectionId: newerProjection.id,
+        generation: newerProjection.generation,
+        leaseOwner,
+        writeMarker: marker,
+        observedState: 'skipped',
+        checkRunId: '90071992547409932'
+      })
+    ).toBe(true)
+    expect(
+      await repo.advancePendingReviewProjection(
+        newerProjection.id,
+        newerProjection.generation,
+        new Date('2026-07-11T00:00:03.000Z')
+      )
+    ).toMatchObject({
+      generation: newerProjection.generation + 1n,
+      currentHookRunId: pendingRun!.id,
+      checkRunId: null
     })
   })
 
