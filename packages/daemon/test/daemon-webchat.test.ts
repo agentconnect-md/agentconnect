@@ -56,13 +56,22 @@ function writeAgent(root: string, agentExtra?: Record<string, unknown>): void {
  *  `opts.usage` is returned from prompt() with adapter-owned fold semantics. */
 function streamingHost(
   updates: unknown[],
-  opts: { stopReason?: string; model?: string; models?: string[]; usage?: Record<string, number> } = {}
+  opts: {
+    stopReason?: string
+    model?: string
+    models?: string[]
+    usage?: Record<string, number>
+    initialUpdates?: unknown[]
+  } = {}
 ) {
-  const { stopReason = 'end_turn', model, models, usage } = opts
+  const { stopReason = 'end_turn', model, models, usage, initialUpdates = [] } = opts
   let onUpdate!: (sid: string, u: unknown) => void
   const host = {
     start: vi.fn(async () => {}),
-    newSession: vi.fn(async () => 'acp-wc-1'),
+    newSession: vi.fn(async () => {
+      for (const update of initialUpdates) onUpdate('acp-wc-1', update)
+      return 'acp-wc-1'
+    }),
     modelOptions: vi.fn(() => (model ? { current: model, models: models ?? [model] } : null)),
     hasSession: vi.fn(() => true),
     setSessionModel: vi.fn(async () => true),
@@ -270,6 +279,40 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // …and the persisted list row (the record) carries the same title (latest wins).
     const list = (daemon as any).store.listSessions(AGENT_ID) as { title: string | null }[]
     expect(list[0]?.title).toBe('Roll back the deploy')
+    await daemon.stop()
+  }, 15_000)
+
+  it('streams a session title emitted during session initialization', async () => {
+    const { factory } = streamingHost([text('done')], {
+      initialUpdates: [sessionInfo('Inspect startup state')]
+    })
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    await (daemon as any).dispatch(
+      AGENT_ID,
+      {
+        msgId: `webchat:${CONV}`,
+        traceId: turnId,
+        source: 'user' as const,
+        platform: 'webchat' as const,
+        channel: CONV,
+        sender: { id: 'alice', isBot: false },
+        text: 'go',
+        mentionedBots: [] as string[],
+        isDm: true,
+        trigger: 'dm' as const
+      },
+      undefined,
+      { conversationId: CONV, turnId, sink: cp.sink }
+    )
+
+    expect(cp.outputs.filter((output) => output.event).map((output) => output.event)).toEqual([
+      { kind: 'session_info', title: 'Inspect startup state' },
+      { kind: 'message', text: 'done' }
+    ])
     await daemon.stop()
   }, 15_000)
 

@@ -9931,13 +9931,13 @@ export class Daemon {
         this.refreshObservedChannels()
       }
     }
-    this.finishSessionInitialization(agentId, sessionId)
     try {
       onSessionReady?.(sessionId)
     } catch (err) {
       this.log.warn(`dispatch: session-ready notification failed (${formatErr(err)})`)
     }
     if (handled.initializedOnly) {
+      this.finishSessionInitialization(agentId, sessionId)
       this.showActivity(replyConn, msg.channel, statusThread, '')
       releaseReplyConn()
       this.log.info(`dispatch: initialized session ${key} from self-authored channel root without a model turn`)
@@ -10013,6 +10013,10 @@ export class Daemon {
         : {})
     }
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
+    // session/new|load may emit title/usage metadata before the local row exists.
+    // Replay only after Pending owns the live sink so persisted and streamed state
+    // converge in the same turn instead of requiring a browser refresh.
+    this.finishSessionInitialization(agentId, sessionId)
     // §6.7 active-turn context: expose THIS turn's trusted callMeta by logical sessionKey so
     // a nested messageAgent made during the turn can auto-inherit hop/origin + reply-correlation.
     if (callMeta) this.activeTurnCallMeta.set(key, callMeta)

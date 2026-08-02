@@ -8,7 +8,9 @@ import {
   MOCK_MODE,
   PLAYGROUND_CHANNEL_FILTER,
   agentLabel,
+  canonicalSessionId,
   enrichSessionWithAgent,
+  mergeCanonicalSessions,
   platName,
   sessionChannelDisplay,
   sessionChannelFilterValue,
@@ -155,12 +157,7 @@ export default function SessionsView() {
   // Live playground sessions, the filtered CP page chain, and demo rows share
   // one timeline. A real ACP id replaces its temporary playground row.
   const sessions = useMemo<Session[]>(() => {
-    const byId = new Map<string, Session>()
-    for (const session of [...localSessions, ...filteredServerSessions]) {
-      const id = session.realSessionId ?? session.id
-      if (!byId.has(id)) byId.set(id, session)
-    }
-    return [...byId.values()]
+    return mergeCanonicalSessions([...filteredServerSessions, ...localSessions])
       .map((s, index) => ({ s, index }))
       .sort((a, b) => {
         const at = activityMs(a.s)
@@ -179,7 +176,7 @@ export default function SessionsView() {
   }, [params])
   const sessionHref = useCallback(
     (session: Session) => {
-      const id = session.realSessionId ?? session.id
+      const id = canonicalSessionId(session)
       const query = new URLSearchParams(filterQuery)
       const provider = sessionPlatform(session)
       if (provider === 'slack' || provider === 'github') query.set('source', provider)
@@ -379,9 +376,7 @@ export default function SessionsView() {
 
   const filtered = sessions
   const loadedServerIds = new Set(sessionList.sessions.map((session) => session.id))
-  const localOnlyCount = localSessions.filter(
-    (session) => !loadedServerIds.has(session.realSessionId ?? session.id)
-  ).length
+  const localOnlyCount = localSessions.filter((session) => !loadedServerIds.has(canonicalSessionId(session))).length
   const totalCount = sessionList.total + localOnlyCount
   const filtActive = !(fAgent === 'all' && fInt === 'all' && fChannel === 'all' && fTrigger === 'all')
   const initialLoading = sessionList.isLoading && sessions.length === 0

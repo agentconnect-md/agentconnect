@@ -500,7 +500,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   conversationIds.current.set(id, m.conversationId)
                   setPgSessions((current) => {
                     const session = current[id]
-                    return session ? { ...current, [id]: { ...session, channel: m.conversationId! } } : current
+                    return session ? { ...current, [id]: { ...session, channelId: m.conversationId! } } : current
                   })
                 }
                 if (resumeStream && busyRef.current[id]) {
