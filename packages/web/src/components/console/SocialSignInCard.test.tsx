@@ -47,7 +47,13 @@ function RevalidateAccount() {
   )
 }
 
-async function renderCard() {
+async function renderCard({
+  autoLinkTarget,
+  onAutoLinkHandled = vi.fn()
+}: {
+  autoLinkTarget?: 'github'
+  onAutoLinkHandled?: () => void
+} = {}) {
   const cache = new Map()
   container = document.createElement('div')
   document.body.append(container)
@@ -62,7 +68,7 @@ async function renderCard() {
           shouldRetryOnError: true
         }}
       >
-        <SocialSignInCard onNotice={vi.fn()} />
+        <SocialSignInCard onNotice={vi.fn()} autoLinkTarget={autoLinkTarget} onAutoLinkHandled={onAutoLinkHandled} />
         <RevalidateAccount />
       </SWRConfig>
     )
@@ -172,6 +178,29 @@ describe('SocialSignInCard account state', () => {
 
     expect(container?.querySelector('[role="dialog"]')).toBeNull()
     expect(resolveMySocialConnectorId).toHaveBeenCalled()
+  })
+
+  it('continues a verified install through linking only when GitHub is unlinked', async () => {
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({ identities: [], hasSecurityVerificationMethod: false })
+    const onAutoLinkHandled = vi.fn()
+
+    await renderCard({ autoLinkTarget: 'github', onAutoLinkHandled })
+    await waitUntil(() => vi.mocked(resolveMySocialConnectorId).mock.calls.length === 1)
+
+    expect(onAutoLinkHandled).toHaveBeenCalledOnce()
+  })
+
+  it('does not reauthorize GitHub when the installed app user already linked it', async () => {
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [{ target: 'github', userId: 'github-user', name: 'Phil Z' }],
+      hasSecurityVerificationMethod: false
+    })
+    const onAutoLinkHandled = vi.fn()
+
+    await renderCard({ autoLinkTarget: 'github', onAutoLinkHandled })
+    await waitUntil(() => onAutoLinkHandled.mock.calls.length === 1)
+
+    expect(resolveMySocialConnectorId).not.toHaveBeenCalled()
   })
 
   it('skips the code dialog for a second link while the ownership proof is fresh', async () => {
