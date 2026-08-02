@@ -289,6 +289,7 @@ async function main(): Promise<void> {
     relayId: () => client.relayId,
     clock: systemClock,
     onChat: (chat) => router.deliver(chat),
+    onWebchatPost: (post) => router.deliverPost(post),
     onAgentMsg: (fromDaemonId, msg) => routeAgentMsg(fromDaemonId, msg),
     log
   })

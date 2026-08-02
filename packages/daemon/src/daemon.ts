@@ -5240,7 +5240,7 @@ export class Daemon {
       return { accepted: false, turnId, reason: 'busy' }
     }
     this.pruneWebchatStreams()
-    if (this.webchatStreams.has(turnId)) {
+    if (this.webchatStreams.has(this.webchatStreamKey(turnId, result.agentId))) {
       return { accepted: false, turnId, reason: 'busy' }
     }
     const initialRuntime =
@@ -5265,6 +5265,13 @@ export class Daemon {
    *  (channel = conversationId, statusThread = the stable `webchat:<id>` msgId, no thread). */
   private webchatSessionKey(conversationId: string, agentId: string): string {
     return sessionKey('webchat', conversationId, `webchat:${conversationId}`, agentId)
+  }
+
+  /** Replay-window key: one browser turn fans out to N participants, and two of
+   *  them may be co-hosted on THIS daemon — each (turnId, agentId) pair owns its
+   *  own stream (webchat-multi-agents.md §5.3). */
+  private webchatStreamKey(turnId: string, agentId: string): string {
+    return `${turnId}:${agentId}`
   }
 
   /** Wrap the turn's relay-bound transport with daemon-owned bounded replay. The
@@ -5297,7 +5304,7 @@ export class Daemon {
       replayDisabled: false,
       lastOutputIndex: -1
     }
-    this.webchatStreams.set(turnId, stream)
+    this.webchatStreams.set(this.webchatStreamKey(turnId, agentId), stream)
     this.pruneWebchatStreams()
     return stream
   }
@@ -5359,7 +5366,7 @@ export class Daemon {
     transport: WebchatSink
   ): { accepted: boolean; turnId?: string; reason?: string } {
     this.pruneWebchatStreams()
-    const stream = this.webchatStreams.get(turnId)
+    const stream = this.webchatStreams.get(this.webchatStreamKey(turnId, agentId))
     if (!stream || stream.agentId !== agentId || stream.conversationId !== conversationId) {
       return { accepted: false, reason: 'stream_not_found' }
     }
@@ -5387,8 +5394,8 @@ export class Daemon {
     return { accepted: true, turnId: stream.turnId }
   }
 
-  private removeWebchatStream(turnId: string, stream: WebchatTurnStream): void {
-    this.webchatStreams.delete(turnId)
+  private removeWebchatStream(streamKey: string, stream: WebchatTurnStream): void {
+    this.webchatStreams.delete(streamKey)
     stream.replayDisabled = true
     stream.replay = []
     stream.replayBytes = 0
@@ -5396,9 +5403,9 @@ export class Daemon {
 
   private pruneWebchatStreams(): void {
     const now = this.clock.now()
-    for (const [turnId, stream] of this.webchatStreams) {
+    for (const [streamKey, stream] of this.webchatStreams) {
       if (stream.completedAt !== undefined && now - stream.completedAt > WEBCHAT_REPLAY_TTL_MS) {
-        this.removeWebchatStream(turnId, stream)
+        this.removeWebchatStream(streamKey, stream)
       }
     }
     while (this.webchatStreams.size > WEBCHAT_REPLAY_MAX_STREAMS) {

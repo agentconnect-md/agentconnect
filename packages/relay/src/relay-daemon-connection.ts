@@ -25,6 +25,7 @@ import {
   type RdAgentMsgFwd,
   type RdAgentMsgAck,
   type RdChat,
+  type RdWebchatPost,
   type RcVerifyResult,
   type ErrorCode
 } from '@agentconnect.md/protocol'
@@ -51,6 +52,10 @@ export interface RelayDaemonConnDeps {
   onClosed: (daemonId: string, conn: RelayDaemonConnection) => void
   /** Route an inbound `rd/chat` (agent reply chunk) back to the browser for its `chatId`. */
   onChat: (chat: RdChat) => void
+  /** Route an inbound `rd/webchat-post` (a participant's completed reply post) to the
+   *  conversation's browser connection, which renders it and fans the context copies
+   *  to the other participants' daemons (webchat-multi-agents.md §5.2). */
+  onWebchatPost: (post: RdWebchatPost) => void
   /** Route an inbound cross-daemon `rd/agentmsg` (agent-collaboration §2.3/§6.2). The
    *  socket's AUTHENTICATED `daemonId` is passed in (NOT the frame's untrusted
    *  `claimedFromAgentId`) — the router binds the request to it, validates/authorizes
@@ -134,6 +139,10 @@ export class RelayDaemonConnection {
           // Agent reply chunk → route to the browser owning this chatId.
           this.deps.onChat(frame.payload)
           return
+        case 'rd/webchat-post':
+          // Completed reply post → browser render + context fan-out.
+          this.deps.onWebchatPost(frame.payload)
+          return
         case 'rd/agentmsg': {
           // Cross-daemon agent-call REQ (§2.3/§6.2). Bind to the AUTHENTICATED daemonId —
           // NEVER the frame's untrusted claimedFromAgentId. The router validates +
@@ -162,7 +171,8 @@ export class RelayDaemonConnection {
       case 'AUTHENTICATING':
         return type === 'rd/hello'
       case 'READY':
-        return type === 'rd/chat' || type === 'rd/agentmsg' // rd/ack + rd/agentmsg/ack settle above
+        // rd/ack + rd/agentmsg/ack settle above
+        return type === 'rd/chat' || type === 'rd/webchat-post' || type === 'rd/agentmsg'
       default:
         return false
     }

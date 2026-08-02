@@ -85,6 +85,9 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
         return refuse(socket, 401, 'Unauthorized')
       }
       const user = result.user ?? 'webchat'
+      // The verified roster (webchat-multi-agents.md §6.2). A pre-roster CP omits
+      // it — degrade to the singular primary binding (the single-agent shape).
+      const participants = result.participants?.length ? result.participants : [{ agentId, daemonId, primary: true }]
 
       wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {
         trackAlive(raw)
@@ -92,9 +95,10 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
         new RelayBrowserConnection(new WsServerTransport(raw, remoteAddr), {
           chatId: conversationId,
           agentId,
+          participants,
           user,
           ...(result.remoteMcp ? { remoteMcp: result.remoteMcp } : {}),
-          daemonConn: () => deps.daemons.get(daemonId),
+          daemonConnFor: (id) => deps.daemons.get(id),
           register: (c, sink) => deps.router.register(c, sink),
           unregister: (c, sink) => deps.router.unregister(c, sink),
           log: deps.log
