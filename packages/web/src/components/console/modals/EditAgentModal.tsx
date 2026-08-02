@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   approvalsReviewerDefault,
-  approvalsReviewerOptions,
   effortChoicesFor,
   effortField,
   effortLabel,
@@ -18,8 +17,10 @@ import {
   permissionModeChoicesFor,
   permissionModeDefault,
   permissionModeLabel,
+  permissionModePresets,
+  permissionPresetSettings,
   runtimeLabel,
-  supportsApprovalsReviewer,
+  selectedPermissionPreset,
   supportsModes,
   agentLabel,
   type Agent,
@@ -369,15 +370,15 @@ export default function EditAgentModal({
   const fastModeAvailable = fastModeAvailableFor(runtime, capability)
   const permissionChoices = permissionModeChoicesFor(runtime, modelCatalog)
   const showPermission = !!modelCatalog?.permissionModes?.length || runtimeSupportsModes
-  const permissionOptions =
+  const permissionModeOptions =
     modelCatalog?.permissionModes?.length && !permissionChoices.some((o) => o.v === permissionMode)
       ? [
           ...permissionChoices,
           { v: permissionMode, l: `${permissionModeLabel(runtime, permissionMode)} (unavailable)` }
         ]
       : permissionChoices
-  const showApprovalsReviewer = supportsApprovalsReviewer(runtime)
-  const approvalsReviewerChoices = approvalsReviewerOptions(runtime)
+  const permissionOptions = permissionModePresets(runtime, permissionModeOptions)
+  const selectedPermissionModePreset = selectedPermissionPreset(runtime, permissionMode, approvalsReviewer)
   const runtimeUnavailable = daemonChanged && reportedRuntimeIds.length > 0 && !reportedRuntimeIds.includes(runtime)
   const modelUnavailable =
     daemonChanged && !!selectedModel && reportedModels.length > 0 && !reportedModels.includes(selectedModel)
@@ -789,7 +790,7 @@ export default function EditAgentModal({
             <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
               <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
               <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-                {(showEffort || fastModeAvailable || showPermission || showApprovalsReviewer) && (
+                {(showEffort || fastModeAvailable || showPermission) && (
                   <div className="fld desktop:col-span-2">
                     <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
                       {showEffort && (
@@ -842,40 +843,22 @@ export default function EditAgentModal({
                       {showPermission && (
                         <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
                           <span className="fldlbl">Permission mode</span>
-                          <div className="pillbar self-start">
+                          <div className="pillbar max-w-full overflow-x-auto self-start">
                             {permissionOptions.map((o) => (
                               <button
                                 key={o.v}
                                 type="button"
                                 title={o.description}
                                 className={
-                                  permissionMode === o.v
-                                    ? 'pill on px-[10px] py-1 text-[12px]'
-                                    : 'pill px-[10px] py-1 text-[12px]'
+                                  selectedPermissionModePreset === o.v
+                                    ? 'pill on whitespace-nowrap px-[10px] py-1 text-[12px]'
+                                    : 'pill whitespace-nowrap px-[10px] py-1 text-[12px]'
                                 }
-                                onClick={() => setPermissionMode(o.v)}
-                              >
-                                {o.l}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {showApprovalsReviewer && (
-                        <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
-                          <span className="fldlbl">Approval reviewer</span>
-                          <div className="pillbar self-start">
-                            {approvalsReviewerChoices.map((o) => (
-                              <button
-                                key={o.v}
-                                type="button"
-                                title={o.description}
-                                className={
-                                  approvalsReviewer === o.v
-                                    ? 'pill on px-[10px] py-1 text-[12px]'
-                                    : 'pill px-[10px] py-1 text-[12px]'
-                                }
-                                onClick={() => setApprovalsReviewer(o.v)}
+                                onClick={() => {
+                                  const next = permissionPresetSettings(runtime, o.v)
+                                  setPermissionMode(next.permissionMode)
+                                  setApprovalsReviewer(next.approvalsReviewer)
+                                }}
                               >
                                 {o.l}
                               </button>

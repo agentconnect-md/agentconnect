@@ -9,7 +9,6 @@ import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
   approvalsReviewerDefault,
-  approvalsReviewerOptions,
   loginRequiredRuntimeIds,
   agentSlugFinalize,
   agentSlugSanitize,
@@ -25,7 +24,9 @@ import {
   resolveEffortForModel,
   permissionModeChoicesFor,
   permissionModeDefault,
-  supportsApprovalsReviewer,
+  permissionModePresets,
+  permissionPresetSettings,
+  selectedPermissionPreset,
   type AgentCallPolicy,
   type ApprovalsReviewer,
   supportsModes
@@ -391,10 +392,16 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // currentValue), else the first offered mode. No "(unavailable)" here: unlike
   // Edit, nothing in this modal is stored yet.
   const selectedPermissionMode = resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
-  const permissionOptions = permissionChoices
-  const showApprovalsReviewer = supportsApprovalsReviewer(effectiveRuntime)
-  const selectedApprovalsReviewer = approvalsReviewer || approvalsReviewerDefault(effectiveRuntime)
-  const approvalsReviewerChoices = approvalsReviewerOptions(effectiveRuntime)
+  const defaultApprovalsReviewer = approvalsReviewerDefault(effectiveRuntime)
+  const selectedApprovalsReviewer = defaultApprovalsReviewer
+    ? approvalsReviewer || defaultApprovalsReviewer
+    : defaultApprovalsReviewer
+  const permissionOptions = permissionModePresets(effectiveRuntime, permissionChoices)
+  const selectedPermissionModePreset = selectedPermissionPreset(
+    effectiveRuntime,
+    selectedPermissionMode,
+    selectedApprovalsReviewer
+  )
 
   // A daemon selection defines the product default: optional means off; required
   // means on and immutable. Capability refreshes converge the same way.
@@ -813,7 +820,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
-        ...(showApprovalsReviewer && selectedApprovalsReviewer ? { approvalsReviewer: selectedApprovalsReviewer } : {}),
+        ...(selectedApprovalsReviewer ? { approvalsReviewer: selectedApprovalsReviewer } : {}),
         allowRuntimeChangesInChat,
         workspace,
         // Atomic restricted-create: the CP intersects sharedWith with org members.
@@ -1041,7 +1048,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              {(showEffort || fastModeAvailable || showPermission || showApprovalsReviewer) && (
+              {(showEffort || fastModeAvailable || showPermission) && (
                 <div className="fld desktop:col-span-2">
                   <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
                     {showEffort && (
@@ -1094,40 +1101,22 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     {showPermission && (
                       <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
                         <span className="fldlbl">Permission mode</span>
-                        <div className="pillbar self-start">
+                        <div className="pillbar max-w-full overflow-x-auto self-start">
                           {permissionOptions.map((o) => (
                             <button
                               key={o.v}
                               type="button"
                               title={o.description}
                               className={
-                                selectedPermissionMode === o.v
-                                  ? 'pill on px-[10px] py-1 text-[12px]'
-                                  : 'pill px-[10px] py-1 text-[12px]'
+                                selectedPermissionModePreset === o.v
+                                  ? 'pill on whitespace-nowrap px-[10px] py-1 text-[12px]'
+                                  : 'pill whitespace-nowrap px-[10px] py-1 text-[12px]'
                               }
-                              onClick={() => setPermissionMode(o.v)}
-                            >
-                              {o.l}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {showApprovalsReviewer && (
-                      <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
-                        <span className="fldlbl">Approval reviewer</span>
-                        <div className="pillbar self-start">
-                          {approvalsReviewerChoices.map((o) => (
-                            <button
-                              key={o.v}
-                              type="button"
-                              title={o.description}
-                              className={
-                                selectedApprovalsReviewer === o.v
-                                  ? 'pill on px-[10px] py-1 text-[12px]'
-                                  : 'pill px-[10px] py-1 text-[12px]'
-                              }
-                              onClick={() => setApprovalsReviewer(o.v)}
+                              onClick={() => {
+                                const next = permissionPresetSettings(effectiveRuntime, o.v)
+                                setPermissionMode(next.permissionMode)
+                                setApprovalsReviewer(next.approvalsReviewer)
+                              }}
                             >
                               {o.l}
                             </button>
