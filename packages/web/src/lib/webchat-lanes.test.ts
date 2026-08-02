@@ -49,6 +49,20 @@ describe('webchat stream lanes', () => {
     expect(admitsLane(B, undefined, turn)).toBe(false)
   })
 
+  it('a completed lane is not re-admitted by its trailing ack', () => {
+    // done-before-ack ordering: a coalesced turn's immediate done(lastIndex:-1)
+    // admits the lane, applies, and retires it — the ack that trails it must
+    // NOT recreate an empty cursor (it would never receive another terminal
+    // frame, wedging the turn's busy state and fencing the next turn).
+    const turn = 'turn-1'
+    const finished = new Set<string>()
+    expect(admitsLane(B, turn, turn, finished)).toBe(true)
+    finished.add(B)
+    expect(admitsLane(B, turn, turn, finished)).toBe(false)
+    // Other participants of the same turn stay admittable.
+    expect(admitsLane(A, turn, turn, finished)).toBe(true)
+  })
+
   it('after lazy admission, both participants resolve independently', () => {
     const lanes = new Map<string, unknown>([[laneKey(ID, A), {}]])
     // Lazy admission on B's ack: the caller creates the exact lane…

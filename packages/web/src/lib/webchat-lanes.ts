@@ -52,7 +52,13 @@ export function cursorKeyFor(lanes: ReadonlyMap<string, unknown>, id: string, ag
 export function admitsLane(
   agentId: string | undefined,
   turnId: string | undefined,
-  pendingTurnId: string | undefined
+  pendingTurnId: string | undefined,
+  finishedAgentIds?: ReadonlySet<string>
 ): boolean {
-  return agentId !== undefined && turnId !== undefined && turnId === pendingTurnId
+  if (agentId === undefined || turnId === undefined || turnId !== pendingTurnId) return false
+  // A COMPLETED lane must never be re-admitted: with done-before-ack ordering
+  // the terminal frame both creates and retires the lane, and the trailing ack
+  // would otherwise recreate an empty cursor that can never finish — wedging
+  // the turn's busy state and fencing the participant's next turn.
+  return !finishedAgentIds?.has(agentId)
 }
