@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { formatTranscriptTime, parseTranscriptTime } from './transcript-time'
+import {
+  formatTranscriptTime,
+  parseTranscriptTime,
+  formatTranscriptRowTime,
+  transcriptRowTimeMs
+} from './transcript-time'
 
 describe('transcript time', () => {
   it('parses a suffixed hook timestamp as epoch milliseconds', () => {
@@ -20,5 +25,18 @@ describe('transcript time', () => {
     expect(parseTranscriptTime(raw)).toBe(1_710_799_200_000_000_000)
     expect(() => formatTranscriptTime(raw)).not.toThrow()
     expect(formatTranscriptTime(raw)).toBe('')
+  })
+  it('prefers the stored event-time axis for rows whose ts is a native platform id', () => {
+    // Telegram sequence id, Feishu om_ id, Discord snowflake: none is a
+    // parseable clock time — the daemon-stored axis must drive the label and
+    // duration math; legacy rows without it fall back to ts.
+    const authoritative = 1_754_123_458_000_000 // µs
+    expect(transcriptRowTimeMs({ ts: '4821', eventTimeUs: authoritative })).toBe(1_754_123_458_000)
+    expect(transcriptRowTimeMs({ ts: 'om_abc', eventTimeUs: authoritative })).toBe(1_754_123_458_000)
+    expect(transcriptRowTimeMs({ ts: '1101111111111111111', eventTimeUs: authoritative })).toBe(1_754_123_458_000)
+    expect(formatTranscriptRowTime({ ts: 'om_abc', eventTimeUs: authoritative })).not.toBe('')
+    // Legacy fallback: no stored axis → derive from ts exactly as before.
+    expect(transcriptRowTimeMs({ ts: '1754123457123' })).toBe(1_754_123_457_123)
+    expect(formatTranscriptRowTime({ ts: 'om_abc' })).toBe('')
   })
 })

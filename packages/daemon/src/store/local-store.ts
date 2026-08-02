@@ -2527,6 +2527,18 @@ export class LocalStore {
             )
             .run(e.postId, e.channel, e.thread, e.ts)
         : undefined
+    // A later duplicate can be the first copy that carries the AUTHORITATIVE
+    // provider send time (an early observer wrote the row with the derived
+    // axis). Explicit values only — two derived computations must never flap.
+    const eventTimeUpgraded =
+      Number(inserted.changes) === 0 && e.eventTimeUs
+        ? this.db
+            .prepare(
+              `UPDATE transcript SET eventTimeUs = ?
+               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
+            )
+            .run(e.eventTimeUs, e.channel, e.thread, e.ts, e.eventTimeUs)
+        : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
     // a provider snapshot subsequently re-appends the same text row without metadata.
@@ -2556,6 +2568,7 @@ export class LocalStore {
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
       Number(postIdUpgraded?.changes ?? 0) === 1 ||
+      Number(eventTimeUpgraded?.changes ?? 0) === 1 ||
       Number(delivered?.changes ?? 0) === 1
     ) {
       const deliveryRevision = this.transcriptRevision + 1

@@ -8344,6 +8344,11 @@ export class Daemon {
       ts,
       sender: msg.sender.id,
       ...(recipient ? { recipient } : {}),
+      // The observer often wins the INSERT race against SessionManager's
+      // authoritative append — the provider send time must ride the FIRST
+      // write or non-chronological-id platforms (Telegram/Feishu) keep the
+      // broken derived axis.
+      ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})

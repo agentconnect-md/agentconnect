@@ -1150,4 +1150,27 @@ describe('LocalStore webchat MCP grant ledger', () => {
     expect(due.every((r) => r.reason === 'session_closed')).toBe(true)
     s.close()
   })
+  it('an authoritative event time upgrades a row the derived-axis observer wrote first', () => {
+    // Regression (merged-conversation-view.md §6 / PR review): with
+    // turnFinalContextRefresh on, recordObservedInbound races SessionManager
+    // and wins the INSERT — a Telegram row ts="4821" landed at the derived
+    // 4_821_000_000µs axis, and the later authoritative append was
+    // INSERT-OR-IGNOREd without repair. Explicit eventTimeUs must upgrade the
+    // deduped row (and bump its revision); derived recomputes never flap it.
+    const s = store()
+    s.appendTranscript({ channel: 'C1', thread: 'T', ts: '4821', sender: 'U1', kind: 'text', text: 'hi' })
+    const before = s.transcriptSince('C1', 'T', null)[0] as { eventTimeUs?: number }
+    expect(before.eventTimeUs).toBe(4_821_000_000)
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T',
+      ts: '4821',
+      sender: 'U1',
+      kind: 'text',
+      text: 'hi',
+      eventTimeUs: 1_754_123_458_000_000
+    })
+    const after = s.transcriptSince('C1', 'T', null)[0] as { eventTimeUs?: number }
+    expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
+  })
 })
