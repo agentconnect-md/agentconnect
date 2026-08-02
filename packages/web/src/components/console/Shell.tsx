@@ -118,7 +118,7 @@ const HELP_LINK_DEFAULTS = {
   mcp: 'https://docs.agentconnect.md/docs/mcp-connector',
   docs: 'https://docs.agentconnect.md',
   releases: 'https://github.com/agentconnect-md/agentconnect/releases',
-  support: 'mailto:support@agentconnect.md'
+  support: 'mailto:contact@agentconnect.md'
 }
 
 // Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
