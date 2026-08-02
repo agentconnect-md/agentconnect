@@ -27,6 +27,7 @@ import {
   type MemoryHistoryRecord
 } from '../src/agents/memory.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
+import { storeDigest } from '../src/agents/memory-dreamer.js'
 
 const silent = { info() {}, warn() {} }
 
@@ -457,6 +458,30 @@ describe('DreamRunner adoption', () => {
     const history = await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8')
     expect(history).toContain('"source":"dream"')
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
+  })
+
+  it('binds adoption to the reviewed staged bytes (same-bytes review fence)', async () => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // The review token is the digest of the exact staged output the user reviewed.
+    const out = join(dir, 'memory-dreams', started.dreamId, 'output')
+    const names = await readdir(out)
+    const stagedFiles = await Promise.all(
+      names.map(async (name) => ({ name, content: await readFile(join(out, name), 'utf8') }))
+    )
+    const token = storeDigest(stagedFiles)
+
+    // A stale/incorrect token is refused before any mutation — the reviewed bytes
+    // must match what is about to be adopted.
+    await expect(runner.adopt('a1', started.dreamId, false, `sha256:${'0'.repeat(64)}`)).rejects.toThrow(/re-review/i)
+    expect(store.dreams.get(started.dreamId)?.status).toBe('completed')
+
+    // The exact reviewed digest adopts cleanly.
+    const adopted = await runner.adopt('a1', started.dreamId, false, token)
+    expect(adopted.status).toBe('adopted')
+    expect(await readMemoryFile(dir, 'prefs.md')).toBe('- Uses tabs, not spaces (2026-07-24).\n')
   })
 
   it('records the exact add, update, and delete set with live before snapshots', async () => {
