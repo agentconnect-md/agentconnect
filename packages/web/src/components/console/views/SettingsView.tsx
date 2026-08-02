@@ -771,9 +771,7 @@ export default function SettingsView() {
 
   return (
     <div className="wrap max-w-[900px] max-desktop:p-4">
-      <p className="psub mt-0">Organization, members and access tokens.</p>
-
-      <div className="card mt-5">
+      <div className="card">
         <div className="cardhead justify-between">
           <span className="cardtitle">Organization</span>
           {isOwner && (
