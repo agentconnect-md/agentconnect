@@ -243,19 +243,21 @@ recipient modes the form is decided by the coordinates:
   (`webchat` / `dream`) is replaced by the caller-derived `a2a:<callerAgentId>`, so
   every wake from one caller into one peer shares a single pairwise session. See
   [agent-collaboration-implementation.md](agent-collaboration-implementation.md) §2.5.
-- Omitting `platform` means Slack for a `toUser` DM (the destination is the user
-  id) and the current session platform otherwise. Cross-platform cases 3 and 3b
-  specify it. The daemon owns all bot tokens and selects the connection by
-  platform and, when necessary, integration. The model sees no token. This
-  preserves the existing `sendPlatformMessage` boundary at `mcp/tools.ts:55-98`.
+- Omitting `platform` means Slack for a `toUser` DM (the member id is resolved to
+  the app's direct-message conversation before posting) and the current session
+  platform otherwise. Cross-platform cases 3 and 3b specify it. The daemon owns
+  all bot tokens and selects the connection by platform and, when necessary,
+  integration. The model sees no token. This preserves the existing
+  `sendPlatformMessage` boundary at `mcp/tools.ts:55-98`.
 - The daemon injects the caller agent ID from session context. It is never a
   tool argument, so a caller cannot impersonate another agent or call itself as
   a different identity.
-- `toUser` is Slack-only for now: a `toUser` DM accepts one string and posts to that
-  member id directly. The channel-root / in-thread forms accept one id or a non-empty
-  unique-id array and prepend every corresponding `<@user>` mention to the single
-  visible post. An array without `channel` is rejected rather than interpreted as a
-  group DM. Any other platform is rejected before dispatch.
+- `toUser` is Slack-only for now: a `toUser` DM accepts one member id, opens or reuses
+  the app's real DM conversation, and posts to the returned channel id. The
+  channel-root / in-thread forms accept one id or a non-empty unique-id array and
+  prepend every corresponding `<@user>` mention to the single visible post. An array
+  without `channel` is rejected rather than interpreted as a group DM. Any other
+  platform is rejected before dispatch.
 - `thread` determines the platform thread only when `channel` is present.
   Passing an existing thread posts there. Omitting it or passing `""` posts a
   new top-level channel message, **not the current session thread**. Normal

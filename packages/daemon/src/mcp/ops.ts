@@ -31,6 +31,10 @@ export interface SendIdentity {
 }
 
 export interface MessageGateway {
+  /** Resolve one platform user to the app's real direct-message conversation.
+   *  Slack needs this before posting with a customized agent identity: sending to
+   *  a raw U… id routes the message through Slack's system-notification DM. */
+  openDirectMessage?(user: string): Promise<string>
   /** Post a message; returns the resulting message id (`ts` / message_id) so the
    *  daemon can record it. `identity` carries the agent's stable id and optional
    *  visual identity; other platforms may ignore it. */
@@ -811,10 +815,10 @@ export async function executeTool(
     const wakeRejection = baseWakeReq !== undefined ? (deps.preflightWake?.(baseWakeReq) ?? null) : null
 
     // (A) Post a visible IM to a platform channel or Slack user. The destination is the
-    // `channel` for the channel-root / in-thread forms; the `toUser` DM form (no channel) uses
-    // the Slack member id directly as chat.postMessage's destination, which opens or reuses
-    // that DM. Routing is by `platform` (+ optional `integrationId`) to ANY platform the agent
-    // is connected to; identity is stamped from the trusted session. THREAD DEFAULT: a
+    // `channel` for the channel-root / in-thread forms; the `toUser` DM form (no channel) first
+    // resolves the Slack member id to the app's real D… conversation. Routing is by `platform`
+    // (+ optional `integrationId`) to ANY platform the agent is connected to; identity is
+    // stamped from the trusted session. THREAD DEFAULT: a
     // deliberate `sendMessage` posts to the channel ROOT — "reply here" is the agent's normal
     // turn output, so an explicit send is a top-level post unless it names a `thread`.
     // `thread:"<id>"` targets that thread; absent or "" ⇒ root. We post BEFORE any peer wake
@@ -831,9 +835,9 @@ export async function executeTool(
     // back — the peer then falls back to messageAgent's default thread).
     let postedThread: string | undefined
     // Destination: an explicit `channel` (channel-root / in-thread forms), else the `toUser`
-    // DM form targets the user id itself.
-    const postChannel = channel ?? toUsers?.[0]
-    if (postChannel !== undefined && wakeRejection === null) {
+    // DM form starts from the user id and resolves it below.
+    const requestedChannel = channel ?? toUsers?.[0]
+    if (requestedChannel !== undefined && wakeRejection === null) {
       const directMessage = toUsers !== undefined && channel === undefined
       const wantPlatform = optionalString(args, 'platform') ?? (directMessage ? 'slack' : ctx.platform)
       const wantIntegrationId = optionalString(args, 'integrationId')
@@ -851,6 +855,7 @@ export async function executeTool(
           body = `${mentions.join(' ')} ${message}`
         }
       }
+      const postChannel = directMessage ? await openDirectMessage(gw, requestedChannel) : requestedChannel
       const identity: SendIdentity = {
         ...(ctx.agentName ? { username: ctx.agentName } : {}),
         ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
@@ -1237,6 +1242,13 @@ function parseUserTargets(value: unknown): string[] | undefined {
     throw new Error('sendMessage: `toUser` must not contain duplicate user ids')
   }
   return ids
+}
+
+async function openDirectMessage(gateway: MessageGateway, user: string): Promise<string> {
+  if (!gateway.openDirectMessage) {
+    throw new Error('sendMessage: the selected Slack integration cannot open direct messages')
+  }
+  return gateway.openDirectMessage(user)
 }
 
 function assertOnlyKeys(args: Record<string, unknown>, allowed: readonly string[], target: string): void {
