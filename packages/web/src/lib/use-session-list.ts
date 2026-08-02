@@ -2,14 +2,22 @@
 
 import { useCallback, useMemo } from 'react'
 import useSWRInfinite from 'swr/infinite'
-import { fetchSessions, type SessionListFilters, type SessionListPage } from '@/lib/api'
+import { fetchConversations, fetchSessions, type SessionListFilters, type SessionListPage } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 
 const SESSION_PAGE_LIMIT = 50
 const SESSION_FALLBACK_REFRESH_MS = 60_000
 type SessionPageKey = NonNullable<ReturnType<typeof consoleKeys.sessions>>
 
-export function useSessionList(orgId: string | null | undefined, filters: SessionListFilters = {}) {
+export function useSessionList(
+  orgId: string | null | undefined,
+  filters: SessionListFilters = {},
+  // The sessions LIST page reads the grouped conversation view (one row per
+  // conversation, merged-conversation-view.md §5.2); every other consumer
+  // (rails, agent pages) keeps the flat rows.
+  options: { grouped?: boolean } = {}
+) {
+  const grouped = options.grouped === true
   const agentId = filters.agentId ?? ''
   const integration = filters.integration ?? ''
   const platform = filters.platform ?? ''
@@ -30,10 +38,11 @@ export function useSessionList(orgId: string | null | undefined, filters: Sessio
         platform,
         channel,
         triggeredBy,
-        githubRepoId
+        githubRepoId,
+        grouped ? 'grouped' : 'flat'
       )
     },
-    [agentId, channel, githubRepoId, integration, orgId, platform, triggeredBy]
+    [agentId, channel, githubRepoId, grouped, integration, orgId, platform, triggeredBy]
   )
   const {
     data: pages = [],
@@ -57,9 +66,11 @@ export function useSessionList(orgId: string | null | undefined, filters: Sessio
         keyPlatform,
         keyChannel,
         keyTriggeredBy,
-        keyGithubRepoId
+        keyGithubRepoId,
+        keyView
       ] = args as SessionPageKey
-      return fetchSessions(cursor || undefined, Number(limit), keyOrgId, {
+      const fetchPage = keyView === 'grouped' ? fetchConversations : fetchSessions
+      return fetchPage(cursor || undefined, Number(limit), keyOrgId, {
         ...(keyAgentId ? { agentId: keyAgentId } : {}),
         ...(keyIntegration ? { integration: keyIntegration } : {}),
         ...(keyPlatform ? { platform: keyPlatform } : {}),

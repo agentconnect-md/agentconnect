@@ -924,6 +924,9 @@ export interface Session {
   /** Multi-agent webchat roster (webchat-multi-agents.md §3.1), primary first —
    *  present on live conversations with more than one participant. */
   participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+  /** merged-conversation-view.md §5.1 key — present on grouped-list rows that
+   *  represent a multi-participant conversation. */
+  conversationKey?: string
   /** Runtime id + daemonId the session ran with: the session-recorded snapshot,
    *  with the owning agent's current values as the legacy-row fallback (attached
    *  at flatten time, like `model`). Views resolve `daemon` to a display name. */

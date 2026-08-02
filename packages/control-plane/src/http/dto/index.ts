@@ -2371,9 +2371,28 @@ export const SessionFacetsDto = z.object({
     })
   )
 })
+/** One grouped-list row (merged-conversation-view.md §5.2): a conversation and
+ *  its current member sessions. */
+export const ConversationDto = z.object({
+  /** §5.1 encoded key — null for singleton conversations (no groupable
+   *  channel/thread), which are not key-addressable. */
+  key: z.string().nullable(),
+  platform: z.string().nullable(),
+  channel: z.string().nullable(),
+  thread: z.string().nullable(),
+  /** Current member sessions, representative (the caller's newest visible
+   *  member) first, one row per agent. Singleton conversations carry exactly
+   *  one session; its row renders like the flat list's. */
+  sessions: SessionListDto
+})
+
 export const SessionListPageDto = z.object({
-  sessions: SessionListDto,
+  /** `view=flat`: the raw session rows (the pre-grouped list shape). */
+  sessions: SessionListDto.optional(),
+  /** Default (grouped) view: one row per conversation, newest-first. */
+  conversations: z.array(ConversationDto).optional(),
   // Counting is skipped on cursor pages; the first page remains authoritative.
+  // Grouped pages count conversations, flat pages count session rows.
   total: z.number().int().nonnegative().nullable(),
   nextCursor: z.string().nullable(),
   // Org-level "any session exists" boolean (first page only) — deliberately a bare

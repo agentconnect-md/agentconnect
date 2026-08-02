@@ -65,7 +65,7 @@ describe('session visibility — list & detail', () => {
     })
 
     const mineApp = appAs(mine)
-    const listed = sessionIds((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json())
+    const listed = sessionIds((await mineApp.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })).json())
     expect(listed).toEqual(expect.arrayContaining([orgSession, ownSession]))
     expect(listed).not.toContain(otherSession)
     expect(listed).not.toContain(orphanSession)
@@ -78,7 +78,7 @@ describe('session visibility — list & detail', () => {
     // No governance override on sessions: an org owner filters exactly like any
     // other member — a private transcript is its owner's, role grants nothing.
     const ownerApp = appAs(owner)
-    const asOwner = sessionIds((await ownerApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json())
+    const asOwner = sessionIds((await ownerApp.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })).json())
     expect(asOwner).toContain(orgSession)
     expect(asOwner).not.toContain(ownSession)
     expect(asOwner).not.toContain(otherSession)
@@ -92,7 +92,7 @@ describe('session visibility — list & detail', () => {
 
     // Before any session exists: the boolean is present and false on the first page.
     const viewerApp = appAs(viewer)
-    const emptyPage = (await viewerApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json() as {
+    const emptyPage = (await viewerApp.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })).json() as {
       sessions: unknown[]
       orgHasSessions?: boolean
     }
@@ -107,7 +107,7 @@ describe('session visibility — list & detail', () => {
       visibility: 'private',
       ownerIdentity: `user:${other}`
     })
-    const page = (await viewerApp.app.inject({ method: 'GET', url: `${ORG}/sessions` })).json() as {
+    const page = (await viewerApp.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })).json() as {
       sessions: unknown[]
       orgHasSessions?: boolean
     }
@@ -137,7 +137,7 @@ describe('session visibility — list & detail', () => {
     const collected: string[] = []
     let cursor: string | null = null
     for (let page = 0; page < 5; page++) {
-      const url = `${ORG}/sessions?limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+      const url = `${ORG}/sessions?view=flat&limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
       const body = (await app.app.inject({ method: 'GET', url })).json() as {
         sessions: Array<{ sessionId: string }>
         nextCursor: string | null

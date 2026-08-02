@@ -17,6 +17,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
+import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
 import { canChangeSessionVisibility, canView, canViewSession } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { Tag } from '../plugins/openapi.js'
@@ -51,7 +52,13 @@ const SessionFilterQueryDto = z.object({
 
 const SessionQueryDto = SessionFilterQueryDto.extend({
   cursor: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(200).default(50)
+  limit: z.coerce.number().int().positive().max(200).default(50),
+  // merged-conversation-view.md §5.2: the grouped list is the DEFAULT response
+  // shape; `view=flat` returns the raw session rows (the pre-grouped shape).
+  view: z.enum(['grouped', 'flat']).default('grouped'),
+  // §5.2 key-addressed member resolver: resolves one conversation's current
+  // visible member sessions without paging the grouped list.
+  conversationKey: z.string().min(1).max(512).optional()
 })
 
 type SessionCursor = { activityMs: number; startedMs: number; id: string }
@@ -439,16 +446,25 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'List sessions',
           description:
-            'Lists CP-stored session metadata synced by daemon event/session snapshots; transcript bodies remain daemon-local.',
+            'Lists CP-stored session metadata synced by daemon event/session snapshots; transcript bodies remain ' +
+            'daemon-local. Returns one row per CONVERSATION by default (merged-conversation-view.md §5.2) — sessions ' +
+            'sharing a thread group into `conversations`, each carrying its current member sessions. `view=flat` ' +
+            'returns the raw `sessions` rows (the pre-grouped shape); `conversationKey` resolves one conversation’s ' +
+            'members directly.',
           operationId: 'listSessions',
           querystring: SessionQueryDto,
           response: { 200: SessionListPageDto, 400: ErrorDto }
         }
       },
       async (req, reply) => {
+        const grouped = req.query.view !== 'flat'
         const cursor = req.query.cursor ? decodeSessionCursor(req.query.cursor) : undefined
         if (req.query.cursor && !cursor) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid session cursor' })
+        }
+        const conversationKey = req.query.conversationKey ? decodeConversationKey(req.query.conversationKey) : undefined
+        if (req.query.conversationKey && (!conversationKey || conversationKey.channel === null)) {
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid conversation key' })
         }
 
         // The set of agents THIS caller may see under the resource policy. Roles
@@ -465,10 +481,10 @@ export function sessionRoutes(deps: HttpDeps) {
         // FULL org — including sessions the caller can't see — which is safe precisely
         // because it is a bare boolean; the getting-started conversation step derives
         // from it so a collaborator in an active org isn't asked to run a redundant chat.
-        const orgHasSessions = cursor ? undefined : await deps.repos.session.orgHasAny(orgOf(req))
+        const orgHasSessions = cursor || conversationKey ? undefined : await deps.repos.session.orgHasAny(orgOf(req))
         if (selectedAgentIds.length === 0) {
           return {
-            sessions: [],
+            ...(grouped || conversationKey ? { conversations: [] } : { sessions: [] }),
             total: cursor ? null : 0,
             nextCursor: null,
             ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
@@ -491,12 +507,62 @@ export function sessionRoutes(deps: HttpDeps) {
           includeTotal: !cursor
         }
         const { viewer, access } = await viewerForQuery(req, query)
-        const page = await deps.repos.session.listPage({ ...query, viewer })
-        const hookMetadata = await hookMetadataForSessions(deps, page.sessions, orgOf(req))
-        const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
 
+        // §5.2 key-addressed resolver: a bounded metadata-only member lookup for
+        // a direct conversation load — the paginated list is not a key lookup.
+        if (conversationKey) {
+          const members = await deps.repos.session.listConversationMembers(
+            { agentIds: selectedAgentIds, viewer },
+            conversationKey
+          )
+          const hookMetadata = await hookMetadataForSessions(deps, members, orgOf(req))
+          return {
+            conversations:
+              members.length > 0
+                ? [
+                    {
+                      key: encodeConversationKey(conversationKey),
+                      platform: conversationKey.platform,
+                      channel: conversationKey.channel,
+                      thread: conversationKey.thread,
+                      sessions: members.map((session) => sessionDto(session, hookMetadata))
+                    }
+                  ]
+                : [],
+            total: members.length > 0 ? 1 : 0,
+            nextCursor: null,
+            accessSyncDegraded: access.degraded
+          }
+        }
+
+        if (!grouped) {
+          const page = await deps.repos.session.listPage({ ...query, viewer })
+          const hookMetadata = await hookMetadataForSessions(deps, page.sessions, orgOf(req))
+          const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
+          return {
+            sessions: page.sessions.map((session) => sessionDto(session, hookMetadata)),
+            total: page.total,
+            nextCursor,
+            accessSyncDegraded: access.degraded,
+            ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
+          }
+        }
+
+        const page = await deps.repos.session.listConversationPage({ ...query, viewer })
+        const allRows = page.conversations.flatMap((c) => c.sessions)
+        const hookMetadata = await hookMetadataForSessions(deps, allRows, orgOf(req))
+        // The grouped cursor is the last conversation's REPRESENTATIVE row —
+        // emit-at-max makes resumption stateless (§5.2).
+        const lastRep = page.conversations[page.conversations.length - 1]?.sessions[0]
+        const nextCursor = page.hasMore && lastRep ? encodeSessionCursor(lastRep) : null
         return {
-          sessions: page.sessions.map((session) => sessionDto(session, hookMetadata)),
+          conversations: page.conversations.map((c) => ({
+            key: encodeConversationKey(c.key),
+            platform: c.key.platform,
+            channel: c.key.channel,
+            thread: c.key.thread,
+            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata))
+          })),
           total: page.total,
           nextCursor,
           accessSyncDegraded: access.degraded,

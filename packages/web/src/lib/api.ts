@@ -393,8 +393,22 @@ export interface SessionFacetsDto {
   }>
 }
 
-export interface SessionListPageDto {
+/** One grouped-list row (merged-conversation-view.md §5.2). */
+export interface ConversationDto {
+  /** §5.1 encoded key — null for singleton conversations. */
+  key: string | null
+  platform: string | null
+  channel: string | null
+  thread: string | null
+  /** Current member sessions, representative (newest visible) first. */
   sessions: SessionDto[]
+}
+
+export interface SessionListPageDto {
+  /** Present on `view=flat` responses (and older CPs). */
+  sessions?: SessionDto[]
+  /** Present on default (grouped) responses. */
+  conversations?: ConversationDto[]
   total: number | null
   nextCursor: string | null
   /** Org-level "any session exists" boolean (first page only) — a bare boolean so the
@@ -1869,12 +1883,56 @@ export async function fetchSessions(
   orgId?: string,
   filters: SessionListFilters = {}
 ): Promise<SessionListPage> {
-  const q = new URLSearchParams({ limit: String(limit) })
+  // The CP's default response shape is the GROUPED conversation list
+  // (merged-conversation-view.md §5.2); this fetcher serves the flat-row
+  // consumers (rails, agent pages), so it pins the escape hatch explicitly.
+  const q = new URLSearchParams({ limit: String(limit), view: 'flat' })
   if (cursor) q.set('cursor', cursor)
   appendSessionFilters(q, filters)
   const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
   return {
-    sessions: page.sessions.map(sessionFromDto),
+    sessions: (page.sessions ?? []).map(sessionFromDto),
+    total: page.total,
+    nextCursor: page.nextCursor,
+    ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {}),
+    ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {})
+  }
+}
+
+/** The grouped sessions list (merged-conversation-view.md §5.2): one row per
+ *  conversation. Each conversation is projected onto its REPRESENTATIVE member
+ *  session (the newest visible one) so the list pipeline renders it exactly
+ *  like a session row; multi-participant conversations additionally carry
+ *  `participants` (one per member agent, representative first) and the §5.1
+ *  `conversationKey`. */
+export async function fetchConversations(
+  cursor?: string,
+  limit = 50,
+  orgId?: string,
+  filters: SessionListFilters = {}
+): Promise<SessionListPage> {
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (cursor) q.set('cursor', cursor)
+  appendSessionFilters(q, filters)
+  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
+  const sessions = (page.conversations ?? []).map((conversation) => {
+    const members = conversation.sessions.map(sessionFromDto)
+    const rep = members[0]!
+    if (members.length <= 1) return rep
+    return {
+      ...rep,
+      ...(conversation.key !== null ? { conversationKey: conversation.key } : {}),
+      // Names resolve at render time from the org agent list (the DTO carries
+      // ids only); the placeholder keeps the field shape valid.
+      participants: members.map((member, i) => ({
+        agentId: member.agentId ?? '',
+        name: member.agentName ?? member.agentId ?? '',
+        ...(i === 0 ? { primary: true } : {})
+      }))
+    }
+  })
+  return {
+    sessions,
     total: page.total,
     nextCursor: page.nextCursor,
     ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {}),

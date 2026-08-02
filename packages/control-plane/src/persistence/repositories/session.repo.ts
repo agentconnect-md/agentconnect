@@ -23,6 +23,8 @@ import type {
   SessionFilterQuery,
   SessionPageQuery,
   SessionPageRecord,
+  ConversationKey,
+  ConversationPageRecord,
   SessionFacetQuery,
   SessionFacetRecord,
   SessionFacetIndex,
@@ -184,71 +186,76 @@ function queryAgentIds(q: SessionQuery): string[] {
   return q.agentIds ?? []
 }
 
-function platformSql(platform: Platform): Prisma.Sql {
+// Default row alias for the predicate builders. The conversation grouping
+// query (listConversationPage) applies the SAME predicate to an inner probe
+// row, so every builder takes the alias as a parameter.
+const S = Prisma.raw('s')
+
+function platformSql(platform: Platform, a: Prisma.Sql = S): Prisma.Sql {
   return platform === 'slack'
-    ? Prisma.sql`(s."platform" = 'slack' OR s."platform" IS NULL)`
-    : Prisma.sql`s."platform" = ${platform}`
+    ? Prisma.sql`(${a}."platform" = 'slack' OR ${a}."platform" IS NULL)`
+    : Prisma.sql`${a}."platform" = ${platform}`
 }
 
-function hookTriggerSql(hookIds: string[]): Prisma.Sql {
+function hookTriggerSql(hookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
   if (hookIds.length === 0) return Prisma.sql`FALSE`
   const triggers = hookIds.map((id) => `${HOOK_TRIGGER_PREFIX}${id}`)
   return Prisma.sql`
     (
-      s."triggeredBy" IN (${Prisma.join(triggers)})
+      ${a}."triggeredBy" IN (${Prisma.join(triggers)})
       OR (
-        s."platform" = 'hook'
+        ${a}."platform" = 'hook'
         AND
         (
-          s."triggeredBy" IS NULL
-          OR s."triggeredBy" = ${HOOK_TRIGGER_PREFIX}
-          OR s."triggeredBy" NOT LIKE ${`${HOOK_TRIGGER_PREFIX}%`}
+          ${a}."triggeredBy" IS NULL
+          OR ${a}."triggeredBy" = ${HOOK_TRIGGER_PREFIX}
+          OR ${a}."triggeredBy" NOT LIKE ${`${HOOK_TRIGGER_PREFIX}%`}
         )
-        AND s."channel" IN (${Prisma.join(hookIds)})
+        AND ${a}."channel" IN (${Prisma.join(hookIds)})
       )
     )
   `
 }
 
-function githubHookSql(githubHookIds: string[]): Prisma.Sql {
-  return Prisma.sql`s."platform" = 'hook' AND ${hookTriggerSql(githubHookIds)}`
+function githubHookSql(githubHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
+  return Prisma.sql`${a}."platform" = 'hook' AND ${hookTriggerSql(githubHookIds, a)}`
 }
 
-function genericHookSql(githubHookIds: string[]): Prisma.Sql {
-  if (githubHookIds.length === 0) return Prisma.sql`s."platform" = 'hook'`
+function genericHookSql(githubHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
+  if (githubHookIds.length === 0) return Prisma.sql`${a}."platform" = 'hook'`
   const triggers = githubHookIds.map((id) => `${HOOK_TRIGGER_PREFIX}${id}`)
   return Prisma.sql`
-    s."platform" = 'hook'
-    AND (s."triggeredBy" IS NULL OR s."triggeredBy" NOT IN (${Prisma.join(triggers)}))
+    ${a}."platform" = 'hook'
+    AND (${a}."triggeredBy" IS NULL OR ${a}."triggeredBy" NOT IN (${Prisma.join(triggers)}))
     AND (
-      (s."triggeredBy" LIKE ${`${HOOK_TRIGGER_PREFIX}%`} AND s."triggeredBy" <> ${HOOK_TRIGGER_PREFIX})
-      OR s."channel" IS NULL
-      OR s."channel" NOT IN (${Prisma.join(githubHookIds)})
+      (${a}."triggeredBy" LIKE ${`${HOOK_TRIGGER_PREFIX}%`} AND ${a}."triggeredBy" <> ${HOOK_TRIGGER_PREFIX})
+      OR ${a}."channel" IS NULL
+      OR ${a}."channel" NOT IN (${Prisma.join(githubHookIds)})
     )
   `
 }
 
-function integrationSql(q: SessionFilterQuery): Prisma.Sql | null {
+function integrationSql(q: SessionFilterQuery, a: Prisma.Sql = S): Prisma.Sql | null {
   if (!q.integration) return null
   const githubHookIds = q.githubHookIds ?? []
-  if (q.integration === 'github') return githubHookSql(githubHookIds)
-  if (q.integration === 'hook') return genericHookSql(githubHookIds)
-  return platformSql(q.integration)
+  if (q.integration === 'github') return githubHookSql(githubHookIds, a)
+  if (q.integration === 'hook') return genericHookSql(githubHookIds, a)
+  return platformSql(q.integration, a)
 }
 
-function pageWhereSql(q: SessionFilterQuery, includeCursor: boolean): Prisma.Sql {
-  const filters: Prisma.Sql[] = [Prisma.sql`s."agentId" IN (${Prisma.join(queryAgentIds(q))})`]
-  const viewerArm = sessionViewerSql(q.viewer)
+function pageWhereSql(q: SessionFilterQuery, includeCursor: boolean, a: Prisma.Sql = S): Prisma.Sql {
+  const filters: Prisma.Sql[] = [Prisma.sql`${a}."agentId" IN (${Prisma.join(queryAgentIds(q))})`]
+  const viewerArm = sessionViewerSql(q.viewer, a)
   if (viewerArm) filters.push(viewerArm)
-  if (q.platform) filters.push(platformSql(q.platform))
-  const integration = integrationSql(q)
+  if (q.platform) filters.push(platformSql(q.platform, a))
+  const integration = integrationSql(q, a)
   if (integration) filters.push(integration)
-  if (q.channel) filters.push(Prisma.sql`s."channel" = ${q.channel}`)
-  if (q.triggeredBy) filters.push(Prisma.sql`s."triggeredBy" = ${q.triggeredBy}`)
-  if (q.hookTriggerIds) filters.push(hookTriggerSql(q.hookTriggerIds))
+  if (q.channel) filters.push(Prisma.sql`${a}."channel" = ${q.channel}`)
+  if (q.triggeredBy) filters.push(Prisma.sql`${a}."triggeredBy" = ${q.triggeredBy}`)
+  if (q.hookTriggerIds) filters.push(hookTriggerSql(q.hookTriggerIds, a))
   if (includeCursor && q.cursor) {
     filters.push(Prisma.sql`
-      (s."lastActivityAt", s."startedAt", s."id") < (
+      (${a}."lastActivityAt", ${a}."startedAt", ${a}."id") < (
         ${new Date(q.cursor.activityMs)},
         ${new Date(q.cursor.startedMs)},
         ${q.cursor.id}
@@ -267,6 +274,26 @@ function integrationFacetSql(githubHookIds: string[]): Prisma.Sql {
       ELSE s."platform"
     END
   `
+}
+
+/** Conversation-key equality between two aliased session rows
+ *  (merged-conversation-view.md §5.1): legacy NULL platform reads as 'slack'
+ *  (mirroring `platformWhere`), tenant scope matches NULL-safely. Callers only
+ *  apply this to rows whose channel/thread are both present. */
+function conversationKeyJoinSql(a: Prisma.Sql, b: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`
+    COALESCE(${a}."platform", 'slack') = COALESCE(${b}."platform", 'slack')
+    AND ${a}."tenantScope" IS NOT DISTINCT FROM ${b}."tenantScope"
+    AND ${a}."channel" = ${b}."channel"
+    AND ${a}."thread" = ${b}."thread"
+  `
+}
+
+/** In-process mirror of `conversationKeyJoinSql` for bucketing fetched rows.
+ *  NUL-joined like the §5.1 codec — a printable separator could collide on
+ *  parts that contain it. */
+function conversationKeyOf(row: Pick<SessionMeta, 'platform' | 'tenantScope' | 'channel' | 'thread'>): string {
+  return [row.platform ?? 'slack', row.tenantScope ?? '', row.channel ?? '', row.thread ?? ''].join('\u0000')
 }
 
 const SESSION_ORDER: Prisma.SessionMetaOrderByWithRelationInput[] = [
@@ -690,7 +717,7 @@ export class PgSessionRepo implements SessionRepo {
     const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
       INSERT INTO "session_meta" (
         "id", "parentSessionId", "agentId", "launchId", "platform", "channel",
-        "thread", "phase", "link", "summary", "title", "status",
+        "thread", "tenantScope", "phase", "link", "summary", "title", "status",
         "lastActivityAt", "triggeredBy", "channelName", "triggeredByName",
         "threadUrl", "runtime", "model", "effort", "fastMode",
         "permissionMode", "outputMode", "daemonId", "orgId", "visibility",
@@ -700,7 +727,7 @@ export class PgSessionRepo implements SessionRepo {
       ) VALUES (
         ${ev.sessionId}, ${ev.parentSessionId ?? null}, ${ev.agentId},
         ${ev.launchId ?? null}, ${ev.platform ?? null}, ${ev.channel ?? null},
-        ${ev.thread ?? null}, ${ev.phase}::"SessionPhase", ${ev.link ?? null},
+        ${ev.thread ?? null}, ${ev.transportScope ?? null}, ${ev.phase}::"SessionPhase", ${ev.link ?? null},
         ${ev.summary ?? null}, ${ev.title ?? null}, ${ev.status ?? null},
         ${lastActivityAt}, ${ev.triggeredBy ?? null}, ${ev.channelName ?? null},
         ${ev.triggeredByName ?? null}, ${ev.threadUrl ?? null},
@@ -733,6 +760,7 @@ export class PgSessionRepo implements SessionRepo {
         "platform" = COALESCE(EXCLUDED."platform", "session_meta"."platform"),
         "channel" = COALESCE(EXCLUDED."channel", "session_meta"."channel"),
         "thread" = COALESCE(EXCLUDED."thread", "session_meta"."thread"),
+        "tenantScope" = COALESCE(EXCLUDED."tenantScope", "session_meta"."tenantScope"),
         "link" = COALESCE(EXCLUDED."link", "session_meta"."link"),
         "summary" = COALESCE(EXCLUDED."summary", "session_meta"."summary"),
         "title" = COALESCE(EXCLUDED."title", "session_meta"."title"),
@@ -872,6 +900,139 @@ export class PgSessionRepo implements SessionRepo {
       total,
       hasMore
     }
+  }
+
+  async listConversationPage(q: SessionPageQuery): Promise<ConversationPageRecord> {
+    if (queryAgentIds(q).length === 0) {
+      return { conversations: [], total: q.includeTotal ? 0 : null, hasMore: false }
+    }
+    const N = Prisma.raw('n')
+    const pageWhere = pageWhereSql(q, true)
+    // The probe runs the caller's OWN predicate (org/agents/viewer/filters) on
+    // the inner row — a newer row the caller cannot see must not suppress a
+    // conversation they can (merged-conversation-view.md §5.2). Cursor excluded:
+    // the probe asks about the whole authorized row set, not the current page.
+    const probeWhere = pageWhereSql({ ...q, cursor: undefined }, false, N)
+    const countWhere = pageWhereSql(q, false)
+    // Emit-at-max: a row yields its conversation only when no same-key row is
+    // strictly greater under the full page tuple. Rows without a groupable key
+    // (NULL channel or thread — cron/hook/dream and legacy shapes) are
+    // singleton conversations and always emit.
+    const emitAtMax = Prisma.sql`
+      (
+        s."channel" IS NULL OR s."thread" IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM "session_meta" AS n
+          ${probeWhere}
+            AND ${conversationKeyJoinSql(N, S)}
+            AND (n."lastActivityAt", n."startedAt", n."id") > (s."lastActivityAt", s."startedAt", s."id")
+        )
+      )
+    `
+    const [reps, totalRows] = await Promise.all([
+      this.db.$queryRaw<SessionMeta[]>(Prisma.sql`
+        SELECT s.*
+        FROM "session_meta" AS s
+        ${pageWhere} AND ${emitAtMax}
+        ORDER BY s."lastActivityAt" DESC, s."startedAt" DESC, s."id" DESC
+        LIMIT ${q.limit + 1}
+      `),
+      q.includeTotal
+        ? this.db.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+            SELECT
+              (
+                SELECT COUNT(*) FROM (
+                  SELECT DISTINCT COALESCE(s."platform", 'slack'), s."tenantScope", s."channel", s."thread"
+                  FROM "session_meta" AS s
+                  ${countWhere} AND s."channel" IS NOT NULL AND s."thread" IS NOT NULL
+                ) AS grouped
+              )
+              + (
+                SELECT COUNT(*) FROM "session_meta" AS s
+                ${countWhere} AND (s."channel" IS NULL OR s."thread" IS NULL)
+              ) AS count
+          `)
+        : Promise.resolve(null)
+    ])
+    const hasMore = reps.length > q.limit
+    const page = hasMore ? reps.slice(0, q.limit) : reps
+    const groupable = page.filter((r) => r.channel !== null && r.thread !== null)
+    const membersByKey = new Map<string, SessionMeta[]>()
+    if (groupable.length > 0) {
+      const memberWhere = pageWhereSql({ ...q, cursor: undefined }, false)
+      const keyTuples = groupable.map(
+        (r) => Prisma.sql`(${r.platform ?? 'slack'}, ${r.tenantScope ?? ''}, ${r.channel}, ${r.thread})`
+      )
+      const members = await this.db.$queryRaw<SessionMeta[]>(Prisma.sql`
+        SELECT s.*
+        FROM "session_meta" AS s
+        ${memberWhere}
+          AND s."channel" IS NOT NULL AND s."thread" IS NOT NULL
+          AND (COALESCE(s."platform", 'slack'), COALESCE(s."tenantScope", ''), s."channel", s."thread")
+            IN (${Prisma.join(keyTuples)})
+        ORDER BY s."lastActivityAt" DESC, s."startedAt" DESC, s."id" DESC
+      `)
+      for (const row of members) {
+        const key = conversationKeyOf(row)
+        const bucket = membersByKey.get(key)
+        if (bucket) bucket.push(row)
+        else membersByKey.set(key, [row])
+      }
+    }
+    // Collapse each conversation to the current session per agent: rows arrive
+    // newest-first, so the first row seen for an agentId wins and superseded
+    // ACP session rows drop out. The representative is by construction the
+    // group's first row.
+    const collapsed = page.map((rep) => {
+      const rows =
+        rep.channel !== null && rep.thread !== null ? (membersByKey.get(conversationKeyOf(rep)) ?? [rep]) : [rep]
+      const perAgent: SessionMeta[] = []
+      const seen = new Set<string>()
+      for (const row of rows) {
+        if (seen.has(row.agentId)) continue
+        seen.add(row.agentId)
+        perAgent.push(row)
+      }
+      return { rep, rows: perAgent }
+    })
+    const hydrated = await this.hydrate(collapsed.flatMap((c) => c.rows))
+    const byId = new Map(hydrated.map((rec) => [rec.id, rec]))
+    return {
+      conversations: collapsed.map((c) => ({
+        key: {
+          platform: c.rep.platform ?? 'slack',
+          tenantScope: c.rep.tenantScope,
+          channel: c.rep.channel,
+          thread: c.rep.thread
+        },
+        sessions: c.rows.map((row) => byId.get(SessionId(row.id))!).filter(Boolean)
+      })),
+      total: totalRows ? Number(totalRows[0]?.count ?? 0n) : null,
+      hasMore
+    }
+  }
+
+  async listConversationMembers(q: SessionFacetQuery, key: ConversationKey): Promise<SessionListRecord[]> {
+    if (queryAgentIds(q).length === 0 || key.channel === null || key.thread === null) return []
+    const where = pageWhereSql(q, false)
+    const rows = await this.db.$queryRaw<SessionMeta[]>(Prisma.sql`
+      SELECT s.*
+      FROM "session_meta" AS s
+      ${where}
+        AND COALESCE(s."platform", 'slack') = ${key.platform}
+        AND COALESCE(s."tenantScope", '') = ${key.tenantScope ?? ''}
+        AND s."channel" = ${key.channel}
+        AND s."thread" = ${key.thread}
+      ORDER BY s."lastActivityAt" DESC, s."startedAt" DESC, s."id" DESC
+    `)
+    const perAgent: SessionMeta[] = []
+    const seen = new Set<string>()
+    for (const row of rows) {
+      if (seen.has(row.agentId)) continue
+      seen.add(row.agentId)
+      perAgent.push(row)
+    }
+    return this.hydrate(perAgent)
   }
 
   async orgHasAny(orgId: OrgId): Promise<boolean> {
