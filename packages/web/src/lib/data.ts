@@ -766,6 +766,10 @@ export interface SessionStep {
   /** Authoring participant of a live multi-agent webchat step — keys the per-agent
    *  stream lane accumulation and the per-block attribution label. */
   agentId?: string
+  /** Hard lane boundary (the supersession marker): chunk accumulation for this
+   *  step's lane never merges across it, so a replacement generation starts
+   *  fresh blocks while the marker stays a visible part of the conversation. */
+  boundary?: boolean
   /** Display timestamp for live/mock-only steps. Persisted transcripts use their raw ts. */
   time?: string
   text: string

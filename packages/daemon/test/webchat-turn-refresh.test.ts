@@ -223,6 +223,90 @@ describe('webchat turn-final context refresh', () => {
     await daemon.stop()
   })
 
+  it('coalesces a busy follow-up even when its canonical millisecond was collision-bumped', async () => {
+    let onUpdate!: (sid: string, u: unknown) => void
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>((resolve) => (releaseFirst = resolve))
+    const prompts: string[] = []
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-wc-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sid: string, blocks: { text?: string }[]) => {
+        prompts.push(blocks.map((b) => b.text ?? '').join('\n'))
+        if (prompts.length === 1) {
+          onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'stale candidate' } })
+          await firstBlocked
+        } else {
+          onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'combined answer' } })
+        }
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent: unknown, cb: (sid: string, u: unknown) => void) => {
+        onUpdate = cb
+        return host as any
+      }
+    })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const first: RdChatEvent[] = []
+    const second: RdChatEvent[] = []
+    const posts: RdWebchatPost[] = []
+    ;(daemon as any).handleRelayMsg(
+      rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
+      (event: RdChatEvent) => first.push(event),
+      (post: RdWebchatPost) => posts.push(post)
+    )
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+
+    // A FOREIGN row (e.g. this agent's own earlier reply) already occupies the
+    // follow-up's canonical millisecond, so its admission row lands one slot
+    // later. The bumped ts must ride the queued message — otherwise the queue
+    // match misses and the follow-up runs again as a third prompt.
+    ;(daemon as any).store.appendTranscript({
+      channel: transcriptChannelKey(CONV, undefined),
+      thread: `webchat:${CONV}`,
+      ts: '1500',
+      sender: AGENT_ID,
+      kind: 'text',
+      text: 'earlier self-authored row'
+    })
+    const secondTurn = '66666666-6666-4666-8666-666666666666'
+    ;(daemon as any).handleRelayMsg(
+      rd(
+        {
+          op: 'turn',
+          text: 'also compare memory usage',
+          user: 'owner',
+          turnId: secondTurn,
+          post: { postId: secondTurn, at: 1_500 }
+        },
+        { msgId: 'm-2' }
+      ),
+      (event: RdChatEvent) => second.push(event),
+      (post: RdWebchatPost) => posts.push(post)
+    )
+    releaseFirst()
+
+    await vi.waitFor(() => expect(first.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    await vi.waitFor(() => expect(second.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(host.prompt).toHaveBeenCalledTimes(2) // regeneration absorbed it — no third prompt
+    expect(prompts[1]).toContain('[owner] also compare memory usage')
+    const secondDone = second.find((e) => e.kind === 'done')
+    expect(secondDone && secondDone.kind === 'done' ? secondDone.done.stopReason : undefined).toBe(
+      'coalesced_into_turn'
+    )
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.post.text).toBe('combined answer')
+    await daemon.stop()
+  })
+
   it('context-churn exhaustion closes the browser turn with stopReason context_churn and commits no post', async () => {
     let onUpdate!: (sid: string, u: unknown) => void
     let promptCount = 0

@@ -5262,11 +5262,22 @@ export class Daemon {
     // SessionManager.handle dedups in place (same canonical ts, sender, text).
     if (post && this.cfg.features.turnFinalContextRefresh) {
       const observedMention = attachmentMention(msg.attachments)
-      this.appendWebchatTextRow(transcriptChannelKey(chatId, undefined), `webchat:${chatId}`, String(post.at), {
-        sender: user,
-        recipient: result.agentId,
-        text: observedMention ? `${text}\n${observedMention}`.trim() : text
-      })
+      const observedTs = this.appendWebchatTextRow(
+        transcriptChannelKey(chatId, undefined),
+        `webchat:${chatId}`,
+        String(post.at),
+        {
+          sender: user,
+          recipient: result.agentId,
+          text: observedMention ? `${text}\n${observedMention}`.trim() : text
+        }
+      )
+      // The slot may have been collision-bumped (a self-authored row can occupy
+      // the canonical millisecond). The message must carry the ts its row
+      // ACTUALLY landed on: queue coalescing matches activations by
+      // transcriptCoords ts, and a mismatch would run the follow-up again as a
+      // separate turn after the regeneration already answered it.
+      msg.transcriptTs = observedTs
     }
     void this.dispatch(result.agentId, msg, undefined, stream).catch((err) => {
       if (!(err instanceof LifecycleCleanupBlockedError))

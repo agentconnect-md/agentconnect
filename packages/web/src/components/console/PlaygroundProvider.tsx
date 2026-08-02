@@ -322,7 +322,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i]!
             if (step.kind === 'msg' && step.agentId === undefined) return -1
-            if ((step.agentId ?? undefined) === agentId) return i
+            if ((step.agentId ?? undefined) !== agentId) continue
+            // The supersession marker is a hard boundary: the replacement
+            // generation starts fresh blocks instead of merging into it (or
+            // into the collapsed discarded work behind it).
+            if (step.boundary) return -1
+            return i
           }
           return -1
         })()
@@ -343,9 +348,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             const step = collapsed[i]!
             if (step.kind === 'msg' && step.agentId === undefined) break
             if ((step.agentId ?? undefined) !== agentId) continue
+            if (step.boundary) break
             if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan' }
           }
-          return [...collapsed, lane({ kind: 'plan', text: 'The conversation moved on — updating this answer…' })]
+          // The marker is a VISIBLE conversation step ('done', not the
+          // collapsible work lane) fenced with `boundary` so replacement chunks
+          // never merge into it.
+          return [
+            ...collapsed,
+            lane({ kind: 'done', text: 'The conversation moved on — updating this answer…', boundary: true })
+          ]
         }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {
