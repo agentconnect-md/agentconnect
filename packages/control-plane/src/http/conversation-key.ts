@@ -24,7 +24,10 @@ export function encodeConversationKey(key: ConversationKey): string | null {
 }
 
 export function decodeConversationKey(raw: string): ConversationKey | null {
-  if (UUID_RE.test(raw)) return { platform: 'webchat', tenantScope: null, channel: raw, thread: raw }
+  // The webchat session key's thread segment is the PREFIXED msgId form the
+  // daemon records (`webchat:<conversationId>`), not the bare id — the
+  // resolver must match rows as they are actually reported.
+  if (UUID_RE.test(raw)) return { platform: 'webchat', tenantScope: null, channel: raw, thread: `webchat:${raw}` }
   const decoded = Buffer.from(raw, 'base64url').toString('utf8')
   const parts = decoded.split(SEP)
   if (parts.length !== 4 || !parts[0] || !parts[2] || !parts[3]) return null

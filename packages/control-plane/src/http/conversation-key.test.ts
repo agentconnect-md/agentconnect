@@ -12,9 +12,12 @@ describe('conversation key codec', () => {
     expect(decodeConversationKey(encodeConversationKey(unscoped)!)).toEqual(unscoped)
   })
 
-  it('uses the bare conversation id for webchat', () => {
+  it('uses the bare conversation id for webchat; decode restores the prefixed thread', () => {
     const id = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
-    const key = { platform: 'webchat', tenantScope: null, channel: id, thread: id }
+    // Rows record thread as the daemon's msgId form (`webchat:<id>`); the
+    // bare-id key must round-trip onto that shape or the resolver matches
+    // nothing (the exact production bug this pins).
+    const key = { platform: 'webchat', tenantScope: null, channel: id, thread: `webchat:${id}` }
     expect(encodeConversationKey(key)).toBe(id)
     expect(decodeConversationKey(id)).toEqual(key)
   })
