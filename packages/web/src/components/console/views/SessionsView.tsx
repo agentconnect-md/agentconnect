@@ -177,8 +177,12 @@ export default function SessionsView() {
   const sessionHref = useCallback(
     (session: Session) => {
       // A multi-participant conversation row links to the merged page — the
-      // only surfaced view for it (merged-conversation-view.md §5.3).
-      if (session.conversationKey) return orgPath(`/conversations/${encodeURIComponent(session.conversationKey)}`)
+      // only surfaced view for it (merged-conversation-view.md §5.3). The test is
+      // `participants`, not the key: every grouped row carries a key now, and a
+      // one-participant conversation is still read as a session.
+      if ((session.participants?.length ?? 0) > 1 && session.conversationKey) {
+        return orgPath(`/conversations/${encodeURIComponent(session.conversationKey)}`)
+      }
       const id = canonicalSessionId(session)
       const query = new URLSearchParams(filterQuery)
       const provider = sessionPlatform(session)

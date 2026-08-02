@@ -92,21 +92,36 @@ export function pinnedIdsForOrg(pins: SessionPin[], orgId: string): string[] {
 /** Split `sessions` into the pinned ones (in pin order, newest pin first) and the
  *  rest (input order preserved). Matches on id alone, so a legacy pin whose
  *  organization was never recorded still groups correctly once its row appears. */
+/** The stored-pin ids a row answers to: every member of its conversation, or just
+ *  itself for an ordinary session. A conversation is identified in a list by its
+ *  newest member, and that moves whenever another participant answers — so a pin
+ *  recorded against the row's own id alone would come loose on ordinary activity. */
+export function sessionPinIds(row: { id: string; memberSessionIds?: string[] }): string[] {
+  return row.memberSessionIds?.length ? row.memberSessionIds : [row.id]
+}
+
 export function partitionPinned<T extends { id: string }>(
   sessions: T[],
-  pins: SessionPin[]
+  pins: SessionPin[],
+  // Which stored ids claim a row. A conversation row stands for several member
+  // sessions and is identified by whichever is newest, so matching on its `id`
+  // alone would silently drop the pin the moment another participant answered.
+  idsOf: (row: T) => readonly string[] = (row) => [row.id]
 ): { pinned: T[]; rest: T[] } {
-  const byId = new Map(sessions.map((s) => [s.id, s]))
+  const byId = new Map<string, T>()
+  for (const session of sessions) {
+    for (const id of idsOf(session)) if (!byId.has(id)) byId.set(id, session)
+  }
   const pinned: T[] = []
-  const seen = new Set<string>()
+  const seen = new Set<T>()
   for (const { id } of pins) {
     const hit = byId.get(id)
-    if (hit && !seen.has(id)) {
+    if (hit && !seen.has(hit)) {
       pinned.push(hit)
-      seen.add(id)
+      seen.add(hit)
     }
   }
-  return { pinned, rest: sessions.filter((s) => !seen.has(s.id)) }
+  return { pinned, rest: sessions.filter((s) => !seen.has(s)) }
 }
 
 function asPin(entry: unknown): SessionPin | null {

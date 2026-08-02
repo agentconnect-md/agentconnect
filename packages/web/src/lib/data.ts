@@ -924,9 +924,17 @@ export interface Session {
   /** Multi-agent webchat roster (webchat-multi-agents.md §3.1), primary first —
    *  present on live conversations with more than one participant. */
   participants?: Array<{ agentId: string; name: string; primary?: boolean }>
-  /** merged-conversation-view.md §5.1 key — present on grouped-list rows that
-   *  represent a multi-participant conversation. */
+  /** merged-conversation-view.md §5.1 key — the conversation a grouped-list row
+   *  stands for, whatever its member count. It is IDENTITY, not a claim that the
+   *  row is a merged view: that is `participants`. A single-participant row still
+   *  carries it, because filtering to one agent narrows the members, not the
+   *  conversation they belong to. */
   conversationKey?: string
+  /** Every member session of a grouped-list row's conversation, representative
+   *  first. The row's own `id` is only the representative, which moves as
+   *  participants take turns; anything that must survive that — a pin, an
+   *  already-loaded check — matches against this instead. */
+  memberSessionIds?: string[]
   /** Runtime id + daemonId the session ran with: the session-recorded snapshot,
    *  with the owning agent's current values as the legacy-row fallback (attached
    *  at flatten time, like `model`). Views resolve `daemon` to a display name. */
@@ -939,6 +947,19 @@ export interface Session {
  * persisted rows. Later rows win so callers can put the freshest representation last. */
 export function canonicalSessionId(session: Pick<Session, 'id' | 'realSessionId'>): string {
   return session.realSessionId ?? session.id
+}
+
+/**
+ * What a row IS, for lists that must not show one conversation twice: its
+ * conversation where it has one, and otherwise the session itself.
+ *
+ * Two rows of the same conversation can disagree about which session represents
+ * it — a filtered list names the newest member the filter still covers, while the
+ * open page names the newest member outright — so the session id cannot be the
+ * identity a list deduplicates on.
+ */
+export function conversationRowKey(session: Pick<Session, 'id' | 'realSessionId' | 'conversationKey'>): string {
+  return session.conversationKey ?? canonicalSessionId(session)
 }
 
 export function mergeCanonicalSessions(sessions: readonly Session[]): Session[] {

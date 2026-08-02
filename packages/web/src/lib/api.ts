@@ -1935,10 +1935,21 @@ export async function fetchConversations(
   const sessions = (page.conversations ?? []).map((conversation) => {
     const members = conversation.sessions.map(sessionFromDto)
     const rep = members[0]!
-    if (members.length <= 1) return rep
+    // Conversation IDENTITY rides along whatever the member count. Filtering to a
+    // single participant still returns the conversation, only with one member, and
+    // a row that dropped its key there could not be recognised as the same
+    // conversation the reader has open. What marks a row as a MERGED view is
+    // `participants`, not the key. `memberSessionIds` names every member so a
+    // consumer keyed on the representative — which moves as participants take
+    // turns — can follow the conversation instead of the session.
+    const identity = {
+      ...(conversation.key !== null ? { conversationKey: conversation.key } : {}),
+      memberSessionIds: members.map((member) => member.id)
+    }
+    if (members.length <= 1) return { ...rep, ...identity }
     return {
       ...rep,
-      ...(conversation.key !== null ? { conversationKey: conversation.key } : {}),
+      ...identity,
       // Names resolve at render time from the org agent list (the DTO carries
       // ids only); the placeholder keeps the field shape valid.
       participants: members.map((member, i) => ({

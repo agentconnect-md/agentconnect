@@ -46,6 +46,7 @@ import useSWR from 'swr'
 import {
   agentLabel,
   canonicalSessionId,
+  conversationRowKey,
   mergeCanonicalSessions,
   sessionChannelDisplay,
   type Agent,
@@ -60,6 +61,7 @@ import { groupSessionsByAge } from '@/lib/session-age'
 import {
   partitionPinned,
   pinnedIdsForOrg,
+  sessionPinIds,
   readSessionPins,
   SESSION_PIN_HYDRATE_MAX,
   toggleSessionPin,
@@ -76,10 +78,22 @@ interface RailRow {
    *  page is its only surfaced view (merged-conversation-view.md §5.3) — linking to
    *  the member session instead would just bounce through the redirect. */
   href: string
+  /** The id this row's pin toggle writes: the member already pinned when there is
+   *  one, so unpinning releases the pin that is actually claiming the row. */
+  pinId: string
   session?: Session
 }
 
 const EMPTY_RELATIONS: SessionRelationDto[] = []
+
+/** {@link sessionPinIds} over a rail row, whose id is canonical (a live playground
+ *  row still carries its synthetic route id). */
+function pinIdsOf(session: Session): string[] {
+  return sessionPinIds({
+    id: canonicalSessionId(session),
+    ...(session.memberSessionIds ? { memberSessionIds: session.memberSessionIds } : {})
+  })
+}
 
 /**
  * The rail's footprint with nothing in it — the shape every session detail state
@@ -170,8 +184,12 @@ export function SessionRail({
   // to load is simply not rendered — a 404 here means "missing or not authorized",
   // which is not proof of deletion, so the pin is left alone (see
   // lib/session-pins.ts).
+  // Every MEMBER of a listed conversation counts as loaded, not just the row's
+  // representative: a pin on the member who has since stopped being newest is
+  // already on screen as that conversation, and hydrating it would put the same
+  // conversation in the rail twice.
   const loadedIds = useMemo(
-    () => new Set([...sessions.map(canonicalSessionId), currentId, ...relatedIds]),
+    () => new Set([...sessions.flatMap(pinIdsOf), currentId, ...relatedIds]),
     [sessions, currentId, relatedIds]
   )
   const missingPinIds = useMemo(
@@ -200,15 +218,23 @@ export function SessionRail({
   // `lastActivityAt`, so this only decides where the merged rows land. The live
   // current row comes last so it replaces its persisted twin without losing streamed state.
   //
-  // The open conversation is dropped from the listed rows by KEY rather than left
-  // to the id merge below. Both name the newest member, but the list row names the
-  // newest member *the filter still covers* — narrow the filter to one of two
-  // participants and the two ids part company, putting the open conversation on
-  // screen twice.
+  // Rows are collapsed by CONVERSATION before the id merge. Two rows of one
+  // conversation can carry different representatives — the list names the newest
+  // member the FILTER still covers, `current` names the newest member outright —
+  // so narrowing to one of two participants would otherwise put the open
+  // conversation on screen twice. Later entries win, which is why `current` is
+  // last: it is the live row, and it must not be replaced by its persisted twin.
   const rows = useMemo(() => {
-    const currentKey = current.conversationKey
-    const listed = currentKey ? sessions.filter((s) => s.conversationKey !== currentKey) : sessions
-    return mergeCanonicalSessions([...listed, ...(hydratedPins ?? []), current]).sort((a, b) =>
+    const byConversation = new Map<string, Session>()
+    for (const session of [...sessions, ...(hydratedPins ?? []), current]) {
+      const key = conversationRowKey(session)
+      const seen = byConversation.get(key)
+      // Layered, not replaced: `current` carries the live state but not the roster
+      // the list row was built with, and dropping that would cost the row its
+      // members — the very thing its pin and its link are matched on.
+      byConversation.set(key, seen ? { ...seen, ...session } : session)
+    }
+    return mergeCanonicalSessions([...byConversation.values()]).sort((a, b) =>
       (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '')
     )
   }, [sessions, current, hydratedPins])
@@ -217,7 +243,7 @@ export function SessionRail({
     () => (hasFamily ? rows.filter((session) => !relatedIds.has(session.id)) : rows),
     [hasFamily, relatedIds, rows]
   )
-  const { pinned, rest } = useMemo(() => partitionPinned(ordinaryRows, pins), [ordinaryRows, pins])
+  const { pinned, rest } = useMemo(() => partitionPinned(ordinaryRows, pins, pinIdsOf), [ordinaryRows, pins])
   // Dated groups cover the UNPINNED rows only — a pin is an explicit "keep this at
   // the top", which outranks how old the run is. `now` is read per render; the rail
   // only renders once its agent-filtered page has landed on the client, so there is
@@ -242,16 +268,21 @@ export function SessionRail({
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
     const id = canonicalSessionId(s)
+    // The merged page is the only surfaced view of a MULTI-participant
+    // conversation (§5.3). A conversation of one is still read as a session, so
+    // the test is `participants` and not the key every grouped row now carries.
+    const merged = (s.participants?.length ?? 0) > 1 && s.conversationKey
     return {
-      // The SESSION id, even for a conversation row: it is what the pin store
-      // records and what `current` is matched against. Only the link differs.
+      // The SESSION id: it is what `current` is matched against and what a fresh
+      // pin records. Pin LOOKUP goes through every member (see sessionPinIds).
       id,
       platform: channel.platform,
       title: s.title,
       tooltip: `${s.title}\n${s.time} · ${channel.label}`,
-      href: s.conversationKey
-        ? orgPath(`/conversations/${encodeURIComponent(s.conversationKey)}`)
+      href: merged
+        ? orgPath(`/conversations/${encodeURIComponent(s.conversationKey!)}`)
         : orgPath(`/sessions/${encodeURIComponent(id)}`),
+      pinId: rowPin(s).id,
       session: s
     }
   }
@@ -262,10 +293,18 @@ export function SessionRail({
       platform: relation.platform,
       title,
       tooltip: title,
-      href: orgPath(`/sessions/${encodeURIComponent(relation.id)}`)
+      href: orgPath(`/sessions/${encodeURIComponent(relation.id)}`),
+      pinId: relation.id
     }
   }
   const isPinned = (sessionId: string) => pins.some((pin) => pin.id === sessionId)
+  // A conversation row is pinned when ANY of its members is, and unpinning it
+  // must release that same member — pinning the current representative instead
+  // would leave the old pin behind, still claiming the row.
+  const rowPin = (s: Session) => {
+    const ids = pinIdsOf(s)
+    return { pinned: ids.some(isPinned), id: ids.find(isPinned) ?? canonicalSessionId(s) }
+  }
   const row = (item: RailRow, pinnedRow: boolean, depth: 0 | 1 | 2 = 0, on = false) => {
     return (
       <div
@@ -312,7 +351,7 @@ export function SessionRail({
         </Link>
         <button
           type="button"
-          onClick={() => togglePin(item.id)}
+          onClick={() => togglePin(item.pinId)}
           aria-pressed={pinnedRow}
           title={pinnedRow ? 'Unpin session' : 'Pin session'}
           className={`absolute top-1/2 right-[7px] z-10 flex h-[19px] w-[19px] -translate-y-1/2 items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
@@ -343,7 +382,7 @@ export function SessionRail({
                 </div>
               )}
               {parent && row(relationRow(parent), isPinned(parent.id))}
-              {row(sessionRow(current), isPinned(currentId), parent ? 1 : 0, true)}
+              {row(sessionRow(current), rowPin(current).pinned, parent ? 1 : 0, true)}
               {conversation && children.length > 0 && (
                 <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
                   Delegations

@@ -11,6 +11,7 @@ import {
   effortField,
   fastModeAvailableFor,
   lifecycleStatus,
+  conversationRowKey,
   mergeCanonicalSessions,
   modelCapability,
   modelLabel,
@@ -123,6 +124,23 @@ describe('mergeCanonicalSessions', () => {
     expect(mergeCanonicalSessions([persisted, live])).toEqual([
       expect.objectContaining({ id: 'session-real', realSessionId: 'session-real', title: 'Live title' })
     ])
+  })
+
+  describe('conversationRowKey', () => {
+    it('gives two rows of one conversation the same identity, whatever represents them', () => {
+      // A filtered list names the newest member the filter still covers; the open
+      // page names the newest member outright. Narrow a two-agent filter to one
+      // participant and those part company — on the session id the conversation
+      // would list itself twice.
+      const listed = { ...persisted, id: 'member-a', conversationKey: 'conv-1' }
+      const open = { ...persisted, id: 'member-b', conversationKey: 'conv-1' }
+      expect(conversationRowKey(listed)).toBe(conversationRowKey(open))
+    })
+
+    it('falls back to the session for a row that belongs to no conversation', () => {
+      expect(conversationRowKey(persisted)).toBe('session-real')
+      expect(conversationRowKey({ ...persisted, id: 'pg_x', realSessionId: 'session-real' })).toBe('session-real')
+    })
   })
 })
 

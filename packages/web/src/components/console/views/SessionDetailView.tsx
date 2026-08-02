@@ -2364,11 +2364,14 @@ export default function SessionDetailView() {
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
       <SessionRail
         sessions={railSessions}
-        // In conversation mode the open row IS a conversation, so it has to say so:
-        // the grouped list identifies its rows by key, and a `current` merged in
-        // without one would overwrite the matching row with a bare session and
-        // send the reader back through the member→conversation redirect.
-        current={conversationMode && conversationKey ? { ...session, conversationKey } : session}
+        // The open row has to name its conversation, because that is how the rail
+        // collapses it against the grouped list — matching on the session id alone
+        // would double the row whenever the two disagree on which member is
+        // newest. `selfKey` is the same §5.1 key computed for the redirect probe,
+        // so a single-participant thread is deduplicated on exactly the same terms.
+        current={
+          (conversationKey ?? selfKey) ? { ...session, conversationKey: (conversationKey ?? selfKey)! } : session
+        }
         total={railSessionTotal}
         agentIds={railFilter.agentIds}
         filterTouched={railFilter.touched}
