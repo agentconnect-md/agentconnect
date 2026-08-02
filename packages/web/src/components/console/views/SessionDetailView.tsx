@@ -51,7 +51,7 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
-import { Icon } from '@/components/ui'
+import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
@@ -507,6 +507,7 @@ type Turn =
       sp: ReturnType<typeof speaker>
       agent: Agent | null
       avatarUrl?: string | null
+      avatarInitials?: string
       sourceLabel: string
       time: string
       text: string
@@ -519,11 +520,13 @@ type Turn =
 function ParticipantAvatar({
   agent,
   avatarUrl,
+  avatarInitials,
   sp,
   isCron
 }: {
   agent: Agent | null
   avatarUrl?: string | null
+  avatarInitials?: string
   sp: ReturnType<typeof speaker>
   isCron: boolean
 }) {
@@ -534,17 +537,18 @@ function ParticipantAvatar({
     >
       {agent ? (
         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
-      ) : avatarUrl ? (
-        <img src={avatarUrl} alt="" className="object-cover" style={{ width: '100%', height: '100%' }} />
       ) : isCron ? (
         <Icon name="calendar-clock" size={14} color="var(--text-secondary)" />
       ) : (
-        <span
-          className="flex h-full w-full items-center justify-center rounded-[inherit]"
-          style={{ background: sp.avBg, color: sp.avText }}
-        >
-          {sp.initials || '?'}
-        </span>
+        <Avatar
+          src={avatarUrl}
+          initials={avatarInitials || sp.initials || '?'}
+          size={26}
+          bg={sp.avBg}
+          fg={sp.avText}
+          fontSize={9.5}
+          style={{ borderRadius: 'inherit' }}
+        />
       )}
     </span>
   )
@@ -696,7 +700,7 @@ export default function SessionDetailView() {
     pgSetFast,
     pgCancel
   } = usePlayground()
-  const { me } = useProfile()
+  const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
   // Desktop header "Details" popover (run facts: status, duration, tokens, …).
   const [detailOpen, setDetailOpen] = useState(false)
@@ -1162,7 +1166,8 @@ export default function SessionDetailView() {
         const senderAgent = participantAgent(m.sender, m.text, m.trustedAgentBot)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
-        const participant = isSelf(m.sender)
+        const self = isSelf(m.sender)
+        const participant = self
           ? speaker('@you')
           : speaker(
               senderAgentName ?? m.sender,
@@ -1173,7 +1178,8 @@ export default function SessionDetailView() {
           kind: 'user',
           sp: participant,
           agent: senderAgent ?? null,
-          avatarUrl: isSelf(m.sender) ? me?.picture : memberPictureByIdentity.get(m.sender),
+          avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(m.sender),
+          avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
           time: formatTranscriptTime(m.ts),
           text: m.text,
@@ -1191,13 +1197,17 @@ export default function SessionDetailView() {
         const cron = asCron(who)
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
-        const participant = speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
+        const self = isSelf(who)
+        const participant = self
+          ? speaker('@you')
+          : speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
         speakers.set(senderAgent?.id ?? who, participant.name)
         turns.push({
           kind: 'user',
           sp: participant,
           agent: senderAgent ?? null,
-          avatarUrl: isSelf(who) ? me?.picture : memberPictureByIdentity.get(who),
+          avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
+          avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? (firstMsg ? session.time : ''),
           text: stp.text,
@@ -1227,13 +1237,15 @@ export default function SessionDetailView() {
         const who = stp.who ?? session.user
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
-        const participant = speaker(senderAgentName ?? who, senderAgentName)
+        const self = isSelf(who)
+        const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
         speakers.set(senderAgent?.id ?? who, participant.name)
         turns.push({
           kind: 'user',
           sp: participant,
           agent: senderAgent ?? null,
-          avatarUrl: isSelf(who) ? me?.picture : memberPictureByIdentity.get(who),
+          avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
+          avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? '',
           text: stp.text,
@@ -1720,6 +1732,7 @@ export default function SessionDetailView() {
                     <ParticipantAvatar
                       agent={turn.agent}
                       avatarUrl={turn.avatarUrl}
+                      avatarInitials={turn.avatarInitials}
                       sp={turn.sp}
                       isCron={turn.isCron}
                     />

@@ -6,7 +6,7 @@ import {
   type SessionDetailDto,
   type SessionDto
 } from './api'
-import { platName, sessionPlatform } from './data'
+import { isSelfSender, platName, sessionPlatform } from './data'
 import {
   githubRepoIdFromSessionTriggerFilter,
   sessionAttributionAgentAuthors,
@@ -212,6 +212,12 @@ describe('sessionSenderLabel', () => {
     expect(sessionSenderLabel('agent-id', 'agent-id', agents, members, me)).toBe('Release agent')
     expect(sessionSenderLabel('member-id', 'member-id', agents, members, me)).toBe('Ada')
     expect(sessionSenderLabel('me', 'me', agents, members, me)).toBe('You')
+  })
+})
+
+describe('isSelfSender', () => {
+  it('recognizes the live Playground viewer marker before /me is available', () => {
+    expect(isSelfSender('@you', null)).toBe(true)
   })
 })
 
