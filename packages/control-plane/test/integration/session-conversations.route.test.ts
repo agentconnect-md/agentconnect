@@ -434,6 +434,16 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     expect((soloAlone.json() as ConversationsBody).conversations[0]!.sessions.map((s) => s.sessionId)).toEqual([
       'sess-a-only'
     ])
+
+    // Membership is the conversation's, not the query's, here too — the key form
+    // and the grouped page must not disagree about who took part.
+    const filtered = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${keyOf('T-1')}&agentId=${AGENT_A}`
+    })
+    const conv = (filtered.json() as ConversationsBody).conversations[0]!
+    expect(conv.sessions.map((s) => s.sessionId)).toEqual(['sess-shared-a'])
+    expect(conv.memberSessionIds).toEqual(['sess-shared-b', 'sess-shared-a'])
   })
 
   it('answers empty when any requested agent is not visible to the caller', async () => {

@@ -527,6 +527,79 @@ describe('session visibility — Slack conversation audience', () => {
   })
 })
 
+describe('session visibility — membership across an agent filter', () => {
+  it('resolves the scopes of members the filter excluded, so membership does not lose them', async () => {
+    // A conversation where A is org-visible and B is visible ONLY through the
+    // Slack audience. Filtering the list to A still has to report B as a member
+    // (merged-conversation-view.md §5.2) — and that only works if B's scope was
+    // resolved, because the membership query is authorized against the viewer
+    // snapshot built from those scopes. Resolve scopes over the narrower filter
+    // and B is dropped for having been filtered out, not for being invisible.
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentA = await seedAgent(prisma, randomUUID(), { daemonId })
+    const agentB = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const credentialId = randomUUID()
+    const thread = `T-${randomUUID()}`
+    const sessionA = `s-mix-a-${randomUUID()}`
+    const sessionB = `s-mix-b-${randomUUID()}`
+
+    await repo.recordMilestone({
+      sessionId: SessionId(sessionA),
+      agentId: AgentId(agentA),
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_MIXED',
+      thread,
+      at: new Date(1_000),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' }
+    })
+    await repo.recordMilestone({
+      sessionId: SessionId(sessionB),
+      agentId: AgentId(agentB),
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C_MIXED',
+      thread,
+      at: new Date(2_000),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: {
+        provider: 'slack',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'T_INSTALL',
+          resourceKind: 'conversation',
+          resourceKey: 'C_MIXED',
+          credentialKind: 'bot',
+          credentialId
+        }
+      }
+    })
+    const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    expect((await repo.get(SessionId(sessionB)))?.visibility).toBe('external')
+
+    const filtered = { agentIds: [AgentId(agentA)] }
+    const widened = { ...filtered, memberAgentIds: [AgentId(agentA), AgentId(agentB)] }
+    expect(await repo.listExternalScopes(filtered)).toEqual([])
+    const scopes = await repo.listExternalScopes(widened)
+    expect(scopes).toHaveLength(1)
+
+    const viewer = {
+      role: 'owner' as const,
+      identitySet: [],
+      externalAccess: {
+        policies: [{ provider: 'slack' as const, readFenceRev: enabled.policy.readFenceRev }],
+        allowedScopes: scopes.map((scope) => ({ id: scope.id, aclRevision: scope.aclRevision })),
+        decisionAt: new Date()
+      }
+    }
+    const page = await repo.listConversationPage({ ...widened, viewer, limit: 10, includeTotal: false })
+    const conversation = page.conversations.find((c) => c.key.thread === thread)!
+    expect(conversation.sessions.map((s) => s.id)).toEqual([sessionA])
+    expect(conversation.memberSessionIds).toEqual([sessionB, sessionA])
+  })
+})
+
 describe('session visibility — GitHub repository audience', () => {
   it('exposes an independent owner-only sync setting', async () => {
     const owner = await makeUser(`sv-github-owner-${randomUUID()}`, 'owner')

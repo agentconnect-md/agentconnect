@@ -532,12 +532,15 @@ export function sessionRoutes(deps: HttpDeps) {
         // a path that took `agentIds` alone would silently answer the wider
         // "either agent" question under the same query string.
         const conversationAgentIds = requested.length > 1 ? selectedAgentIds : undefined
+        // Membership is read over everything the caller may see, so a grouped row
+        // still names the participants an agent filter kept out of its `sessions`.
+        // It reaches the query before the viewer is resolved, because the scopes
+        // that authorize those extra members have to be resolved with it.
+        const memberAgentIds = requested.length > 0 ? visibleAgentIds : undefined
         const query = {
           agentIds: selectedAgentIds,
           ...(conversationAgentIds ? { conversationAgentIds } : {}),
-          // Membership is read over everything the caller may see, so a grouped row
-          // still names the participants an agent filter kept out of its `sessions`.
-          ...(requested.length > 0 ? { memberAgentIds: visibleAgentIds } : {}),
+          ...(memberAgentIds ? { memberAgentIds } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
@@ -553,32 +556,35 @@ export function sessionRoutes(deps: HttpDeps) {
         // §5.2 key-addressed resolver: a bounded metadata-only member lookup for
         // a direct conversation load — the paginated list is not a key lookup.
         if (conversationKey) {
+          // Resolved over the MEMBERSHIP agents and split here, so the key form
+          // reports the same membership the grouped page does — the two must not
+          // disagree about who took part just because one of them was addressed
+          // by key. The participant arm still rides along: addressing a
+          // conversation by key must not widen the same repeated `agentId` into an
+          // `IN` filter, or a key that holds A but not B would answer with A's
+          // members when the caller asked for a conversation the two of them share.
           const members = await deps.repos.session.listConversationMembers(
-            // Carries the participant arm too: addressing a conversation by key
-            // must not widen the same repeated `agentId` into an `IN` filter, or
-            // a key that holds A but not B would answer with A's members when
-            // the caller asked for a conversation the two of them share.
-            { agentIds: selectedAgentIds, conversationAgentIds, viewer },
+            { agentIds: memberAgentIds ?? selectedAgentIds, conversationAgentIds, viewer },
             conversationKey
           )
-          const hookMetadata = await hookMetadataForSessions(deps, members, orgOf(req))
+          const selected = new Set<string>(selectedAgentIds)
+          const rows = members.filter((session) => selected.has(session.agentId))
+          const hookMetadata = await hookMetadataForSessions(deps, rows, orgOf(req))
           return {
             conversations:
-              members.length > 0
+              rows.length > 0
                 ? [
                     {
                       key: encodeConversationKey(conversationKey),
                       platform: conversationKey.platform,
                       channel: conversationKey.channel,
                       thread: conversationKey.thread,
-                      sessions: members.map((session) => sessionDto(session, hookMetadata)),
-                      // The resolver already answers per agent over what the caller
-                      // asked for, so its rows ARE its membership.
+                      sessions: rows.map((session) => sessionDto(session, hookMetadata)),
                       memberSessionIds: members.map((session) => session.id)
                     }
                   ]
                 : [],
-            total: members.length > 0 ? 1 : 0,
+            total: rows.length > 0 ? 1 : 0,
             nextCursor: null,
             accessSyncDegraded: access.degraded
           }

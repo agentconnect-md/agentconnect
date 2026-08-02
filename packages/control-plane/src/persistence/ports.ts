@@ -1035,6 +1035,17 @@ export interface SessionFilterQuery extends SessionQuery {
   triggeredBy?: string
   githubHookIds?: HookId[]
   hookTriggerIds?: HookId[]
+  /** Agents whose sessions count as conversation MEMBERS, when the caller may see
+   *  more than the filter returns. Absent ⇒ `agentIds`, i.e. membership and row
+   *  scope are the same set. Only widens membership — which conversations qualify,
+   *  their order, and the rows returned all stay on `agentIds`.
+   *
+   *  It widens EXTERNAL SCOPE resolution with it. A member visible only through a
+   *  provider audience is authorized by a scope the caller's viewer snapshot has
+   *  to carry; resolving scopes over the narrower set would leave the membership
+   *  query unable to authorize the very rows it was widened to find, and drop
+   *  them again for a reason that has nothing to do with visibility. */
+  memberAgentIds?: AgentId[]
   /** Conversation-participant filter: keep only rows whose CONVERSATION
    *  (merged-conversation-view.md §5.1 key) carries a visible session for every
    *  listed agent. `agentIds` still decides which rows come back; this decides
@@ -1057,11 +1068,6 @@ export interface SessionFilterQuery extends SessionQuery {
 export interface SessionPageQuery extends SessionFilterQuery {
   limit: number
   includeTotal: boolean
-  /** Agents whose sessions count as conversation MEMBERS, when the caller may see
-   *  more than the filter returns. Absent ⇒ `agentIds`, i.e. membership and row
-   *  scope are the same set. Only widens `memberSessionIds`; which conversations
-   *  qualify, their order, and the rows returned all stay on `agentIds`. */
-  memberAgentIds?: AgentId[]
 }
 
 export type SessionFacetQuery = Omit<SessionFilterQuery, 'cursor' | 'limit'>
