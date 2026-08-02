@@ -131,6 +131,7 @@ type WebchatEvent =
   | { kind: 'tool_call'; toolCallId: string; title: string; status: string }
   | { kind: 'tool_update'; toolCallId: string; status: string }
   | { kind: 'session_info'; title: string }
+  | { kind: 'superseded'; generation: number }
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
@@ -321,7 +322,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i]!
             if (step.kind === 'msg' && step.agentId === undefined) return -1
-            if ((step.agentId ?? undefined) === agentId) return i
+            if ((step.agentId ?? undefined) !== agentId) continue
+            // The supersession marker is a hard boundary: the replacement
+            // generation starts fresh blocks instead of merging into it (or
+            // into the collapsed discarded work behind it).
+            if (step.boundary) return -1
+            return i
           }
           return -1
         })()
@@ -331,6 +337,28 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           step,
           ...steps.slice(i + 1)
         ]
+        if (ev.kind === 'superseded') {
+          // Turn-final context refresh discarded the streamed candidate
+          // (webchat-multi-agents.md §5.4): COLLAPSE the discarded answer —
+          // this lane's streamed 'done' blocks since the last user message move
+          // into the collapsible work lane ('plan') — then break the lane with
+          // a marker so the replacement starts a fresh answer block.
+          const collapsed = [...steps]
+          for (let i = collapsed.length - 1; i >= 0; i--) {
+            const step = collapsed[i]!
+            if (step.kind === 'msg' && step.agentId === undefined) break
+            if ((step.agentId ?? undefined) !== agentId) continue
+            if (step.boundary) break
+            if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan' }
+          }
+          // The marker is a VISIBLE conversation step ('done', not the
+          // collapsible work lane) fenced with `boundary` so replacement chunks
+          // never merge into it.
+          return [
+            ...collapsed,
+            lane({ kind: 'done', text: 'The conversation moved on — updating this answer…', boundary: true })
+          ]
+        }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {
             return replaceAt(laneIndex, { ...last, text: last.text + ev.text, observedAtMs })

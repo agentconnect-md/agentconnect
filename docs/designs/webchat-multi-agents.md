@@ -388,10 +388,11 @@ concurrent agent streams need only an attribution field:
 - `cancel` gains optional `agentId`; absent means every live turn in the
   conversation (today's resolution is already conversation-scoped,
   `daemon.ts:5240-5267`, but must stop matching only the first hit).
-- `WebchatOutput`/`WebchatDone` gain a `generation` counter and `WebchatDone`
-  a `superseded` stop reason, used by the turn-final context refresh
-  (section 5.4): a superseded generation's stream ends, and the replacement
-  streams under the same `turnId` with `generation + 1`.
+- `WebchatEvent` gains a `superseded` kind (carrying the replacement's
+  generation ordinal), used by the turn-final context refresh (section 5.4):
+  the discarded candidate's lane collapses in place and the replacement
+  streams under the same `turnId`. Supersession is an event rather than a
+  terminal frame — the turn still ends with exactly one `done`.
 
 ### 5.4 Turn-final context refresh before commit
 
@@ -423,17 +424,26 @@ multi-agent webchat adopts the same workflow with three adaptations:
   the audience is a shared channel; the webchat live stream is a watch
   surface private to the one human who is also the only source of human
   churn. Tokens keep streaming as today. When the final refresh invalidates a
-  candidate, the browser receives `done { stopReason: 'superseded' }` plus a
-  chrome notice ("the conversation moved on — updating the answer"), and the
-  replacement generation streams under the same `turnId`. Only the accepted
-  generation becomes the canonical post, fans out as context, and is recorded
-  as delivered; discarded generations follow that design's transcript and
-  usage rules — audit-visible, usage counted, never delivered.
+  candidate, the browser receives a `superseded` stream EVENT (carrying the
+  replacement's generation ordinal) — not a terminal frame: the turn still
+  ends with exactly one `done`, so replay windows, busy state, and older
+  browsers (which ignore unknown event kinds) stay coherent. The console
+  collapses the lane with a "the conversation moved on — updating this
+  answer" marker and the replacement generation streams under the same
+  `turnId`. Only the accepted generation becomes the canonical post, fans
+  out as context, and is recorded as delivered; discarded generations follow
+  that design's transcript and usage rules — audit-visible, usage counted,
+  never delivered.
+- **One co-hosting subtlety.** A co-hosted participant dispatching the SAME
+  user turn bumps the shared trigger row's transcript revision (its
+  recipient-delivery write), which would re-surface this agent's own trigger
+  as a "new" message at the final fence. The trigger's canonical `at` is
+  carried on the message, so the invalidation filter excludes that exact ts.
 
 Retry budgets are the IM defaults (three replacement generations, a
-two-minute regeneration cap, the 50-event replay cap). Exhaustion follows the
-context-churn terminalization rules, with the daemon-authored notice rendered
-as chrome in the conversation.
+two-minute regeneration cap, the 50-event replay cap). Exhaustion closes the
+browser turn explicitly — a daemon-authored warning message event followed by
+`done { stopReason: 'context_churn' }` — and commits no canonical post.
 
 Two scope rules:
 

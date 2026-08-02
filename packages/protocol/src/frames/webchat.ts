@@ -79,7 +79,15 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // daemon persists it (session/list surfaces it on the persisted row); this streams
   // the same value so the LIVE playground session renames itself in place, matching
   // what a Slack session shows once its title lands.
-  z.object({ kind: z.literal('session_info'), title: z.string() })
+  z.object({ kind: z.literal('session_info'), title: z.string() }),
+  // A turn-final context refresh discarded the streamed candidate
+  // (webchat-multi-agents.md §5.4): the conversation changed while the agent was
+  // answering, so the browser collapses this lane's streamed text in place and
+  // the replacement generation streams next under the SAME turnId. `generation`
+  // is the replacement's ordinal (1 = first retry). An event rather than a
+  // terminal frame: the turn still ends with exactly one `done`, so replay,
+  // busy-state, and older browsers (which ignore unknown kinds) stay coherent.
+  z.object({ kind: z.literal('superseded'), generation: z.number().int() })
 ])
 export type WebchatEvent = z.infer<typeof WebchatEvent>
 
