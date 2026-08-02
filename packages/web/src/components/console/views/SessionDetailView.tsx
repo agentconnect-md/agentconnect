@@ -163,8 +163,28 @@ interface FmtStep {
   code: string
   files: { tag: string; path: string; color: string }[]
   time?: string
+  // A peer participant's message attachment (rendered like the user bubble's).
+  image?: SessionImage
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
+}
+
+// A bare text step (no lane chrome) — how a peer participant's message renders
+// inside its agent block.
+function plainStep(text: string, time?: string, image?: SessionImage): FmtStep {
+  return {
+    lane: '',
+    laneColor: 'var(--text-tertiary)',
+    dot: 'var(--text-disabled)',
+    weight: 400,
+    textColor: 'var(--text-primary)',
+    codeColor: 'var(--text-secondary)',
+    text,
+    code: '',
+    files: [],
+    ...(time ? { time } : {}),
+    ...(image ? { image } : {})
+  }
 }
 
 // A step's non-text extras (code block, file chips, captured tool body) — rendered
@@ -1246,14 +1266,36 @@ export default function SessionDetailView() {
 
   const turns: Turn[] = []
   const speakers = new Map<string, string>()
+  // Another agent speaking in this session — a webchat peer participant or a
+  // trusted a2a bot — renders as its own left-side agent block: the right side
+  // is reserved for humans. Groups consecutive rows like live bot steps.
+  const pushAgentTurn = (agent: Agent, step: FmtStep): void => {
+    const name = agentLabel(agent)
+    speakers.set(agent.id, name)
+    let last = turns[turns.length - 1]
+    if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
+      last = { kind: 'bot', agentName: name, agentId: agent.id, model: '', time: '', steps: [] }
+      turns.push(last)
+    }
+    last.steps.push(step)
+    if (!last.time && step.time) last.time = step.time
+  }
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
     for (const m of visibleMsgs ?? []) {
       if (m.sender === session.agentId) {
         let last = turns[turns.length - 1]
-        if (!last || last.kind !== 'bot') {
-          last = { kind: 'bot', agentName: session.agentName ?? '', model: session.model ?? '', time: '', steps: [] }
+        const ownerName = session.agentName ?? ''
+        if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
+          last = {
+            kind: 'bot',
+            agentName: ownerName,
+            agentId: m.sender,
+            model: session.model ?? '',
+            time: '',
+            steps: []
+          }
           turns.push(last)
         }
         const step = msgStep(m)
@@ -1266,6 +1308,10 @@ export default function SessionDetailView() {
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
         const self = isSelf(m.sender)
+        if (senderAgent && !self) {
+          pushAgentTurn(senderAgent, { ...msgStep(m), ...(m.attachments?.[0] ? { image: m.attachments[0] } : {}) })
+          continue
+        }
         const participant = self
           ? speaker('@you')
           : speaker(
@@ -1297,6 +1343,11 @@ export default function SessionDetailView() {
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
+        if (senderAgent && !self) {
+          pushAgentTurn(senderAgent, plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image))
+          firstMsg = false
+          return
+        }
         const participant = self
           ? speaker('@you')
           : speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
@@ -1355,6 +1406,10 @@ export default function SessionDetailView() {
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
+        if (senderAgent && !self) {
+          pushAgentTurn(senderAgent, plainStep(stp.text, stp.time ?? '', stp.image))
+          continue
+        }
         const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
         speakers.set(senderAgent?.id ?? who, participant.name)
         turns.push({
@@ -1910,6 +1965,13 @@ export default function SessionDetailView() {
                           </div>
                           {textSteps.map((st, si) => (
                             <div key={si} className={si > 0 ? 'mt-2' : ''}>
+                              {st.image && (
+                                <img
+                                  src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                  alt={st.image.name}
+                                  className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+                                />
+                              )}
                               {st.text && (
                                 <div className="font-sans text-[13.5px] leading-[1.6] whitespace-pre-wrap text-(--text-primary)">
                                   <MessageText text={st.text} />
@@ -2087,7 +2149,9 @@ export default function SessionDetailView() {
                   )}
                   <textarea
                     className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-                    placeholder={`Message ${session.agentName}…`}
+                    placeholder={
+                      (session.participants?.length ?? 0) > 1 ? 'Message everyone…' : `Message ${session.agentName}…`
+                    }
                     value={pgInput}
                     onChange={(e) => setPgInput(e.target.value)}
                     onPaste={(event) => {
