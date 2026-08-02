@@ -516,7 +516,7 @@ type Turn =
       isCron: boolean
       cronId: string | null
     }
-  | { kind: 'bot'; agentName: string; model: string; time: string; steps: FmtStep[] }
+  | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[] }
 
 function ParticipantAvatar({
   agent,
@@ -1315,14 +1315,24 @@ export default function SessionDetailView() {
         })
         firstMsg = false
       } else {
-        // Multi-agent conversations attribute live steps per participant
-        // (`who`/`agentId` from the stream lane); break the bot-turn grouping
-        // when the author changes so each block carries the right name.
-        const stepAgentName = stp.who ?? session.agentName ?? ''
-        if (stp.who) speakers.set(stp.agentId ?? stp.who, stp.who)
+        // Multi-agent conversations attribute live steps per participant. The
+        // lane's `agentId` is authoritative (stamped from the stream cursor);
+        // resolve its display name at RENDER time from the org agent list —
+        // stream-time `who` can be missing (the socket closure predates the
+        // session state) and adopted sessions never had a roster.
+        const stepAgent = stp.agentId ? agents.find((a) => a.id === stp.agentId) : undefined
+        const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
+        if (stp.agentId || stp.who) speakers.set(stp.agentId ?? stepAgentName, stepAgentName)
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || last.agentName !== stepAgentName) {
-          last = { kind: 'bot', agentName: stepAgentName, model: session.model ?? '', time: '', steps: [] }
+          last = {
+            kind: 'bot',
+            agentName: stepAgentName,
+            ...(stp.agentId ? { agentId: stp.agentId } : {}),
+            model: session.model ?? '',
+            time: '',
+            steps: []
+          }
           turns.push(last)
         }
         const step = fmtStep(stp)
@@ -1357,11 +1367,19 @@ export default function SessionDetailView() {
           cronId: null
         })
       } else {
-        const stepAgentName = stp.who ?? session.agentName ?? ''
-        if (stp.who) speakers.set(stp.agentId ?? stp.who, stp.who)
+        const stepAgent = stp.agentId ? agents.find((a) => a.id === stp.agentId) : undefined
+        const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
+        if (stp.agentId || stp.who) speakers.set(stp.agentId ?? stepAgentName, stepAgentName)
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || last.agentName !== stepAgentName) {
-          last = { kind: 'bot', agentName: stepAgentName, model: session.model ?? '', time: '', steps: [] }
+          last = {
+            kind: 'bot',
+            agentName: stepAgentName,
+            ...(stp.agentId ? { agentId: stp.agentId } : {}),
+            model: session.model ?? '',
+            time: '',
+            steps: []
+          }
           turns.push(last)
         }
         const step = fmtStep(stp)
@@ -1865,7 +1883,16 @@ export default function SessionDetailView() {
                     return (
                       <div key={`${session.id}:${ti}`} className="flex items-start gap-[9px]">
                         <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                          <AgentIconView icon={owner?.icon} runtime={agentRuntime || turn.model} size={26} />
+                          <AgentIconView
+                            icon={
+                              (turn.agentId ? agents.find((a) => a.id === turn.agentId) : owner)?.icon ?? owner?.icon
+                            }
+                            runtime={
+                              (turn.agentId ? agents.find((a) => a.id === turn.agentId)?.runtime : undefined) ??
+                              (agentRuntime || turn.model)
+                            }
+                            size={26}
+                          />
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="mb-[5px] flex items-center gap-[7px]">

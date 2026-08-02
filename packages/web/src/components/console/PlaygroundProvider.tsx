@@ -204,6 +204,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // where the relay applied the all-participants default) create its stream
   // lane lazily instead of dropping the reply.
   const pendingTurnIds = useRef<Map<string, string>>(new Map())
+  // Participant display names per session id, mirrored in a ref: the socket's
+  // message handlers are closures captured when the socket opened — often the
+  // same tick openPlayground staged the session — so state-based lookups there
+  // would read a stale snapshot and stamp every step without a name.
+  const rosterNames = useRef<Map<string, Map<string, string>>>(new Map())
   // One ordering cursor per stream LANE — a multi-agent turn runs one lane per
   // targeted participant (webchat-multi-agents.md §5.3); keys from lib/webchat-lanes.ts.
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
@@ -303,6 +308,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const participantName = useCallback(
     (id: string, agentId: string | undefined): string | undefined => {
       if (!agentId) return undefined
+      const named = rosterNames.current.get(id)?.get(agentId)
+      if (named) return named
       const s = pgSessions[id]
       return s?.participants?.find((p) => p.agentId === agentId)?.name
     },
@@ -742,11 +749,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // The roster is fixed at creation (webchat-multi-agents.md §3.1): the
       // first pick is the primary; there is no add/remove after the first send.
       const roster = [da, ...(members ?? []).filter((m) => m.id !== da.id)]
-      if (roster.length > 1)
+      if (roster.length > 1) {
         rosterAgentIds.current.set(
           id,
           roster.map((a) => a.id)
         )
+        rosterNames.current.set(id, new Map(roster.map((a) => [a.id, agentLabel(a)])))
+      }
       setPgSessions((cur) => {
         return {
           ...cur,
@@ -818,6 +827,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       }
       const ids = rosterAgentIds.current.get(id) ?? [primaryId]
       if (!ids.includes(added.id)) rosterAgentIds.current.set(id, [...ids, added.id])
+      const names = rosterNames.current.get(id) ?? new Map<string, string>()
+      if (!names.size && session.agentName) names.set(primaryId, session.agentName)
+      names.set(added.id, agentLabel(added))
+      rosterNames.current.set(id, names)
       setPgSessions((cur) => {
         const s = cur[id]
         if (!s || !s.agentId) return cur
