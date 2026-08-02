@@ -42,23 +42,22 @@ export interface DashboardRows {
 /**
  * Pick each card's row count.
  *
- * Two facts drive it. The viewport caps how many rows fit at all, and the identity
- * above fixes the left card at one row more than the right column's total. So: trim
- * the right column — schedules first, in two passes down to a 2-row floor before
- * either list is taken to one — until the matching left card fits, then let
- * `sessionRows` follow from what survived.
+ * Two things bound the left card: the viewport caps how many rows fit at all, and it
+ * can only draw the sessions that exist. The identity above then fixes it at one row
+ * more than the right column's total. So: trim the right column — schedules first, in
+ * two passes down to a 2-row floor before either list is taken to one — until the
+ * matching left card fits both bounds, and let `sessionRows` follow from what survived.
  *
- * Deliberately NOT part of the trim: how many sessions the org actually has. Trimming
- * against a thin session list would shrink the other two cards to chase an alignment
- * they can't reach anyway — a quiet org would see one agent instead of four on a
- * full-height window. The right column's floor is MIN_RIGHT_COLUMN_ROWS row
- * equivalents, so an org with fewer sessions than that simply cannot square up; that
- * is reported as `aligned: false` rather than papered over.
+ * The session bound applies ONLY while a trim can still land the alignment. The right
+ * column floors at MIN_RIGHT_COLUMN_ROWS row equivalents (one agent row + one schedule
+ * row, the second card's chrome included), so an org below that cannot square up no
+ * matter how far the trim runs — and trimming anyway would cost it two of its four
+ * agents for nothing. Those orgs keep the full right column and are reported as
+ * `aligned: false` instead.
  *
  * @param availableHeight leftover viewport height for the grid; null ⇒ no cap.
  * @param sessions/agents/crons how many rows each card HAS to draw. An empty card
- *   still draws its placeholder row, so agents and crons cost a row either way — but
- *   sessions are the one list whose shortfall the layout cannot absorb.
+ *   still draws its placeholder row, so every list costs at least one row.
  */
 export function dashboardRowBudget({
   availableHeight,
@@ -77,10 +76,13 @@ export function dashboardRowBudget({
     availableHeight === null
       ? Number.POSITIVE_INFINITY
       : Math.max(MIN_RIGHT_COLUMN_ROWS, Math.floor((availableHeight - CARD_CHROME_H) / DASH_ROW_H))
+  // Rows the Recent card can actually draw, and whether aiming at that is worth it.
+  const reach = Math.max(1, sessions)
+  const budget = Math.min(capacity, reach >= MIN_RIGHT_COLUMN_ROWS ? reach : Number.POSITIVE_INFINITY)
   for (const floor of [2, 1]) {
-    while (a + c + 1 > capacity && c > floor) c--
-    while (a + c + 1 > capacity && a > floor) a--
+    while (a + c + 1 > budget && c > floor) c--
+    while (a + c + 1 > budget && a > floor) a--
   }
   const sessionRows = a + c + 1
-  return { sessionRows, agentRows: a, cronRows: c, aligned: Math.max(1, sessions) >= sessionRows }
+  return { sessionRows, agentRows: a, cronRows: c, aligned: reach >= sessionRows }
 }

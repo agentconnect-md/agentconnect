@@ -52,12 +52,36 @@ describe('dashboardRowBudget', () => {
     expect(rowsAt(3)).toEqual([1, 1, 3])
   })
 
-  it('refuses to shrink the right column to match a thin session list', () => {
-    // A quiet org on a full-height window still gets all four agents and three
-    // schedules — trimming them would chase an alignment the left card can't reach.
+  it('trims to meet a short session list on a roomy window', () => {
+    // The viewport has room for 8 rows, but the card can only draw what exists, so
+    // the right column comes down to meet it rather than towering over it.
+    const rowsAt = (sessions: number) => {
+      const b = dashboardRowBudget({ availableHeight: heightFor(8), ...FULL, sessions })
+      return [b.agentRows, b.cronRows, b.sessionRows]
+    }
+
+    expect(rowsAt(8)).toEqual([4, 3, 8])
+    expect(rowsAt(7)).toEqual([4, 2, 7])
+    expect(rowsAt(5)).toEqual([2, 2, 5])
+    expect(rowsAt(3)).toEqual([1, 1, 3])
+  })
+
+  it('squares up for every session count a trim can reach, on a roomy window', () => {
+    for (let sessions = MIN_RIGHT_COLUMN_ROWS; sessions <= 8; sessions++) {
+      const b = dashboardRowBudget({ availableHeight: heightFor(20), ...FULL, sessions })
+
+      expect(b.aligned).toBe(true)
+      expect(b.sessionRows).toBeLessThanOrEqual(sessions)
+      expect(leftHeight(b.sessionRows)).toBe(rightHeight(b.agentRows, b.cronRows))
+    }
+  })
+
+  it('refuses to shrink the right column below the floor for a session list it cannot meet', () => {
+    // Two sessions can never reach the right column's two-card floor, so trimming
+    // would cost this org two of its four agents and still not line up.
     const b = dashboardRowBudget({ availableHeight: heightFor(10), sessions: 2, agents: 6, crons: 5 })
 
-    expect(b).toMatchObject({ agentRows: MAX_AGENT_ROWS, cronRows: MAX_CRON_ROWS })
+    expect(b).toMatchObject({ agentRows: MAX_AGENT_ROWS, cronRows: MAX_CRON_ROWS, aligned: false })
   })
 
   describe('sparse orgs — fewer sessions than the right column can go', () => {
