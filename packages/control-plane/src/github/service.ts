@@ -3,9 +3,9 @@
  * (docs/designs/github-app-git-credentials.md §CP Side).
  *
  * Owns install-state minting/consumption, setup-callback verification (App-JWT
- * ownership check — never trust a callback's installation_id), sync
- * reconciliation (mark-revoked, never delete), the repo/branch picker proxies,
- * create-time repo validation, and the gitcred mint resolution
+ * ownership check — never trust a callback's installation_id), org-scoped
+ * installation refresh (mark-revoked, never delete), the repo/branch picker
+ * proxies, create-time repo validation, and the gitcred mint resolution
  * (agent → repo owner → LIVE installation → scoped token).
  */
 import { gitRepoLabel, type GitCommitIdentity, type GitCredCapability } from '@agentconnect.md/protocol'
@@ -201,8 +201,8 @@ export class GithubService {
    * Setup-callback claim: verify the signed state (one-shot nonce), then verify
    * the installation actually belongs to OUR App via an App-JWT read — GitHub's
    * own guidance is to never trust the callback's `installation_id`.
-   * Returns null when the state is invalid/replayed (caller degrades to the
-   * console Sync path — state passthrough is undocumented GitHub behavior).
+   * Returns null when the state is invalid/replayed. The caller must ask the
+   * user to restart the org-bound install; Sync never guesses claim ownership.
    */
   async claimFromCallback(state: string, installationId: number): Promise<GithubInstallationRecord | null> {
     const parsed = verifyInstallState(this.stateKey, state, this.deps.clock)
@@ -217,37 +217,17 @@ export class GithubService {
     return row
   }
 
-  /**
-   * Sync fallback (`POST …/installations/sync`): reconcile the org's claims
-   * against GitHub's full installation list. New installations are claimed by
-   * the CALLING org; rows GitHub no longer reports are MARKED revoked (never
-   * deleted — agents hold provenance pointers). `upsertFromGithub` never moves
-   * an existing claim between orgs.
+  /** Refresh every durable claim belonging to the calling org.
+   *
+   * GitHub's App installation roster is deployment-global, not tenant-scoped.
+   * Sync therefore pulls only ids already bound to this org; it never discovers
+   * or claims an unknown installation. Missing ids are marked revoked, never
+   * deleted, because agents retain provenance pointers.
    */
   async sync(orgId: OrgId): Promise<GithubInstallationRecord[]> {
     this.outdatedInstallationsCache = undefined
-    const before = await this.deps.installations.listForOrg(orgId)
-    const all: GhInstallation[] = []
-    for (let page = 1; page <= 10; page++) {
-      const batch = await this.appRequest<GhInstallation[]>(`/app/installations?per_page=100&page=${page}`)
-      all.push(...batch)
-      if (batch.length < 100) break
-    }
-    for (const ins of all) {
-      const row = await this.deps.installations.upsertFromGithub(orgId, toFacts(ins))
-      this.tokens.invalidateInstallation(BigInt(ins.id))
-      this.invalidateRepositoryRoster(row.installationId)
-      await this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
-    }
-    await this.deps.installations.markRevokedExcept(
-      orgId,
-      all.map((i) => BigInt(i.id))
-    )
-    for (const row of before) {
-      this.tokens.invalidateInstallation(row.installationId)
-      this.invalidateRepositoryRoster(row.installationId)
-    }
-    for (const row of before) await this.deps.onInstallationFactsChanged?.(row.installationId, row.orgId)
+    const claims = await this.deps.installations.listClaimsForOrg(orgId)
+    for (const claim of claims) await this.refreshClaimedInstallation(claim)
     return this.deps.installations.listForOrg(orgId)
   }
 
@@ -536,16 +516,23 @@ export class GithubService {
   async refreshInstallationFacts(installationId: bigint): Promise<GithubInstallationRecord | null> {
     const claimed = await this.deps.installations.getByInstallationId(installationId)
     if (!claimed) return null
+    return this.refreshClaimedInstallation(claimed)
+  }
+
+  private async refreshClaimedInstallation(
+    claimed: GithubInstallationRecord
+  ): Promise<GithubInstallationRecord | null> {
+    const { installationId, orgId } = claimed
     const facts = await this.pullInstallation(installationId)
     let refreshed: GithubInstallationRecord | null = null
     if (facts) {
-      refreshed = await this.deps.installations.upsertFromGithub(claimed.orgId, facts)
+      refreshed = await this.deps.installations.upsertFromGithub(orgId, facts)
     } else {
       await this.deps.installations.markRevokedByInstallationId(installationId)
     }
     this.tokens.invalidateInstallation(installationId)
     this.invalidateRepositoryRoster(installationId)
-    await this.deps.onInstallationFactsChanged?.(installationId, claimed.orgId)
+    await this.deps.onInstallationFactsChanged?.(installationId, orgId)
     return refreshed
   }
 

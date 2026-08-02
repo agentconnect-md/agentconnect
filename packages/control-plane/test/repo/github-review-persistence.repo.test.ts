@@ -1668,6 +1668,14 @@ describe('R1/R2a persistence foundation', () => {
     const durable = await repo.get(first.id)
     expect(durable).toMatchObject({ orgId: DEFAULT_ORG_ID, accountLogin: 'acme' })
     expect(durable?.permissions).toEqual({ pull_requests: 'write', checks: 'write' })
+
+    await repo.markRevokedByInstallationId(installationId)
+    expect((await repo.listForOrg(OrgId(DEFAULT_ORG_ID))).some((row) => row.installationId === installationId)).toBe(
+      false
+    )
+    expect(await repo.listClaimsForOrg(OrgId(DEFAULT_ORG_ID))).toEqual([
+      expect.objectContaining({ installationId, orgId: DEFAULT_ORG_ID, revokedAt: expect.any(Date) })
+    ])
   })
 
   it('fences start/review/completion and drives the durable projection outbox', async () => {

@@ -79,6 +79,14 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
     return rows.map(toRecord)
   }
 
+  async listClaimsForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]> {
+    const rows = await this.prisma.githubInstallation.findMany({
+      where: { orgId },
+      orderBy: { accountLogin: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
   async liveByOrgAndAccount(orgId: OrgId, accountLogin: string): Promise<GithubInstallationRecord | null> {
     const row = await this.prisma.githubInstallation.findFirst({
       // GitHub logins are case-insensitive; stored as reported, matched loosely.
@@ -97,13 +105,6 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
   async markRevokedByInstallationId(installationId: bigint): Promise<void> {
     await this.prisma.githubInstallation.updateMany({
       where: { installationId, revokedAt: null },
-      data: { revokedAt: new Date() }
-    })
-  }
-
-  async markRevokedExcept(orgId: OrgId, liveInstallationIds: bigint[]): Promise<void> {
-    await this.prisma.githubInstallation.updateMany({
-      where: { orgId, revokedAt: null, installationId: { notIn: liveInstallationIds } },
       data: { revokedAt: new Date() }
     })
   }

@@ -190,7 +190,7 @@ stale until a network fetch succeeds.
   daemon uses its local `webAppUrl` or the `http://localhost:3000` default.
   **Do not add configuration.**
   Redirect to `<console>/?github=<note>`, where note is
-  `installed`/`sync-needed`/`pending-approval`, with no orgSlug path segment. If
+  `installed`/`retry-install`/`pending-approval`, with no orgSlug path segment. If
   no console URL is configured, it falls back to a plaintext informational
   page (`routes/github.ts`). Never accept a redirect destination from request
   parameters or state; that would permit open redirects.
@@ -380,14 +380,14 @@ and RBAC. The organization subtree uniformly applies `humanAuth` +
 `owner|collaborator|viewer` in `rbac.ts`, with `denyViewerWrite` on write
 operations. The GitHub routes are therefore registered as two plugins:
 
-| Route                                                                  | Authentication/RBAC                                                                                       | Behavior                                                                                                                                                                                            |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/v1/orgs/:orgId/github/app`                                   | Organization-subtree hooks + `denyViewerWrite` (issuing installation state initiates a connection change) | App metadata (slug and enabled status) + installation deep link `…/installations/new?state=…`; state is a domain-separated HMAC signature over **orgId = path organization** + exp + one-time nonce |
-| `POST /api/v1/orgs/:orgId/github/installations/sync`                   | Organization-subtree hooks + `denyViewerWrite`                                                            | Use an App JWT to fully reconcile `GET /app/installations` and claim installations into the **path organization**; mark missing installations with `revokedAt`, **never delete their rows**         |
-| `GET /api/v1/orgs/:orgId/github/installations`                         | Organization-subtree hooks (viewers can read; organization-level resource, **not visibility-filtered**)   | List live installations for this organization, providing the picker's first level                                                                                                                   |
-| `GET …/github/installations/:id/repositories?page`                     | Same                                                                                                      | Mint a token -> `GET /installation/repositories`; paginated with `per_page <= 100`. **This endpoint has no server-side search**; filter in the CP/frontend                                          |
-| `GET …/repositories/:owner/:repo/branches`                             | Same                                                                                                      | Branch picker. **Requires a `contents:read` token** because metadata-only returns 403, exactly reusing the token-cache key `(iid, repo, 'read')`                                                    |
-| `GET /api/v1/github/setup/callback?installation_id&setup_action&state` | **Unauthenticated** because GitHub redirects the browser                                                  | See "Setup Callback Semantics" below                                                                                                                                                                |
+| Route                                                                  | Authentication/RBAC                                                                                       | Behavior                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/orgs/:orgId/github/app`                                   | Organization-subtree hooks + `denyViewerWrite` (issuing installation state initiates a connection change) | App metadata (slug and enabled status) + installation deep link `…/installations/new?state=…`; state is a domain-separated HMAC signature over **orgId = path organization** + exp + one-time nonce                                       |
+| `POST /api/v1/orgs/:orgId/github/installations/sync`                   | Organization-subtree hooks + `denyViewerWrite`                                                            | Use an App JWT to refresh every durable claim already belonging to the **path organization**; mark missing installations with `revokedAt`, **never delete their rows**, and never discover or claim from the deployment-global App roster |
+| `GET /api/v1/orgs/:orgId/github/installations`                         | Organization-subtree hooks (viewers can read; organization-level resource, **not visibility-filtered**)   | List live installations for this organization, providing the picker's first level                                                                                                                                                         |
+| `GET …/github/installations/:id/repositories?page`                     | Same                                                                                                      | Mint a token -> `GET /installation/repositories`; paginated with `per_page <= 100`. **This endpoint has no server-side search**; filter in the CP/frontend                                                                                |
+| `GET …/repositories/:owner/:repo/branches`                             | Same                                                                                                      | Branch picker. **Requires a `contents:read` token** because metadata-only returns 403, exactly reusing the token-cache key `(iid, repo, 'read')`                                                                                          |
+| `GET /api/v1/github/setup/callback?installation_id&setup_action&state` | **Unauthenticated** because GitHub redirects the browser                                                  | See "Setup Callback Semantics" below                                                                                                                                                                                                      |
 
 - **Callback mount point:** it cannot enter the organization subtree because
   it has neither a bearer token nor `:orgId`. Export it as the **second plugin**
@@ -417,17 +417,18 @@ operations. The GitHub routes are therefore registered as two plugins:
 **Setup callback semantics:**
 
 - Forwarding `state` from `installations/new?state=…` to the Setup URL is
-  undocumented GitHub behavior and cannot be required. When state is present
-  and verifies successfully, verify
-  App ownership, upsert the installation, and claim it into the organization
-  in state. **Missing state is not an error:** redirect with 302 to the
-  console's "GitHub connection" page and ask the user to click Sync, which
-  claims it through an authenticated path. This is a recoverable degradation,
-  not a hard dependency on undocumented behavior.
+  undocumented GitHub behavior. When state is present and verifies successfully,
+  verify App ownership, upsert the installation, and claim it into the
+  organization in state. When state is missing, redirect with 302 to the console
+  and ask the user to restart the org-bound install. The App installation roster
+  is deployment-global, so an authenticated organization path alone is not proof
+  that an unclaimed installation belongs to that organization; Sync must never
+  guess or create the claim.
 - `setup_action === 'request'` means a nonadministrator initiated the request
   and an organization administrator must approve it. There is **no usable
   `installation_id`** at this point. Redirect with 302 directly to the console
-  and display "Pending administrator approval"; Sync claims it later.
+  and display "Pending administrator approval"; after approval, restart the
+  org-bound install so a signed callback can create the claim.
 - No branch trusts callback parameters themselves. The only path into the
   database is an App-JWT lookup that confirms ownership.
 
@@ -872,8 +873,10 @@ an explicit grant, so the daemon cannot name an arbitrary repository.
      operator configuration required."
    - When enabled, show an "Install on GitHub" deep link with state, the
      installation list with accountLogin, repositorySelection, and
-     suspended/revoked states, and a "Sync" button as the common fallback for
-     missing state, administrator approval, or a missed callback.
+     suspended/revoked states, and a "Sync" button that refreshes only the
+     organization's durable claims. Missing state or administrator approval
+     requires restarting the signed install flow; Sync never claims from the
+     deployment-global App roster.
 2. **AddAgentModal workspace step:** in GitHub mode, offer two alternatives:
    - **"Select from GitHub App":** installation selector -> searchable
      repository selector with pagination and client-side filtering, because
@@ -924,12 +927,13 @@ the instance)**
 
 The console's "Install on GitHub" deep link with one-time state -> the user
 selects an organization and repository scope on GitHub -> 302 to the CP setup
-callback -> verify state, or degrade with a Sync prompt if it is absent, and
-verify ownership with an App JWT -> upsert the installation and claim it into
-the organization -> 302 to `<console>/?github=installed`, visible in the
-console. The callback has no orgSlug path segment. A nonadministrator
-installation uses `setup_action=request` -> pending-approval prompt -> Sync
-claims it after approval.
+callback -> verify state and ownership with an App JWT -> upsert the installation
+and claim it into the organization -> 302 to `<console>/?github=installed`,
+visible in the console. The callback has no orgSlug path segment. A missing or
+invalid state returns a retry-install prompt instead of guessing ownership from
+the deployment-global App roster. A nonadministrator installation uses
+`setup_action=request` -> pending-approval prompt -> after approval, restart the
+signed install flow.
 
 **B. Select a repository while creating an agent**
 
@@ -1064,7 +1068,7 @@ the cache and stops requesting.
    `PATCH /agents/:id` must not silently rewrite the workspace. A dedicated
    `PUT /agents/:id/workspace` cold action owns that operation, while
    `lastModifiedBy/At` continues to record the security-relevant actor. The
-   installation sync/claim row could similarly add `createdByUserId` for
+   setup-callback installation claim row could similarly add `createdByUserId` for
    aligned auditing.
    PATCH is gated by `canEdit`. A viewer can never edit; any collaborator can edit an
    organization-visible agent, and any **shared** collaborator can edit a

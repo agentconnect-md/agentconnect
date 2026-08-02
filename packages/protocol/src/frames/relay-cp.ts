@@ -376,8 +376,8 @@ export type RcRunReport = z.infer<typeof RcRunReport>
 // event as a minimal poke; the CP re-pulls `GET /app/installations/{id}` as the
 // source of truth (`action` is observational — the CP never writes from it).
 // Emitted ONLY after X-Hub-Signature-256 verification. A dropped doorbell is
-// safe: the pull-based sync paths (setup callback / manual Sync / mint-failure
-// markRevoked) converge eventually.
+// safe for a durable claim: the setup callback / scoped manual Sync /
+// mint-failure refresh paths converge eventually.
 export const RcGithubInstallation = z.object({
   installationId: z.string().min(1), // GitHub numeric id (BigInt as string)
   action: z.string().min(1) // created|deleted|suspend|…|added|removed

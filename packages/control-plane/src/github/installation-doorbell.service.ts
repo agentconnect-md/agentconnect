@@ -7,7 +7,7 @@
  * and writes what GITHUB says (200 ⇒ upsert under the EXISTING claim's org;
  * 404/410 ⇒ markRevoked), then recompiles that org's github hooks so the relay
  * pool's `installationIds` gates converge. An installation with no org claim
- * yet is ignored — claiming stays with the setup callback / manual Sync.
+ * yet is ignored — claiming stays with the signed setup callback.
  *
  * Throttling: per-installation single-flight + a short cooldown, so an event
  * storm (bulk repo grants fan out one event per change) coalesces into one
@@ -130,8 +130,8 @@ export class GithubInstallationDoorbell {
     try {
       const row = await this.deps.installations.getByInstallationId(installationId)
       if (!row) {
-        // No org claim — the poke can't be attributed; claiming is the setup
-        // callback's / Sync's job (never write from an unclaimed event).
+        // No org claim — the poke can't be attributed; only a signed setup
+        // callback may create one (never write from an unclaimed event).
         this.deps.log.debug({ installationId: key, action }, 'doorbell: unknown installation — ignored')
         return
       }

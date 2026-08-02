@@ -14,7 +14,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { SiModelcontextprotocol } from 'react-icons/si'
 import { SWRConfig, type SWRConfiguration } from 'swr'
 import Link from 'next/link'
-import { useParams, usePathname, useRouter } from 'next/navigation'
+import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
 import { ApiError, getMyAccess, type OrgDto } from '@/lib/api'
@@ -84,6 +84,33 @@ const CONSOLE_SWR_CONFIG = {
   shouldRetryOnError: (error: unknown) =>
     !(error instanceof ApiError) || error.status === 408 || error.status === 429 || error.status >= 500
 } satisfies SWRConfiguration
+
+interface GithubCallbackNotice {
+  message: string
+  tone: 'success' | 'warning'
+}
+
+function githubCallbackNotice(code: string): GithubCallbackNotice | null {
+  if (code === 'installed') {
+    return { message: 'GitHub installation connected.', tone: 'success' }
+  }
+  if (code === 'pending-approval') {
+    return {
+      message:
+        'GitHub is waiting for an organization administrator to approve this installation. After approval, choose Install on GitHub again to finish connecting it.',
+      tone: 'warning'
+    }
+  }
+  if (code === 'retry-install') {
+    return {
+      message:
+        'AgentConnect could not verify which organization this GitHub installation belongs to. Choose Install on GitHub again to restart the connection.',
+      tone: 'warning'
+    }
+  }
+  return null
+}
+
 // The per-list-tab "+" action → which modal it opens.
 const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon'> = {
   '/agents': 'agent',
@@ -309,6 +336,7 @@ function RailAccount({
 
 function ShellChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname()
+  const searchParams = useSearchParams()
   const params = useParams<{ slug?: string }>()
   const { orgPath, orgs, activeOrg, setActiveOrg } = useOrgs()
   const { openModal } = useModal()
@@ -337,6 +365,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
   const [helpMenu, setHelpMenu] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [connectAiOpen, setConnectAiOpen] = useState(false)
+  const [githubNotice, setGithubNotice] = useState<GithubCallbackNotice | null>(null)
   const help = resolveHelpLinks()
   // Push-screen share action: the session detail app bar surfaces a top-right link
   // icon (design) that copies the deep link; a brief check-swap confirms the copy.
@@ -452,6 +481,19 @@ function ShellChrome({ children }: { children: ReactNode }) {
     setMobileSearch(false)
     if (typeof window !== 'undefined') setLocationSearch(window.location.search)
   }, [barePath])
+
+  // The GitHub setup callback returns through the bare console entry. Wait for
+  // OrgProvider to canonicalize that entry before removing the one-shot result
+  // parameter, otherwise two competing router.replace calls can lose the org URL.
+  const githubCallback = searchParams.get('github')
+  useEffect(() => {
+    if (!activeOrg || !githubCallback) return
+    const notice = githubCallbackNotice(githubCallback)
+    if (notice) setGithubNotice(notice)
+    const next = new URLSearchParams(searchParams.toString())
+    next.delete('github')
+    router.replace(`${pathname}${next.size ? `?${next}` : ''}`, { scroll: false })
+  }, [activeOrg, githubCallback, pathname, router, searchParams])
 
   // No-auth mode has no identity and a single implicit org, so Profile / Settings
   // don't exist — bounce any direct navigation to those routes back to the home landing.
@@ -723,6 +765,37 @@ function ShellChrome({ children }: { children: ReactNode }) {
           no parent back-link, no title strip. The rail states where you are, and each
           detail view owns its own heading. Mobile still needs one — `.mtop` below. */}
           <div className="main">
+            {githubNotice && (
+              <div
+                role={githubNotice.tone === 'warning' ? 'alert' : 'status'}
+                className="fixed top-[72px] right-4 left-4 z-50 flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) desktop:top-4 desktop:left-auto desktop:w-[460px]"
+              >
+                <Icon
+                  name={githubNotice.tone === 'success' ? 'circle-check' : 'triangle-alert'}
+                  size={16}
+                  color={githubNotice.tone === 'success' ? 'var(--status-online)' : 'var(--amber-500)'}
+                  className="mt-[1px] flex-none"
+                />
+                <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                  {githubNotice.message}
+                </span>
+                <Link
+                  href={orgPath('/settings')}
+                  className="lnk flex-none text-[12px]"
+                  onClick={() => setGithubNotice(null)}
+                >
+                  Settings
+                </Link>
+                <button
+                  type="button"
+                  className="iconbtn -m-1 h-7 w-7 flex-none"
+                  aria-label="Dismiss GitHub installation notice"
+                  onClick={() => setGithubNotice(null)}
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+            )}
             {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
             <header className="mtop">
               {isListRoute ? (

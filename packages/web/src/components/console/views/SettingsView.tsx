@@ -1468,8 +1468,8 @@ function GithubCard({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean
     }
   }
 
-  // Reconcile with GitHub — the fallback for a lost setup callback, a pending
-  // admin approval, or an install finished in the other tab just now.
+  // Refresh the org's claimed installations after GitHub changes or an install
+  // finished in the other tab just now.
   const sync = async () => {
     if (busy) return
     setBusy(true)

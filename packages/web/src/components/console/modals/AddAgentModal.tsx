@@ -856,9 +856,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
   // "Manage access" lands on the App's ACCOUNT CHOOSER (installations/new): every
   // account is listed — already-installed ones open their repo-selection config,
-  // and a fresh org can be installed from the same page (an AgentConnect org can
-  // attach several GitHub orgs; Sync claims them all). Same one-shot link as the
-  // install button.
+  // and a fresh org can be installed from the same page. The signed setup callback
+  // binds each new installation to this AgentConnect org. Same one-shot link as
+  // the install button.
   const manageGithubAccess = installGithubApp
 
   const modeHint =
