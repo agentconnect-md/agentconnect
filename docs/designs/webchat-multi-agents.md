@@ -273,7 +273,10 @@ There is **no automatic round-table**: neither answer is fed to the other
 agent as a new activation. Each peer's answer reaches the other only as
 conversation context at its next activation, or when someone — the owner or an
 agent — explicitly mentions it. This matches the Slack-channel behavior:
-posting in a thread never auto-triggers the other bots present.
+posting in a thread never auto-triggers the other bots present. (A racing
+sibling may still regenerate once at commit time to stay current with the
+conversation — section 5.4 — which changes freshness of the same turn, never
+activation.)
 
 ## 5. Conversation posts, context fan-out, and ordering
 
@@ -374,6 +377,68 @@ concurrent agent streams need only an attribution field:
 - `cancel` gains optional `agentId`; absent means every live turn in the
   conversation (today's resolution is already conversation-scoped,
   `daemon.ts:5240-5267`, but must stop matching only the first hit).
+- `WebchatOutput`/`WebchatDone` gain a `generation` counter and `WebchatDone`
+  a `superseded` stop reason, used by the turn-final context refresh
+  (section 5.4): a superseded generation's stream ends, and the replacement
+  streams under the same `turnId` with `generation + 1`.
+
+### 5.4 Turn-final context refresh before commit
+
+[turn-final-context-refresh.md](turn-final-context-refresh.md) defines the
+daemon-owned answer workflow for IM turns: refresh context at turn start,
+stage the candidate answer, refresh again after `session/prompt` resolves,
+regenerate in the same ACP session when non-self conversation events arrived
+meanwhile, and commit only a candidate that passed the final check. That
+design deferred webchat explicitly because a single-agent conversation has no
+independently moving thread. A multi-agent conversation **is** one — the owner
+can address other agents and peers can post while an agent is generating — so
+multi-agent webchat adopts the same workflow with three adaptations:
+
+- **Refresh source.** Webchat has no provider history API. The refresh source
+  is the daemon's local conversation transcript, fed by activations and
+  context frames (section 5.2), which are durably recorded on arrival — the
+  same observed-only completeness contract that design assigns to Telegram.
+  The context-revision fence and the per-thread commit mutex apply unchanged.
+- **The commit point is the canonical post.** The conversation post — the
+  turn-end transcript write plus the `rd/webchat-post` fan-out (section 6.1)
+  — is the staged answer's commit. The invalidation set is posts authored by
+  the owner or by peer agents and recorded after the generation's fence; the
+  agent's own output and chrome never invalidate. An owner message targeted
+  at the same busy agent is a queued activation and follows that design's
+  coalescing rules verbatim (start-fence absorption, regeneration
+  absorption); owner messages targeted elsewhere and peer posts are pure
+  context churn.
+- **Browser streaming stays live.** IM staging withholds body text because
+  the audience is a shared channel; the webchat live stream is a watch
+  surface private to the one human who is also the only source of human
+  churn. Tokens keep streaming as today. When the final refresh invalidates a
+  candidate, the browser receives `done { stopReason: 'superseded' }` plus a
+  chrome notice ("the conversation moved on — updating the answer"), and the
+  replacement generation streams under the same `turnId`. Only the accepted
+  generation becomes the canonical post, fans out as context, and is recorded
+  as delivered; discarded generations follow that design's transcript and
+  usage rules — audit-visible, usage counted, never delivered.
+
+Retry budgets are the IM defaults (three replacement generations, a
+two-minute regeneration cap, the 50-event replay cap). Exhaustion follows the
+context-churn terminalization rules, with the daemon-authored notice rendered
+as chrome in the conversation.
+
+Two scope rules:
+
+- **Single-participant conversations keep today's behavior.** With
+  `roster == 1` there are no peer writers; the owner's follow-ups remain
+  queued turns, and the existing Playground UX is untouched.
+- **Concurrent multi-target turns race intentionally.** In "@a @b compare",
+  whichever agent commits first is unaffected; the slower agent's final
+  refresh sees the earlier post and regenerates once — exactly as two agents
+  racing in one Slack thread do. This does not reopen the rejected
+  auto-round-table (section 4.3): no new activation is created; the same
+  admitted turn is made current before it commits. Excluding same-turn
+  sibling posts from the invalidation set was considered, to keep "compare"
+  answers independent, and rejected: it would silently diverge webchat from
+  IM freshness semantics, and the regeneration notice already tells the agent
+  to re-evaluate rather than defer.
 
 ## 6. Wire protocol changes
 
@@ -576,7 +641,10 @@ here.
   `Conversation participants:` standing line, `channel/agents` conversation
   filter. Update [product-conventions.md](../product-conventions.md) §Channel's
   remaining role and `agent-collaboration-implementation.md` §2.5 tables in the
-  same change.
+  same change. Turn-final context refresh for multi-agent conversations
+  (section 5.4) also lands here — a2a wakes make peer churn common — and
+  depends on the `ThreadContextCoordinator` extraction, rollout step 1 of
+  [turn-final-context-refresh.md](turn-final-context-refresh.md).
 - **M3 — polish.** Agent-initiated live streaming, grouped conversation view in
   the console sessions list, merged console transcript, per-agent runtime
   controls, mobile pass.
@@ -628,3 +696,8 @@ Questions resolved during design review:
    answers; peers see each other's output only as context at their next
    activation or via an explicit mention, matching Slack-channel behavior
    (section 4.3).
+7. **Turn-final context refresh applies to multi-agent conversations** — the
+   canonical post is staged and committed only after a final context check,
+   mirroring the IM answer workflow; the browser stream stays live and a
+   superseded generation is replaced in place. Single-participant
+   conversations keep today's behavior (section 5.4).
