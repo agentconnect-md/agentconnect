@@ -175,6 +175,7 @@ describe('organization Skills library', () => {
         </SWRConfig>
       )
     })
+    await act(async () => buttonWithText('Add').click())
     await act(async () => buttonWithText('Install from skills.sh').click())
 
     await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'pdf')
