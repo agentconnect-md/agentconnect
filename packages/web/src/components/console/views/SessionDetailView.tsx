@@ -1207,9 +1207,14 @@ export default function SessionDetailView() {
         })
         firstMsg = false
       } else {
+        // Multi-agent conversations attribute live steps per participant
+        // (`who`/`agentId` from the stream lane); break the bot-turn grouping
+        // when the author changes so each block carries the right name.
+        const stepAgentName = stp.who ?? session.agentName ?? ''
+        if (stp.who) speakers.set(stp.agentId ?? stp.who, stp.who)
         let last = turns[turns.length - 1]
-        if (!last || last.kind !== 'bot') {
-          last = { kind: 'bot', agentName: session.agentName ?? '', model: session.model ?? '', time: '', steps: [] }
+        if (!last || last.kind !== 'bot' || last.agentName !== stepAgentName) {
+          last = { kind: 'bot', agentName: stepAgentName, model: session.model ?? '', time: '', steps: [] }
           turns.push(last)
         }
         const step = fmtStep(stp)
@@ -1242,9 +1247,11 @@ export default function SessionDetailView() {
           cronId: null
         })
       } else {
+        const stepAgentName = stp.who ?? session.agentName ?? ''
+        if (stp.who) speakers.set(stp.agentId ?? stp.who, stp.who)
         let last = turns[turns.length - 1]
-        if (!last || last.kind !== 'bot') {
-          last = { kind: 'bot', agentName: session.agentName ?? '', model: session.model ?? '', time: '', steps: [] }
+        if (!last || last.kind !== 'bot' || last.agentName !== stepAgentName) {
+          last = { kind: 'bot', agentName: stepAgentName, model: session.model ?? '', time: '', steps: [] }
           turns.push(last)
         }
         const step = fmtStep(stp)

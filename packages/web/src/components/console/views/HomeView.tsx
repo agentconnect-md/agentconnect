@@ -138,9 +138,27 @@ export default function HomeView() {
   const agent = agents.find((a) => a.id === agentId) ?? preferred
   const agentOnline = agent ? isOnline(agent) : false
 
+  // Additional participants staged before the first send (webchat-multi-agents.md
+  // §9.1): the composer is the assembly area, and the roster freezes at creation.
+  // The primary is simply the first agent of the final list — no visible marker.
+  const [memberIds, setMemberIds] = useState<string[]>([])
+  const members = useMemo(
+    () => memberIds.flatMap((mid) => (mid === agent?.id ? [] : (agents.filter((a) => a.id === mid) as Agent[]))),
+    [memberIds, agents, agent?.id]
+  )
+  const multi = members.length > 0
+  const removeMember = (mid: string) => setMemberIds((cur) => cur.filter((x) => x !== mid))
+  // Removing the first chip promotes the next pick to primary — silently.
+  const removePrimary = () => {
+    const next = members[0]
+    if (!next) return
+    setAgentId(next.id)
+    setMemberIds((cur) => cur.filter((x) => x !== next.id))
+  }
+
   const [input, setInput] = useState('')
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
-  const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | null>(null)
+  const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | null>(null)
   const [runtime, setRuntime] = useState<{ model?: string; effort?: string; permission?: string }>({})
 
   // Overrides are per-agent; drop them when the agent changes so the new agent's
@@ -204,19 +222,25 @@ export default function HomeView() {
       : authRequiredFor(agent)
         ? 'auth'
         : null
-  const canSend = !!agent && blocked === null
+  // A multi-agent create needs every roster pick startable (the picker only
+  // offers ready agents, but readiness can change while composing).
+  const canSend = !!agent && blocked === null && members.every(agentReady)
   const daemonHref = owningDaemon ? orgPath(`/daemons/${owningDaemon.daemonId}`) : null
 
   const send = () => {
     const text = input.trim()
     if (!text || !agent || !canSend) return // offline / unsigned-in agents can't take a session
-    const id = openPlayground(agent) // pg_ session; pgSend awaits the socket, so no race
+    const id = openPlayground(agent, members) // pg_ session; pgSend awaits the socket, so no race
     // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
     // overrides — so the session runs exactly what the composer showed. stageRuntimeChange
     // is a synchronous ref write, so pgSend's payload picks it up (PlaygroundProvider).
-    if (model) pgSetModel(id, agent.id, model)
-    if (effort) pgSetEffort(id, agent.id, effort)
-    if (permission) pgSetPermissionMode(id, agent.id, permission)
+    // Multi-agent conversations expose no runtime controls: every participant
+    // runs its configured defaults (webchat-multi-agents.md §9.1).
+    if (!multi) {
+      if (model) pgSetModel(id, agent.id, model)
+      if (effort) pgSetEffort(id, agent.id, effort)
+      if (permission) pgSetPermissionMode(id, agent.id, permission)
+    }
     pgSend(id, agent.id, text)
     setInput('')
     router.push(orgPath(`/sessions/${id}`))
@@ -286,6 +310,31 @@ export default function HomeView() {
     }
   })
 
+  // Agents addable as extra participants: everyone not already in the roster.
+  // Only ready agents are selectable — a multi-agent create requires every
+  // pick startable (and its daemon multi-agent capable; the CP enforces that).
+  const rosterIds = new Set([agent?.id, ...memberIds])
+  const addOptions = agents
+    .filter((a) => !rosterIds.has(a.id))
+    .map((a) => {
+      const ready = agentReady(a)
+      return {
+        value: a.id,
+        label: agentLabel(a),
+        dimmed: !ready,
+        description: ready
+          ? 'Add to this conversation'
+          : !isOnline(a)
+            ? `${agentLabel(a)} is offline — its daemon isn't serving`
+            : `${agentLabel(a)} has no AI runtime signed in`,
+        leading: (
+          <span className="av h-[18px] w-[18px] flex-none rounded-xs">
+            <AgentIconView icon={a.icon} runtime={a.runtime} size={18} />
+          </span>
+        )
+      }
+    })
+
   // While the redirect to /onboarding is in flight (or the skip flag is still being
   // read), hold a spinner so the empty composer never flashes behind it.
   if (holdForOnboarding) return <LoadingState fill />
@@ -333,23 +382,64 @@ export default function HomeView() {
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             {agent ? (
               <>
-                <ComposerMenu
-                  title="Agent"
-                  value={agent.id}
-                  options={agentOptions}
-                  open={menu === 'agent'}
-                  align="left"
-                  placement="down"
-                  triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
-                  leading={
-                    <span className="av h-4 w-4 rounded-xs">
-                      <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
+                {multi ? (
+                  // Roster chips (webchat-multi-agents.md §9.1): every chip —
+                  // including the first — is removable until the first send; the
+                  // primary is silently re-derived as the first of the final list.
+                  [agent, ...members].map((a, i) => (
+                    <span
+                      key={a.id}
+                      className="inline-flex h-7 items-center gap-[7px] rounded-full bg-(--surface-hover) px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)"
+                    >
+                      <span className="av h-4 w-4 rounded-xs">
+                        <AgentIconView icon={a.icon} runtime={a.runtime} size={16} />
+                      </span>
+                      {agentLabel(a)}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${agentLabel(a)}`}
+                        className="-mr-1 px-1 text-(--text-tertiary) hover:text-(--text-primary)"
+                        onClick={() => (i === 0 ? removePrimary() : removeMember(a.id))}
+                      >
+                        ×
+                      </button>
                     </span>
-                  }
-                  onOpenChange={(o) => setMenu(o ? 'agent' : null)}
-                  onChange={setAgentId}
-                />
-                {modelChoices.length > 0 && (
+                  ))
+                ) : (
+                  <ComposerMenu
+                    title="Agent"
+                    value={agent.id}
+                    options={agentOptions}
+                    open={menu === 'agent'}
+                    align="left"
+                    placement="down"
+                    triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    leading={
+                      <span className="av h-4 w-4 rounded-xs">
+                        <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
+                      </span>
+                    }
+                    onOpenChange={(o) => setMenu(o ? 'agent' : null)}
+                    onChange={setAgentId}
+                  />
+                )}
+                {addOptions.length > 0 && (
+                  <ComposerMenu
+                    title="Add agents"
+                    value=""
+                    options={addOptions}
+                    iconOnly
+                    open={menu === 'add'}
+                    align="left"
+                    placement="down"
+                    triggerClassName="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans text-[14px] leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                    tooltips={false}
+                    leading={<span aria-hidden>+</span>}
+                    onOpenChange={(o) => setMenu(o ? 'add' : null)}
+                    onChange={(v) => setMemberIds((cur) => (cur.includes(v) ? cur : [...cur, v]))}
+                  />
+                )}
+                {!multi && modelChoices.length > 0 && (
                   <ComposerMenu
                     title="Model"
                     value={model}
@@ -368,7 +458,7 @@ export default function HomeView() {
                     onChange={(m) => setRuntime((r) => ({ ...r, model: m }))}
                   />
                 )}
-                {showEffort && effortChoices.length > 0 && (
+                {!multi && showEffort && effortChoices.length > 0 && (
                   <ComposerMenu
                     title="Effort"
                     value={effort}
@@ -382,7 +472,7 @@ export default function HomeView() {
                     onChange={(v) => setRuntime((r) => ({ ...r, effort: v }))}
                   />
                 )}
-                {showPermission && permissionChoices.length > 0 && (
+                {!multi && showPermission && permissionChoices.length > 0 && (
                   <ComposerMenu
                     title="Permission"
                     value={permission}

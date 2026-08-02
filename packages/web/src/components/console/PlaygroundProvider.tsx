@@ -33,8 +33,10 @@ interface PlaygroundData {
   setPgImage: (id: string, image?: SessionImage) => void
   /** Is a turn in flight for this session id? Drives its typing indicator + send-disable. */
   isPgBusy: (id: string) => boolean
-  /** Create a new sandbox session for an agent and return its id. Does not navigate. */
-  openPlayground: (agent: Agent) => string
+  /** Create a new sandbox session and return its id. Does not navigate. `members`
+   *  adds more participants — the conversation's roster is fixed at creation
+   *  (webchat-multi-agents.md §3.1); the first agent is the primary. */
+  openPlayground: (agent: Agent, members?: Agent[]) => string
   pgSend: (id: string, agentId: string, text?: string, conversationId?: string) => void
   /** Switch the session's model (in-session, sticky). */
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
@@ -140,6 +142,9 @@ type WebchatStatus = {
 
 type WebchatOutput = {
   turnId: string
+  /** Streaming participant (multi-agent conversations). Absent from an older
+   *  daemon ⇒ the conversation's sole agent. */
+  agentId?: string
   index: number
   event?: WebchatEvent
   status?: WebchatStatus
@@ -147,9 +152,13 @@ type WebchatOutput = {
 
 type WebchatDone = {
   turnId: string
+  agentId?: string
   lastIndex?: number
   error?: string
 }
+
+/** One roster entry from the relay `ready` frame. */
+type WebchatParticipant = { agentId: string; primary?: boolean }
 
 type WebchatRuntimeConfig = {
   model?: string
@@ -173,6 +182,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
+  // Creation-time roster per session id (primary first) — drives the
+  // conversation-scoped token mint for a multi-agent create.
+  const rosterAgentIds = useRef<Map<string, string[]>>(new Map())
+  // One ordering cursor per stream LANE — a multi-agent turn runs one lane per
+  // targeted participant (webchat-multi-agents.md §5.3), keyed `${id} ${agentId}`.
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
   const reconnectAttempts = useRef<Map<string, number>>(new Map())
   // Standalone set_* operations cannot bind until the first daemon session exists.
@@ -253,45 +267,75 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  label; the agent's auto-generated title arrives mid-turn (like a Slack session's).
    *  Only synthetic sessions are relabeled here; an adopted webchat session already
    *  carries its persisted title from the list fetch. */
-  const applyTitle = useCallback((id: string, title: string): void => {
+  const applyTitle = useCallback((id: string, title: string, agentId?: string): void => {
     if (!title.trim() || !id.startsWith(PG_PREFIX)) return
     setPgSessions((cur) => {
       const s = cur[id]
       if (!s || s.title === title) return cur
+      // The conversation title follows the PRIMARY participant's session_info
+      // (webchat-multi-agents.md §8); a member's title applies only to its own row.
+      if (agentId && s.agentId && agentId !== s.agentId) return cur
       return { ...cur, [id]: { ...s, title } }
     })
   }, [])
+
+  /** Display name of a conversation participant (multi-agent sessions only —
+   *  a single-agent session carries no roster and keeps unattributed steps). */
+  const participantName = useCallback(
+    (id: string, agentId: string | undefined): string | undefined => {
+      if (!agentId) return undefined
+      const s = pgSessions[id]
+      return s?.participants?.find((p) => p.agentId === agentId)?.name
+    },
+    [pgSessions]
+  )
 
   /** Fold one streamed reply event into the session's steps. Consecutive
    *  thinking / message chunks accumulate into a single PLAN / DONE lane so the
    *  bot turn reads as one block instead of one row per delta. */
   const applyEvent = useCallback(
-    (id: string, ev: WebchatEvent): void => {
+    (id: string, ev: WebchatEvent, agentId?: string): void => {
       const observedAtMs = Date.now()
+      const who = participantName(id, agentId)
+      const lane = (extra: Omit<SessionStep, 'text'> & { text: string }): SessionStep =>
+        stampStep({ ...extra, ...(agentId ? { agentId } : {}), ...(who ? { who } : {}) }, observedAtMs)
       mutateSteps(id, (steps) => {
-        const last = steps[steps.length - 1]
-        if (ev.kind === 'message') {
-          if (last && last.kind === 'done') {
-            return [...steps.slice(0, -1), { ...last, text: last.text + ev.text, observedAtMs }]
+        // Concurrent participant streams interleave: accumulate each chunk into
+        // the most recent step OF THIS LANE (same agentId), not the array tail.
+        const laneIndex = (() => {
+          for (let i = steps.length - 1; i >= 0; i--) {
+            if ((steps[i]!.agentId ?? undefined) === agentId) return i
           }
-          return [...steps, stampStep({ kind: 'done', text: ev.text }, observedAtMs)]
+          return -1
+        })()
+        const last = laneIndex >= 0 ? steps[laneIndex] : undefined
+        const replaceAt = (i: number, step: SessionStep): SessionStep[] => [
+          ...steps.slice(0, i),
+          step,
+          ...steps.slice(i + 1)
+        ]
+        if (ev.kind === 'message') {
+          if (last && last.kind === 'done' && last.who === who) {
+            return replaceAt(laneIndex, { ...last, text: last.text + ev.text, observedAtMs })
+          }
+          return [...steps, lane({ kind: 'done', text: ev.text })]
         }
         if (ev.kind === 'thinking') {
-          if (last && last.kind === 'plan') {
-            return [...steps.slice(0, -1), { ...last, text: last.text + ev.text, observedAtMs }]
+          if (last && last.kind === 'plan' && last.who === who) {
+            return replaceAt(laneIndex, { ...last, text: last.text + ev.text, observedAtMs })
           }
-          return [...steps, stampStep({ kind: 'plan', text: ev.text }, observedAtMs)]
+          return [...steps, lane({ kind: 'plan', text: ev.text })]
         }
         if (ev.kind === 'tool_call') {
-          return [...steps, stampStep({ kind: 'tool', text: ev.title || 'tool call' }, observedAtMs)]
+          return [...steps, lane({ kind: 'tool', text: ev.title || 'tool call' })]
         }
         if (ev.kind === 'tool_update' && last?.kind === 'tool') {
-          return [...steps.slice(0, -1), { ...last, observedAtMs }]
+          return replaceAt(laneIndex, { ...last, observedAtMs })
         }
         return steps // tool_update: status-only, nothing to render for now
       })
     },
-    [mutateSteps]
+    [mutateSteps, participantName]
   )
 
   /** Fold a status snapshot (model / context / tokens / cost) into the session's headline
@@ -299,10 +343,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  fields overwrite, so a partial snapshot (context-only mid-turn) never clears the
    *  model or the last token total. Playground sessions only (adopted webchat rows carry
    *  their own persisted headline). */
-  const applyStatus = useCallback((id: string, st: WebchatStatus): void => {
+  const applyStatus = useCallback((id: string, st: WebchatStatus, agentId?: string): void => {
     setPgSessions((cur) => {
       const s = cur[id]
       if (!s) return cur
+      // Headline runtime/usage fields track the PRIMARY participant; a member
+      // agent's status frames only belong to its own session row (multi-agent
+      // conversations expose no in-conversation runtime controls anyway).
+      if (agentId && s.agentId && agentId !== s.agentId) return cur
       const usage = {
         ...s.usage,
         ...(st.contextUsed !== undefined ? { contextUsed: st.contextUsed } : {}),
@@ -332,9 +380,30 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  // ── stream lanes ──────────────────────────────────────────────────────────
+  // Cursor keys are `${id} ${agentId}`. A frame from an older daemon omits
+  // agentId — it resolves to the session's sole lane.
+  const laneKey = (id: string, agentId?: string): string => `${id} ${agentId ?? ''}`
+  const lanesOf = (id: string): string[] => [...streamCursors.current.keys()].filter((k) => k.startsWith(`${id} `))
+  const laneAgentId = (key: string): string | undefined => {
+    const agentId = key.slice(key.indexOf(' ') + 1)
+    return agentId || undefined
+  }
+  const cursorKeyFor = (id: string, agentId?: string): string | undefined => {
+    const exact = laneKey(id, agentId)
+    if (streamCursors.current.has(exact)) return exact
+    const lanes = lanesOf(id)
+    // Legacy frames without agentId (or a lane created before the ready roster
+    // landed) resolve to the sole lane when there is exactly one.
+    return lanes.length === 1 ? lanes[0] : undefined
+  }
+  const dropLanes = (id: string): void => {
+    for (const key of lanesOf(id)) streamCursors.current.delete(key)
+  }
+
   const failStream = useCallback(
     (id: string, message: string): void => {
-      streamCursors.current.delete(id)
+      dropLanes(id)
       reconnectAttempts.current.delete(id)
       pushStep(id, { kind: 'done', text: `⚠️ ${message}` })
       setBusy(id, false)
@@ -343,43 +412,63 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const applyStreamResult = useCallback(
-    (id: string, result: OrderedWebchatResult<WebchatOutput, WebchatDone>): void => {
+    (id: string, cursorKey: string, result: OrderedWebchatResult<WebchatOutput, WebchatDone>): void => {
+      const agentId = laneAgentId(cursorKey)
       if (result.overflow) {
         failStream(id, 'Connection interrupted — refresh to load the complete response.')
         return
       }
       for (const output of result.outputs) {
-        if (output.status) applyStatus(id, output.status)
+        if (output.status) applyStatus(id, output.status, agentId)
         const event = output.event
         if (event) {
-          if (event.kind === 'session_info') applyTitle(id, event.title)
-          else applyEvent(id, event)
+          if (event.kind === 'session_info') applyTitle(id, event.title, agentId)
+          else applyEvent(id, event, agentId)
         }
       }
       if (!result.done) return
       reconnectAttempts.current.delete(id)
-      streamCursors.current.delete(id)
-      if (result.done.error) pushStep(id, { kind: 'done', text: `⚠️ ${result.done.error}` })
-      setBusy(id, false)
+      streamCursors.current.delete(cursorKey)
+      if (result.done.error) {
+        const name = participantName(id, agentId)
+        pushStep(id, {
+          kind: 'done',
+          ...(agentId ? { agentId } : {}),
+          ...(name ? { who: name } : {}),
+          text: `⚠️ ${result.done.error}`
+        })
+      } else if (agentId) {
+        // Rung 2 of the composer targeting ladder: the last participant to
+        // complete a reply is the default target of an unmentioned follow-up.
+        setPgSessions((cur) => {
+          const s = cur[id]
+          if (!s || s.lastResponderAgentId === agentId) return cur
+          return { ...cur, [id]: { ...s, lastResponderAgentId: agentId } }
+        })
+      }
+      // The turn stays busy until every targeted participant's lane finished.
+      if (lanesOf(id).length === 0) setBusy(id, false)
     },
-    [applyEvent, applyStatus, applyTitle, failStream, pushStep, setBusy]
+    [applyEvent, applyStatus, applyTitle, failStream, participantName, pushStep, setBusy]
   )
 
   const receiveOutput = useCallback(
     (id: string, output: WebchatOutput): void => {
-      const cursor = streamCursors.current.get(id)
-      if (!cursor || !bindWebchatTurn(cursor, output.turnId)) return
+      const key = cursorKeyFor(id, output.agentId)
+      const cursor = key ? streamCursors.current.get(key) : undefined
+      if (!key || !cursor || !bindWebchatTurn(cursor, output.turnId)) return
       reconnectAttempts.current.delete(id)
-      applyStreamResult(id, acceptWebchatOutput(cursor, output))
+      applyStreamResult(id, key, acceptWebchatOutput(cursor, output))
     },
     [applyStreamResult]
   )
 
   const receiveDone = useCallback(
     (id: string, done: WebchatDone): void => {
-      const cursor = streamCursors.current.get(id)
-      if (!cursor) return
-      applyStreamResult(id, acceptWebchatDone(cursor, done))
+      const key = cursorKeyFor(id, done.agentId)
+      const cursor = key ? streamCursors.current.get(key) : undefined
+      if (!key || !cursor) return
+      applyStreamResult(id, key, acceptWebchatDone(cursor, done))
     },
     [applyStreamResult]
   )
@@ -414,18 +503,24 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       }
 
       const sendResume = (ws: WebSocket): void => {
-        const cursor = streamCursors.current.get(id)
-        const turnId = cursor?.turnId ?? cursor?.requestedTurnId
-        if (!cursor || !turnId || ws.readyState !== WebSocket.OPEN) return
-        cursor.resumeGeneration += 1
-        ws.send(
-          JSON.stringify({
-            type: 'resume',
-            turnId,
-            generation: cursor.resumeGeneration,
-            afterIndex: cursor.nextIndex - 1
-          })
-        )
+        // One resume per live lane — a multi-agent turn streams from several
+        // participants, each with its own daemon-side replay window.
+        for (const key of lanesOf(id)) {
+          const cursor = streamCursors.current.get(key)
+          const turnId = cursor?.turnId ?? cursor?.requestedTurnId
+          if (!cursor || !turnId || ws.readyState !== WebSocket.OPEN) continue
+          cursor.resumeGeneration += 1
+          const agentId = laneAgentId(key)
+          ws.send(
+            JSON.stringify({
+              type: 'resume',
+              turnId,
+              ...(agentId ? { agentId } : {}),
+              generation: cursor.resumeGeneration,
+              afterIndex: cursor.nextIndex - 1
+            })
+          )
+        }
       }
 
       /** A reconnect can beat the original turn across different relay links.
@@ -469,7 +564,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const ready = new Promise<WebSocket>((resolve, reject) => {
         const orgId = activeOrg?.id
         if (!orgId) return reject(new Error('no active org'))
-        void webchatWsUrl(orgId, agentId, resumeId)
+        void webchatWsUrl(orgId, agentId, resumeId, rosterAgentIds.current.get(id))
           .then((url) => {
             const ws = new WebSocket(url)
             ws.onopen = () => resolve(ws)
@@ -485,9 +580,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               let m: {
                 type?: string
                 conversationId?: string
+                participants?: WebchatParticipant[]
                 output?: WebchatOutput
                 done?: WebchatDone
-                ack?: { accepted?: boolean; reason?: string; turnId?: string }
+                ack?: { accepted?: boolean; reason?: string; turnId?: string; agentId?: string }
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -500,7 +596,28 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   conversationIds.current.set(id, m.conversationId)
                   setPgSessions((current) => {
                     const session = current[id]
-                    return session ? { ...current, [id]: { ...session, channelId: m.conversationId! } } : current
+                    if (!session) return current
+                    // Adopt the verified roster: names were seeded at open
+                    // (openPlayground) — keep them; a resume without seeds falls
+                    // back to short ids until the detail view resolves names.
+                    const verified = m.participants
+                    const participants =
+                      verified && verified.length > 1
+                        ? verified.map((p) => ({
+                            agentId: p.agentId,
+                            name:
+                              session.participants?.find((x) => x.agentId === p.agentId)?.name ?? p.agentId.slice(0, 8),
+                            ...(p.primary ? { primary: true } : {})
+                          }))
+                        : session.participants
+                    return {
+                      ...current,
+                      [id]: {
+                        ...session,
+                        channelId: m.conversationId!,
+                        ...(participants ? { participants } : {})
+                      }
+                    }
                   })
                 }
                 if (resumeStream && busyRef.current[id]) {
@@ -511,14 +628,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               } else if (m.type === 'done') {
                 if (m.done) receiveDone(id, m.done)
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
-                const cursor = streamCursors.current.get(id)
+                const key = cursorKeyFor(id, m.ack?.agentId)
+                const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
               } else if (m.type === 'resumed' && m.ack?.accepted !== false) {
-                const cursor = streamCursors.current.get(id)
+                const key = cursorKeyFor(id, m.ack?.agentId)
+                const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
                 reconnectAttempts.current.delete(id)
               } else if (m.type === 'resumed' && m.ack?.accepted === false) {
-                const awaitingAdmission = m.ack.reason === 'stream_not_found' && !streamCursors.current.get(id)?.turnId
+                const key = cursorKeyFor(id, m.ack?.agentId)
+                const awaitingAdmission =
+                  m.ack.reason === 'stream_not_found' && !(key ? streamCursors.current.get(key)?.turnId : undefined)
                 if (awaitingAdmission) scheduleResumeRetry(ws)
                 else
                   failStream(
@@ -528,16 +649,29 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                       : 'The response could not be resumed — refresh to load its latest state.'
                   )
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
-                streamCursors.current.delete(id)
-                reconnectAttempts.current.delete(id)
+                // A per-participant rejection: fail only that lane — the other
+                // targets of a multi-agent turn keep streaming.
+                const key = cursorKeyFor(id, m.ack.agentId)
+                if (key) streamCursors.current.delete(key)
+                const agentId = m.ack.agentId
+                const name = participantName(id, agentId)
                 pushStep(id, {
                   kind: 'done',
+                  ...(agentId ? { agentId } : {}),
+                  ...(name ? { who: name } : {}),
                   text:
                     m.ack.reason === 'paused'
-                      ? '⚠️ Agent is paused — it is not processing messages.'
-                      : '⚠️ Agent unavailable (no live daemon).'
+                      ? `⚠️ ${name ?? 'Agent'} is paused — it is not processing messages.`
+                      : m.ack.reason === 'busy'
+                        ? `⚠️ ${name ?? 'Agent'} is busy — try again shortly.`
+                        : m.ack.reason === 'not_participant'
+                          ? `⚠️ ${name ?? 'That agent'} is not in this conversation.`
+                          : `⚠️ ${name ?? 'Agent'} unavailable (no live daemon).`
                 })
-                setBusy(id, false)
+                if (lanesOf(id).length === 0) {
+                  reconnectAttempts.current.delete(id)
+                  setBusy(id, false)
+                }
               } else if (m.type === 'error') {
                 failStream(id, 'Connection error.')
               }
@@ -560,14 +694,22 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const openPlayground = useCallback(
-    (da: Agent): string => {
+    (da: Agent, members?: Agent[]): string => {
       const id = newPlaygroundSessionId(da.id)
+      // The roster is fixed at creation (webchat-multi-agents.md §3.1): the
+      // first pick is the primary; there is no add/remove after the first send.
+      const roster = [da, ...(members ?? []).filter((m) => m.id !== da.id)]
+      if (roster.length > 1)
+        rosterAgentIds.current.set(
+          id,
+          roster.map((a) => a.id)
+        )
       setPgSessions((cur) => {
         return {
           ...cur,
           [id]: {
             id,
-            title: 'Playground · ' + agentLabel(da),
+            title: 'Playground · ' + roster.map((a) => agentLabel(a)).join(', '),
             ...liveActivityStamp(),
             status: 'online',
             platform: 'playground',
@@ -575,6 +717,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             user: '@you',
             agentId: da.id,
             agentName: agentLabel(da),
+            ...(roster.length > 1
+              ? {
+                  participants: roster.map((a, i) => ({
+                    agentId: a.id,
+                    name: agentLabel(a),
+                    ...(i === 0 ? { primary: true } : {})
+                  }))
+                }
+              : {}),
             model: da.model,
             runtime: da.runtime,
             permissionMode: da.permissionMode,
@@ -609,7 +760,29 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgImage(id)
       setBusy(id, true)
       const requestedTurnId = crypto.randomUUID()
-      streamCursors.current.set(id, createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
+      // The composer targeting ladder (webchat-multi-agents.md §4.2), computed
+      // client-side: @mentions in the text → the last responder → the primary.
+      // The relay validates targets against the verified roster.
+      const session = pgSessions[id]
+      const roster = session?.participants ?? []
+      const mentions =
+        roster.length > 1
+          ? roster
+              .filter(
+                (p) => p.name && new RegExp(`@${p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)
+              )
+              .map((p) => p.agentId)
+          : []
+      const lastResponder = session?.lastResponderAgentId
+      const targets =
+        roster.length > 1
+          ? mentions.length
+            ? mentions
+            : [lastResponder && roster.some((p) => p.agentId === lastResponder) ? lastResponder : agentForId]
+          : [agentForId]
+      for (const target of targets) {
+        streamCursors.current.set(laneKey(id, target), createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
+      }
       if (conversationId) conversationIds.current.set(id, conversationId)
       reconnectAttempts.current.delete(id)
       // First send of a fresh conversation mints a real session on the daemon. The SSE
@@ -624,8 +797,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             JSON.stringify({
               text,
               turnId: requestedTurnId,
+              ...(roster.length > 1 ? { mentions, targets } : {}),
               ...(image ? { attachments: [image] } : {}),
-              ...(stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {})
+              // Runtime staging is a single-agent affordance — multi-agent
+              // conversations expose no runtime controls (§9.1/§9.3).
+              ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {})
             })
           )
           if (isNewConversation) setTimeout(refreshSessions, 2500)
@@ -634,17 +810,22 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           // A 503 from the token mint means the CP has no relay pool configured — the
           // agent may be perfectly healthy, so name the real cause instead of "unreachable".
           const noRelay = err instanceof ApiError && err.status === 503
+          // A 409 from the conversation mint names the exact blocker (an agent's
+          // daemon lacking multi-agent webchat support) — surface it verbatim.
+          const conflict = err instanceof ApiError && err.status === 409 ? err.message : undefined
           pushStep(id, {
             kind: 'done',
             text: noRelay
               ? '⚠️ Webchat relay not configured — set PUBLIC_RELAY_URL on the control plane.'
-              : '⚠️ Could not reach the agent.'
+              : conflict
+                ? `⚠️ ${conflict}`
+                : '⚠️ Could not reach the agent.'
           })
-          streamCursors.current.delete(id)
+          dropLanes(id)
           setBusy(id, false)
         })
     },
-    [pgBusyBy, pgImageBy, pgInputBy, connect, pushStep, setPgImage, setPgInput, setBusy, refreshSessions]
+    [pgBusyBy, pgImageBy, pgInputBy, pgSessions, connect, pushStep, setPgImage, setPgInput, setBusy, refreshSessions]
   )
 
   /** Switch the session's model (fire-and-forget over the conversation socket). Updates

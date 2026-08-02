@@ -137,6 +137,19 @@ export function mintWebchatToken(orgId: string, agentId: string, conversationId?
 }
 
 /**
+ * Conversation-scoped mint (webchat-multi-agents.md §6.2): pass `agentIds` (first
+ * entry = primary) to CREATE a conversation — the roster is fixed at creation — or
+ * `conversationId` to resume one. Creating with more than one agent requires every
+ * selected agent's daemon to support multi-agent webchat (409 otherwise).
+ */
+export function mintWebchatConversationToken(
+  orgId: string,
+  body: { conversationId?: string; agentIds?: string[] }
+): Promise<WebchatTokenDto> {
+  return apiPost<WebchatTokenDto>(`/orgs/${encodeURIComponent(orgId)}/webchat/conversations/token`, body)
+}
+
+/**
  * Build the client-facing webchat WebSocket URL for an agent (milestone A4: the relay
  * pool is the ONLY webchat path — the CP is never on the message hot path). Mint a
  * CP token, then dial `${relayUrl}/webchat?token=…&conversation_id=…`; content never
@@ -147,8 +160,26 @@ export function mintWebchatToken(orgId: string, agentId: string, conversationId?
  * session. Omit it to start fresh (the CP allocates and binds the id, echoed back in the
  * `ready` frame).
  */
-export async function webchatWsUrl(orgId: string, agentId: string, conversationId?: string): Promise<string> {
-  const minted = await mintWebchatToken(orgId, agentId, conversationId)
+export async function webchatWsUrl(
+  orgId: string,
+  agentId: string,
+  conversationId?: string,
+  agentIds?: string[]
+): Promise<string> {
+  // A multi-agent create (roster fixed at creation) goes through the
+  // conversation-scoped mint. A RESUME also prefers it — the legacy per-agent
+  // path authorizes only the conversation's PRIMARY agent, and a resume opened
+  // from a member participant's session row would 404 there — falling back to
+  // the legacy mint when the CP predates the conversation route.
+  const minted =
+    agentIds && agentIds.length > 1 && !conversationId
+      ? await mintWebchatConversationToken(orgId, { agentIds })
+      : conversationId
+        ? await mintWebchatConversationToken(orgId, { conversationId }).catch((err) => {
+            if (err instanceof ApiError && err.status === 404) return mintWebchatToken(orgId, agentId, conversationId)
+            throw err
+          })
+        : await mintWebchatToken(orgId, agentId, conversationId)
   const base = minted.relayUrl.replace(/^http/, 'ws').replace(/\/+$/, '') // http→ws, https→wss
   const params = new URLSearchParams({ token: minted.token, conversation_id: minted.conversationId })
   return `${base}/webchat?${params.toString()}`

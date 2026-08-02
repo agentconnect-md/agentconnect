@@ -763,6 +763,9 @@ export interface SessionImage {
 export interface SessionStep {
   kind: LaneKind
   who?: string
+  /** Authoring participant of a live multi-agent webchat step — keys the per-agent
+   *  stream lane accumulation and the per-block attribution label. */
+  agentId?: string
   /** Display timestamp for live/mock-only steps. Persisted transcripts use their raw ts. */
   time?: string
   text: string
@@ -848,6 +851,12 @@ export interface Session {
   /** The daemon's real session id for a live (playground) conversation — used to replace
    *  its synthetic route with a refresh-safe URL. Absent until the first turn creates it. */
   realSessionId?: string
+  /** Multi-agent webchat roster (webchat-multi-agents.md §3.1), primary first —
+   *  present on live conversations with more than one participant. */
+  participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+  /** The participant that most recently replied — rung 2 of the composer's
+   *  targeting ladder (mention → last responder → primary). */
+  lastResponderAgentId?: string
   /** Runtime id + daemonId the session ran with: the session-recorded snapshot,
    *  with the owning agent's current values as the legacy-row fallback (attached
    *  at flatten time, like `model`). Views resolve `daemon` to a display name. */
