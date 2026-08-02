@@ -199,11 +199,9 @@ export function OrgIconView({
 // GitHub octocat mark — rendered on the workspace tiles and cards instead of
 // <Icon name="github" /> (which lucide no longer ships).
 export function GithubMark({ color = 'currentColor', fillPct = 60 }: { color?: string; fillPct?: number }) {
-  const s =
-    fillPct === 60
-      ? { width: '60%', height: '60%', display: 'block' }
-      : ({ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' } as const)
-  return <SiGithub className="block" style={s} color={color} aria-hidden />
+  return (
+    <SiGithub style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
+  )
 }
 
 export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fillPct?: number }) {
@@ -228,8 +226,9 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   if (x.includes('dream')) {
     return (
       <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
-        {/* --brand, not --brand-soft-text: the mark's usual home is an `.imark` tile,
-            whose plate stays light in dark mode — the soft tint vanishes on it. */}
+        {/* --brand, not --brand-soft-text: that token swings with the theme (a pale tint
+            on dark, a deep wine on light), while one magenta reads on both surfaces —
+            and matches the webhook mark above, the other brand-colored glyph here. */}
         <Icon name="moon" className="h-full w-full text-(--brand)" />
       </span>
     )
