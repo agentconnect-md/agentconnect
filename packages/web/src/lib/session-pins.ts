@@ -13,10 +13,10 @@
 // If cross-device pins are ever wanted, this module is the whole seam: swap the
 // reads/writes for a CP-backed hook and the rail is unchanged.
 //
-// The list is GLOBAL across agents, so each entry records its owning agent. That
-// is what lets the rail tell "this pin belongs to another agent" apart from "this
-// pin is gone", and what lets it fetch the handful of pinned rows that are not on
-// the loaded page (see SESSION_PIN_HYDRATE_MAX).
+// The list is GLOBAL across agents. A pin is a session bookmark, not an agent-list
+// preference: opening it restores that session and therefore its current position
+// in the related-session tree. The rail fetches the handful of pinned rows that are
+// not on the loaded page (see SESSION_PIN_HYDRATE_MAX).
 //
 // Forgetting is by RECENCY ONLY: `writeSessionPins` keeps the newest
 // SESSION_PINS_MAX entries and drops the tail. Nothing here ever infers that a
@@ -24,11 +24,9 @@
 // the console has no cheap proof of deletion (the detail endpoint answers 404 for
 // unauthorized as well as missing). Growth is bounded by the cap instead.
 
-/** One pinned session and the agent whose rail it belongs to. */
+/** One pinned session. */
 export interface SessionPin {
   id: string
-  /** Owning agent id; '' for entries written before the agent was recorded. */
-  agentId: string
 }
 
 /** localStorage key holding the pinned sessions, newest pin first. */
@@ -38,14 +36,14 @@ export const SESSION_PINS_KEY = 'ac.pinned-sessions'
  *  forever in a browser that never revisits the sessions they belong to. */
 export const SESSION_PINS_MAX = 200
 
-/** How many of one agent's pinned rows the rail will fetch individually when they
- *  are not on the loaded page. A rail holds a handful of pins in practice; the cap
- *  only stops a pathological list from fanning out into hundreds of requests.
- *  Pins beyond it still persist — they render once they are on the loaded page. */
+/** How many pinned rows the rail will fetch individually when they are not on the
+ *  loaded page. A rail holds a handful of pins in practice; the cap only stops a
+ *  pathological list from fanning out into hundreds of requests. Pins beyond it
+ *  still persist — they render once they are on the loaded page. */
 export const SESSION_PIN_HYDRATE_MAX = 12
 
 /** The stored pins, newest first. `[]` on SSR, malformed JSON, or blocked storage.
- *  Accepts the legacy flat `string[]` shape, attributing those to no agent. */
+ *  Accepts both the legacy flat `string[]` shape and prior `{ id, agentId }` rows. */
 export function readSessionPins(): SessionPin[] {
   if (typeof window === 'undefined') return []
   try {
@@ -73,17 +71,8 @@ export function writeSessionPins(pins: SessionPin[]): void {
 
 /** `pins` with `sessionId` pinned (newest first) or unpinned. Pure — persist via
  *  `writeSessionPins`, so the caller can update React state from the same value. */
-export function toggleSessionPin(pins: SessionPin[], sessionId: string, agentId: string): SessionPin[] {
-  return pins.some((p) => p.id === sessionId)
-    ? pins.filter((p) => p.id !== sessionId)
-    : [{ id: sessionId, agentId }, ...pins]
-}
-
-/** Ids pinned on `agentId`'s rail, newest pin first. Only exact matches — an entry
- *  with no recorded agent is not claimed here (it would otherwise be fetched on
- *  every agent's rail); `partitionPinned` still lifts it once it is on the page. */
-export function pinnedIdsForAgent(pins: SessionPin[], agentId: string): string[] {
-  return agentId ? pins.filter((p) => p.agentId === agentId).map((p) => p.id) : []
+export function toggleSessionPin(pins: SessionPin[], sessionId: string): SessionPin[] {
+  return pins.some((p) => p.id === sessionId) ? pins.filter((p) => p.id !== sessionId) : [{ id: sessionId }, ...pins]
 }
 
 /** Split `sessions` into the pinned ones (in pin order, newest pin first) and the
@@ -107,11 +96,11 @@ export function partitionPinned<T extends { id: string }>(
 }
 
 function asPin(entry: unknown): SessionPin | null {
-  if (typeof entry === 'string') return entry ? { id: entry, agentId: '' } : null
+  if (typeof entry === 'string') return entry ? { id: entry } : null
   if (!entry || typeof entry !== 'object') return null
-  const { id, agentId } = entry as { id?: unknown; agentId?: unknown }
+  const { id } = entry as { id?: unknown }
   if (typeof id !== 'string' || !id) return null
-  return { id, agentId: typeof agentId === 'string' ? agentId : '' }
+  return { id }
 }
 
 function dedupe(pins: SessionPin[]): SessionPin[] {

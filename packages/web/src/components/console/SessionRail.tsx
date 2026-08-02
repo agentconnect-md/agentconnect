@@ -1,11 +1,12 @@
 'use client'
 
 // The session detail page's left rail: the open session's direct family (parent,
-// siblings, and children) followed by the other sessions of the CURRENT agent.
-// Family rows stay in their tree even when pinned and are removed from the ordinary
-// list below, so lineage never appears twice. The rail only appears when there is
-// another session to navigate to and only on desktop — ≤768px uses the relation
-// card in SessionDetailView plus the Shell app bar's back affordance.
+// siblings, and children), globally pinned shortcuts, then the other sessions of
+// the CURRENT agent. Family rows stay in their tree even when pinned and are
+// removed from the ordinary list below, so lineage never appears twice. The rail
+// only appears when there is another session to navigate to and only on desktop —
+// ≤768px uses the relation card in SessionDetailView plus the Shell app bar's back
+// affordance.
 //
 // A row is the owning integration's platform mark (Slack / Telegram / … ) plus the
 // title, and nothing else: at 224px a per-row timestamp crowds out the one thing
@@ -18,8 +19,9 @@
 // The caller's rows are the agent-filtered FIRST PAGE, so two kinds of row would
 // otherwise be missing from a long-running agent's rail: the open session itself
 // (a deep link to session 51+), and pinned runs that newer runs pushed off page
-// one. Both are the rail's whole point, so `current` is merged in and this agent's
-// off-page pins are fetched individually (bounded by SESSION_PIN_HYDRATE_MAX).
+// one or that belong to another agent. Both are the rail's whole point, so
+// `current` is merged in and off-page pins are fetched individually (bounded by
+// SESSION_PIN_HYDRATE_MAX).
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
@@ -33,7 +35,6 @@ import { PlatformMark } from '@/components/marks'
 import { groupSessionsByAge } from '@/lib/session-age'
 import {
   partitionPinned,
-  pinnedIdsForAgent,
   readSessionPins,
   SESSION_PIN_HYDRATE_MAX,
   toggleSessionPin,
@@ -43,7 +44,6 @@ import {
 
 interface RailRow {
   id: string
-  agentId?: string
   platform: string
   title: string
   tooltip: string
@@ -83,16 +83,13 @@ export function SessionRail({
     setPins(readSessionPins())
   }, [])
 
-  const togglePin = useCallback(
-    (sessionId: string, rowAgentId?: string) => {
-      setPins((prev) => {
-        const next = toggleSessionPin(prev, sessionId, rowAgentId ?? agentId ?? '')
-        writeSessionPins(next)
-        return next
-      })
-    },
-    [agentId]
-  )
+  const togglePin = useCallback((sessionId: string) => {
+    setPins((prev) => {
+      const next = toggleSessionPin(prev, sessionId)
+      writeSessionPins(next)
+      return next
+    })
+  }, [])
 
   const currentId = canonicalSessionId(current)
   const parent = family?.parentSession ?? null
@@ -109,21 +106,23 @@ export function SessionRail({
     return ids
   }, [children, currentId, hasFamily, parent, siblings])
 
-  // Pinned rows for THIS agent that the loaded page does not carry. Fetched by id
-  // because the list endpoint cannot filter by id; a rail holds a handful of pins,
-  // and the cap only bounds a pathological list. A row that fails to load is simply
-  // not rendered — a 404 here means "missing or not authorized", which is not proof
-  // of deletion, so the pin is left alone (see lib/session-pins.ts).
+  // Globally pinned rows that the loaded page or current family does not carry.
+  // Fetched by id because the list endpoint cannot filter by id; a rail holds a
+  // handful of pins, and the cap only bounds a pathological list. A row that fails
+  // to load is simply not rendered — a 404 here means "missing or not authorized",
+  // which is not proof of deletion, so the pin is left alone (see
+  // lib/session-pins.ts).
   const loadedIds = useMemo(
     () => new Set([...sessions.map(canonicalSessionId), currentId, ...relatedIds]),
     [sessions, currentId, relatedIds]
   )
   const missingPinIds = useMemo(
     () =>
-      pinnedIdsForAgent(pins, agentId ?? '')
+      pins
+        .map((pin) => pin.id)
         .filter((id) => !loadedIds.has(id))
         .slice(0, SESSION_PIN_HYDRATE_MAX),
-    [pins, agentId, loadedIds]
+    [pins, loadedIds]
   )
   const { data: hydratedPins } = useSWR(
     missingPinIds.length > 0 ? ['session-rail-pins', activeOrg?.id ?? '', missingPinIds.join(',')] : null,
@@ -162,29 +161,14 @@ export function SessionRail({
   // no server pass whose clock could disagree.
   const groups = useMemo(() => groupSessionsByAge(rest, new Date()), [rest])
 
-  // Start with the owning agent's real count, not the loaded-page length — a
-  // 60-session agent must not read "50". Related sessions from that agent are
-  // already included in `total`; cross-agent relatives are not, so add that
-  // distinct visible set to make the badge match the rail's navigable union.
-  const currentAgentId = agentId ?? current.agentId
-  const crossAgentRelatedCount = useMemo(() => {
-    const ids = new Set<string>()
-    for (const relation of [...(parent ? [parent] : []), ...siblings, ...children]) {
-      if (relation.agentId !== currentAgentId) ids.add(relation.id)
-    }
-    return ids.size
-  }, [children, currentAgentId, parent, siblings])
-  const count = Math.max(total, rows.length) + crossAgentRelatedCount
-
   // A rail that would only show the session already on screen is noise. Direct
   // lineage still makes it useful when the current agent itself has one session.
-  if (count < 2 && !hasFamily) return null
+  if (Math.max(total, rows.length) < 2 && !hasFamily) return null
 
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
     return {
       id: canonicalSessionId(s),
-      agentId: s.agentId ?? agentId,
       platform: channel.platform,
       title: s.title,
       tooltip: `${s.title}\n${s.time} · ${channel.label}`
@@ -194,7 +178,6 @@ export function SessionRail({
     const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
     return {
       id: relation.id,
-      agentId: relation.agentId,
       platform: relation.platform,
       title,
       tooltip: title
@@ -238,7 +221,7 @@ export function SessionRail({
         </Link>
         <button
           type="button"
-          onClick={() => togglePin(item.id, item.agentId)}
+          onClick={() => togglePin(item.id)}
           aria-pressed={pinnedRow}
           title={pinnedRow ? 'Unpin session' : 'Pin session'}
           className={`-my-[2px] h-[19px] w-[19px] flex-none items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
@@ -254,12 +237,6 @@ export function SessionRail({
   return (
     <div className="hidden w-[224px] flex-none desktop:block">
       <div className="sticky top-[-9px] flex max-h-[calc(100vh-110px)] flex-col pb-1">
-        <div className="flex items-center gap-2 pr-[9px] pb-[7px] pl-[9px]">
-          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] font-semibold leading-normal tracking-[0.08em] text-(--text-tertiary) uppercase">
-            Sessions
-          </span>
-          <span className="mono flex-none text-[11px] text-(--text-tertiary)">{count}</span>
-        </div>
         <div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto">
           {hasFamily && (
             <>
@@ -278,8 +255,8 @@ export function SessionRail({
           {pinned.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
           {groups.map((g, i) => (
             <Fragment key={g.bucket}>
-              {/* No top margin on the very first heading — it would double the gap
-                  the rail header already leaves (or the pinned divider's). */}
+              {/* The first heading starts flush; separators already provide spacing
+                  when Related or pinned rows precede it. */}
               <div
                 className={`flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase ${
                   i === 0 ? '' : 'pt-[11px]'
