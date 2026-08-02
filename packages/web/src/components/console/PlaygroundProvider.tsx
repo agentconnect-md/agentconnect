@@ -11,7 +11,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { agentLabel, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { webchatWsUrl, fmtCountCompact, fmtCost, ApiError, type SessionMessageDto } from '@/lib/api'
+import {
+  webchatWsUrl,
+  addWebchatConversationAgent,
+  fmtCountCompact,
+  fmtCost,
+  ApiError,
+  type SessionMessageDto
+} from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
@@ -37,6 +44,11 @@ interface PlaygroundData {
    *  adds more participants — the conversation's roster is fixed at creation
    *  (webchat-multi-agents.md §3.1); the first agent is the primary. */
   openPlayground: (agent: Agent, members?: Agent[]) => string
+  /** Add a participant to a LIVE conversation (mid-conversation join,
+   *  webchat-multi-agents.md §3.1). Registers the agent with the CP, then
+   *  rebuilds the socket so the relay re-verifies and caches the grown roster.
+   *  Failures surface as a ⚠️ transcript step. Refused while a turn streams. */
+  pgAddAgent: (id: string, agent: Agent) => Promise<void>
   pgSend: (id: string, agentId: string, text?: string, conversationId?: string) => void
   /** Switch the session's model (in-session, sticky). */
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
@@ -750,6 +762,61 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, setPgImage, setPgInput, setBusy]
   )
 
+  const pgAddAgent = useCallback(
+    async (id: string, added: Agent): Promise<void> => {
+      const orgId = activeOrg?.id
+      const session = pgSessions[id]
+      const primaryId = session?.agentId
+      if (!orgId || !primaryId) return
+      if (primaryId === added.id || session.participants?.some((p) => p.agentId === added.id)) return
+      if (busyRef.current[id]) {
+        pushStep(id, { kind: 'done', text: '⚠️ Wait for the current reply to finish before adding an agent.' })
+        return
+      }
+      const conversationId = conversationIds.current.get(id)
+      if (conversationId) {
+        try {
+          await addWebchatConversationAgent(orgId, conversationId, added.id)
+        } catch (err) {
+          pushStep(id, {
+            kind: 'done',
+            text: `⚠️ ${err instanceof ApiError ? err.message : `Could not add ${agentLabel(added)}.`}`
+          })
+          return
+        }
+      }
+      const ids = rosterAgentIds.current.get(id) ?? [primaryId]
+      if (!ids.includes(added.id)) rosterAgentIds.current.set(id, [...ids, added.id])
+      setPgSessions((cur) => {
+        const s = cur[id]
+        if (!s || !s.agentId) return cur
+        const base = s.participants ?? [{ agentId: s.agentId, name: s.agentName ?? '', primary: true }]
+        if (base.some((p) => p.agentId === added.id)) return cur
+        return {
+          ...cur,
+          [id]: {
+            ...s,
+            title: s.participants ? s.title : `Playground · ${s.agentName ?? ''}, ${agentLabel(added)}`,
+            participants: [...base, { agentId: added.id, name: agentLabel(added) }]
+          }
+        }
+      })
+      // A live conversation's relay connection caches the roster it verified at
+      // connect — rebuild the socket so a fresh rc/verify picks up the join.
+      if (conversationId) {
+        const existing = conns.current.get(id)
+        if (existing) {
+          existing.closing = true
+          if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
+          existing.ws?.close()
+          conns.current.delete(id)
+        }
+        connect(id, primaryId, conversationId).ready.catch(() => {})
+      }
+    },
+    [activeOrg, pgSessions, connect, pushStep]
+  )
+
   const pgSend = useCallback(
     (id: string, agentForId: string, textArg?: string, conversationId?: string) => {
       const text = String(textArg ?? pgInputBy[id] ?? '').trim()
@@ -924,6 +991,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgImage,
       isPgBusy,
       openPlayground,
+      pgAddAgent,
       pgSend,
       pgSetModel,
       pgSetEffort,
@@ -942,6 +1010,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgImage,
       isPgBusy,
       openPlayground,
+      pgAddAgent,
       pgSend,
       pgSetModel,
       pgSetEffort,

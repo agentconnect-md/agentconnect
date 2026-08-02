@@ -78,7 +78,7 @@ import {
   sessionRuntimeChangesEnabled
 } from '@/lib/session-runtime-controls'
 
-type ComposerMenuKey = 'permission' | 'model' | 'effort'
+type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
 // Design composer selectors (session composer, mirrors HomeView): the model is a
 // "pill" with a leading mark, effort/permission are plain chips. Full literal
@@ -690,6 +690,7 @@ export default function SessionDetailView() {
     setPgInput: setPgInputById,
     setPgImage,
     pgSend,
+    pgAddAgent,
     pgSetModel,
     pgSetEffort,
     pgSetPermissionMode,
@@ -1120,6 +1121,28 @@ export default function SessionDetailView() {
     }
   }
   const webchatConversationId = isLive ? session.channelId : undefined
+  // Mid-conversation join (webchat-multi-agents.md §3.1): a live playground
+  // conversation may GROW its roster; removal stays unsupported. Multi-agent
+  // conversations show participant chips instead of runtime pills (§9.1/§9.3).
+  const liveRoster = isPg
+    ? (session.participants ??
+      (session.agentId ? [{ agentId: session.agentId, name: session.agentName ?? '', primary: true }] : []))
+    : []
+  const multiLive = liveRoster.length > 1
+  const addAgentOptions = isPg
+    ? agents
+        .filter((a) => !liveRoster.some((p) => p.agentId === a.id))
+        .map((a) => ({
+          value: a.id,
+          label: agentLabel(a),
+          description: 'Add to this conversation',
+          leading: (
+            <span className="av h-[18px] w-[18px] flex-none rounded-xs">
+              <AgentIconView icon={a.icon} runtime={a.runtime} size={18} />
+            </span>
+          )
+        }))
+    : []
   const onCopyLink = () => {
     try {
       const canonicalId = session.realSessionId ?? session.id
@@ -2001,147 +2024,185 @@ export default function SessionDetailView() {
                       )}
                     </div>
                     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                      {runtimeChangesEnabled && pgModelOptions.length > 0 ? (
-                        <ComposerMenu
-                          title="Model"
-                          value={pgModel}
-                          options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
-                          open={composerMenuOpen === 'model'}
-                          align="left"
-                          triggerClassName={COMPOSER_PILL}
-                          tooltips={false}
-                          leading={
-                            <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                              <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                      {multiLive &&
+                        liveRoster.map((p) => {
+                          const rosterAgent = agents.find((a) => a.id === p.agentId)
+                          return (
+                            <span key={p.agentId} className={COMPOSER_PILL_STATIC} title="Participant">
+                              {rosterAgent && (
+                                <span className="av h-[14px] w-[14px] flex-none rounded-xs">
+                                  <AgentIconView icon={rosterAgent.icon} runtime={rosterAgent.runtime} size={14} />
+                                </span>
+                              )}
+                              {p.name}
                             </span>
-                          }
-                          trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
-                          footer={
-                            pgFastModeAvailable ? (
-                              <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
-                                <button
-                                  type="button"
-                                  role="switch"
-                                  aria-checked={pgFastMode}
-                                  aria-label="Fast mode"
-                                  title="Fast mode trades depth for latency"
-                                  className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
-                                    pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
-                                  }`}
-                                  onClick={() => {
-                                    const fast = !pgFastMode
-                                    setRuntimeSelection({ fast })
-                                    pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
-                                  }}
-                                >
-                                  <span
-                                    className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
-                                      pgFastMode ? 'left-3' : 'left-[1px]'
-                                    }`}
-                                  />
-                                </button>
-                                <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                                  Fast mode
-                                </span>
-                                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                  lower latency
-                                </span>
-                              </div>
-                            ) : undefined
-                          }
+                          )
+                        })}
+                      {isPg && addAgentOptions.length > 0 && (
+                        <ComposerMenu
+                          title="Add agents"
+                          value=""
+                          options={addAgentOptions}
+                          iconOnly
+                          open={composerMenuOpen === 'addAgent'}
+                          align="left"
+                          triggerClassName="inline-flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans text-[13px] leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                          tooltips={false}
+                          leading={<span aria-hidden>+</span>}
                           onOpenChange={(open) => {
                             setAttachMenuOpen(false)
-                            setComposerMenuOpen(open ? 'model' : null)
+                            setComposerMenuOpen(open ? 'addAgent' : null)
                           }}
-                          onChange={(model) => {
-                            const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
-                            const effort = sessionEffortAfterModelChange(
-                              agentRuntime,
-                              owningDaemon,
-                              model,
-                              currentEffort
-                            )
-                            setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
-                            pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
-                            if (effort !== currentEffort) {
-                              pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                          onChange={(v) => {
+                            const picked = agents.find((a) => a.id === v)
+                            if (picked) void pgAddAgent(session.id, picked)
+                          }}
+                        />
+                      )}
+                      {!multiLive &&
+                        (runtimeChangesEnabled && pgModelOptions.length > 0 ? (
+                          <ComposerMenu
+                            title="Model"
+                            value={pgModel}
+                            options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
+                            open={composerMenuOpen === 'model'}
+                            align="left"
+                            triggerClassName={COMPOSER_PILL}
+                            tooltips={false}
+                            leading={
+                              <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                                <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                              </span>
                             }
-                          }}
-                        />
-                      ) : (
-                        pgModel && (
-                          <span className={COMPOSER_PILL_STATIC} title="Model">
-                            <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                              <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                            trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
+                            footer={
+                              pgFastModeAvailable ? (
+                                <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
+                                  <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={pgFastMode}
+                                    aria-label="Fast mode"
+                                    title="Fast mode trades depth for latency"
+                                    className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
+                                      pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
+                                    }`}
+                                    onClick={() => {
+                                      const fast = !pgFastMode
+                                      setRuntimeSelection({ fast })
+                                      pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+                                    }}
+                                  >
+                                    <span
+                                      className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
+                                        pgFastMode ? 'left-3' : 'left-[1px]'
+                                      }`}
+                                    />
+                                  </button>
+                                  <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                                    Fast mode
+                                  </span>
+                                  <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                                    lower latency
+                                  </span>
+                                </div>
+                              ) : undefined
+                            }
+                            onOpenChange={(open) => {
+                              setAttachMenuOpen(false)
+                              setComposerMenuOpen(open ? 'model' : null)
+                            }}
+                            onChange={(model) => {
+                              const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
+                              const effort = sessionEffortAfterModelChange(
+                                agentRuntime,
+                                owningDaemon,
+                                model,
+                                currentEffort
+                              )
+                              setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
+                              pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
+                              if (effort !== currentEffort) {
+                                pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                              }
+                            }}
+                          />
+                        ) : (
+                          pgModel && (
+                            <span className={COMPOSER_PILL_STATIC} title="Model">
+                              <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                                <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                              </span>
+                              {modelLabel(pgModel)}
+                              {pgFastModeAvailable && pgFastMode && <FastBadge />}
                             </span>
-                            {modelLabel(pgModel)}
-                            {pgFastModeAvailable && pgFastMode && <FastBadge />}
-                          </span>
-                        )
-                      )}
-                      {runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
-                        <ComposerMenu
-                          title="Effort"
-                          value={pgEffort}
-                          options={pgEffortOptions.map((effort) => ({
-                            value: effort.value,
-                            label: effort.label,
-                            description: effort.description
-                          }))}
-                          open={composerMenuOpen === 'effort'}
-                          align="left"
-                          triggerClassName={COMPOSER_CHIP}
-                          tooltips={false}
-                          onOpenChange={(open) => {
-                            setAttachMenuOpen(false)
-                            setComposerMenuOpen(open ? 'effort' : null)
-                          }}
-                          onChange={(effort) => {
-                            setRuntimeSelection({ effort })
-                            pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-                          }}
-                        />
-                      ) : (
-                        pgEffort && (
-                          <span className={COMPOSER_CHIP_STATIC} title="Effort">
-                            {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
-                              effortLabel(agentRuntime, pgEffort)}
-                          </span>
-                        )
-                      )}
-                      {runtimeChangesEnabled && pgPermissionModes.length > 0 ? (
-                        <ComposerMenu
-                          title="Permission"
-                          value={pgPermissionMode}
-                          options={pgPermissionModes.map((mode) => ({
-                            value: mode.v,
-                            label: mode.l,
-                            description: mode.description
-                          }))}
-                          open={composerMenuOpen === 'permission'}
-                          align="left"
-                          triggerClassName={COMPOSER_CHIP}
-                          onOpenChange={(open) => {
-                            setAttachMenuOpen(false)
-                            setComposerMenuOpen(open ? 'permission' : null)
-                          }}
-                          onChange={(permissionMode) => {
-                            setRuntimeSelection({ permissionMode })
-                            pgSetPermissionMode(
-                              session.id,
-                              session.agentId ?? '',
-                              permissionMode,
-                              webchatConversationId
-                            )
-                          }}
-                        />
-                      ) : (
-                        pgPermissionMode && (
-                          <span className={COMPOSER_CHIP_STATIC} title="Permission">
-                            {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}
-                          </span>
-                        )
-                      )}
+                          )
+                        ))}
+                      {!multiLive &&
+                        (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
+                          <ComposerMenu
+                            title="Effort"
+                            value={pgEffort}
+                            options={pgEffortOptions.map((effort) => ({
+                              value: effort.value,
+                              label: effort.label,
+                              description: effort.description
+                            }))}
+                            open={composerMenuOpen === 'effort'}
+                            align="left"
+                            triggerClassName={COMPOSER_CHIP}
+                            tooltips={false}
+                            onOpenChange={(open) => {
+                              setAttachMenuOpen(false)
+                              setComposerMenuOpen(open ? 'effort' : null)
+                            }}
+                            onChange={(effort) => {
+                              setRuntimeSelection({ effort })
+                              pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                            }}
+                          />
+                        ) : (
+                          pgEffort && (
+                            <span className={COMPOSER_CHIP_STATIC} title="Effort">
+                              {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
+                                effortLabel(agentRuntime, pgEffort)}
+                            </span>
+                          )
+                        ))}
+                      {!multiLive &&
+                        (runtimeChangesEnabled && pgPermissionModes.length > 0 ? (
+                          <ComposerMenu
+                            title="Permission"
+                            value={pgPermissionMode}
+                            options={pgPermissionModes.map((mode) => ({
+                              value: mode.v,
+                              label: mode.l,
+                              description: mode.description
+                            }))}
+                            open={composerMenuOpen === 'permission'}
+                            align="left"
+                            triggerClassName={COMPOSER_CHIP}
+                            onOpenChange={(open) => {
+                              setAttachMenuOpen(false)
+                              setComposerMenuOpen(open ? 'permission' : null)
+                            }}
+                            onChange={(permissionMode) => {
+                              setRuntimeSelection({ permissionMode })
+                              pgSetPermissionMode(
+                                session.id,
+                                session.agentId ?? '',
+                                permissionMode,
+                                webchatConversationId
+                              )
+                            }}
+                          />
+                        ) : (
+                          pgPermissionMode && (
+                            <span className={COMPOSER_CHIP_STATIC} title="Permission">
+                              {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}
+                            </span>
+                          )
+                        ))}
                     </div>
                     <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
                     <button

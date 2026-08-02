@@ -137,6 +137,22 @@ export function mintWebchatToken(orgId: string, agentId: string, conversationId?
 }
 
 /**
+ * Add a participant agent to an existing conversation (mid-conversation join,
+ * webchat-multi-agents.md §3.1). Owner-only; 409 when the roster is full or a
+ * participant's daemon lacks multi-agent webchat support. Idempotent.
+ */
+export function addWebchatConversationAgent(
+  orgId: string,
+  conversationId: string,
+  agentId: string
+): Promise<{ participants: Array<{ agentId: string; primary?: boolean }> }> {
+  return apiPost(
+    `/orgs/${encodeURIComponent(orgId)}/webchat/conversations/${encodeURIComponent(conversationId)}/agents`,
+    { agentId }
+  )
+}
+
+/**
  * Conversation-scoped mint (webchat-multi-agents.md §6.2): pass `agentIds` (first
  * entry = primary) to CREATE a conversation — the roster is fixed at creation — or
  * `conversationId` to resume one. Creating with more than one agent requires every

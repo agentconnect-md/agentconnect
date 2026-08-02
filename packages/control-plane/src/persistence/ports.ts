@@ -1190,6 +1190,11 @@ export interface WebchatConversationRepo {
   /** The conversation's full roster (primary first, then pick order). Empty
    *  for an unknown conversation — callers fail closed. */
   participants(conversationId: string): Promise<WebchatParticipant[]>
+  /** Append one member to an existing conversation's roster (mid-conversation
+   *  join, webchat-multi-agents.md §3.1). Idempotent — re-adding an existing
+   *  participant is a no-op. Authorization (owner, canView, capability, cap)
+   *  belongs to the caller. */
+  addParticipant(conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
   /** The owning console user of a conversation, for session-visibility ingest
    *  (§4.2). Scoped to a PARTICIPANT agent (any roster role); unknown and
    *  foreign bindings both return null (the caller fails closed). */

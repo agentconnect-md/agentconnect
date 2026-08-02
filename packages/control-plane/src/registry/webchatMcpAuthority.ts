@@ -11,6 +11,7 @@ export type WebchatMcpAuthorityDenialReason =
   | 'placement_mismatch'
   | 'daemon_unavailable'
   | 'daemon_feature_missing'
+  | 'multi_agent_conversation'
 
 interface LiveDaemon {
   reachable: boolean
@@ -19,7 +20,7 @@ interface LiveDaemon {
 }
 
 export interface LiveWebchatMcpAuthorityDeps {
-  conversations: Pick<WebchatConversationRepo, 'findOwner' | 'owns'>
+  conversations: Pick<WebchatConversationRepo, 'findOwner' | 'owns' | 'participants'>
   orgs: Pick<OrgRepo, 'roleOf'>
   agents: Pick<AgentRepo, 'get'>
   presets: Pick<PresetAgentStore, 'get'>
@@ -53,6 +54,14 @@ export async function resolveLiveWebchatMcpAuthority(
   ) {
     return { ok: false, reason: 'conversation_binding' }
   }
+
+  // Delegated administration is a single-participant privilege
+  // (webchat-multi-agents.md §10.3). Checked LIVE — a participant added
+  // mid-conversation suspends the catalog on the very next request, without
+  // waiting for grant expiry. An empty roster is a pre-backfill conversation
+  // and stays admissible (the single-agent shape).
+  const roster = await deps.conversations.participants(input.conversationId)
+  if (roster.length > 1) return { ok: false, reason: 'multi_agent_conversation' }
 
   const role = await deps.orgs.roleOf(input.orgId, owner)
   if (!role) return { ok: false, reason: 'membership_missing' }
