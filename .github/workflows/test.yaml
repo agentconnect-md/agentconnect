@@ -121,10 +121,10 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client
         run: pnpm -r prisma:generate
-      # NOTE: this job runs bwrap-free on purpose. The confined skills suites
-      # (which need the OS sandbox) self-skip here and run in the dedicated
-      # `skill-sandbox` job below; keeping bwrap out avoids forcing every other
-      # bwrap-gated suite to run under the runner's kernel sandbox.
+      # NOTE: this job runs bwrap-free on purpose. Suites that need the OS
+      # sandbox self-skip here and run in the dedicated `sandbox-linux` job
+      # below; keeping bwrap out prevents the broad unit suite from changing
+      # behavior based on the runner's available kernel sandbox.
       - name: Unit tests
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
@@ -168,13 +168,11 @@ jobs:
             echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
 
-  # The confined skills suites drive the pinned CLI + workspace mutation inside
-  # the OS kernel sandbox (bwrap on Linux). They self-skip in the bwrap-free Unit
-  # Test job above and run for real here, on a runner made bwrap-capable. Kept in
-  # its own job so enabling the kernel sandbox does not force every other
-  # bwrap-gated suite (e.g. the ACP credential-isolation tests) to run under it.
-  skill-sandbox:
-    name: Skill sandbox (Linux)
+  # Exercise the daemon's core sandbox boundaries and confined skills pipeline
+  # under the real Linux kernel sandbox. These cases self-skip in the bwrap-free
+  # Unit Test job above and run for real here on a bwrap-capable runner.
+  sandbox-linux:
+    name: Sandbox (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -199,9 +197,11 @@ jobs:
           # Ubuntu 24.04 runners restrict unprivileged user namespaces via
           # AppArmor; bwrap (and therefore the SRT sandbox) requires them.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          # Fail loudly rather than letting the confined skills suites silently
+          # Fail loudly rather than letting sandbox-dependent suites silently
           # skip if bwrap cannot start on this runner.
           bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc /usr/bin/true
+      - name: Core sandbox suite
+        run: pnpm --filter @agentconnect.md/daemon exec vitest run test/sandbox.test.ts
       - name: Confined skills suites
         run: >
           pnpm --filter @agentconnect.md/daemon exec vitest run
