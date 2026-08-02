@@ -311,6 +311,7 @@ export default function SessionsView() {
         </>
       )
     }
+    const rosterNames = roster.map((participant) => participant.name)
     return (
       <>
         <span className="flex flex-none items-center -space-x-[5px]">
@@ -320,7 +321,12 @@ export default function SessionsView() {
             </span>
           ))}
         </span>
-        <span className={`truncate ${label}`}>{roster.length} agents</span>
+        <span className={`truncate ${label}`} title={rosterNames.join('\n')}>
+          <span aria-hidden="true">+{roster.length}</span>
+          <span className="sr-only">
+            {roster.length} agents: {rosterNames.join(', ')}
+          </span>
+        </span>
       </>
     )
   }
