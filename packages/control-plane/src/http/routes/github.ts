@@ -258,7 +258,7 @@ export function githubRoutes(deps: HttpDeps) {
           tags: [Tag.GitHub],
           summary: 'List installation repositories',
           description:
-            'Repositories the installation is granted (paged, max 100/page). With the per-user authorization gate configured, the page is filtered to repositories the CALLER can read on GitHub (public, or any effective permission) — no-access repo names never reach the console. GitHub offers NO server-side search on this listing — the console filters client-side.',
+            'Repositories the installation is granted (paged, max 100/page). With the per-user authorization gate configured, public repositories remain visible while private repositories are filtered to those the CALLER can read on GitHub. Without a linked GitHub identity, only the public subset is returned and `privateReposHidden` is true — no private repository names reach the console. GitHub offers NO server-side search on this listing — the console filters client-side.',
           operationId: 'listGithubInstallationRepositories',
           params: IdParam,
           querystring: GithubRepoPageQuery,
@@ -280,9 +280,9 @@ export function githubRoutes(deps: HttpDeps) {
                 ins,
                 repos.map((r) => ({ fullName: r.full_name, private: r.private, repo: r }))
               )
-            : repos.map((r) => ({ repo: r }))
+            : { repos: repos.map((r) => ({ repo: r })), privateReposHidden: false }
           return {
-            repos: visible.map(({ repo }) => ({
+            repos: visible.repos.map(({ repo }) => ({
               repoId: String(repo.id),
               fullName: repo.full_name,
               private: repo.private,
@@ -290,7 +290,8 @@ export function githubRoutes(deps: HttpDeps) {
               description: repo.description,
               updatedAt: repo.pushed_at ?? repo.updated_at ?? null
             })),
-            totalCount
+            totalCount,
+            privateReposHidden: visible.privateReposHidden
           }
         } catch (e) {
           if (e instanceof UserAuthzDeniedError) return userAuthzDenied(reply, e)
@@ -418,7 +419,12 @@ export function githubRoutes(deps: HttpDeps) {
           }
           try {
             const access = await authz.accessFor(req.principal!.userId, ins, req.params.owner, req.params.repo)
-            return { permission: access.permission, canRead: access.canRead, canWrite: access.canWrite }
+            return {
+              permission: access.permission,
+              canRead: access.canRead,
+              canWrite: access.canWrite,
+              identityRequired: access.identityRequired
+            }
           } catch (e) {
             if (e instanceof UserAuthzDeniedError) return userAuthzDenied(reply, e)
             return githubUpstreamFailure(reply, e)

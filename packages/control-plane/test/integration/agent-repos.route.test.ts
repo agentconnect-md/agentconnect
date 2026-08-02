@@ -243,7 +243,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
           need: 'read' | 'write'
         ) => {
           needs.push(need)
-          return { permission: 'write', repoPrivate: true, canRead: true, canWrite: true }
+          return { permission: 'write', repoPrivate: true, canRead: true, canWrite: true, identityRequired: false }
         }
       } as never
     })
@@ -725,7 +725,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
         if (need === 'write') {
           throw new UserAuthzDeniedError(`you do not have write access to ${owner}/${repo} on GitHub`, 'USER_NO_ACCESS')
         }
-        return { permission: 'read', repoPrivate: true, canRead: true, canWrite: false }
+        return { permission: 'read', repoPrivate: true, canRead: true, canWrite: false, identityRequired: false }
       }
     }
     const a = app({ githubUserAuthz: githubUserAuthz as never })

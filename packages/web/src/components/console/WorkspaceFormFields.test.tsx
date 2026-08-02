@@ -4,6 +4,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  GithubPrivateReposNotice,
   GithubRepositoryField,
   GithubRepositoryOption,
   RepositoryAccessField,
@@ -30,6 +31,16 @@ afterEach(async () => {
 })
 
 describe('WorkspaceFormFields', () => {
+  it('keeps missing private repositories informational and links to Profile', async () => {
+    await render(<GithubPrivateReposNotice profileHref="/acme/profile#sign-in-methods" />)
+
+    expect(container?.textContent).toContain('Public repositories are shown.')
+    const link = container?.querySelector('a')
+    expect(link?.textContent).toBe('Link your GitHub profile')
+    expect(link?.getAttribute('href')).toBe('/acme/profile#sign-in-methods')
+    expect(container?.querySelector('[class*="status-error"]')).toBeNull()
+  })
+
   it('uses one workspace source picker for create and edit flows', async () => {
     const onChange = vi.fn()
     await render(<WorkspaceModeField value="scratch" onChange={onChange} />)

@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
+import { GithubPrivateReposNotice } from '@/components/console/WorkspaceFormFields'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -1105,10 +1106,9 @@ export default function AddIntegrationModal({
   const [ghRepos, setGhRepos] = useState<GithubRepoChoice[] | null>(null)
   const [ghReposNonce, setGhReposNonce] = useState(0)
   // At least one installation's roster failed to load — the list may be
-  // incomplete, which must not read as "no repositories". `denied` = the
-  // per-user identity gate refused the caller (actionable: sign in with
-  // GitHub); `failed` = upstream trouble (actionable: retry).
-  const [ghReposError, setGhReposError] = useState<'failed' | 'denied' | null>(null)
+  // incomplete, which must not read as "no repositories".
+  const [ghReposError, setGhReposError] = useState<'failed' | null>(null)
+  const [ghPrivateReposHidden, setGhPrivateReposHidden] = useState(false)
   const [ghRepoPick, setGhRepoPick] = useState<string | null>(
     agent.workspace.mode === 'github' ? agent.workspace.repo : null
   )
@@ -1124,7 +1124,7 @@ export default function AddIntegrationModal({
   const [ghWorkspaceAccessOverride, setGhWorkspaceAccessOverride] = useState<'write' | null>(null)
   // Repos this agent ALREADY watches — offered rows are disabled, free-typed
   // duplicates rejected inline (the CP 409s them as the backstop).
-  const { activeOrg } = useOrgs()
+  const { activeOrg, orgPath } = useOrgs()
   const agentHooksKey = consoleKeys.agentHooks(activeOrg?.id, agent.id)
   const { data: agentHooksData } = useSWR(agentHooksKey, ([, orgId, , agentId]) => fetchAgentHooks(agentId, orgId))
   const watchedRepos = useMemo(
@@ -1477,6 +1477,7 @@ export default function AddIntegrationModal({
     if (platform !== 'github' || !gh?.enabled || gh.installations.length === 0) return
     let alive = true
     const ctrl = new AbortController()
+    setGhPrivateReposHidden(false)
     const applyRoster = (incoming: GithubRepoChoice[]) => {
       if (!alive) return
       setGhRepos((current) => {
@@ -1488,14 +1489,16 @@ export default function AddIntegrationModal({
         return [...merged.values()]
       })
     }
-    void fetchGithubRepoRoster(gh.installations, ctrl.signal, applyRoster).then(({ repos, denied, failed }) => {
-      if (!alive) return
-      // A failed roster read (GitHub outage) must not render as an empty
-      // list — keep the pages that loaded and surface the gap with a retry.
-      // An identity denial outranks a generic failure for messaging.
-      setGhReposError(denied ? 'denied' : failed ? 'failed' : null)
-      applyRoster(repos)
-    })
+    void fetchGithubRepoRoster(gh.installations, ctrl.signal, applyRoster).then(
+      ({ repos, privateReposHidden, failed }) => {
+        if (!alive) return
+        // A failed roster read (GitHub outage) must not render as an empty
+        // list — keep the pages that loaded and surface the gap with a retry.
+        setGhReposError(failed ? 'failed' : null)
+        setGhPrivateReposHidden(privateReposHidden)
+        applyRoster(repos)
+      }
+    )
     return () => {
       alive = false
       ctrl.abort()
@@ -1581,6 +1584,7 @@ export default function AddIntegrationModal({
       const installations = await syncGithubInstallations()
       setGh({ enabled: true, installations })
       setGhReposError(null)
+      setGhPrivateReposHidden(false)
       setGhRepos(null) // fresh install set ⇒ re-pull the repo list
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -2493,6 +2497,9 @@ export default function AddIntegrationModal({
                         </span>
                         <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />
                       </div>
+                      {ghPrivateReposHidden ? (
+                        <GithubPrivateReposNotice profileHref={orgPath('/profile#sign-in-methods')} />
+                      ) : null}
                       {ghRepoOpen && (
                         <>
                           <div className="fscrim" onClick={() => setGhRepoOpen(false)} />
@@ -2510,12 +2517,10 @@ export default function AddIntegrationModal({
                               </div>
                             ) : (
                               <>
-                                {ghReposError && (
+                                {ghReposError === 'failed' && (
                                   <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                                     <span className="min-w-0 flex-1">
-                                      {ghReposError === 'denied'
-                                        ? 'Your GitHub identity could not be verified — sign in with GitHub, then retry.'
-                                        : 'Couldn’t load repositories from GitHub — the list may be incomplete.'}
+                                      Couldn’t load repositories from GitHub — the list may be incomplete.
                                     </span>
                                     <button
                                       type="button"
@@ -2523,6 +2528,7 @@ export default function AddIntegrationModal({
                                       onClick={() => {
                                         invalidateGithubRepoRosterCache()
                                         setGhReposError(null)
+                                        setGhPrivateReposHidden(false)
                                         setGhRepos(null) // re-arms the roster effect
                                         setGhReposNonce((value) => value + 1)
                                       }}

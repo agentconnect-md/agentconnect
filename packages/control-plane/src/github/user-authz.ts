@@ -20,7 +20,8 @@
  *  - need=write ⇒ effective write/admin (GitHub collapses maintain→write) —
  *    public repos do NOT satisfy write;
  *  - no GitHub identity on the account (Google sign-in, deleted at provider)
- *    ⇒ GITHUB_IDENTITY_REQUIRED, never a silent allow;
+ *    ⇒ public read remains available, while private/read-write checks return
+ *    GITHUB_IDENTITY_REQUIRED;
  *  - authorization is asserted at pick/create time; the daemon keeps running
  *    on installation tokens (creator drift is the tracked re-attest follow-up).
  */
@@ -49,6 +50,9 @@ export interface UserRepoAccess {
   repoPrivate: boolean
   canRead: boolean
   canWrite: boolean
+  /** No linked GitHub identity was available. Public read is still valid, but
+   *  every identity-dependent capability must keep failing closed. */
+  identityRequired: boolean
 }
 
 // Narrow structural deps (the composition root passes LogtoIdentityService /
@@ -96,7 +100,7 @@ export class GithubUserAuthzService {
     const login = await this.deps.identity.githubLoginFor(sub, maxCacheAgeMs)
     if (!login) {
       throw new UserAuthzDeniedError(
-        'no GitHub identity on this account — sign in with GitHub to verify repo access',
+        'no GitHub identity on this account — link GitHub to verify repository access',
         'GITHUB_IDENTITY_REQUIRED'
       )
     }
@@ -176,16 +180,28 @@ export class GithubUserAuthzService {
    * The repo is assumed already resolved inside `ins` (callers 404 first).
    */
   async accessFor(userId: string, ins: GithubInstallationRecord, owner: string, repo: string): Promise<UserRepoAccess> {
-    const login = await this.loginOf(userId)
     const meta = await this.metaOf(ins, owner, repo)
     // Out-of-grant repo: callers normally 404 before asking; report no access.
     const repoPrivate = meta?.private ?? true
+    let login: string
+    try {
+      login = await this.loginOf(userId)
+    } catch (error) {
+      // Public repository metadata is itself enough to authorize a read. Do
+      // not turn the absence of an unrelated personal identity into a denial,
+      // but retain the fact so write remains identity-gated below.
+      if (error instanceof UserAuthzDeniedError && error.code === 'GITHUB_IDENTITY_REQUIRED' && meta && !repoPrivate) {
+        return { permission: 'none', repoPrivate, canRead: true, canWrite: false, identityRequired: true }
+      }
+      throw error
+    }
     const permission = meta ? await this.permissionOf(login, ins, owner, repo) : 'none'
     return {
       permission,
       repoPrivate,
       canRead: permission !== 'none' || !repoPrivate,
-      canWrite: permission === 'admin' || permission === 'write'
+      canWrite: permission === 'admin' || permission === 'write',
+      identityRequired: false
     }
   }
 
@@ -193,15 +209,26 @@ export class GithubUserAuthzService {
    * List filter for the picker: keep public repos and private repos the caller
    * can read on GitHub — so no-access repo NAMES never render in the console.
    * Private repos are probed with the same cached permission unit as the gates
-   * using the verified REST endpoint with bounded concurrency. Throws
-   * GITHUB_IDENTITY_REQUIRED like every other check — never a silent allow.
+   * using the verified REST endpoint with bounded concurrency. Without a
+   * linked identity the public subset is returned and the result explicitly
+   * says that private repositories were hidden.
    */
   async filterReposForUser<T extends { fullName: string; private: boolean }>(
     userId: string,
     ins: GithubInstallationRecord,
     repos: T[]
-  ): Promise<T[]> {
-    const login = await this.loginOf(userId)
+  ): Promise<{ repos: T[]; privateReposHidden: boolean }> {
+    if (!repos.some((repo) => repo.private)) return { repos, privateReposHidden: false }
+
+    let login: string
+    try {
+      login = await this.loginOf(userId)
+    } catch (error) {
+      if (error instanceof UserAuthzDeniedError && error.code === 'GITHUB_IDENTITY_REQUIRED') {
+        return { repos: repos.filter((repo) => !repo.private), privateReposHidden: true }
+      }
+      throw error
+    }
     const results = new Array<boolean>(repos.length).fill(false)
     let next = 0
     const worker = async (): Promise<void> => {
@@ -219,7 +246,7 @@ export class GithubUserAuthzService {
       }
     }
     await Promise.all(Array.from({ length: Math.min(FILTER_CONCURRENCY, repos.length) }, worker))
-    return repos.filter((_, index) => results[index])
+    return { repos: repos.filter((_, index) => results[index]), privateReposHidden: false }
   }
 
   /** The enforcement form: resolve access and throw USER_NO_ACCESS below `need`. */
@@ -233,6 +260,12 @@ export class GithubUserAuthzService {
     const access = await this.accessFor(userId, ins, owner, repo)
     const ok = need === 'write' ? access.canWrite : access.canRead
     if (!ok) {
+      if (access.identityRequired) {
+        throw new UserAuthzDeniedError(
+          'no GitHub identity on this account — link GitHub to verify repository write access',
+          'GITHUB_IDENTITY_REQUIRED'
+        )
+      }
       throw new UserAuthzDeniedError(
         need === 'write'
           ? `you do not have write access to ${owner}/${repo} on GitHub (effective: ${access.permission})`

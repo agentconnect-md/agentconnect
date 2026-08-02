@@ -3166,6 +3166,9 @@ export async function fetchMySessionIdentity(provider: SessionAccessProvider): P
 // copy would hide the new identity. Say so once, right after a link lands.
 export async function refreshMySocialIdentities(): Promise<void> {
   await apiPost('/me/social-identities/refresh', {})
+  // Repository rosters are identity-filtered. A successful GitHub link must
+  // not leave the public-only result cached when the user reopens a picker.
+  invalidateGithubRepoRosterCache()
 }
 
 async function putMyProfilePicture(blob: Blob): Promise<MeDto> {
@@ -3802,7 +3805,18 @@ type GithubRepoRequestWaiter = {
 
 let activeGithubRepoRequests = 0
 const githubRepoRequestWaiters: GithubRepoRequestWaiter[] = []
-const githubRepoRosterCache = new Map<string, { repos: GithubRepoDto[]; expiresAt: number }>()
+type GithubRepoPage = {
+  repos: GithubRepoDto[]
+  totalCount: number
+  privateReposHidden: boolean
+}
+
+type GithubRepoRoster = {
+  repos: GithubRepoDto[]
+  privateReposHidden: boolean
+}
+
+const githubRepoRosterCache = new Map<string, GithubRepoRoster & { expiresAt: number }>()
 
 export function invalidateGithubRepoRosterCache(installationId?: string): void {
   if (installationId) githubRepoRosterCache.delete(installationId)
@@ -3877,15 +3891,20 @@ export async function fetchGithubRepos(
   installationId: string,
   page = 1,
   signal?: AbortSignal
-): Promise<{ repos: GithubRepoDto[]; totalCount: number }> {
-  // Not apiGet: a per-user-gate denial (403) carries a machine `code` in the
-  // body that the picker branches on (GITHUB_IDENTITY_REQUIRED ⇒ "sign in with
-  // GitHub" note instead of a silently empty list).
+): Promise<GithubRepoPage> {
+  // Not apiGet: rolling deployments can still return the former machine-coded
+  // identity denial, which the aggregate below degrades to the same explicit
+  // private-repositories-hidden state.
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories?page=${page}&perPage=${GITHUB_REPO_PAGE_SIZE}`
   return withGithubRepoRequestLimit(async () => {
     for (let attempt = 0; ; attempt++) {
       const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store', signal })
-      if (res.ok) return (await res.json()) as { repos: GithubRepoDto[]; totalCount: number }
+      if (res.ok) {
+        const body = (await res.json()) as Omit<GithubRepoPage, 'privateReposHidden'> & {
+          privateReposHidden?: boolean
+        }
+        return { ...body, privateReposHidden: body.privateReposHidden ?? false }
+      }
       const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
       // Only upstream trouble (5xx, rate-limit) is worth retrying — a 4xx
       // verdict (403 identity gate, 404) would just repeat.
@@ -3898,9 +3917,7 @@ export async function fetchGithubRepos(
   }, signal)
 }
 
-function mergeGithubRepoPages(
-  pages: Array<{ repos: GithubRepoDto[]; totalCount: number } | undefined>
-): GithubRepoDto[] {
+function mergeGithubRepoPages(pages: Array<GithubRepoPage | undefined>): GithubRepoDto[] {
   const unique = new Map<string, GithubRepoDto>()
   for (const repo of pages.flatMap((page) => page?.repos ?? [])) {
     const key = repo.fullName.toLowerCase()
@@ -3916,17 +3933,17 @@ export async function fetchAllGithubRepos(
   installationId: string,
   signal?: AbortSignal,
   onProgress?: (repos: GithubRepoDto[]) => void
-): Promise<GithubRepoDto[]> {
+): Promise<GithubRepoRoster> {
   const cached = githubRepoRosterCache.get(installationId)
   if (cached && cached.expiresAt > Date.now()) {
     onProgress?.(cached.repos)
-    return cached.repos
+    return { repos: cached.repos, privateReposHidden: cached.privateReposHidden }
   }
   if (cached) githubRepoRosterCache.delete(installationId)
 
   const first = await fetchGithubRepos(installationId, 1, signal)
   const pageCount = Math.ceil(first.totalCount / GITHUB_REPO_PAGE_SIZE)
-  const pages: Array<{ repos: GithubRepoDto[]; totalCount: number } | undefined> = Array.from({
+  const pages: Array<GithubRepoPage | undefined> = Array.from({
     length: Math.max(1, pageCount)
   })
   pages[0] = first
@@ -3941,8 +3958,13 @@ export async function fetchAllGithubRepos(
   )
 
   const repos = mergeGithubRepoPages(pages)
-  githubRepoRosterCache.set(installationId, { repos, expiresAt: Date.now() + GITHUB_REPO_ROSTER_CACHE_MS })
-  return repos
+  const privateReposHidden = pages.some((page) => page?.privateReposHidden)
+  githubRepoRosterCache.set(installationId, {
+    repos,
+    privateReposHidden,
+    expiresAt: Date.now() + GITHUB_REPO_ROSTER_CACHE_MS
+  })
+  return { repos, privateReposHidden }
 }
 
 function mergeGithubInstallationRosters(
@@ -3966,8 +3988,9 @@ export async function fetchGithubRepoRoster(
   installations: readonly Pick<GithubInstallationDto, 'id'>[],
   signal?: AbortSignal,
   onProgress?: (repos: GithubInstalledRepoDto[]) => void
-): Promise<{ repos: GithubInstalledRepoDto[]; denied: boolean; failed: boolean }> {
+): Promise<{ repos: GithubInstalledRepoDto[]; privateReposHidden: boolean; failed: boolean }> {
   const rosters = new Map<string, GithubRepoDto[]>()
+  const hiddenByInstallation = new Map<string, boolean>()
   const publish = (installationId: string, repos: GithubRepoDto[]) => {
     rosters.set(installationId, repos)
     onProgress?.(mergeGithubInstallationRosters(installations, rosters))
@@ -3975,8 +3998,11 @@ export async function fetchGithubRepoRoster(
   const errors = await Promise.all(
     installations.map(async (installation) => {
       try {
-        const repos = await fetchAllGithubRepos(installation.id, signal, (partial) => publish(installation.id, partial))
-        publish(installation.id, repos)
+        const result = await fetchAllGithubRepos(installation.id, signal, (partial) =>
+          publish(installation.id, partial)
+        )
+        hiddenByInstallation.set(installation.id, result.privateReposHidden)
+        publish(installation.id, result.repos)
         return null
       } catch (error) {
         return error
@@ -3985,7 +4011,9 @@ export async function fetchGithubRepoRoster(
   )
   return {
     repos: mergeGithubInstallationRosters(installations, rosters),
-    denied: errors.some((error) => error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED'),
+    privateReposHidden:
+      [...hiddenByInstallation.values()].some(Boolean) ||
+      errors.some((error) => error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED'),
     failed: errors.some(
       (error) => error !== null && !(error instanceof ApiError && error.code === 'GITHUB_IDENTITY_REQUIRED')
     )
@@ -4030,6 +4058,7 @@ export interface GithubRepoAccess {
   gated: boolean
   canRead: boolean
   canWrite: boolean
+  identityRequired: boolean
   denied?: string
   message?: string
 }
@@ -4041,20 +4070,26 @@ export async function fetchGithubRepoAccess(
 ): Promise<GithubRepoAccess> {
   const path = `${orgBase()}/github/installations/${encodeURIComponent(installationId)}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/access`
   const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
-  if (res.status === 404) return { gated: false, canRead: true, canWrite: true }
+  if (res.status === 404) return { gated: false, canRead: true, canWrite: true, identityRequired: false }
   if (res.status === 403) {
     const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
     return {
       gated: true,
       canRead: false,
       canWrite: false,
+      identityRequired: body.code === 'GITHUB_IDENTITY_REQUIRED',
       denied: body.code ?? 'USER_NO_ACCESS',
       ...(body.message ? { message: body.message } : {})
     }
   }
   if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
-  const body = (await res.json()) as { canRead: boolean; canWrite: boolean }
-  return { gated: true, canRead: body.canRead, canWrite: body.canWrite }
+  const body = (await res.json()) as { canRead: boolean; canWrite: boolean; identityRequired?: boolean }
+  return {
+    gated: true,
+    canRead: body.canRead,
+    canWrite: body.canWrite,
+    identityRequired: body.identityRequired ?? false
+  }
 }
 
 // ── agent repository authorizations (agent-multi-repo-authorization.md) ──────

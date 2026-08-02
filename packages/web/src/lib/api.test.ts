@@ -334,7 +334,7 @@ describe('GitHub installation repositories', () => {
           : page === '2'
             ? [{ fullName: 'acme/beta-private', private: true }]
             : [{ fullName: 'acme/gamma', private: false }]
-      return new Response(JSON.stringify({ repos, totalCount: 101 }), {
+      return new Response(JSON.stringify({ repos, totalCount: 101, privateReposHidden: page === '2' }), {
         status: 200,
         headers: { 'content-type': 'application/json' }
       })
@@ -343,11 +343,12 @@ describe('GitHub installation repositories', () => {
     setApiOrgId('org-1')
 
     const progress: string[][] = []
-    const repos = await fetchAllGithubRepos('installation-1', undefined, (partial) => {
+    const result = await fetchAllGithubRepos('installation-1', undefined, (partial) => {
       progress.push(partial.map((repo) => repo.fullName))
     })
 
-    expect(repos.map((repo) => repo.fullName)).toEqual(['acme/alpha', 'acme/beta-private', 'acme/gamma'])
+    expect(result.repos.map((repo) => repo.fullName)).toEqual(['acme/alpha', 'acme/beta-private', 'acme/gamma'])
+    expect(result.privateReposHidden).toBe(true)
     expect(progress[0]).toEqual(['acme/alpha'])
     expect(progress.at(-1)).toEqual(['acme/alpha', 'acme/beta-private', 'acme/gamma'])
     expect(fetchMock).toHaveBeenCalledTimes(3)
@@ -357,7 +358,7 @@ describe('GitHub installation repositories', () => {
       '50'
     ])
 
-    await expect(fetchAllGithubRepos('installation-1')).resolves.toEqual(repos)
+    await expect(fetchAllGithubRepos('installation-1')).resolves.toEqual(result)
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
@@ -367,7 +368,8 @@ describe('GitHub installation repositories', () => {
       return new Response(
         JSON.stringify({
           repos: [{ fullName: `${installationId}/repo`, private: true }],
-          totalCount: 1
+          totalCount: 1,
+          privateReposHidden: false
         }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       )
@@ -382,7 +384,7 @@ describe('GitHub installation repositories', () => {
       (repos) => progress.push(repos.map((repo) => repo.installationId))
     )
 
-    expect(result).toMatchObject({ denied: false, failed: false })
+    expect(result).toMatchObject({ privateReposHidden: false, failed: false })
     expect(result.repos.map((repo) => repo.installationId)).toEqual(['installation-1', 'installation-2'])
     expect(progress.at(-1)).toEqual(['installation-1', 'installation-2'])
   })
@@ -397,21 +399,29 @@ describe('GitHub installation repositories', () => {
         })
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ repos: [{ fullName: 'acme/recovered', private: true }], totalCount: 1 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        })
+        new Response(
+          JSON.stringify({
+            repos: [{ fullName: 'acme/recovered', private: true }],
+            totalCount: 1,
+            privateReposHidden: false
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          }
+        )
       )
     vi.stubGlobal('fetch', fetchMock)
     setApiOrgId('org-1')
 
-    await expect(fetchAllGithubRepos('installation-1')).resolves.toEqual([
-      { fullName: 'acme/recovered', private: true }
-    ])
+    await expect(fetchAllGithubRepos('installation-1')).resolves.toEqual({
+      repos: [{ fullName: 'acme/recovered', private: true }],
+      privateReposHidden: false
+    })
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('does not retry a per-user authorization verdict (403)', async () => {
+  it('treats a legacy identity denial as private repositories hidden without retrying', async () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(JSON.stringify({ message: 'sign in with GitHub', code: 'GITHUB_IDENTITY_REQUIRED' }), {
@@ -422,8 +432,11 @@ describe('GitHub installation repositories', () => {
     vi.stubGlobal('fetch', fetchMock)
     setApiOrgId('org-1')
 
-    const error = await fetchAllGithubRepos('installation-1').catch((reason: unknown) => reason)
-    expect(error).toMatchObject({ name: 'ApiError', status: 403, code: 'GITHUB_IDENTITY_REQUIRED' })
+    await expect(fetchGithubRepoRoster([{ id: 'installation-1' }])).resolves.toEqual({
+      repos: [],
+      privateReposHidden: true,
+      failed: false
+    })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
@@ -440,7 +453,8 @@ describe('GitHub installation repositories', () => {
       return new Response(
         JSON.stringify({
           repos: [{ fullName: `${url.pathname}-${url.searchParams.get('page')}`, private: true }],
-          totalCount: 51
+          totalCount: 51,
+          privateReposHidden: false
         }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       )
