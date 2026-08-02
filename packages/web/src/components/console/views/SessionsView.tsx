@@ -299,8 +299,8 @@ export default function SessionsView() {
     )
   }
   // Multi-participant conversation rows (merged-conversation-view.md §5.2):
-  // stacked participant icons replace the single agent face; the label counts
-  // agents instead of naming one.
+  // stacked participant icons replace the single agent face; the compact label
+  // carries the total while its tooltip names the visible roster.
   const agentCell = (s: Session, av: string, size: number, label: string) => {
     const roster = s.participants ?? []
     if (roster.length <= 1) {
@@ -311,6 +311,7 @@ export default function SessionsView() {
         </>
       )
     }
+    const rosterNames = roster.map((participant) => participant.name)
     return (
       <>
         <span className="flex flex-none items-center -space-x-[5px]">
@@ -320,7 +321,12 @@ export default function SessionsView() {
             </span>
           ))}
         </span>
-        <span className={`truncate ${label}`}>{roster.length} agents</span>
+        <span className={`truncate ${label}`} title={rosterNames.join('\n')} data-tooltip-focus>
+          <span aria-hidden="true">+{roster.length}</span>
+          <span className="sr-only">
+            {roster.length} agents: {rosterNames.join(', ')}
+          </span>
+        </span>
       </>
     )
   }

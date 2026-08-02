@@ -125,8 +125,11 @@ desktop:grid-cols-4`. The hack rules stay in globals.css (harmless — they
     exists for another purpose and would only repeat text the user can already
     read, omit it in that state. The nav rail, for example, sets `title` only
     while collapsed, so icon-only controls use the themed tooltip and expanded
-    labels stay silent. Mark a whole subtree `data-no-tooltip` only when its
-    titles must remain available to the browser without entering this layer.
+    labels stay silent. When a focused row contains several titled descendants,
+    mark its intended focus hint with `data-tooltip-focus`; the layer ignores
+    responsive copies hidden by CSS. Mark a whole subtree `data-no-tooltip` only
+    when its titles must remain available to the browser without entering this
+    layer.
 
 15. **JSX whitespace after an inline element (SWC gotcha).** Turbopack/SWC
     drops the space in `</span> long text…` when that text run wraps to the
