@@ -13,7 +13,7 @@
  * `https://tenant.example.com/api`).
  *
  * Caching: the M2M token until 60s before expiry; display/GitHub projections
- * keep a 10 min positive / 60 s negative user cache, while Slack authorization
+ * keep a 10 min positive / 60 s negative user cache, while provider authorization
  * caps reuse of a positive assertion at 2 min. Lookups are single-flight and
  * fail CLOSED at their authorization callers.
  */
@@ -72,11 +72,11 @@ export class LogtoApiError extends Error {
 const TOKEN_SKEW_MS = 60_000
 const LOGIN_TTL_MS = 10 * 60_000
 const NEGATIVE_TTL_MS = 60_000
-// Slack identity participates in live Session authorization. Even if no
+// Provider identity participates in live Session authorization. Even if no
 // in-product unlink invalidation fires (for example an administrator changes
 // the Logto account directly), a positive assertion is never reused beyond
 // this hard lease.
-const SLACK_IDENTITY_TTL_MS = 120_000
+const PROVIDER_IDENTITY_TTL_MS = 120_000
 const TIMEOUT_MS = 10_000
 
 interface CachedLogin {
@@ -134,6 +134,13 @@ export interface SlackIdentity {
   userId: string
   teamName?: string
   teamDomain?: string
+}
+
+export interface FeishuIdentity {
+  region: 'feishu' | 'lark'
+  /** App-scoped human identity. It is comparable only when Logto and the
+   * messaging integration use the same platform app id. */
+  openId: string
 }
 
 // Slack namespaces its non-standard OIDC claims. `sub` carries the same user id
@@ -233,7 +240,13 @@ export class LogtoIdentityService {
    * console's refresh call (`forgetUser`).
    */
   async slackIdentityFor(sub: string): Promise<SlackIdentity | null> {
-    return slackIdentityOf(await this.logtoUser(sub, SLACK_IDENTITY_TTL_MS))
+    return slackIdentityOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
+  }
+
+  /** Linked Feishu/Lark identities. Their open_id values remain app-scoped;
+   * viewer-identity adds the configured app id before they can authorize. */
+  async feishuIdentitiesFor(sub: string): Promise<FeishuIdentity[]> {
+    return feishuIdentitiesOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
   }
 
   /**
@@ -566,4 +579,18 @@ function slackIdentityOf(user: LogtoUser | null): SlackIdentity | null {
     ...(teamName ? { teamName } : {}),
     ...(teamDomain ? { teamDomain } : {})
   }
+}
+
+function feishuIdentitiesOf(user: LogtoUser | null): FeishuIdentity[] {
+  const identities: FeishuIdentity[] = []
+  for (const region of ['feishu', 'lark'] as const) {
+    const raw = user?.identities?.[region]?.details?.rawData
+    const data = raw?.data as Record<string, unknown> | undefined
+    const userInfo = raw?.userInfo as Record<string, unknown> | undefined
+    // Built-in Feishu currently stores the normalized user-info body; generic
+    // OAuth2 connectors may preserve the provider's {data:{...}} envelope.
+    const openId = firstString(raw?.open_id, data?.open_id, userInfo?.open_id)
+    if (openId) identities.push({ region, openId })
+  }
+  return identities
 }

@@ -114,7 +114,17 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
     return { provider: origin.provider, resolution: 'invalid' as const }
   }
   const bot = await deps.bot?.get(BotId(integration.botId))
-  const realmKey = bot?.workspaceId ?? bot?.teamId
+  const feishuRegion = bot?.platform === 'feishu' ? (bot.feishuRegion ?? 'feishu') : undefined
+  const feishuAppId = bot?.feishuAppId ?? undefined
+  const platformApp = feishuRegion ? deps.feishuPlatformApps?.[feishuRegion] : undefined
+  // open_id is app-scoped. Only the environment-owned app that also backs the
+  // Logto connector can participate; a user-built Feishu/Lark app keeps the
+  // ordinary org classification instead of becoming an unresolvable scope.
+  if (origin.provider === 'feishu' && (!platformApp || platformApp.appId !== feishuAppId)) return undefined
+  const realmKey =
+    origin.provider === 'feishu' && feishuRegion && feishuAppId
+      ? `${feishuRegion}:${feishuAppId}`
+      : (bot?.workspaceId ?? bot?.teamId)
   if (
     !bot ||
     bot.orgId !== integration.orgId ||

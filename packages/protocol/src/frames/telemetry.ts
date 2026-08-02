@@ -35,6 +35,12 @@ export const ExternalSessionAudience = z.discriminatedUnion('provider', [
     resourceKey: ExternalKey
   }),
   z.object({
+    provider: z.literal('feishu'),
+    realmKey: ExternalKey.optional(),
+    resourceKind: z.literal('conversation'),
+    resourceKey: ExternalKey
+  }),
+  z.object({
     provider: z.literal('github'),
     realmKey: z.literal('github.com'),
     resourceKind: z.literal('repository'),
@@ -51,6 +57,9 @@ export const ExternalSessionOrigin = z.discriminatedUnion('provider', [
     integrationId: z.string().uuid().optional()
   }),
   ExternalSessionAudience.options[1].extend({
+    integrationId: z.string().uuid().optional()
+  }),
+  ExternalSessionAudience.options[2].extend({
     hookId: z.string().uuid(),
     deliveryKey: ExternalKey,
     sourceInstallationId: GithubId,

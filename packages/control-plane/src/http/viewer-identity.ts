@@ -17,31 +17,47 @@
  * Boundaries, all fail-closed:
  *  - Only a REAL OIDC session carries `req.oidcSubject` — devAuth and personal
  *    API keys never reach the provider, so their set stays console-only.
- *  - A Logto miss or error NARROWS the set to the console identity (the caller
+ *  - A Logto miss or error NARROWS that provider's contribution (the caller
  *    momentarily sees fewer sessions, never someone else's) and is logged.
  */
 import type { FastifyRequest } from 'fastify'
 import { identitySetOf } from '../authorization/policy.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
+import type { FeishuPlatformApps } from '../config/feishu-platform.js'
 import { ctxOf } from './rbac.js'
 
 /** The one provider read this needs — injectable so tests stay offline. */
-export type SlackIdentityReader = Pick<LogtoIdentityService, 'slackIdentityFor'>
+export type ProviderIdentityReader = Partial<Pick<LogtoIdentityService, 'slackIdentityFor' | 'feishuIdentitiesFor'>>
 
 export type ViewerIdentitySetResolver = (req: FastifyRequest) => Promise<Set<string>>
 
 /** Build the per-request identity-set resolver the session routes share.
  *  `logtoIdentity` absent (LOGTO_MGMT_* unset) ⇒ console identity only. */
-export function makeViewerIdentitySet(logtoIdentity?: SlackIdentityReader): ViewerIdentitySetResolver {
+export function makeViewerIdentitySet(
+  logtoIdentity?: ProviderIdentityReader,
+  feishuPlatformApps: FeishuPlatformApps = {}
+): ViewerIdentitySetResolver {
   return async (req) => {
     const identitySet = identitySetOf(ctxOf(req))
     const sub = req.oidcSubject
     if (!sub || !logtoIdentity) return identitySet
-    try {
-      const slack = await logtoIdentity.slackIdentityFor(sub)
+    const [slackResult, feishuResult] = await Promise.allSettled([
+      logtoIdentity.slackIdentityFor?.(sub),
+      logtoIdentity.feishuIdentitiesFor?.(sub)
+    ])
+    if (slackResult.status === 'fulfilled') {
+      const slack = slackResult.value
       if (slack) identitySet.add(`slack:${slack.teamId}:${slack.userId}`)
-    } catch (err) {
-      req.log.warn({ err }, 'viewer identity: slack lookup failed — matching on the console identity only')
+    } else {
+      req.log.warn({ err: slackResult.reason }, 'viewer identity: Slack lookup failed')
+    }
+    if (feishuResult.status === 'fulfilled') {
+      for (const identity of feishuResult.value ?? []) {
+        const app = feishuPlatformApps[identity.region]
+        if (app) identitySet.add(`feishu:${identity.region}:${app.appId}:${identity.openId}`)
+      }
+    } else {
+      req.log.warn({ err: feishuResult.reason }, 'viewer identity: Feishu/Lark lookup failed')
     }
     return identitySet
   }

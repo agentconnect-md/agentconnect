@@ -174,6 +174,110 @@ describe('handleEventSession', () => {
     )
   })
 
+  it('binds a Feishu/Lark audience only for the environment-owned matching app', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      integration: {
+        get: vi.fn().mockResolvedValue({
+          id: INTEGRATION_ID,
+          agentId: AGENT_ID,
+          botId: BOT_ID,
+          orgId: 'org-1',
+          platform: 'feishu',
+          status: 'active'
+        })
+      },
+      bot: {
+        get: vi.fn().mockResolvedValue({
+          id: BOT_ID,
+          orgId: 'org-1',
+          platform: 'feishu',
+          feishuRegion: 'lark',
+          feishuAppId: 'cli_platform',
+          revokedAt: null
+        })
+      },
+      feishuPlatformApps: { lark: { appId: 'cli_platform', appSecret: 'secret' } },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      platform: 'feishu',
+      channel: 'oc_chat',
+      externalOrigin: {
+        provider: 'feishu',
+        realmKey: 'lark:cli_platform',
+        resourceKind: 'conversation',
+        resourceKey: 'oc_chat',
+        integrationId: INTEGRATION_ID
+      }
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalCandidate: {
+          provider: 'feishu',
+          resolution: 'settled',
+          scope: {
+            realmKey: 'lark:cli_platform',
+            resourceKind: 'conversation',
+            resourceKey: 'oc_chat',
+            credentialKind: 'bot',
+            credentialId: BOT_ID
+          }
+        }
+      })
+    )
+  })
+
+  it('leaves a user-built Feishu/Lark app on ordinary org visibility', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(recorded())
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      integration: {
+        get: vi.fn().mockResolvedValue({
+          id: INTEGRATION_ID,
+          agentId: AGENT_ID,
+          botId: BOT_ID,
+          orgId: 'org-1',
+          platform: 'feishu',
+          status: 'active'
+        })
+      },
+      bot: {
+        get: vi.fn().mockResolvedValue({
+          id: BOT_ID,
+          orgId: 'org-1',
+          platform: 'feishu',
+          feishuRegion: 'lark',
+          feishuAppId: 'cli_custom',
+          revokedAt: null
+        })
+      },
+      feishuPlatformApps: { lark: { appId: 'cli_platform', appSecret: 'secret' } },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      platform: 'feishu',
+      channel: 'oc_chat',
+      externalOrigin: {
+        provider: 'feishu',
+        realmKey: 'lark:cli_custom',
+        resourceKind: 'conversation',
+        resourceKey: 'oc_chat',
+        integrationId: INTEGRATION_ID
+      }
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(recordMilestone).toHaveBeenCalledWith(expect.not.objectContaining({ externalCandidate: expect.anything() }))
+  })
+
   it('keeps a root shared Slack session from an older daemon as an unresolved candidate', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({

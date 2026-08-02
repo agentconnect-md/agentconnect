@@ -1,5 +1,5 @@
 /**
- * Unit tests for the Slack half of LogtoIdentityService (fake fetch — claim
+ * Unit tests for the Slack/Feishu identity projections of LogtoIdentityService (fake fetch — claim
  * extraction, per-provider caching, invalidation on unlink). No Docker, no
  * network. The GitHub half and the connector-id/unlink writes are covered by
  * `user-authz.test.ts`.
@@ -193,6 +193,30 @@ describe('LogtoIdentityService.slackIdentityFor', () => {
     // workspace the user just disconnected.
     users['sub-1'] = { identities: { github: { userId: 'g' } } }
     expect(await svc.slackIdentityFor('sub-1')).toBeNull()
+  })
+})
+
+describe('LogtoIdentityService.feishuIdentitiesFor', () => {
+  it('reads app-scoped open_id values from both built-in Feishu and generic Lark connector rawData', async () => {
+    const { fetchImpl } = fakeLogto({
+      'sub-1': {
+        identities: {
+          feishu: { userId: 'union-f', details: { rawData: { open_id: 'ou_feishu' } } },
+          lark: { userId: 'union-l', details: { rawData: { data: { open_id: 'ou_lark' } } } }
+        }
+      }
+    })
+    await expect(svcOf(fetchImpl).feishuIdentitiesFor('sub-1')).resolves.toEqual([
+      { region: 'feishu', openId: 'ou_feishu' },
+      { region: 'lark', openId: 'ou_lark' }
+    ])
+  })
+
+  it('ignores an identity whose connector rawData has no open_id', async () => {
+    const { fetchImpl } = fakeLogto({
+      'sub-1': { identities: { lark: { userId: 'union-only', details: { rawData: { union_id: 'on_x' } } } } }
+    })
+    await expect(svcOf(fetchImpl).feishuIdentitiesFor('sub-1')).resolves.toEqual([])
   })
 })
 

@@ -67,4 +67,24 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
     expect(text).toContain('hides the transcript')
     expect(text).toContain('no per-session control')
   })
+
+  it('labels a settled Feishu/Lark external audience as current chat members', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <SessionVisibilityControl
+          sessionId="acp-1"
+          visibility="external"
+          externalProvider="feishu"
+          externalResolution="settled"
+          canChange={false}
+          onChanged={() => {}}
+        />
+      )
+    })
+    expect(container.textContent).toContain('Feishu / Lark members')
+    expect(container.querySelector('span')?.title).toContain('current members')
+  })
 })
