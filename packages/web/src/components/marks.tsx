@@ -6,7 +6,6 @@
 import { useState } from 'react'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
-import newLarkIcon from '@iconify-icons/icon-park/new-lark'
 import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
@@ -16,8 +15,7 @@ import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 const fill = { width: '60%', height: '60%', display: 'block' } as const
-const larkBrandClasses =
-  '[&_path:nth-child(1)]:stroke-[#3370FF] [&_path:nth-child(2)]:fill-[#00D6B9] [&_path:nth-child(3)]:stroke-[#133C9A]'
+const LARK_MARK_SRC = '/brands/lark.svg'
 
 // Dark-mode treatment for the brand logos we can only load as an <img> (ACP registry
 // / lobehub SVGs, so no per-path recoloring): most are `currentColor`-black and have
@@ -254,7 +252,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
     return <SiDiscord style={s} color="#5865F2" aria-hidden />
   }
   if (x.includes('feishu') || x.includes('lark')) {
-    return <IconifyIcon icon={newLarkIcon} style={s} className={larkBrandClasses} aria-hidden />
+    return <img src={LARK_MARK_SRC} alt="" style={s} className="object-contain" aria-hidden />
   }
   if (x.includes('slack')) {
     return <IconifyIcon icon={slackIcon} style={s} aria-hidden />
@@ -271,7 +269,8 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
  * Profile "Sign-in methods" card so a provider added to the catalog
  * cannot render correctly in one place and wrong in the other.
  *
- * `size` is left unset on the login page, where `.sso svg` sizes the mark.
+ * `size` defaults to the login button's 18px mark and can be overridden by
+ * denser surfaces such as the Profile card.
  */
 export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; size?: number }) {
   if (target === 'github') return <SiGithub size={size} aria-hidden />
@@ -279,12 +278,7 @@ export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; s
     return <IconifyIcon icon={slackIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
   if (target === 'lark' || target === 'feishu')
     return (
-      <IconifyIcon
-        icon={newLarkIcon}
-        className={larkBrandClasses}
-        {...(size ? { width: size, height: size } : {})}
-        aria-hidden
-      />
+      <img src={LARK_MARK_SRC} alt="" width={size ?? 18} height={size ?? 18} className="object-contain" aria-hidden />
     )
   return <FcGoogle size={size} aria-hidden />
 }

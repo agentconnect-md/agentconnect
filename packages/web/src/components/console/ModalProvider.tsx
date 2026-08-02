@@ -11,7 +11,10 @@ import type { Agent, DaemonRow, IntegrationRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
-import AddIntegrationModal, { type Platform as IntegrationPlatform } from './modals/AddIntegrationModal'
+import AddIntegrationModal, {
+  type FeishuRegion,
+  type Platform as IntegrationPlatform
+} from './modals/AddIntegrationModal'
 import DeleteIntegrationModal from './modals/DeleteIntegrationModal'
 import DeleteHookModal from './modals/DeleteHookModal'
 import AddCronModal from './modals/AddCronModal'
@@ -54,6 +57,7 @@ type ModalTarget = DaemonRow | Agent | CronDto | IntegrationRow | HookDto | Hook
 // behavior / Access), so every Configuration group edits through the same surface.
 interface ModalOpts {
   platform?: IntegrationPlatform
+  feishuRegion?: FeishuRegion
   focusSection?: EditAgentSection
 }
 
@@ -129,7 +133,12 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               />
             )}
             {open.kind === 'integration' && open.target && (
-              <AddIntegrationModal agent={open.target as Agent} initialPlatform={open.opts?.platform} onClose={close} />
+              <AddIntegrationModal
+                agent={open.target as Agent}
+                initialPlatform={open.opts?.platform}
+                initialFeishuRegion={open.opts?.feishuRegion}
+                onClose={close}
+              />
             )}
             {open.kind === 'deleteIntegration' && open.target && (
               <DeleteIntegrationModal integration={open.target as IntegrationRow} onClose={close} />

@@ -97,4 +97,12 @@ describe('PlatformMark', () => {
     expect(full).toContain('display:block')
     expect(full).not.toContain('width:60%')
   })
+
+  it('uses the filled Lark brand asset for the shared Lark and Feishu platform family', () => {
+    const lark = renderToStaticMarkup(<PlatformMark platform="lark" />)
+    const feishu = renderToStaticMarkup(<PlatformMark platform="feishu" />)
+
+    expect(lark).toContain('src="/brands/lark.svg"')
+    expect(feishu).toContain('src="/brands/lark.svg"')
+  })
 })

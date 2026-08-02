@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
+import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
@@ -83,6 +84,7 @@ import { discordApplicationIdFromToken, discordBotInviteUrl } from '@/lib/discor
 // capabilities.
 export type BotPlatform = 'slack' | 'telegram' | 'discord' | 'feishu'
 export type Platform = BotPlatform | 'webhook' | 'github'
+export type FeishuRegion = LarkFeishuTarget
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
@@ -93,7 +95,7 @@ export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
   { key: 'slack', label: 'Slack' },
   { key: 'telegram', label: 'Telegram' },
   { key: 'discord', label: 'Discord' },
-  { key: 'feishu', label: 'Lark' }
+  { key: 'feishu', label: 'Lark / Feishu' }
 ]
 
 export const PLATFORMS: { key: Platform; label: string }[] = [
@@ -977,10 +979,12 @@ function feishuWalkthroughSteps(brand: 'Feishu' | 'Lark', host: string): Walkthr
 export default function AddIntegrationModal({
   agent,
   initialPlatform,
+  initialFeishuRegion,
   onClose
 }: {
   agent: Agent
   initialPlatform?: Platform
+  initialFeishuRegion?: FeishuRegion
   onClose: () => void
 }) {
   const {
@@ -1008,7 +1012,7 @@ export default function AddIntegrationModal({
     sequence: number
   } | null>(null)
   // Lark/Feishu gateway: new installs default to international Lark.
-  const [feishuRegion, setFeishuRegion] = useState<'feishu' | 'lark'>('lark')
+  const [feishuRegion, setFeishuRegion] = useState<FeishuRegion>(initialFeishuRegion ?? 'lark')
   const [feishuVerificationToken, setFeishuVerificationToken] = useState('')
   const [feishuEncryptKey, setFeishuEncryptKey] = useState('')
   const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
@@ -2209,7 +2213,18 @@ export default function AddIntegrationModal({
                     <PlatformMark platform={candidate.key} fillPct={100} />
                   </span>
                 )}
-                <span className="font-sans text-[13px] font-semibold leading-normal">{candidate.label}</span>
+                {candidate.key === 'feishu' ? (
+                  <LarkFeishuSwitcher
+                    value={feishuRegion}
+                    disabled={!available || !!createdHook || feishuPhase === 'authorizing'}
+                    onSwitch={(region) => {
+                      if (platform !== 'feishu') pickPlatform('feishu')
+                      setFeishuRegion(region)
+                    }}
+                  />
+                ) : (
+                  <span className="font-sans text-[13px] font-semibold leading-normal">{candidate.label}</span>
+                )}
               </div>
             )
           })}
@@ -3494,41 +3509,6 @@ export default function AddIntegrationModal({
               />
             </div>
             <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-              {/* Region selects the user-facing launcher; the one-click result normally
-                  reports the authorized tenant brand and the CP stores that exact gateway. */}
-              <div className="mb-3">
-                <span className="fldlbl mb-[6px] block">Region</span>
-                <div className="grid grid-cols-2 gap-[6px]" role="radiogroup" aria-label="Lark or Feishu region">
-                  {(
-                    [
-                      { key: 'lark', label: 'Lark', sub: 'International' },
-                      { key: 'feishu', label: 'Feishu', sub: '飞书 · China' }
-                    ] as const
-                  ).map((region) => (
-                    <button
-                      key={region.key}
-                      type="button"
-                      role="radio"
-                      disabled={feishuPhase === 'authorizing'}
-                      aria-checked={feishuRegion === region.key}
-                      onClick={() => setFeishuRegion(region.key)}
-                      className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[7px] text-left ${
-                        feishuRegion === region.key
-                          ? 'border-(--brand) bg-(--surface-active)'
-                          : 'border-(--border-default) bg-(--surface-app)'
-                      } ${feishuPhase === 'authorizing' ? 'cursor-not-allowed opacity-50' : ''}`}
-                    >
-                      <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                        {region.label}
-                      </span>
-                      <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                        {region.sub}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               {feishuMethod === 'deeplink' ? (
                 feishuPhase === 'authorizing' && feishuRegistration ? (
                   <div className="flex gap-[10px]">
