@@ -406,11 +406,14 @@ export class SessionManager {
     const { thread, ts: coordTs } = transcriptCoords(msg)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
-    // every follow-up user message (only the first turn is ever recorded). Stamp each
-    // webchat turn with a fresh strictly-monotonic ts (shared with the reply recording in
+    // every follow-up user message (only the first turn is ever recorded). Prefer the
+    // relay-minted canonical post timestamp when the turn carries one
+    // (webchat-multi-agents.md §5.1: minted ONCE at origin, shared by every participant
+    // copy so co-hosted agents collapse onto one shared text row + recipient entries);
+    // otherwise stamp a fresh strictly-monotonic ts (shared with the reply recording in
     // daemon.ts, so the user message and its reply never collide on the same ms) — the
     // whole conversation is recorded, and thread stays stable → one session.
-    const ts = msg.platform === 'webchat' ? monotonicTs() : coordTs
+    const ts = msg.platform === 'webchat' ? (msg.transcriptTs ?? monotonicTs()) : coordTs
     const transportScope = msg.transportScope
     const legacyKey = sessionKey(msg.platform, msg.channel, thread, agentId)
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
