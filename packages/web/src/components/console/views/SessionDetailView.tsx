@@ -70,6 +70,7 @@ import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { SessionRail } from '@/components/console/SessionRail'
+import { EMPTY_RAIL_AGENT_FILTER, seedRailAgentFilter, type RailAgentFilter } from '@/lib/session-rail-filter'
 import { useSessionList } from '@/lib/use-session-list'
 import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import {
@@ -882,19 +883,31 @@ export default function SessionDetailView() {
   const agentRuntime = session?.runtime || owner?.runtime || ''
   const runtimeMeta = acpRuntime(acpRegistry, agentRuntime)
 
-  // Other sessions for the left rail. Like the agent page's Recent-sessions card
-  // this reads an AGENT-FILTERED page, not the org-wide `allSessions` window — a
-  // busy org's newest 50 may not include this agent at all, which would hide the
-  // rail on an agent that has plenty of runs. The org key stays null until the
-  // agent is known so no unfiltered page is fetched on the way there.
-  const railAgentId = session?.agentId ?? ''
+  // Other sessions for the left rail, scoped by the rail's own agent filter — see
+  // lib/session-rail-filter.ts for why an untouched filter follows the route and an
+  // edited one does not.
+  const sessionAgentId = session?.agentId ?? ''
+  const [railFilter, setRailFilter] = useState<RailAgentFilter>(EMPTY_RAIL_AGENT_FILTER)
+  useEffect(() => {
+    setRailFilter((prev) => seedRailAgentFilter(prev, sessionAgentId))
+  }, [sessionAgentId])
+  const setRailAgentIds = useCallback((agentIds: string[]) => setRailFilter({ agentIds, touched: true }), [])
+
+  // With an agent selected this reads an AGENT-FILTERED page, not the org-wide
+  // `allSessions` window — a busy org's newest 50 may not include this agent at
+  // all, which would hide the rail on an agent that has plenty of runs. Cleared,
+  // the unfiltered page IS the question being asked. The org key stays null while
+  // an untouched filter is still empty, since that only means the session has not
+  // resolved yet and an unfiltered page fetched there would be thrown away.
+  const railAgentId = railFilter.agentIds[0] ?? ''
+  const railFilterReady = railFilter.touched || Boolean(sessionAgentId)
   const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
-    MOCK_MODE || !railAgentId ? null : activeOrg?.id,
-    { agentId: railAgentId }
+    MOCK_MODE || !railFilterReady ? null : activeOrg?.id,
+    railAgentId ? { agentId: railAgentId } : {}
   )
   const railSessions = useMemo(
-    () => (MOCK_MODE ? (railAgentId ? getSessions(railAgentId) : []) : railSessionRows),
-    [getSessions, railAgentId, railSessionRows]
+    () => (MOCK_MODE ? (railAgentId ? getSessions(railAgentId) : allSessions) : railSessionRows),
+    [allSessions, getSessions, railAgentId, railSessionRows]
   )
   const sessionBusy = session ? isPgBusy(session.id) : false
   const sessionBusyRef = useRef(sessionBusy)
@@ -1637,7 +1650,8 @@ export default function SessionDetailView() {
         sessions={railSessions}
         current={session}
         total={railSessionTotal}
-        agentId={session.agentId}
+        agentIds={railFilter.agentIds}
+        onAgentIdsChange={setRailAgentIds}
         family={currentSessionDetail?.id === session.id ? currentSessionDetail : undefined}
         onSelect={setRouteSession}
       />

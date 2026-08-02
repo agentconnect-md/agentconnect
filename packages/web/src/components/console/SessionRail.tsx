@@ -14,22 +14,39 @@
 // a divider, pin lit in the brand color, ahead of the dated groups. Pins live in
 // localStorage — see lib/session-pins.ts for why they are not CP state.
 //
-// The caller's rows are the agent-filtered FIRST PAGE, so two kinds of row would
+// Above the list sits the agent filter: a chip per selected agent (removable), plus
+// a "+" that opens the agent picker. It is seeded by the caller with the open
+// session's agent — "the other runs of THIS agent" is the rail's default question —
+// and clearing it widens the list to every session the viewer can see. Only one
+// agent at a time for now: the CP list endpoint filters by a single `agentId`. The
+// prop is already a list so the eventual multi-agent filter (conversations several
+// agents took part in) is a wire change, not a redesign here.
+//
+// The caller's rows are the filtered FIRST PAGE, so two kinds of row would
 // otherwise be missing from a long-running agent's rail: the open session itself
 // (a deep link to session 51+), and pinned runs that newer runs pushed off page
 // one or that belong to another agent. Both are the rail's whole point, so
 // `current` is merged in and off-page pins are fetched individually (bounded by
-// SESSION_PIN_HYDRATE_MAX).
+// SESSION_PIN_HYDRATE_MAX). `current` stays merged in under a foreign agent filter
+// too — the open session is where the reader is, and dropping its row would leave
+// the rail with nothing marked `aria-current`.
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
-import { canonicalSessionId, mergeCanonicalSessions, sessionChannelDisplay, type Session } from '@/lib/data'
+import {
+  agentLabel,
+  canonicalSessionId,
+  mergeCanonicalSessions,
+  sessionChannelDisplay,
+  type Agent,
+  type Session
+} from '@/lib/data'
 import { fetchSessionDetail, sessionFromDetailDto, type SessionDetailDto, type SessionRelationDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
-import { PlatformMark } from '@/components/marks'
+import { AgentIconView, PlatformMark } from '@/components/marks'
 import { groupSessionsByAge } from '@/lib/session-age'
 import {
   partitionPinned,
@@ -55,18 +72,21 @@ export function SessionRail({
   sessions,
   current,
   total,
-  agentId,
+  agentIds,
+  onAgentIdsChange,
   family,
   onSelect
 }: {
-  /** The agent-filtered first page of sessions, newest first. */
+  /** The filtered first page of sessions, newest first. */
   sessions: Session[]
   /** The open session — merged in when it is not on the loaded page. */
   current: Session
-  /** The agent's full session count (CP `total`); 0 when unknown (mock). */
+  /** The filtered session count (CP `total`); 0 when unknown (mock). */
   total: number
-  /** Owning agent — scopes the footer link. */
-  agentId: string | undefined
+  /** Agents the list is filtered to; empty = every session the viewer can see. */
+  agentIds: string[]
+  /** Edit the filter. The caller owns it — the rail is not the only thing it scopes. */
+  onAgentIdsChange: (agentIds: string[]) => void
   /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
   family?: Pick<SessionDetailDto, 'parentSession' | 'siblingSessions' | 'childSessions'>
   /** Seed the persistent detail view before the route id changes. */
@@ -75,7 +95,8 @@ export function SessionRail({
   const { orgPath, activeOrg } = useOrgs()
   // Schedule-triggered rows show the schedule's name, so the rail needs the crons
   // list — resolve it here instead of threading another display-only callback.
-  const { crons } = useConsoleData()
+  // `agents` backs the filter chips and their picker.
+  const { agents, crons } = useConsoleData()
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
 
   // Hydration: the server has no localStorage, so the first client paint must match
@@ -167,7 +188,10 @@ export function SessionRail({
 
   // A rail that would only show the session already on screen is noise. Direct
   // lineage still makes it useful when the current agent itself has one session.
-  if (Math.max(total, rows.length) < 2 && !hasFamily) return null
+  // A filter the reader chose is the exception: hiding the rail would take the
+  // filter control away with it, leaving no way back to a wider list.
+  const filterIsDefault = agentIds.length <= 1 && (agentIds[0] ?? '') === (current.agentId ?? '')
+  if (Math.max(total, rows.length) < 2 && !hasFamily && filterIsDefault) return null
 
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
@@ -253,6 +277,7 @@ export function SessionRail({
   return (
     <div className="hidden w-[224px] flex-none desktop:block">
       <div className="sticky top-[-9px] flex max-h-[calc(100vh-110px)] flex-col pb-1">
+        <RailAgentFilter agents={agents} selected={agentIds} onChange={onAgentIdsChange} />
         <div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto">
           {hasFamily && (
             <>
@@ -284,14 +309,147 @@ export function SessionRail({
             </Fragment>
           ))}
         </div>
+        {/* Carry the rail's filter into the full list so the link is the same
+            question, unabridged. The sessions page takes one agent, which is
+            exactly what the picker can produce today. */}
         <Link
           className="lnk mt-[10px] mr-[9px] ml-[9px] font-sans text-[12px] font-medium leading-normal"
-          href={orgPath(agentId ? `/sessions?agent=${encodeURIComponent(agentId)}` : '/sessions')}
+          href={orgPath(agentIds[0] ? `/sessions?agent=${encodeURIComponent(agentIds[0])}` : '/sessions')}
         >
           All sessions
           <Icon name="arrow-right" size={12} />
         </Link>
       </div>
+    </div>
+  )
+}
+
+// The filter above the list: one chip per selected agent, then the "+" picker.
+// With nothing selected the chip row reads "All agents", so the rail always says
+// what it is showing rather than leaving an unexplained gap above the first group.
+//
+// Single-select while the CP filters by one `agentId`: picking an agent replaces
+// the chip, and picking the selected one clears it (the same toggle the chip's ×
+// performs). The signature stays plural so multi-select is a later change to the
+// menu's click handler and the fetch, not to this component's shape.
+function RailAgentFilter({
+  agents,
+  selected,
+  onChange
+}: {
+  agents: Agent[]
+  selected: string[]
+  onChange: (agentIds: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  // A restricted agent can own the open session while staying out of this viewer's
+  // roster; show the id rather than dropping the chip and silently misdescribing
+  // the list as unfiltered.
+  const chips = selected.map((id) => {
+    const agent = agents.find((a) => a.id === id)
+    return { id, label: agent ? agentLabel(agent) : id, agent }
+  })
+
+  useEffect(() => {
+    if (!open) {
+      setQuery('')
+      return
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const q = query.trim().toLowerCase()
+  const shown = agents.filter((agent) => agentLabel(agent).toLowerCase().includes(q))
+
+  return (
+    <div className="relative mb-[7px] flex flex-none flex-wrap items-center gap-[5px] px-[9px]">
+      {chips.length === 0 && (
+        <span className="py-[3px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
+          All agents
+        </span>
+      )}
+      {chips.map((chip) => (
+        <span
+          key={chip.id}
+          title={chip.label}
+          className="inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] rounded-md border border-(--border-default) bg-(--surface-card) py-0 pr-[3px] pl-[6px]"
+        >
+          <span className="av h-[15px] w-[15px] flex-none rounded-xs">
+            <AgentIconView icon={chip.agent?.icon} runtime={chip.agent?.runtime ?? ''} size={15} />
+          </span>
+          <span className="min-w-0 truncate font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
+            {chip.label}
+          </span>
+          <button
+            type="button"
+            onClick={() => onChange(selected.filter((id) => id !== chip.id))}
+            title="Clear agent filter"
+            aria-label={`Clear agent filter ${chip.label}`}
+            className="flex h-[18px] w-[18px] flex-none items-center justify-center rounded-xs border-0 bg-none p-0 text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
+          >
+            <Icon name="x" size={11} />
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="Filter by agent"
+        aria-label="Filter by agent"
+        aria-expanded={open}
+        className={`flex h-[22px] w-[22px] flex-none items-center justify-center rounded-sm border p-0 focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
+          open
+            ? 'border-(--brand) bg-(--surface-card) text-(--brand)'
+            : 'border-(--border-default) bg-(--surface-card) text-(--text-tertiary) hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)'
+        }`}
+      >
+        <Icon name="plus" size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fscrim" onClick={() => setOpen(false)} />
+          {/* .fmenu anchors to the row's left edge; the rail is 224px, so widen the
+              menu past its own 210px minimum only through the row's own width. */}
+          <div className="fmenu" role="listbox">
+            <input
+              className="fsearch"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter agents…"
+              autoFocus
+              aria-label="Filter agents"
+            />
+            {shown.map((agent) => {
+              const on = selected.includes(agent.id)
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  role="option"
+                  aria-selected={on}
+                  className="fopt"
+                  onClick={() => {
+                    onChange(on ? [] : [agent.id])
+                    setOpen(false)
+                  }}
+                >
+                  <span className="av h-5 w-5 flex-none rounded-xs">
+                    <AgentIconView icon={agent.icon} runtime={agent.runtime} size={20} />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{agentLabel(agent)}</span>
+                  {on && <Icon name="check" size={14} color="var(--brand)" className="flex-none" />}
+                </button>
+              )
+            })}
+            {shown.length === 0 && <div className="fnohit">No matches</div>}
+          </div>
+        </>
+      )}
     </div>
   )
 }
