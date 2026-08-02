@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -705,8 +705,14 @@ export default function SessionDetailView() {
   } = usePlayground()
   const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
-  // Desktop header "Details" popover (run facts: status, duration, tokens, …).
-  const [detailOpen, setDetailOpen] = useState(false)
+  const detailTooltipId = useId()
+  const [detailInteraction, setDetailInteraction] = useState({ hovered: false, focused: false, dismissed: false })
+  const detailOpen = (detailInteraction.hovered || detailInteraction.focused) && !detailInteraction.dismissed
+  const updateDetailPresence = (key: 'hovered' | 'focused', value: boolean) =>
+    setDetailInteraction((current) => {
+      const next = { ...current, [key]: value }
+      return { ...next, dismissed: next.hovered || next.focused ? current.dismissed : false }
+    })
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
@@ -738,6 +744,20 @@ export default function SessionDetailView() {
   const tailReadyRef = useRef(false)
   const tailInFlightRef = useRef<Promise<void> | null>(null)
   const tailDirtyRef = useRef(false)
+
+  // Hover does not move focus to the trigger, so Escape has to be observed while
+  // the tooltip is open rather than only on the button.
+  useEffect(() => {
+    if (!detailOpen) return
+    const dismissDetails = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setDetailInteraction((current) => ({ ...current, dismissed: true }))
+    }
+    document.addEventListener('keydown', dismissDetails, true)
+    return () => document.removeEventListener('keydown', dismissDetails, true)
+  }, [detailOpen])
 
   const localSession =
     getPgSession(id) ??
@@ -1054,7 +1074,7 @@ export default function SessionDetailView() {
   useEffect(() => {
     imagePrepareGenerationRef.current += 1
     setCopied(false)
-    setDetailOpen(false)
+    setDetailInteraction({ hovered: false, focused: false, dismissed: false })
     setWorkOverride(new Map())
     setImagePreparing(false)
     setImageError(null)
@@ -1593,61 +1613,62 @@ export default function SessionDetailView() {
           {visibilityControl}
           {/* `flex` on the wrapper: an inline-flex button in a block div sits on a text
             baseline, and the descender gap under it pushed the button off the row's
-            centre line. */}
+            centre line. The transparent top padding bridges the trigger/panel gap so
+            the hover target remains continuous. */}
           <div
             className="relative ml-[-3px] flex flex-none items-center"
-            onKeyDown={(event) => {
-              if (event.key !== 'Escape' || !detailOpen) return
-              event.stopPropagation()
-              setDetailOpen(false)
-            }}
+            onMouseEnter={() => updateDetailPresence('hovered', true)}
+            onMouseLeave={() => updateDetailPresence('hovered', false)}
+            onFocus={() => updateDetailPresence('focused', true)}
+            onBlur={() => updateDetailPresence('focused', false)}
           >
             <button
-              className="inline-flex h-[22px] cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-              onClick={() => setDetailOpen((o) => !o)}
-              aria-haspopup="dialog"
-              aria-expanded={detailOpen}
-              title="Run details"
+              type="button"
+              className="inline-flex h-[22px] items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+              aria-describedby={detailTooltipId}
             >
               <Icon name="info" size={14} />
               Details
             </button>
-            {detailOpen && (
-              <>
-                <div className="fixed inset-0 z-40" aria-hidden="true" onClick={() => setDetailOpen(false)} />
-                <div role="dialog" aria-label="Run details" className="fmenu z-50 min-w-[216px] px-0 py-[5px]">
-                  {headerFacts.map((f) => (
-                    <div key={f.label} className="flex items-center gap-[9px] px-3 py-[5px]">
-                      <Icon name={f.icon} size={13} color="var(--text-tertiary)" className="flex-none" />
-                      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                        {f.label}
-                      </span>
-                      <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
-                        {f.value}
-                      </span>
+            <div
+              id={detailTooltipId}
+              role="tooltip"
+              className={`absolute top-full left-0 z-50 w-max pt-[5px] transition-[opacity,visibility] ${
+                detailOpen ? 'pointer-events-auto visible opacity-100' : 'pointer-events-none invisible opacity-0'
+              }`}
+            >
+              <div className="max-h-[340px] min-w-[216px] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) px-0 py-[5px] shadow-(--shadow-lg)">
+                {headerFacts.map((f) => (
+                  <div key={f.label} className="flex items-center gap-[9px] px-3 py-[5px]">
+                    <Icon name={f.icon} size={13} color="var(--text-tertiary)" className="flex-none" />
+                    <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+                      {f.label}
+                    </span>
+                    <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
+                      {f.value}
+                    </span>
+                  </div>
+                ))}
+                {usageEntries.length > 0 && (
+                  <>
+                    <div className="my-1 border-t border-(--border-subtle)" />
+                    <div className="px-3 pt-1 pb-[2px] font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
+                      Token usage
                     </div>
-                  ))}
-                  {usageEntries.length > 0 && (
-                    <>
-                      <div className="my-1 border-t border-(--border-subtle)" />
-                      <div className="px-3 pt-1 pb-[2px] font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
-                        Token usage
+                    {usageEntries.map((e) => (
+                      <div key={e.label} className="flex items-center gap-[9px] py-1 pr-3 pl-[34px]">
+                        <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+                          {e.label}
+                        </span>
+                        <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
+                          {e.value}
+                        </span>
                       </div>
-                      {usageEntries.map((e) => (
-                        <div key={e.label} className="flex items-center gap-[9px] py-1 pr-3 pl-[34px]">
-                          <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                            {e.label}
-                          </span>
-                          <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
-                            {e.value}
-                          </span>
-                        </div>
-                      ))}
-                    </>
-                  )}
-                </div>
-              </>
-            )}
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
           </div>
           <button
             className="ml-auto flex h-[19px] w-[19px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
