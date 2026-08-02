@@ -91,6 +91,7 @@ function button(label: string): HTMLButtonElement | undefined {
 
 beforeEach(() => {
   sessionStorage.clear()
+  window.__AC_ENV = {}
   vi.mocked(fetchMySocialAccount).mockReset()
   mocks.requestEmailVerification.mockReset()
   vi.mocked(resolveMySocialConnectorId).mockReset()
@@ -105,6 +106,20 @@ afterEach(async () => {
 })
 
 describe('SocialSignInCard account state', () => {
+  it('offers configured Lark and Feishu identities through the shared link flow', async () => {
+    window.__AC_ENV = { SOCIAL_PROVIDERS: 'lark,feishu' }
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({ identities: [], hasSecurityVerificationMethod: false })
+
+    await renderCard()
+    await waitUntil(() => container?.textContent?.includes('Not linked') === true)
+
+    expect(container?.textContent).toContain('Lark')
+    expect(container?.textContent).toContain('Feishu')
+    expect(
+      Array.from(container?.querySelectorAll('button') ?? []).filter((item) => item.textContent === 'Link')
+    ).toHaveLength(2)
+  })
+
   it('keeps a failed request idle and marks an explicit Retry as busy', async () => {
     vi.mocked(fetchMySocialAccount)
       .mockRejectedValueOnce(new LogtoAccountError('Unavailable', 500))

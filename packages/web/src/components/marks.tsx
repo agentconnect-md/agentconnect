@@ -16,6 +16,8 @@ import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 const fill = { width: '60%', height: '60%', display: 'block' } as const
+const larkBrandClasses =
+  '[&_path:nth-child(1)]:stroke-[#3370FF] [&_path:nth-child(2)]:fill-[#00D6B9] [&_path:nth-child(3)]:stroke-[#133C9A]'
 
 // Dark-mode treatment for the brand logos we can only load as an <img> (ACP registry
 // / lobehub SVGs, so no per-path recoloring): most are `currentColor`-black and have
@@ -252,14 +254,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
     return <SiDiscord style={s} color="#5865F2" aria-hidden />
   }
   if (x.includes('feishu') || x.includes('lark')) {
-    return (
-      <IconifyIcon
-        icon={newLarkIcon}
-        style={s}
-        className="[&_path:nth-child(1)]:stroke-[#3370FF] [&_path:nth-child(2)]:fill-[#00D6B9] [&_path:nth-child(3)]:stroke-[#133C9A]"
-        aria-hidden
-      />
-    )
+    return <IconifyIcon icon={newLarkIcon} style={s} className={larkBrandClasses} aria-hidden />
   }
   if (x.includes('slack')) {
     return <IconifyIcon icon={slackIcon} style={s} aria-hidden />
@@ -282,6 +277,15 @@ export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; s
   if (target === 'github') return <SiGithub size={size} aria-hidden />
   if (target === 'slack')
     return <IconifyIcon icon={slackIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
+  if (target === 'lark' || target === 'feishu')
+    return (
+      <IconifyIcon
+        icon={newLarkIcon}
+        className={larkBrandClasses}
+        {...(size ? { width: size, height: size } : {})}
+        aria-hidden
+      />
+    )
   return <FcGoogle size={size} aria-hidden />
 }
 

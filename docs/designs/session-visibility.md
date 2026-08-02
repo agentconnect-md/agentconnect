@@ -583,13 +583,19 @@ login from Logto and asks GitHub for that user's current effective repository
 permission. AgentConnect stores neither the GitHub login nor a copied provider
 ACL; only bounded allow/deny/error verdicts are cached in process.
 
-**Other platforms (future, separate design).** Telegram/Discord/Feishu have no
-OIDC sign-in to piggyback on, so they need a `UserIdentity` table (`userId`,
-`platform`, `workspace`, `platformUserId`, verified-at, unique on the
-`(platform, workspace, platformUserId)` tuple — matching the three-part
-identity format of §2) populated by an explicit link flow (e.g. the bot DMs a
-code, the user pastes it in the console). Once it exists, the same identity-set
-computation reads it; the Slack read-through can fold into that table then.
+**Other platform session access (future, separate design).** A user may link a
+Lark or Feishu social identity through a configured Logto connector. Feishu uses
+Logto's built-in connector; Lark uses its generic OAuth connector pointed at the
+Lark passport endpoints. That alone cannot authorize messaging sessions: the
+message-side `open_id` is scoped to one app, and the social connector may be a
+different app. Telegram, Discord, Lark, and Feishu therefore still need an
+explicit verified binding before their identities can enter the session identity
+set. One option is a `UserIdentity`
+table (`userId`, `platform`, `workspace`, `platformUserId`, verified-at, unique
+on the `(platform, workspace, platformUserId)` tuple — matching the three-part
+identity format of §2) populated by a bot-mediated code flow. Once it exists,
+the same identity-set computation reads it; the Slack read-through can fold
+into that table then.
 
 ## 8. Share-by-link (future, separate design)
 
