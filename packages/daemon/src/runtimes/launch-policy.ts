@@ -154,6 +154,7 @@ export function composeRuntimeLaunch(opts: {
   runtimeReadRoots?: string[]
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
+  allowModelToolUnixSockets?: boolean
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -182,7 +183,8 @@ export function composeRuntimeLaunch(opts: {
     agentsRoot: opts.agentsRoot,
     trustedRuntimeReadRoots: [...(sandboxAccess?.readRoots ?? []), ...(opts.runtimeReadRoots ?? [])],
     sandboxMechanism: opts.sandboxMechanism,
-    mcpSocketPath: opts.mcpSocketPath
+    mcpSocketPath: opts.mcpSocketPath,
+    allowModelToolUnixSockets: opts.allowModelToolUnixSockets
   })
   if (sandboxAccess?.claudeExecutable && !launch.env.CLAUDE_CODE_EXECUTABLE) {
     launch.env.CLAUDE_CODE_EXECUTABLE = sandboxAccess.claudeExecutable

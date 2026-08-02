@@ -20,6 +20,20 @@ import {
   codexPermissionProfileConfig
 } from './codex-permission-profiles.js'
 
+function applyCodexPermissionProfile(
+  env: Record<string, string>,
+  protectedRoots: readonly string[],
+  allowModelToolUnixSockets: boolean,
+  inheritedCodexConfig?: string
+): void {
+  const profileConfig = codexPermissionProfileConfig(protectedRoots, allowModelToolUnixSockets)
+  if (!profileConfig) return
+
+  const codexConfig = codexConfigWithoutPermissionOverrides(env.CODEX_CONFIG ?? inheritedCodexConfig)
+  if (codexConfig !== undefined) env.CODEX_CONFIG = codexConfig
+  env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV] = JSON.stringify(profileConfig)
+}
+
 function disabledClaudeProfileRoot(scopeDir: string): string {
   const root = realpathSync(resolve(scopeDir))
   const target = join(root, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
@@ -101,6 +115,9 @@ export interface PreparedRuntimeLaunch {
     /** Credential paths deliberately exposed to the trusted runtime parent but
      * denied again inside a runtime-native tool sandbox. */
     protectedCredentialRoots: string[]
+    /** A daemon-owned model-side Unix channel deliberately exposed to the
+     * runtime, currently the agent-scoped GitHub credential socket. */
+    allowModelToolUnixSockets?: boolean
     /** Highest-precedence Claude settings that keep project/local settings from
      * redirecting the trusted parent to an attacker-selected credential profile. */
     claudeProtectedSettings?: ClaudeProtectedSettings
@@ -144,9 +161,17 @@ export function prepareRuntimeLaunch(opts: {
   credentialPlatform?: NodeJS.Platform
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
+  /** Permit the runtime-native tool sandbox to reach a daemon-owned Unix
+   * channel. An enabled outer sandbox remains the surrounding boundary. */
+  allowModelToolUnixSockets?: boolean
 }): PreparedRuntimeLaunch {
+  const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   if (!opts.runInSandbox && !opts.isolateHome) {
-    return { env: opts.explicitEnv ?? {}, inheritProcessEnv: true }
+    const env = { ...(opts.explicitEnv ?? {}) }
+    if (credentialProfile === 'codex' && opts.allowModelToolUnixSockets) {
+      applyCodexPermissionProfile(env, [], true, (opts.hostEnv ?? process.env).CODEX_CONFIG)
+    }
+    return { env, inheritProcessEnv: true }
   }
   if (opts.runInSandbox && !opts.sandboxMechanism) {
     throw new Error('OS sandbox requested but this host has no supported Linux SRT/bwrap mechanism')
@@ -249,7 +274,6 @@ export function prepareRuntimeLaunch(opts: {
     credentials?.seedExclusions
   )
   credentials?.preparePrivateHome(runtimeHome)
-  const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   const env = {
     ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, opts.hostEnv),
     ...credentials?.env
@@ -258,6 +282,10 @@ export function prepareRuntimeLaunch(opts: {
   if (opts.runInSandbox) isolateHostSocketEnvironment(env, runtimeHome)
 
   if (!opts.runInSandbox) {
+    if (credentialProfile === 'codex' && opts.allowModelToolUnixSockets) {
+      const privateCodex = join(runtimeHome, '.codex')
+      applyCodexPermissionProfile(env, existsSync(privateCodex) ? [realpathSync(privateCodex)] : [], true)
+    }
     return { env, inheritProcessEnv: false, runtimeHome }
   }
 
@@ -358,12 +386,7 @@ export function prepareRuntimeLaunch(opts: {
     ...privateCodexStateRoots
   ])
   if (credentialProfile === 'codex') {
-    const profileConfig = codexPermissionProfileConfig(protectedCredentialRoots)
-    if (profileConfig) {
-      const codexConfig = codexConfigWithoutPermissionOverrides(env.CODEX_CONFIG)
-      if (codexConfig !== undefined) env.CODEX_CONFIG = codexConfig
-      env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV] = JSON.stringify(profileConfig)
-    }
+    applyCodexPermissionProfile(env, protectedCredentialRoots, opts.allowModelToolUnixSockets === true)
   }
   return {
     env,
@@ -377,6 +400,7 @@ export function prepareRuntimeLaunch(opts: {
       denyReadRoots,
       allowReadRoots: boundary.allowRead,
       protectedCredentialRoots,
+      ...(opts.allowModelToolUnixSockets ? { allowModelToolUnixSockets: true } : {}),
       ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {})
     }
   }

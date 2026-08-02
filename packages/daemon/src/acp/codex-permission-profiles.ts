@@ -44,15 +44,23 @@ export function codexConfigWithoutPermissionOverrides(raw: string | undefined): 
 
 /** Build the complete inner-tool policy from daemon-owned canonical paths. */
 export function codexPermissionProfileConfig(
-  protectedRoots: readonly string[]
+  protectedRoots: readonly string[],
+  allowModelToolUnixSockets = false
 ): CodexPermissionProfileConfig | undefined {
   const roots = [...new Set(protectedRoots.map((root) => normalize(root)))]
-  if (roots.length === 0) return undefined
+  if (roots.length === 0 && !allowModelToolUnixSockets) return undefined
   if (roots.some((root) => !isAbsolute(root))) {
     throw new Error('Codex protected permission roots must be absolute paths')
   }
 
   const deny = tomlInlineTable(roots.map((root): [string, string] => [root, 'deny']))
+  const protectedFilesystem =
+    roots.length > 0
+      ? [
+          `permissions.${PROFILE_IDS['read-only']}.filesystem=${deny}`,
+          `permissions.${PROFILE_IDS.agent}.filesystem=${deny}`
+        ]
+      : []
   const fullAccess = tomlInlineTable([
     [':root', 'write'],
     ['/.git', 'write'],
@@ -60,14 +68,25 @@ export function codexPermissionProfileConfig(
     ['/.codex', 'write'],
     ...roots.map((root): [string, string] => [root, 'deny'])
   ])
+  // On Linux Codex's restricted network seccomp permits AF_UNIX socket()
+  // creation but rejects connect(). Enable the inner network layer only when
+  // the daemon deliberately provides the agent-scoped GitHub credential
+  // channel. When enabled, outer SRT remains the boundary; when disabled by the
+  // operator, the launch is already explicitly unconfined.
+  const credentialChannelNetwork = allowModelToolUnixSockets
+    ? [
+        `permissions.${PROFILE_IDS['read-only']}.network.enabled=true`,
+        `permissions.${PROFILE_IDS.agent}.network.enabled=true`
+      ]
+    : []
 
   return {
     configOverrides: [
       `default_permissions="${PROFILE_IDS.agent}"`,
       `permissions.${PROFILE_IDS['read-only']}.extends=":read-only"`,
-      `permissions.${PROFILE_IDS['read-only']}.filesystem=${deny}`,
       `permissions.${PROFILE_IDS.agent}.extends=":workspace"`,
-      `permissions.${PROFILE_IDS.agent}.filesystem=${deny}`,
+      ...protectedFilesystem,
+      ...credentialChannelNetwork,
       `permissions.${PROFILE_IDS['agent-full-access']}.filesystem=${fullAccess}`,
       `permissions.${PROFILE_IDS['agent-full-access']}.network.enabled=true`,
       `permissions.${PROFILE_IDS['agent-full-access']}.network.allow_local_binding=true`,
