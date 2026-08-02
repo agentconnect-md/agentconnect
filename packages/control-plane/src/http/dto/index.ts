@@ -2758,11 +2758,20 @@ export const StartDreamBody = z
   })
   .strict()
 /** Body for adopting a dream: fenced by default; `force` overrides the snapshot fence. */
-export const AdoptDreamBody = z.object({ force: z.boolean().optional() }).strict()
+export const AdoptDreamBody = z
+  .object({
+    force: z.boolean().optional(),
+    /** Same-bytes review fence (task #36 Phase B): echo `DreamFilesDto.reviewToken`
+     *  from the review read to bind adoption to the exact bytes reviewed. */
+    reviewToken: z.string().optional()
+  })
+  .strict()
 /** `GET …/dreams/:dreamId/files` — the staged output store's files (index + topics). */
 export const DreamFilesDto = z.object({
   exists: z.boolean(), // false ⇒ nothing staged (yet)
-  files: z.array(MemoryFileEntryDto)
+  files: z.array(MemoryFileEntryDto),
+  /** Same-bytes review fence token (task #36 Phase B); present only when `exists`. */
+  reviewToken: z.string().optional()
 })
 /** `GET …/dreams/:dreamId/file` — one byte slice of a staged file (memory/read semantics). */
 export const DreamFileDto = z.object({
@@ -2779,8 +2788,18 @@ export const DreamSkillContentDto = z.object({
   name: z.string(),
   exists: z.boolean(),
   skill: z.string().nullable(),
-  scripts: z.array(z.object({ path: z.string(), content: z.string() }))
+  scripts: z.array(z.object({ path: z.string(), content: z.string() })),
+  /** Same-bytes review fence token (task #36 Phase B); present only when `exists`. */
+  reviewToken: z.string().optional()
 })
+/** `POST …/dreams/:dreamId/skills/:name/accept` body — the review fence token. */
+export const AcceptDreamSkillBody = z
+  .object({
+    /** Echo `DreamSkillContentDto.reviewToken` from the skill review read to bind
+     *  publication to the exact bytes reviewed (task #36 Phase B). */
+    reviewToken: z.string().optional()
+  })
+  .strict()
 export const DreamSkillParam = z.object({
   id: z.string().uuid(),
   dreamId: z.string().min(1).max(128),

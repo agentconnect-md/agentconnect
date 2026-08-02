@@ -433,7 +433,12 @@ export const DreamAdoptReq = z
     agentId: z.string().min(1),
     dreamId: z.string().min(1),
     /** Adopt even when the live store changed since the snapshot (fence override). */
-    force: z.boolean().default(false)
+    force: z.boolean().default(false),
+    /** Same-bytes review fence (task #36 Phase B): the store review token from
+     *  `DreamFilesPage.reviewToken`. When present the daemon refuses adoption
+     *  unless the staged bytes still hash to it, so a re-run/rebase after review
+     *  forces a re-review. Omitted by auto-adopt (which skips content review). */
+    reviewToken: z.string().optional()
   })
   .strict()
 export type DreamAdoptReq = z.infer<typeof DreamAdoptReq>
@@ -452,7 +457,11 @@ export const DreamFilesPage = z
     agentId: z.string(),
     dreamId: z.string(),
     exists: z.boolean(), // false ⇒ nothing staged (yet) — DATA, not an error
-    entries: z.array(MemoryEntry)
+    entries: z.array(MemoryEntry),
+    /** Same-bytes review fence (task #36 Phase B): digest of the staged store the
+     *  console is reviewing; echo it back as `DreamAdoptReq.reviewToken` to bind
+     *  adoption to these exact bytes. Present only when `exists`. */
+    reviewToken: z.string().optional()
   })
   .strict()
 export type DreamFilesPage = z.infer<typeof DreamFilesPage>
@@ -524,7 +533,12 @@ export const DreamSkillContent = z
           .strict()
       )
       .max(4)
-      .optional()
+      .optional(),
+    /** Same-bytes review fence (task #36 Phase B): canonical digest of the staged
+     *  skill the console is reviewing; echo it back as
+     *  `DreamSkillReviewReq.reviewToken` on Accept to bind publication to these
+     *  exact bytes. Present only when `exists`. */
+    reviewToken: z.string().optional()
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -545,7 +559,11 @@ export const DreamSkillReviewReq = z
   .object({
     agentId: z.string().min(1),
     dreamId: z.string().min(1),
-    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+    /** Same-bytes review fence (task #36 Phase B): the skill review token from
+     *  `DreamSkillContent.reviewToken`. Used on Accept — publication refuses
+     *  unless the captured snapshot hashes to it; ignored on Dismiss. */
+    reviewToken: z.string().optional()
   })
   .strict()
 export type DreamSkillReviewReq = z.infer<typeof DreamSkillReviewReq>

@@ -49,6 +49,7 @@ import {
   type TrustedOrganizationSkillTarget
 } from './memory-dreamer.js'
 import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
+import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
 
 /**
  * `DreamRunner` — the daemon's dream-job engine (design:
@@ -1400,6 +1401,47 @@ export class DreamRunner {
     try {
       const [content, st] = await Promise.all([fsp.readFile(abs, 'utf8'), fsp.stat(abs)])
       return { content, mtime: st.mtime.toISOString() }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
+    }
+  }
+
+  /** Review token for the staged memory-store proposal: the digest the console
+   *  reviewed, which `adopt(reviewToken)` re-verifies against the exact staged
+   *  bytes before swapping (task #36 Phase B). `null` when nothing is staged.
+   *  Uses the same canonical `storeDigest` the adopt fence recomputes. */
+  async stagedStoreReviewToken(agentId: string, dreamId: string): Promise<string | null> {
+    this.assertStagedContentAllowed()
+    this.getDream(agentId, dreamId)
+    const out = join(this.dreamDir(agentId, dreamId), 'output')
+    let names: string[]
+    try {
+      names = (await fsp.readdir(out, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && stagedPathOk(entry.name))
+        .map((entry) => entry.name)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
+    }
+    if (names.length === 0) return null
+    const files = await Promise.all(
+      names.map(async (name) => ({ name, content: await fsp.readFile(join(out, name), 'utf8') }))
+    )
+    return storeDigest(files)
+  }
+
+  /** Review token for a staged skill candidate: the canonical snapshot digest the
+   *  console reviewed, which `skillAccept(reviewToken)` re-verifies against the
+   *  captured publish snapshot (task #36 Phase B). `inspectLocalSkillSource` uses
+   *  the same walker + digest as the publish snapshot, so the token matches the
+   *  bytes that would be published. `null` when the candidate has no staging. */
+  async stagedSkillReviewToken(agentId: string, dreamId: string, name: string): Promise<string | null> {
+    this.assertStagedContentAllowed()
+    this.skillCandidate(agentId, dreamId, name)
+    const dir = join(this.dreamDir(agentId, dreamId), 'skills', name)
+    try {
+      return (await inspectLocalSkillSource(dir)).sha256
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw err

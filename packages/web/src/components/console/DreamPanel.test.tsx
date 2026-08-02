@@ -66,7 +66,11 @@ beforeEach(() => {
   for (const [key, fn] of Object.entries(api)) if (key !== 'ApiError') (fn as ReturnType<typeof vi.fn>).mockReset()
   api.listDreams.mockResolvedValue([])
   api.startDream.mockResolvedValue(dream({ status: 'pending' }))
-  api.listDreamFiles.mockResolvedValue({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
+  api.listDreamFiles.mockResolvedValue({
+    exists: true,
+    files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }],
+    reviewToken: 'sha256:store'
+  })
   api.fetchDreamFileFull.mockResolvedValue({ exists: true, content: '# Memory (rebuilt)' })
   api.fetchAgentMemoryFull.mockResolvedValue({ exists: true, content: '# Memory (old)', mtime: null })
   api.listAgentMemory.mockResolvedValue({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
@@ -78,7 +82,8 @@ beforeEach(() => {
     name: 'deploy-staging',
     exists: true,
     skill: '---\nname: deploy-staging\n---\n# Deploy\nrun the thing',
-    scripts: [{ path: 'run.sh', content: '#!/bin/sh\necho deploying' }]
+    scripts: [{ path: 'run.sh', content: '#!/bin/sh\necho deploying' }],
+    reviewToken: 'sha256:skill'
   })
 })
 
@@ -247,7 +252,8 @@ describe('DreamPanel', () => {
       (b) => b.textContent?.trim() === 'Adopt'
     )
     await act(async () => confirm.at(-1)?.click())
-    expect(api.adoptDream).toHaveBeenCalledWith(AGENT, 'drm-1')
+    // The store review token from listDreamFiles is echoed on adopt (task #36 Phase B).
+    expect(api.adoptDream).toHaveBeenCalledWith(AGENT, 'drm-1', false, 'sha256:store')
     expect(host.textContent).toContain('Outdated proposals were moved to History')
   })
 
@@ -398,7 +404,8 @@ describe('DreamPanel', () => {
     expect(host.textContent).toContain('scripts/run.sh')
 
     await act(async () => button(host, 'Accept')?.click())
-    expect(api.acceptDreamSkill).toHaveBeenCalledWith(AGENT, 'drm-1', 'deploy-staging')
+    // The skill review token from fetchDreamSkill is echoed on accept (task #36 Phase B).
+    expect(api.acceptDreamSkill).toHaveBeenCalledWith(AGENT, 'drm-1', 'deploy-staging', 'sha256:skill')
   })
 
   it('dismisses a recommendation without installing it', async () => {

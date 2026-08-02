@@ -2342,6 +2342,8 @@ export interface DreamDto {
 export interface DreamFilesDto {
   exists: boolean
   files: MemoryFileEntry[]
+  /** Same-bytes review fence token (task #36 Phase B); present only when `exists`. */
+  reviewToken?: string
 }
 
 /** A dream is terminal (won't change) once it reaches one of these states. */
@@ -2380,8 +2382,18 @@ export async function cancelDream(agentId: string, dreamId: string): Promise<Dre
 }
 
 /** Adopt a completed dream's staged store. `force` overrides the snapshot fence. */
-export async function adoptDream(agentId: string, dreamId: string, force = false): Promise<DreamDto> {
-  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/adopt`, force ? { force } : {})
+export async function adoptDream(
+  agentId: string,
+  dreamId: string,
+  force = false,
+  reviewToken?: string
+): Promise<DreamDto> {
+  // Echo the review token from listDreamFiles so the daemon binds adoption to the
+  // exact bytes reviewed (task #36 Phase B same-bytes fence).
+  return apiPost<DreamDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/adopt`, {
+    ...(force ? { force } : {}),
+    ...(reviewToken ? { reviewToken } : {})
+  })
 }
 
 export interface DreamSkillContentDto {
@@ -2389,6 +2401,8 @@ export interface DreamSkillContentDto {
   exists: boolean
   skill: string | null
   scripts: { path: string; content: string }[]
+  /** Same-bytes review fence token (task #36 Phase B); present only when `exists`. */
+  reviewToken?: string
 }
 
 /** Read a candidate's FULL staged body — what accepting would install. */
@@ -2399,10 +2413,17 @@ export async function fetchDreamSkill(agentId: string, dreamId: string, name: st
 }
 
 /** Accept one mined skill candidate — installs it for this agent (design §7). */
-export async function acceptDreamSkill(agentId: string, dreamId: string, name: string): Promise<DreamDto> {
+export async function acceptDreamSkill(
+  agentId: string,
+  dreamId: string,
+  name: string,
+  reviewToken?: string
+): Promise<DreamDto> {
+  // Echo the review token from fetchDreamSkill so the daemon binds publication to
+  // the exact reviewed bytes (task #36 Phase B same-bytes fence).
   return apiPost<DreamDto>(
     `${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/skills/${encodeURIComponent(name)}/accept`,
-    {}
+    reviewToken ? { reviewToken } : {}
   )
 }
 

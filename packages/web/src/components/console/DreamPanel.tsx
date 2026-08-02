@@ -128,7 +128,7 @@ export function DreamPanel({
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
-  const [confirmAdopt, setConfirmAdopt] = useState<string | null>(null)
+  const [confirmAdopt, setConfirmAdopt] = useState<{ dreamId: string; reviewToken?: string } | null>(null)
   const listRequest = useRef(0)
 
   const refresh = useCallback(async () => {
@@ -379,7 +379,7 @@ export function DreamPanel({
             dreamId={reviewing}
             canEdit={canEdit}
             busy={busy}
-            onAdopt={() => setConfirmAdopt(reviewing)}
+            onAdopt={(reviewToken) => setConfirmAdopt({ dreamId: reviewing, reviewToken })}
             onDiscard={() => discard(reviewing)}
           />
         ) : null}
@@ -398,7 +398,9 @@ export function DreamPanel({
               busy={busy || !canEdit}
               agentId={agentId}
               dreamId={dream.dreamId}
-              onAccept={(name) => void run(() => acceptDreamSkill(agentId, dream.dreamId, name))}
+              onAccept={(name, reviewToken) =>
+                void run(() => acceptDreamSkill(agentId, dream.dreamId, name, reviewToken))
+              }
               onDismiss={(name) => void run(() => dismissDreamSkill(agentId, dream.dreamId, name))}
             />
           )
@@ -447,10 +449,10 @@ export function DreamPanel({
             confirmLabel="Adopt"
             onClose={() => setConfirmAdopt(null)}
             onConfirm={() => {
-              const dreamId = confirmAdopt
+              const { dreamId, reviewToken } = confirmAdopt
               setConfirmAdopt(null)
               void run(async () => {
-                await adoptDream(agentId, dreamId)
+                await adoptDream(agentId, dreamId, false, reviewToken)
                 setReviewing(null)
                 setActionNotice('Memory adopted. Outdated proposals were moved to History.')
               })
@@ -478,7 +480,7 @@ function DreamReview({
   dreamId: string
   canEdit: boolean
   busy: boolean
-  onAdopt: () => void
+  onAdopt: (reviewToken?: string) => void
   onDiscard: () => void
 }) {
   // The UNION of live and staged paths, not just the staged tree. Adoption swaps
@@ -491,6 +493,9 @@ function DreamReview({
   const [live, setLive] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Same-bytes review fence token from the staged listing; echoed on Adopt so the
+  // daemon binds adoption to exactly the bytes shown here (task #36 Phase B).
+  const [reviewToken, setReviewToken] = useState<string | undefined>(undefined)
   const request = useRef(0)
 
   useEffect(() => {
@@ -498,10 +503,12 @@ function DreamReview({
     setPaths(null)
     setSelected(null)
     setError(null)
+    setReviewToken(undefined)
     void (async () => {
       try {
         const [stagedPage, livePage] = await Promise.all([listDreamFiles(agentId, dreamId), listAgentMemory(agentId)])
         if (!alive) return
+        setReviewToken(stagedPage.reviewToken)
         const stagedNames = new Set(stagedPage.files.map((f: MemoryFileEntry) => f.name))
         const liveNames = new Set(livePage.exists ? livePage.files.map((f: MemoryFileEntry) => f.name) : [])
         const merged = [...new Set([...stagedNames, ...liveNames])]
@@ -574,7 +581,7 @@ function DreamReview({
             <Button variant="secondary" disabled={busy} onClick={onDiscard}>
               Discard
             </Button>
-            <Button disabled={busy || !paths?.some((p) => p.staged)} onClick={onAdopt}>
+            <Button disabled={busy || !paths?.some((p) => p.staged)} onClick={() => onAdopt(reviewToken)}>
               <Icon name="check" size={13} /> Adopt
             </Button>
           </span>
@@ -617,13 +624,15 @@ function DreamSkills({
   dreamId: string
   proposed: Array<{ name: string; description: string }>
   busy: boolean
-  onAccept: (name: string) => void
+  onAccept: (name: string, reviewToken?: string) => void
   onDismiss: (name: string) => void
 }) {
   // Accept stays disabled until the body has been opened. The whole safety
   // argument for mined skills is that a human reviewed them, and a
-  // model-authored description is not evidence for itself.
-  const [seen, setSeen] = useState<Set<string>>(new Set())
+  // model-authored description is not evidence for itself. The map also carries
+  // each reviewed skill's fence token (task #36 Phase B), echoed on Accept so
+  // publication is bound to the exact reviewed bytes.
+  const [reviewTokens, setReviewTokens] = useState<Map<string, string | undefined>>(new Map())
   return (
     <div className="flex flex-col gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3">
       <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">
@@ -648,7 +657,10 @@ function DreamSkills({
             <Button variant="secondary" disabled={busy} onClick={() => onDismiss(skill.name)}>
               Dismiss
             </Button>
-            <Button disabled={busy || !seen.has(skill.name)} onClick={() => onAccept(skill.name)}>
+            <Button
+              disabled={busy || !reviewTokens.has(skill.name)}
+              onClick={() => onAccept(skill.name, reviewTokens.get(skill.name))}
+            >
               Accept
             </Button>
           </span>
@@ -656,7 +668,7 @@ function DreamSkills({
             agentId={agentId}
             dreamId={dreamId}
             name={skill.name}
-            onRead={() => setSeen((current) => new Set(current).add(skill.name))}
+            onRead={(reviewToken) => setReviewTokens((current) => new Map(current).set(skill.name, reviewToken))}
           />
         </div>
       ))}
@@ -675,7 +687,7 @@ function SkillBody({
   agentId: string
   dreamId: string
   name: string
-  onRead: () => void
+  onRead: (reviewToken?: string) => void
 }) {
   const [content, setContent] = useState<DreamSkillContentDto | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -690,7 +702,7 @@ function SkillBody({
             setContent(body)
             // Only a body that actually rendered counts as reviewed — a pending
             // request, an error, or vanished staging must all keep Accept off.
-            if (body.exists && body.skill) onRead()
+            if (body.exists && body.skill) onRead(body.reviewToken)
           })
           .catch((err) => setError(err instanceof Error ? err.message : 'Could not load this skill.'))
       }}

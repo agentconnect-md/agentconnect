@@ -485,6 +485,18 @@ describe('DreamRunner adoption', () => {
     expect(await readMemoryFile(dir, 'prefs.md')).toBe('- Uses tabs, not spaces (2026-07-24).\n')
   })
 
+  it('stagedStoreReviewToken returns the token adopt accepts (review-read → adopt loop)', async () => {
+    const { store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // The review read hands the console this token; echoing it back must adopt.
+    const token = await runner.stagedStoreReviewToken('a1', started.dreamId)
+    expect(token).toMatch(/^sha256:[0-9a-f]{64}$/)
+    const adopted = await runner.adopt('a1', started.dreamId, false, token!)
+    expect(adopted.status).toBe('adopted')
+  })
+
   it('records the exact add, update, and delete set with live before snapshots', async () => {
     const proposal = JSON.stringify({
       index: '# Memory\n- [prefs](prefs.md)\n- [fresh](fresh.md)',
@@ -1531,6 +1543,14 @@ describe('DreamRunner skill mining (D-3)', () => {
     // Re-reviewing the current bytes (fresh token) accepts.
     const current = (await inspectLocalSkillSource(staged)).sha256
     const after = await runner.skillAccept('a1', dreamId, 'deploy-staging', current)
+    expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
+  })
+
+  it('stagedSkillReviewToken returns the token skillAccept accepts (review-read → accept loop)', async () => {
+    const { runner, dreamId } = await mining(grounded)
+    const token = await runner.stagedSkillReviewToken('a1', dreamId, 'deploy-staging')
+    expect(token).toMatch(/^sha256:[0-9a-f]{64}$/)
+    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging', token!)
     expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
   })
 

@@ -77,7 +77,7 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
     },
 
     async adopt(req) {
-      return { dream: await runner.adopt(req.agentId, req.dreamId, req.force) }
+      return { dream: await runner.adopt(req.agentId, req.dreamId, req.force, req.reviewToken) }
     },
 
     async discard(req) {
@@ -86,11 +86,13 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
 
     async files(req) {
       const entries = await runner.stagedFiles(req.agentId, req.dreamId)
+      const reviewToken = entries !== null ? await runner.stagedStoreReviewToken(req.agentId, req.dreamId) : null
       return {
         agentId: req.agentId,
         dreamId: req.dreamId,
         exists: entries !== null,
-        entries: entries ?? []
+        entries: entries ?? [],
+        ...(reviewToken !== null ? { reviewToken } : {})
       }
     },
 
@@ -119,12 +121,19 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
 
     async skillRead(req) {
       const staged = await runner.stagedSkill(req.agentId, req.dreamId, req.name)
-      return staged
-        ? { agentId: req.agentId, dreamId: req.dreamId, name: req.name, exists: true, ...staged }
-        : { agentId: req.agentId, dreamId: req.dreamId, name: req.name, exists: false }
+      if (!staged) return { agentId: req.agentId, dreamId: req.dreamId, name: req.name, exists: false }
+      const reviewToken = await runner.stagedSkillReviewToken(req.agentId, req.dreamId, req.name)
+      return {
+        agentId: req.agentId,
+        dreamId: req.dreamId,
+        name: req.name,
+        exists: true,
+        ...staged,
+        ...(reviewToken !== null ? { reviewToken } : {})
+      }
     },
     async skillAccept(req) {
-      return { dream: await runner.skillAccept(req.agentId, req.dreamId, req.name) }
+      return { dream: await runner.skillAccept(req.agentId, req.dreamId, req.name, req.reviewToken) }
     },
 
     async skillDismiss(req) {

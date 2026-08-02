@@ -123,6 +123,7 @@ import {
   DreamSkillContentDto,
   StartDreamBody,
   AdoptDreamBody,
+  AcceptDreamSkillBody,
   type AgentDtoT,
   type WorkspaceFilesDtoT,
   type WorkspaceFileDtoT,
@@ -351,7 +352,11 @@ export function toDreamListDto(rep: DreamListPage): DreamListDtoT {
 }
 
 export function toDreamFilesDto(rep: DreamFilesPage): DreamFilesDtoT {
-  return { exists: rep.exists, files: rep.entries }
+  return {
+    exists: rep.exists,
+    files: rep.entries,
+    ...(rep.reviewToken !== undefined ? { reviewToken: rep.reviewToken } : {})
+  }
 }
 
 export function toDreamFileDto(rep: DreamFileReadContent): DreamFileDtoT {
@@ -3295,7 +3300,8 @@ export function agentRoutes(deps: HttpDeps) {
           const { dream } = await deps.control.dreamAdopt(agent.daemonId, {
             agentId: agent.id,
             dreamId: req.params.dreamId,
-            force: req.body.force ?? false
+            force: req.body.force ?? false,
+            ...(req.body.reviewToken !== undefined ? { reviewToken: req.body.reviewToken } : {})
           })
           return toDreamDto(dream)
         } catch (err) {
@@ -3364,7 +3370,8 @@ export function agentRoutes(deps: HttpDeps) {
             name: content.name,
             exists: content.exists,
             skill: content.skill ?? null,
-            scripts: content.scripts ?? []
+            scripts: content.scripts ?? [],
+            ...(content.reviewToken !== undefined ? { reviewToken: content.reviewToken } : {})
           }
         } catch (err) {
           if (sendDreamFailure(reply, err)) return
@@ -3384,6 +3391,7 @@ export function agentRoutes(deps: HttpDeps) {
             "Install one of this dream's mined skill candidates for the agent. Copies the reviewed skill into the agent's own tree, so discarding the dream later does not uninstall it. 409 if the candidate was already dismissed or the daemon predates dreaming.",
           operationId: 'acceptAgentMemoryDreamSkill',
           params: DreamSkillParam,
+          body: AcceptDreamSkillBody,
           response: { 200: DreamDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
@@ -3394,7 +3402,8 @@ export function agentRoutes(deps: HttpDeps) {
           const { dream } = await deps.control.dreamSkillAccept(agent.daemonId, {
             agentId: agent.id,
             dreamId: req.params.dreamId,
-            name: req.params.name
+            name: req.params.name,
+            ...(req.body?.reviewToken !== undefined ? { reviewToken: req.body.reviewToken } : {})
           })
           return toDreamDto(dream)
         } catch (err) {
