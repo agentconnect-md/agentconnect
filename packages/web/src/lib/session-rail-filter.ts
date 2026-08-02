@@ -19,12 +19,25 @@ export const EMPTY_RAIL_AGENT_FILTER: RailAgentFilter = { agentIds: [], touched:
 
 /**
  * The filter after the open session resolved to `sessionAgentId` ('' while unknown).
- * Returns `prev` unchanged whenever nothing moved, so this is safe to call from a
- * state updater on every render without churning the subscribers of `agentIds`.
+ * Pure, and returns `chosen` unchanged whenever nothing moved, so the caller can
+ * derive it during render — seeding from an effect instead would commit one frame
+ * carrying the unseeded filter even though the session's agent is already known.
  */
-export function seedRailAgentFilter(prev: RailAgentFilter, sessionAgentId: string): RailAgentFilter {
-  if (prev.touched) return prev
+export function seedRailAgentFilter(chosen: RailAgentFilter, sessionAgentId: string): RailAgentFilter {
+  if (chosen.touched) return chosen
   const agentIds = sessionAgentId ? [sessionAgentId] : []
-  const unchanged = prev.agentIds.length === agentIds.length && prev.agentIds[0] === agentIds[0]
-  return unchanged ? prev : { agentIds, touched: false }
+  const unchanged = chosen.agentIds.length === agentIds.length && chosen.agentIds[0] === agentIds[0]
+  return unchanged ? chosen : { agentIds, touched: false }
+}
+
+/**
+ * The session-list query a seeded filter asks for, or `null` when it asks nothing
+ * yet. Only an UNTOUCHED empty filter means "the session has not resolved" — a
+ * fetch there would be thrown away the moment it seeds. An empty filter the reader
+ * cleared themselves is a real question, and its answer is every session they can
+ * see, so it returns a query with no `agentId`.
+ */
+export function railAgentFilterQuery(filter: RailAgentFilter): { agentId?: string } | null {
+  if (filter.agentIds[0]) return { agentId: filter.agentIds[0] }
+  return filter.touched ? {} : null
 }

@@ -73,6 +73,7 @@ export function SessionRail({
   current,
   total,
   agentIds,
+  filterTouched,
   onAgentIdsChange,
   family,
   onSelect
@@ -85,6 +86,8 @@ export function SessionRail({
   total: number
   /** Agents the list is filtered to; empty = every session the viewer can see. */
   agentIds: string[]
+  /** Whether `agentIds` is the reader's own choice rather than the seeded default. */
+  filterTouched: boolean
   /** Edit the filter. The caller owns it — the rail is not the only thing it scopes. */
   onAgentIdsChange: (agentIds: string[]) => void
   /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
@@ -189,9 +192,11 @@ export function SessionRail({
   // A rail that would only show the session already on screen is noise. Direct
   // lineage still makes it useful when the current agent itself has one session.
   // A filter the reader chose is the exception: hiding the rail would take the
-  // filter control away with it, leaving no way back to a wider list.
-  const filterIsDefault = agentIds.length <= 1 && (agentIds[0] ?? '') === (current.agentId ?? '')
-  if (Math.max(total, rows.length) < 2 && !hasFamily && filterIsDefault) return null
+  // filter control away with it, leaving no way back to a wider list. That has to
+  // come from `filterTouched` and not from comparing `agentIds` against the open
+  // session — filtering to agent B and then opening B's only session lands on a
+  // filter that LOOKS like the default while still being the reader's own.
+  if (Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched) return null
 
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
