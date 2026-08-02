@@ -28,6 +28,7 @@ import {
 } from '../src/agents/memory.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/agents/memory-dreamer.js'
+import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 
 const silent = { info() {}, warn() {} }
 
@@ -1507,6 +1508,22 @@ describe('DreamRunner skill mining (D-3)', () => {
     await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
     expect(events.filter((event) => event.type === 'memory.dream.skill_accepted')).toHaveLength(1)
     expect(withSkillAcceptance).toHaveBeenCalledOnce()
+  })
+
+  it('binds skill acceptance to the reviewed staged bytes (same-bytes review fence)', async () => {
+    const { dir, runner, dreamId } = await mining(grounded)
+    const staged = join(dir, 'memory-dreams', dreamId, 'skills', 'deploy-staging')
+    const token = (await inspectLocalSkillSource(staged)).sha256
+
+    // A stale/incorrect token is refused before the skill is published.
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging', `sha256:${'0'.repeat(64)}`)).rejects.toThrow(
+      /re-review/i
+    )
+
+    // The exact reviewed digest accepts (proving the failed attempt left the
+    // candidate reviewable).
+    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging', token)
+    expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
   })
 
   it('an accepted skill survives discarding the dream it came from', async () => {

@@ -49,6 +49,7 @@ import {
   type TrustedOrganizationSkillTarget
 } from './memory-dreamer.js'
 import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
+import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
 
 /**
  * `DreamRunner` — the daemon's dream-job engine (design:
@@ -1148,7 +1149,7 @@ export class DreamRunner {
   /** Accept a mined skill by publishing an immutable bounded local-source
    * revision under the daemon-owned agent root. Workspace materialization is
    * deferred to the unified installer and the warm host is fenced first. */
-  async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
+  async skillAccept(agentId: string, dreamId: string, name: string, reviewToken?: string): Promise<DreamInfo> {
     this.assertStagedContentAllowed()
     const dir = this.dirFor(agentId)
     return this.withLock(agentId, async () => {
@@ -1157,6 +1158,16 @@ export class DreamRunner {
       if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was already dismissed')
 
       const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
+      // Same-bytes review fence (task #36 Phase B): bind acceptance to the exact
+      // staged skill bytes the caller reviewed. inspectLocalSkillSource uses the
+      // same canonical no-follow walker + digest as the publish snapshot, so any
+      // change to the staged skill since review yields a different digest and
+      // forces a re-review instead of accepting un-reviewed bytes.
+      if (reviewToken !== undefined && (await inspectLocalSkillSource(staged)).sha256 !== reviewToken) {
+        throw new DreamStateError(
+          'the staged skill changed since it was reviewed; re-review the current skill before accepting'
+        )
+      }
       const publish = async (): Promise<void> => {
         await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged, name })
       }
