@@ -110,14 +110,14 @@ async function setup(opts: {
   ensureMemory(dir, 'bot')
   await writeMemoryFile(dir, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
   const store = new FakeStore()
-  const prompts: { systemPrompt: string; prompt: string }[] = []
+  const prompts: { systemPrompt: string; prompt: string; inputDir: string }[] = []
   const runner = new DreamRunner({
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
     operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
-    extract: async (agentId, systemPrompt, prompt, signal) => {
-      prompts.push({ systemPrompt, prompt })
+    extract: async (agentId, systemPrompt, prompt, signal, context) => {
+      prompts.push({ systemPrompt, prompt, inputDir: context.inputDir })
       if (opts.extractionResult) return opts.extractionResult
       const output = opts.extract ? await opts.extract(agentId, systemPrompt, prompt, signal) : PROPOSAL
       return { output }
@@ -159,8 +159,13 @@ describe('DreamRunner pipeline', () => {
     expect(done.status).toBe('completed')
     expect(done.usage?.inputBytes).toBeGreaterThan(0)
 
-    // Prompt carried the store and the transcript as untrusted data.
-    expect(prompts[0]?.prompt).toContain('please use tabs')
+    // Inputs are materialized as files the model explores with its own tools:
+    // the transcript lands in sessions/<id>.md, the memory snapshot at the input
+    // root, and the prompt points at them under the untrusted-data system policy.
+    const inputDir = prompts[0]!.inputDir
+    expect(await readFile(join(inputDir, 'sessions', 'sess-1.md'), 'utf8')).toContain('please use tabs')
+    expect(await readFile(join(inputDir, 'prefs.md'), 'utf8')).toContain('uses tabs')
+    expect(prompts[0]?.prompt).toContain('sess-1')
     expect(prompts[0]?.systemPrompt).toContain('memory dreamer')
 
     // Live store untouched; staged output holds the rebuilt store.
@@ -1526,31 +1531,35 @@ describe('DreamRunner skill mining — review findings', () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     ensureMemory(dir, 'bot')
     const prompts: string[] = []
+    let inputDir = ''
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       operationPolicy: 'test-only',
       store,
-      extract: async (_a, _s, prompt) => {
+      extract: async (_a, _s, prompt, _signal, context) => {
         prompts.push(prompt)
+        inputDir = context.inputDir
         return { output: opts.proposal ?? proposalWith([candidate()]) }
       },
       log: silent
     })
     const started = await runner.start('a1', { trigger: 'manual' })
     const done = await settle(store, started.dreamId)
-    return { dir, runner, store, prompts, dreamId: started.dreamId, done }
+    return { dir, runner, store, prompts, inputDir, dreamId: started.dreamId, done }
   }
 
-  it('feeds tool titles into the mining prompt, and never tool bodies', async () => {
+  it('feeds tool titles into the session files the miner reads, and never tool bodies', async () => {
     // A procedure expressed only through repeated commands is invisible in
-    // conversational text — the miner must see the trajectory.
+    // conversational text — the miner must see the trajectory. Tool titles land
+    // in the materialized session file the miner explores with its own tools.
     const store = new TwoSession()
     store.rows = [{ sender: 'user-1', text: 'ship it' }]
     store.toolRows = [{ sender: 'agent', text: 'Bash(npm run deploy)', kind: 'tool' }]
-    const { prompts } = await mine({ store })
-    expect(prompts[0]).toContain('[tool] Bash(npm run deploy)')
-    expect(prompts[0]).toContain('ship it')
+    const { inputDir } = await mine({ store })
+    const session = await readFile(join(inputDir, 'sessions', 'sess-1.md'), 'utf8')
+    expect(session).toContain('[tool] Bash(npm run deploy)')
+    expect(session).toContain('ship it')
   })
 
   it('does not read tool rows at all when mining is off', async () => {

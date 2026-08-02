@@ -37,7 +37,9 @@ import {
   withMemoryDirLock
 } from './memory.js'
 import {
-  buildDreamPrompt,
+  buildDreamExplorationPrompt,
+  dreamSessionFileName,
+  renderDreamSessionFile,
   dreamSystemPrompt,
   MAX_SKILL_BODY_BYTES,
   parseDreamProposal,
@@ -175,7 +177,7 @@ export interface DreamRunnerDeps {
     systemPrompt: string,
     prompt: string,
     signal: AbortSignal,
-    context: { dreamId: string; trigger: DreamTrigger; sessionIds: string[] }
+    context: { dreamId: string; trigger: DreamTrigger; sessionIds: string[]; inputDir: string }
   ): Promise<DreamExtractionResult>
   /** Metadata-only lifecycle tap. Observer failures are contained by the
    *  runner and can never change the job outcome. */
@@ -435,11 +437,24 @@ export class DreamRunner {
         )
       }))
 
-      // Snapshot copy for inspection (input/ is never read back by the pipeline).
+      // Materialize the dream inputs as FILES the model explores with its own
+      // read-only tools (task #36): the memory snapshot at input/ root, each mined
+      // transcript at input/sessions/<id>.md (already secret-hygiene filtered by
+      // dreamTranscriptText). input/ IS the dream's working directory now — it is
+      // read back, by the model, not the pipeline.
       const base = this.dreamDir(agentId, dreamId)
-      await fsp.mkdir(join(base, 'input'), { recursive: true })
+      const inputDir = join(base, 'input')
+      const sessionsDir = join(inputDir, 'sessions')
+      await fsp.mkdir(sessionsDir, { recursive: true })
       for (const file of files) {
-        await fsp.writeFile(join(base, 'input', file.name), file.content, 'utf8')
+        await fsp.writeFile(join(inputDir, file.name), file.content, 'utf8')
+      }
+      const materializedSessionIds: string[] = []
+      for (const transcript of transcripts) {
+        const body = renderDreamSessionFile(transcript)
+        if (!body.trim()) continue
+        await fsp.writeFile(join(sessionsDir, `${dreamSessionFileName(transcript.sessionId)}.md`), body, 'utf8')
+        materializedSessionIds.push(transcript.sessionId)
       }
 
       let organizationKnowledge: KnowledgeSearchItem[] = []
@@ -460,9 +475,8 @@ export class DreamRunner {
       }
       const managedSkills = mineSkills ? (this.deps.managedSkillsFor?.(agentId) ?? []) : []
 
-      const prompt = buildDreamPrompt({
-        files,
-        transcripts,
+      const prompt = buildDreamExplorationPrompt({
+        sessionIds: materializedSessionIds,
         mineSkills,
         organizationKnowledge,
         managedSkills,
@@ -474,7 +488,7 @@ export class DreamRunner {
       // A cancel that landed before extraction wins: skip the expensive call.
       if (this.deps.store.getDream(agentId, dreamId)?.status !== 'running') return
 
-      const extracted = await this.extractWithBackstop(dream, prompt, signal, mineSkills)
+      const extracted = await this.extractWithBackstop(dream, prompt, signal, inputDir, mineSkills)
 
       // A cancel that landed mid-extraction wins: drop the output unstaged. This
       // also covers the backstop firing (extraction ignored the cancel and never
@@ -575,6 +589,7 @@ export class DreamRunner {
     dream: DreamInfo,
     prompt: string,
     signal: AbortSignal,
+    inputDir: string,
     mineSkills = false
   ): Promise<({ abandoned: false } & DreamExtractionResult) | { abandoned: true; output: '' }> {
     const graceMs = this.deps.cancelGraceMs ?? 30_000
@@ -582,7 +597,8 @@ export class DreamRunner {
       .extract(dream.agentId, dreamSystemPrompt(mineSkills), prompt, signal, {
         dreamId: dream.dreamId,
         trigger: dream.trigger,
-        sessionIds: dream.sessionIds
+        sessionIds: dream.sessionIds,
+        inputDir
       })
       .then((result) => ({ abandoned: false as const, ...result }))
     let timer: ReturnType<typeof setTimeout> | undefined
