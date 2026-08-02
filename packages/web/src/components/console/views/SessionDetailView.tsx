@@ -639,7 +639,6 @@ function SessionParticipantsHover({
           id={tooltipId}
           role="tooltip"
           tabIndex={0}
-          aria-label={`${participants.length} session participants`}
           onKeyDown={dismissOnEscape}
           className="block max-h-[min(360px,calc(100vh-120px))] overflow-y-auto overscroll-contain rounded-lg border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-lg) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
         >
