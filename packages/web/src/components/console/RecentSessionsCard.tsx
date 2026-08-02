@@ -11,7 +11,7 @@ import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
-import { sessionChannelDisplay, type Session } from '@/lib/data'
+import { isMergedConversationRow, sessionChannelDisplay, type Session } from '@/lib/data'
 
 export function Card({
   title,
@@ -122,7 +122,13 @@ export function RecentSessionsCard({
             return (
               <Link
                 key={s.id}
-                href={orgPath(`/sessions/${s.id}`)}
+                // These rows are conversations, so a multi-participant one goes to
+                // the merged page rather than to whichever member represents it.
+                href={
+                  isMergedConversationRow(s)
+                    ? orgPath(`/conversations/${encodeURIComponent(s.conversationKey!)}`)
+                    : orgPath(`/sessions/${s.id}`)
+                }
                 className={`row click grid-cols-[1fr_auto] gap-3 ${rowClassName ?? ''}`}
               >
                 <span className="min-w-0">
