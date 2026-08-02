@@ -87,6 +87,9 @@ async function handlePrompt(id, params) {
     const append = sessionMeta.get(params.sessionId)?.systemPrompt?.append ?? null
     update(params.sessionId, textChunk(`sysmeta:${JSON.stringify(append)}`))
   }
+  if (p.echoConfigOptions) {
+    update(params.sessionId, textChunk(`config:${JSON.stringify(sessionOptions.get(params.sessionId) ?? [])}`))
+  }
 
   // Scripted stream. Default = a single echo chunk (keeps simple profiles terse).
   const updates = p.updates ?? [textChunk(`echo:${input}`)]

@@ -621,7 +621,7 @@ export interface AgentRecord {
   showStatusBar: boolean // from runtimeOverrides.showStatusBar (default true)
   fastMode: boolean | null // from runtimeOverrides.fastMode (null ⇒ runtime default)
   permissionMode: string | null // from runtimeOverrides.permissionMode (null ⇒ runtime default)
-  approvalsReviewer?: ApprovalsReviewer | null // from runtimeOverrides.approvalsReviewer
+  approvalsReviewer: ApprovalsReviewer | null // from runtimeOverrides.approvalsReviewer
   allowRuntimeChangesInChat: boolean // from runtimeOverrides (default false)
   pause: boolean | null // from runtimeOverrides.pause (null ⇒ not paused) (#288)
   env: Record<string, string> // from runtimeOverrides.env ({} when unset)

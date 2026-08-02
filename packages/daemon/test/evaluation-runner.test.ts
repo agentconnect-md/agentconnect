@@ -169,6 +169,7 @@ describe('EvaluationRunner', () => {
       scenarioPath,
       JSON.stringify({
         prompt: {
+          echoConfigOptions: true,
           requestPermission: {
             options: [
               { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
@@ -176,7 +177,19 @@ describe('EvaluationRunner', () => {
             ]
           },
           updates: [{ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '$INPUT' } }]
-        }
+        },
+        configOptions: [
+          {
+            id: 'approvals_reviewer',
+            category: '_approvals_reviewer',
+            type: 'select',
+            currentValue: 'user',
+            options: [
+              { value: 'user', name: 'User' },
+              { value: 'auto_review', name: 'Auto-review' }
+            ]
+          }
+        ]
       })
     )
     writeFileSync(
@@ -204,7 +217,8 @@ describe('EvaluationRunner', () => {
         runtime: 'codex-acp',
         workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
         integrations: [],
-        output: { mode: 'medium' }
+        output: { mode: 'medium' },
+        approvalsReviewer: 'auto_review'
       })
     )
     const runner = new RawAcpEvaluationRunner({
@@ -223,12 +237,14 @@ describe('EvaluationRunner', () => {
       return
     }
     expect(result.status).toBe('passed')
+    expect(result.output).toContain('"category":"_approvals_reviewer"')
+    expect(result.output).toContain('"currentValue":"auto_review"')
     expect(result.output).toContain('perm:{"outcome":"selected","optionId":"allow"}')
     expect(result.output).toContain('echo:hello')
     const manifest = EvaluationRunManifestSchema.parse(JSON.parse(readFileSync(result.manifestPath, 'utf8')))
     expect(manifest).toMatchObject({
       treatment: { name: 'raw-acp', memory: 'off', collaboration: 'off' },
-      subject: { settings: { execution: 'raw-acp' } }
+      subject: { settings: { execution: 'raw-acp', approvalsReviewer: 'auto_review' } }
     })
     const events = readFileSync(result.eventsPath, 'utf8')
       .trim()
@@ -240,6 +256,7 @@ describe('EvaluationRunner', () => {
       'permission.requested',
       'permission.auto_allowed',
       'permission.resolved',
+      'acp.update',
       'acp.update',
       'acp.update',
       'turn.completed'
