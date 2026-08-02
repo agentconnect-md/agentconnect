@@ -18,7 +18,7 @@ import {
   agentLabel,
   modelLabel,
   preferredModelFor,
-  unavailableRuntimeIds
+  loginRequiredRuntimeIds
 } from '@/lib/data'
 import type { Agent, DaemonRow } from '@/lib/data'
 import type { DaemonConnectDto } from '@/lib/api'
@@ -375,13 +375,12 @@ function ConfigureAgent({
   onSkip: () => void
 }) {
   const runtimeIds = daemon.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
-  // Reported but unlaunchable (installed on the new daemon, logged out) — offered
-  // disabled, and never the default: a first agent pinned to one could not answer.
-  const unavailableRuntimes = unavailableRuntimeIds(daemon)
-  const firstUsableRuntime = runtimeIds.find((id) => !unavailableRuntimes.includes(id)) ?? runtimeIds[0] ?? ''
-  const [runtime, setRuntime] = useState('')
-  const effectiveRuntime =
-    runtimeIds.includes(runtime) && !unavailableRuntimes.includes(runtime) ? runtime : firstUsableRuntime
+  // Logged-out runtimes are marked, not blocked; the default just prefers a signed-in
+  // one so a first agent starts answerable where the daemon allows it.
+  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
+  const defaultRuntime = runtimeIds.find((id) => !runtimesNeedingLogin.includes(id)) ?? runtimeIds[0] ?? ''
+  const [runtime, setRuntime] = useState('') // '' = untouched
+  const effectiveRuntime = runtime && runtimeIds.includes(runtime) ? runtime : defaultRuntime
   const models = daemon.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
   const [model, setModel] = useState('')
   // Keep the selection valid as the runtime (and so the model set) changes.
@@ -421,7 +420,7 @@ function ConfigureAgent({
             <RuntimeSelect
               value={effectiveRuntime}
               options={runtimeIds}
-              unavailable={unavailableRuntimes}
+              needsLogin={runtimesNeedingLogin}
               onChange={(next) => {
                 setRuntime(next)
                 setModel('')

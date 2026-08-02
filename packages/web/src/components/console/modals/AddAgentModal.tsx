@@ -8,7 +8,7 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
-  unavailableRuntimeIds,
+  loginRequiredRuntimeIds,
   agentSlugFinalize,
   agentSlugSanitize,
   effortChoicesFor,
@@ -189,7 +189,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [displayName, setDisplayName] = useState('')
   // New agents default to a random glyph+color (product default — not runtime-branded).
   const [icon, setIcon] = useState<AgentIcon>(() => randomGlyphIcon())
-  const [runtime, setRuntime] = useState(FALLBACK_RUNTIME_IDS[0]!)
+  const [runtime, setRuntime] = useState('') // '' = untouched; the daemon supplies the default
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState('')
   const [fastMode, setFastMode] = useState(false)
@@ -338,15 +338,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // that round-trip back to the launch key — so a created agent actually resolves.
   // No daemon (or none reported) ⇒ the static fallback list.
   const runtimeIds = daemon?.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
-  // Reported but unlaunchable (installed, logged out) — offered disabled, and never
-  // the fallback: an agent pinned to one could not take a session.
-  const unavailableRuntimes = unavailableRuntimeIds(daemon)
-  const firstUsableRuntime = runtimeIds.find((id) => !unavailableRuntimes.includes(id)) ?? runtimeIds[0] ?? ''
-  // Keep the selection valid as the option set changes with the daemon. The picker
-  // can't hand back an unavailable id, so one only ever arrives here as the initial
-  // seed — fall back rather than carry it.
-  const effectiveRuntime =
-    runtimeIds.includes(runtime) && !unavailableRuntimes.includes(runtime) ? runtime : firstUsableRuntime
+  // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
+  // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
+  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
+  // …but the DEFAULT prefers a signed-in one, mirroring how auto-placement picks a
+  // preset's runtime. Falls through to the first reported id when all are logged out.
+  const defaultRuntime = runtimeIds.find((id) => !runtimesNeedingLogin.includes(id)) ?? runtimeIds[0] ?? ''
+  // `runtime` is '' until the user picks one, so the default above applies to a fresh
+  // form while an explicit choice — logged out or not — always survives.
+  const effectiveRuntime = runtime && runtimeIds.includes(runtime) ? runtime : defaultRuntime
   // Models come from the chosen daemon's reported capabilities for this runtime.
   // There is no separate "Default" entry: with real models known, the picker
   // preselects the runtime's resolved default (else the first model) and the
@@ -974,7 +974,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   <RuntimeSelect
                     value={effectiveRuntime}
                     options={runtimeIds}
-                    unavailable={unavailableRuntimes}
+                    needsLogin={runtimesNeedingLogin}
                     onChange={(nextRuntime) => {
                       setRuntime(nextRuntime)
                       setEffort('')

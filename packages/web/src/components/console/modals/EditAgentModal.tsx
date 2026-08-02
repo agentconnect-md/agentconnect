@@ -6,7 +6,7 @@ import {
   effortField,
   effortLabel,
   FALLBACK_RUNTIME_IDS,
-  unavailableRuntimeIds,
+  loginRequiredRuntimeIds,
   fastModeAvailableFor,
   modelCapability,
   modelLabel,
@@ -316,11 +316,10 @@ export default function EditAgentModal({
   const reportedRuntimeIds = daemon?.runtimeModels.map((r) => r.runtime) ?? []
   const runtimeIds = reportedRuntimeIds.length ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
   const runtimeOptions = runtime && !runtimeIds.includes(runtime) ? [runtime, ...runtimeIds] : runtimeIds
-  // Reported but unlaunchable (installed on the host, logged out) — offered disabled
-  // so a move can't repin the agent onto a runtime that could never take a session.
-  // The agent's OWN runtime is exempt (RuntimeSelect never disables the current value):
-  // an unusable stored runtime is a state to show and fix, not one to hide.
-  const unavailableRuntimes = unavailableRuntimeIds(daemon)
+  // Runtimes the daemon reports as logged out — marked in the picker, never blocked.
+  // An agent may legitimately sit on one (docs/designs/preset-agents.md §3.2), so this
+  // surfaces the state on the choice rather than taking the choice away.
+  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
   const runtimeMeta = acpRuntime(acpRegistry, runtime)
   // Models are only what the daemon reports for this runtime — advertised ids
   // verbatim, never a synthesized "Default" entry: an agent without an explicit
@@ -724,7 +723,7 @@ export default function EditAgentModal({
                   <RuntimeSelect
                     value={runtime}
                     options={runtimeOptions}
-                    unavailable={unavailableRuntimes}
+                    needsLogin={runtimesNeedingLogin}
                     onChange={onRuntimeChange}
                   />
                 </div>
