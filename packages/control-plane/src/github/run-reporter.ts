@@ -12,7 +12,7 @@
  * projection metadata only.
  */
 import { randomUUID } from 'node:crypto'
-import { GITHUB_REQUEST_REVIEW_ACTION, HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/protocol'
+import { GITHUB_REQUEST_REVIEW_ACTION } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import { OrgId, type HookId } from '../domain/ids.js'
 import type {
@@ -641,7 +641,11 @@ export class GithubRunReporter {
     }
     const skippedLabel = hookSkippedCheckLabel(run?.reason, this.deps.appSlug) ?? undefined
     const skippedGuidance = hookSkippedCheckGuidance(run?.reason, this.deps.appSlug) ?? undefined
-    const requestReviewAction = run?.reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED || undefined
+    const requestReviewAction =
+      projection.tombstonedAt === null &&
+      (projection.desiredState === 'skipped' || projection.desiredState === 'failure')
+        ? true
+        : undefined
     const fallback = {
       ...(skippedLabel ? { skippedLabel } : {}),
       ...(skippedGuidance ? { skippedGuidance } : {}),
@@ -1022,15 +1026,16 @@ function checkPayload(
     title: checkOutputTitle(state, associationError, presentation),
     summary: normalizedSummary
   }
-  const actions: CheckAction[] = presentation.requestReviewAction
-    ? [
-        {
-          label: 'Request review',
-          description: 'Start AgentConnect review',
-          identifier: GITHUB_REQUEST_REVIEW_ACTION
-        }
-      ]
-    : []
+  const actions: CheckAction[] =
+    presentation.requestReviewAction && (state === 'skipped' || state === 'failure')
+      ? [
+          {
+            label: 'Request review',
+            description: 'Start AgentConnect review',
+            identifier: GITHUB_REQUEST_REVIEW_ACTION
+          }
+        ]
+      : []
   const link = presentation.detailsUrl ? { details_url: presentation.detailsUrl } : {}
   if (state === 'queued' || state === 'in_progress') return { status: state, output, actions, ...link }
   return {

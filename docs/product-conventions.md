@@ -574,6 +574,11 @@ AgentConnect informational review Check in that App suite, with the same live ma
 authorization and revision fences as a single-Check rerun. It does not depend on the
 integration's ordinary event cadence.
 
+Every active informational review Check completed as `skipped` or `failure` offers a
+`Request review` action. It targets only that Check's Agent and opens a new generation
+for the same revision after the same live maintainer authorization and revision fences.
+A retired Check offers no action because it no longer has a live integration to run.
+
 ## GitHub maintainer trigger authorization
 
 GitHub Issue and pull-request integrations treat current repository permission—not the
