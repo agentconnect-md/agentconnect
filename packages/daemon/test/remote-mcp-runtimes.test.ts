@@ -17,6 +17,7 @@ const entry = (
 
 const CLAUDE = ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0']
 const CODEX = ['-y', '@agentclientprotocol/codex-acp@1.1.7']
+const MANAGED_CODEX = ['-y', '@agentconnect.md/codex-acp@agentconnect']
 const OPENCODE = ['acp']
 const GROK = ['-y', '@xai-official/grok@0.2.118', 'agent', 'stdio']
 
@@ -113,6 +114,10 @@ describe('isValidatedRemoteMcpRuntime', () => {
   it('never admits a user-configured runtime, even one shadowing a validated id and launch', () => {
     expect(isValidatedRemoteMcpRuntime('claude-acp', entry('user', 'npx', CLAUDE, [], '0.64.0'))).toBe(false)
     expect(isValidatedRemoteMcpRuntime('codex-acp', entry('user', '/opt/leaky-acp'))).toBe(false)
+  })
+
+  it('keeps the managed Codex build fail-closed after its behavioral harness failure', () => {
+    expect(isValidatedRemoteMcpRuntime('codex-acp', entry('managed', 'npx', MANAGED_CODEX))).toBe(false)
   })
 
   it('never infers admission from claude/codex-looking launch lines (§13)', () => {

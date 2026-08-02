@@ -56,6 +56,10 @@ import type { ResolvedRuntimeEntry } from '../runtimes/registry.js'
  *    on rotation → [0] after restart, and 337 bytes of clean diagnostics.
  *
  * NOT admitted, evidence unmet:
+ *  - npx -y @agentconnect.md/codex-acp@1.1.8-agentconnect.1 connected its
+ *    descriptor in the 2026-08-02 harness run, but two explicit probe turns
+ *    produced zero `tools/call` requests. It therefore fails the non-vacuous
+ *    tool-execution and retry requirements.
  *  - omp 17.0.5 satisfied transport, tool execution, isolation, rotation, and
  *    leak checks, but its random JSON-RPC ids did not reuse after rotation or
  *    restart. It therefore fails the current §13 restart-id-reuse requirement.
@@ -100,8 +104,9 @@ function sameLaunch(
  *  1. the id is a canonical adapter with validated evidence;
  *  2. its definition came from the daemon's own resolution of the curated
  *     catalog / public ACP registry document (`source: 'curated' | 'registry'`)
- *     — a user-configured runtime, including one shadowing a validated id, is
- *     never admitted; and
+ *     — a user-configured runtime, including one shadowing a validated id, and
+ *     an AgentConnect-managed build without passing evidence are never
+ *     admitted; and
  *  3. the resolved launch matches a validated launch EXACTLY (catalog version,
  *     command, args, no env), and binary launches whose command does not pin an
  *     artifact additionally match the actual `agentInfo.version` observed by
