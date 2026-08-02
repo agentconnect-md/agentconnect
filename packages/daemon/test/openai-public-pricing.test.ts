@@ -18,11 +18,12 @@ describe('estimateOpenAiTurnCost', () => {
     expect(estimate.ok && estimate.amount).toBeCloseTo(0.315)
   })
 
-  it('uses total request input, including cache reads, for the long-context threshold', () => {
+  it('uses explicit request input for the long-context threshold', () => {
     const estimate = estimateOpenAiTurnCost('gpt-5.4', {
       inputTokens: 250_000,
       cachedReadTokens: 30_000,
-      outputTokens: 10_000
+      outputTokens: 10_000,
+      tierInputTokens: 280_000
     })
     expect(estimate).toMatchObject({ ok: true, longContext: true })
     if (estimate.ok) expect(estimate.amount).toBeCloseTo(1.49)
@@ -32,10 +33,21 @@ describe('estimateOpenAiTurnCost', () => {
     const estimate = estimateOpenAiTurnCost('gpt-5.4', {
       inputTokens: 250_000,
       cachedReadTokens: 22_000,
-      outputTokens: 0
+      outputTokens: 0,
+      tierInputTokens: 272_000
     })
     expect(estimate).toMatchObject({ ok: true, longContext: false })
     if (estimate.ok) expect(estimate.amount).toBeCloseTo(0.6305)
+  })
+
+  it('does not infer long context from a multi-request ACP turn aggregate', () => {
+    const estimate = estimateOpenAiTurnCost('gpt-5.6-sol', {
+      inputTokens: 227_000,
+      cachedReadTokens: 6_480_000,
+      outputTokens: 19_000
+    })
+    expect(estimate).toMatchObject({ ok: true, longContext: false })
+    if (estimate.ok) expect(estimate.amount).toBeCloseTo(4.945)
   })
 
   it('uses GPT-5.6 public cache-write pricing when the adapter supplies that bucket', () => {
@@ -46,7 +58,7 @@ describe('estimateOpenAiTurnCost', () => {
       outputTokens: 5_000
     })
     if (!estimate.ok) throw new Error(estimate.reason)
-    expect(estimate.amount).toBeCloseTo(0.36125)
+    expect(estimate.amount).toBeCloseTo(0.289)
   })
 
   it('still estimates GPT-5.6 when codex-acp omits the cache-write bucket', () => {
@@ -56,7 +68,7 @@ describe('estimateOpenAiTurnCost', () => {
       outputTokens: 5_000
     })
     if (!estimate.ok) throw new Error(estimate.reason)
-    expect(estimate.amount).toBeCloseTo(0.33)
+    expect(estimate.amount).toBeCloseTo(0.264)
   })
 
   it('supports only explicit aliases and never prefix-guesses a future model', () => {
@@ -102,6 +114,10 @@ describe('estimateOpenAiTurnCost', () => {
       reason: 'usage_incomplete'
     })
     expect(estimateOpenAiTurnCost('gpt-5.4-mini', { inputTokens: -1, outputTokens: 1 })).toEqual({
+      ok: false,
+      reason: 'usage_invalid'
+    })
+    expect(estimateOpenAiTurnCost('gpt-5.6-sol', { inputTokens: 1, outputTokens: 1, tierInputTokens: -1 })).toEqual({
       ok: false,
       reason: 'usage_invalid'
     })

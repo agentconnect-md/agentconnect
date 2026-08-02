@@ -1057,8 +1057,8 @@ export class AcpHost {
   }
 
   /** Drive one turn to completion. Returns the stop reason plus the agent's token
-   *  `usage` when the runtime reports it (ACP's experimental per-turn usage, which
-   *  carries session-cumulative counts) — `undefined` when it doesn't. */
+   *  `usage` when the runtime reports it. Usage semantics are adapter-defined;
+   *  AgentConnect's managed Codex adapter returns one ACP-prompt delta. */
   async prompt(sessionId: string, blocks: ContentBlock[]): Promise<{ stopReason: StopReason; usage?: Usage }> {
     const res = await this.conn!.agent.request(methods.agent.session.prompt, { sessionId, prompt: blocks })
     return { stopReason: res.stopReason, usage: res.usage ?? undefined }
