@@ -1110,6 +1110,13 @@ interface Pending {
   /** Interactive IM platforms use staged answer delivery; webchat/hooks keep their
    * existing transport-specific contracts and remain outside the initial rollout. */
   stageAnswer: boolean
+  /** Turn-final context refresh for webchat conversations (webchat-multi-agents.md
+   * §5.4): the browser stream stays LIVE (no answer staging) — only the canonical
+   * post commit (reply record + rd/webchat-post) is fenced. Invalidation comes
+   * from conversation posts other participants produced (relay `context` ops
+   * recorded into the shared transcript); a single-agent conversation receives
+   * none, so the check is inert there. */
+  webchatRefresh: boolean
   /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
    *  requests may carry only this opaque id, regardless of which ACP path is used. */
   builtinSystemToolCallIds: Set<string>
@@ -10432,6 +10439,7 @@ export class Daemon {
           msg.platform === 'telegram' ||
           msg.platform === 'discord' ||
           msg.platform === 'feishu'),
+      webchatRefresh: this.cfg.features.turnFinalContextRefresh && !!webchat && msg.platform === 'webchat',
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
       agentId,
@@ -10616,7 +10624,7 @@ export class Daemon {
       let baseRevision =
         handled.contextRevision ?? this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
       let providerCheckpoint = handled.providerCheckpoint
-      if (p.stageAnswer) {
+      if (p.stageAnswer || p.webchatRefresh) {
         // Recheck observations that landed while attachments, memory recall, or
         // runtime ready gates were awaiting. Queue entries remain untouched until
         // every gate above has succeeded.
@@ -10730,7 +10738,7 @@ export class Daemon {
           }
         }
 
-        if (!p.stageAnswer) break
+        if (!p.stageAnswer && !p.webchatRefresh) break
 
         const refresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, true)
         providerCheckpoint = refresh.providerCheckpoint ?? providerCheckpoint
@@ -10749,13 +10757,17 @@ export class Daemon {
         // Recheck once more after provider I/O reconciliation returned. This is the
         // local commit fence that catches gateway events arriving during that read.
         const lateEvents = this.localInvalidatingEvents(p, refresh.revision)
-        const invalidatingEvents = [...refresh.events, ...lateEvents].sort(
-          (a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq
-        )
+        const invalidatingEvents = [...refresh.events, ...lateEvents]
+          // Webchat: a co-hosted participant dispatching the SAME user turn bumps
+          // the shared trigger row's revision (recipient-delivery write), which
+          // would re-surface this agent's OWN trigger as a "new" message. The
+          // trigger's canonical ts is carried on the message — exclude it.
+          .filter((event) => !p.webchatRefresh || msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
+          .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
         const finalRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
 
         if (invalidatingEvents.length === 0) {
-          this.acceptStagedAttempt(p)
+          if (p.stageAnswer) this.acceptStagedAttempt(p)
           if (generation > 0) defaultTurnOutputMetrics.regeneration(p.platform, 'accepted')
           defaultTurnOutputMetrics.generations(generation + 1)
           baseRevision = finalRevision
@@ -10763,6 +10775,21 @@ export class Daemon {
         }
 
         this.discardStagedAttempt(p)
+        if (p.webchatRefresh && p.webchat) {
+          // The live stream already showed the discarded candidate (webchat
+          // streams are never staged, §5.4) — tell the browser to collapse the
+          // lane in place; the replacement generation streams under the SAME
+          // turnId. The canonical post must carry only the accepted text.
+          p.webchat.replyText = ''
+          if (!p.webchat.doneSent) {
+            p.webchat.sink.output({
+              conversationId: p.webchat.conversationId,
+              turnId: p.webchat.turnId,
+              index: p.webchat.index++,
+              event: { kind: 'superseded', generation: generation + 1 }
+            })
+          }
+        }
         this.emitEvaluation({
           type: 'turn.context_changed',
           agentId,
@@ -10794,6 +10821,30 @@ export class Daemon {
           defaultTurnOutputMetrics.contextChurnExhausted(p.platform)
           defaultTurnOutputMetrics.generations(generation + 1)
           finishEvaluation('turn.cancelled', { reason: 'context_churn', generations: generation + 1 })
+          if (p.webchat) {
+            // No canonical post: the churned candidate is never committed or
+            // fanned out. Close the browser turn explicitly — a bare return
+            // would leave the stream open and the composer stuck busy.
+            p.webchat.replyText = ''
+            if (!p.webchat.doneSent) {
+              p.webchat.doneSent = true
+              p.webchat.sink.output({
+                conversationId: p.webchat.conversationId,
+                turnId: p.webchat.turnId,
+                index: p.webchat.index++,
+                event: {
+                  kind: 'message',
+                  text: '⚠️ The conversation kept changing while I was answering, so I stopped this reply. Ask again when it settles.'
+                }
+              })
+              p.webchat.sink.done({
+                conversationId: p.webchat.conversationId,
+                turnId: p.webchat.turnId,
+                stopReason: 'context_churn'
+              })
+            }
+            return null
+          }
           this.showActivity(replyConn, msg.channel, statusThread, '')
           if (p.conv instanceof FeishuConverger) this.enqueueApply(p, { kind: 'card-cancel' })
           if (queuedMatches.length === 0 && mode !== 'none') {

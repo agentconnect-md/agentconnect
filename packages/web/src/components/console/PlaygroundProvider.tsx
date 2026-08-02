@@ -131,6 +131,7 @@ type WebchatEvent =
   | { kind: 'tool_call'; toolCallId: string; title: string; status: string }
   | { kind: 'tool_update'; toolCallId: string; status: string }
   | { kind: 'session_info'; title: string }
+  | { kind: 'superseded'; generation: number }
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
@@ -331,6 +332,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           step,
           ...steps.slice(i + 1)
         ]
+        if (ev.kind === 'superseded') {
+          // Turn-final context refresh discarded the streamed candidate
+          // (webchat-multi-agents.md §5.4): break the lane with a marker so the
+          // replacement generation starts a fresh block instead of merging into
+          // the discarded text.
+          return [...steps, lane({ kind: 'plan', text: 'The conversation moved on — updating this answer…' })]
+        }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {
             return replaceAt(laneIndex, { ...last, text: last.text + ev.text, observedAtMs })
