@@ -866,7 +866,12 @@ export default function SessionDetailView() {
   } = useSWR(
     conversationKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, conversationKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId),
-    { refreshInterval: 30_000, revalidateOnFocus: false }
+    {
+      // A just-created conversation can beat the CP's event/session sync —
+      // poll fast until members resolve, then settle to the normal cadence.
+      refreshInterval: (latest) => (latest ? 30_000 : 5_000),
+      revalidateOnFocus: false
+    }
   )
   const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
   const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
@@ -1041,6 +1046,19 @@ export default function SessionDetailView() {
   // key-to-key navigation in the persistent layout can never act on the
   // previous conversation's leftover msgs/cursors.
   const [conversationLoadedKey, setConversationLoadedKey] = useState<string | null>(null)
+  // A resolver NULL that persists past the grace window is a real not-found
+  // (invisible or nonexistent, indistinguishable by design §7); within it,
+  // null is treated as still-loading so a just-created conversation racing
+  // event/session sync never flashes a premature not-found.
+  const [conversationUnresolved, setConversationUnresolved] = useState(false)
+  useEffect(() => {
+    if (!conversationKey || conversationRoster !== null) {
+      setConversationUnresolved(false)
+      return
+    }
+    const timer = window.setTimeout(() => setConversationUnresolved(true), 15_000)
+    return () => window.clearTimeout(timer)
+  }, [conversationKey, conversationRoster])
   const conversationMembersRef = useRef<{ sessionId: string; agentId: string; platform: string }[] | null>(null)
   // Merge sources in CANONICAL order — sessionId sort, decoupled from the
   // resolver's representative-first response, whose activity-based order is
@@ -1283,10 +1301,20 @@ export default function SessionDetailView() {
     // refresh must land where the live Playground already looks merged
     // (merged-conversation-view.md §5.3). channelId is the conversation id.
     const conversationId = (session?.participants?.length ?? 0) > 1 ? session?.channelId : undefined
-    const target = conversationId
-      ? orgPath(`/conversations/${encodeURIComponent(conversationId)}`)
-      : orgPath(`/sessions/${encodeURIComponent(realSessionId)}`)
-    router.replace(`${target}${window.location.search}`, {
+    if (conversationId) {
+      // ADDRESS BAR ONLY (Next shallow history update): a router.replace to
+      // /conversations/:key would remount into persisted conversation mode
+      // MID-STREAM — killing the live canvas and racing the CP's
+      // session_meta sync. The live view stays; only a real refresh loads
+      // the merged page.
+      window.history.replaceState(
+        null,
+        '',
+        `${orgPath(`/conversations/${encodeURIComponent(conversationId)}`)}${window.location.search}`
+      )
+      return
+    }
+    router.replace(`${orgPath(`/sessions/${encodeURIComponent(realSessionId)}`)}${window.location.search}`, {
       scroll: false
     })
   }, [
@@ -1702,7 +1730,18 @@ export default function SessionDetailView() {
       </div>
     )
   }
-  if (conversationKey && (conversationLoading || (!conversationRoster && !conversationError))) {
+  // `undefined` = first fetch in flight; `null` = the resolver ANSWERED empty
+  // (a just-created conversation racing event/session sync, or one the caller
+  // cannot see). Both keep the loading affordance — the fast poll above
+  // resolves the just-created case within seconds — but null never renders a
+  // premature not-found flash for a conversation that is about to exist.
+  if (
+    conversationKey &&
+    !conversationError &&
+    (conversationLoading ||
+      conversationRoster === undefined ||
+      (conversationRoster === null && !conversationUnresolved))
+  ) {
     return (
       <div className="wrap max-w-[880px] max-desktop:p-4">
         <LoadingState fill />
@@ -1710,6 +1749,7 @@ export default function SessionDetailView() {
     )
   }
   if (conversationKey && (conversationError || !conversationRoster || conversationRoster.sessions.length === 0)) {
+    // conversationError, a grace-expired null, or a resolved-but-empty roster.
     return (
       <div className="wrap max-w-[880px] max-desktop:p-4">
         <NotFound
