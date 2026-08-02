@@ -72,6 +72,10 @@ interface RailRow {
   platform: string
   title: string
   tooltip: string
+  /** Where the row goes. A multi-participant row is a CONVERSATION, and the merged
+   *  page is its only surfaced view (merged-conversation-view.md §5.3) — linking to
+   *  the member session instead would just bounce through the redirect. */
+  href: string
   session?: Session
 }
 
@@ -195,13 +199,19 @@ export function SessionRail({
   // One de-duplicated list ordered newest-first. The CP already orders its page by
   // `lastActivityAt`, so this only decides where the merged rows land. The live
   // current row comes last so it replaces its persisted twin without losing streamed state.
-  const rows = useMemo(
-    () =>
-      mergeCanonicalSessions([...sessions, ...(hydratedPins ?? []), current]).sort((a, b) =>
-        (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '')
-      ),
-    [sessions, current, hydratedPins]
-  )
+  //
+  // The open conversation is dropped from the listed rows by KEY rather than left
+  // to the id merge below. Both name the newest member, but the list row names the
+  // newest member *the filter still covers* — narrow the filter to one of two
+  // participants and the two ids part company, putting the open conversation on
+  // screen twice.
+  const rows = useMemo(() => {
+    const currentKey = current.conversationKey
+    const listed = currentKey ? sessions.filter((s) => s.conversationKey !== currentKey) : sessions
+    return mergeCanonicalSessions([...listed, ...(hydratedPins ?? []), current]).sort((a, b) =>
+      (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '')
+    )
+  }, [sessions, current, hydratedPins])
 
   const ordinaryRows = useMemo(
     () => (hasFamily ? rows.filter((session) => !relatedIds.has(session.id)) : rows),
@@ -231,11 +241,17 @@ export function SessionRail({
 
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
+    const id = canonicalSessionId(s)
     return {
-      id: canonicalSessionId(s),
+      // The SESSION id, even for a conversation row: it is what the pin store
+      // records and what `current` is matched against. Only the link differs.
+      id,
       platform: channel.platform,
       title: s.title,
       tooltip: `${s.title}\n${s.time} · ${channel.label}`,
+      href: s.conversationKey
+        ? orgPath(`/conversations/${encodeURIComponent(s.conversationKey)}`)
+        : orgPath(`/sessions/${encodeURIComponent(id)}`),
       session: s
     }
   }
@@ -245,7 +261,8 @@ export function SessionRail({
       id: relation.id,
       platform: relation.platform,
       title,
-      tooltip: title
+      tooltip: title,
+      href: orgPath(`/sessions/${encodeURIComponent(relation.id)}`)
     }
   }
   const isPinned = (sessionId: string) => pins.some((pin) => pin.id === sessionId)
@@ -260,7 +277,7 @@ export function SessionRail({
         }`}
       >
         <Link
-          href={orgPath(`/sessions/${encodeURIComponent(item.id)}`)}
+          href={item.href}
           title={item.tooltip}
           aria-current={on ? 'page' : undefined}
           onClick={(event) => {
@@ -409,10 +426,17 @@ function RailAgentFilter({
   // A restricted agent can own the open session while staying out of this viewer's
   // roster; show the id rather than dropping the chip and silently misdescribing
   // the list as unfiltered.
-  const chips = selected.map((id) => {
-    const agent = agents.find((a) => a.id === id)
-    return { id, label: agent ? agentLabel(agent) : id, agent }
-  })
+  //
+  // Both lists read alphabetically. Neither the roster nor the org agent list is
+  // ordered by anything the reader can see — activity reshuffles one and the API
+  // the other — so a filter that named the same agents twice in a row could still
+  // look different each time.
+  const chips = selected
+    .map((id) => {
+      const agent = agents.find((a) => a.id === id)
+      return { id, label: agent ? agentLabel(agent) : id, agent }
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
 
   useEffect(() => {
     if (!open) {
@@ -427,7 +451,9 @@ function RailAgentFilter({
   }, [open])
 
   const q = query.trim().toLowerCase()
-  const shown = agents.filter((agent) => agentLabel(agent).toLowerCase().includes(q))
+  const shown = agents
+    .filter((agent) => agentLabel(agent).toLowerCase().includes(q))
+    .sort((a, b) => agentLabel(a).localeCompare(agentLabel(b)))
 
   return (
     <div className="relative mb-[7px] flex flex-none flex-wrap items-center gap-[5px] px-[9px]">

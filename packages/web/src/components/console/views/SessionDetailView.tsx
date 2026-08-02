@@ -1300,11 +1300,18 @@ export default function SessionDetailView() {
   // the question being asked. A null query means the filter has nothing to say yet
   // (no session, and the reader has not touched it), so the org key stays null and
   // no page is fetched to be thrown away.
+  //
+  // GROUPED, because the filter is conversation-shaped: the flat view returns one
+  // row per member session, so the moment the filter names a whole roster a thread
+  // two agents worked in listed itself once per agent. One row per conversation is
+  // also what the rail was always showing — that only happened to be true while
+  // the filter named a single agent.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
   const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
     MOCK_MODE || !railQuery ? null : activeOrg?.id,
-    railQuery ?? {}
+    railQuery ?? {},
+    { grouped: true }
   )
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
@@ -2357,7 +2364,11 @@ export default function SessionDetailView() {
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
       <SessionRail
         sessions={railSessions}
-        current={session}
+        // In conversation mode the open row IS a conversation, so it has to say so:
+        // the grouped list identifies its rows by key, and a `current` merged in
+        // without one would overwrite the matching row with a bare session and
+        // send the reader back through the member→conversation redirect.
+        current={conversationMode && conversationKey ? { ...session, conversationKey } : session}
         total={railSessionTotal}
         agentIds={railFilter.agentIds}
         filterTouched={railFilter.touched}

@@ -12,6 +12,9 @@
 // on a thread two agents worked in, the rail's default question is "the other
 // threads these two worked in together", which is exactly what the CP answers for
 // a repeated `agentId` (merged-conversation-view.md §5.1 grouping).
+//
+// Order carries no meaning here — the CP's answer does not depend on it — so the
+// ids are held sorted to keep the state from churning as the roster reshuffles.
 
 export interface RailAgentFilter {
   /** Agents the rail's list is filtered to. Empty = every session the viewer can see. */
@@ -35,9 +38,11 @@ function sameIds(a: readonly string[], b: readonly string[]): boolean {
  */
 export function seedRailAgentFilter(chosen: RailAgentFilter, conversationAgentIds: readonly string[]): RailAgentFilter {
   if (chosen.touched) return chosen
-  // De-duplicated but NOT sorted: the roster arrives in the conversation's own
-  // order (its primary agent first), which is the order the chips should read in.
-  const agentIds = [...new Set(conversationAgentIds)].filter(Boolean)
+  // Sorted, because the roster arrives in last-activity order: leaving it alone
+  // would re-seed the filter — and reshuffle the chips — every time one of the
+  // agents said something. Ids sort arbitrarily but STABLY, which is all the
+  // state needs; the chips are ordered by name where they are rendered.
+  const agentIds = [...new Set(conversationAgentIds)].filter(Boolean).sort()
   return sameIds(chosen.agentIds, agentIds) ? chosen : { agentIds, touched: false }
 }
 
