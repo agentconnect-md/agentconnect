@@ -1409,6 +1409,44 @@ const RAW_SESSIONS_BY_AGENT: Record<string, Session[]> = {
         { kind: 'tool', text: 'bash · run checkout.spec.ts x20', code: '20/20 passed (no flakes)' },
         { kind: 'done', text: 'Ran it 20 times on main — all green. The retry shim did the trick.' }
       ]
+    },
+    {
+      id: 'r3',
+      title: 'Summarize the review queue',
+      time: '1:12 PM',
+      status: 'online',
+      platform: 'slack',
+      channel: '#pull-requests',
+      user: '@dana',
+      duration: '27s',
+      tokens: '740',
+      cost: '$0.09',
+      toolCount: '1',
+      statusLabel: 'completed',
+      steps: [
+        { kind: 'msg', text: '@review-bot what is still waiting on review?' },
+        { kind: 'tool', text: 'gh · pr list --search "review:required"', code: '4 open pull requests' },
+        { kind: 'done', text: 'Four PRs are waiting — #1284, #1291, #1293 and #1298. Two are older than a day.' }
+      ]
+    },
+    {
+      id: 'r4',
+      title: 'Backport the auth fix to 1.3',
+      time: 'Yesterday',
+      status: 'online',
+      platform: 'telegram',
+      channel: '@acme_reviews',
+      user: '@sam',
+      duration: '1m 12s',
+      tokens: '1.9K',
+      cost: '$0.22',
+      toolCount: '4',
+      statusLabel: 'completed',
+      steps: [
+        { kind: 'msg', text: '@review-bot backport the auth fix to release/1.3' },
+        { kind: 'tool', text: 'git · cherry-pick 9f2c1ab', code: '1 file changed, +18 −4' },
+        { kind: 'done', text: 'Backported to release/1.3 and opened PR #1301 with the cherry-picked commit.' }
+      ]
     }
   ],
   docs: [

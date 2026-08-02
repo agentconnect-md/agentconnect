@@ -5,30 +5,27 @@
 // name, platform mark + channel, relative time. The small Card/CardLink/EmptyRow
 // primitives live here too — HomeView's other cards reuse them.
 
-import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react'
+import { type ReactNode } from 'react'
 import Link from 'next/link'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import { sessionChannelDisplay, type Session } from '@/lib/data'
-import { useIsMobile } from '@/lib/use-is-mobile'
 
 export function Card({
   title,
   action,
   className,
-  children,
-  ref
+  children
 }: {
   title: string
   action?: ReactNode
   className?: string
   children: ReactNode
-  ref?: Ref<HTMLDivElement>
 }) {
   return (
-    <div ref={ref} className={`card overflow-hidden ${className ?? ''}`}>
+    <div className={`card overflow-hidden ${className ?? ''}`}>
       <div className="cardhead justify-between">
         <span className="cardtitle">{title}</span>
         {action}
@@ -50,9 +47,11 @@ export function CardLink({ href, children }: { href: string; children: ReactNode
   )
 }
 
-export function EmptyRow({ children }: { children: ReactNode }) {
+export function EmptyRow({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className="px-4 py-5 text-center font-sans text-[12.5px] leading-normal text-(--text-tertiary)">
+    <div
+      className={`flex items-center justify-center px-4 py-5 text-center font-sans text-[12.5px] leading-normal text-(--text-tertiary) ${className ?? ''}`}
+    >
       {children}
     </div>
   )
@@ -62,9 +61,9 @@ export function EmptyRow({ children }: { children: ReactNode }) {
 // causes no layout shift. Title width cycles deterministically (no Math.random)
 // so server and client render identically.
 const SKEL_TITLE_WIDTHS = ['w-2/5', 'w-1/3', 'w-1/2', 'w-3/5']
-function SessionRowSkeleton({ i }: { i: number }) {
+function SessionRowSkeleton({ i, rowClassName }: { i: number; rowClassName?: string }) {
   return (
-    <div className="row grid-cols-[1fr_auto] gap-3">
+    <div className={`row grid-cols-[1fr_auto] gap-3 ${rowClassName ?? ''}`}>
       <span className="min-w-0">
         <span
           className={`block h-[13px] ${SKEL_TITLE_WIDTHS[i % SKEL_TITLE_WIDTHS.length]} animate-pulse rounded-full bg-(--surface-active)`}
@@ -88,7 +87,7 @@ export function RecentSessionsCard({
   limit = 6,
   className,
   showAgent = true,
-  fillHeight = false
+  rowClassName
 }: {
   title?: string
   sessions: Session[]
@@ -99,53 +98,33 @@ export function RecentSessionsCard({
   className?: string
   /** Agent detail already scopes to one agent — hide the redundant icon+name there. */
   showAgent?: boolean
-  /** Card height is set externally (Home: match the right column) — fit only WHOLE rows,
-   * so the card never ends on a row sliced in half. */
-  fillHeight?: boolean
+  /** Per-row utilities. Home pins every dashboard row to one shared height so its two
+   * columns end on the same line (see HomeView's row-budget note); other surfaces let
+   * the rows size to their content. */
+  rowClassName?: string
 }) {
   const { orgPath } = useOrgs()
   const { getAgent, crons } = useConsoleData()
-  const cardRef = useRef<HTMLDivElement>(null)
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const [fit, setFit] = useState<number | null>(null)
-  // Mobile stacks the card in normal flow, so its height is its own content —
-  // measuring there would feed back into itself. Fit rows on desktop only.
-  const isMobile = useIsMobile()
-  const canFill = fillHeight && !isMobile
-  useEffect(() => {
-    if (!canFill) return
-    const el = cardRef.current
-    const body = bodyRef.current
-    if (!el || !body) return
-    const measure = () => {
-      const row = body.querySelector<HTMLElement>('a.row')
-      if (!row || row.offsetHeight === 0) return
-      setFit(Math.max(1, Math.floor(body.clientHeight / row.offsetHeight)))
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [canFill, sessions.length])
-  const recent = sessions.slice(0, canFill && fit !== null ? fit : limit)
+  const recent = sessions.slice(0, limit)
   return (
-    <Card
-      ref={cardRef}
-      title={title}
-      action={<CardLink href={allHref}>All sessions</CardLink>}
-      className={`${fillHeight ? 'desktop:flex desktop:flex-col' : ''} ${className ?? ''}`}
-    >
-      <div ref={bodyRef} className={fillHeight ? 'desktop:min-h-0 desktop:flex-1 desktop:overflow-y-auto' : undefined}>
+    <Card title={title} action={<CardLink href={allHref}>All sessions</CardLink>} className={className}>
+      <>
         {loading && recent.length === 0 ? (
-          Array.from({ length: 4 }, (_, i) => <SessionRowSkeleton key={i} i={i} />)
+          Array.from({ length: Math.min(4, limit) }, (_, i) => (
+            <SessionRowSkeleton key={i} i={i} rowClassName={rowClassName} />
+          ))
         ) : recent.length === 0 ? (
-          <EmptyRow>{emptyText}</EmptyRow>
+          <EmptyRow className={rowClassName}>{emptyText}</EmptyRow>
         ) : (
           recent.map((s) => {
             const owner = s.agentId ? getAgent(s.agentId) : undefined
             const ch = sessionChannelDisplay(s, (id) => crons.find((c) => c.id === id)?.name)
             return (
-              <Link key={s.id} href={orgPath(`/sessions/${s.id}`)} className="row click grid-cols-[1fr_auto] gap-3">
+              <Link
+                key={s.id}
+                href={orgPath(`/sessions/${s.id}`)}
+                className={`row click grid-cols-[1fr_auto] gap-3 ${rowClassName ?? ''}`}
+              >
                 <span className="min-w-0">
                   <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
                     {s.title}
@@ -178,7 +157,7 @@ export function RecentSessionsCard({
             )
           })
         )}
-      </div>
+      </>
     </Card>
   )
 }
