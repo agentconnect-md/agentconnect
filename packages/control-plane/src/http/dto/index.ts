@@ -2334,6 +2334,7 @@ export const SessionDto = z.object({
   model: z.string().nullable(),
   effort: z.string().nullable(),
   fastMode: z.boolean().nullable(),
+  // Effective session permission preset reported by the daemon; Codex Auto may be composite.
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),
@@ -2411,6 +2412,7 @@ export const SessionDetailDto = z.object({
   model: z.string().nullable(),
   effort: z.string().nullable(),
   fastMode: z.boolean().nullable(),
+  // Effective session permission preset reported by the daemon; Codex Auto may be composite.
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),

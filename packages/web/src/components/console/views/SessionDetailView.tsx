@@ -709,7 +709,7 @@ export default function SessionDetailView() {
     pgAddAgent,
     pgSetModel,
     pgSetEffort,
-    pgSetPermissionMode,
+    pgSetPermissionPreset,
     pgSetFast,
     pgCancel
   } = usePlayground()
@@ -741,7 +741,7 @@ export default function SessionDetailView() {
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState<ComposerMenuKey | null>(null)
   const [runtimeSelections, setRuntimeSelections] = useState<
-    Record<string, { model?: string; effort?: string; permissionMode?: string; fast?: boolean }>
+    Record<string, { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
   >({})
   // A rail row already carries enough metadata to paint the next session while
   // its detail/transcript requests catch up. Keeping it here also holds the
@@ -1474,7 +1474,7 @@ export default function SessionDetailView() {
   const allowRuntimeChangesInChat = owner?.allowRuntimeChangesInChat === true
   const runtimeChangesEnabled = sessionRuntimeChangesEnabled(allowRuntimeChangesInChat, session)
   const runtimeSelection = runtimeSelections[session.id]
-  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionMode?: string; fast?: boolean }) =>
+  const setRuntimeSelection = (patch: { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }) =>
     setRuntimeSelections((current) => ({
       ...current,
       [session.id]: { ...current[session.id], ...patch }
@@ -1505,17 +1505,21 @@ export default function SessionDetailView() {
       : pgEffortChoices
   const livePermissionModes = session.availablePermissionModes
   const selectablePermissionModes = sessionPermissionChoices(agentRuntime, runtimeCatalog, livePermissionModes)
-  const pgPermissionMode = sessionPermissionSelection(
+  const pgPermissionPreset = sessionPermissionSelection(
     agentRuntime,
     runtimeCatalog,
     livePermissionModes,
-    runtimeSelection?.permissionMode ?? session.permissionMode ?? owner?.permissionMode ?? ''
+    runtimeSelection?.permissionPreset ?? session.permissionMode ?? owner?.permissionMode ?? '',
+    owner?.approvalsReviewer ?? 'user'
   )
-  const pgPermissionModes =
+  const pgPermissionPresets =
     livePermissionModes === undefined &&
-    pgPermissionMode &&
-    !selectablePermissionModes.some((choice) => choice.v === pgPermissionMode)
-      ? [{ v: pgPermissionMode, l: permissionModeLabel(agentRuntime, pgPermissionMode) }, ...selectablePermissionModes]
+    pgPermissionPreset &&
+    !selectablePermissionModes.some((choice) => choice.v === pgPermissionPreset)
+      ? [
+          { v: pgPermissionPreset, l: permissionModeLabel(agentRuntime, pgPermissionPreset) },
+          ...selectablePermissionModes
+        ]
       : selectablePermissionModes
   // Stage the fast selection locally like model/effort/permission: an adopted
   // (persisted webchat) session has no synthetic provider entry for pgSetFast to
@@ -2296,11 +2300,11 @@ export default function SessionDetailView() {
                           )
                         ))}
                       {!multiLive &&
-                        (runtimeChangesEnabled && pgPermissionModes.length > 0 ? (
+                        (runtimeChangesEnabled && pgPermissionPresets.length > 0 ? (
                           <ComposerMenu
                             title="Permission"
-                            value={pgPermissionMode}
-                            options={pgPermissionModes.map((mode) => ({
+                            value={pgPermissionPreset}
+                            options={pgPermissionPresets.map((mode) => ({
                               value: mode.v,
                               label: mode.l,
                               description: mode.description
@@ -2312,20 +2316,20 @@ export default function SessionDetailView() {
                               setAttachMenuOpen(false)
                               setComposerMenuOpen(open ? 'permission' : null)
                             }}
-                            onChange={(permissionMode) => {
-                              setRuntimeSelection({ permissionMode })
-                              pgSetPermissionMode(
+                            onChange={(permissionPreset) => {
+                              setRuntimeSelection({ permissionPreset })
+                              pgSetPermissionPreset(
                                 session.id,
                                 session.agentId ?? '',
-                                permissionMode,
+                                permissionPreset,
                                 webchatConversationId
                               )
                             }}
                           />
                         ) : (
-                          pgPermissionMode && (
+                          pgPermissionPreset && (
                             <span className={COMPOSER_CHIP_STATIC} title="Permission">
-                              {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionMode)}
+                              {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
                             </span>
                           )
                         ))}

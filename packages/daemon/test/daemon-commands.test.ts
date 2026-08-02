@@ -894,7 +894,12 @@ describe('Daemon in-conversation commands', () => {
       permissionModeOptions: vi.fn(() => ({
         current: 'agent',
         modes: ['read-only', 'agent', 'agent-full-access']
-      }))
+      })),
+      approvalsReviewerOptions: vi.fn(() => ({
+        current: 'user',
+        reviewers: ['user', 'auto_review']
+      })),
+      setSessionApprovalsReviewer: vi.fn(async () => true)
     }
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
     await daemon.start()
@@ -923,13 +928,16 @@ describe('Daemon in-conversation commands', () => {
     const listed = conn.postMessage.mock.calls.at(-1)![1] as string
     expect(listed).toContain('Read Only')
     expect(listed).toContain('Ask for approval')
+    expect(listed).toContain('Auto')
     expect(listed).toContain('Full Access')
     expect(listed).not.toContain('agent-full-access')
 
     // choose by label ("full access") → resolves to the raw wire id, applied live
     ;(daemon as any).onInbound(dm('210', '/permission full access'))
     expect(store.getPermissionModeOverride(key)).toBe('agent-full-access')
-    expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent-full-access')
+    await vi.waitFor(() => {
+      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent-full-access')
+    })
     expect(conn.postMessage).toHaveBeenCalledWith(
       'C1',
       expect.stringContaining('Permission mode set to Full Access'),
@@ -939,6 +947,20 @@ describe('Daemon in-conversation commands', () => {
     // the default preset resolves from its Codex label too ("ask for approval" → agent)
     ;(daemon as any).onInbound(dm('220', '/permission ask for approval'))
     expect(store.getPermissionModeOverride(key)).toBe('agent')
+    await vi.waitFor(() => {
+      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
+    })
+    host.setSessionPermissionMode.mockClear()
+    host.setSessionApprovalsReviewer.mockClear()
+
+    // Auto is one session preset in every chat surface, but reaches ACP as two
+    // independent config selections.
+    ;(daemon as any).onInbound(dm('230', '/permission auto'))
+    expect(store.getPermissionModeOverride(key)).toBe('agent:auto-review')
+    await vi.waitFor(() => {
+      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
+      expect(host.setSessionApprovalsReviewer).toHaveBeenCalledWith('acp-1', 'auto_review')
+    })
 
     await daemon.stop()
   }, 15_000)

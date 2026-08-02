@@ -35,7 +35,12 @@ import {
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
 import { detectSandbox, sandboxBoundary, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
-import { permissionModeDisplayLabel } from './acp/permission-modes.js'
+import {
+  permissionModeDisplayLabel,
+  permissionPresetSettings,
+  permissionPresetValues,
+  selectedPermissionPreset
+} from './acp/permission-modes.js'
 import {
   SessionManager,
   transcriptCoords,
@@ -5540,23 +5545,40 @@ export class Daemon {
     return true
   }
 
-  /** Every chat-side runtime change funnels through the same Agent-level guard before
-   * a sticky override can be written, including stale callbacks and relay frames. */
-  private setPermissionModeByKey(key: string, permissionMode: string): boolean {
+  /** Apply one composite session permission value to a warm host. Older injected host
+   * fakes retain the two-setter fallback; real AcpHosts own the validation/decomposition. */
+  private async applySessionPermissionPreset(host: AcpHost, sessionId: string, preset: string): Promise<void> {
+    if (typeof host.setSessionPermissionPreset === 'function') {
+      await host.setSessionPermissionPreset(sessionId, preset)
+      return
+    }
+    const settings = permissionPresetSettings(preset)
+    if (settings.approvalsReviewer === 'user' && typeof host.setSessionApprovalsReviewer === 'function') {
+      await host.setSessionApprovalsReviewer(sessionId, 'user')
+    }
+    await host.setSessionPermissionMode(sessionId, settings.permissionMode)
+    if (settings.approvalsReviewer === 'auto_review' && typeof host.setSessionApprovalsReviewer === 'function') {
+      await host.setSessionApprovalsReviewer(sessionId, 'auto_review')
+    }
+  }
+
+  /** Every chat-side permission-preset change funnels through the same Agent-level
+   * guard before a sticky override can be written, including stale callbacks and
+   * relay frames. */
+  private setPermissionModeByKey(key: string, permissionPreset: string): boolean {
     const rec = this.chatRuntimeSession(key)
     if (!rec) return false
-    this.store.setPermissionModeOverride(key, permissionMode)
-    this.log.info(`session ${key} permission-mode override → "${permissionMode}"`)
+    this.store.setPermissionModeOverride(key, permissionPreset)
+    this.log.info(`session ${key} permission preset override → "${permissionPreset}"`)
     const acpSessionId = rec.acpSessionId
     const host = this.hosts.get(rec.agentId)
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       this.refreshStatusBarForKey(key)
       return true
     }
-    void host
-      .setSessionPermissionMode(acpSessionId, permissionMode)
+    void this.applySessionPermissionPreset(host, acpSessionId, permissionPreset)
       .then(() => this.refreshStatusBarForKey(key))
-      .catch((err) => this.log.warn(`set-permission-mode failed: ${(err as Error).message}`))
+      .catch((err) => this.log.warn(`set-permission-preset failed: ${(err as Error).message}`))
     return true
   }
 
@@ -5580,8 +5602,12 @@ export class Daemon {
     const fastMode = agent.fastMode ?? false
     if (model) await host.setSessionModel(sessionId, model)
     if (effort) await host.setSessionEffort(sessionId, effort)
-    if (permissionMode && typeof host.setSessionPermissionMode === 'function') {
-      await host.setSessionPermissionMode(sessionId, permissionMode)
+    if (permissionMode) {
+      await this.applySessionPermissionPreset(
+        host,
+        sessionId,
+        selectedPermissionPreset(permissionMode, agent.approvalsReviewer ?? 'user')
+      )
     }
     await host.setSessionFastMode(sessionId, fastMode)
   }
@@ -8871,9 +8897,8 @@ export class Daemon {
     return this.setPermissionModeByKey(key, value)
   }
 
-  /** Display alias for a select value: permission-mode ids read as their Codex
-   *  desktop-app names; model/effort values render verbatim. The underlying value
-   *  (state, wire, resolution) is unchanged — this is presentation only. */
+  /** Display alias for a select value: raw modes and AgentConnect's composite Auto
+   *  preset read as their Codex names; model/effort values render verbatim. */
   private selectDisplay(kind: SelectKind, value: string): string {
     return kind === 'permission' ? permissionModeDisplayLabel(value) : value
   }
@@ -10602,20 +10627,19 @@ export class Daemon {
           .setSessionEffort(sessionId, effortOverride)
           .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
       }
-      const permissionModeOverride = allowRuntimeChangesInChat ? this.store.getPermissionModeOverride(key) : undefined
-      const effectivePermissionMode =
-        permissionModeOverride ??
+      const permissionPresetOverride = allowRuntimeChangesInChat ? this.store.getPermissionModeOverride(key) : undefined
+      const configuredPermissionMode =
         runtimeAgent?.permissionMode ??
         this.runtimeCatalogs.get(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode
-      // AcpHost provides this method; older injected/embedded hosts may not.
-      // Treat the selector as an advertised capability, matching the other
-      // optional runtime controls, while real hosts still restore the Agent policy.
-      if (effectivePermissionMode && typeof host.setSessionPermissionMode === 'function') {
-        await host
-          .setSessionPermissionMode(sessionId, effectivePermissionMode)
-          .catch((err) =>
-            this.log.debug(`permission-mode "${effectivePermissionMode}" not applied: ${(err as Error).message}`)
-          )
+      const effectivePermissionPreset =
+        permissionPresetOverride ??
+        (configuredPermissionMode
+          ? selectedPermissionPreset(configuredPermissionMode, runtimeAgent?.approvalsReviewer ?? 'user')
+          : undefined)
+      if (effectivePermissionPreset) {
+        await this.applySessionPermissionPreset(host, sessionId, effectivePermissionPreset).catch((err) =>
+          this.log.debug(`permission preset "${effectivePermissionPreset}" not applied: ${(err as Error).message}`)
+        )
       }
       const fastOverride = allowRuntimeChangesInChat ? this.store.getFastModeOverride(key) : undefined
       if (fastOverride !== undefined) {
@@ -12380,7 +12404,9 @@ export class Daemon {
     if (fastMode !== undefined) event.fastMode = fastMode
     const permissionMode =
       (allowRuntimeChangesInChat && storeKey ? this.store.getPermissionModeOverride(storeKey) : undefined) ??
-      agent?.permissionMode
+      (agent?.permissionMode
+        ? selectedPermissionPreset(agent.permissionMode, agent.approvalsReviewer ?? 'user')
+        : undefined)
     if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
     else if (permissionMode !== undefined) event.permissionMode = permissionMode
     const outputMode = (storeKey ? this.store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
@@ -12439,7 +12465,8 @@ export class Daemon {
           : models[0]
         : undefined
     const effort = host?.effortOptions?.()
-    const permissionMode = host?.permissionModeOptions?.()
+    const permissionMode = host?.permissionModeOptions?.(acpSessionId)
+    const approvalsReviewer = host?.approvalsReviewerOptions?.(acpSessionId)
     const fast = host?.fastModeOption?.()
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     // Current model: live selector, then sticky/session default, then the runtime's
@@ -12447,16 +12474,22 @@ export class Daemon {
     // only way an `ultracode` value (which never appears in the live select) is reflected.
     const effortOverride = allowRuntimeChangesInChat ? this.store.getEffortOverride(sessionKey) : undefined
     const modelOverride = allowRuntimeChangesInChat ? this.store.getModelOverride(sessionKey) : undefined
-    const permissionModeOverride = allowRuntimeChangesInChat
+    const permissionPresetOverride = allowRuntimeChangesInChat
       ? this.store.getPermissionModeOverride(sessionKey)
       : undefined
     const fastOverride = allowRuntimeChangesInChat ? this.store.getFastModeOverride(sessionKey) : undefined
+    const currentPermissionMode = allowRuntimeChangesInChat
+      ? (permissionMode?.current ?? agent?.permissionMode)
+      : (agent?.permissionMode ?? permissionMode?.current)
+    const currentApprovalsReviewer = allowRuntimeChangesInChat
+      ? (approvalsReviewer?.current ?? agent?.approvalsReviewer ?? 'user')
+      : (agent?.approvalsReviewer ?? approvalsReviewer?.current ?? 'user')
     return {
       model: model?.current ?? modelOverride ?? agent?.runtimeOverrides?.model ?? fallbackModel,
       effort: effortOverride ?? effort?.current ?? agent?.reasoningEffort,
-      permissionMode: allowRuntimeChangesInChat
-        ? (permissionModeOverride ?? permissionMode?.current ?? agent?.permissionMode)
-        : (agent?.permissionMode ?? permissionMode?.current),
+      permissionMode:
+        permissionPresetOverride ??
+        (currentPermissionMode ? selectedPermissionPreset(currentPermissionMode, currentApprovalsReviewer) : undefined),
       fastMode: fastOverride ?? fast?.current ?? agent?.fastMode,
       contextUsed: usage.contextUsed,
       contextSize: usage.contextSize,
@@ -12483,7 +12516,10 @@ export class Daemon {
       ...(allowRuntimeChangesInChat && effort?.efforts?.length ? { efforts: effort.efforts } : {}),
       ...(agent
         ? {
-            permissionModes: allowRuntimeChangesInChat && permissionMode?.modes?.length ? permissionMode.modes : []
+            permissionModes:
+              allowRuntimeChangesInChat && permissionMode?.modes?.length
+                ? permissionPresetValues(permissionMode.modes, approvalsReviewer?.reviewers ?? [])
+                : []
           }
         : {}),
       ...(allowRuntimeChangesInChat && fast ? { fastModeAvailable: true } : {}),

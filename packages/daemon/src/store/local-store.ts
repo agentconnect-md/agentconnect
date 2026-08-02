@@ -2006,17 +2006,19 @@ export class LocalStore {
     this.db.prepare('UPDATE sessions SET effortOverride = ? WHERE key = ?').run(effort, key)
   }
 
-  /** The session-scoped permission-mode override (set via status bars), or undefined if
-   *  the session runs on the agent's default. Sticky across turns and restarts. */
+  /** The session-scoped permission preset (set via status bars), or undefined if the
+   *  session runs on the agent's default. Codex Auto is stored as AgentConnect's
+   *  composite preset and decomposed only when applied to ACP. Sticky across turns
+   *  and restarts. */
   getPermissionModeOverride(key: string): string | undefined {
     const row = this.db.prepare('SELECT permissionModeOverride FROM sessions WHERE key = ?').get(key) as
       { permissionModeOverride: string | null } | undefined
     return row?.permissionModeOverride ?? undefined
   }
 
-  /** Persist the session-scoped permission-mode override. No-op on an unknown key. */
-  setPermissionModeOverride(key: string, mode: string): void {
-    this.db.prepare('UPDATE sessions SET permissionModeOverride = ? WHERE key = ?').run(mode, key)
+  /** Persist the session-scoped permission preset. No-op on an unknown key. */
+  setPermissionModeOverride(key: string, preset: string): void {
+    this.db.prepare('UPDATE sessions SET permissionModeOverride = ? WHERE key = ?').run(preset, key)
   }
 
   /** Revoke every chat-authored runtime override for an Agent. Output mode is

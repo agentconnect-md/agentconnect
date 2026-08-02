@@ -38,7 +38,9 @@ import {
   displayedEffort,
   resolveEffortForModel,
   permissionModeChoicesFor,
+  permissionModePresets,
   resolvedPermissionMode,
+  selectedPermissionPreset,
   supportsModes,
   type Agent
 } from '@/lib/data'
@@ -110,7 +112,7 @@ export default function HomeView() {
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
   const { orgPath } = useOrgs()
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading } = useConsoleData()
-  const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionMode } = usePlayground()
+  const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionPreset } = usePlayground()
   // Home is the default landing, so it owns the fresh-org bounce to /onboarding.
   const holdForOnboarding = useOnboardingRedirect()
 
@@ -159,7 +161,7 @@ export default function HomeView() {
   const [input, setInput] = useState('')
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
   const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | null>(null)
-  const [runtime, setRuntime] = useState<{ model?: string; effort?: string; permission?: string }>({})
+  const [runtime, setRuntime] = useState<{ model?: string; effort?: string; permissionPreset?: string }>({})
 
   // Overrides are per-agent; drop them when the agent changes so the new agent's
   // own defaults show through.
@@ -209,10 +211,17 @@ export default function HomeView() {
 
   const permissionList = agent ? permissionModeChoicesFor(agent.runtime, modelCatalog) : []
   const showPermission = agent ? !!modelCatalog?.permissionModes?.length || supportsModes(agent.runtime) : false
-  const permission = showPermission
-    ? resolvedPermissionMode(runtime.permission ?? agent?.permissionMode ?? '', permissionList, modelCatalog)
+  const permissionMode = showPermission
+    ? resolvedPermissionMode(agent?.permissionMode ?? '', permissionList, modelCatalog)
     : ''
-  const permissionChoices = permissionList.map((o) => ({ value: o.v, label: o.l, description: o.description }))
+  const permissionPreset =
+    runtime.permissionPreset ??
+    selectedPermissionPreset(agent?.runtime ?? '', permissionMode, agent?.approvalsReviewer ?? 'user')
+  const permissionChoices = permissionModePresets(agent?.runtime ?? '', permissionList).map((o) => ({
+    value: o.v,
+    label: o.l,
+    description: o.description
+  }))
 
   // Why the composer can't start a session for the selected agent (null ⇒ it can).
   const blocked: 'offline' | 'auth' | null = !agent
@@ -239,7 +248,7 @@ export default function HomeView() {
     if (!multi) {
       if (model) pgSetModel(id, agent.id, model)
       if (effort) pgSetEffort(id, agent.id, effort)
-      if (permission) pgSetPermissionMode(id, agent.id, permission)
+      if (permissionPreset) pgSetPermissionPreset(id, agent.id, permissionPreset)
     }
     pgSend(id, agent.id, text)
     setInput('')
@@ -475,7 +484,7 @@ export default function HomeView() {
                 {!multi && showPermission && permissionChoices.length > 0 && (
                   <ComposerMenu
                     title="Permission"
-                    value={permission}
+                    value={permissionPreset}
                     options={permissionChoices}
                     open={menu === 'permission'}
                     align="left"
@@ -483,7 +492,7 @@ export default function HomeView() {
                     triggerClassName={CHIP}
                     tooltips={false}
                     onOpenChange={(o) => setMenu(o ? 'permission' : null)}
-                    onChange={(v) => setRuntime((r) => ({ ...r, permission: v }))}
+                    onChange={(v) => setRuntime((r) => ({ ...r, permissionPreset: v }))}
                   />
                 )}
               </>

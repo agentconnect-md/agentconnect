@@ -35,6 +35,7 @@ import {
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
+import { permissionPresetSettings, type SessionApprovalsReviewer } from './permission-modes.js'
 
 // The raw session config-option shapes (from the ACP SDK), re-exported so
 // sessionConfigOptions() consumers can type the option tree without importing
@@ -78,6 +79,12 @@ export interface PermissionModeOptions {
   current?: string
   /** Selectable permission mode values (group structure flattened away). */
   modes: string[]
+}
+
+/** A runtime's advertised approval-reviewer selector. Independent from the mode. */
+export interface ApprovalsReviewerOptions {
+  current?: SessionApprovalsReviewer
+  reviewers: SessionApprovalsReviewer[]
 }
 
 export type AcpPermissionPolicyEvent =
@@ -443,6 +450,25 @@ export function permissionModeOptionsFrom(
   return { current: opt.currentValue, modes }
 }
 
+/** Extract codex-acp's approval-reviewer selector, retaining only values AgentConnect
+ * can represent. Older runtimes omit it and therefore expose no Auto preset. */
+export function approvalsReviewerOptionsFrom(
+  configOptions: SessionConfigOption[] | null | undefined
+): ApprovalsReviewerOptions | null {
+  const opt = configOptions?.find((o) => o.category === APPROVALS_REVIEWER_CATEGORY && o.type === 'select')
+  if (!opt || opt.type !== 'select') return null
+  const isReviewer = (value: string): value is SessionApprovalsReviewer => value === 'user' || value === 'auto_review'
+  const reviewers = opt.options
+    .flatMap((o) => ('group' in o ? o.options : [o]))
+    .map((o) => o.value)
+    .filter(isReviewer)
+  if (reviewers.length === 0) return null
+  return {
+    ...(isReviewer(opt.currentValue) ? { current: opt.currentValue } : {}),
+    reviewers
+  }
+}
+
 /**
  * Extract the fast-mode toggle from a session's `configOptions` (ACP `category:
  * "model_config"`, `type: "select"` with on/off values). Returns null when the current
@@ -476,6 +502,7 @@ export class AcpHost {
   private lastModelOptions: ModelOptions | null = null
   private lastEffortOptions: EffortOptions | null = null
   private lastPermissionModeOptions: PermissionModeOptions | null = null
+  private lastApprovalsReviewerOptions: ApprovalsReviewerOptions | null = null
   private lastFastOption: FastModeOption | null = null
   // The most recent reconciled config-option set per live session, cached so a
   // mid-session `set_config_option` (e.g. setSessionModel) can plan against the
@@ -848,10 +875,24 @@ export class AcpHost {
     // ultracode already forces effort to xhigh).
     const ultracode = this.isClaudeRuntime() && this.opts.configPrefs?.reasoningEffort === ULTRACODE_EFFORT
     const fastMode = this.opts.configPrefs?.fastMode
+    const permissionMode = this.opts.configPrefs?.permissionMode
+    const approvalsReviewer = this.opts.configPrefs?.approvalsReviewer
+    // Clear Auto-review before widening permissions; when enabling it, establish
+    // Agent mode first. This also protects restored sessions whose persisted
+    // selector state differs from the Agent's current configuration.
+    const permissionPrefs: Array<[category: string, desired: string | undefined]> =
+      approvalsReviewer === 'user'
+        ? [
+            [APPROVALS_REVIEWER_CATEGORY, approvalsReviewer],
+            ['mode', permissionMode]
+          ]
+        : [
+            ['mode', permissionMode],
+            [APPROVALS_REVIEWER_CATEGORY, approvalsReviewer]
+          ]
     const prefs: Array<[category: string, desired: string | undefined]> = [
       ['model', this.opts.configPrefs?.model],
-      ['mode', this.opts.configPrefs?.permissionMode],
-      [APPROVALS_REVIEWER_CATEGORY, this.opts.configPrefs?.approvalsReviewer],
+      ...permissionPrefs,
       ['thought_level', ultracode ? undefined : this.opts.configPrefs?.reasoningEffort],
       // Fast mode comes AFTER model: the option is only advertised (and the
       // reconciled option set only carries it) once a fast-capable model is set.
@@ -884,6 +925,7 @@ export class AcpHost {
     this.lastModelOptions = modelOptionsFrom(configOptions)
     this.lastEffortOptions = effortOptionsFrom(configOptions, this.isClaudeRuntime())
     this.lastPermissionModeOptions = permissionModeOptionsFrom(configOptions)
+    this.lastApprovalsReviewerOptions = approvalsReviewerOptionsFrom(configOptions)
     this.lastFastOption = fastOptionFrom(configOptions)
   }
 
@@ -908,10 +950,18 @@ export class AcpHost {
     return this.lastEffortOptions
   }
 
-  /** The permission/approval mode selector from the most recent session/new|load, or
-   *  null if none is offered. */
-  permissionModeOptions(): PermissionModeOptions | null {
+  /** The permission/approval mode selector for one live session, or the most recently
+   *  reconciled selector when no session is supplied. */
+  permissionModeOptions(sessionId?: string): PermissionModeOptions | null {
+    if (sessionId !== undefined) return permissionModeOptionsFrom(this.sessionConfigs.get(sessionId))
     return this.lastPermissionModeOptions
+  }
+
+  /** The approval-reviewer selector for one live session, or the most recently
+   * reconciled selector when no session is supplied. */
+  approvalsReviewerOptions(sessionId?: string): ApprovalsReviewerOptions | null {
+    if (sessionId !== undefined) return approvalsReviewerOptionsFrom(this.sessionConfigs.get(sessionId))
+    return this.lastApprovalsReviewerOptions
   }
 
   /** The fast-mode toggle from the most recent session/new|load, or null if the current
@@ -963,6 +1013,32 @@ export class AcpHost {
    *  select). Values are runtime-owned and validated against the advertised options. */
   async setSessionPermissionMode(sessionId: string, mode: string): Promise<boolean> {
     return this.setSessionConfig(sessionId, 'mode', mode)
+  }
+
+  /** Switch who reviews eligible approval requests on an already-running Codex
+   * session. False when the runtime does not advertise the selector. */
+  async setSessionApprovalsReviewer(sessionId: string, reviewer: SessionApprovalsReviewer): Promise<boolean> {
+    return this.setSessionConfig(sessionId, APPROVALS_REVIEWER_CATEGORY, reviewer)
+  }
+
+  /** Apply the composite value shared by every AgentConnect session selector. The
+   * raw ACP mode is validated before reviewer state can change. */
+  async setSessionPermissionPreset(sessionId: string, preset: string): Promise<boolean> {
+    const settings = permissionPresetSettings(preset)
+    const offeredModes = permissionModeOptionsFrom(this.sessionConfigs.get(sessionId))?.modes ?? []
+    if (!offeredModes.includes(settings.permissionMode)) return false
+    const reviewerAvailable = this.approvalsReviewerOptions(sessionId) !== null
+    // Disable Auto-review before changing to an ordinary mode (especially Full
+    // Access); enable it only after the requested Agent mode is in force.
+    let reviewerApplied = false
+    if (reviewerAvailable && settings.approvalsReviewer === 'user') {
+      reviewerApplied = await this.setSessionApprovalsReviewer(sessionId, 'user')
+    }
+    const modeApplied = await this.setSessionPermissionMode(sessionId, settings.permissionMode)
+    if (reviewerAvailable && settings.approvalsReviewer === 'auto_review') {
+      reviewerApplied = await this.setSessionApprovalsReviewer(sessionId, 'auto_review')
+    }
+    return modeApplied || reviewerApplied
   }
 
   /** Toggle fast mode on an already-running session (ACP `model_config` on/off select).

@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   pgSend: vi.fn(),
   pgSetModel: vi.fn(),
   pgSetEffort: vi.fn(),
-  pgSetPermissionMode: vi.fn(),
+  pgSetPermissionPreset: vi.fn(),
   push: vi.fn()
 }))
 
@@ -43,7 +43,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => ({
     pgSend: mocks.pgSend,
     pgSetModel: mocks.pgSetModel,
     pgSetEffort: mocks.pgSetEffort,
-    pgSetPermissionMode: mocks.pgSetPermissionMode
+    pgSetPermissionPreset: mocks.pgSetPermissionPreset
   })
 }))
 vi.mock('@/components/console/ComposerMenu', () => ({
@@ -122,7 +122,7 @@ beforeEach(() => {
   mocks.pgSend.mockClear()
   mocks.pgSetModel.mockClear()
   mocks.pgSetEffort.mockClear()
-  mocks.pgSetPermissionMode.mockClear()
+  mocks.pgSetPermissionPreset.mockClear()
   mocks.push.mockClear()
 })
 afterEach(() => {
@@ -237,6 +237,51 @@ describe('HomeView run-selectors (catalog-aware)', () => {
     expect(menu('Model')).toBeTruthy()
     expect(menu('Effort')).toBeUndefined()
     expect(menu('Permission')).toBeUndefined()
+  })
+
+  it('shows and stages Auto as one Codex permission preset', async () => {
+    const codexCatalog = {
+      models: [{ id: 'gpt-5.6-sol' }],
+      permissionModes: [
+        { value: 'read-only', name: 'Read-only' },
+        { value: 'agent', name: 'Agent' },
+        { value: 'agent-full-access', name: 'Agent (full access)' }
+      ],
+      defaultModel: 'gpt-5.6-sol',
+      defaultPermissionMode: 'agent',
+      source: 'acp',
+      observedAt: ''
+    }
+    mocks.agents = [
+      agent({
+        runtime: 'codex',
+        model: 'gpt-5.6-sol',
+        permissionMode: 'agent',
+        approvalsReviewer: 'auto_review'
+      })
+    ]
+    mocks.daemons = [
+      daemon({
+        runtimeModels: [{ runtime: 'codex', models: ['gpt-5.6-sol'], modelCatalog: codexCatalog, authRequired: false }]
+      })
+    ]
+    await render()
+    expect(menu('Permission')).toMatchObject({
+      value: 'agent:auto-review',
+      options: ['read-only', 'agent', 'agent:auto-review', 'agent-full-access']
+    })
+
+    const ta = host.querySelector('textarea')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    await act(async () => {
+      setValue.call(ta, 'hi')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button.sendbtn')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(mocks.pgSetPermissionPreset).toHaveBeenCalledWith('pg_1', 'a1', 'agent:auto-review')
   })
 })
 

@@ -1154,6 +1154,19 @@ describe('buildStatusModal (Configure controls modal)', () => {
     expect(select.initial_option.text.text).toBe('Permission · Full Access')
   })
 
+  it('renders Auto as one Slack session permission option', () => {
+    const view = buildStatusModal(
+      {
+        permissionMode: 'agent:auto-review',
+        permissionModes: ['read-only', 'agent', 'agent:auto-review', 'agent-full-access']
+      },
+      KEY
+    )
+    const select = accessoryById(view, 'ac_set_permission_mode')
+    expect(select.initial_option).toMatchObject({ value: 'agent:auto-review', text: { text: 'Permission · Auto' } })
+    expect(select.options.map((o: any) => o.text.text)).toContain('Permission · Auto')
+  })
+
   it('prepends a current effort the advertised list omits (e.g. a pending ultracode override)', () => {
     const select = accessoryById(
       buildStatusModal({ effort: 'ultracode', efforts: ['low', 'high'] }, KEY),

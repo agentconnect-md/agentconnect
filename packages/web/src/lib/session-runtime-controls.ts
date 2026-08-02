@@ -5,8 +5,11 @@ import {
   permissionModeChoicesFor,
   permissionModeDefault,
   permissionModeLabel,
+  permissionModePresets,
   resolvedPermissionMode,
   resolveEffortForModel,
+  selectedPermissionPreset,
+  type ApprovalsReviewer,
   type DaemonRow,
   type EffortChoice,
   type RuntimeModelCatalog,
@@ -56,9 +59,15 @@ export function sessionPermissionChoices(
   liveValues: string[] | undefined
 ): PermissionChoice[] {
   const discovered = permissionModeChoicesFor(runtime, catalog)
-  if (liveValues === undefined) return discovered
+  if (liveValues === undefined) return permissionModePresets(runtime, discovered)
+  // A live daemon has already composed capability-backed presets. Preserve its
+  // exact list so an older runtime without the reviewer selector cannot expose Auto.
   return liveValues.map(
-    (value) => discovered.find((choice) => choice.v === value) ?? { v: value, l: permissionModeLabel(runtime, value) }
+    (value) =>
+      discovered.find((choice) => choice.v === value) ?? {
+        v: value,
+        l: permissionModeLabel(runtime, value)
+      }
   )
 }
 
@@ -67,17 +76,24 @@ export function sessionPermissionSelection(
   runtime: string,
   catalog: RuntimeModelCatalog | undefined,
   liveValues: string[] | undefined,
-  current: string
+  current: string,
+  approvalsReviewer: ApprovalsReviewer | '' = ''
 ): string {
   const choices = sessionPermissionChoices(runtime, catalog, liveValues)
   const resolvedCurrent = current || catalog?.defaultPermissionMode || permissionModeDefault(runtime)
+  const selectedCurrent = selectedPermissionPreset(runtime, resolvedCurrent, approvalsReviewer)
+  if (choices.some((choice) => choice.v === selectedCurrent)) return selectedCurrent
   if (liveValues === undefined) {
-    return resolvedPermissionMode(resolvedCurrent, choices, catalog)
+    const resolvedMode = resolvedPermissionMode(resolvedCurrent, choices, catalog)
+    return selectedPermissionPreset(runtime, resolvedMode, approvalsReviewer)
   }
-  if (choices.length === 0) return resolvedCurrent
-  if (choices.some((choice) => choice.v === current)) return current
+  if (choices.length === 0) return selectedCurrent
   const defaultMode = catalog?.defaultPermissionMode
-  if (defaultMode && choices.some((choice) => choice.v === defaultMode)) return defaultMode
+  if (defaultMode) {
+    const selectedDefault = selectedPermissionPreset(runtime, defaultMode, approvalsReviewer)
+    if (choices.some((choice) => choice.v === selectedDefault)) return selectedDefault
+    if (choices.some((choice) => choice.v === defaultMode)) return defaultMode
+  }
   return choices[0]?.v ?? ''
 }
 

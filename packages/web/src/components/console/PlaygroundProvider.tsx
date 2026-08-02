@@ -9,7 +9,14 @@
 // view.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { agentLabel, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
+import {
+  agentLabel,
+  selectedPermissionPreset,
+  type Agent,
+  type Session,
+  type SessionImage,
+  type SessionStep
+} from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import {
   webchatWsUrl,
@@ -55,8 +62,8 @@ interface PlaygroundData {
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
   /** Switch the session's reasoning effort (in-session, sticky). */
   pgSetEffort: (id: string, agentId: string, effort: string, conversationId?: string) => void
-  /** Switch the session's permission mode when the Agent explicitly allows chat changes. */
-  pgSetPermissionMode: (id: string, agentId: string, permissionMode: string, conversationId?: string) => void
+  /** Switch the session's composite permission preset when chat changes are allowed. */
+  pgSetPermissionPreset: (id: string, agentId: string, permissionPreset: string, conversationId?: string) => void
   /** Toggle the session's fast mode (in-session, sticky). */
   pgSetFast: (id: string, agentId: string, fastMode: boolean, conversationId?: string) => void
   /** Interrupt the running turn without ending the session. */
@@ -780,7 +787,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               : {}),
             model: da.model,
             runtime: da.runtime,
-            permissionMode: da.permissionMode,
+            permissionMode: selectedPermissionPreset(da.runtime, da.permissionMode, da.approvalsReviewer ?? 'user'),
             duration: 'live',
             tokens: '0',
             cost: '—',
@@ -965,13 +972,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, stageRuntimeChange]
   )
 
-  /** Switch the session's permission/approval mode (fire-and-forget), optimistic like pgSetEffort. */
-  const pgSetPermissionMode = useCallback(
-    (id: string, agentForId: string, permissionMode: string, conversationId?: string) => {
-      setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, permissionMode } } : cur))
-      stageRuntimeChange(id, { permissionMode })
+  /** Switch the session's composite permission preset (fire-and-forget), optimistic
+   * like pgSetEffort. The daemon decomposes Auto before calling ACP. */
+  const pgSetPermissionPreset = useCallback(
+    (id: string, agentForId: string, permissionPreset: string, conversationId?: string) => {
+      setPgSessions((cur) => (cur[id] ? { ...cur, [id]: { ...cur[id]!, permissionMode: permissionPreset } } : cur))
+      stageRuntimeChange(id, { permissionMode: permissionPreset })
       connect(id, agentForId, conversationId)
-        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_permission_mode', permissionMode })))
+        .ready.then((ws) => ws.send(JSON.stringify({ type: 'set_permission_mode', permissionMode: permissionPreset })))
         .catch(() => {})
     },
     [connect, stageRuntimeChange]
@@ -1037,7 +1045,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgSend,
       pgSetModel,
       pgSetEffort,
-      pgSetPermissionMode,
+      pgSetPermissionPreset,
       pgSetFast,
       pgCancel,
       getPgSession,
@@ -1056,7 +1064,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgSend,
       pgSetModel,
       pgSetEffort,
-      pgSetPermissionMode,
+      pgSetPermissionPreset,
       pgSetFast,
       pgCancel,
       getPgSession,
