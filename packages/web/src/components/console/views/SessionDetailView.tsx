@@ -726,6 +726,7 @@ export default function SessionDetailView() {
   // agent-filtered rail steady instead of briefly dropping it between ids.
   const [routeSession, setRouteSession] = useState<Session | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const imagePrepareGenerationRef = useRef(0)
   const liveCursorRef = useRef<string | null>(null)
   const tailSessionRef = useRef<string | null>(null)
   const tailReadyRef = useRef(false)
@@ -1045,6 +1046,7 @@ export default function SessionDetailView() {
   // session into the next now that the shared route layout preserves this
   // component instance.
   useEffect(() => {
+    imagePrepareGenerationRef.current += 1
     setCopied(false)
     setDetailOpen(false)
     setWorkOverride(new Map())
@@ -1143,16 +1145,22 @@ export default function SessionDetailView() {
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return
+    const generation = ++imagePrepareGenerationRef.current
     setAttachMenuOpen(false)
     setImagePreparing(true)
     setImageError(null)
     try {
-      setPgImage(session.id, await prepareWebchatImage(file))
+      const image = await prepareWebchatImage(file)
+      if (imagePrepareGenerationRef.current !== generation) return
+      setPgImage(session.id, image)
     } catch (error) {
+      if (imagePrepareGenerationRef.current !== generation) return
       setImageError(error instanceof Error ? error.message : 'Couldn’t prepare that image.')
     } finally {
-      setImagePreparing(false)
-      if (imageInputRef.current) imageInputRef.current.value = ''
+      if (imagePrepareGenerationRef.current === generation) {
+        setImagePreparing(false)
+        if (imageInputRef.current) imageInputRef.current.value = ''
+      }
     }
   }
   const webchatConversationId = isLive ? session.channelId : undefined
