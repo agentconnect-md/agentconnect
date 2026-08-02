@@ -88,8 +88,10 @@ relay persists no content, and message bodies remain daemon-local.
   agent-scoped.
 - Extending the delegated `agentconnect-admin` MCP
   ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md)) to
-  multi-agent conversations. Its grant tuple binds one `agentId`; v1 keeps
-  delegated MCP conversations single-participant (section 10.3).
+  multi-agent conversations. A conversation containing the built-in
+  `agentconnect` preset **may** grow a roster, but the administrative catalog
+  is available only while the conversation is single-participant
+  (section 10.3).
 - Group webchat across organizations.
 
 ## 3. Conversation model
@@ -137,8 +139,14 @@ an explicit per-conversation act by a user who can see the agent, a
 per-conversation enablement (the webchat analogue of the gated Off/Mention/All
 model in `packages/control-plane/src/orchestrator/placement.ts:188`). Removing
 a participant closes its current session pointer; its transcript rows remain.
-The primary agent cannot be removed (transfer primary first; a v1 may simply
-disallow both).
+
+Removing the **primary** is allowed and **auto-promotes** the longest-standing
+remaining member (ordered by `addedAt`, tie-broken by `agentId`): the CP swaps
+the `role='primary'` row and the mirrored `WebchatConversation.agentId` column
+in one transaction. No separate "make primary" mutation exists — primary is a
+derived anchor, not a user-facing concept, and the deterministic promotion
+keeps it filled without new UI. Removing the **last** participant is refused: a
+conversation always has at least one agent.
 
 ### 3.2 The conversation becomes a recorded coordinate
 
@@ -252,6 +260,11 @@ as today (`daemon.ts:4860-4885`) with these changes:
 
 Multiple targets on one turn (e.g. "@a @b compare your answers") each get
 their own activation, their own ack, and their own turn stream, concurrently.
+There is **no automatic round-table**: neither answer is fed to the other
+agent as a new activation. Each peer's answer reaches the other only as
+conversation context at its next activation, or when someone — the owner or an
+agent — explicitly mentions it. This matches the Slack-channel behavior:
+posting in a thread never auto-triggers the other bots present.
 
 ## 5. Conversation posts, context fan-out, and ordering
 
@@ -266,7 +279,8 @@ interface WebchatPost {
   author: { kind: 'user' } | { kind: 'agent'; agentId: string }
   text: string
   at: number            // canonical timestamp, minted ONCE at origin
-  attachments?: [...]   // user turns only, existing 160 KiB image cap
+  attachments?: [...]   // user turns only, existing 160 KiB image cap;
+                        // carried on context copies too (full fan-out)
 }
 ```
 
@@ -455,6 +469,11 @@ recorded in the author's own session.
   existing agent-avatar union), the owner as "You" via `isSelfSender`
   (`packages/web/src/lib/data.ts:1764-1774`) — unchanged, since `triggeredBy`
   still carries the CP principal handle.
+- **Title**: the conversation title comes from the **primary** agent's
+  `session_info` stream (the flow that renames a live `pg_` session today);
+  other participants' `session_info` titles apply only to their own session
+  rows. The sessions-list grouping shows the conversation title; per-agent
+  drill-down keeps per-session titles.
 - **Visibility**: all participant sessions are private to the owner, exactly
   the current webchat classification; publishing follows the existing
   session-visibility rules per session.
@@ -485,7 +504,9 @@ recorded in the author's own session.
 
 - Roster cap 8; relay fan-out per post ≤ roster size; context frames are
   bounded by the existing webchat text caps and are fire-and-forget with
-  `postId` dedup.
+  `postId` dedup. A turn's image attachment fans out with its context copies,
+  so the worst case per turn is roster-size × the existing 160 KiB cap —
+  bounded and small enough to keep every participant's transcript complete.
 - Turn concurrency is bounded per agent by the existing per-session
   serialization gate and `serialQueue` (`busy`/`queued` acks unchanged).
 - Agent-initiated posts obey `hopCount` (`MAX_AGENT_CALL_HOPS`) and the loop
@@ -508,11 +529,25 @@ IM conversations.
 
 ### 10.3 Delegated admin MCP
 
-Conversations containing the built-in `agentconnect` preset stay
-single-participant in v1: the grant's logical-authority tuple binds one
-`agentId` and the confirmation UX assumes one acting agent. Adding a second
-agent to such a conversation is refused with a clear message; relaxing this
-later means extending the grant tuple per participant, which is out of scope
+A conversation containing the built-in `agentconnect` preset **may** be
+multi-agent, but the administrative catalog is available only while the
+conversation is single-participant. The grant's logical-authority tuple binds
+one `agentId` and the confirmation UX assumes one acting agent
+([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md) §3),
+so instead of refusing roster growth:
+
+- Growing the roster beyond one participant **rotates the conversation's
+  authority generation**: all active `agentconnect-admin` grants are revoked
+  atomically and issuance is suspended while the roster has more than one
+  member. This is an additional entry in that design's §5.3 revocation list,
+  enforced CP-side, so a delayed daemon cannot keep a live descriptor working.
+- The daemon removes the descriptor through the existing revision-fenced
+  lifecycle; the session surfaces "administration tools are unavailable in
+  multi-agent conversations" the same way descriptor-attachment failure does.
+- Shrinking the roster back to exactly the preset resumes issuance through the
+  normal two-phase activation under the new authority generation.
+
+Extending the grant model to multiple acting agents is explicitly out of scope
 here.
 
 ## 11. Rollout
@@ -522,9 +557,12 @@ here.
   current-session pointers. No behavior change for existing conversations.
 - **M1 — multi-target turns.** `rc/verify` roster verdict, relay fan-out with
   membership validation, `RdMsgWebchat` additions, canonical `at`/`postId`,
-  per-agent acks/streams, context fan-out of user turns and agent replies,
-  composer mentions + targeting ladder, per-agent stream lanes. Capability
-  `webchat_multi_agent_v1` gates roster growth.
+  per-agent acks/streams, context fan-out of user turns and agent replies
+  (attachments included), composer mentions + targeting ladder, per-agent
+  stream lanes. Capability `webchat_multi_agent_v1` gates roster growth.
+  Roster-growth grant revocation for preset conversations (section 10.3) lands
+  here, with the matching §5.3 addition to
+  [webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md).
 - **M2 — a2a in-conversation.** Roster slice in `CollabRoutesSnapshot`, the
   recorded-coordinate carve-out in both collaboration routers,
   `rd/webchat-post`, agent-initiated posts (complete-post form), the
@@ -561,18 +599,24 @@ user-facing product ("talk to several agents in one Playground conversation").
   the sink relay, so the sequence would have gaps exactly when it matters.
   `(at, postId)` merging degrades more gracefully.
 
-## 13. Open questions
+## 13. Decision log
 
-1. **Primary transfer.** v1 disallows removing the primary; is an explicit
-   "make primary" mutation needed at M0, or can it wait for demand?
-2. **Attachment fan-out.** v1 delivers a turn's image only to targeted agents;
-   context copies carry a textual placeholder. Is full image fan-out to all
-   participants worth the bandwidth on the context path?
-3. **Session title.** With N sessions per conversation, the conversation title
-   should come from the primary agent's `session_info` stream; per-agent
-   titles stay per-session. Confirm this reads well in the sessions list
-   grouping.
-4. **Turn-level multi-target semantics.** "@a @b compare" activates both with
-   the same prompt but neither sees the other's answer until its next
-   activation. Is a follow-up "round-table" affordance (auto-feeding each
-   answer to the other) wanted, or is explicit user relay enough for v1?
+Questions resolved during design review:
+
+1. **Primary removal** — no user-facing "transfer primary" concept. Removing
+   the primary auto-promotes the longest-standing remaining member; primary is
+   a derived compatibility/default anchor, not something owners manage
+   (section 3.1).
+2. **Attachment fan-out** — full fan-out: a turn's image travels with its
+   context copies to every participant, bounded by roster cap × the 160 KiB
+   image cap (sections 5.1, 10.1).
+3. **Conversation title** — taken from the primary agent's `session_info`
+   stream; other participants title only their own session rows (section 8).
+4. **Preset conversations** — the built-in `agentconnect` preset may be in a
+   multi-agent conversation; the delegated admin catalog is simply revoked and
+   suspended while the roster has more than one member, and resumes when it
+   shrinks back (section 10.3).
+5. **No automatic round-table** — a multi-target turn produces independent
+   answers; peers see each other's output only as context at their next
+   activation or via an explicit mention, matching Slack-channel behavior
+   (section 4.3).
