@@ -496,6 +496,104 @@ const MOCK_BOTS: BotDto[] = [
   }
 ]
 
+// Demo schedule roster (MOCK_MODE only) — enough rows that Home's "Scheduled runs"
+// card and the Schedules view render populated with no CP running. Mixed enabled /
+// paused and a never-run row so both the next-run and the "ran …" labels are exercised.
+const MOCK_CRONS: CronDto[] = [
+  {
+    id: 'cron_deps',
+    orgId: 'mock',
+    agentId: 'review',
+    name: 'daily-deps-check',
+    schedule: '0 9 * * *',
+    timezone: 'UTC',
+    targetPlatform: 'slack',
+    targetChannel: '#pull-requests',
+    targetIntegrationId: null,
+    trigger: 'check the dependency report and flag anything new',
+    enabled: true,
+    lastRunAt: '2026-04-11T09:00:00Z',
+    createdBy: 'u_dana',
+    createdAt: '2026-03-01T00:00:00Z',
+    lastModifiedBy: 'u_dana',
+    lastModifiedAt: '2026-03-01T00:00:00Z',
+    visibility: 'org',
+    sharedWith: [],
+    ownerUserId: 'u_dana',
+    canEdit: true,
+    canManageSharing: true
+  },
+  {
+    id: 'cron_bugsweep',
+    orgId: 'mock',
+    agentId: 'deploy',
+    name: 'nightly bug sweep',
+    schedule: '30 2 * * *',
+    timezone: 'UTC',
+    targetPlatform: 'slack',
+    targetChannel: '#deploys',
+    targetIntegrationId: null,
+    trigger: 'sweep yesterday’s error budget and summarize',
+    enabled: true,
+    lastRunAt: '2026-04-11T02:30:00Z',
+    createdBy: 'u_sam',
+    createdAt: '2026-03-04T00:00:00Z',
+    lastModifiedBy: 'u_sam',
+    lastModifiedAt: '2026-03-04T00:00:00Z',
+    visibility: 'org',
+    sharedWith: [],
+    ownerUserId: 'u_sam',
+    canEdit: true,
+    canManageSharing: true
+  },
+  {
+    id: 'cron_wakeup',
+    orgId: 'mock',
+    agentId: 'docs',
+    name: 'daily wake up dm',
+    schedule: '0 8 * * 1-5',
+    timezone: 'UTC',
+    targetPlatform: 'telegram',
+    targetChannel: '@acme_docs',
+    targetIntegrationId: null,
+    trigger: 'post the docs backlog for the day',
+    enabled: true,
+    lastRunAt: null,
+    createdBy: 'u_lee',
+    createdAt: '2026-04-02T00:00:00Z',
+    lastModifiedBy: 'u_lee',
+    lastModifiedAt: '2026-04-02T00:00:00Z',
+    visibility: 'org',
+    sharedWith: [],
+    ownerUserId: 'u_lee',
+    canEdit: true,
+    canManageSharing: true
+  },
+  {
+    id: 'cron_weekly_digest',
+    orgId: 'mock',
+    agentId: 'review',
+    name: 'weekly digest',
+    schedule: '0 16 * * 5',
+    timezone: 'UTC',
+    targetPlatform: 'slack',
+    targetChannel: '#pull-requests',
+    targetIntegrationId: null,
+    trigger: 'summarize the week’s merged pull requests',
+    enabled: false,
+    lastRunAt: '2026-04-04T16:00:00Z',
+    createdBy: 'u_dana',
+    createdAt: '2026-02-14T00:00:00Z',
+    lastModifiedBy: 'u_dana',
+    lastModifiedAt: '2026-02-14T00:00:00Z',
+    visibility: 'org',
+    sharedWith: [],
+    ownerUserId: 'u_dana',
+    canEdit: true,
+    canManageSharing: true
+  }
+]
+
 // Demo MCP-provider registry (MOCK_MODE only) — covers both kinds so the Tools &
 // Skills tiles show the connector icon path and the plain plug, and both access
 // scopes (org-wide vs restricted, which renders the avatar stack). `service` slugs
@@ -655,7 +753,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     refreshInterval: DAEMON_REFRESH_MS
   })
   const {
-    data: crons = [],
+    data: realCrons = [],
     error: cronsError,
     isLoading: cronsIsLoading,
     mutate: mutateCrons
@@ -864,6 +962,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   }, [realSessions, agents])
 
   const getSessions = useCallback((id: string) => allSessions.filter((s) => s.agentId === id), [allSessions])
+
+  // crons: live rows, plus the demo roster in mock mode — so Home's "Scheduled runs"
+  // card and the Schedules view are populated with no CP running.
+  const crons = useMemo(() => (MOCK_MODE ? [...realCrons, ...MOCK_CRONS] : realCrons), [realCrons])
 
   // bots: live rows, plus the demo roster in mock mode — so the Settings platform
   // cards + the Add-integration reuse picker are populated with no CP running.

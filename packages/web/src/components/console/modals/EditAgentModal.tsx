@@ -6,6 +6,7 @@ import {
   effortField,
   effortLabel,
   FALLBACK_RUNTIME_IDS,
+  loginRequiredRuntimeIds,
   fastModeAvailableFor,
   modelCapability,
   modelLabel,
@@ -315,6 +316,10 @@ export default function EditAgentModal({
   const reportedRuntimeIds = daemon?.runtimeModels.map((r) => r.runtime) ?? []
   const runtimeIds = reportedRuntimeIds.length ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
   const runtimeOptions = runtime && !runtimeIds.includes(runtime) ? [runtime, ...runtimeIds] : runtimeIds
+  // Runtimes the daemon reports as logged out — marked in the picker, never blocked.
+  // An agent may legitimately sit on one (docs/designs/preset-agents.md §3.2), so this
+  // surfaces the state on the choice rather than taking the choice away.
+  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
   const runtimeMeta = acpRuntime(acpRegistry, runtime)
   // Models are only what the daemon reports for this runtime — advertised ids
   // verbatim, never a synthesized "Default" entry: an agent without an explicit
@@ -715,7 +720,12 @@ export default function EditAgentModal({
                 </div>
                 <div className="fld">
                   <span className="fldlbl">Runtime</span>
-                  <RuntimeSelect value={runtime} options={runtimeOptions} onChange={onRuntimeChange} />
+                  <RuntimeSelect
+                    value={runtime}
+                    options={runtimeOptions}
+                    needsLogin={runtimesNeedingLogin}
+                    onChange={onRuntimeChange}
+                  />
                 </div>
                 <div className="fld">
                   <span className="fldlbl">Model</span>

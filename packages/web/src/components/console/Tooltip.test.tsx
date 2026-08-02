@@ -169,13 +169,14 @@ describe('TooltipLayer', () => {
   })
 
   it('releases a focused title before keyboard activation updates it', async () => {
-    const btn = iconButton('Expand sidebar')
-    // The collapsed rail's click changes its title prop to undefined. By the
-    // time this runs, the tooltip layer has already lifted the DOM attribute.
+    const btn = iconButton('Show secret')
+    // A control whose activation drops its own title (the reveal toggles do this
+    // when their label flips). By the time this runs, the tooltip layer has
+    // already lifted the DOM attribute.
     btn.addEventListener('click', () => btn.removeAttribute('title'))
 
     await focus(btn)
-    expect(tooltip()?.textContent).toBe('Expand sidebar')
+    expect(tooltip()?.textContent).toBe('Show secret')
 
     await act(async () => btn.click())
     await act(async () => btn.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))

@@ -7,15 +7,22 @@
 // do I ask": Recent sessions, Agents you use (ranked by 24h session count),
 // and Scheduled runs.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useOrgs } from '@/lib/org-context'
 import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
+import { useIsMobile } from '@/lib/use-is-mobile'
 import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { Card, CardLink, EmptyRow, RecentSessionsCard } from '@/components/console/RecentSessionsCard'
+import {
+  dashboardRowBudget,
+  MAX_AGENT_ROWS,
+  MAX_CRON_ROWS,
+  MOBILE_SESSION_ROWS
+} from '@/components/console/dashboard-rows'
 import { Icon } from '@/components/ui'
 import { AgentIconView, ModelMark, LoadingState, LogoMark } from '@/components/marks'
 import { useProfile } from '@/lib/profile'
@@ -42,6 +49,40 @@ import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 // scanner sees them (STYLE.md §8).
 const CHIP =
   'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
+
+// The literal Tailwind spelling of DASH_ROW_H (`.row` is a components-layer class, so
+// these utilities win). `content-center` centres the row's single grid track inside the
+// taller box instead of stretching it, which is what keeps a cell's `self-start` (the
+// timestamp / next-run column) riding the title line rather than the row's top edge.
+// Desktop only: the mobile layer stacks the cards, so there is nothing to align there
+// and rows keep their natural height.
+const DASH_ROW = 'desktop:h-[63px] desktop:content-center desktop:py-0'
+
+// Leftover height under the composer, measured against the SCROLL CONTAINER — never
+// against the dashboard's own box, so a taller grid can't feed back into the row
+// count and oscillate. Returns null when it can't/shouldn't cap (mobile, no scroller).
+function useAvailableHeight(ref: RefObject<HTMLElement | null>, enabled: boolean, reflow: unknown): number | null {
+  const [height, setHeight] = useState<number | null>(null)
+  useEffect(() => {
+    if (!enabled) {
+      setHeight(null)
+      return
+    }
+    const el = ref.current
+    const scroller = el?.closest<HTMLElement>('.content')
+    if (!el || !scroller) return
+    const measure = () => {
+      const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+      const padBottom = parseFloat(getComputedStyle(scroller).paddingBottom) || 0
+      setHeight(Math.max(0, scroller.clientHeight - top - padBottom))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(scroller)
+    return () => ro.disconnect()
+  }, [ref, enabled, reflow])
+  return height
+}
 
 // Relative "…ago" for a cron's last run. fmtNextRun covers the future side;
 // this is the (missing) past side. Coarse buckets are all a dashboard needs.
@@ -186,11 +227,36 @@ export default function HomeView() {
     [usage24h]
   )
   const rankedAgents = useMemo(
-    () => [...agents].sort((a, b) => (sessionsByAgent.get(b.id) ?? 0) - (sessionsByAgent.get(a.id) ?? 0)).slice(0, 4),
+    () => [...agents].sort((a, b) => (sessionsByAgent.get(b.id) ?? 0) - (sessionsByAgent.get(a.id) ?? 0)),
     [agents, sessionsByAgent]
   )
 
-  const scheduled = crons.slice(0, 3)
+  // How many rows each dashboard card draws — see `dashboard-rows.ts` for the identity
+  // that makes the two columns end on the same line.
+  const isMobile = useIsMobile()
+  const gridRef = useRef<HTMLDivElement>(null)
+  const availableHeight = useAvailableHeight(gridRef, !isMobile, blocked)
+  const { sessionRows, agentRows, cronRows, aligned } = useMemo(
+    () =>
+      isMobile
+        ? // Mobile stacks the three cards: nothing to align, plain content caps.
+          {
+            sessionRows: MOBILE_SESSION_ROWS,
+            agentRows: MAX_AGENT_ROWS,
+            cronRows: MAX_CRON_ROWS,
+            aligned: false
+          }
+        : dashboardRowBudget({
+            availableHeight,
+            sessions: allSessions.length,
+            agents: rankedAgents.length,
+            crons: crons.length
+          }),
+    [isMobile, availableHeight, allSessions.length, rankedAgents.length, crons.length]
+  )
+
+  const topAgents = rankedAgents.slice(0, agentRows)
+  const scheduled = crons.slice(0, cronRows)
 
   if (loading && agents.length === 0 && allSessions.length === 0) return <LoadingState fill />
 
@@ -225,15 +291,13 @@ export default function HomeView() {
   if (holdForOnboarding) return <LoadingState fill />
 
   return (
-    // Desktop: `h-full` pins the page to the viewport so a roomy window shows no page
-    // scrollbar, and `min-h-fit` is the floor — the wrap never shrinks below what the
-    // cards actually need, so .content scrolls instead of squashing a card into a
-    // half-drawn row. The floor is the content's own height, which is row-aligned by
-    // construction (no magic px to keep in sync with row metrics).
+    // Every block here is content-sized: the dashboard picks a row count that fits the
+    // leftover viewport (useAvailableHeight), so the page fills a roomy window without
+    // stretching a card past its rows, and scrolls rather than squashing when it can't.
     // Mobile keeps normal flow + the bottom-nav padding.
-    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-24 desktop:flex desktop:h-full desktop:min-h-fit desktop:flex-col">
+    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-24">
       {/* Centered greeting above the composer (design: 32px mark, 27px title). */}
-      <div className="mt-[22px] mb-[22px] flex flex-none items-center justify-center gap-[13px]">
+      <div className="mt-[22px] mb-[22px] flex items-center justify-center gap-[13px]">
         <LogoMark size={32} />
         {/* Server and client can sit in different timezones, and the display name
             only resolves after mount — both settle on the client. */}
@@ -246,7 +310,7 @@ export default function HomeView() {
       {/* Composer — hands off to a live session on send. The footer selectors mirror
           the design: agent + model as pills (leading mark), effort + permission as
           chips. Each picks the run's runtime; the choice is applied on send. */}
-      <div className="card mb-3 flex-none overflow-visible">
+      <div className="card mb-3 overflow-visible">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -361,7 +425,7 @@ export default function HomeView() {
           offline ⇒ its daemon isn't serving; auth ⇒ online but the daemon's runtime
           reported "sign-in required" (no active AI subscription/login). */}
       {!loading && blocked && (
-        <div className="mb-3 flex flex-none items-center gap-3 rounded-lg border border-(--status-paused-soft) bg-(--status-paused-soft) px-4 py-[10px]">
+        <div className="mb-3 flex items-center gap-3 rounded-lg border border-(--status-paused-soft) bg-(--status-paused-soft) px-4 py-[10px]">
           <Icon name="triangle-alert" size={16} color="var(--status-paused)" />
           <span className="min-w-0 flex-1 font-sans text-[13px] leading-normal text-(--text-secondary)">
             {blocked === 'offline' ? (
@@ -394,37 +458,39 @@ export default function HomeView() {
         </div>
       )}
 
-      {/* Dashboard grid. */}
-      {/* Desktop: the row is sized by the right column (the left card is absolute, so
-          it contributes no height), which keeps both bottoms aligned. */}
-      <div className="grid grid-cols-1 gap-4 desktop:grid-cols-[1.5fr_1fr]">
-        {/* On desktop the grid row height is the leftover viewport space: the card is
-            absolutely positioned (so it never stretches the row itself) and
-            fillHeight fits as many whole session rows as that height allows. */}
-        <div className="desktop:relative">
-          <RecentSessionsCard
-            sessions={allSessions}
-            loading={loading}
-            allHref={orgPath('/sessions')}
-            emptyText="No sessions yet — ask an agent above to start one."
-            fillHeight
-            className="desktop:absolute desktop:inset-0"
-          />
-        </div>
+      {/* Dashboard grid. Both columns are content-sized and the row counts are chosen so
+          they come out the same height — see the row-budget note at the top of the file.
+          `gap-4` is the 16px the budget accounts for; changing it changes DASH_ROW_H. */}
+      <div ref={gridRef} className="grid grid-cols-1 gap-4 desktop:grid-cols-[1.5fr_1fr]">
+        {/* `self-start` is the sparse-state treatment. With enough sessions the card
+            already measures exactly the row height, so it changes nothing; with fewer
+            (a new or quiet org) it stops the grid stretching a two-row card down to
+            the right column's floor, which would trade a shared bottom edge for a tall
+            blank strip. A short card beside a taller column reads as "not much here
+            yet" — the stretched one just reads as broken. */}
+        <RecentSessionsCard
+          sessions={allSessions}
+          loading={loading}
+          allHref={orgPath('/sessions')}
+          emptyText="No sessions yet — ask an agent above to start one."
+          limit={sessionRows}
+          rowClassName={DASH_ROW}
+          className={aligned ? undefined : 'desktop:self-start'}
+        />
 
         <div className="flex flex-col gap-4">
           <Card title="Agents you use" action={<CardLink href={orgPath('/agents')}>All agents</CardLink>}>
-            {rankedAgents.length === 0 ? (
-              <EmptyRow>No agents yet.</EmptyRow>
+            {topAgents.length === 0 ? (
+              <EmptyRow className={DASH_ROW}>No agents yet.</EmptyRow>
             ) : (
-              rankedAgents.map((a) => {
+              topAgents.map((a) => {
                 const ready = agentReady(a)
                 return (
                   <Link
                     key={a.id}
                     href={orgPath(`/agents/${a.id}`)}
                     title={agentLabel(a)}
-                    className={`row click grid-cols-[auto_1fr_auto] gap-3 ${ready ? '' : 'opacity-60'}`}
+                    className={`row click grid-cols-[auto_1fr_auto] gap-3 ${DASH_ROW} ${ready ? '' : 'opacity-60'}`}
                   >
                     <span className="av h-7 w-7 rounded-md">
                       <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
@@ -453,12 +519,16 @@ export default function HomeView() {
 
           <Card title="Scheduled runs" action={<CardLink href={orgPath('/crons')}>All schedules</CardLink>}>
             {scheduled.length === 0 ? (
-              <EmptyRow>No schedules yet.</EmptyRow>
+              <EmptyRow className={DASH_ROW}>No schedules yet.</EmptyRow>
             ) : (
               scheduled.map((c) => {
                 const owner = c.agentId ? getAgent(c.agentId) : undefined
                 return (
-                  <Link key={c.id} href={orgPath(`/crons/${c.id}`)} className="row click grid-cols-[1fr_auto] gap-3">
+                  <Link
+                    key={c.id}
+                    href={orgPath(`/crons/${c.id}`)}
+                    className={`row click grid-cols-[1fr_auto] gap-3 ${DASH_ROW}`}
+                  >
                     <span className="min-w-0">
                       <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
                         {c.name || cronHuman(c.schedule) || c.schedule}

@@ -4,21 +4,30 @@ import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { runtimeLabel } from '@/lib/data'
 
+const LOGIN_HINT = 'Not signed in on this daemon — you can still pick it, then sign in on the daemon host'
+
 export function RuntimeSelect({
   value,
   options,
+  needsLogin,
   onChange,
   ariaLabel = 'Runtime'
 }: {
   value: string
   options: readonly string[]
+  /** Ids the daemon reports as needing a login on its host. MARKED, never disabled:
+   *  the flag doesn't mean "can't launch" (see `loginRequiredRuntimeIds`), and placing
+   *  an agent on a logged-out runtime is a supported state — creation and placement
+   *  deliberately don't gate on readiness (docs/designs/preset-agents.md §3.2). */
+  needsLogin?: readonly string[]
   onChange: (value: string) => void
   ariaLabel?: string
 }) {
   const registry = useAcpRegistry()
   const rows = options.map((id) => ({
     id,
-    label: runtimeLabel(id, acpRuntime(registry, id)?.name)
+    label: runtimeLabel(id, acpRuntime(registry, id)?.name),
+    needsLogin: !!needsLogin?.includes(id)
   }))
   const selectedIndex = Math.max(
     0,
@@ -112,6 +121,13 @@ export function RuntimeSelect({
                 <AgentMark model={selected?.id ?? value} />
               </span>
               <span className="truncate">{selected?.label ?? value}</span>
+              {/* The field is a 1/3 column, too narrow for the menu's text tag — carry
+                  the same warning as a mark so the state survives the menu closing. */}
+              {selected?.needsLogin && (
+                <span className="flex-none" title={LOGIN_HINT}>
+                  <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
+                </span>
+              )}
             </>
           ) : (
             // Deferred exec config (an unplaced preset agent): nothing chosen yet —
@@ -153,6 +169,7 @@ export function RuntimeSelect({
                   role="option"
                   tabIndex={-1}
                   aria-selected={isSelected}
+                  title={row.needsLogin ? LOGIN_HINT : undefined}
                   className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
                     isSelected
                       ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
@@ -167,6 +184,12 @@ export function RuntimeSelect({
                     <AgentMark model={row.id} />
                   </span>
                   <span className="flex-1 whitespace-nowrap">{row.label}</span>
+                  {row.needsLogin && (
+                    <span className="flex flex-none items-center gap-[4px] font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
+                      <Icon name="triangle-alert" size={11} className="flex-none" />
+                      Login required
+                    </span>
+                  )}
                   {isSelected && <Icon name="check" size={16} color="var(--brand)" className="flex-none" />}
                 </button>
               )

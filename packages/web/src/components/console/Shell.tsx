@@ -118,7 +118,7 @@ const HELP_LINK_DEFAULTS = {
   mcp: 'https://docs.agentconnect.md/docs/mcp-connector',
   docs: 'https://docs.agentconnect.md',
   releases: 'https://github.com/agentconnect-md/agentconnect/releases',
-  support: 'mailto:support@agentconnect.md'
+  support: 'mailto:contact@agentconnect.md'
 }
 
 // Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
@@ -583,7 +583,9 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 type="button"
                 onClick={toggleRail}
                 className="railtoggle"
-                title={railCollapsed ? 'Expand sidebar' : undefined}
+                // No `title`: the icon already reads as the collapse/expand affordance,
+                // and a tooltip on the collapsed rail's own toggle is noise. Screen
+                // readers still get the state from aria-label.
                 aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
                 <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />
