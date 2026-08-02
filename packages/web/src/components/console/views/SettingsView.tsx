@@ -50,7 +50,7 @@ import {
   type SessionAccessProvider,
   type SlackBotRefreshDto
 } from '@/lib/api'
-import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
+import { agentLabel, isDirectConversation, type AgentCallPolicy, type IntegrationRow } from '@/lib/data'
 import { slackAppSettingsUrl } from '@/lib/slack-manifest'
 import { slackRefreshNoticeState } from '@/lib/slack-refresh-notice'
 import { discordBotInviteUrl } from '@/lib/discord-invite'
@@ -211,6 +211,101 @@ function SessionAccessRow({
           onChange={(next) => void setEnabled(next)}
         />
       </span>
+    </div>
+  )
+}
+
+const AGENT_VISIBILITY_OPTIONS = [
+  {
+    key: 'all',
+    label: 'All agents',
+    sub: 'Open in both directions to every agent in the organization.'
+  },
+  {
+    key: 'selected',
+    label: 'Isolated',
+    sub: 'No peer access until agents are selected.'
+  }
+] as const satisfies ReadonlyArray<{ key: AgentCallPolicy; label: string; sub: string }>
+
+function AgentVisibilityCard({
+  orgId,
+  policy,
+  isOwner,
+  onChange
+}: {
+  orgId?: string
+  policy: AgentCallPolicy
+  isOwner: boolean
+  onChange: (policy: AgentCallPolicy) => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const setPolicy = async (next: AgentCallPolicy) => {
+    if (!orgId || !isOwner || busy || next === policy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onChange(next)
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : String(nextError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const disabled = !orgId || !isOwner || busy
+
+  return (
+    <div className="card mt-[18px]">
+      <div className="cardhead">
+        <span className="cardtitle">Agent visibility</span>
+      </div>
+      <div className="px-4 py-[15px]">
+        <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+          Default for new agents
+        </div>
+        <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+          Choose whether newly created agents can collaborate with every agent or start isolated. Existing agents keep
+          their own settings.
+        </div>
+        <div
+          className="mt-3 grid grid-cols-2 gap-[6px]"
+          role="radiogroup"
+          aria-label="Default agent visibility"
+          aria-busy={busy}
+          title={isOwner ? undefined : 'Only organization owners can change this setting'}
+        >
+          {AGENT_VISIBILITY_OPTIONS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              role="radio"
+              disabled={disabled}
+              aria-checked={policy === option.key}
+              onClick={() => void setPolicy(option.key)}
+              className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[8px] text-left ${
+                policy === option.key
+                  ? 'border-(--brand) bg-(--surface-active)'
+                  : 'border-(--border-default) bg-(--surface-app)'
+              } ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+            >
+              <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                {option.label}
+              </span>
+              <span className="font-sans text-[11px] font-normal leading-[1.4] text-(--text-tertiary)">
+                {option.sub}
+              </span>
+            </button>
+          ))}
+        </div>
+        {error && (
+          <div role="alert" className="mt-2 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
+            {error}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -619,7 +714,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
 export default function SettingsView() {
   const targetBotId = useSearchParams().get('bot')
   const { me } = useProfile()
-  const { activeOrg, myRole, refreshOrgs, leaveOrg, error: orgError } = useOrgs()
+  const { activeOrg, myRole, refreshOrgs, updateOrg: updateOrgSettings, leaveOrg, error: orgError } = useOrgs()
   const { openModal } = useModal()
   const isOwner = myRole === 'owner'
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
@@ -725,6 +820,17 @@ export default function SettingsView() {
           </div>
         </div>
       </div>
+
+      <AgentVisibilityCard
+        key={activeOrg?.id ?? 'loading'}
+        orgId={activeOrg?.id}
+        policy={activeOrg?.defaultAgentVisibility ?? 'all'}
+        isOwner={isOwner}
+        onChange={async (policy) => {
+          if (!activeOrg) return
+          await updateOrgSettings(activeOrg.id, { defaultAgentVisibility: policy })
+        }}
+      />
 
       <div className="card mt-[18px]">
         <div className="cardhead">

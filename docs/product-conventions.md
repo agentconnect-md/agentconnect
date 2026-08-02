@@ -353,6 +353,8 @@ directions, so future agents discover no peers and accept no peer calls until co
 An individual create may still override either direction. Changing the organization
 default affects only future agents and never rewrites an existing agent's persisted policy.
 A local or otherwise unconfigured agent also defaults to `all` for compatibility.
+The organization-wide creation default is a first-class Settings card at the same
+hierarchy as Session access, not a field inside the Edit organization dialog.
 
 **Two unrelated settings are both called "visibility".** The `callPolicy` /
 `outboundPolicy` pair above is what the console labels "Agent visibility", and it is the
