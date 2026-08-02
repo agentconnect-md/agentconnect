@@ -27,6 +27,7 @@ import {
   speaker,
   status,
   type Agent,
+  type Session,
   type SessionImage,
   type SessionStep
 } from '@/lib/data'
@@ -705,6 +706,7 @@ export default function SessionDetailView() {
   const [msgPaging, setMsgPaging] = useState(false)
   const [msgErr, setMsgErr] = useState<string | null>(null)
   const [tailReady, setTailReady] = useState(false)
+  const [transcriptSessionId, setTranscriptSessionId] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
   // by turn index), overriding the default that turn's content implies. Stored as the
@@ -719,14 +721,22 @@ export default function SessionDetailView() {
   const [runtimeSelections, setRuntimeSelections] = useState<
     Record<string, { model?: string; effort?: string; permissionMode?: string; fast?: boolean }>
   >({})
+  // A rail row already carries enough metadata to paint the next session while
+  // its detail/transcript requests catch up. Keeping it here also holds the
+  // agent-filtered rail steady instead of briefly dropping it between ids.
+  const [routeSession, setRouteSession] = useState<Session | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const imagePrepareGenerationRef = useRef(0)
   const liveCursorRef = useRef<string | null>(null)
   const tailSessionRef = useRef<string | null>(null)
   const tailReadyRef = useRef(false)
   const tailInFlightRef = useRef<Promise<void> | null>(null)
   const tailDirtyRef = useRef(false)
 
-  const localSession = getPgSession(id) ?? allSessions.find((s) => s.id === id) ?? null
+  const localSession =
+    getPgSession(id) ??
+    allSessions.find((s) => s.id === id) ??
+    (routeSession && (routeSession.id === id || routeSession.realSessionId === id) ? routeSession : null)
   // Relationship links can point outside the cursor pages loaded by SessionsView.
   // Fetch CP-stored detail metadata for real sessions (or an otherwise-missing
   // deep link) and use it as a fallback row. Mock sessions carry local steps and
@@ -785,7 +795,11 @@ export default function SessionDetailView() {
     !profileIdentityLoading &&
     profileIdentityError === undefined &&
     profileIdentity?.linked === false
-  const detailSession = sessionDetail ? sessionFromDetailDto(sessionDetail) : null
+  // SWR normally clears data when its key changes. Keep the id check explicit
+  // because this view now persists across route ids and must never merge a
+  // retained previous snapshot into the newly selected rail row.
+  const currentSessionDetail = sessionDetail?.id === detailId ? sessionDetail : null
+  const detailSession = currentSessionDetail ? sessionFromDetailDto(currentSessionDetail) : null
   // The cursor-loaded list row can predate the final Dream usage report. Keep
   // its local/live fields, but let the independently refreshed detail snapshot
   // supply the authoritative per-session token and cost totals.
@@ -842,6 +856,14 @@ export default function SessionDetailView() {
   const sid = session?.id
   const aid = session?.agentId
   const wantTranscript = !!session && session.platform !== 'playground' && session.steps.length === 0 && !!aid
+  // This component now survives id changes. Do not paint session A's transcript
+  // for one frame under session B's header before the loading effect clears it.
+  const transcriptMatchesSession = !wantTranscript || transcriptSessionId === sid
+  const visibleMsgs = transcriptMatchesSession ? msgs : null
+  const visibleMsgLoading = transcriptMatchesSession ? msgLoading : wantTranscript
+  const visibleMsgPaging = wantTranscript && transcriptMatchesSession && msgPaging
+  const visibleMsgErr = wantTranscript && transcriptMatchesSession ? msgErr : null
+  const visibleTailReady = wantTranscript && transcriptMatchesSession && tailReady
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a.id, agentLabel(a)])), [agents])
   const memberNameByIdentity = useMemo(() => {
     const names = new Map<string, string>()
@@ -862,8 +884,8 @@ export default function SessionDetailView() {
     return pictures
   }, [members])
   const attributedAgentIdBySender = useMemo(
-    () => sessionAttributionAgentAuthors(session?.platform ?? '', msgs ?? [], agentById),
-    [session?.platform, msgs, agentById]
+    () => sessionAttributionAgentAuthors(session?.platform ?? '', visibleMsgs ?? [], agentById),
+    [session?.platform, visibleMsgs, agentById]
   )
   const participantAgent = (sender: string, text: string, trustedAgentBot?: boolean): Agent | undefined => {
     const id = agentById.has(sender)
@@ -881,6 +903,7 @@ export default function SessionDetailView() {
   useEffect(() => {
     if (!wantTranscript || !sid || !aid) return
     let active = true
+    setTranscriptSessionId(sid)
     tailSessionRef.current = sid
     tailReadyRef.current = false
     liveCursorRef.current = null
@@ -981,15 +1004,15 @@ export default function SessionDetailView() {
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
   useEffect(() => {
-    if (!tailReady || sessionBusy) return
+    if (!visibleTailReady || sessionBusy) return
     void refreshTranscriptTail()
-  }, [tailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTranscriptTail])
+  }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTranscriptTail])
 
   useEffect(() => {
-    if (!tailReady) return
+    if (!visibleTailReady) return
     const timer = window.setInterval(() => void refreshTranscriptTail(), 15_000)
     return () => window.clearInterval(timer)
-  }, [tailReady, refreshTranscriptTail])
+  }, [visibleTailReady, refreshTranscriptTail])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -1018,6 +1041,21 @@ export default function SessionDetailView() {
     registerCrumb({ id, title: crumbTitle, status: crumbStatusKey, statusLabel: crumbStatusLabel })
     return () => registerCrumb(null)
   }, [registerCrumb, id, crumbTitle, crumbStatusKey, crumbStatusLabel])
+
+  // Page-local popovers and turn expansion choices must not leak from one
+  // session into the next now that the shared route layout preserves this
+  // component instance.
+  useEffect(() => {
+    imagePrepareGenerationRef.current += 1
+    setCopied(false)
+    setDetailOpen(false)
+    setWorkOverride(new Map())
+    setImagePreparing(false)
+    setImageError(null)
+    if (imageInputRef.current) imageInputRef.current.value = ''
+    setAttachMenuOpen(false)
+    setComposerMenuOpen(null)
+  }, [id])
 
   if (!session) {
     // Shell owns detail navigation at both breakpoints; this branch only renders the
@@ -1057,14 +1095,15 @@ export default function SessionDetailView() {
   // header and the mobile meta strip; null when there is nothing to show (an org
   // session the caller cannot re-classify, or a mock/legacy row).
   const visibilityControl =
-    sessionDetail && detailId ? (
+    currentSessionDetail && detailId ? (
       <SessionVisibilityControl
+        key={detailId}
         sessionId={detailId}
-        visibility={sessionDetail.visibility ?? undefined}
-        state={sessionDetail.visibilityState}
-        canChange={sessionDetail.canChangeVisibility === true}
-        externalProvider={sessionDetail.externalProvider}
-        externalResolution={sessionDetail.externalResolution}
+        visibility={currentSessionDetail.visibility ?? undefined}
+        state={currentSessionDetail.visibilityState}
+        canChange={currentSessionDetail.canChangeVisibility === true}
+        externalProvider={currentSessionDetail.externalProvider}
+        externalResolution={currentSessionDetail.externalResolution}
         // Native runtime memory has no per-session gate, so the copy must not
         // promise a memory boundary this tier cannot deliver.
         nativeMemory={owner?.memoryProvider === 'native'}
@@ -1107,16 +1146,22 @@ export default function SessionDetailView() {
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return
+    const generation = ++imagePrepareGenerationRef.current
     setAttachMenuOpen(false)
     setImagePreparing(true)
     setImageError(null)
     try {
-      setPgImage(session.id, await prepareWebchatImage(file))
+      const image = await prepareWebchatImage(file)
+      if (imagePrepareGenerationRef.current !== generation) return
+      setPgImage(session.id, image)
     } catch (error) {
+      if (imagePrepareGenerationRef.current !== generation) return
       setImageError(error instanceof Error ? error.message : 'Couldn’t prepare that image.')
     } finally {
-      setImagePreparing(false)
-      if (imageInputRef.current) imageInputRef.current.value = ''
+      if (imagePrepareGenerationRef.current === generation) {
+        setImagePreparing(false)
+        if (imageInputRef.current) imageInputRef.current.value = ''
+      }
     }
   }
   const webchatConversationId = isLive ? session.channelId : undefined
@@ -1146,7 +1191,7 @@ export default function SessionDetailView() {
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
-    for (const m of msgs ?? []) {
+    for (const m of visibleMsgs ?? []) {
       if (m.sender === session.agentId) {
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot') {
@@ -1284,9 +1329,10 @@ export default function SessionDetailView() {
   const pgEmpty = isPg && session.steps.length === 0 && !pgBusy
   // "No messages" only when nothing is rendered — a resumed webchat turn folds into
   // `turns`, so once you've sent one the empty card gives way to the transcript.
-  const transcriptEmpty = wantTranscript && !msgLoading && !msgErr && (msgs?.length ?? 0) === 0 && turns.length === 0
+  const transcriptEmpty =
+    wantTranscript && !visibleMsgLoading && !visibleMsgErr && (visibleMsgs?.length ?? 0) === 0 && turns.length === 0
   const prompts = pgPrompts(session.agentId ?? '')
-  const loadedTranscriptStats = wantTranscript && msgs !== null ? activityStatsFromTranscript(msgs) : null
+  const loadedTranscriptStats = wantTranscript && visibleMsgs !== null ? activityStatsFromTranscript(visibleMsgs) : null
   const liveActivityStats = isPg ? activityStatsFromSteps(session.steps) : activityStatsFromSteps(liveSteps)
   const durationFirst = minTime(loadedTranscriptStats?.firstMs, liveActivityStats.firstMs)
   const durationLast = maxTime(
@@ -1427,7 +1473,8 @@ export default function SessionDetailView() {
         current={session}
         total={railSessionTotal}
         agentId={session.agentId}
-        family={sessionDetail?.id === session.id ? sessionDetail : undefined}
+        family={currentSessionDetail?.id === session.id ? currentSessionDetail : undefined}
+        onSelect={setRouteSession}
       />
       <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
         {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
@@ -1569,7 +1616,7 @@ export default function SessionDetailView() {
           </button>
         </div>
 
-        {sessionDetail?.accessSyncDegraded && (
+        {currentSessionDetail?.accessSyncDegraded && (
           <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3">
             External access could not be verified. Related sessions remain hidden until access checks succeed.
           </div>
@@ -1633,11 +1680,11 @@ export default function SessionDetailView() {
           </div>
         )}
 
-        {sessionDetail?.id === session.id && (
+        {currentSessionDetail?.id === session.id && (
           <MobileSessionFamilyLinks
-            parent={sessionDetail.parentSession}
-            siblings={sessionDetail.siblingSessions ?? []}
-            children={sessionDetail.childSessions}
+            parent={currentSessionDetail.parentSession}
+            siblings={currentSessionDetail.siblingSessions ?? []}
+            children={currentSessionDetail.childSessions}
             agentById={agentById}
             orgPath={orgPath}
           />
@@ -1645,6 +1692,7 @@ export default function SessionDetailView() {
 
         {owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
           <ApprovalRequestsCard
+            key={session.id}
             agentId={session.agentId}
             sessionId={session.realSessionId ?? session.id}
             hideWhenEmpty
@@ -1652,12 +1700,12 @@ export default function SessionDetailView() {
           />
         )}
 
-        {wantTranscript && msgLoading && (
+        {wantTranscript && visibleMsgLoading && (
           <div className="flex justify-center py-10">
             <Spinner size={30} />
           </div>
         )}
-        {wantTranscript && msgErr && (
+        {wantTranscript && visibleMsgErr && (
           <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
             <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
             <span>
@@ -1675,7 +1723,7 @@ export default function SessionDetailView() {
           </div>
         )}
 
-        {msgPaging && (
+        {visibleMsgPaging && (
           <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
             <Spinner size={14} />
             Loading earlier activity…
@@ -1692,7 +1740,7 @@ export default function SessionDetailView() {
                 turn.kind === 'user' ? (
                   // 2b: user turns are right-aligned brand-soft bubbles. A sender label
                   // sits above the bubble only when it isn't you (platform user / cron).
-                  <div key={ti} className="flex items-start justify-end gap-[9px]">
+                  <div key={`${session.id}:${ti}`} className="flex items-start justify-end gap-[9px]">
                     <div className="flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
                       {(turn.isCron || turn.sp.handle !== '@you') && (
                         <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
@@ -1740,7 +1788,7 @@ export default function SessionDetailView() {
                     const autoOpen = textSteps.length === 0
                     const openWork = workPanelOpen(workOverride.get(ti), autoOpen)
                     return (
-                      <div key={ti} className="flex items-start gap-[9px]">
+                      <div key={`${session.id}:${ti}`} className="flex items-start gap-[9px]">
                         <span className="av h-[26px] w-[26px] flex-none rounded-md">
                           <AgentIconView icon={owner?.icon} runtime={agentRuntime || turn.model} size={26} />
                         </span>
@@ -1842,6 +1890,7 @@ export default function SessionDetailView() {
             <>
               {activeOrg && session.agentId && webchatConversationId && (
                 <WebchatMcpApprovalCard
+                  key={webchatConversationId}
                   orgId={activeOrg.id}
                   agentId={session.agentId}
                   conversationId={webchatConversationId}
