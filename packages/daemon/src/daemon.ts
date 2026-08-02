@@ -4155,7 +4155,12 @@ export class Daemon {
   private buildAcpHost(
     agent: LoadedAgent,
     cfg: ReturnType<typeof loadConfig>,
-    opts: { runInSandbox: boolean; cwd: string; warnOnSandboxDowngrade?: boolean }
+    opts: {
+      runInSandbox: boolean
+      cwd: string
+      warnOnSandboxDowngrade?: boolean
+      excludeAgentToolCredentials?: boolean
+    }
   ): { host: AcpHost; configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.onAcpUpdate(agentId, sid, u)
@@ -4188,9 +4193,17 @@ export class Daemon {
       throw new Error(
         `runtime "${agent.runtime}" not available: not installed on this host, or absent from config.runtimes / the ACP registry`
       )
+    // A dream reads only its materialized inputs to produce a memory proposal, so
+    // it never needs the agent's TOOL credentials (github-app git helper, gh
+    // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
+    // DOCKER_CONFIG). Excluding them keeps those secrets out of the
+    // attacker-controlled extraction AND avoids materializing files that a
+    // dedicated dream host would never clean up (it never reaches stopHost's
+    // cleanupConfigFiles) — task #36 A2.
+    const excludeAgentToolCredentials = opts.excludeAgentToolCredentials === true
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
-    const githubAppCredentials = agent.workspace.gitCredential === 'github-app'
+    const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
     // sessionGitEnv LAST: the github-app credential-helper env must win over
     // runtimeOverrides env (a user-supplied GIT_CONFIG_* would reopen
     // the machine-credential leak the injection exists to close).
@@ -4220,16 +4233,20 @@ export class Daemon {
     // explicit pointer var configured anywhere wins and skips materialization.
     // The pre-strip merged env is snapshotted so the idle sweep can delete the
     // files and rematerializeConfigFiles() can re-write them before a later turn.
-    const configFileSourceEnv = { ...runtimeEnv, ...env }
-    const configFiles = materializeConfigFiles(agent.dir, configFileSourceEnv)
-    for (const name of configFiles.strip) {
-      delete env[name]
-      delete runtimeEnv[name]
-    }
-    Object.assign(env, configFiles.env)
-    this.queueSpawnNotices(agentId, configFiles.notices)
-    if (Object.keys(configFiles.env).length > 0) {
-      configFileState = { childEnv: configFileSourceEnv, materialized: true }
+    // Skipped entirely for a dream host — it needs none of these tool secrets and
+    // has no config-file cleanup path.
+    if (!excludeAgentToolCredentials) {
+      const configFileSourceEnv = { ...runtimeEnv, ...env }
+      const configFiles = materializeConfigFiles(agent.dir, configFileSourceEnv)
+      for (const name of configFiles.strip) {
+        delete env[name]
+        delete runtimeEnv[name]
+      }
+      Object.assign(env, configFiles.env)
+      this.queueSpawnNotices(agentId, configFiles.notices)
+      if (Object.keys(configFiles.env).length > 0) {
+        configFileState = { childEnv: configFileSourceEnv, materialized: true }
+      }
     }
     const shimDirs = new Set<string>()
     if (githubAppCredentials && this.ghBinDir) {
@@ -4572,16 +4589,21 @@ export class Daemon {
     // transcript can never reach provider credentials, and the confined child is
     // torn down the moment the extraction settles.
     const host = await this.buildDreamHost(agent, context.inputDir)
+    const ref: { sessionId?: string } = {}
     try {
-      return await this.runDreamExtractionOnHost(host, agent, systemPrompt, prompt, signal, context)
+      return await this.runDreamExtractionOnHost(host, agent, systemPrompt, prompt, signal, context, ref)
     } finally {
       // One-off host: discard the whole confined child so its process + huge,
       // attacker-influenced context never lingers (dreams are rare). Stopping the
-      // child also kills a runtime that ignored `session/cancel`. The extraction's
-      // quarantine tombstone (set to discard stragglers during teardown) is not
-      // cleared here — a dedicated dream host never reaches stopHost's
-      // clearMemoryExtractionQuarantines sweep, so shutdown clears it instead.
+      // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
+      // The confined child is gone, so no straggler ACP callback can arrive for
+      // this dream's session. Reclaim the extraction quarantine tombstone now —
+      // a dedicated dream host never reaches stopHost's per-agent
+      // clearMemoryExtractionQuarantines sweep, so without this a long-lived
+      // daemon would leak one Map entry per dream. Scoped to THIS session so a
+      // concurrent distiller quarantine on the warm host is untouched.
+      if (ref.sessionId) this.memoryExtractionQuarantines.delete(pendingTurnKey(agent.id, ref.sessionId))
     }
   }
 
@@ -4600,7 +4622,14 @@ export class Daemon {
         'memory dream requires a supported OS sandbox to isolate provider credentials from the mined transcript; none is available on this host'
       )
     }
-    const { host } = this.buildAcpHost(agent, this.cfg, { runInSandbox: true, cwd })
+    const { host } = this.buildAcpHost(agent, this.cfg, {
+      runInSandbox: true,
+      cwd,
+      // A dream needs only its materialized inputs, never the agent's tool
+      // credentials — keep github-app/gh/`*_DATA` secrets out of the
+      // attacker-controlled extraction (and off a host with no cleanup path).
+      excludeAgentToolCredentials: true
+    })
     try {
       await host.start()
     } catch (err) {
@@ -4641,7 +4670,10 @@ export class Daemon {
     systemPrompt: string,
     prompt: string,
     signal: AbortSignal,
-    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string }
+    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string },
+    // Written back once the ACP session exists so the caller's teardown can
+    // reclaim this session's quarantine tombstone after the host is stopped.
+    ref: { sessionId?: string }
   ): Promise<{
     output: string
     sessionId: string
@@ -4665,6 +4697,7 @@ export class Daemon {
     // launching an uncancellable prompt.
     if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    ref.sessionId = sessionId
     const modelOptions = host.modelOptions?.(sessionId) ?? null
     const selectedModel = modelOptions?.current
     // Mirror ordinary-turn attribution: a runtime-owned `default` means the
@@ -17656,10 +17689,9 @@ export class Daemon {
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
     await Promise.allSettled(hostStarts)
-    // Every host (warm + any dedicated dream host) is now gone, so no straggler
-    // ACP callback can arrive. stopHost's per-agent clearMemoryExtractionQuarantines
-    // only ran for agents that had a warm host; a dedicated dream host is never
-    // registered there, so drop any remaining extraction tombstones here (task #36).
+    // Shutdown backstop: dream extractions reclaim their own tombstone when the
+    // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop
+    // anything still lingering here so nothing survives the process (task #36).
     this.memoryExtractionQuarantines.clear()
     // An aborted warm SessionManager caller can settle before its uncancellable
     // workspace I/O. Keep the trusted ledger/store boundary alive until every

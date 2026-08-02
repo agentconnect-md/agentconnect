@@ -269,47 +269,17 @@ describe('Daemon evaluation surface', () => {
     expect(JSON.stringify(collector.events())).not.toContain(proposal)
     expect(host.discardSession).toHaveBeenCalledWith('dream-session-1')
 
-    const eventCount = collector.events().length
-    onUpdate('dream-session-1', {
-      sessionUpdate: 'agent_thought_chunk',
-      content: { type: 'text', text: 'PRIVATE LATE DREAM UPDATE' }
-    })
-    expect((daemon as any).memoryExtractionQuarantines.size).toBe(1)
-    expect(collector.events()).toHaveLength(eventCount)
-    expect(
-      (daemon as any).store
-        .threadTranscript('memory', started.dreamId)
-        .map((row: { text: string }) => row.text)
-        .join('\n')
-    ).not.toContain('PRIVATE LATE DREAM UPDATE')
-
-    onUpdate('dream-session-1', {
-      sessionUpdate: 'usage_update',
-      used: 99,
-      size: 256_000,
-      cost: { amount: 0.09, currency: 'USD' }
-    })
-    expect((daemon as any).store.getUsage(session.key)).toMatchObject({
-      totalTokens: 12,
-      contextUsed: 99,
-      contextSize: 256_000,
-      costAmount: 0.09,
-      costCurrency: 'USD'
-    })
+    // The dedicated dream host is torn down when the extraction settles, so its
+    // quarantine tombstone is reclaimed immediately — nothing accumulates across
+    // dreams for the life of the daemon (task #36 A2). Straggler handling during
+    // the teardown window is covered by the ignore-cancel test below.
+    expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
     expect(usageReports.at(-1)).toMatchObject({
       sessionId: 'dream-session-1',
       agentId: AGENT_ID,
       platform: 'dream',
-      channel: 'memory',
-      usage: {
-        totalTokens: 12,
-        contextUsed: 99,
-        contextSize: 256_000,
-        costAmount: 0.09,
-        costCurrency: 'USD'
-      }
+      channel: 'memory'
     })
-    expect(collector.events()).toHaveLength(eventCount)
 
     ;(daemon as any).recordDreamLifecycle({
       type: 'memory.dream.skill_accepted',
@@ -383,16 +353,23 @@ describe('Daemon evaluation surface', () => {
     collector.assertValid()
   }, 15_000)
 
-  it('quarantines late Dream output when a runtime ignores cancellation', async () => {
+  it('quarantines stragglers during teardown then reclaims the tombstone when a runtime ignores cancellation', async () => {
     const collector = new EvaluationEventCollector()
     let onUpdate!: (sessionId: string, update: unknown) => void
     let promptStarted!: () => void
     let settlePrompt!: (value: { stopReason: string }) => void
+    let releaseStop!: () => void
     const startedPrompt = new Promise<void>((resolve) => {
       promptStarted = resolve
     })
     const promptResult = new Promise<{ stopReason: string }>((resolve) => {
       settlePrompt = resolve
+    })
+    // Gate the dedicated host's teardown so the test can act in the window between
+    // the backstop detaching the collector and the confined child being gone —
+    // exactly when a cancel-ignoring runtime can still emit stragglers.
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve
     })
     const host = {
       start: vi.fn(async () => {}),
@@ -408,7 +385,7 @@ describe('Daemon evaluation surface', () => {
       }),
       discardSession: vi.fn(),
       cancel: vi.fn(async () => {}),
-      stop: vi.fn(async () => {})
+      stop: vi.fn(() => stopGate)
     }
     const daemon = new Daemon({
       root: scaffold(),
@@ -431,8 +408,14 @@ describe('Daemon evaluation surface', () => {
       runner.cancel(AGENT_ID, started.dreamId)
       await vi.advanceTimersByTimeAsync(15_000)
 
+      // The backstop detached the collector and force-stopped the confined host
+      // (killing the cancel-ignoring runtime); teardown is paused on the gate, so
+      // this session's quarantine tombstone still guards stragglers.
       expect((daemon as any).memoryExtractionCollectors.size).toBe(0)
+      expect(host.stop).toHaveBeenCalled()
       expect((daemon as any).memoryExtractionQuarantines.size).toBe(1)
+
+      // A body-bearing straggler is discarded — never reaches evaluation telemetry.
       onUpdate('dream-ignored-cancel', {
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: 'PRIVATE DREAM PROPOSAL' }
@@ -440,10 +423,30 @@ describe('Daemon evaluation surface', () => {
       expect(JSON.stringify(collector.events())).not.toContain('PRIVATE DREAM PROPOSAL')
       expect(collector.events().some((event) => event.type === 'acp.update')).toBe(false)
 
+      // A late usage snapshot is safe metadata and still corrects the session's
+      // latest-wins accounting.
+      const session = (daemon as any).store.getSessionByAcpIdForAgent(AGENT_ID, 'dream-ignored-cancel')
+      onUpdate('dream-ignored-cancel', {
+        sessionUpdate: 'usage_update',
+        used: 99,
+        size: 256_000,
+        cost: { amount: 0.09, currency: 'USD' }
+      })
+      expect((daemon as any).store.getUsage(session.key)).toMatchObject({
+        contextUsed: 99,
+        contextSize: 256_000,
+        costAmount: 0.09,
+        costCurrency: 'USD'
+      })
+
+      // Once the confined child is fully gone, its session's tombstone is reclaimed
+      // — a stopped host can produce no further callbacks.
+      releaseStop()
       settlePrompt({ stopReason: 'end_turn' })
       await vi.advanceTimersByTimeAsync(0)
-      expect((daemon as any).memoryExtractionQuarantines.size).toBe(1)
+      expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
     } finally {
+      releaseStop()
       settlePrompt({ stopReason: 'end_turn' })
       vi.useRealTimers()
       await daemon.stop()
