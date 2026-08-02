@@ -33,6 +33,10 @@ export interface NormalizedMessage extends Omit<
    * only the timestamp before the separator.
    */
   transcriptTs?: string
+  /** The canonical webchat post id minted beside `transcriptTs` (same origin,
+   *  merged-conversation-view.md §6) — persisted on the transcript row so
+   *  cross-daemon copies share an explicit identity. */
+  transcriptPostId?: string
   source: 'user' | 'cron' | 'agent' | 'hook'
   platform: 'slack' | 'telegram' | 'webchat' | 'discord' | 'feishu' | 'hook'
   /**

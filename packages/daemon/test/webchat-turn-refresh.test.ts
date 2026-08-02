@@ -142,6 +142,19 @@ describe('webchat turn-final context refresh', () => {
       .filter((row: { sender: string }) => row.sender === AGENT_ID)
       .map((row: { text: string }) => row.text)
     expect(replies).toEqual(['fresh replacement'])
+
+    // Canonical post identity (merged-conversation-view.md §6): every webchat
+    // text row persists the origin-minted postId — the trigger carries the
+    // relay-minted one, the peer's context copy the peer's, and the reply row
+    // the SAME id its rd/webchat-post fan-out announced.
+    const rows = (daemon as any).store.transcriptSince(
+      transcriptChannelKey(CONV, undefined),
+      `webchat:${CONV}`,
+      null
+    ) as { sender: string; text: string; postId?: string | null }[]
+    expect(rows.find((r) => r.text === 'original request')?.postId).toBe(TURN)
+    expect(rows.find((r) => r.text === 'peer answer 1')?.postId).toBe(peerPost(1, 0).postId)
+    expect(rows.find((r) => r.text === 'fresh replacement')?.postId).toBe(posts[0]!.post.postId)
     await daemon.stop()
   })
 
