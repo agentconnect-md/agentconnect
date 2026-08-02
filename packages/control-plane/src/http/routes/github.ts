@@ -24,6 +24,7 @@ import { OrgId } from '../../domain/ids.js'
 import { GithubApiError } from '../../github/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
+import { GithubInstallationClaimConflict } from '../../persistence/errors.js'
 import { orgOf, denyViewerWrite, denyNonOwner } from '../rbac.js'
 import {
   ErrorDto,
@@ -175,7 +176,7 @@ export function githubRoutes(deps: HttpDeps) {
           tags: [Tag.GitHub],
           summary: 'Sync GitHub installations',
           description:
-            'Reconcile claims against GitHub (App-JWT read): claim new installations for this org, mark vanished ones revoked, and refresh the current/outdated permission verdict. The fallback for a lost setup callback, a pending admin approval, or a missing state.',
+            "Refresh this organization's existing installation claims from GitHub, mark vanished ones revoked, and update the current/outdated permission verdict. Unknown installations are never claimed by Sync.",
           operationId: 'syncGithubInstallations',
           response: { 200: GithubInstallationListDto, 403: ErrorDto, 429: ErrorDto, 502: ErrorDto }
         }
@@ -468,13 +469,14 @@ export function githubCallbackRoutes(deps: HttpDeps) {
             : reply.type('text/plain').send(`GitHub App: ${note}. You can close this tab and open the console.`)
 
         // Admin-approval flow: a non-admin requested the install — no usable
-        // installation yet; the eventual approval is picked up by Sync.
+        // installation yet. After approval the user must restart the org-bound
+        // install so a signed callback, rather than an App-wide scan, claims it.
         if (req.query.setup_action === 'request') return back('pending-approval')
 
         // State passthrough is UNDOCUMENTED GitHub behavior that has regressed
-        // before (#61291) — a missing/invalid state degrades to the Sync path,
-        // it is never an error.
-        if (!req.query.state || req.query.installation_id === undefined) return back('sync-needed')
+        // before (#61291). Without it there is no tenant-binding proof, so never
+        // guess from the App-wide installation roster; ask the user to restart.
+        if (!req.query.state || req.query.installation_id === undefined) return back('retry-install')
         try {
           const claimed = await gh.claimFromCallback(req.query.state, req.query.installation_id)
           if (claimed) {
@@ -485,13 +487,22 @@ export function githubCallbackRoutes(deps: HttpDeps) {
               .rebroadcastGithubForOrg(claimed.orgId)
               .catch((err) => req.log.warn({ err }, 'github setup callback: hook rebroadcast failed'))
           }
-          return back(claimed ? 'installed' : 'sync-needed')
+          return back(claimed ? 'installed' : 'retry-install')
         } catch (e) {
           if (e instanceof GithubApiError) {
             // Ownership verify failed (someone else's installation id, GitHub
-            // hiccup) — nothing was claimed; the console Sync path recovers.
+            // hiccup) — nothing was claimed; restart the signed install flow.
             req.log.warn({ status: e.status }, 'github setup callback verify failed')
-            return back('sync-needed')
+            return back('retry-install')
+          }
+          if (e instanceof GithubInstallationClaimConflict) {
+            // Preserve the immutable tenant claim without exposing which other
+            // organization owns it through this unauthenticated callback.
+            req.log.warn(
+              { installationId: e.installationId.toString(), code: e.code },
+              'github setup callback: installation already claimed'
+            )
+            return back('retry-install')
           }
           throw e
         }

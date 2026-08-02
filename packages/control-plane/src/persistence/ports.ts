@@ -2440,11 +2440,15 @@ export interface GithubInstallationRecord extends GithubInstallationFacts {
 }
 
 export interface GithubInstallationRepo {
-  /** Claim/update by GitHub installation id (idempotent for setup-callback + sync). */
+  /** Claim/update by GitHub installation id. The setup callback is the only
+   * path allowed to create a claim; refresh paths pass the durable claim's org. */
   upsertFromGithub(orgId: OrgId, facts: GithubInstallationFacts): Promise<GithubInstallationRecord>
   get(id: string): Promise<GithubInstallationRecord | null>
   /** Live (non-revoked) installations claimed by the org — the picker's first level. */
   listForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
+  /** Every durable claim for an org, including revoked rows. Sync refreshes
+   * exactly this set, so it never assigns an unclaimed or foreign installation. */
+  listClaimsForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
   /** Mint-time resolution: the live installation covering `accountLogin` in this org. */
   liveByOrgAndAccount(orgId: OrgId, accountLogin: string): Promise<GithubInstallationRecord | null>
   /** Doorbell lookup by GITHUB-side id (revoked rows included — the claim row is
@@ -2452,8 +2456,6 @@ export interface GithubInstallationRepo {
   getByInstallationId(installationId: bigint): Promise<GithubInstallationRecord | null>
   /** Doorbell revoke: GitHub answered 404/410 for this installation (never delete). */
   markRevokedByInstallationId(installationId: bigint): Promise<void>
-  /** Sync reconciliation: mark the org's rows NOT in `liveInstallationIds` revoked (never delete). */
-  markRevokedExcept(orgId: OrgId, liveInstallationIds: bigint[]): Promise<void>
 }
 
 /** One-shot install-state nonces (`github_install_state`): put on mint, consume-once on callback. */

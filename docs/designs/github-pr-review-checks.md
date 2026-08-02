@@ -431,7 +431,7 @@ R2a requires App registration/installation `checks:write` and `pull_requests:rea
 
 `GithubInstallation.permissions Json` exists; unknown `{}` fails closed. Setup callback, Sync, and installation doorbell pull (including `new_permissions_accepted`) replace local facts with installation-effective permissions returned by GitHub. Selected repository/projection remains and dynamically refreshes provenance; console displays exact `checksPermission`. With `checks:write`, GitHub App automatically receives `check_run` and `check_suite` rerequests plus `check_run.requested_action`; relay handles only rerequested and `request_review`, returning 202 no-op for other actions.
 
-Installation-claim conflict update preserves original `orgId`; cross-organization claim rejects explicitly so another organization's sync cannot move reporter authority.
+Installation-claim conflict update preserves original `orgId`; Sync refreshes only durable claims already belonging to its organization and cannot discover or move reporter authority.
 
 After callback/Sync/doorbell writes permission/revoke/suspend, all pass through one convergence hook: `InstallationTokenService.invalidateInstallation(iid)` → immediately wake installation's `blocked(permission)`/nonterminal projections → recompile organization hooks. Per-installation invalidation exists; never merely update DB and wait for normal retry.
 

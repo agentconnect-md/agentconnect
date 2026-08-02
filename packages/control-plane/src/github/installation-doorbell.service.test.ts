@@ -71,7 +71,7 @@ function make(opts: {
 }
 
 describe('GithubInstallationDoorbell', () => {
-  it('unknown installation: ignored — no pull, no recompile (claiming stays with callback/Sync)', async () => {
+  it('unknown installation: ignored — no pull, no recompile (claiming stays with the signed callback)', async () => {
     const h = make({ known: false })
     h.doorbell.poke({ installationId: INS.toString(), action: 'created' })
     await h.doorbell.settle()

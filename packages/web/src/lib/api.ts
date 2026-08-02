@@ -3769,8 +3769,8 @@ export async function fetchGithubInstallUrl(): Promise<string | null> {
   }
 }
 
-/** Reconcile claims against GitHub — the fallback for a lost setup callback /
- *  pending admin approval. Returns the refreshed list. */
+/** Refresh the organization's existing claims from GitHub. Unknown App-wide
+ * installations are never assigned by this endpoint. */
 export async function syncGithubInstallations(): Promise<GithubInstallationDto[]> {
   const installations = await apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
   invalidateGithubRepoRosterCache()

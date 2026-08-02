@@ -243,6 +243,78 @@ describe('install state', () => {
   })
 })
 
+describe('GithubService.sync', () => {
+  it('refreshes only durable org claims and never scans the App-wide installation roster', async () => {
+    const claimed = {
+      id: 'row-42',
+      orgId: 'org-a',
+      installationId: 42n,
+      accountLogin: 'acme',
+      accountType: 'Organization',
+      repositorySelection: 'all',
+      suspendedAt: null,
+      revokedAt: null,
+      permissions: {},
+      createdAt: new Date(0)
+    } as GithubInstallationRecord
+    const revoked = {
+      ...claimed,
+      id: 'row-43',
+      installationId: 43n,
+      accountLogin: 'gone',
+      revokedAt: new Date(1)
+    }
+    const refreshed = { ...claimed, permissions: { checks: 'write' } }
+    const upsertFromGithub = vi.fn(async () => refreshed)
+    const markRevokedByInstallationId = vi.fn(async () => {})
+    const listForOrg = vi.fn(async () => [refreshed])
+    const onInstallationFactsChanged = vi.fn()
+    const urls: string[] = []
+    const svc = new GithubService({
+      cfg: cfg(),
+      clock: new FakeClock(1_700_000_000_000),
+      installations: {
+        listClaimsForOrg: vi.fn(async () => [claimed, revoked]),
+        listForOrg,
+        upsertFromGithub,
+        markRevokedByInstallationId
+      } as never,
+      installState: { put: async () => {}, consume: async () => true },
+      onInstallationFactsChanged,
+      pepper: 'p'.repeat(32),
+      fetchImpl: async (url) => {
+        urls.push(url)
+        if (url.endsWith('/app/installations/42')) {
+          return Response.json({
+            id: 42,
+            account: { login: 'acme', type: 'Organization' },
+            repository_selection: 'all',
+            suspended_at: null,
+            permissions: { checks: 'write' }
+          })
+        }
+        if (url.endsWith('/app/installations/43')) return Response.json({ message: 'Not Found' }, { status: 404 })
+        throw new Error(`unexpected GitHub request: ${url}`)
+      }
+    })
+
+    await expect(svc.sync(claimed.orgId)).resolves.toEqual([refreshed])
+
+    expect(urls).toEqual(['https://api.github.com/app/installations/42', 'https://api.github.com/app/installations/43'])
+    expect(upsertFromGithub).toHaveBeenCalledOnce()
+    expect(upsertFromGithub).toHaveBeenCalledWith(
+      'org-a',
+      expect.objectContaining({ installationId: 42n, permissions: { checks: 'write' } })
+    )
+    expect(markRevokedByInstallationId).toHaveBeenCalledWith(43n)
+    expect(onInstallationFactsChanged.mock.calls).toEqual([
+      [42n, 'org-a'],
+      [43n, 'org-a']
+    ])
+    expect(listForOrg).toHaveBeenCalledWith('org-a')
+  })
+})
+
 describe('GithubService.outdatedInstallations', () => {
   it("reads GitHub's outdated installation filter and briefly caches the result", async () => {
     const clock = new FakeClock(1_700_000_000_000)

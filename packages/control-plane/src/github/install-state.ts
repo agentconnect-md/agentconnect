@@ -10,8 +10,9 @@
  * the signature so a stale row can never be resurrected.
  *
  * GitHub's state passthrough to the Setup URL is undocumented behavior that has
- * regressed before (community #61291) — callers must treat a MISSING state as
- * degraded-but-recoverable (redirect to console → Sync), never an error.
+ * regressed before (community #61291). A missing state cannot safely bind an
+ * App-wide installation to a tenant; callers redirect to the console and ask
+ * the user to restart the signed install flow.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { Clock } from '../domain/clock.js'
