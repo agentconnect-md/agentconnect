@@ -1,6 +1,14 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent
+} from 'react'
 import Link from 'next/link'
 import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -608,6 +616,12 @@ function SessionParticipantsHover({
   platformMark?: string
 }) {
   const tooltipId = useId()
+  const dismissOnEscape = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.blur()
+  }
 
   return (
     <span className="group relative inline-flex min-w-0 flex-[0_1_auto]">
@@ -615,23 +629,20 @@ function SessionParticipantsHover({
         type="button"
         aria-describedby={tooltipId}
         className="inline-flex min-w-0 cursor-default items-center gap-[6px] rounded-xs border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            event.stopPropagation()
-            event.currentTarget.blur()
-          }
-        }}
+        onKeyDown={dismissOnEscape}
       >
         <Icon name="users" size={13} className="flex-none" />
         <span className="truncate">{label}</span>
       </button>
-      <span
-        id={tooltipId}
-        role="tooltip"
-        className="pointer-events-none invisible absolute top-full left-0 z-40 w-[220px] max-w-[calc(100vw-40px)] -translate-y-1 pt-2 opacity-0 transition-[opacity,transform,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
-      >
-        <span className="block max-h-[min(360px,calc(100vh-120px))] overflow-y-auto overscroll-contain rounded-lg border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-lg)">
+      <span className="pointer-events-none invisible absolute top-full left-0 z-40 w-[220px] max-w-[calc(100vw-40px)] -translate-y-1 pt-2 opacity-0 transition-[opacity,transform,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100">
+        <span
+          id={tooltipId}
+          role="tooltip"
+          tabIndex={0}
+          aria-label={`${participants.length} session participants`}
+          onKeyDown={dismissOnEscape}
+          className="block max-h-[min(360px,calc(100vh-120px))] overflow-y-auto overscroll-contain rounded-lg border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-lg) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+        >
           <span className="block px-2 pt-1 font-sans text-[10.5px] font-semibold leading-normal tracking-[0.06em] text-(--text-tertiary) uppercase">
             Participants
           </span>
