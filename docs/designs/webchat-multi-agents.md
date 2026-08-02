@@ -745,9 +745,10 @@ here.
   (section 5.4) also lands here — a2a wakes make peer churn common — and
   depends on the `ThreadContextCoordinator` extraction, rollout step 1 of
   [turn-final-context-refresh.md](turn-final-context-refresh.md).
-- **M3 — polish.** Agent-initiated live streaming, grouped conversation view in
-  the console sessions list, merged console transcript, per-agent runtime
-  controls, mobile pass.
+- **M3 — polish.** Agent-initiated live streaming, per-agent runtime controls,
+  mobile pass. The grouped sessions list and merged console transcript have
+  grown into their own platform-neutral design (webchat + Slack together):
+  [merged-conversation-view.md](merged-conversation-view.md).
 
 Each milestone is independently shippable; M1 without M2 already delivers the
 user-facing product ("talk to several agents in one Playground conversation").
