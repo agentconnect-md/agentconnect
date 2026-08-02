@@ -1095,7 +1095,7 @@ export default function SessionDetailView() {
       if (imageInputRef.current) imageInputRef.current.value = ''
     }
   }
-  const webchatConversationId = isWebchat ? session.channelId : undefined
+  const webchatConversationId = isLive ? session.channelId : undefined
   const onCopyLink = () => {
     try {
       const canonicalId = session.realSessionId ?? session.id
@@ -1809,11 +1809,11 @@ export default function SessionDetailView() {
           {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
           {isLive && (
             <>
-              {activeOrg && session.agentId && /^[0-9a-f-]{36}$/i.test(session.channel) && (
+              {activeOrg && session.agentId && webchatConversationId && (
                 <WebchatMcpApprovalCard
                   orgId={activeOrg.id}
                   agentId={session.agentId}
-                  conversationId={session.channel}
+                  conversationId={webchatConversationId}
                 />
               )}
               {pgBusy && (

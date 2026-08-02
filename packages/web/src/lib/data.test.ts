@@ -10,6 +10,7 @@ import {
   effortField,
   fastModeAvailableFor,
   lifecycleStatus,
+  mergeCanonicalSessions,
   modelCapability,
   modelLabel,
   permissionModeChoicesFor,
@@ -85,6 +86,39 @@ describe('sessionChannelDisplay', () => {
       platform: 'slack',
       label: '#deploys'
     })
+  })
+})
+
+describe('mergeCanonicalSessions', () => {
+  const persisted: Session = {
+    id: 'session-real',
+    title: 'Persisted title',
+    time: 'now',
+    status: 'online',
+    platform: 'webchat',
+    channel: 'Playground',
+    channelId: 'conversation-1',
+    user: '@you',
+    duration: 'live',
+    tokens: '0',
+    cost: '—',
+    toolCount: '0',
+    statusLabel: 'Live',
+    steps: []
+  }
+
+  it('collapses a live Playground row into its durable session identity', () => {
+    const live = {
+      ...persisted,
+      id: 'pg_agent-temporary',
+      realSessionId: persisted.id,
+      title: 'Live title',
+      platform: 'playground'
+    }
+
+    expect(mergeCanonicalSessions([persisted, live])).toEqual([
+      expect.objectContaining({ id: 'session-real', realSessionId: 'session-real', title: 'Live title' })
+    ])
   })
 })
 

@@ -23,7 +23,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
-import { sessionChannelDisplay, type Session } from '@/lib/data'
+import { canonicalSessionId, mergeCanonicalSessions, sessionChannelDisplay, type Session } from '@/lib/data'
 import { fetchSessionDetail, sessionFromDetailDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
@@ -85,7 +85,8 @@ export function SessionRail({
   // and the cap only bounds a pathological list. A row that fails to load is simply
   // not rendered — a 404 here means "missing or not authorized", which is not proof
   // of deletion, so the pin is left alone (see lib/session-pins.ts).
-  const loadedIds = useMemo(() => new Set([...sessions.map((s) => s.id), current.id]), [sessions, current.id])
+  const currentId = canonicalSessionId(current)
+  const loadedIds = useMemo(() => new Set([...sessions.map(canonicalSessionId), currentId]), [sessions, currentId])
   const missingPinIds = useMemo(
     () =>
       pinnedIdsForAgent(pins, agentId ?? '')
@@ -109,12 +110,15 @@ export function SessionRail({
   )
 
   // One de-duplicated list ordered newest-first. The CP already orders its page by
-  // `lastActivityAt`, so this only decides where the merged rows land.
-  const rows = useMemo(() => {
-    const byId = new Map<string, Session>()
-    for (const s of [...sessions, current, ...(hydratedPins ?? [])]) if (!byId.has(s.id)) byId.set(s.id, s)
-    return [...byId.values()].sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''))
-  }, [sessions, current, hydratedPins])
+  // `lastActivityAt`, so this only decides where the merged rows land. The live
+  // current row comes last so it replaces its persisted twin without losing streamed state.
+  const rows = useMemo(
+    () =>
+      mergeCanonicalSessions([...sessions, ...(hydratedPins ?? []), current]).sort((a, b) =>
+        (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? '')
+      ),
+    [sessions, current, hydratedPins]
+  )
 
   const { pinned, rest } = useMemo(() => partitionPinned(rows, pins), [rows, pins])
   // Dated groups cover the UNPINNED rows only — a pin is an explicit "keep this at
@@ -133,7 +137,7 @@ export function SessionRail({
 
   const row = (s: Session, isPinned: boolean) => {
     const channel = sessionChannelDisplay(s, cronName)
-    const on = s.id === current.id
+    const on = s.id === currentId
     return (
       <div
         key={s.id}

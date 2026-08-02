@@ -855,6 +855,22 @@ export interface Session {
   daemon?: string
 }
 
+/** A live Playground row starts with a synthetic id, then learns the durable ACP
+ * session id. Treat both shapes as one session everywhere that merges local and
+ * persisted rows. Later rows win so callers can put the freshest representation last. */
+export function canonicalSessionId(session: Pick<Session, 'id' | 'realSessionId'>): string {
+  return session.realSessionId ?? session.id
+}
+
+export function mergeCanonicalSessions(sessions: readonly Session[]): Session[] {
+  const byId = new Map<string, Session>()
+  for (const session of sessions) {
+    const id = canonicalSessionId(session)
+    byId.set(id, id === session.id ? session : { ...session, id })
+  }
+  return [...byId.values()]
+}
+
 /** Attach owning-agent display metadata to a CP session row. Recorded runtime
  *  values remain authoritative; only legacy rows fall back to current agent config. */
 export function enrichSessionWithAgent(
