@@ -218,4 +218,80 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       await daemon.stop()
     }
   }, 15_000)
+
+  // task #36 A2 — credential isolation: the dream runs on a DEDICATED,
+  // sandbox-forced host and is torn down after, so the attacker-controlled
+  // transcript is never mined next to provider credentials.
+  it('fails closed when the host has no OS sandbox to isolate dream credentials', async () => {
+    const root = scaffold()
+    const hostFactory = vi.fn(() => ({}) as any)
+    const daemon = new Daemon({ root, hostFactory, dreamOperationPolicy: 'test-only' })
+    await daemon.start()
+    try {
+      const inner = daemon as any
+      // test-only policy admits the extraction past the operation gate; without a
+      // sandbox mechanism the dedicated dream host must refuse rather than run the
+      // dream model unconfined next to credentials.
+      inner.sandboxMechanism = undefined
+      await expect(
+        inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
+          dreamId: 'drm-nosandbox',
+          trigger: 'manual',
+          sessionIds: [],
+          inputDir: join(root, 'in')
+        })
+      ).rejects.toThrow(/sandbox/i)
+      // Fail-closed happens before any host is built.
+      expect(hostFactory).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  }, 15_000)
+
+  it('runs the dream on a dedicated sandboxed host (cwd = input dir) then tears it down', async () => {
+    const root = scaffold()
+    let stopped = 0
+    const dreamHost = {
+      start: async () => {},
+      hasSession: () => true,
+      usesMetaSystemPrompt: () => false,
+      newSession: async () => 'dream-sess',
+      modelOptions: () => null,
+      permissionModeOptions: () => ({ modes: ['read-only'] }),
+      setSessionPermissionMode: async () => true,
+      prompt: async () => ({ stopReason: 'end_turn' }),
+      discardSession: () => {},
+      cancel: async () => {},
+      stop: async () => {
+        stopped++
+      }
+    }
+    const hostFactory = vi.fn(() => dreamHost as any)
+    const daemon = new Daemon({ root, hostFactory, dreamOperationPolicy: 'test-only' })
+    await daemon.start()
+    try {
+      const inner = daemon as any
+      inner.sandboxMechanism = 'bwrap' // simulate a host with an OS sandbox
+      const buildSpy = vi.spyOn(inner, 'buildAcpHost')
+      const res = await inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
+        dreamId: 'drm-sandboxed',
+        trigger: 'manual',
+        sessionIds: [],
+        inputDir: join(root, 'in')
+      })
+      // The dedicated dream host is built with sandbox FORCED on + cwd = the
+      // materialized input dir — never the agent's warm (possibly unsandboxed) host.
+      expect(buildSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'bot-a' }),
+        expect.anything(),
+        expect.objectContaining({ runInSandbox: true, cwd: join(root, 'in') })
+      )
+      // One-off: stopped after the extraction, and never memoized as the warm host.
+      expect(stopped).toBe(1)
+      expect(inner.hosts.has('bot-a')).toBe(false)
+      expect(res.sessionId).toBe('dream-sess')
+    } finally {
+      await daemon.stop()
+    }
+  }, 15_000)
 })

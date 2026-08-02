@@ -78,7 +78,7 @@ import type {
   SubmitGithubReviewReq
 } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
-import { cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
+import { CONFIG_FILE_CONVENTIONS, cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { gitCredentialEnv, initGitInjection, probeGitVersion, sessionGitEnv } from './workspace/git-injection.js'
@@ -4129,9 +4129,45 @@ export class Daemon {
   }
 
   private ensureHost(agentId: string, cfg: ReturnType<typeof loadConfig>): AcpHost {
-    let host = this.hosts.get(agentId)
+    const host = this.hosts.get(agentId)
     if (host) return host
     const agent = this.agents.get(agentId)!
+    const built = this.buildAcpHost(agent, cfg, {
+      runInSandbox: this.agentRunsInSandbox(agent),
+      cwd: agent.workspace.path,
+      warnOnSandboxDowngrade: true
+    })
+    this.hosts.set(agentId, built.host)
+    this.hostStartedAt.set(agentId, this.clock.now())
+    this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
+    return built.host
+  }
+
+  /**
+   * Construct (do NOT memoize or start) an ACP host for `agent`.
+   *
+   * Split out of `ensureHost` so a memory dream can build a DEDICATED, one-off
+   * host with sandboxing FORCED on (memory-dreaming.md §5, task #36 Phase A2):
+   * the mined transcript is attacker-controlled, so the dream model must run
+   * confined — a sandboxed runtime is denied provider credentials (HOME + the
+   * runtime-state dirs are denyRead) — no matter the agent's own sandbox
+   * preference. The warm agent host keeps its normal launch; the dream never
+   * reuses it. `opts.runInSandbox` and `opts.cwd` are the only launch inputs
+   * that differ between the two callers; the warm path passes
+   * `warnOnSandboxDowngrade` so a requested-but-unavailable sandbox still logs,
+   * while the dream path fails closed upstream in {@link buildDreamHost}.
+   */
+  private buildAcpHost(
+    agent: LoadedAgent,
+    cfg: ReturnType<typeof loadConfig>,
+    opts: {
+      runInSandbox: boolean
+      cwd: string
+      warnOnSandboxDowngrade?: boolean
+      excludeAgentToolCredentials?: boolean
+    }
+  ): { host: AcpHost; configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } } {
+    const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.onAcpUpdate(agentId, sid, u)
     const runtimeEntry = this.runtimeCatalog.entries[agent.runtime]
     if (runtimeEntry?.source === 'curated') {
@@ -4155,45 +4191,67 @@ export class Daemon {
       materialized: false
     }
     if (this.opts.hostFactory) {
-      host = this.opts.hostFactory(agent, onUpdate)
+      return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
+    }
+    const runtime = this.runtimes[agent.runtime]
+    if (!runtime)
+      throw new Error(
+        `runtime "${agent.runtime}" not available: not installed on this host, or absent from config.runtimes / the ACP registry`
+      )
+    // A dream reads only its materialized inputs to produce a memory proposal, so
+    // it never needs the agent's TOOL credentials (github-app git helper, gh
+    // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
+    // DOCKER_CONFIG). Excluding them keeps those secrets out of the
+    // attacker-controlled extraction AND avoids materializing files that a
+    // dedicated dream host would never clean up (it never reaches stopHost's
+    // cleanupConfigFiles) — task #36 A2.
+    const excludeAgentToolCredentials = opts.excludeAgentToolCredentials === true
+    // A GitHub workspace uses this channel for its implicit repo; scratch uses
+    // it only for explicitly authorized repos named by git/gh.
+    const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
+    // sessionGitEnv LAST: the github-app credential-helper env must win over
+    // runtimeOverrides env (a user-supplied GIT_CONFIG_* would reopen
+    // the machine-credential leak the injection exists to close).
+    const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
+    const runInSandbox = opts.runInSandbox
+    if (agent.runInSandbox && !runInSandbox && opts.warnOnSandboxDowngrade) {
+      this.log.warn(
+        `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
+      )
+    }
+    const memoryAgent =
+      memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
+    const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+    const env: Record<string, string> = {
+      ...baseEnv,
+      // Memory backend env: managed disables the runtime's own memory; native
+      // redirects it under the private runtime HOME. Throws
+      // MemoryProviderUnavailableError for an unbuildable provider (external, or
+      // native on an unregistered runtime) — surfaced here at spawn.
+      ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission()).runtimeEnv(),
+      ...(githubAppCredentials ? sessionGitEnv(agent.id, this.gitCommitIdentity) : {})
+    }
+    // Config-file secrets (agents/config-file-env.ts): materialize `*_DATA`
+    // contents under the agent dir and point the tool-native env vars
+    // (KUBECONFIG / DOCKER_CONFIG) at the result; the raw values are stripped
+    // from the child env. Detection spans the runtime-def env too, so an
+    // explicit pointer var configured anywhere wins and skips materialization.
+    // The pre-strip merged env is snapshotted so the idle sweep can delete the
+    // files and rematerializeConfigFiles() can re-write them before a later turn.
+    if (excludeAgentToolCredentials) {
+      // A dream host needs none of these tool secrets. Do NOT materialize (it has
+      // no cleanup path), and crucially DELETE the raw `*_DATA` source vars — they
+      // were copied into the child env by agentChildEnv, and skipping the
+      // materialize block below would otherwise leak the raw values to the
+      // attacker-controlled extraction (task #36 A2). Strip every convention name
+      // (data var + legacy aliases) whether or not it would have been planned.
+      for (const convention of CONFIG_FILE_CONVENTIONS) {
+        for (const name of [convention.dataVar, ...(convention.aliases ?? [])]) {
+          delete env[name]
+          delete runtimeEnv[name]
+        }
+      }
     } else {
-      const runtime = this.runtimes[agent.runtime]
-      if (!runtime)
-        throw new Error(
-          `runtime "${agent.runtime}" not available: not installed on this host, or absent from config.runtimes / the ACP registry`
-        )
-      // A GitHub workspace uses this channel for its implicit repo; scratch uses
-      // it only for explicitly authorized repos named by git/gh.
-      const githubAppCredentials = agent.workspace.gitCredential === 'github-app'
-      // sessionGitEnv LAST: the github-app credential-helper env must win over
-      // runtimeOverrides env (a user-supplied GIT_CONFIG_* would reopen
-      // the machine-credential leak the injection exists to close).
-      const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
-      const runInSandbox = this.agentRunsInSandbox(agent)
-      if (agent.runInSandbox && !runInSandbox) {
-        this.log.warn(
-          `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
-        )
-      }
-      const memoryAgent =
-        memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
-      const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
-      const env: Record<string, string> = {
-        ...baseEnv,
-        // Memory backend env: managed disables the runtime's own memory; native
-        // redirects it under the private runtime HOME. Throws
-        // MemoryProviderUnavailableError for an unbuildable provider (external, or
-        // native on an unregistered runtime) — surfaced here at spawn.
-        ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission()).runtimeEnv(),
-        ...(githubAppCredentials ? sessionGitEnv(agent.id, this.gitCommitIdentity) : {})
-      }
-      // Config-file secrets (agents/config-file-env.ts): materialize `*_DATA`
-      // contents under the agent dir and point the tool-native env vars
-      // (KUBECONFIG / DOCKER_CONFIG) at the result; the raw values are stripped
-      // from the child env. Detection spans the runtime-def env too, so an
-      // explicit pointer var configured anywhere wins and skips materialization.
-      // The pre-strip merged env is snapshotted so the idle sweep can delete the
-      // files and rematerializeConfigFiles() can re-write them before a later turn.
       const configFileSourceEnv = { ...runtimeEnv, ...env }
       const configFiles = materializeConfigFiles(agent.dir, configFileSourceEnv)
       for (const name of configFiles.strip) {
@@ -4205,83 +4263,80 @@ export class Daemon {
       if (Object.keys(configFiles.env).length > 0) {
         configFileState = { childEnv: configFileSourceEnv, materialized: true }
       }
-      const shimDirs = new Set<string>()
-      if (githubAppCredentials && this.ghBinDir) {
-        // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
-        // wrapper hands to the hidden token helper. sessionGitEnv supplies the
-        // matching runtime-only capability; a user PATH override must not
-        // shadow the wrapper.
-        env.AC_AGENT_ID = agent.id
-        shimDirs.add(this.ghBinDir)
-      }
-      if (shimDirs.size > 0) {
-        env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
-      }
-      // OS sandbox decision (issue #312). security.requireSandbox forces every agent
-      // on; otherwise the per-agent preference is effective only when this host has a
-      // mechanism. The writable set is derived from the TRUSTED agent dir
-      // (agent.dir — the daemon's filesystem-scan result), NOT from the mutable
-      // workspace.path in agent.json: the agent-dir ROOT (which holds agent.json)
-      // stays read-only, so a confined runtime can't rewrite the config that controls
-      // sandboxing and escape on respawn. An un-sandboxable layout (SandboxError)
-      // always refuses — never runs unconfined behind an effective on toggle.
-      let launch: ReturnType<typeof prepareRuntimeLaunch>
-      let launchRuntime = runtime
-      try {
-        const composed = composeRuntimeLaunch({
-          runtimeId: agent.runtime,
-          runtime,
-          provider: memoryKindOf(agent),
-          scopeDir: agent.dir,
-          cwd: agent.workspace.path,
-          runInSandbox,
-          daemonRoot: this.root,
-          agentsRoot: cfg.agentsDir,
-          runtimeReadRoots: runInSandbox
-            ? this.sandboxRuntimeReadRoots(agent, runtime, { ...runtimeEnv, ...env }, githubAppCredentials)
-            : undefined,
-          explicitEnv: { ...runtimeEnv, ...env },
-          sandboxMechanism: this.sandboxMechanism,
-          mcpSocketPath: mcpSocketPath(this.root)
-        })
-        launch = composed.launch
-        launchRuntime = composed.runtime
-      } catch (err) {
-        if (err instanceof SandboxError) {
-          throw new Error(
-            `agent "${agentId}" cannot be safely sandboxed: ${err.message} ` +
-              `(turn off Run in sandbox to run it without confinement)`
-          )
-        }
-        throw new Error(`agent "${agentId}" runtime launch preparation failed: ${formatErr(err)}`, { cause: err })
-      }
-      host = new AcpHost(launchRuntime, {
-        onUpdate,
-        onPermission: (sid, params) => this.onAcpPermission(agentId, sid, params),
-        ...(this.evaluation.enabled
-          ? { onPermissionEvent: (sid, params, event) => this.onAcpPermissionEvent(agentId, sid, params, event) }
-          : {}),
-        onElicit: (sid, params) => this.onAcpElicit(agentId, sid, params),
-        onSdkLifecycle: (sid, message) => this.onSdkLifecycle(agentId, sid, message),
-        env: launch.env,
-        inheritProcessEnv: launch.inheritProcessEnv,
-        runtimeId: agent.runtime,
-        isolateAccountApps: cfg.security.isolateAccountApps,
-        sandbox: launch.sandbox ? { ...launch.sandbox, allowModelToolUnixSockets: githubAppCredentials } : undefined,
-        configPrefs: {
-          model: agent.runtimeOverrides?.model,
-          permissionMode: agent.permissionMode,
-          approvalsReviewer: agent.approvalsReviewer,
-          reasoningEffort: agent.reasoningEffort,
-          fastMode: agent.fastMode
-        },
-        log: this.log
-      })
     }
-    this.hosts.set(agentId, host)
-    this.hostStartedAt.set(agentId, this.clock.now())
-    this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...configFileState })
-    return host
+    const shimDirs = new Set<string>()
+    if (githubAppCredentials && this.ghBinDir) {
+      // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
+      // wrapper hands to the hidden token helper. sessionGitEnv supplies the
+      // matching runtime-only capability; a user PATH override must not
+      // shadow the wrapper.
+      env.AC_AGENT_ID = agent.id
+      shimDirs.add(this.ghBinDir)
+    }
+    if (shimDirs.size > 0) {
+      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
+    }
+    // OS sandbox decision (issue #312). security.requireSandbox forces every agent
+    // on; otherwise the per-agent preference is effective only when this host has a
+    // mechanism. The writable set is derived from the TRUSTED agent dir
+    // (agent.dir — the daemon's filesystem-scan result), NOT from the mutable
+    // workspace.path in agent.json: the agent-dir ROOT (which holds agent.json)
+    // stays read-only, so a confined runtime can't rewrite the config that controls
+    // sandboxing and escape on respawn. An un-sandboxable layout (SandboxError)
+    // always refuses — never runs unconfined behind an effective on toggle.
+    let launch: ReturnType<typeof prepareRuntimeLaunch>
+    let launchRuntime = runtime
+    try {
+      const composed = composeRuntimeLaunch({
+        runtimeId: agent.runtime,
+        runtime,
+        provider: memoryKindOf(agent),
+        scopeDir: agent.dir,
+        cwd: opts.cwd,
+        runInSandbox,
+        daemonRoot: this.root,
+        agentsRoot: cfg.agentsDir,
+        runtimeReadRoots: runInSandbox
+          ? this.sandboxRuntimeReadRoots(agent, runtime, { ...runtimeEnv, ...env }, githubAppCredentials)
+          : undefined,
+        explicitEnv: { ...runtimeEnv, ...env },
+        sandboxMechanism: this.sandboxMechanism,
+        mcpSocketPath: mcpSocketPath(this.root)
+      })
+      launch = composed.launch
+      launchRuntime = composed.runtime
+    } catch (err) {
+      if (err instanceof SandboxError) {
+        throw new Error(
+          `agent "${agentId}" cannot be safely sandboxed: ${err.message} ` +
+            `(turn off Run in sandbox to run it without confinement)`
+        )
+      }
+      throw new Error(`agent "${agentId}" runtime launch preparation failed: ${formatErr(err)}`, { cause: err })
+    }
+    const host = new AcpHost(launchRuntime, {
+      onUpdate,
+      onPermission: (sid, params) => this.onAcpPermission(agentId, sid, params),
+      ...(this.evaluation.enabled
+        ? { onPermissionEvent: (sid, params, event) => this.onAcpPermissionEvent(agentId, sid, params, event) }
+        : {}),
+      onElicit: (sid, params) => this.onAcpElicit(agentId, sid, params),
+      onSdkLifecycle: (sid, message) => this.onSdkLifecycle(agentId, sid, message),
+      env: launch.env,
+      inheritProcessEnv: launch.inheritProcessEnv,
+      runtimeId: agent.runtime,
+      isolateAccountApps: cfg.security.isolateAccountApps,
+      sandbox: launch.sandbox ? { ...launch.sandbox, allowModelToolUnixSockets: githubAppCredentials } : undefined,
+      configPrefs: {
+        model: agent.runtimeOverrides?.model,
+        permissionMode: agent.permissionMode,
+        approvalsReviewer: agent.approvalsReviewer,
+        reasoningEffort: agent.reasoningEffort,
+        fastMode: agent.fastMode
+      },
+      log: this.log
+    })
+    return { host, configFileState }
   }
 
   private registrationFeatures(): string[] {
@@ -4518,26 +4573,12 @@ export class Daemon {
   }
 
   /**
-   * Run one isolated dream-extraction session (docs/designs/memory-dreaming.md §5).
-   * Unlike the long-lived distillation session, every dream gets a FRESH session
-   * and discards it — dreams are rare and their huge prompts should not linger in
-   * a cached context.
-   *
-   * Two independent trust dimensions, deliberately gated differently:
-   *
-   * - **Side effects during the run — HARD GATE (fail closed).** The mined
-   *   transcript is attacker-controlled; a prompt injection could drive the
-   *   runtime's native shell/file/network tools before it ever returns JSON, and
-   *   staged-output review only contains the *memory result*, not tool side
-   *   effects. So we REQUIRE a verified non-mutating (read-only/plan) permission
-   *   mode and throw if the runtime has none or the switch doesn't take — the
-   *   dream then fails rather than running with write access. (Passing `[]`
-   *   mcpServers only drops our MCP tools, not the runtime's built-ins.)
-   * - **Trusted system-prompt channel — OBSERVED.** When the runtime carries the
-   *   system prompt via `_meta.systemPrompt` the dream policy rides it; otherwise
-   *   the policy is prepended to the user prompt. Auto-accept is the user's
-   *   explicit choice to skip content review, so this transport distinction does
-   *   not override it; the verified non-mutating mode above still gates the run.
+   * Run one isolated dream-extraction session (docs/designs/memory-dreaming.md §5)
+   * on a DEDICATED sandboxed host built for this dream and torn down after it —
+   * so the attacker-controlled transcript is isolated from provider credentials
+   * (task #36 A2). Admission + the two independently gated trust dimensions live
+   * in {@link runDreamExtractionOnHost}; credential isolation in
+   * {@link buildDreamHost}.
    */
   private async runDreamExtraction(
     agentId: string,
@@ -4559,7 +4600,113 @@ export class Daemon {
     if (!this.dreamOperationsAllowed()) throw new DreamStateError(DREAM_MODEL_READABLE_CREDENTIALS_REASON)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
-    const host = await this.ensureHostAsync(agentId)
+    // Credential isolation (task #36 A2): the dream runs on its OWN dedicated,
+    // sandbox-forced host — NOT the agent's warm host — so the attacker-controlled
+    // transcript can never reach provider credentials, and the confined child is
+    // torn down the moment the extraction settles.
+    const host = await this.buildDreamHost(agent, context.inputDir)
+    const ref: { sessionId?: string } = {}
+    try {
+      return await this.runDreamExtractionOnHost(host, agent, systemPrompt, prompt, signal, context, ref)
+    } finally {
+      // One-off host: discard the whole confined child so its process + huge,
+      // attacker-influenced context never lingers (dreams are rare). Stopping the
+      // child also kills a runtime that ignored `session/cancel`.
+      await host.stop().catch(() => {})
+      // The confined child is gone, so no straggler ACP callback can arrive for
+      // this dream's session. Reclaim the extraction quarantine tombstone now —
+      // a dedicated dream host never reaches stopHost's per-agent
+      // clearMemoryExtractionQuarantines sweep, so without this a long-lived
+      // daemon would leak one Map entry per dream. Scoped to THIS session so a
+      // concurrent distiller quarantine on the warm host is untouched.
+      if (ref.sessionId) this.memoryExtractionQuarantines.delete(pendingTurnKey(agent.id, ref.sessionId))
+    }
+  }
+
+  /**
+   * Build + start a DEDICATED, sandbox-forced, one-off host for a single dream
+   * (task #36 A2). Fail closed if this host has no sandbox mechanism: without
+   * confinement the mined (attacker-controlled) transcript could drive the
+   * runtime's native tools against the host and its credentials. A sandboxed
+   * runtime is denied the HOST's credentials (HOME + runtime-state dirs are
+   * denyRead), and on Claude the inner sandbox also denies the agent's own
+   * provider credential to the model's bash, so the dream model reads its
+   * materialized inputs (cwd) yet cannot read those secrets.
+   *
+   * All agent harnesses are supported by default (owner decision): on runtimes
+   * without an inner provider-credential confinement (e.g. Codex) the agent's
+   * OWN provider auth can still be reached by the model's own tools, since it
+   * must stay readable by the runtime parent to authenticate. That residual gap
+   * is a tracked P2 to be closed by a per-runtime credential broker; it does NOT
+   * gate which harnesses may dream.
+   */
+  private async buildDreamHost(agent: LoadedAgent, cwd: string): Promise<AcpHost> {
+    if (!this.sandboxMechanism) {
+      throw new DreamStateError(
+        'memory dream requires a supported OS sandbox to isolate provider credentials from the mined transcript; none is available on this host'
+      )
+    }
+    const { host } = this.buildAcpHost(agent, this.cfg, {
+      runInSandbox: true,
+      cwd,
+      // A dream needs only its materialized inputs, never the agent's tool
+      // credentials — keep github-app/gh/`*_DATA` secrets out of the
+      // attacker-controlled extraction (and off a host with no cleanup path).
+      excludeAgentToolCredentials: true
+    })
+    try {
+      await host.start()
+    } catch (err) {
+      // Reap a half-spawned child so a failed start never leaks a process.
+      await host.stop().catch(() => {})
+      throw err
+    }
+    return host
+  }
+
+  /**
+   * Run one isolated dream-extraction session on the caller-provided `host` (the
+   * dedicated sandboxed dream host from {@link buildDreamHost}), then let the
+   * caller tear it down. Unlike the long-lived distillation session, every dream
+   * gets a FRESH session and discards it — dreams are rare and their huge prompts
+   * should not linger in a cached context.
+   *
+   * Two independent trust dimensions, deliberately gated differently:
+   *
+   * - **Side effects during the run — HARD GATE (fail closed).** The mined
+   *   transcript is attacker-controlled; a prompt injection could drive the
+   *   runtime's native shell/file/network tools before it ever returns JSON, and
+   *   staged-output review only contains the *memory result*, not tool side
+   *   effects. So we REQUIRE a verified non-mutating (read-only/plan) permission
+   *   mode and throw if the runtime has none or the switch doesn't take — the
+   *   dream then fails rather than running with write access. (Passing `[]`
+   *   mcpServers only drops our MCP tools, not the runtime's built-ins.) The
+   *   dedicated host is also sandboxed, so provider credentials stay unreadable.
+   * - **Trusted system-prompt channel — OBSERVED.** When the runtime carries the
+   *   system prompt via `_meta.systemPrompt` the dream policy rides it; otherwise
+   *   the policy is prepended to the user prompt. Auto-accept is the user's
+   *   explicit choice to skip content review, so this transport distinction does
+   *   not override it; the verified non-mutating mode above still gates the run.
+   */
+  private async runDreamExtractionOnHost(
+    host: AcpHost,
+    agent: LoadedAgent,
+    systemPrompt: string,
+    prompt: string,
+    signal: AbortSignal,
+    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string },
+    // Written back once the ACP session exists so the caller's teardown can
+    // reclaim this session's quarantine tombstone after the host is stopped.
+    ref: { sessionId?: string }
+  ): Promise<{
+    output: string
+    sessionId: string
+    runtime: string
+    model?: string
+    stopReason: string
+    usage?: StoredUsage
+  }> {
+    const agentId = agent.id
     // Capture the transport capability from THIS host so the extraction policy
     // uses the same dedicated-system-prompt or inline path as the proposal run.
     const trusted = host.usesMetaSystemPrompt()
@@ -4574,6 +4721,7 @@ export class Daemon {
     // launching an uncancellable prompt.
     if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
     const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    ref.sessionId = sessionId
     const modelOptions = host.modelOptions?.(sessionId) ?? null
     const selectedModel = modelOptions?.current
     // Mirror ordinary-turn attribution: a runtime-owned `default` means the
@@ -4659,7 +4807,10 @@ export class Daemon {
       this.memoryExtractionQuarantines.delete(key)
       this.memoryExtractionCollectors.set(key, collector)
       try {
-        this.rematerializeConfigFiles(agentId)
+        // No rematerializeConfigFiles here: the dedicated dream host deliberately
+        // materializes no agent tool config files (excludeAgentToolCredentials),
+        // and re-creating the warm host's `*_DATA` secret files on disk would
+        // re-expose them to the attacker-controlled extraction (task #36 A2).
         const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
         this.store.appendTranscript({
           channel: 'memory',
@@ -17596,6 +17747,10 @@ export class Daemon {
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
     await Promise.allSettled(hostStarts)
+    // Shutdown backstop: dream extractions reclaim their own tombstone when the
+    // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop
+    // anything still lingering here so nothing survives the process (task #36).
+    this.memoryExtractionQuarantines.clear()
     // An aborted warm SessionManager caller can settle before its uncancellable
     // workspace I/O. Keep the trusted ledger/store boundary alive until every
     // registered preparation has quiesced; a hung mutation deliberately prevents
