@@ -19,7 +19,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@iconify-icons/icon-park": "^1.2.11",
     "@iconify-icons/logos": "^1.2.36",
     "@iconify-icons/ph": "^1.2.5",
     "@iconify/react": "^6.0.2",

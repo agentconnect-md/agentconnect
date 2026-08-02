@@ -19,7 +19,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { FaSlack, FaTelegram, FaDiscord } from 'react-icons/fa'
 import { Icon } from '@/components/ui'
-import { SocialLoginMark, Spinner, Wordmark } from '@/components/marks'
+import { Spinner, Wordmark } from '@/components/marks'
+import SocialLoginButtons from '@/components/SocialLoginButtons'
 import { getMyAccess, joinWaitlist, type WaitlistIntake } from '@/lib/api'
 import { getUser, isAuthConfigured, login, logout } from '@/lib/auth'
 import { socialLoginProviders, type SocialLoginTarget } from '@/lib/social-login-providers'
@@ -373,19 +374,11 @@ export default function Waitlist() {
                   typing, no spoofing.
                 </p>
                 <div className="mt-[26px] flex max-w-[380px] flex-col gap-3">
-                  {socialLoginProviders().map((provider) => (
-                    <button
-                      key={provider.target}
-                      type="button"
-                      // GitHub keeps the design's dark primary treatment; the rest
-                      // are the plain light button.
-                      className={provider.target === 'github' ? 'sso dark' : 'sso'}
-                      onClick={() => continueWith(provider.target)}
-                    >
-                      <SocialLoginMark target={provider.target} />
-                      Continue with {provider.name}
-                    </button>
-                  ))}
+                  <SocialLoginButtons
+                    providers={socialLoginProviders()}
+                    onContinue={continueWith}
+                    darkTarget="github"
+                  />
                 </div>
               </div>
             )}

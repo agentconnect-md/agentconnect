@@ -53,6 +53,7 @@ import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
+import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { PLATFORMS, type Platform } from '@/components/console/modals/AddIntegrationModal'
@@ -1535,7 +1536,17 @@ export default function AgentDetailView() {
                             <PlatformMark platform={p.key} fillPct={100} />
                           </span>
                         )}
-                        <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                        {p.key === 'feishu' ? (
+                          <LarkFeishuSwitcher
+                            value="lark"
+                            disabled={!available}
+                            onSwitch={(feishuRegion) =>
+                              openModal('integration', da, { platform: 'feishu', feishuRegion })
+                            }
+                          />
+                        ) : (
+                          <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
+                        )}
                       </div>
                     )
                   })}

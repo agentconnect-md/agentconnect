@@ -484,9 +484,6 @@ importers:
 
   packages/web:
     dependencies:
-      '@iconify-icons/icon-park':
-        specifier: ^1.2.11
-        version: 1.2.11
       '@iconify-icons/logos':
         specifier: ^1.2.36
         version: 1.2.36
@@ -1305,9 +1302,6 @@ packages:
   '@ibm-cloud/watsonx-ai@1.7.15':
     resolution: {integrity: sha512-JUxFuACcKhDC+shavgyLEFjWiSsBjI+tjIBvLrzcHywh0HqTT0m+whe2kL3isPheBzrduSMfovwypbSuKwCp+g==}
     engines: {node: '>=20.0.0'}
-
-  '@iconify-icons/icon-park@1.2.11':
-    resolution: {integrity: sha512-NKlDBncvQkXww1Y06oDrXZ7TIoRaAjSXOLdknyBSr6RagdAVDL+uBazGYsJHSyTf+zPJsPpNIzqKFhuGrFzuww==}
 
   '@iconify-icons/logos@1.2.36':
     resolution: {integrity: sha512-VzF299ubR4SKCZzLJoAawxeSjszJV1Q6y+4chCIPQuAafqfjtDjZxagZxL3ILKCsRLNN/z3zmCOOAL83tC8kLw==}
@@ -9590,10 +9584,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
     optional: true
-
-  '@iconify-icons/icon-park@1.2.11':
-    dependencies:
-      '@iconify/types': 2.0.0
 
   '@iconify-icons/logos@1.2.36':
     dependencies:

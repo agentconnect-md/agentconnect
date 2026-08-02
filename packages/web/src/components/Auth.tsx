@@ -1,7 +1,8 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { LogoMark, SocialLoginMark, Wordmark } from '@/components/marks'
+import { LogoMark, Wordmark } from '@/components/marks'
+import SocialLoginButtons from '@/components/SocialLoginButtons'
 import { isAuthConfigured, login } from '@/lib/auth'
 import { socialLoginProviders, type SocialLoginTarget } from '@/lib/social-login-providers'
 
@@ -48,12 +49,7 @@ export default function Auth() {
             <h1 className="atitle">Sign in</h1>
             <p className="asub">Welcome back. Continue to your workspace.</p>
             <div className="mt-[26px] flex flex-col gap-[10px]">
-              {socialLoginProviders().map((provider) => (
-                <button key={provider.target} className="sso" onClick={() => sso(provider.target)}>
-                  <SocialLoginMark target={provider.target} />
-                  Continue with {provider.name}
-                </button>
-              ))}
+              <SocialLoginButtons providers={socialLoginProviders()} onContinue={sso} />
             </div>
             <p className="mt-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
               Single sign-on only. AgentConnect never stores a password.
