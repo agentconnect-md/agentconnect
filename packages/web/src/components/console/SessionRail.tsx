@@ -76,6 +76,8 @@ export function SessionRail({
   filterTouched,
   onAgentIdsChange,
   family,
+  conversation = false,
+  childOriginById,
   onSelect
 }: {
   /** The filtered first page of sessions, newest first. */
@@ -92,6 +94,11 @@ export function SessionRail({
   onAgentIdsChange: (agentIds: string[]) => void
   /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
   family?: Pick<SessionDetailDto, 'parentSession' | 'siblingSessions' | 'childSessions'>
+  /** Conversation-level lineage (merged-conversation-view.md §9.2): relabels the
+   *  related tree and groups delegations by their waking member. */
+  conversation?: boolean
+  /** Delegation target id → waking member agentId (conversation mode). */
+  childOriginById?: ReadonlyMap<string, string>
   /** Seed the persistent detail view before the route id changes. */
   onSelect: (session: Session) => void
 }) {
@@ -289,9 +296,33 @@ export function SessionRail({
               <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
                 Related
               </div>
+              {conversation && parent && (
+                <div className="flex-none px-[9px] pt-[2px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                  Parent conversation
+                </div>
+              )}
               {parent && row(relationRow(parent), isPinned(parent.id))}
               {row(sessionRow(current), isPinned(currentId), parent ? 1 : 0, true)}
-              {children.map((child) => row(relationRow(child), isPinned(child.id), parent ? 2 : 1))}
+              {conversation && children.length > 0 && (
+                <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                  Delegations
+                </div>
+              )}
+              {children.map((child, index) => {
+                const origin = childOriginById?.get(child.id)
+                const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
+                const originAgent = origin ? agents.find((agent) => agent.id === origin) : undefined
+                return (
+                  <Fragment key={child.id}>
+                    {origin !== undefined && origin !== previousOrigin && (
+                      <div className="flex-none px-[9px] pt-[4px] pb-[1px] font-mono text-[9.5px] font-medium tracking-[0.06em] text-(--text-tertiary)">
+                        via {originAgent ? agentLabel(originAgent) : origin}
+                      </div>
+                    )}
+                    {row(relationRow(child), isPinned(child.id), parent ? 2 : 1)}
+                  </Fragment>
+                )
+              })}
               {siblings.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
               {siblings.map((sibling) => row(relationRow(sibling), isPinned(sibling.id), 1))}
               {ordinaryRows.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}

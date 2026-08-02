@@ -926,28 +926,33 @@ export default function SessionDetailView() {
       // and drop same-location edges. A target whose detail can't be read is
       // dropped too (fail closed — the caller couldn't open it anyway).
       const candidateIds = [...new Set([...parents.keys(), ...children.keys()])]
-      const targetKeys = new Map<string, string | null>()
+      // Three-way sentinel: an encoded key, 'singleton' (readable target with
+      // no groupable channel/thread — necessarily cross-conversation relative
+      // to this merged page), or 'unreadable' (fail closed).
+      const targetKeys = new Map<
+        string,
+        { kind: 'key'; key: string } | { kind: 'singleton' } | { kind: 'unreadable' }
+      >()
       await Promise.all(
         candidateIds.map(async (targetId) => {
           try {
             const target = await fetchSessionDetail(targetId, orgId)
-            targetKeys.set(
-              targetId,
-              encodeConversationKey({
-                platform: target.platform ?? 'slack',
-                tenantScope: target.tenantScope ?? null,
-                channel: target.channel,
-                thread: target.thread
-              })
-            )
+            const key = encodeConversationKey({
+              platform: target.platform ?? 'slack',
+              tenantScope: target.tenantScope ?? null,
+              channel: target.channel,
+              thread: target.thread
+            })
+            targetKeys.set(targetId, key === null ? { kind: 'singleton' } : { kind: 'key', key })
           } catch {
-            targetKeys.set(targetId, null)
+            targetKeys.set(targetId, { kind: 'unreadable' })
           }
         })
       )
       const crossRoom = (targetId: string): boolean => {
-        const key = targetKeys.get(targetId)
-        return key !== null && key !== undefined && key !== conversationKey
+        const target = targetKeys.get(targetId)
+        if (!target || target.kind === 'unreadable') return false
+        return target.kind === 'singleton' || target.key !== conversationKey
       }
       const crossParents = [...parents.values()].filter((parent) => crossRoom(parent.id))
       const crossChildren = [...children.values()]
@@ -1588,21 +1593,32 @@ export default function SessionDetailView() {
   }, [visibleTailReady, refreshTranscriptTail])
 
   const focusPagesRef = useRef(0)
+  // The persistent layout survives key-to-key navigation: re-arm the one-shot
+  // focus state whenever the (conversation, participant) target changes.
+  useEffect(() => {
+    focusDoneRef.current = false
+    focusPagesRef.current = 0
+    setFocusFlash(false)
+  }, [conversationKey, focusAgentId])
   useEffect(() => {
     if (!focusAgentId || focusDoneRef.current || msgLoading) return
+    // Nothing is knowable before the initial transcript lands — a fresh mount
+    // must not read the not-yet-populated cursors as "history exhausted".
+    if (msgs === null) return
     if (!focusRef.current) {
-      // The focused participant's block may sit outside the newest window —
-      // page older (bounded) until it appears or history is exhausted.
-      if (
-        conversationKey &&
-        conversationHasEarlier &&
-        !conversationPagingEarlier &&
-        focusPagesRef.current < MAX_FOCUS_PAGES
-      ) {
-        focusPagesRef.current += 1
-        void loadEarlierConversation()
-      } else if (!conversationHasEarlier || focusPagesRef.current >= MAX_FOCUS_PAGES) {
-        // Give up quietly — no scroll target exists in reachable history.
+      if (conversationKey && conversationHasEarlier && !conversationPagingEarlier) {
+        if (focusPagesRef.current < MAX_FOCUS_PAGES) {
+          // Auto-page older windows until the focused participant appears.
+          focusPagesRef.current += 1
+          void loadEarlierConversation()
+        }
+        // Budget exhausted with history remaining: PAUSE, don't give up — the
+        // focus stays armed, and each manual "Load earlier" click re-runs
+        // this effect and completes the scroll when the block appears (§5.3).
+        return
+      }
+      if (!conversationHasEarlier) {
+        // History genuinely exhausted with no block found — give up quietly.
         focusDoneRef.current = true
       }
       return
@@ -2259,6 +2275,8 @@ export default function SessionDetailView() {
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
         family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
+        conversation={conversationMode}
+        childOriginById={conversationLineage?.childOriginById}
         onSelect={setRouteSession}
       />
       <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
