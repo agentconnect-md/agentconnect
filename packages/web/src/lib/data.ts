@@ -1830,15 +1830,17 @@ export function speaker(handle: string, name?: string): Speaker {
   return { name: display, handle, initials, avBg, avText }
 }
 
-/** Is `sender` (a raw trigger/sender id) the signed-in viewer? A webchat session's
- *  triggeredBy is the CP principal — the user's email in an OIDC deployment, the devAuth
- *  owner id locally — the same identity `/me` returns, so their own runs read as "You".
- *  Slack/Telegram/Discord senders are platform ids and never match. `me` is the CP
- *  profile record (typed structurally to avoid an api ↔ data import cycle). */
+/** Is `sender` the signed-in viewer? Live Playground steps use the canonical local
+ *  `@you` marker before a durable webchat sender id exists. Persisted webchat rows use
+ *  the CP principal — the user's email in an OIDC deployment, the devAuth owner id
+ *  locally — which is the same identity `/me` returns. Slack/Telegram/Discord senders
+ *  are platform ids and never match. `me` is typed structurally to avoid an api ↔ data
+ *  import cycle. */
 export function isSelfSender(
   sender: string | null | undefined,
   me: { userId: string; email: string | null } | null | undefined
 ): boolean {
+  if (sender === '@you') return true
   return !!sender && !!me && (sender === me.userId || (!!me.email && sender === me.email))
 }
 
