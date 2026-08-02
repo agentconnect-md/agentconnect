@@ -4,6 +4,12 @@
 > immutable source snapshots, an isolated exact CLI cell, receipts, and one
 > trusted external ownership ledger.
 >
+> **Known trust-model mismatch:** the current v3 daemon implementation also
+> forces every ordinary ACP host into the OS sandbox. That enforcement follows
+> an obsolete assumption and is pending a separate code correction. The
+> normative execution model is
+> [daemon-centric-architecture.md §9.1](daemon-centric-architecture.md#91-execution-trust-model).
+>
 > **Scope:** protocol + control-plane + daemon + web
 >
 > **Requirement mapping:**
@@ -564,16 +570,15 @@ The implemented surface follows `McpServersCard`:
   claims, active-roster overlap validation, and exact byte receipts govern
   publication/removal. The installer does not mutate repository ignore
   configuration or depend on Git metadata for ownership.
-- **Authority-domain runtime isolation:** executable skill authority is stored
-  under the daemon's UID, so an unsandboxed sibling ACP process could forge a
-  future victim's accepted registry, ledger, or installed bytes. On every boot
-  for that daemon root, the daemon persists the boundary before any real runtime
-  probe or host launch. Every real ordinary ACP host, runtime probe, model
-  enumerator, direct CLI chat, and raw ACP evaluation launched against that root
-  must use the supported Linux SRT/bwrap sandbox, even when no agent has enabled
-  a skill yet. A host without that mechanism may run the management plane, but
-  it skips real runtime/model probing and refuses all real agent launches; an
-  explicit `security.requireSandbox` setting still refuses daemon startup itself.
+- **Authority-domain runtime trust:** executable skill authority is stored under
+  the daemon's UID. Per the normative execution trust model, an unsandboxed ACP
+  host is an operator-trusted same-user principal; integrity against that host is
+  not an isolation guarantee. Shared skills therefore do not implicitly require
+  every ACP host, runtime probe, model enumerator, direct CLI chat, or raw ACP
+  evaluation to use the Linux SRT/bwrap sandbox. Per-agent **Run in sandbox** and
+  explicit daemon-wide `security.requireSandbox` policy remain the operator's
+  isolation controls. The skills CLI and other narrowly untrusted helpers retain
+  their own audited isolation cells.
 - **Separate-root deployment constraint:** separate daemon roots do not share
   the SQLite workspace-authority database or active-agent roster. Operators must
   not place another daemon root or another daemon's `agentsDir` inside an
