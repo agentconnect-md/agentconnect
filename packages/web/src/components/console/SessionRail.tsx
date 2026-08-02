@@ -1,5 +1,3 @@
-'use client'
-
 // The session detail page's left rail: the open session's direct family (parent,
 // siblings, and children), globally pinned shortcuts, then the other sessions of
 // the CURRENT agent. Family rows stay in their tree even when pinned and are
@@ -48,6 +46,7 @@ interface RailRow {
   platform: string
   title: string
   tooltip: string
+  session?: Session
 }
 
 const EMPTY_RELATIONS: SessionRelationDto[] = []
@@ -57,7 +56,8 @@ export function SessionRail({
   current,
   total,
   agentId,
-  family
+  family,
+  onSelect
 }: {
   /** The agent-filtered first page of sessions, newest first. */
   sessions: Session[]
@@ -69,11 +69,12 @@ export function SessionRail({
   agentId: string | undefined
   /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
   family?: Pick<SessionDetailDto, 'parentSession' | 'siblingSessions' | 'childSessions'>
+  /** Seed the persistent detail view before the route id changes. */
+  onSelect: (session: Session) => void
 }) {
   const { orgPath, activeOrg } = useOrgs()
   // Schedule-triggered rows show the schedule's name, so the rail needs the crons
-  // list — read here rather than taken as a prop (a function prop on a 'use client'
-  // module trips the Next TS plugin's Server-Action serializability check).
+  // list — resolve it here instead of threading another display-only callback.
   const { crons } = useConsoleData()
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
 
@@ -174,7 +175,8 @@ export function SessionRail({
       id: canonicalSessionId(s),
       platform: channel.platform,
       title: s.title,
-      tooltip: `${s.title}\n${s.time} · ${channel.label}`
+      tooltip: `${s.title}\n${s.time} · ${channel.label}`,
+      session: s
     }
   }
   const relationRow = (relation: SessionRelationDto): RailRow => {
@@ -191,9 +193,7 @@ export function SessionRail({
     return (
       <div
         key={item.id}
-        className={`group flex w-full items-center gap-2 rounded-sm py-[6px] pr-[9px] ${
-          depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
-        } ${
+        className={`group relative w-full rounded-sm ${
           on
             ? 'bg-(--brand-soft) text-(--text-primary)'
             : 'text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
@@ -203,7 +203,18 @@ export function SessionRail({
           href={orgPath(`/sessions/${encodeURIComponent(item.id)}`)}
           title={item.tooltip}
           aria-current={on ? 'page' : undefined}
-          className="flex min-w-0 flex-1 items-center gap-2"
+          onClick={(event) => {
+            // A selected row is already the current view. Letting Next navigate
+            // to the same dynamic URL needlessly refreshes its route payload.
+            if (on) {
+              event.preventDefault()
+              return
+            }
+            if (item.session) onSelect(item.session)
+          }}
+          className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[34px] focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
+            depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
+          }`}
         >
           {depth > 0 && (
             <span
@@ -227,8 +238,10 @@ export function SessionRail({
           onClick={() => togglePin(item.id)}
           aria-pressed={pinnedRow}
           title={pinnedRow ? 'Unpin session' : 'Pin session'}
-          className={`-my-[2px] h-[19px] w-[19px] flex-none items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
-            pinnedRow ? 'flex text-(--brand)' : 'hidden text-(--text-tertiary) group-hover:flex group-focus-within:flex'
+          className={`absolute top-1/2 right-[7px] z-10 flex h-[19px] w-[19px] -translate-y-1/2 items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
+            pinnedRow
+              ? 'text-(--brand)'
+              : 'pointer-events-none opacity-0 text-(--text-tertiary) group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
           }`}
         >
           <Icon name="pin" size={12} />
