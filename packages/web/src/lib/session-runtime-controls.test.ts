@@ -68,6 +68,49 @@ describe('session runtime controls', () => {
     expect(sessionPermissionSelection('codex', undefined, undefined, '')).toBe('agent')
   })
 
+  it('composes Auto into live and fallback Codex session selectors', () => {
+    const codexCatalog: RuntimeModelCatalog = {
+      ...catalog,
+      permissionModes: [
+        { value: 'read-only', name: 'Read-only' },
+        { value: 'agent', name: 'Agent' },
+        { value: 'agent-full-access', name: 'Agent (full access)' }
+      ],
+      defaultPermissionMode: 'agent'
+    }
+    expect(sessionPermissionChoices('codex', codexCatalog, undefined).map((choice) => choice.v)).toEqual([
+      'read-only',
+      'agent',
+      'agent:auto-review',
+      'agent-full-access'
+    ])
+    expect(sessionPermissionSelection('codex', codexCatalog, undefined, 'agent', 'auto_review')).toBe(
+      'agent:auto-review'
+    )
+    expect(
+      sessionPermissionChoices('codex', codexCatalog, [
+        'read-only',
+        'agent',
+        'agent:auto-review',
+        'agent-full-access'
+      ]).filter((choice) => choice.v === 'agent:auto-review')
+    ).toHaveLength(1)
+    expect(sessionPermissionChoices('codex', codexCatalog, ['read-only', 'agent', 'agent-full-access'])).toEqual([
+      { v: 'read-only', l: 'Read-only' },
+      { v: 'agent', l: 'Agent' },
+      { v: 'agent-full-access', l: 'Agent (full access)' }
+    ])
+    expect(
+      sessionPermissionSelection(
+        'codex',
+        codexCatalog,
+        ['read-only', 'agent', 'agent-full-access'],
+        'agent',
+        'auto_review'
+      )
+    ).toBe('agent')
+  })
+
   it('moves an unavailable effort to the selected model default', () => {
     expect(sessionEffortAfterModelChange('codex', daemon, 'terra', 'max')).toBe('high')
   })

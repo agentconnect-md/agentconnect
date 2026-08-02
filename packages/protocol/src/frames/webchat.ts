@@ -100,6 +100,7 @@ export type WebchatEvent = z.infer<typeof WebchatEvent>
 export const WebchatStatus = z.object({
   model: z.string().optional(),
   effort: z.string().optional(),
+  // Effective session permission preset; Codex Auto is composite rather than a raw mode.
   permissionMode: z.string().optional(),
   fastMode: z.boolean().optional(),
   contextUsed: z.number().int().optional(),
@@ -114,8 +115,9 @@ export const WebchatStatus = z.object({
   // `thought_level` config option, plus the synthetic `ultracode`/`max` entries on
   // Claude runtimes) — populates the console's effort dropdown. Absent ⇒ no selector.
   efforts: z.array(z.string()).optional(),
-  // The runtime's selectable permission/approval modes (ACP `mode` config option).
-  // Values are runtime-owned and omitted when the Agent disables chat-side changes.
+  // Selectable session permission presets. Most values come from ACP `mode`; Codex Auto
+  // is composed from `mode=agent` + `_approvals_reviewer=auto_review`. Omitted when the
+  // Agent disables chat-side changes.
   permissionModes: z.array(z.string()).optional(),
   // Whether the selected model advertises a fast-mode toggle (the ACP `model_config`
   // config option only appears once a fast-capable model is selected). Absent/false ⇒

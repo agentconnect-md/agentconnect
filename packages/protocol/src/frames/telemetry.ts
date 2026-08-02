@@ -113,7 +113,9 @@ export const EventSession = z.object({
   model: z.string().optional(),
   effort: z.string().optional(), // reasoning effort level (runtime-owned vocabulary)
   fastMode: z.boolean().optional(),
-  permissionMode: z.string().optional(), // runtime permission/approval mode
+  // Effective session permission preset. Usually the runtime-owned mode; Codex Auto
+  // is the AgentConnect composite value that the daemon decomposes before ACP.
+  permissionMode: z.string().optional(),
   outputMode: z.string().optional(), // daemon-side output verbosity (none/minimal/low/medium/high)
   ts: z.string().datetime()
 })

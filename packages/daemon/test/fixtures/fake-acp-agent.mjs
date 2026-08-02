@@ -21,6 +21,11 @@ const modelList = (process.env.AC_MODELS ?? '')
   .map((s) => s.trim())
   .filter(Boolean)
 const sessionModels = new Map()
+const permissionModeList = (process.env.AC_PERMISSION_MODES ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+const sessionPermissionModes = new Map()
 const reviewerEnabled = process.env.AC_APPROVALS_REVIEWER === '1'
 const sessionReviewers = new Map()
 
@@ -52,6 +57,15 @@ const configOptions = (sessionId) => {
       options: modelList.map((value) => ({ value, name: value }))
     })
   }
+  if (permissionModeList.length) {
+    options.push({
+      id: 'mode',
+      category: 'mode',
+      type: 'select',
+      currentValue: sessionPermissionModes.get(sessionId) ?? permissionModeList[0],
+      options: permissionModeList.map((value) => ({ value, name: value }))
+    })
+  }
   if (reviewerEnabled) {
     options.push({
       id: 'approvals_reviewer',
@@ -76,11 +90,14 @@ rl.on('line', async (line) => {
   } else if (method === 'session/new') {
     const sessionId = `s${++sessionCounter}`
     sessionModels.set(sessionId, modelList[0])
+    sessionPermissionModes.set(sessionId, permissionModeList[0])
     sessionReviewers.set(sessionId, 'user')
     send({ jsonrpc: '2.0', id, result: { sessionId, configOptions: configOptions(sessionId) } })
   } else if (method === 'session/set_config_option') {
     if (params.configId === 'model' && modelList.includes(params.value))
       sessionModels.set(params.sessionId, params.value)
+    if (params.configId === 'mode' && permissionModeList.includes(params.value))
+      sessionPermissionModes.set(params.sessionId, params.value)
     if (params.configId === 'approvals_reviewer' && ['user', 'auto_review'].includes(params.value))
       sessionReviewers.set(params.sessionId, params.value)
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })

@@ -369,7 +369,7 @@ export interface SessionDto {
   model: string | null
   effort: string | null
   fastMode: boolean | null
-  permissionMode: string | null
+  permissionMode: string | null // effective session preset; Codex Auto is composite
   outputMode: string | null
   daemonId: string | null
 }
@@ -462,7 +462,7 @@ export interface SessionDetailDto {
   model: string | null
   effort: string | null
   fastMode: boolean | null
-  permissionMode: string | null
+  permissionMode: string | null // effective session preset; Codex Auto is composite
   outputMode: string | null
   daemonId: string | null
   // Session visibility (docs/designs/session-visibility.md §5/§6). All three are

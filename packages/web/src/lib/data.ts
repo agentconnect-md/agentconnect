@@ -451,9 +451,9 @@ export function permissionModeOptions(runtime: string): { v: string; l: string }
     // console can't misrepresent them. Values are codex-acp's runtime-owned ids (probed
     // from session/new): `agent` is Codex's default, labeled "Ask for approval"
     // (on-request + workspace-write); `agent-full-access` is danger-full-access —
-    // out-of-workspace + network. Codex's Auto preset is composed in the Agent
-    // editor from `agent` + approvalsReviewer; it is not a runtime mode and must
-    // stay out of this raw list (session controls can only stage the mode itself).
+    // out-of-workspace + network. Codex's Auto preset is composed by the UI from
+    // `agent` + approvalsReviewer; it is not a runtime mode and stays out of this
+    // raw list.
     return [
       { v: 'read-only', l: 'Read Only' },
       { v: 'agent', l: 'Ask for approval' },
@@ -479,6 +479,7 @@ export function permissionModeDefault(runtime: string): string {
 
 export function permissionModeLabel(runtime: string, v: string): string {
   const mode = v || permissionModeDefault(runtime)
+  if (supportsApprovalsReviewer(runtime) && mode === CODEX_AUTO_REVIEW_PRESET) return 'Auto'
   const o = permissionModeOptions(runtime).find((x) => x.v === mode)
   return o?.l ?? mode
 }
@@ -493,14 +494,20 @@ export function approvalsReviewerDefault(runtime: string): ApprovalsReviewer | '
 
 const CODEX_AUTO_REVIEW_PRESET = 'agent:auto-review'
 
-/** Agent-editor presets compose Codex's independent mode + reviewer selectors
- * into the single permissions control users see in Codex. Other runtimes keep
- * their advertised mode list unchanged. */
+/** Agent and session presets compose Codex's independent mode + reviewer selectors
+ * into the single permissions control users see in Codex. Other runtimes keep their
+ * advertised mode list unchanged. */
 export function permissionModePresets(
   runtime: string,
   modes: Array<{ v: string; l: string; description?: string }>
 ): Array<{ v: string; l: string; description?: string }> {
-  if (!supportsApprovalsReviewer(runtime) || !modes.some((mode) => mode.v === 'agent')) return modes
+  if (
+    !supportsApprovalsReviewer(runtime) ||
+    !modes.some((mode) => mode.v === 'agent') ||
+    modes.some((mode) => mode.v === CODEX_AUTO_REVIEW_PRESET)
+  ) {
+    return modes
+  }
   return modes.flatMap((mode) =>
     mode.v === 'agent'
       ? [
@@ -899,8 +906,9 @@ export interface Session {
    *  (webchat status frame). `availableEfforts` empty/absent ⇒ no effort selector. */
   effort?: string
   availableEfforts?: string[]
-  /** Current permission/approval mode + selectable modes for the in-session switch
-   *  (webchat status frame). `availablePermissionModes` empty/absent ⇒ no selector. */
+  /** Current permission preset + selectable presets for the in-session switch
+   *  (webchat status frame). Codex Auto is composite; an empty/absent
+   *  `availablePermissionModes` means no selector. */
   permissionMode?: string
   availablePermissionModes?: string[]
   /** Current fast-mode state + whether the selected model offers a fast toggle (webchat

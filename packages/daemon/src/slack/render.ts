@@ -251,6 +251,7 @@ function renderReasoning(buf: string): string {
 export interface StatusBarInfo {
   model?: string
   effort?: string
+  /** Effective session permission preset. Codex Auto is a composite value, not a raw ACP mode. */
   permissionMode?: string
   fastMode?: boolean
   contextUsed?: number
@@ -263,6 +264,7 @@ export interface StatusBarInfo {
   // ignores these; only buildStatusModal / the web bar consume them.
   models?: string[]
   efforts?: string[]
+  /** Selectable session presets; may include the synthetic Codex Auto value. */
   permissionModes?: string[]
   fastModeAvailable?: boolean
   // Current Slack output verbosity (daemon-side minimal/low/medium/high). Modal-only selector;
@@ -649,8 +651,9 @@ export function buildStatusModal(
     })
   }
 
-  // Permission mode follows the model / effort / fast controls, matching the agent
-  // configuration surfaces. Values remain runtime-owned and travel verbatim.
+  // Permission follows the model / effort / fast controls, matching the Agent and
+  // console session surfaces. Codex Auto travels as one AgentConnect session preset;
+  // the daemon decomposes it before calling ACP.
   const permissionModes = info.permissionModes ?? []
   if (permissionModes.length > 0) {
     const opts =
