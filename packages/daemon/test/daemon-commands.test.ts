@@ -935,7 +935,9 @@ describe('Daemon in-conversation commands', () => {
     // choose by label ("full access") → resolves to the raw wire id, applied live
     ;(daemon as any).onInbound(dm('210', '/permission full access'))
     expect(store.getPermissionModeOverride(key)).toBe('agent-full-access')
-    expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent-full-access')
+    await vi.waitFor(() => {
+      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent-full-access')
+    })
     expect(conn.postMessage).toHaveBeenCalledWith(
       'C1',
       expect.stringContaining('Permission mode set to Full Access'),
@@ -945,6 +947,11 @@ describe('Daemon in-conversation commands', () => {
     // the default preset resolves from its Codex label too ("ask for approval" → agent)
     ;(daemon as any).onInbound(dm('220', '/permission ask for approval'))
     expect(store.getPermissionModeOverride(key)).toBe('agent')
+    await vi.waitFor(() => {
+      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
+    })
+    host.setSessionPermissionMode.mockClear()
+    host.setSessionApprovalsReviewer.mockClear()
 
     // Auto is one session preset in every chat surface, but reaches ACP as two
     // independent config selections.
