@@ -43,6 +43,14 @@ This design adds a small evaluation system around existing tests and the real da
 - A single weighted “agent score” that can hide a safety failure.
 - In v1, a large public coding benchmark, generalized LLM judge, or trend dashboard.
 
+> **Scope amendment.** [collaboration-arena.md](collaboration-arena.md) supersedes
+> the “no bespoke runner / general benchmark engine” non-goal for the narrow scope
+> of stateful multi-agent collaboration games. The Arena adds a game engine and
+> world model while keeping Promptfoo as the outer orchestrator, ATIF and the
+> evaluation-event schema as the product trace, and the separation of trial
+> validity, product invariants, and game score defined here. All other non-goals
+> in this list remain in force.
+
 ## 2. Experimental model
 
 ### 2.1 Terms
