@@ -574,6 +574,17 @@ AgentConnect informational review Check in that App suite, with the same live ma
 authorization and revision fences as a single-Check rerun. It does not depend on the
 integration's ordinary event cadence.
 
+Every active informational review Check completed as `skipped` or `failure` offers a
+`Request review` action. It targets only that Check's Agent and opens a new generation
+for the same revision after the same live maintainer authorization and revision fences.
+A retired Check offers no action because it no longer has a live integration to run.
+A new review generation following a terminal Check publishes a fresh Check Run: GitHub
+keeps a completed run terminal, so reusing it would leave the top-level status and icon
+completed while its output claims the review is queued or in progress. The fresh run is
+then updated through queued, in-progress, and terminal states; the previous run remains
+historical. A request that supersedes an incomplete generation keeps that active Check
+instead of leaving it permanently unfinished.
+
 ## GitHub maintainer trigger authorization
 
 GitHub Issue and pull-request integrations treat current repository permission—not the

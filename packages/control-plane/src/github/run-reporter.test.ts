@@ -631,9 +631,11 @@ describe('GithubRunReporter', () => {
     const body = JSON.parse(String(mutation?.[1]?.body)) as {
       status: string
       conclusion: string
+      actions: Array<{ identifier: string }>
       output: { summary: string }
     }
     expect(body).toMatchObject({ status: 'completed', conclusion: 'failure' })
+    expect(body.actions).toEqual([])
     expect(body.output.summary).toContain(`Agent: [review-agent](https://console.example.com/acme/agents/${agentId})`)
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
       expect.objectContaining({ projectionId: p.id, generation: p.generation, observedState: 'failure' })
@@ -863,9 +865,12 @@ describe('GithubRunReporter', () => {
     )
   })
 
-  it('publishes an explicit skipped conclusion for a quota-exhausted review', async () => {
+  it.each([
+    ['skipped', 'Review was not run'],
+    ['failure', 'Review could not be completed']
+  ] as const)('publishes a Request review action for every active %s Check', async (desiredState, title) => {
     const p = projection({
-      desiredState: 'skipped',
+      desiredState,
       observedState: 'in_progress',
       checkRunId: '90071992547409931'
     })
@@ -875,7 +880,7 @@ describe('GithubRunReporter', () => {
         id: p.checkRunId,
         external_id: p.externalId,
         status: 'completed',
-        conclusion: 'skipped',
+        conclusion: desiredState,
         output: { summary: JSON.parse(String(init?.body)).output.summary }
       })
     })
@@ -886,16 +891,24 @@ describe('GithubRunReporter', () => {
     const body = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as {
       status: string
       conclusion: string
+      actions: Array<{ label: string; description: string; identifier: string }>
       output: { title: string; summary: string }
     }
     expect(body).toMatchObject({
       status: 'completed',
-      conclusion: 'skipped',
-      output: { title: 'Review was not run' }
+      conclusion: desiredState,
+      actions: [
+        {
+          label: 'Request review',
+          description: 'Start AgentConnect review',
+          identifier: 'request_review'
+        }
+      ],
+      output: { title }
     })
-    expect(body.output.summary).toContain('Phase: skipped')
+    expect(body.output.summary).toContain(`Phase: ${desiredState}`)
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
-      expect.objectContaining({ checkRunId: p.checkRunId, observedState: 'skipped' })
+      expect.objectContaining({ checkRunId: p.checkRunId, observedState: desiredState })
     )
   })
 
