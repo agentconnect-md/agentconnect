@@ -275,6 +275,7 @@ function integrationRowFromDto(
     botId: d.botId,
     shareable: bot?.shareable ?? false,
     discordAppId: bot?.discordAppId ?? null,
+    ...(d.platform === 'feishu' ? { region: d.region ?? bot?.feishuRegion ?? 'feishu' } : {}),
     name: d.name,
     platform: d.platform,
     kind: 'Custom app',

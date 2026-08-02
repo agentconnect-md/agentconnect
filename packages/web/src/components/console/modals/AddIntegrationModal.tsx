@@ -1265,7 +1265,8 @@ export default function AddIntegrationModal({
   }, [agent.name, createdHook, daemonsLoading, firstSupportedBotPlatform, selectedBotPlatformSupported])
 
   // A bot serves one agent at a time; freed (or prebuilt, never-installed) bots of
-  // THIS platform are offered for reuse instead of forcing a re-create. Two kinds
+  // THIS platform (and active Feishu/Lark region) are offered for reuse instead
+  // of forcing a re-create. Two kinds
   // look "free" (`inUseByAgentId` clears with the last install) but are not, and the
   // server rejects both — don't offer what cannot be picked:
   //   • revoked — the workspace uninstalled the app, so its token is dead;
@@ -1275,7 +1276,12 @@ export default function AddIntegrationModal({
   //     shared bot; before that, reuse is the dedicated "Add to Slack" flow or a
   //     Slack app of this agent's own.
   const freeBots = bots.filter(
-    (b) => b.platform === platform && !b.inUseByAgentId && !b.revokedAt && (!b.teamId || b.shareable)
+    (b) =>
+      b.platform === platform &&
+      (platform !== 'feishu' || (b.feishuRegion ?? 'feishu') === feishuRegion) &&
+      !b.inUseByAgentId &&
+      !b.revokedAt &&
+      (!b.teamId || b.shareable)
   )
   const mode = modePick ?? 'create'
   // Slack Bot-identity panes (design: builtin-first). While the funnel probe is in

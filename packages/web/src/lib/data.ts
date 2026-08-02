@@ -1630,6 +1630,8 @@ export interface IntegrationRow {
   shareable?: boolean
   /** Discord application (client) id from the backing bot — builds the "Add to Discord" invite URL. Null/absent for non-Discord or when unknown. */
   discordAppId?: string | null
+  /** Feishu-family gateway identity. Lark and Feishu integrations remain separate rows even though they share the wire platform key. */
+  region?: 'feishu' | 'lark'
   name: string
   platform: string
   kind: string
