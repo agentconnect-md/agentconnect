@@ -12,6 +12,7 @@ import {
 import Link from 'next/link'
 import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
+import { focusAction } from '@/lib/conversation-focus'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -1034,6 +1035,11 @@ export default function SessionDetailView() {
   }>({ rows: new Map(), cursors: new Map(), older: new Map() })
   const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
   const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
+  // Which conversation key the CURRENT fan-out state belongs to — the focus
+  // effect's readiness signal. Null while a (new) key is loading, so a
+  // key-to-key navigation in the persistent layout can never act on the
+  // previous conversation's leftover msgs/cursors.
+  const [conversationLoadedKey, setConversationLoadedKey] = useState<string | null>(null)
   const conversationMembersRef = useRef<{ sessionId: string; agentId: string; platform: string }[] | null>(null)
   // Merge sources in CANONICAL order — sessionId sort, decoupled from the
   // resolver's representative-first response, whose activity-based order is
@@ -1370,6 +1376,7 @@ export default function SessionDetailView() {
       // roster in the first place.
       const sources = conversationMembersRef.current ?? []
       if (sources.length === 0) return
+      setConversationLoadedKey(null)
       const rowsBySession = new Map<string, SessionMessageDto[]>()
       const cursors = new Map<string, string | null>()
       const older = new Map<string, string | null>()
@@ -1394,6 +1401,7 @@ export default function SessionDetailView() {
         if (!active) return
         conversationSourcesRef.current = { rows: rowsBySession, cursors, older }
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
+        setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
         setMsgs(mergeConversationRows(sources, rowsBySession))
         setMsgLoading(false)
@@ -1601,30 +1609,31 @@ export default function SessionDetailView() {
     setFocusFlash(false)
   }, [conversationKey, focusAgentId])
   useEffect(() => {
-    if (!focusAgentId || focusDoneRef.current || msgLoading) return
-    // Nothing is knowable before the initial transcript lands — a fresh mount
-    // must not read the not-yet-populated cursors as "history exhausted".
-    if (msgs === null) return
-    if (!focusRef.current) {
-      if (conversationKey && conversationHasEarlier && !conversationPagingEarlier) {
-        if (focusPagesRef.current < MAX_FOCUS_PAGES) {
-          // Auto-page older windows until the focused participant appears.
-          focusPagesRef.current += 1
-          void loadEarlierConversation()
-        }
-        // Budget exhausted with history remaining: PAUSE, don't give up — the
-        // focus stays armed, and each manual "Load earlier" click re-runs
-        // this effect and completes the scroll when the block appears (§5.3).
-        return
-      }
-      if (!conversationHasEarlier) {
-        // History genuinely exhausted with no block found — give up quietly.
-        focusDoneRef.current = true
-      }
+    if (!focusAgentId || focusDoneRef.current) return
+    // The decision is pure (conversation-focus.ts) and every input is SCOPED
+    // to the current key: `transcriptReady` compares the fan-out's stamped key
+    // against this render's, so a key-to-key navigation in the persistent
+    // layout can never page or give up on the previous conversation's state.
+    const action = focusAction({
+      targetVisible: focusRef.current !== null,
+      transcriptReady: !msgLoading && conversationLoadedKey === conversationKey,
+      hasEarlier: conversationHasEarlier,
+      paging: conversationPagingEarlier,
+      pagesUsed: focusPagesRef.current,
+      pageBudget: MAX_FOCUS_PAGES
+    })
+    if (action === 'wait' || action === 'pause') return
+    if (action === 'page') {
+      focusPagesRef.current += 1
+      void loadEarlierConversation()
+      return
+    }
+    if (action === 'give-up') {
+      focusDoneRef.current = true
       return
     }
     focusDoneRef.current = true
-    focusRef.current.scrollIntoView({ block: 'center' })
+    focusRef.current!.scrollIntoView({ block: 'center' })
     setFocusFlash(true)
     const timer = window.setTimeout(() => setFocusFlash(false), 1_800)
     return () => window.clearTimeout(timer)
@@ -1633,6 +1642,7 @@ export default function SessionDetailView() {
     msgLoading,
     msgs,
     conversationKey,
+    conversationLoadedKey,
     conversationHasEarlier,
     conversationPagingEarlier,
     loadEarlierConversation
