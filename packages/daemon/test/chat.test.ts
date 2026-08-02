@@ -5,7 +5,6 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Writable } from 'node:stream'
 import { runChat } from '../src/cli/chat.js'
-import { detectSandbox } from '../src/acp/sandbox.js'
 import type { AcpHost } from '../src/acp/acp-host.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 
@@ -90,11 +89,10 @@ describe('runChat', () => {
   it('single-shot: discovers the lone agent, spawns runtime, streams the echoed reply', async () => {
     const { agentsDir, configPath, root } = scaffold()
     const out = capture()
+    // Sandbox-optional principle (#36): the single-shot host runs (sandboxed where
+    // a mechanism exists, unsandboxed otherwise) instead of failing closed, so the
+    // echo path holds on hosts with or without an OS sandbox.
     const run = runChat({ agentsDir, message: 'hi', configPath, root, out: out.stream })
-    if (!detectSandbox()) {
-      await expect(run).rejects.toThrow(/requires every real ACP host.*sandbox/)
-      return
-    }
     await run
     expect(out.text()).toContain('echo:hi')
   }, 20_000)

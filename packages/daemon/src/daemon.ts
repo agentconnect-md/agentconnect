@@ -139,7 +139,6 @@ import {
   prefetchWorkspace
 } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
-import { persistSkillSandboxRequirement, skillSandboxRequirementPresent } from './skills/skill-sandbox-policy.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -1614,7 +1613,6 @@ export class Daemon {
   private sandboxMechanism: SandboxMechanism | undefined
   /** Daemon-wide same-UID boundary. It is established before the first real ACP
    * child, so no earlier unconfined sibling can pre-forge later skill authority. */
-  private globalSkillSandboxRequired = false
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
   // Models learned by actively probing each runtime (registry id -> model ids).
@@ -1968,8 +1966,11 @@ export class Daemon {
     // Establish the fleet-wide boundary on first boot, before probes or hosts;
     // waiting until a skill exists would let an earlier unconfined ACP sibling
     // forge the marker, registry, ledger, and installed bytes retroactively.
-    await persistSkillSandboxRequirement(root)
-    this.globalSkillSandboxRequired = true
+    // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
+    // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
+    // daemon boots, reconciles, and connects on hosts with or without an OS
+    // sandbox. The residual "an unconfined ACP child could tamper with skill
+    // authority" exposure on an unsandboxed agent is a tracked P2.
     // Mint a stable local daemonId only when we are NOT onboarding via a CP
     // token: with a `controlPlane.key` and no explicit id, the CP assigns the
     // id from the token's `sub` and the daemon adopts it (see startCpClient).
@@ -2723,7 +2724,6 @@ export class Daemon {
       )
     }
     this.fileAgents = nextFileAgents
-    await this.activateGlobalSkillSandbox(false, desired)
     const { toStart, toStop, toChange } = diffAgents(desired, this.agents)
     if (toStart.length || toStop.length || toChange.length)
       this.log.info(
@@ -3965,46 +3965,16 @@ export class Daemon {
    * cache, trusted installer state, and runtime CLI identity together prevents
    * a non-session warmup from spawning with a weaker preparation path. */
   private agentRunsInSandbox(agent: Agent): boolean {
-    const requireSandbox =
-      this.cfg.security.requireSandbox || (this.globalSkillSandboxRequired && this.opts.hostFactory === undefined)
-    return effectiveRunInSandbox(requireSandbox, agent.runInSandbox, this.sandboxMechanism)
-  }
-
-  private async activateGlobalSkillSandbox(
-    force = false,
-    agents: readonly Agent[] = [...this.agents.values()]
-  ): Promise<void> {
-    if (!force && !skillSandboxRequirementPresent(this.root, agents)) return
-    const transitioned = !this.globalSkillSandboxRequired
-    if (transitioned) {
-      // Publish the sticky boundary before stopping current hosts. A crash at any
-      // later point therefore makes the next daemon fail closed before ACP spawn.
-      await persistSkillSandboxRequirement(this.root)
-      this.globalSkillSandboxRequired = true
-    }
-
-    if (transitioned && !this.opts.hostFactory) {
-      for (const agentId of [...this.hosts.keys()]) {
-        const wasDraining = this.drainingAgents.has(agentId)
-        this.drainingAgents.add(agentId)
-        this.interruptAgentTurns(agentId, 'stop')
-        try {
-          await this.stopHost(agentId)
-        } finally {
-          if (!wasDraining && !this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
-        }
-      }
-    }
-    if (!this.sandboxMechanism && !this.opts.hostFactory) {
-      throw new Error(
-        'AgentConnect skill authority requires every real ACP host to use a supported Linux SRT/bwrap sandbox'
-      )
-    }
+    // Sandbox-optional principle (#36): skills follow the agent's OWN sandbox
+    // decision, never a forced fleet-wide requirement. Only the explicit operator
+    // `security.requireSandbox` still forces confinement; a trusted/unsandboxed
+    // agent runs (and installs/uses skills) unsandboxed, and the daemon never
+    // fails closed on a host with no OS sandbox.
+    return effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
   }
 
   private async runAgentWorkspacePreparation(agent: Agent): Promise<string> {
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
-    await this.activateGlobalSkillSandbox(false, [agent])
     return prepareWorkspace(agent, {
       managedSkills: (value) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
       skillsStateDir: join(this.root, 'skill-installs'),
@@ -5032,7 +5002,6 @@ export class Daemon {
           this.log.warn(`cp: organization suggestion sync failed (${err instanceof Error ? err.name : 'unknown'})`)
         ),
       withSkillAcceptance: async (agentId, publish) => {
-        await this.activateGlobalSkillSandbox(true)
         return this.withWorkspaceFileWrite(agentId, publish)
       },
       onEvent: (event) => this.recordDreamLifecycle(event),

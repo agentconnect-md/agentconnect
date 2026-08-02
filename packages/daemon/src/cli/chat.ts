@@ -76,17 +76,11 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
 
   const sandboxMechanism = detectSandbox()
-  const enforceSkillSandbox = opts.hostFactory === undefined
-  if (enforceSkillSandbox && !sandboxMechanism) {
-    throw new Error(
-      'AgentConnect skill authority requires every real ACP host to use a supported Linux SRT/bwrap sandbox'
-    )
-  }
-  const runInSandbox = effectiveRunInSandbox(
-    cfg.security.requireSandbox || enforceSkillSandbox,
-    agent.runInSandbox,
-    sandboxMechanism
-  )
+  // Sandbox-optional principle (#36): the single-shot host follows the agent's OWN
+  // sandbox decision (and the explicit operator requireSandbox), never a forced
+  // skill-authority requirement — so chat runs on hosts with or without an OS
+  // sandbox instead of failing closed.
+  const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, sandboxMechanism)
   if (entry?.source === 'curated') {
     const admission = new CuratedRuntimeAdmission()
     const probe = opts.probeRuntimes ?? probeAllRuntimes
