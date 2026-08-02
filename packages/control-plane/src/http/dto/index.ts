@@ -468,7 +468,7 @@ export const CreateAgentBody = z.object({
   allowRuntimeChangesInChat: z.boolean().optional(), // explicit opt-in; absent ⇒ false
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-  restrictFileAccess: z.boolean().optional(), // #642: request an OS sandbox (absent ⇒ default false)
+  runInSandbox: z.boolean().optional(), // #642: request an OS sandbox (absent ⇒ default false)
   env: AgentEnvBody.optional(),
   secrets: AgentSecretsCreateBody.optional(), // write-only secret env vars (values never returned)
   // Names of daemon-configured MCP servers to attach at session/new; the daemon
@@ -516,7 +516,7 @@ export const UpdateAgentBody = z
     allowRuntimeChangesInChat: z.boolean().optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-    restrictFileAccess: z.boolean().optional(), // #642: request an OS sandbox for this agent
+    runInSandbox: z.boolean().optional(), // #642: request an OS sandbox for this agent
     // Same-repository capability widening only. Workspace identity/conversion
     // stays on the dedicated cold action, and downgrades are deliberately not
     // exposed here because enabled review hooks may depend on write access.
@@ -610,7 +610,7 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
-  restrictFileAccess: z.boolean(), // #642: persisted per-agent sandbox preference (default false)
+  runInSandbox: z.boolean(), // #642: persisted per-agent sandbox preference (default false)
   // #642: whether the placed daemon can enforce the preference. false ⇒ the
   // console renders Run in sandbox unavailable and the effective value is false.
   sandboxSupported: z.boolean(),

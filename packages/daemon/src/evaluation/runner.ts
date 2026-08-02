@@ -467,7 +467,7 @@ function prepareSubject(options: EvaluationRunnerOptions, agentIds: readonly str
           ...(typeof agent.permissionMode === 'string' ? { permissionMode: agent.permissionMode } : {}),
           ...(typeof agent.reasoningEffort === 'string' ? { reasoningEffort: agent.reasoningEffort } : {}),
           ...(typeof agent.fastMode === 'boolean' ? { fastMode: agent.fastMode } : {}),
-          ...(typeof agent.restrictFileAccess === 'boolean' ? { restrictFileAccess: agent.restrictFileAccess } : {}),
+          ...(typeof agent.runInSandbox === 'boolean' ? { runInSandbox: agent.runInSandbox } : {}),
           ...(typeof agent.output?.mode === 'string' ? { outputMode: agent.output.mode } : {})
         }
       }
@@ -771,7 +771,7 @@ export class RawAcpEvaluationRunner {
       const runtime = cfg.runtimes?.[agent.runtime]
       if (!runtime) throw new Error(`raw ACP subject runtime "${agent.runtime}" must be explicit in config.json`)
       const mechanism = detectSandbox()
-      const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.restrictFileAccess, mechanism)
+      const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, mechanism)
       const baseEnv = agentChildEnv(agent)
       const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
       const memoryOffEnv = memoryProviderFor(

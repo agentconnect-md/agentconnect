@@ -1326,7 +1326,7 @@ export class Daemon {
       const agent = this.agents.get(id)
       if (!agent) return undefined
       return memoryKindOf(agent) === 'native' &&
-        effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.restrictFileAccess, this.sandboxMechanism)
+        effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
         ? runtimeHomePath(agent.dir)
         : agent.dir
     },
@@ -2352,7 +2352,7 @@ export class Daemon {
             enabled: agent.mcpServers,
             defs: this.mcpServerDefs,
             caps: this.runtimeMcpCaps.get(agent.runtime),
-            ...(effectiveRunInSandbox(cfg.security.requireSandbox, agent.restrictFileAccess, this.sandboxMechanism)
+            ...(effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
               ? {
                   resolveStdioCommand: (command: string, entries: { name: string; value: string }[]) =>
                     resolveTrustedExecutable(command, {
@@ -3811,12 +3811,8 @@ export class Daemon {
       // runtimeOverrides env (a user-supplied GIT_CONFIG_* would reopen
       // the machine-credential leak the injection exists to close).
       const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
-      const runInSandbox = effectiveRunInSandbox(
-        cfg.security.requireSandbox,
-        agent.restrictFileAccess,
-        this.sandboxMechanism
-      )
-      if (agent.restrictFileAccess && !runInSandbox) {
+      const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
+      if (agent.runInSandbox && !runInSandbox) {
         this.log.warn(
           `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
         )

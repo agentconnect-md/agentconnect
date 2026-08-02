@@ -22,7 +22,7 @@ function signature(a: Agent): string {
 function hostSpawnSig(a: Agent): string {
   return JSON.stringify({
     runtime: a.runtime,
-    restrictFileAccess: a.restrictFileAccess,
+    runInSandbox: a.runInSandbox,
     model: a.runtimeOverrides?.model,
     description: a.description,
     reasoningEffort: a.reasoningEffort,

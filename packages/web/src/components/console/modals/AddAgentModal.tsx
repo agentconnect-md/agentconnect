@@ -793,7 +793,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           : memoryProvider !== 'managed'
             ? { memory: { provider: memoryProvider as 'native' | 'none' } }
             : {}),
-        restrictFileAccess: effectiveRunInSandbox,
+        runInSandbox: effectiveRunInSandbox,
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,

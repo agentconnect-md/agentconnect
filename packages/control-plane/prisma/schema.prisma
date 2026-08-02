@@ -638,7 +638,7 @@ model Agent {
   outboundPolicy        AgentCallPolicy    @default(all) // 'all' = this agent may discover/call any otherwise-callable org peer
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
-  restrictFileAccess    Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
+  runInSandbox          Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
   createdAt             DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 

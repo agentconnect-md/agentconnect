@@ -232,7 +232,7 @@ export function agentRecordToSpec(
     introduceOnJoin: a.introduceOnJoin,
     // #642: sandbox toggle. Definite column, always shipped so the daemon applies it
     // to agent.json (the daemon then decides fail-open/closed based on host support).
-    restrictFileAccess: a.restrictFileAccess,
+    runInSandbox: a.runInSandbox,
     // Preset marker (preset-agents.md §3.1). Always shipped (definite record field)
     // so the daemon can gate preset-only capabilities locally — e.g. advertise
     // `webchat_remote_mcp_v1` as soon as this agent syncs, without a probe round.

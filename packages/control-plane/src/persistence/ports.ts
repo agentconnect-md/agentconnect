@@ -524,7 +524,7 @@ export interface CreateAgentInput {
   allowRuntimeChangesInChat?: boolean // explicit opt-in; default false
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
-  restrictFileAccess?: boolean // #642: request an OS sandbox (absent ⇒ DB default false)
+  runInSandbox?: boolean // #642: request an OS sandbox (absent ⇒ DB default false)
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
   // NOTE: write-only secret env vars are NOT part of the agent row — they live behind
   // the AgentSecretStore seam (routes write them there after create).
@@ -573,7 +573,7 @@ export interface UpdateAgentInput {
   allowRuntimeChangesInChat?: boolean
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
-  restrictFileAccess?: boolean // #642: request an OS sandbox for this agent
+  runInSandbox?: boolean // #642: request an OS sandbox for this agent
   /** Widen an existing App-backed GitHub workspace from read to write. */
   gitAccess?: 'write'
   /** GitHub workspace-relative ACP cwd; null restores repository root. */
@@ -648,7 +648,7 @@ export interface AgentRecord {
   outboundPolicy: AgentCallPolicy
   allowedTargetAgentIds: string[] // agent.id set; meaningful only when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join (default false)
-  restrictFileAccess: boolean // #642: persisted per-agent sandbox preference (default false)
+  runInSandbox: boolean // #642: persisted per-agent sandbox preference (default false)
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
 }

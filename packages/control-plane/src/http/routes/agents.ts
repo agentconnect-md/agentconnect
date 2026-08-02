@@ -248,7 +248,7 @@ function toDto(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    restrictFileAccess: a.restrictFileAccess,
+    runInSandbox: a.runInSandbox,
     sandboxSupported: sandboxPolicy.supported,
     sandboxRequired: sandboxPolicy.required,
     hookKinds
@@ -895,16 +895,16 @@ export function agentRoutes(deps: HttpDeps) {
           return conflict('managed skills require a daemon that supports organization knowledge')
         }
         const sandboxPolicy = sandboxPolicyOf(placedDaemon)
-        if (sandboxPolicy.required && req.body.restrictFileAccess === false) {
+        if (sandboxPolicy.required && req.body.runInSandbox === false) {
           return conflict('Run in sandbox is required by this daemon')
         }
-        if (!sandboxPolicy.supported && req.body.restrictFileAccess === true) {
+        if (!sandboxPolicy.supported && req.body.runInSandbox === true) {
           return conflict('Run in sandbox is unavailable on this daemon')
         }
-        const restrictFileAccess = sandboxPolicy.required
+        const runInSandbox = sandboxPolicy.required
           ? true
           : sandboxPolicy.supported
-            ? (req.body.restrictFileAccess ?? false)
+            ? (req.body.runInSandbox ?? false)
             : false
         // github-app workspace: the picked installation must be a LIVE claim of
         // THIS org, and the repo must sit inside that installation's account +
@@ -1052,7 +1052,7 @@ export function agentRoutes(deps: HttpDeps) {
                     : {}),
                   ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
                   ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                  restrictFileAccess,
+                  runInSandbox,
                   ...(req.body.env !== undefined ? { env: req.body.env } : {}),
                   ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
@@ -1403,14 +1403,14 @@ export function agentRoutes(deps: HttpDeps) {
               .send({ error: 'Conflict', statusCode: 409, message: 'agent changed; refresh and retry the edit' })
           }
           const sandboxPolicy = await sandboxPolicyFor(deps, existing)
-          if (sandboxPolicy.required && req.body.restrictFileAccess === false) {
+          if (sandboxPolicy.required && req.body.runInSandbox === false) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
               message: 'Run in sandbox is required by this daemon'
             })
           }
-          if (!sandboxPolicy.supported && req.body.restrictFileAccess === true) {
+          if (!sandboxPolicy.supported && req.body.runInSandbox === true) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
