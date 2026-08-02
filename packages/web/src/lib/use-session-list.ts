@@ -9,6 +9,14 @@ const SESSION_PAGE_LIMIT = 50
 const SESSION_FALLBACK_REFRESH_MS = 60_000
 type SessionPageKey = NonNullable<ReturnType<typeof consoleKeys.sessions>>
 
+/** The agent filter as one scalar SWR key part. Sorted so the same set of agents
+ *  always addresses the same cache entry regardless of the order they were
+ *  picked in — the CP's answer does not depend on it either. */
+export function sessionFilterAgentKey(agentId: SessionListFilters['agentId']): string {
+  if (!agentId) return ''
+  return (typeof agentId === 'string' ? [agentId] : [...agentId]).filter(Boolean).sort().join(',')
+}
+
 export function useSessionList(
   orgId: string | null | undefined,
   filters: SessionListFilters = {},
@@ -18,7 +26,9 @@ export function useSessionList(
   options: { grouped?: boolean } = {}
 ) {
   const grouped = options.grouped === true
-  const agentId = filters.agentId ?? ''
+  // The key is a scalar cache discriminator, so a multi-agent filter travels as
+  // one comma-joined string and the fetcher splits it back into repeated params.
+  const agentId = sessionFilterAgentKey(filters.agentId)
   const integration = filters.integration ?? ''
   const platform = filters.platform ?? ''
   const channel = filters.channel ?? ''
@@ -71,7 +81,7 @@ export function useSessionList(
       ] = args as SessionPageKey
       const fetchPage = keyView === 'grouped' ? fetchConversations : fetchSessions
       return fetchPage(cursor || undefined, Number(limit), keyOrgId, {
-        ...(keyAgentId ? { agentId: keyAgentId } : {}),
+        ...(keyAgentId ? { agentId: keyAgentId.split(',') } : {}),
         ...(keyIntegration ? { integration: keyIntegration } : {}),
         ...(keyPlatform ? { platform: keyPlatform } : {}),
         ...(keyChannel ? { channel: keyChannel } : {}),

@@ -25,12 +25,11 @@
 // localStorage — see lib/session-pins.ts for why they are not CP state.
 //
 // Above the list sits the agent filter: a chip per selected agent (removable), plus
-// a "+" that opens the agent picker. It is seeded by the caller with the open
-// session's agent — "the other runs of THIS agent" is the rail's default question —
-// and clearing it widens the list to every session the viewer can see. Only one
-// agent at a time for now: the CP list endpoint filters by a single `agentId`. The
-// prop is already a list so the eventual multi-agent filter (conversations several
-// agents took part in) is a wire change, not a redesign here.
+// a "+" that opens the agent picker. It is seeded by the caller with the agents in
+// the open CONVERSATION, so the rail's default question is "the other threads these
+// same agents worked in"; clearing it widens the list to every session the viewer
+// can see. Two or more agents mean conversations they SHARE — the CP resolves that
+// against the conversation each row belongs to, not against the row itself.
 //
 // The caller's rows are the filtered FIRST PAGE, so two kinds of row would
 // otherwise be missing from a long-running agent's rail: the open session itself
@@ -371,11 +370,13 @@ export function SessionRail({
           ))}
         </div>
         {/* Carry the rail's filter into the full list so the link is the same
-            question, unabridged. The sessions page takes one agent, which is
-            exactly what the picker can produce today. */}
+            question, unabridged — but only when the list can actually ask it.
+            The sessions page filters by ONE agent, so a shared-conversation
+            filter is dropped rather than silently narrowed to whichever agent
+            happened to be first, which would answer something else entirely. */}
         <Link
           className="lnk mt-[10px] mr-[9px] ml-[9px] font-sans text-[12px] font-medium leading-normal"
-          href={orgPath(agentIds[0] ? `/sessions?agent=${encodeURIComponent(agentIds[0])}` : '/sessions')}
+          href={orgPath(agentIds.length === 1 ? `/sessions?agent=${encodeURIComponent(agentIds[0]!)}` : '/sessions')}
         >
           All sessions
           <Icon name="arrow-right" size={12} />
@@ -389,10 +390,11 @@ export function SessionRail({
 // With nothing selected the chip row reads "All agents", so the rail always says
 // what it is showing rather than leaving an unexplained gap above the first group.
 //
-// Single-select while the CP filters by one `agentId`: picking an agent replaces
-// the chip, and picking the selected one clears it (the same toggle the chip's ×
-// performs). The signature stays plural so multi-select is a later change to the
-// menu's click handler and the fetch, not to this component's shape.
+// Multi-select: each menu row toggles its agent, and two or more of them narrow
+// the list to the conversations they SHARE, which is a different question from
+// the union of their sessions — see the CP's conversation-participant filter.
+// The menu stays open while picking, because building a set of agents one
+// closing menu at a time is three clicks for what should be two.
 function RailAgentFilter({
   agents,
   selected,
@@ -449,8 +451,8 @@ function RailAgentFilter({
           <button
             type="button"
             onClick={() => onChange(selected.filter((id) => id !== chip.id))}
-            title="Clear agent filter"
-            aria-label={`Clear agent filter ${chip.label}`}
+            title="Remove from filter"
+            aria-label={`Remove ${chip.label} from the agent filter`}
             className="flex h-[18px] w-[18px] flex-none items-center justify-center rounded-xs border-0 bg-none p-0 text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
           >
             <Icon name="x" size={11} />
@@ -494,10 +496,7 @@ function RailAgentFilter({
                   role="option"
                   aria-selected={on}
                   className="fopt"
-                  onClick={() => {
-                    onChange(on ? [] : [agent.id])
-                    setOpen(false)
-                  }}
+                  onClick={() => onChange(on ? selected.filter((id) => id !== agent.id) : [...selected, agent.id])}
                 >
                   <span className="av h-5 w-5 flex-none rounded-xs">
                     <AgentIconView icon={agent.icon} runtime={agent.runtime} size={20} />

@@ -249,3 +249,191 @@ describe('GET /sessions — grouped conversations', () => {
     expect(invalid.statusCode).toBe(400)
   })
 })
+
+/**
+ * Multi-agent filter: a repeated `agentId` asks for the conversations every
+ * listed agent took part in. No single row is owned by two agents, so the
+ * predicate is asked of the row's conversation; the rows returned stay scoped
+ * to the selected agents, which is what keeps the one-agent form unchanged.
+ */
+describe('GET /sessions — multi-agent conversation filter', () => {
+  const AGENT_C = 'c3c3c3c3-cccc-4ccc-8ccc-cccccccccccc'
+
+  it('keeps only the threads both agents worked in, and only their rows', async () => {
+    await seedDaemon(prisma, DAEMON)
+    for (const agent of [AGENT_A, AGENT_B, AGENT_C]) await seedAgent(prisma, agent, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    // T-1: A, B and C. T-2: A alone. T-3: B alone.
+    await slackReport('sess-shared-a', AGENT_A, 1_000)
+    await slackReport('sess-shared-b', AGENT_B, 2_000)
+    await slackReport('sess-shared-c', AGENT_C, 3_000)
+    await slackReport('sess-a-only', AGENT_A, 4_000, { thread: 'T-2' })
+    await slackReport('sess-b-only', AGENT_B, 5_000, { thread: 'T-3' })
+
+    const flat = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${AGENT_B}`
+    })
+    expect(flat.statusCode).toBe(200)
+    const flatBody = flat.json() as { sessions: Array<{ sessionId: string }>; total: number | null }
+    // The solo threads drop out; C's row stays out because it is not selected,
+    // even though its conversation qualifies.
+    expect(flatBody.sessions.map((s) => s.sessionId).sort()).toEqual(['sess-shared-a', 'sess-shared-b'])
+    expect(flatBody.total).toBe(2)
+
+    const grouped = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?agentId=${AGENT_A}&agentId=${AGENT_B}`
+    })
+    const groupedBody = grouped.json() as ConversationsBody
+    expect(groupedBody.conversations).toHaveLength(1)
+    expect(groupedBody.conversations[0]!.thread).toBe('T-1')
+    expect(groupedBody.conversations[0]!.sessions.map((s) => s.sessionId)).toEqual(['sess-shared-b', 'sess-shared-a'])
+    expect(groupedBody.total).toBe(1)
+
+    // One agent is the pre-existing question and must answer it unchanged.
+    const single = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}` })
+    expect((single.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual([
+      'sess-a-only',
+      'sess-shared-a'
+    ])
+  })
+
+  it('never lets an invisible participant qualify a conversation', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    const stranger = await prisma.user.create({
+      data: { id: randomUUID(), email: `stranger-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Stranger' }
+    })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', ownerUserId: stranger.id })
+    running = buildHttpApp(prisma)
+
+    await slackReport('sess-vis', AGENT_A, 1_000)
+    await slackReport('sess-hidden', AGENT_B, 2_000)
+
+    // Asking for a thread shared with an agent the caller cannot see must not
+    // confirm that the thread exists — the answer is empty, not A's row.
+    const res = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${AGENT_B}`
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { sessions: unknown[]; total: number | null }
+    expect(body.sessions).toHaveLength(0)
+    expect(body.total).toBe(0)
+    expect(JSON.stringify(body)).not.toContain('sess-hidden')
+  })
+
+  it('excludes rows with no groupable key — a conversation of one holds no second agent', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    // A row with no thread has no groupable key, so it is a conversation of
+    // one however many of them share a channel.
+    await slackReport('sess-cron-a', AGENT_A, 1_000, { thread: undefined })
+    await slackReport('sess-cron-b', AGENT_B, 2_000, { thread: undefined })
+
+    const res = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${AGENT_B}`
+    })
+    expect((res.json() as { sessions: unknown[] }).sessions).toHaveLength(0)
+
+    // Each is still its own conversation when the filter does not pair them.
+    const solo = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}` })
+    expect((solo.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual([
+      'sess-cron-a'
+    ])
+  })
+
+  it('holds the key-addressed resolver to the same question as the list', async () => {
+    await seedDaemon(prisma, DAEMON)
+    for (const agent of [AGENT_A, AGENT_B]) await seedAgent(prisma, agent, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    await slackReport('sess-shared-a', AGENT_A, 1_000)
+    await slackReport('sess-shared-b', AGENT_B, 2_000)
+    await slackReport('sess-a-only', AGENT_A, 3_000, { thread: 'T-2' })
+
+    const keyOf = (thread: string) =>
+      encodeURIComponent(encodeConversationKey({ platform: 'slack', tenantScope: 'TEAM-1', channel: 'C-OPS', thread })!)
+    const pair = `agentId=${AGENT_A}&agentId=${AGENT_B}`
+
+    const shared = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${keyOf('T-1')}&${pair}`
+    })
+    expect((shared.json() as ConversationsBody).conversations[0]!.sessions.map((s) => s.sessionId)).toEqual([
+      'sess-shared-b',
+      'sess-shared-a'
+    ])
+
+    // T-2 holds A but not B. Addressing it by key must not fall back to an `IN`
+    // filter and answer with A's members — that is the wider "either agent"
+    // question, under the very same query string.
+    const soloByKey = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${keyOf('T-2')}&${pair}`
+    })
+    expect(soloByKey.statusCode).toBe(200)
+    expect((soloByKey.json() as ConversationsBody).conversations).toHaveLength(0)
+
+    // …while the one-agent form still resolves it.
+    const soloAlone = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${keyOf('T-2')}&agentId=${AGENT_A}`
+    })
+    expect((soloAlone.json() as ConversationsBody).conversations[0]!.sessions.map((s) => s.sessionId)).toEqual([
+      'sess-a-only'
+    ])
+  })
+
+  it('answers empty when any requested agent is not visible to the caller', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+    await slackReport('sess-a', AGENT_A, 1_000)
+
+    const res = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${randomUUID()}`
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as { sessions: unknown[]; total: number | null }).sessions).toHaveLength(0)
+  })
+
+  it('pages the grouped list without re-emitting a filtered conversation', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    // Two qualifying threads, each with an old A row and a newer B row, so the
+    // emit-at-max probe has to run under the participant predicate as well.
+    await slackReport('sess-1-a', AGENT_A, 1_000)
+    await slackReport('sess-1-b', AGENT_B, 10_000)
+    await slackReport('sess-2-a', AGENT_A, 2_000, { thread: 'T-2' })
+    await slackReport('sess-2-b', AGENT_B, 20_000, { thread: 'T-2' })
+
+    const first = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?limit=1&agentId=${AGENT_A}&agentId=${AGENT_B}`
+    })
+    const firstBody = first.json() as ConversationsBody
+    expect(firstBody.conversations.map((c) => c.thread)).toEqual(['T-2'])
+    expect(firstBody.total).toBe(2)
+
+    const second = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?limit=1&agentId=${AGENT_A}&agentId=${AGENT_B}&cursor=${encodeURIComponent(
+        firstBody.nextCursor!
+      )}`
+    })
+    const secondBody = second.json() as ConversationsBody
+    expect(secondBody.conversations.map((c) => c.thread)).toEqual(['T-1'])
+    expect(secondBody.nextCursor).toBeNull()
+  })
+})
