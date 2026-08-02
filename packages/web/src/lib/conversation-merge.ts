@@ -52,6 +52,14 @@ export function transcriptEventTimeUs(ts: string | null | undefined): number {
   if (local) raw = raw.slice('local-'.length)
   raw = raw.split('|', 1)[0] ?? ''
 
+  // Discord snowflakes: creation ms in the top 42 bits (BigInt — they exceed
+  // Number's safe range, and the generic integer branch below would overflow
+  // them to 0).
+  if (/^\d{16,20}$/.test(raw)) {
+    const ms = Number((BigInt(raw) >> 22n) + 1_420_070_400_000n)
+    return Number.isSafeInteger(ms * 1_000) && ms > 0 ? ms * 1_000 : 0
+  }
+
   const decimal = /^(\d+)\.(\d+)$/.exec(raw)
   if (decimal) {
     const seconds = Number(decimal[1]!)
@@ -75,10 +83,16 @@ function safeEventTimeUs(value: number): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
-/** Provider-native Slack message timestamp — the platform message id shared by
- *  every delivery. Exactly `^\d+\.\d+$` (anchored, dot escaped): an integer
- *  `monotonicTs()` millisecond value must never match. */
+/** Provider-native message-id shapes per platform — each is the identity a
+ *  duplicate shares across every member's copy, chosen so a daemon-local
+ *  13-digit `monotonicTs()` millisecond stamp can NEVER match:
+ *  Slack decimal seconds; Discord 16–20-digit snowflakes; Telegram short
+ *  per-chat sequence ids (≤9 digits — the 10-digit legacy-seconds era and
+ *  13-digit local stamps are both excluded); Feishu om_ ids. */
 const SLACK_NATIVE_TS = /^\d+\.\d+$/
+const DISCORD_SNOWFLAKE = /^\d{16,20}$/
+const TELEGRAM_MESSAGE_ID = /^\d{1,9}$/
+const FEISHU_MESSAGE_ID = /^om_[A-Za-z0-9_-]+$/
 
 /**
  * The provenance-explicit duplicate identity of a row, or null when the row
@@ -97,6 +111,9 @@ const SLACK_NATIVE_TS = /^\d+\.\d+$/
 export function duplicateIdentity(platform: string, row: SessionMessageDto): string | null {
   if (row.kind !== 'text') return null
   if (platform === 'webchat') return row.postId ? `post:${row.postId}` : null
+  if (platform === 'discord') return DISCORD_SNOWFLAKE.test(row.ts) ? `ts:${row.ts}` : null
+  if (platform === 'telegram') return TELEGRAM_MESSAGE_ID.test(row.ts) ? `ts:${row.ts}` : null
+  if (platform === 'feishu') return FEISHU_MESSAGE_ID.test(row.ts) ? `ts:${row.ts}` : null
   return SLACK_NATIVE_TS.test(row.ts) ? `ts:${row.ts}` : null
 }
 
@@ -122,7 +139,10 @@ export function mergeConversation(sources: MergeSource[]): MergedRow[] {
         sourceSessionId: source.sessionId,
         sourceAgentId: source.agentId,
         authorCopy: row.sender === source.agentId,
-        us: transcriptEventTimeUs(row.ts),
+        // Prefer the daemon's stored axis (provider-authoritative for
+        // Telegram/Feishu, whose ids carry no time); a missing/zero value
+        // falls back to deriving from `ts` (which handles snowflakes).
+        us: row.eventTimeUs && row.eventTimeUs > 0 ? row.eventTimeUs : transcriptEventTimeUs(row.ts),
         order: order++
       }
       const identity = duplicateIdentity(source.platform, row)

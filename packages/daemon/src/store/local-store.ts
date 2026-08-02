@@ -198,6 +198,11 @@ export interface TranscriptEntry {
    *  origin, identical on every participant's copy regardless of a
    *  collision-bumped `ts`. Text rows only; absent everywhere else. */
   postId?: string
+  /** Provider-authoritative event time (epoch µs) for the normalized
+   *  chronological axis — platforms whose message ids carry no time
+   *  (Telegram/Feishu) supply it from the message's own send time. Computed
+   *  from `ts` when absent. */
+  eventTimeUs?: number
   /** True only when the daemon verified that this Slack history row came from an
    *  AgentConnect-managed bot identity. Legacy rows and all other platforms omit it. */
   trustedAgentBot?: boolean
@@ -2490,7 +2495,7 @@ export class LocalStore {
         ...entry,
         recipient: e.recipient ?? null,
         postId: e.postId ?? null,
-        eventTimeUs: transcriptEventTimeUs(e.ts),
+        eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
         attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
         quoteJson: durableQuoteJson,
         trustedAgentBot: trustedAgentBot ? 1 : null,
@@ -2522,6 +2527,18 @@ export class LocalStore {
             )
             .run(e.postId, e.channel, e.thread, e.ts)
         : undefined
+    // A later duplicate can be the first copy that carries the AUTHORITATIVE
+    // provider send time (an early observer wrote the row with the derived
+    // axis). Explicit values only — two derived computations must never flap.
+    const eventTimeUpgraded =
+      Number(inserted.changes) === 0 && e.eventTimeUs
+        ? this.db
+            .prepare(
+              `UPDATE transcript SET eventTimeUs = ?
+               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND eventTimeUs IS NOT ?`
+            )
+            .run(e.eventTimeUs, e.channel, e.thread, e.ts, e.eventTimeUs)
+        : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
     // a provider snapshot subsequently re-appends the same text row without metadata.
@@ -2551,6 +2568,7 @@ export class LocalStore {
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
       Number(postIdUpgraded?.changes ?? 0) === 1 ||
+      Number(eventTimeUpgraded?.changes ?? 0) === 1 ||
       Number(delivered?.changes ?? 0) === 1
     ) {
       const deliveryRevision = this.transcriptRevision + 1

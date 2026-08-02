@@ -1,6 +1,6 @@
 import type { SessionMessageDto } from '@/lib/api'
 import type { SessionImage, SessionStep } from '@/lib/data'
-import { parseTranscriptTime } from '@/lib/transcript-time'
+import { transcriptRowTimeMs } from '@/lib/transcript-time'
 
 const LIVE_TURN_CONFIRM_WINDOW_MS = 5 * 60_000
 
@@ -15,7 +15,7 @@ export function mergeSessionMessages(
   for (const message of incoming) bySeq.set(message.seq, message)
   return [...bySeq.values()].sort((a, b) => {
     if (platform !== 'slack') return a.seq - b.seq
-    return (parseTranscriptTime(a.ts) ?? 0) - (parseTranscriptTime(b.ts) ?? 0) || a.seq - b.seq
+    return (transcriptRowTimeMs(a) ?? 0) - (transcriptRowTimeMs(b) ?? 0) || a.seq - b.seq
   })
 }
 
@@ -59,7 +59,7 @@ export function reconcilePersistedLiveSteps(
   const confirmed = new Set<number>()
   for (const message of persisted) {
     if (message.kind.toLowerCase() !== 'text' || message.sender === agentId) continue
-    const persistedAtMs = parseTranscriptTime(message.ts)
+    const persistedAtMs = transcriptRowTimeMs(message)
     if (persistedAtMs == null) continue
     const key = promptKey(message.text, message.attachments?.[0])
     let bestTurn = -1

@@ -4,6 +4,16 @@ import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnec
  * Minimal plain-object Discord view accepted by pure normalization. The daemon
  * adapts discord.js gateway messages and slash commands into this shape.
  */
+// Discord snowflakes embed their creation time in the top 42 bits (ms since
+// the Discord epoch, 2015-01-01). BigInt: snowflakes exceed Number's safe
+// integer range.
+const DISCORD_EPOCH_MS = 1_420_070_400_000n
+function snowflakeTimeMs(id: string): number | undefined {
+  if (!/^\d{16,20}$/.test(id)) return undefined
+  const ms = Number((BigInt(id) >> 22n) + DISCORD_EPOCH_MS)
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined
+}
+
 export interface DiscordAttachmentLike {
   id: string
   name?: string | null
@@ -70,6 +80,7 @@ export function normalizeDiscordMessage(
 
   return {
     msgId: `discord:${message.channelId}:${message.id}`,
+    ...(snowflakeTimeMs(message.id) !== undefined ? { platformTimeMs: snowflakeTimeMs(message.id) } : {}),
     traceId: context.traceId,
     source: 'user',
     platform: 'discord',

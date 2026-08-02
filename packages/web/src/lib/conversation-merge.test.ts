@@ -29,6 +29,18 @@ describe('transcriptEventTimeUs', () => {
 })
 
 describe('duplicateIdentity', () => {
+  it('recognizes per-platform native id shapes; 13-digit local stamps never match any', () => {
+    const SNOWFLAKE = '1101111111111111111'
+    expect(duplicateIdentity('discord', row({ ts: SNOWFLAKE }))).toBe(`ts:${SNOWFLAKE}`)
+    expect(duplicateIdentity('telegram', row({ ts: '4821' }))).toBe('ts:4821')
+    expect(duplicateIdentity('feishu', row({ ts: 'om_abc123' }))).toBe('ts:om_abc123')
+    for (const platform of ['discord', 'telegram', 'feishu', 'slack']) {
+      expect(duplicateIdentity(platform, row({ ts: '1754123457123' }))).toBeNull()
+    }
+    // The 10-digit legacy-seconds era stays outside the Telegram predicate.
+    expect(duplicateIdentity('telegram', row({ ts: '1754123456' }))).toBeNull()
+  })
+
   it('is provenance-explicit — integer monotonicTs values never match the Slack predicate', () => {
     expect(duplicateIdentity('slack', row({ ts: '1754123456.000200' }))).toBe('ts:1754123456.000200')
     expect(duplicateIdentity('slack', row({ ts: '1754123457123' }))).toBeNull()
@@ -41,6 +53,43 @@ describe('duplicateIdentity', () => {
 })
 
 describe('mergeConversation', () => {
+  it('dedupes Discord copies on the snowflake and orders them by its embedded time', () => {
+    // Snowflake for ~2024: time bits decode via (id >> 22) + Discord epoch.
+    const SNOWFLAKE = '1101111111111111111'
+    const merged = mergeConversation([
+      src(A, 'discord', [
+        row({ sender: 'U-HUMAN', ts: SNOWFLAKE, text: 'thread msg' }),
+        row({ sender: A, kind: 'reasoning', ts: '1754123457123', text: 'thinking' })
+      ]),
+      src(B, 'discord', [row({ sender: 'U-HUMAN', ts: SNOWFLAKE, text: 'thread msg' })])
+    ])
+    expect(merged.filter((m) => m.row.text === 'thread msg')).toHaveLength(1)
+    // The snowflake must NOT overflow to epoch-0: its decoded time (2023+)
+    // sorts near the daemon-ms work row, not before everything.
+    expect(transcriptEventTimeUs(SNOWFLAKE)).toBeGreaterThan(1_600_000_000_000_000)
+  })
+
+  it('orders Telegram rows by the daemon-stored event time, not the sequence id', () => {
+    // TG message ids are per-chat sequences (no embedded time): the daemon
+    // stamps eventTimeUs from message.date; the merge must prefer it over
+    // deriving from the id (which would read as 1970s seconds).
+    const merged = mergeConversation([
+      src(A, 'telegram', [
+        row({ sender: 'tg-user', ts: '4821', eventTimeUs: 1_754_123_458_000_000, text: 'later' }),
+        row({ sender: A, ts: '1754123457123', text: 'agent reply' })
+      ])
+    ])
+    expect(merged.map((m) => m.row.text)).toEqual(['agent reply', 'later'])
+  })
+
+  it('dedupes Feishu copies on the om_ message id', () => {
+    const merged = mergeConversation([
+      src(A, 'feishu', [row({ sender: 'U-H', ts: 'om_xyz', eventTimeUs: 1_754_123_456_000_000, text: 'hello' })]),
+      src(B, 'feishu', [row({ sender: 'U-H', ts: 'om_xyz', eventTimeUs: 1_754_123_456_000_000, text: 'hello' })])
+    ])
+    expect(merged).toHaveLength(1)
+  })
+
   it('dedupes webchat copies by postId with author-copy precedence, surviving a collision bump', () => {
     // B's copy of A's post got collision-bumped (+1ms): raw-ts equality would
     // miss it, postId identifies it regardless. The author copy (A's) wins.

@@ -28,6 +28,24 @@ export function formatTranscriptTime(raw: string | null | undefined): string {
   return transcriptTime.format(date)
 }
 
+/** Epoch ms for a transcript ROW: the daemon's stored event-time axis wins
+ *  (provider-authoritative — Telegram/Feishu ids carry no time, Discord
+ *  snowflakes aren't parseable here); legacy rows fall back to `ts`. */
+export function transcriptRowTimeMs(row: { ts: string; eventTimeUs?: number }): number | null {
+  if (row.eventTimeUs && row.eventTimeUs > 0) return Math.floor(row.eventTimeUs / 1000)
+  return parseTranscriptTime(row.ts)
+}
+
+/** Clock-time label for a transcript ROW — `formatTranscriptTime` over the
+ *  row-aware coordinate above. */
+export function formatTranscriptRowTime(row: { ts: string; eventTimeUs?: number }): string {
+  const ms = transcriptRowTimeMs(row)
+  if (ms == null) return ''
+  const date = new Date(ms)
+  if (Number.isNaN(date.getTime())) return ''
+  return transcriptTime.format(date)
+}
+
 export function parseTranscriptTime(ts: string): number | null {
   const raw = timestampValue(ts)
   if (!raw) return null

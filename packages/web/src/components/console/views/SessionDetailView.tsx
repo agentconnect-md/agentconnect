@@ -70,7 +70,7 @@ import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { formatTranscriptTime, parseTranscriptTime } from '@/lib/transcript-time'
+import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
@@ -139,7 +139,7 @@ function msgStep(m: SessionMessageDto): FmtStep {
       text: '',
       code: m.text,
       files: [],
-      time: formatTranscriptTime(m.ts),
+      time: formatTranscriptRowTime(m),
       // Carry the raw message so the row can render the captured tool body (input /
       // output / content / diff / locations) below the title, on demand.
       ...(m.body ? { msg: m } : {})
@@ -156,7 +156,7 @@ function msgStep(m: SessionMessageDto): FmtStep {
       text: m.text,
       code: '',
       files: [],
-      time: formatTranscriptTime(m.ts)
+      time: formatTranscriptRowTime(m)
     }
   }
   return {
@@ -169,7 +169,7 @@ function msgStep(m: SessionMessageDto): FmtStep {
     text: m.text,
     code: '',
     files: [],
-    time: formatTranscriptTime(m.ts)
+    time: formatTranscriptRowTime(m)
   }
 }
 
@@ -284,7 +284,7 @@ function activityStatsFromTranscript(messages: SessionMessageDto[]): ActivitySta
   let anonymousToolRows = 0
 
   for (const m of messages) {
-    const t = parseTranscriptTime(m.ts)
+    const t = transcriptRowTimeMs(m)
     if (t != null) {
       first = Math.min(first, t)
       last = Math.max(last, t)
@@ -2047,7 +2047,7 @@ export default function SessionDetailView() {
           avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : memberPictureByIdentity.get(m.sender)),
           avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
-          time: formatTranscriptTime(m.ts),
+          time: formatTranscriptRowTime(m),
           text: m.text,
           image: m.attachments?.[0],
           isCron: !!cron,

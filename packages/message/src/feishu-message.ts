@@ -17,6 +17,7 @@ export interface FeishuRawEvent {
     message_type?: string
     content?: string
     root_id?: string
+    create_time?: string
     mentions?: FeishuMention[]
   }
 }
@@ -37,6 +38,8 @@ export interface FeishuAttachmentLike {
 
 export interface FeishuMessageLike {
   messageId: string
+  /** Provider send time (epoch ms) — om_ message ids carry no time. */
+  createTimeMs?: number
   chatId: string
   chatType: 'p2p' | 'group' | string
   messageType: string
@@ -151,6 +154,7 @@ export function feishuEventToMessageLike(event: FeishuRawEvent): FeishuMessageLi
   const senderType = event.sender?.sender_type
   return {
     messageId: message.message_id ?? '',
+    ...(message.create_time && /^\d+$/.test(message.create_time) ? { createTimeMs: Number(message.create_time) } : {}),
     chatId: message.chat_id ?? '',
     chatType: message.chat_type ?? 'group',
     messageType: message.message_type ?? 'text',
@@ -177,6 +181,7 @@ export function normalizeFeishuMessage(
   const isDm = message.chatType === 'p2p'
   return {
     msgId: `feishu:${message.chatId}:${message.messageId}`,
+    ...(message.createTimeMs ? { platformTimeMs: message.createTimeMs } : {}),
     traceId: context.traceId,
     source: 'user',
     platform: 'feishu',

@@ -461,6 +461,10 @@ export class SessionManager {
       // The canonical webchat post identity travels with the canonical ts —
       // identical on every participant copy even when `ts` was bumped (§6).
       ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
+      // Provider send time for platforms whose message ids are not
+      // chronological (Telegram/Feishu; Discord decodes its snowflake at
+      // normalization) — the merged conversation view orders on this axis.
+      ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
       // This message was delivered TO this agent (handle() runs for `agentId`), so tag the
       // recipient — the console session view scopes to what THIS agent received + produced.
       recipient: agentId,

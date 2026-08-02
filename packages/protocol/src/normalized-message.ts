@@ -63,6 +63,12 @@ export const NormalizedPlatformMessageSchema = z.object({
   /** Enclosing Discord channel when `channel` is itself a thread channel. */
   parentChannel: z.string().optional(),
   trigger: z.enum(['mention', 'dm', 'keyword', 'auto', 'cron']).optional(),
+  /** Provider-reported send time (epoch ms). Set when the platform's message id
+   *  is not itself chronological (Telegram sequence ids, Feishu om_ ids) or the
+   *  time is embedded in it (Discord snowflakes, decoded at normalization).
+   *  The daemon stamps it onto the transcript row's normalized event-time axis
+   *  so cross-source merges order correctly (merged-conversation-view.md §6). */
+  platformTimeMs: z.number().int().positive().optional(),
   headless: z.boolean().optional()
 })
 export type NormalizedPlatformMessage = z.infer<typeof NormalizedPlatformMessageSchema>
