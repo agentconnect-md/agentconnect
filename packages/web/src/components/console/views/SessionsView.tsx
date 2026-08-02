@@ -119,7 +119,7 @@ export default function SessionsView() {
         : {}),
     ...(fGithubRepoId ? { githubRepoId: fGithubRepoId } : fTrigger !== 'all' ? { triggeredBy: fTrigger } : {})
   } satisfies SessionListFilters
-  const sessionList = useSessionList(activeOrg?.id, sessionFilters)
+  const sessionList = useSessionList(activeOrg?.id, sessionFilters, { grouped: true })
   const { data: sessionFacets = baseSessionFacets } = useSessionFacets(activeOrg?.id, sessionFilters, baseSessionFacets)
   const demoSessions = useMemo(
     () => (MOCK_MODE ? allSessions.filter((session) => DEMO_AGENT_IDS.has(session.agentId ?? '')) : []),
@@ -293,6 +293,32 @@ export default function SessionsView() {
     const agent = agentId ? agentById.get(agentId) : undefined
     return (
       <AgentIconView icon={agent?.icon} runtime={agent?.runtime || fallbackRuntime || agent?.model || ''} size={size} />
+    )
+  }
+  // Multi-participant conversation rows (merged-conversation-view.md §5.2):
+  // stacked participant icons replace the single agent face; the label counts
+  // agents instead of naming one.
+  const agentCell = (s: Session, av: string, size: number, label: string) => {
+    const roster = s.participants ?? []
+    if (roster.length <= 1) {
+      return (
+        <>
+          <span className={`av flex-none ${av}`}>{agentAvatar(s.agentId, s.model, size)}</span>
+          <span className={`truncate ${label}`}>{s.agentName}</span>
+        </>
+      )
+    }
+    return (
+      <>
+        <span className="flex flex-none items-center -space-x-[5px]">
+          {roster.slice(0, 4).map((p) => (
+            <span key={p.agentId} className={`av flex-none ${av}`}>
+              {agentAvatar(p.agentId, undefined, size)}
+            </span>
+          ))}
+        </span>
+        <span className={`truncate ${label}`}>{roster.length} agents</span>
+      </>
     )
   }
 
@@ -588,10 +614,12 @@ export default function SessionsView() {
                   the session title down to only a few characters. */}
               <span className="col-span-2 flex min-w-0 items-center gap-3 desktop:hidden">
                 <span className="inline-flex min-w-0 max-w-[45%] items-center gap-[6px]">
-                  <span className="av h-4 w-4 flex-none rounded-xs">{agentAvatar(s.agentId, s.model, 16)}</span>
-                  <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                    {s.agentName}
-                  </span>
+                  {agentCell(
+                    s,
+                    'h-4 w-4 rounded-xs',
+                    16,
+                    'font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)'
+                  )}
                 </span>
                 <span className="ml-auto inline-flex min-w-0 flex-1 items-center justify-end gap-[5px]">
                   <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
@@ -618,8 +646,7 @@ export default function SessionsView() {
                 </div>
               </div>
               <div className="hidden min-w-0 items-center gap-2 desktop:flex">
-                <span className="av h-6 w-6 rounded-sm">{agentAvatar(s.agentId, s.model, 24)}</span>
-                <span className="mono truncate text-[12px] text-(--text-secondary)">{s.agentName}</span>
+                {agentCell(s, 'h-6 w-6 rounded-sm', 24, 'mono text-[12px] text-(--text-secondary)')}
               </div>
               <div className="hidden min-w-0 items-center gap-2 desktop:flex">
                 <span className="imark h-5 w-5 rounded-[5px]">

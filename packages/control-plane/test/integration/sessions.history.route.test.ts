@@ -109,7 +109,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
     })
     running = buildHttpApp(prisma)
 
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
     expect(res.statusCode).toBe(200)
     const body = res.json() as {
       sessions: Array<{
@@ -158,7 +158,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
       }
     })
     running = buildHttpApp(prisma) // default liveness: nothing connected
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
     expect(res.statusCode).toBe(200)
     expect((res.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual([
       SESSION
@@ -194,7 +194,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
     })
     running = buildHttpApp(prisma)
 
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
     expect(res.statusCode).toBe(200)
     const body = res.json() as { sessions: Array<{ sessionId: string }> }
     expect(body.sessions.map((s) => s.sessionId)).toEqual([newer, older])
@@ -253,7 +253,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
     })
     running = buildHttpApp(prisma)
 
-    const first = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?limit=2` })
+    const first = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&limit=2` })
     expect(first.statusCode).toBe(200)
     const firstBody = first.json() as { sessions: Array<{ sessionId: string }>; nextCursor: string | null }
     expect(firstBody.sessions.map((s) => s.sessionId)).toEqual([tieZ, tieM])
@@ -261,7 +261,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
 
     const second = await running.app.inject({
       method: 'GET',
-      url: `${ORG}/sessions?limit=2&cursor=${encodeURIComponent(firstBody.nextCursor!)}`
+      url: `${ORG}/sessions?view=flat&limit=2&cursor=${encodeURIComponent(firstBody.nextCursor!)}`
     })
     expect(second.statusCode).toBe(200)
     const secondBody = second.json() as {
@@ -309,7 +309,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
     })
     running = buildHttpApp(prisma)
 
-    const first = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?limit=1` })
+    const first = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&limit=1` })
     expect(first.statusCode).toBe(200)
     const firstBody = first.json() as {
       sessions: Array<{ sessionId: string }>
@@ -329,7 +329,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
 
     const filtered = await running.app.inject({
       method: 'GET',
-      url: `${ORG}/sessions?limit=1&channel=C-OLDER&triggeredBy=U-OLDER`
+      url: `${ORG}/sessions?view=flat&limit=1&channel=C-OLDER&triggeredBy=U-OLDER`
     })
     expect(filtered.statusCode).toBe(200)
     const filteredBody = filtered.json() as {
@@ -516,7 +516,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
       ])
     )
 
-    const filtered = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?githubRepoId=123` })
+    const filtered = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&githubRepoId=123` })
     expect(filtered.statusCode).toBe(200)
     const filteredBody = filtered.json() as { sessions: Array<{ sessionId: string }>; total: number }
     expect(filteredBody.sessions.map((session) => session.sessionId)).toEqual([secondSession, firstSession])
@@ -550,7 +550,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
     })
     running = buildHttpApp(prisma)
 
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?channel=%23ops` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&channel=%23ops` })
     const body = res.json() as { sessions: Array<{ sessionKey: { channel: string } }> }
     expect(body.sessions).toHaveLength(1)
     expect(body.sessions[0]!.sessionKey.channel).toBe('#ops')
@@ -558,7 +558,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
 
   it('400s on an invalid pagination cursor', async () => {
     running = buildHttpApp(prisma)
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?cursor=not-a-cursor` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&cursor=not-a-cursor` })
     expect(res.statusCode).toBe(400)
   })
 })

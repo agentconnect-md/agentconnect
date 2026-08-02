@@ -69,6 +69,7 @@ function slackDmSession() {
 
 function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string; userId: string } | null> }) {
   const listPage = vi.fn(async () => ({ sessions: [], total: 0, hasMore: false }))
+  const listConversationPage = vi.fn(async () => ({ conversations: [], total: 0, hasMore: false }))
   const deps = {
     repos: {
       agent: {
@@ -82,6 +83,7 @@ function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string
         getExternalScopes: vi.fn(async () => []),
         getExternalAccessPolicy: vi.fn(async () => null),
         listPage,
+        listConversationPage,
         listChildren: vi.fn(async () => []),
         listFacets: vi.fn(async () => ({ agents: [], integrations: [], channels: [], triggers: [] }))
       },
@@ -91,7 +93,7 @@ function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string
     clock: { now: () => Date.now() },
     ...(overrides.slackIdentityFor ? { logtoIdentity: { slackIdentityFor: overrides.slackIdentityFor } } : {})
   } as unknown as HttpDeps
-  return { deps, listPage }
+  return { deps, listPage, listConversationPage }
 }
 
 async function appAs(deps: HttpDeps, caller: { userId: string; oidcSubject?: string }): Promise<FastifyInstance> {
@@ -110,13 +112,24 @@ async function appAs(deps: HttpDeps, caller: { userId: string; oidcSubject?: str
 
 describe('session routes × viewer identity', () => {
   it('feeds the linked Slack identity into the list projection viewer', async () => {
-    const { deps, listPage } = fakeDeps({
+    const { deps, listPage, listConversationPage } = fakeDeps({
       slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' })
     })
     const app = await appAs(deps, { userId: 'u-1', oidcSubject: 'logto-sub' })
     try {
+      // Default (grouped) view and the flat escape hatch feed the SAME viewer.
       const res = await app.inject({ method: 'GET', url: '/sessions' })
       expect(res.statusCode).toBe(200)
+      expect(listConversationPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          viewer: expect.objectContaining({
+            role: 'collaborator',
+            identitySet: expect.arrayContaining(['user:u-1', SLACK_OWNER])
+          })
+        })
+      )
+      const flat = await app.inject({ method: 'GET', url: '/sessions?view=flat' })
+      expect(flat.statusCode).toBe(200)
       expect(listPage).toHaveBeenCalledWith(
         expect.objectContaining({
           viewer: expect.objectContaining({

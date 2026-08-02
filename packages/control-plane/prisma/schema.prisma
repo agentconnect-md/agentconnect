@@ -867,6 +867,11 @@ model SessionMeta {
   platform            String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
   channel             String?
   thread              String?
+  // Durable workspace/tenant scope (EventSession.transportScope — a Slack team
+  // id, Feishu tenant key, or stable per-integration mint), persisted so the
+  // conversation grouping key (merged-conversation-view.md §5.1) can tell
+  // installations apart. NOT the daemon's credential-derived transport scope.
+  tenantScope         String?
   phase               SessionPhase        @default(start)
   link                String? // deep-link (NOT a body)
   summary             String?             @db.Text // short milestone text (NOT the stream)
@@ -932,7 +937,10 @@ model SessionMeta {
   @@index([agentId, triggeredBy, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_trigger_page_idx")
   @@index([orgId, visibility, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_org_visibility_page_idx")
   @@index([parentSessionId])
-  @@index([platform, channel])
+  // Conversation grouping (merged-conversation-view.md §5.2): serves the
+  // emit-at-max exists-newer probe, the member backfill, and the
+  // conversationKey resolver. Replaces the unused bare (platform, channel).
+  @@index([orgId, platform, tenantScope, channel, thread, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_conversation_key_idx")
   @@index([launchId])
   @@index([daemonId])
   @@index([orgId, externalProvider, externalScopeId])

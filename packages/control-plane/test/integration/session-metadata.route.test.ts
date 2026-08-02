@@ -188,7 +188,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(stored.daemonId).toBe(DAEMON)
 
     // The list route carries the same execution-config snapshot.
-    const list = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
+    const list = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
     expect(list.statusCode).toBe(200)
     const listBody = list.json() as {
       sessions: Array<{
@@ -397,7 +397,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       data: { agentId: reassignedAgent, name: 'new-owner/repo' }
     })
 
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
     expect(res.statusCode).toBe(200)
     const body = res.json() as {
       sessions: Array<{
@@ -434,7 +434,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       triggeredByName: 'owner/repo'
     })
 
-    const filtered = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?integration=github` })
+    const filtered = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&integration=github` })
     expect(filtered.statusCode).toBe(200)
     expect(
       (filtered.json() as { sessions: Array<{ sessionId: string }>; total: number }).sessions.map(
@@ -443,7 +443,10 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     ).toEqual(['acp-github-headless'])
     expect((filtered.json() as { total: number }).total).toBe(1)
 
-    const genericWebhook = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?integration=hook` })
+    const genericWebhook = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&integration=hook`
+    })
     expect(genericWebhook.statusCode).toBe(200)
     expect(
       (genericWebhook.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((session) => session.sessionId)

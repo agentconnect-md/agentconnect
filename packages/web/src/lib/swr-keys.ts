@@ -35,8 +35,22 @@ export const consoleKeys = {
     platform: string,
     channel: string,
     triggeredBy: string,
-    githubRepoId: string
-  ) => consoleKey(orgId, 'sessions', cursor, limit, agentId, integration, platform, channel, triggeredBy, githubRepoId),
+    githubRepoId: string,
+    view: string
+  ) =>
+    consoleKey(
+      orgId,
+      'sessions',
+      cursor,
+      limit,
+      agentId,
+      integration,
+      platform,
+      channel,
+      triggeredBy,
+      githubRepoId,
+      view
+    ),
   sessionFacets: (
     orgId: string | null | undefined,
     agentId: string,

@@ -1057,6 +1057,32 @@ export interface SessionPageRecord {
   hasMore: boolean
 }
 
+/** One conversation grouping key (merged-conversation-view.md §5.1). Legacy
+ *  NULL-platform rows read as 'slack'. A row with a NULL channel or thread
+ *  never groups — it is its own singleton conversation, and its key carries
+ *  the null through. */
+export interface ConversationKey {
+  platform: string
+  tenantScope: string | null
+  channel: string | null
+  thread: string | null
+}
+
+export interface ConversationRecord {
+  key: ConversationKey
+  /** Current member sessions, newest-first under the page's total order and
+   *  collapsed to ONE row per agentId (superseded ACP session rows are
+   *  history, not members). The first entry is the conversation's
+   *  representative — the caller's newest visible member row. */
+  sessions: SessionListRecord[]
+}
+
+export interface ConversationPageRecord {
+  conversations: ConversationRecord[]
+  total: number | null
+  hasMore: boolean
+}
+
 export interface SessionFacetRecord {
   id: SessionId
   agentId: AgentId
@@ -1086,6 +1112,18 @@ export interface SessionRepo {
   /** Filter, keyset-page, and order in Postgres; usage is hydrated only for the
    *  returned page. `total` is computed only when explicitly requested. */
   listPage(q: SessionPageQuery): Promise<SessionPageRecord>
+  /** The grouped list (merged-conversation-view.md §5.2): one row per
+   *  conversation, newest-first, emit-at-max pagination — a scanned row yields
+   *  its conversation only when it is the newest same-key row under the full
+   *  (lastActivityAt, startedAt, id) order AND the caller's own predicate.
+   *  Cursor semantics match `listPage` (the cursor is the previous page's last
+   *  representative row). */
+  listConversationPage(q: SessionPageQuery): Promise<ConversationPageRecord>
+  /** Bounded key-addressed member resolution for a direct conversation load
+   *  (merged-conversation-view.md §5.2): every visible row matching the key,
+   *  collapsed to the current session per agent. Grouped keys only — callers
+   *  resolve singletons through the ordinary session detail route. */
+  listConversationMembers(q: SessionFacetQuery, key: ConversationKey): Promise<SessionListRecord[]>
   /** Org-level "any session exists" — a bare boolean over the org's FULL session set
    *  (no visibility predicate), safe to return to any org member: it reveals nothing
    *  about sessions the caller can't see. Drives the getting-started conversation step. */
