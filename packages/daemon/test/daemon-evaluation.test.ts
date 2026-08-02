@@ -191,7 +191,7 @@ describe('Daemon evaluation surface', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
-      root: scaffold({ runtimeCommand: 'claude', autoAdopt: true }),
+      root: scaffold({ autoAdopt: true }),
       hostFactory: (_agent, update) => {
         onUpdate = update
         return host as any
@@ -325,11 +325,7 @@ describe('Daemon evaluation surface', () => {
       stop: vi.fn(async () => {})
     }
     const daemon = new Daemon({
-      // Claude runtime: dreams are gated to runtimes that confine credentials
-      // from the model's tools (task #36 A2). This exercises model attribution
-      // when the runtime reports `default`; the "reports default" behaviour is
-      // runtime-agnostic (driven by the fake host's modelOptions below).
-      root: scaffold({ runtimeCommand: 'claude', model: 'gpt-5.6', autoAdopt: true }),
+      root: scaffold({ runtimeCommand: 'codex-acp', model: 'gpt-5.6', autoAdopt: true }),
       hostFactory: (_agent, update) => {
         onUpdate = update
         return host as any
@@ -392,7 +388,7 @@ describe('Daemon evaluation surface', () => {
       stop: vi.fn(() => stopGate)
     }
     const daemon = new Daemon({
-      root: scaffold({ runtimeCommand: 'claude' }),
+      root: scaffold(),
       hostFactory: (_agent, update) => {
         onUpdate = update
         return host as any

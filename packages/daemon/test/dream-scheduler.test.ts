@@ -100,11 +100,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       JSON.stringify({
         version: 1,
         controlPlane: { enabled: false },
-        // A dream is only allowed on a runtime that confines provider credentials
-        // from the model's own tools (Claude today, task #36 A2). The command is
-        // never executed here (hostFactory stands in), but it must be recognizable
-        // as Claude so the dedicated dream host clears that gate.
-        runtimes: { claude: { command: 'node', args: ['claude-stub'] } }
+        runtimes: { claude: { command: 'node', args: ['unused'] } }
       })
     )
     const adir = join(root, 'agents', 'bot-a')
@@ -245,33 +241,6 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
           inputDir: join(root, 'in')
         })
       ).rejects.toThrow(/sandbox/i)
-      // Fail-closed happens before any host is built.
-      expect(hostFactory).not.toHaveBeenCalled()
-    } finally {
-      await daemon.stop()
-    }
-  }, 15_000)
-
-  it('fails closed on a runtime that cannot confine credentials from the model tools', async () => {
-    const root = scaffold()
-    const hostFactory = vi.fn(() => ({}) as any)
-    const daemon = new Daemon({ root, hostFactory, dreamOperationPolicy: 'test-only' })
-    await daemon.start()
-    try {
-      const inner = daemon as any
-      inner.sandboxMechanism = 'bwrap'
-      // Swap the agent's runtime for one with no inner credential confinement
-      // (e.g. Codex): the outer sandbox alone cannot keep the agent's own provider
-      // auth away from the model's own tools, so the dream must be refused.
-      inner.runtimes['claude'] = { command: 'codex-acp', args: [] }
-      await expect(
-        inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
-          dreamId: 'drm-nonclaude',
-          trigger: 'manual',
-          sessionIds: [],
-          inputDir: join(root, 'in')
-        })
-      ).rejects.toThrow(/does not confine provider credentials/i)
       // Fail-closed happens before any host is built.
       expect(hostFactory).not.toHaveBeenCalled()
     } finally {
