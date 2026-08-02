@@ -111,7 +111,7 @@ export interface ClaudeInnerSandboxSettings {
   autoAllowBashIfSandboxed: true
   allowUnsandboxedCommands: false
   network: {
-    allowAllUnixSockets: false
+    allowAllUnixSockets: boolean
   }
   filesystem: {
     denyRead: string[]
@@ -127,18 +127,21 @@ export interface ClaudeInnerSandboxSettings {
  * `_meta.claudeCode.options.sandbox`. The outer AgentConnect SRT remains the host
  * boundary; this nested sandbox confines model-authored Bash and its descendants,
  * while the parent Claude process retains shared-login access. */
-export function claudeInnerSandboxSettings(protectedCredentialRoots: readonly string[]): ClaudeInnerSandboxSettings {
+export function claudeInnerSandboxSettings(
+  protectedCredentialRoots: readonly string[],
+  allowAllUnixSockets = false
+): ClaudeInnerSandboxSettings {
   const roots = [...new Set(protectedCredentialRoots)]
   return {
     enabled: true,
     failIfUnavailable: true,
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
-    // The trusted Claude parent stays in the outer AgentConnect sandbox, where
-    // it may use mcp.sock and create the nested SRT helpers. Model-authored Bash
-    // gets a second seccomp layer and cannot create AF_UNIX sockets at all.
+    // Linux SRT cannot filter AF_UNIX by pathname. Block it unless this launch
+    // deliberately exposes the Git credential channel to model-authored Git;
+    // the outer mount/network namespace remains that channel's host boundary.
     network: {
-      allowAllUnixSockets: false
+      allowAllUnixSockets
     },
     filesystem: {
       denyRead: roots,

@@ -3909,7 +3909,7 @@ export class Daemon {
         inheritProcessEnv: launch.inheritProcessEnv,
         runtimeId: agent.runtime,
         isolateAccountApps: cfg.security.isolateAccountApps,
-        sandbox: launch.sandbox,
+        sandbox: launch.sandbox ? { ...launch.sandbox, allowModelToolUnixSockets: githubAppCredentials } : undefined,
         configPrefs: {
           model: agent.runtimeOverrides?.model,
           permissionMode: agent.permissionMode,

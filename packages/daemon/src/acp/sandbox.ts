@@ -150,10 +150,10 @@ function canonicalTarget(path: string): string {
  * Writable set: the cwd, one private runtime HOME, and the managed-memory dir.
  * A runtime credential adapter may add one credential-only host file/directory;
  * it is a separate trusted write capability, never a general read root.
- * AF_UNIX remains available to the trusted ACP parent because it needs the daemon
- * MCP/git credential channels and may launch a nested tool sandbox. Host socket
- * trees are hidden by the caller; the exact daemon MCP socket is re-exposed
- * read-only when an ancestor is hidden, without making its directory writable.
+ * AF_UNIX remains available because the ACP parent needs the daemon MCP channel
+ * and model-authored Git may need the credential channel. Host socket trees are
+ * hidden by the caller; exact AgentConnect sockets are re-exposed read-only when
+ * an ancestor is hidden, without making their directories writable.
  */
 export function sandboxBoundary(opts: {
   agentDir: string
@@ -258,9 +258,9 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
     network: {
       allowedDomains: [],
       deniedDomains: [],
-      // Linux cannot filter AF_UNIX by pathname. Keep it available to the trusted
-      // ACP parent; filesystem visibility limits reachable host sockets, while a
-      // runtime-native inner sandbox may apply seccomp to model-authored tools.
+      // Linux cannot filter AF_UNIX by pathname. Keep it available for the ACP
+      // parent and the model-side Git credential helper; filesystem and network
+      // namespace visibility limit which host sockets are reachable.
       allowAllUnixSockets: true
     },
     filesystem: {
