@@ -706,6 +706,7 @@ export default function SessionDetailView() {
   const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
   const detailTooltipId = useId()
+  const [detailOpen, setDetailOpen] = useState(false)
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
@@ -737,6 +738,20 @@ export default function SessionDetailView() {
   const tailReadyRef = useRef(false)
   const tailInFlightRef = useRef<Promise<void> | null>(null)
   const tailDirtyRef = useRef(false)
+
+  // Hover does not move focus to the trigger, so Escape has to be observed while
+  // the tooltip is open rather than only on the button.
+  useEffect(() => {
+    if (!detailOpen) return
+    const dismissDetails = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setDetailOpen(false)
+    }
+    document.addEventListener('keydown', dismissDetails, true)
+    return () => document.removeEventListener('keydown', dismissDetails, true)
+  }, [detailOpen])
 
   const localSession =
     getPgSession(id) ??
@@ -1053,6 +1068,7 @@ export default function SessionDetailView() {
   useEffect(() => {
     imagePrepareGenerationRef.current += 1
     setCopied(false)
+    setDetailOpen(false)
     setWorkOverride(new Map())
     setImagePreparing(false)
     setImageError(null)
@@ -1593,17 +1609,17 @@ export default function SessionDetailView() {
             baseline, and the descender gap under it pushed the button off the row's
             centre line. The transparent top padding bridges the trigger/panel gap so
             the hover target remains continuous. */}
-          <div className="group relative ml-[-3px] flex flex-none items-center">
+          <div
+            className="relative ml-[-3px] flex flex-none items-center"
+            onMouseEnter={() => setDetailOpen(true)}
+            onMouseLeave={() => setDetailOpen(false)}
+            onFocus={() => setDetailOpen(true)}
+            onBlur={() => setDetailOpen(false)}
+          >
             <button
               type="button"
               className="inline-flex h-[22px] items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
               aria-describedby={detailTooltipId}
-              onKeyDown={(event) => {
-                if (event.key !== 'Escape') return
-                event.preventDefault()
-                event.stopPropagation()
-                event.currentTarget.blur()
-              }}
             >
               <Icon name="info" size={14} />
               Details
@@ -1611,7 +1627,9 @@ export default function SessionDetailView() {
             <div
               id={detailTooltipId}
               role="tooltip"
-              className="pointer-events-none invisible absolute top-full left-0 z-50 w-max pt-[5px] opacity-0 transition-[opacity,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
+              className={`absolute top-full left-0 z-50 w-max pt-[5px] transition-[opacity,visibility] ${
+                detailOpen ? 'pointer-events-auto visible opacity-100' : 'pointer-events-none invisible opacity-0'
+              }`}
             >
               <div className="max-h-[340px] min-w-[216px] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) px-0 py-[5px] shadow-(--shadow-lg)">
                 {headerFacts.map((f) => (
