@@ -451,7 +451,10 @@ Two scope rules:
     `post: { postId, at }` identity;
   - new `payload.op: 'context'` carrying a `WebchatPost` (transcript-only, no
     ack beyond transport, deduplicated by `postId`);
-  - `resume` and `cancel` carry `agentId` as above.
+  - `resume` and `cancel` carry `agentId` as above;
+  - the `set_*` runtime ops are unchanged and carry no `agentId`: multi-agent
+    conversations expose no runtime override (section 9.3), so these ops
+    occur only in single-agent conversations.
 - New daemon → relay frame `rd/webchat-post { conversationId, agentId, post }`
   for a completed agent post, emitted at the same boundary that records
   `replyText` today (`daemon.ts:10394-10404`). The relay (a) delivers it to
@@ -564,8 +567,17 @@ points keep working and gain roster assembly in place:
   multi-select; agents whose daemon lacks `webchat_multi_agent_v1` are dimmed
   with the reason in the description line, exactly like today's offline/auth
   dimming. With two or more selected, the pill expands into a **roster chip
-  row** — first chip is the primary, marked "default"; chips are removable
-  until the first send.
+  row**. Every chip — including the first — is removable until the first
+  send; the primary carries **no visual marker** and is simply the first
+  agent of the final list at send time, re-derived automatically when a chip
+  is removed. Primary is an internal anchor (default route, title source,
+  compat column), not a concept the user manages or sees.
+- **Multi-agent hides the runtime pills.** The Model / Effort / Permission
+  selectors (and the runtime mark on the agent pill) are meaningful only when
+  one agent runs the turn; as soon as the roster has two or more agents the
+  composer footer shows the roster chips only, and every participant runs its
+  configured runtime defaults. A single-agent composer keeps today's pills
+  unchanged.
 - **`@` in the composer text** is the second way in: before the first send the
   autocomplete lists eligible org agents, and picking one joins the roster and
   inserts a mention chip — so "@b @c compare your answers" composes the
@@ -603,10 +615,12 @@ zero-message row is inert.
 
 ### 9.3 Conversation header and streams
 
-- Header: participant chips with icons, primary marked. Clicking a chip opens
-  the per-agent popover: runtime controls (model/effort/permission/fast via
-  the per-agent `set_*` ops) and a deep link to that agent's session for
-  audit.
+- Header: participant chips with icons; no primary marker. Clicking a chip
+  opens a small popover with a deep link to that agent's session (audit) and
+  its configuration page. There are **no in-conversation runtime controls in
+  a multi-agent conversation** — each agent runs its configured defaults, so
+  the `set_*` ops stay single-agent-conversation-only and need no `agentId`
+  in v1. Single-agent conversations keep today's controls unchanged.
 - One stream lane per `(turnId, agentId)`; per-agent typing/streaming
   indicators; per-agent ack failures surfaced inline ("B is busy — queued");
   a superseded generation collapses and re-streams in place (section 5.4).
@@ -625,8 +639,9 @@ zero-message row is inert.
   keys optimistic steps and cursors by `(turnId, agentId)` instead of `turnId`;
   the synthetic `pg_` session becomes a synthetic conversation that adopts N
   real session ids as they are reported (`applyStatus` already carries
-  `sessionId` per stream). Staged runtime settings ride the first turn
-  per-agent (`stageRuntimeChange` already keys by agent).
+  `sessionId` per stream). Runtime staging (`stageRuntimeChange`) applies only
+  to single-agent conversations, where behavior is unchanged; a multi-agent
+  send stages nothing.
 - **Mobile** keeps the single responsive tree per the console conventions:
   the roster multi-select and the per-agent popover render as bottom sheets,
   the roster chip row scrolls horizontally, and the `@` autocomplete is
@@ -760,3 +775,10 @@ Questions resolved during design review:
    mirroring the IM answer workflow; the browser stream stays live and a
    superseded generation is replaced in place. Single-participant
    conversations keep today's behavior (section 5.4).
+8. **Primary is invisible** — no "default" marker anywhere; during assembly
+   every chip is removable and the primary is re-derived as the first agent
+   of the final list (section 9.1).
+9. **No runtime controls in multi-agent conversations** — the Model / Effort /
+   Permission pills and per-agent overrides disappear when the roster has two
+   or more agents; each participant runs its configured runtime defaults, and
+   the `set_*` ops stay single-agent-only (sections 9.1, 9.3).
