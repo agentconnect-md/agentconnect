@@ -2426,6 +2426,14 @@ export const SessionDetailDto = z.object({
    *  server-side; the console never re-derives permissions from identity. */
   canChangeVisibility: z.boolean(),
   accessSyncDegraded: z.boolean(),
+  /** Multi-agent webchat conversation roster, in pick order (webchat-multi-agents.md
+   *  §3.1). Adopted/refreshed sessions have no live relay socket to deliver the
+   *  verified roster, so the composer and header read it from here. Null for
+   *  single-agent conversations and for every other platform; `name` is null when
+   *  the caller cannot view that participant's agent. */
+  participants: z
+    .array(z.object({ agentId: z.string(), name: z.string().nullable(), primary: z.boolean() }))
+    .nullable(),
   startedAt: z.string(), // ISO-8601
   endedAt: z.string().nullable()
 })

@@ -12,12 +12,13 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedLaunch } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { PgAgentRepo, PgHookRepo, PgSessionRepo } from '../../src/persistence/index.js'
+import { PgAgentRepo, PgHookRepo, PgSessionRepo, PgWebchatConversationRepo } from '../../src/persistence/index.js'
+import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { handleEventSession } from '../../src/ws/handlers/index.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import type { AnyFrame } from '@agentconnect.md/protocol'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 
@@ -48,6 +49,9 @@ async function reportSession(payload: Record<string, unknown>, daemonId = DAEMON
     agentMutations: new AgentMutationGate(),
     hook: new PgHookRepo(prisma),
     session: new PgSessionRepo(prisma),
+    // Resolves the private-session owner for webchat reports (session-visibility
+    // §4.2) — without it a webchat session stores ownerless and no caller can view it.
+    webchatConversation: new PgWebchatConversationRepo(prisma),
     events: new InMemorySessionEventSink()
   } as unknown as DaemonWsDeps
   await handleEventSession(frame, { daemonId } as DaemonConnection, deps)
@@ -458,6 +462,58 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         expect.objectContaining({ value: `hook:${githubId}`, hookKind: 'github' })
       ])
     )
+  })
+
+  it('serves the multi-agent webchat roster on the detail route; single-agent stays null', async () => {
+    // An adopted/refreshed webchat session has no relay socket to deliver the
+    // verified roster — the composer/header read it from this DTO field instead.
+    const AGENT2 = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const CONVO = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
+    const SOLO = 'c1c1c1c1-cccc-4ccc-8ccc-cccccccccccc'
+    const SESSION2 = '5691f21b-3911-4d7f-a45d-28ce75d79338'
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, name: 'answer-bot' })
+    await seedAgent(prisma, AGENT2, { daemonId: DAEMON, name: 'peer-bot' })
+    const conversations = new PgWebchatConversationRepo(prisma)
+    await conversations.create(
+      { conversationId: CONVO, orgId: OrgId(DEFAULT_ORG_ID), agentId: AgentId(AGENT), userId: DEFAULT_OWNER_ID },
+      [AgentId(AGENT2)]
+    )
+    await conversations.create({
+      conversationId: SOLO,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(AGENT),
+      userId: DEFAULT_OWNER_ID
+    })
+    running = buildHttpApp(prisma)
+
+    await reportSession({
+      sessionId: SESSION,
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'webchat',
+      channel: CONVO,
+      ts: '2026-07-05T00:00:00.000Z'
+    })
+    await reportSession({
+      sessionId: SESSION2,
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'webchat',
+      channel: SOLO,
+      ts: '2026-07-05T00:00:00.000Z'
+    })
+
+    const multi = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}` })
+    expect(multi.statusCode).toBe(200)
+    expect((multi.json() as { participants: unknown }).participants).toEqual([
+      { agentId: AGENT, name: 'answer-bot', primary: true },
+      { agentId: AGENT2, name: 'peer-bot', primary: false }
+    ])
+
+    const solo = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION2}` })
+    expect(solo.statusCode).toBe(200)
+    expect((solo.json() as { participants: unknown }).participants).toBeNull()
   })
 
   it('404s for an unknown session', async () => {

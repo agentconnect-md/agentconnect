@@ -859,7 +859,14 @@ export default function SessionDetailView() {
   // The cursor-loaded list row can predate the final Dream usage report. Keep
   // its local/live fields, but let the independently refreshed detail snapshot
   // supply the authoritative per-session token and cost totals.
-  const sessionBase = localSession ? mergeSessionDetailUsage(localSession, detailSession) : detailSession
+  const sessionMerged = localSession ? mergeSessionDetailUsage(localSession, detailSession) : detailSession
+  // The conversation roster only exists on the detail snapshot (list rows and
+  // adopted local state don't carry it); a live playground session's own roster
+  // (which tracks mid-conversation joins) stays authoritative when present.
+  const sessionBase =
+    sessionMerged && !sessionMerged.participants && detailSession?.participants
+      ? { ...sessionMerged, participants: detailSession.participants }
+      : sessionMerged
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents])
   const owner = sessionBase?.agentId ? agentById.get(sessionBase.agentId) : undefined
   const session =
@@ -1274,6 +1281,8 @@ export default function SessionDetailView() {
     speakers.set(agent.id, name)
     let last = turns[turns.length - 1]
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
+      // `model` is the icon-runtime fallback for turns whose agent is missing from
+      // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
       last = { kind: 'bot', agentName: name, agentId: agent.id, model: '', time: '', steps: [] }
       turns.push(last)
     }
