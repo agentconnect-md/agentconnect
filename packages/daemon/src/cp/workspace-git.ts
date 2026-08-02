@@ -90,7 +90,7 @@ export function createWorkspaceGit(
       // Status consults branch/upstream config. Reject executable checkout
       // settings first; SRT keeps the audited config read-only while confined.
       await assertSafeWorkspaceGitConfig(root)
-      const git = gitFor(root).env(workspaceGitLocalEnv())
+      const git = gitFor(root).env({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
       const s = await git.status()
       const files: WorkspaceGitFile[] = s.files
         .slice(0, MAX_STATUS_FILES)
@@ -119,8 +119,9 @@ export function createWorkspaceGit(
       // working tree — a diverged branch / local edits surface as ok:false, not a
       // forced reset. Bounded by a timeout so an offline remote can't hang the REP.
       let timer: ReturnType<typeof setTimeout> | undefined
+      const abort = new AbortController()
       try {
-        const git = gitFor(root).env(workspaceGitLocalEnv())
+        const git = gitFor(root, abort.signal).env(workspaceGitLocalEnv())
         const target = workspaceTargetByAgent(agentId)
         let currentOrigin: string | undefined
         let expectedOrigin: string
@@ -142,20 +143,16 @@ export function createWorkspaceGit(
         await assertSafeWorkspaceGitConfig(root)
         const pullBranch = target.branch
         const pullTarget = workspaceGitPullTarget(expectedOrigin)
-        const res = await Promise.race([
-          pullWorkspaceRef(
-            git.env({
-              ...pullTarget.env,
-              ...credentialEnvByAgent(agentId),
-              GIT_TERMINAL_PROMPT: '0'
-            }),
-            pullTarget.remote,
-            pullBranch
-          ),
-          new Promise<never>((_, rej) => {
-            timer = setTimeout(() => rej(new Error('pull timed out')), PULL_TIMEOUT_MS)
-          })
-        ])
+        timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
+        const res = await pullWorkspaceRef(
+          git.env({
+            ...pullTarget.env,
+            ...credentialEnvByAgent(agentId),
+            GIT_TERMINAL_PROMPT: '0'
+          }),
+          pullTarget.remote,
+          pullBranch
+        )
         const changed = res.files.length
         return {
           agentId,

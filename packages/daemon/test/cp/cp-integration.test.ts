@@ -172,7 +172,7 @@ describe('Daemon CP integration → persisted to agent.json (disk is the source 
     const { daemon } = makeDaemon(root)
     await daemon.start()
 
-    apply(daemon).applyReconcileSnapshot({
+    await apply(daemon).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
       agents: [],
@@ -199,7 +199,7 @@ describe('Daemon CP integration → persisted to agent.json (disk is the source 
     apply(daemon).applyIntegrationUpsert(INTEGRATION)
     await daemon.reconcile()
 
-    apply(daemon).applyReconcileSnapshot({
+    await apply(daemon).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
       agents: [],

@@ -9,8 +9,10 @@ let pullImpl: (...args: any[]) => Promise<unknown>
 let logImpl: (...args: any[]) => Promise<unknown>
 let rawImpl: (...args: any[]) => Promise<unknown>
 let envImpl: (...args: any[]) => unknown
+let simpleGitArgs: unknown[]
 vi.mock('simple-git', () => ({
-  simpleGit: (_cwd?: unknown) => {
+  simpleGit: (options?: unknown) => {
+    simpleGitArgs.push(options)
     const git = {
       status: (...a: any[]) => statusImpl(...a),
       pull: (...a: any[]) => pullImpl(...a),
@@ -43,6 +45,7 @@ const githubTarget = () => ({
 })
 
 beforeEach(() => {
+  simpleGitArgs = []
   statusImpl = vi.fn()
   pullImpl = vi.fn()
   envImpl = vi.fn()
@@ -73,7 +76,7 @@ describe('createWorkspaceGit.status', () => {
     const s = await git.status('a')
     expect(s).toMatchObject({ agentId: 'a', isRepo: true, clean: true, branch: 'main', tracking: 'origin/main' })
     expect(s.files).toBeUndefined()
-    expect(envImpl).toHaveBeenCalledWith(expect.objectContaining({ GIT_ALLOW_PROTOCOL: '' }))
+    expect(envImpl).toHaveBeenCalledWith(expect.objectContaining({ GIT_ALLOW_PROTOCOL: '', GIT_OPTIONAL_LOCKS: '0' }))
   })
 
   it('maps a dirty checkout: clean:false + changed files (index/workingDir chars)', async () => {
@@ -173,6 +176,9 @@ describe('createWorkspaceGit.pull', () => {
       githubTarget
     )
     const r = await git.pull('a')
+    expect(
+      simpleGitArgs.some((options) => (options as { abort?: unknown } | undefined)?.abort instanceof AbortSignal)
+    ).toBe(true)
     expect(pullImpl).toHaveBeenCalledWith(
       expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
       '+refs/heads/main:refs/remotes/origin/main',

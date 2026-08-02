@@ -10,6 +10,8 @@ const a = (id: string): Agent =>
     runtime: 'claude',
     runInSandbox: false,
     workspace: { mode: 'from-scratch', path: '/tmp', gitBranch: 'main', pullOnNewSession: true, skills: [] },
+    skills: [],
+    managedSkills: [],
     integrations: [],
     output: { mode: 'medium' },
     permissions: { policy: 'ask', autoApprove: [] },
@@ -116,6 +118,35 @@ describe('diffAgents', () => {
       hostRespawn: false,
       workspace: true,
       workspaceRepoRename: false,
+      integrations: false
+    })
+  })
+
+  it('respawns the host when either skill-definition collection changes', () => {
+    const gitSkills = {
+      ...a('x'),
+      skills: [{ name: 'team-skills', source: 'acme/skills', githubRepoId: '42', skills: ['review'] }]
+    } as Agent
+    expect(diffAgents([gitSkills], actual(a('x'))).toChange[0]).toMatchObject({
+      hostRespawn: true,
+      workspace: false,
+      integrations: false
+    })
+
+    const managedSkills = {
+      ...a('x'),
+      managedSkills: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'review',
+          revision: 1,
+          digest: `sha256:${'a'.repeat(64)}`
+        }
+      ]
+    } as Agent
+    expect(diffAgents([managedSkills], actual(a('x'))).toChange[0]).toMatchObject({
+      hostRespawn: true,
+      workspace: false,
       integrations: false
     })
   })

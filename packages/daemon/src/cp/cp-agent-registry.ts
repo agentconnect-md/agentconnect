@@ -21,6 +21,7 @@ import {
   restoreArchivedAgent,
   pruneMovedAgentDependents,
   findAgentFileById,
+  syncAgentReplica,
   type WriteAgentDeps
 } from '../agents/write-agent.js'
 
@@ -50,6 +51,17 @@ export class CpAgentRegistry {
     return result
   }
 
+  /**
+   * Exact-prune locally persisted CP dependents while an external lifecycle
+   * gate still keeps the agent dark. Used by move activation and by removal-
+   * tombstone re-add so stale platform credentials can never revive.
+   */
+  exactDependents(agentId: string, desired: { integrationIds: string[]; cronIds: string[] }): boolean {
+    const changed = pruneMovedAgentDependents(this.agentsDir, agentId, desired)
+    syncAgentReplica(this.agentsDir, agentId)
+    return changed
+  }
+
   /** Restore a detached root in place. Idempotent while already active. */
   activate(
     agentId: string,
@@ -57,7 +69,7 @@ export class CpAgentRegistry {
   ): 'restored' | 'already-active' | 'missing' {
     const alreadyActive = !!findAgentFileById(this.agentsDir, agentId)
     if (!alreadyActive && !restoreArchivedAgent(this.agentsDir, agentId)) return 'missing'
-    const pruned = pruneMovedAgentDependents(this.agentsDir, agentId, desired)
+    const pruned = this.exactDependents(agentId, desired)
     if (!alreadyActive || pruned) this.onChange()
     return alreadyActive ? 'already-active' : 'restored'
   }

@@ -397,11 +397,17 @@ and atomically renames the verified directory into the cache. A matching cached
 revision works offline; a missing or changed revision is skipped with a warning
 and never blocks the agent from starting.
 
-The existing containment-safe skill materializer reconciles cached managed
-skills into the runtime-visible skills tree using its ownership marker. An
-accepted agent-local Dream skill wins a same-name collision; the managed skill
-is skipped and reported. Disabling removes only materialization owned by the
-marker, not arbitrary user files. The canonical cache may remain for reuse and
+The verified cache directory is an immutable local source for the unified skill
+installer. Git, managed-cache, and accepted agent-local Dream sources all pass
+through the exact same isolated audited `skills@1.5.21` CLI; CLI output supplies
+the runtime-directory receipt. Managed revisions remain bound to their published
+artifact digest. Accepted Dream sources use a digest-addressed bundle plus an
+atomic index, are re-hashed before every activation, and carry that expected
+digest through the installer's own source snapshot. One daemon-owned ledger
+outside the workspace reconciles exact file digests, preserves unowned/manual
+files, and removes old-harness or disabled copies. An accepted agent-local Dream
+source has final precedence over a managed/Git source that produces the same
+CLI-derived path. The canonical managed cache remains for offline reuse and
 garbage collection.
 
 ## 11. Wire additions

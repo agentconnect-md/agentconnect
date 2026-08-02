@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { AgentSpec, RegisterOk } from '@agentconnect.md/protocol'
 import { parseSkillRef, redactSourceCredentials, resolveAgentSkillEntries } from './skillSource.js'
 import type { SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
@@ -11,7 +12,7 @@ function source(over: Partial<SkillSourceRecord>): SkillSourceRecord {
     orgId: ORG,
     name: 'platform',
     source: 'acme/platform-skills',
-    githubRepoId: null,
+    githubRepoId: 123n,
     ref: null,
     subDir: null,
     skills: [],
@@ -57,7 +58,9 @@ describe('resolveAgentSkillEntries', () => {
   it('resolves a whole-source wildcard to an entry with all skills', async () => {
     const repo = repoWith([source({ name: 'platform', source: 'acme/platform-skills', ref: 'v1' })])
     const out = await resolveAgentSkillEntries({ orgId: ORG, skills: ['platform/*'] }, repo)
-    expect(out).toEqual([{ name: 'platform', source: 'acme/platform-skills', ref: 'v1', skills: [] }])
+    expect(out).toEqual([
+      { name: 'platform', source: 'acme/platform-skills', githubRepoId: '123', ref: 'v1', skills: [] }
+    ])
   })
 
   it('collects specific skills per source', async () => {
@@ -102,6 +105,80 @@ describe('resolveAgentSkillEntries', () => {
     const repo = repoWith([source({ name: 'platform' })])
     const out = await resolveAgentSkillEntries({ orgId: ORG, skills: ['gone/x', 'platform/*'] }, repo)
     expect(out.map((e) => e.name)).toEqual(['platform'])
+  })
+
+  it('projects the durable numeric repository identity and omits an unbound historical row', async () => {
+    const invalid: Array<{ sourceId: string; sourceName: string; path: string }> = []
+    const out = await resolveAgentSkillEntries(
+      { orgId: ORG, skills: ['bound/*', 'unbound/*'] },
+      repoWith([
+        source({ id: 'bound-id', name: 'bound', githubRepoId: 9_007_199_254_740_993n }),
+        source({ id: 'unbound-id', name: 'unbound', githubRepoId: null })
+      ]),
+      (entry) =>
+        invalid.push({
+          sourceId: entry.sourceId,
+          sourceName: entry.sourceName,
+          path: entry.issues[0]?.path ?? ''
+        })
+    )
+
+    expect(out).toEqual([
+      { name: 'bound', source: 'acme/platform-skills', githubRepoId: '9007199254740993', skills: [] }
+    ])
+    expect(invalid).toEqual([{ sourceId: 'unbound-id', sourceName: 'unbound', path: 'githubRepoId' }])
+  })
+
+  it('omits only an invalid historical source so one row cannot poison a daemon roster', async () => {
+    const invalid: Array<{ sourceId: string; sourceName: string }> = []
+    const repo = repoWith([
+      source({ id: 'legacy-id', name: 'legacy', source: 'https://gitlab.com/acme/legacy' }),
+      source({ id: 'valid-id', name: 'platform', source: 'acme/platform-skills' })
+    ])
+    const out = await resolveAgentSkillEntries({ orgId: ORG, skills: ['legacy/*', 'platform/*'] }, repo, (entry) =>
+      invalid.push({ sourceId: entry.sourceId, sourceName: entry.sourceName })
+    )
+
+    expect(out.map((entry) => entry.name)).toEqual(['platform'])
+    expect(invalid).toEqual([{ sourceId: 'legacy-id', sourceName: 'legacy' }])
+    expect(AgentSpec.safeParse({ name: 'agent', skills: out }).success).toBe(true)
+    expect(
+      RegisterOk.safeParse({
+        routingEpoch: 1,
+        assignments: [],
+        agents: [{ agentId: '77777777-7777-4777-8777-777777777777', name: 'agent', skills: out }],
+        crons: [],
+        leases: [],
+        drop: { assignments: [], crons: [] }
+      }).success
+    ).toBe(true)
+  })
+
+  it('deterministically caps historical enablement beyond the current wire projection limit', async () => {
+    const rows = Array.from({ length: 65 }, (_, index) =>
+      source({ id: `id-${index}`, name: `source-${index}`, source: `acme/repo-${index}` })
+    )
+    const omitted: string[] = []
+    const out = await resolveAgentSkillEntries(
+      { orgId: ORG, skills: rows.map((row) => `${row.name}/*`) },
+      repoWith(rows),
+      (entry) => omitted.push(entry.sourceName)
+    )
+
+    expect(out).toHaveLength(64)
+    expect(out.at(-1)?.name).toBe('source-63')
+    expect(omitted).toEqual(['source-64'])
+    expect(AgentSpec.safeParse({ name: 'agent', skills: out }).success).toBe(true)
+    expect(
+      RegisterOk.safeParse({
+        routingEpoch: 1,
+        assignments: [],
+        agents: [{ agentId: '77777777-7777-4777-8777-777777777777', name: 'agent', skills: out }],
+        crons: [],
+        leases: [],
+        drop: { assignments: [], crons: [] }
+      }).success
+    ).toBe(true)
   })
 })
 

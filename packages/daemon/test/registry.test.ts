@@ -207,7 +207,7 @@ describe('curated native ACP runtimes', () => {
     expect(CURATED_RUNTIME_CATALOG).toEqual({
       'hermes-agent': {
         name: 'Hermes Agent',
-        runtime: { command: 'hermes', args: ['acp'], env: [] }
+        runtime: { command: 'hermes', args: ['acp'], env: [], skillsAgentId: 'hermes-agent' }
       },
       'open-interpreter': {
         name: 'Open Interpreter',
@@ -215,7 +215,7 @@ describe('curated native ACP runtimes', () => {
       },
       'kiro-cli': {
         name: 'Kiro CLI',
-        runtime: { command: 'kiro-cli', args: ['acp'], env: [] }
+        runtime: { command: 'kiro-cli', args: ['acp'], env: [], skillsAgentId: 'kiro-cli' }
       },
       maki: {
         name: 'Maki',
@@ -231,11 +231,11 @@ describe('curated native ACP runtimes', () => {
       },
       'qoder-cli': {
         name: 'Qoder CLI',
-        runtime: { command: 'qodercli', args: ['--acp'], env: [] }
+        runtime: { command: 'qodercli', args: ['--acp'], env: [], skillsAgentId: 'qoder' }
       },
       'qoder-cli-cn': {
         name: 'Qoder CN CLI',
-        runtime: { command: 'qoderclicn', args: ['--acp'], env: [] }
+        runtime: { command: 'qoderclicn', args: ['--acp'], env: [], skillsAgentId: 'qoder-cn' }
       }
     })
   })
@@ -272,6 +272,7 @@ describe('curated native ACP runtimes', () => {
       source: 'registry',
       name: 'OMP Registry',
       version: '17.0.0',
+      skillsAgentId: null,
       runtime: { command: 'omp-registry', args: ['acp'], env: [] }
     })
   })
@@ -310,8 +311,34 @@ describe('curated native ACP runtimes', () => {
       source: 'user',
       name: 'omp',
       version: '',
+      skillsAgentId: null,
       runtime: { command: '/custom/omp', args: ['acp'], env: [] }
     })
+  })
+
+  it('does not inherit built-in skill admission when a user replaces an audited runtime id', async () => {
+    const root = tmpRoot()
+    const fetchImpl = (async () => new Response(JSON.stringify({ agents: {} }), { status: 200 })) as typeof fetch
+    const implicit: any = {
+      runtimes: { 'claude-acp': { command: 'unrelated-custom-harness', args: [], env: [] } }
+    }
+    const explicit: any = {
+      runtimes: {
+        'claude-acp': {
+          command: 'reviewed-custom-harness',
+          args: [],
+          env: [],
+          skillsAgentId: 'custom-reviewed-id'
+        }
+      }
+    }
+
+    expect(
+      (await resolveRuntimeCatalog(implicit, root, { mode: 'blocking', fetchImpl })).entries['claude-acp']
+    ).toMatchObject({ source: 'user', skillsAgentId: null })
+    expect(
+      (await resolveRuntimeCatalog(explicit, root, { mode: 'blocking', fetchImpl })).entries['claude-acp']
+    ).toMatchObject({ source: 'user', skillsAgentId: 'custom-reviewed-id' })
   })
 
   it('merges usable cache on the needed-runtime fast path without fetching', async () => {

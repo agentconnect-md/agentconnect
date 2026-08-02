@@ -9,8 +9,16 @@
  * the registry is the authority, so an enable-list entry pointing at a deleted
  * source simply drops out rather than failing the whole spec.
  */
-import { redactGitUrlSecrets, type AgentSkillEntry } from '@agentconnect.md/protocol'
+import { AgentSkillEntry, redactGitUrlSecrets } from '@agentconnect.md/protocol'
 import type { AgentRecord, SkillSourceRepo } from '../persistence/ports.js'
+
+const MAX_PROJECTED_SKILL_SOURCES = 64
+
+export interface InvalidSkillSourceProjection {
+  sourceId: string
+  sourceName: string
+  issues: Array<{ path: string; message: string }>
+}
 
 /** Split "<source>/<skill>" (or "<source>/*"); a bare "<source>" ⇒ all skills. */
 export function parseSkillRef(ref: string): { source: string; skill: string | null } {
@@ -29,7 +37,8 @@ export function parseSkillRef(ref: string): { source: string; skill: string | nu
  */
 export async function resolveAgentSkillEntries(
   agent: Pick<AgentRecord, 'orgId' | 'skills'>,
-  repo?: SkillSourceRepo
+  repo?: SkillSourceRepo,
+  onInvalidSource?: (invalid: InvalidSkillSourceProjection) => void
 ): Promise<AgentSkillEntry[]> {
   if (!repo || agent.skills.length === 0) return []
 
@@ -69,13 +78,32 @@ export async function resolveAgentSkillEntries(
       if (skills.length === 0) continue
     }
 
-    entries.push({
+    const candidate = {
       name: row.name,
       source: row.source,
+      ...(row.githubRepoId !== null ? { githubRepoId: row.githubRepoId.toString() } : {}),
       ...(row.ref ? { ref: row.ref } : {}),
       ...(row.subDir ? { subDir: row.subDir } : {}),
       skills
-    })
+    }
+    const parsed = AgentSkillEntry.safeParse(candidate)
+    if (!parsed.success) {
+      onInvalidSource?.({
+        sourceId: row.id,
+        sourceName: row.name,
+        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      })
+      continue
+    }
+    if (entries.length >= MAX_PROJECTED_SKILL_SOURCES) {
+      onInvalidSource?.({
+        sourceId: row.id,
+        sourceName: row.name,
+        issues: [{ path: 'skills', message: `agent skill sources are limited to ${MAX_PROJECTED_SKILL_SOURCES}` }]
+      })
+      continue
+    }
+    entries.push(parsed.data)
   }
   return entries
 }

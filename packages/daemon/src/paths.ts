@@ -15,6 +15,16 @@ export function statePath(root: string): string {
   return join(root, 'state', 'local.sqlite')
 }
 
+/**
+ * Durable CP-removal obligations live under the daemon root rather than under
+ * agentsDir. A custom agentsDir can become read-only independently; keeping a
+ * second marker here prevents that failure from reviving a stale replica after
+ * restart.
+ */
+export function agentRemovalObligationsDir(root: string): string {
+  return join(root, 'state', 'agent-removals')
+}
+
 export function defaultAgentsDir(root: string): string {
   return join(root, 'agents')
 }

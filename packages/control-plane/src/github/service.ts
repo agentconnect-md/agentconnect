@@ -381,11 +381,11 @@ export class GithubService {
   /**
    * Best-effort scan of a skills source repo (docs/designs/shared-skills.md §3/§7):
    * tag names for the ref picker + the `SKILL.md` manifest so the console can offer
-   * a per-skill checklist. Skill discovery mirrors the `npx skills` layout probe:
+   * a per-skill checklist. Skill discovery mirrors the pinned CLI's layout probe:
    * the first matching layout wins (`skills/<skill>/SKILL.md`, then top-level
    * `<skill>/SKILL.md`, then `.claude/skills/<skill>/SKILL.md`, then a root
    * `SKILL.md`). Names come from the skill directory; frontmatter is NOT read here
-   * (best-effort — the daemon's `npx skills` is the authority). Needs contents:read.
+   * (best-effort — the daemon's bundled exact CLI is the authority). Needs contents:read.
    */
   async scanSkillSource(
     ins: GithubInstallationRecord,
@@ -1092,7 +1092,7 @@ function hasChecksReporterPermissions(installation: GithubInstallationRecord): b
 }
 
 /**
- * Pick the skills from a list of SKILL.md blob paths using the `npx skills`
+ * Pick the skills from a list of SKILL.md blob paths using the pinned CLI's
  * layout precedence (shared-skills.md §3): the first layout that matches wins.
  *   1. skills/<skill>/SKILL.md   2. <skill>/SKILL.md (top-level dir)
  *   3. .claude/skills/<skill>/SKILL.md   4. a single root SKILL.md

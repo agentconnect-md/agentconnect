@@ -377,7 +377,17 @@ export function buildContainer(
     repos.agentSecret,
     iconBases,
     repos.skillSource,
-    repos.organizationKnowledge
+    repos.organizationKnowledge,
+    (agentId, invalid) =>
+      http.log.warn(
+        {
+          agentId,
+          skillSourceId: invalid.sourceId,
+          skillSourceName: invalid.sourceName,
+          issues: invalid.issues
+        },
+        'omitting an invalid historical skill source from the daemon projection'
+      )
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to

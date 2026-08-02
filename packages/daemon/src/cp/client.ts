@@ -116,9 +116,18 @@ export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 const ACK_TIMEOUT_MS = 5000
 const BACKOFF_BASE_MS = 1000
 const BACKOFF_CAP_MS = 30000
+const REGISTERING_CONTROL_QUEUE_LIMIT = 1024
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length
 
 export type CpState = 'CONNECTING' | 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'DRAINING' | 'CLOSED' | 'DEGRADED'
+
+interface RegisterControlBarrier {
+  transport: Transport
+  registerRequestId: string
+  /** Becomes true only after a valid register/ok correlated to this request. */
+  snapshotApplying: boolean
+  controls: Array<{ frame: AnyFrame; epoch?: number }>
+}
 
 export interface CpClientDeps {
   url: string
@@ -197,6 +206,19 @@ export class CpClient {
   private lastAuthedEpoch = 0 // for resume on reconnect (per-agent seq tail is out of scope)
   private heartbeatTimer?: TimerHandle
   private heartbeatMs = 0
+  private connectRun?: Promise<void>
+  /** `stop()` must join snapshot convergence after a transport has connected,
+   *  but it cannot wait forever for a connector whose dial is not cancellable.
+   *  Keep the transport-bound handshake separate from the outer dial attempt. */
+  private handshakeRun?: Promise<void>
+  /** The CP may send controls immediately after register/ok, while the daemon is
+   *  still converging that snapshot. Hold only those post-register controls and
+   *  drain them FIFO before exposing READY; pre-register controls stay illegal. */
+  private registerControlBarrier?: RegisterControlBarrier
+  /** A reconnect timer can fire while the failed connection attempt is still
+   *  unwinding. Preserve that admission instead of dropping it on the
+   *  `connectRun` single-flight guard. */
+  private connectPending = false
   // Per-connection monotonic ordinal for `facts/daemon-runtimes` snapshots
   // (reset at each register; the CP nulls its stored value then too).
   private runtimesSeq = 0
@@ -213,40 +235,79 @@ export class CpClient {
   start(): void {
     this.stopped = false
     this.fatal = false
-    void this.attemptConnect()
+    this.beginConnect()
   }
 
   async stop(): Promise<void> {
     this.stopped = true
+    this.connectPending = false
     if (this.reconnectTimer !== undefined) {
       this.deps.clock.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = undefined
     }
     this.stopHeartbeat()
     this.correlator.rejectAll(new Error('stopping'))
+    this.registerControlBarrier = undefined
     this.transport?.close(1000, 'shutdown')
+    while (this.handshakeRun) {
+      const run = this.handshakeRun
+      await run.catch(() => undefined)
+      if (this.handshakeRun === run) this.handshakeRun = undefined
+    }
     this.state = 'CLOSED'
+  }
+
+  private beginConnect(): void {
+    if (this.stopped || this.fatal) return
+    if (this.connectRun) {
+      this.connectPending = true
+      return
+    }
+    this.connectPending = false
+    const run = this.attemptConnect()
+    this.connectRun = run
+    const clear = () => {
+      if (this.connectRun !== run) return
+      this.connectRun = undefined
+      if (this.connectPending) {
+        this.connectPending = false
+        this.beginConnect()
+      }
+    }
+    void run.then(clear, clear)
   }
 
   private async attemptConnect(): Promise<void> {
     if (this.stopped || this.fatal) return
     this.state = 'CONNECTING'
+    let t: Transport | undefined
     try {
-      const t = await this.deps.connect()
+      const connected = await this.deps.connect()
+      t = connected
       if (this.stopped || this.fatal) {
         // stop() (or a fatal close) raced the dial — drop the fresh socket unused.
-        t.close(1000, 'shutdown')
+        connected.close(1000, 'shutdown')
         return
       }
-      this.transport = t
-      t.onMessage((txt) => void this.onText(txt))
-      t.onClose((c, r) => this.onClose(c, r))
-      await this.handshake()
+      this.transport = connected
+      connected.onMessage((txt) => void this.onText(txt, connected))
+      connected.onClose((c, r) => this.onClose(connected, c, r))
+      const handshake = this.handshake(connected)
+      this.handshakeRun = handshake
+      try {
+        await handshake
+      } finally {
+        if (this.handshakeRun === handshake) this.handshakeRun = undefined
+      }
       this.attempt = 0 // connected — reset backoff
     } catch (err) {
+      if (this.stopped) return
       this.deps.log.warn(`cp: connect/handshake failed: ${(err as Error).message}`)
-      this.transport?.close(1011, 'handshake failed')
-      this.transport = undefined
+      if (t && this.transport === t) {
+        if (this.registerControlBarrier?.transport === t) this.registerControlBarrier = undefined
+        t.close(1011, 'handshake failed')
+        this.transport = undefined
+      }
       this.scheduleReconnect()
     }
   }
@@ -262,11 +323,11 @@ export class CpClient {
     this.attempt += 1
     this.reconnectTimer = this.deps.clock.setTimeout(() => {
       this.reconnectTimer = undefined
-      void this.attemptConnect()
+      this.beginConnect()
     }, delay)
   }
 
-  private async handshake(): Promise<void> {
+  private async handshake(expectedTransport: Transport): Promise<void> {
     // ── auth ── (resume on reconnect carries only the last epoch the daemon held)
     this.state = 'AUTHENTICATING'
     const authPayload: Record<string, unknown> = {
@@ -306,23 +367,51 @@ export class CpClient {
     this.state = 'REGISTERING'
     const registerCapabilities = this.deps.capabilities()
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
-    const regOk = await this.request('register', {
+    const register = buildEnvelope('register', {
       host: this.deps.host,
       capabilities: registerCapabilities,
       maxAgents: this.deps.maxAgents,
       localState: this.deps.localState()
     })
-    const snap = regOk.payload as Parameters<ConfigApply['applyReconcileSnapshot']>[0]
-    this.serverFeatures = new Set((regOk.payload as { serverFeatures?: string[] }).serverFeatures ?? [])
-    this.hookReportAckV1 = this.serverFeatures.has('hook-report-ack-v1')
-    this.routingEpoch = snap.routingEpoch
-    this.deps.configApply.applyReconcileSnapshot(snap)
+    const barrier: RegisterControlBarrier = {
+      transport: expectedTransport,
+      registerRequestId: register.id,
+      snapshotApplying: false,
+      controls: []
+    }
+    this.registerControlBarrier = barrier
+    try {
+      const regOk = await this.correlator.request(register, (encoded) => expectedTransport.send(encoded))
+      if (regOk.type !== 'register/ok') throw new Error(`expected register/ok, got ${regOk.type}`)
+      const snap = regOk.payload as Parameters<ConfigApply['applyReconcileSnapshot']>[0]
+      this.serverFeatures = new Set((regOk.payload as { serverFeatures?: string[] }).serverFeatures ?? [])
+      this.hookReportAckV1 = this.serverFeatures.has('hook-report-ack-v1')
+      this.routingEpoch = snap.routingEpoch
+      await this.deps.configApply.applyReconcileSnapshot(snap)
+      if (this.stopped || this.transport !== expectedTransport || this.registerControlBarrier !== barrier) {
+        throw new Error('control-plane handshake was superseded during snapshot convergence')
+      }
 
-    this.state = 'READY'
-    // Reconcile runs synchronously while REGISTERING and may change the daemon's
+      this.drainRegisterControls(barrier)
+      if (this.stopped || this.transport !== expectedTransport || this.registerControlBarrier !== barrier) {
+        throw new Error('control-plane handshake was superseded while draining post-register controls')
+      }
+      this.registerControlBarrier = undefined
+    } finally {
+      if (this.registerControlBarrier === barrier) this.registerControlBarrier = undefined
+    }
+
+    // A queued daemon/drain can move the client directly into DRAINING. All
+    // other post-register controls leave it REGISTERING until this atomic edge.
+    if (this.state === 'REGISTERING') this.state = 'READY'
+    if (this.state !== 'READY' && this.state !== 'DRAINING') {
+      throw new Error(`control-plane handshake left client in ${this.state}`)
+    }
+    // Reconcile runs (awaited) while REGISTERING and may change the daemon's
     // computed capability set (for example by installing the builtin preset
-    // agent). updateCapabilities() deliberately cannot send before READY, so
-    // recheck once after the state transition to avoid dropping that mutation.
+    // agent or admitting skills). updateCapabilities() deliberately cannot send
+    // before READY, so recheck once after the state transition to avoid
+    // dropping that mutation.
     this.updateCapabilities()
     this.heartbeatMs = ok.heartbeatSec > 0 ? ok.heartbeatSec * 1000 : this.deps.heartbeatDefaultMs
     this.armHeartbeat()
@@ -677,7 +766,10 @@ export class CpClient {
     return rep.payload as ManagedSkillChunk
   }
 
-  private async onText(text: string): Promise<void> {
+  private async onText(text: string, source: Transport): Promise<void> {
+    // A superseded socket must not settle the current connection's correlator or
+    // enter its post-register FIFO.
+    if (source !== this.transport) return
     const decoded = decodeEnvelope(text)
     if (!decoded.ok) {
       const code = this.decodeErrorCode(decoded.msg)
@@ -692,15 +784,50 @@ export class CpClient {
       return
     }
     const frame = decoded.frame
+    const barrier = this.registerControlBarrier
+    if (
+      barrier !== undefined &&
+      frame.type === 'register/ok' &&
+      frame.corr === barrier.registerRequestId &&
+      barrier.transport === source
+    ) {
+      // Open the FIFO before settling the register request. A transport may
+      // deliver register/ok and the first control in the same JS turn, before
+      // the handshake continuation gets a chance to run.
+      barrier.snapshotApplying = true
+    }
     // A correlated REP/error settles a pending daemon-issued REQ.
     if (frame.corr && this.correlator.settle(frame)) return
+    if (barrier?.transport === source && barrier.snapshotApplying) {
+      if (barrier.controls.length >= REGISTERING_CONTROL_QUEUE_LIMIT) {
+        this.sendError(frame.id, 'PROTOCOL_STATE', 'post-register control queue full', true)
+        source.close(1011, 'post-register control queue full')
+        return
+      }
+      barrier.controls.push({ frame, epoch: decoded.ext?.epoch })
+      return
+    }
     // §2.1 legal-state gate: control frames are only legal in READY/DRAINING.
     if (this.state !== 'READY' && this.state !== 'DRAINING') {
       this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`, false)
       return
     }
+    this.dispatchFencedControl(frame, decoded.ext?.epoch)
+  }
+
+  /** Drain through a stable barrier so controls arriving during the drain join
+   *  its tail instead of overtaking it on the newly READY connection. */
+  private drainRegisterControls(barrier: RegisterControlBarrier): void {
+    while (barrier.controls.length > 0) {
+      const queued = barrier.controls.shift()!
+      this.dispatchFencedControl(queued.frame, queued.epoch)
+      if (this.registerControlBarrier !== barrier) return
+    }
+  }
+
+  private dispatchFencedControl(frame: AnyFrame, epoch?: number): void {
     // Fencing (protocol §4.2): reject any control frame issued under a stale epoch.
-    if (decoded.ext?.epoch !== undefined && decoded.ext.epoch < this.sessionEpoch) {
+    if (epoch !== undefined && epoch < this.sessionEpoch) {
       this.sendError(frame.id, 'STALE_EPOCH', 'epoch < current', true)
       return
     }
@@ -718,12 +845,14 @@ export class CpClient {
     this.transport.send(encode(buildEnvelope('error', { code, message, retryable }, { corr })))
   }
 
-  private onClose(code: number, _reason: string): void {
+  private onClose(source: Transport, code: number, _reason: string): void {
+    if (source !== this.transport) return
     this.stopHeartbeat()
     // Drop the dead transport: `ws.send` on a CLOSED socket is silently
     // swallowed, so anything still holding it would hang for a full retransmit
     // budget instead of failing fast.
     this.transport = undefined
+    if (this.registerControlBarrier?.transport === source) this.registerControlBarrier = undefined
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
     if (code === 4401) {
       this.fatal = true
@@ -840,9 +969,17 @@ export class CpClient {
           })
         return
       }
-      case 'agent/remove':
-        this.deps.configApply.applyAgentRemove((frame.payload as { agentId: string }).agentId)
+      case 'agent/remove': {
+        try {
+          const run = this.deps.configApply.applyAgentRemove((frame.payload as { agentId: string }).agentId)
+          void Promise.resolve(run).catch((err) =>
+            this.deps.log.error(`cp: agent/remove failed closed: ${(err as Error).message}`)
+          )
+        } catch (err) {
+          this.deps.log.error(`cp: agent/remove failed closed: ${(err as Error).message}`)
+        }
         return // EVT — no reply
+      }
       case 'agent/detach':
         this.deps.configApply
           .applyAgentDetach(frame.payload as Parameters<ConfigApply['applyAgentDetach']>[0])

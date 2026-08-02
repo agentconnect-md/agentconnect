@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,7 +39,7 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
 }
 
 describe('Daemon (no Slack, injected ACP host)', () => {
-  it('keeps an optional unsandboxed host working on a sandbox-capable host', async () => {
+  it('forces every real ACP host through the daemon-wide sandbox boundary', async () => {
     const root = scaffold()
     const daemon = new Daemon({
       root,
@@ -49,7 +49,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     try {
       await daemon.start()
       const host = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
-      expect((host as any).opts.sandbox).toBeUndefined()
+      expect((host as any).opts.sandbox).toMatchObject({ mechanism: 'bwrap' })
     } finally {
       await daemon.stop().catch(() => undefined)
       const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
@@ -68,6 +68,75 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await expect(new Daemon({ root, sandboxMechanism: null }).start()).rejects.toThrow(
       /daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/
     )
+  })
+
+  it('refuses every real ACP host without a sandbox before any skills exist', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({ root, sandboxMechanism: null })
+    try {
+      await daemon.start()
+      await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow(
+        /skill authority requires every real ACP host.*sandbox/
+      )
+      expect(existsSync(join(root, 'skill-installs', 'sandbox-required-v1'))).toBe(true)
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('single-agent mode still rejects an active sibling whose writable workspace overlaps', async () => {
+    const root = scaffold()
+    const sibling = join(root, 'agents', 'bot-b')
+    mkdirSync(sibling, { recursive: true })
+    writeFileSync(
+      join(sibling, 'agent.json'),
+      JSON.stringify({
+        id: 'bot-b',
+        name: 'bot-b',
+        status: 'active',
+        runtime: 'claude',
+        // This canonical root belongs to bot-a and would let bot-b retain
+        // write authority over bot-a's later skill publication.
+        workspace: { mode: 'from-scratch', path: join(root, 'agents', 'bot-a', 'workspace') },
+        integrations: [],
+        output: { mode: 'medium' }
+      })
+    )
+
+    const daemon = new Daemon({ root, agentName: 'bot-a', sandboxMechanism: 'bwrap' })
+    try {
+      await expect(daemon.start()).rejects.toThrow(/workspace cwd.*not inside the agent dir/)
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects duplicate active agent IDs before roster maps can collapse them', async () => {
+    const root = scaffold()
+    const duplicate = join(root, 'agents', 'duplicate')
+    mkdirSync(duplicate, { recursive: true })
+    writeFileSync(
+      join(duplicate, 'agent.json'),
+      JSON.stringify({
+        id: 'bot-a',
+        name: 'duplicate',
+        status: 'active',
+        runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: join(duplicate, 'workspace') },
+        integrations: [],
+        output: { mode: 'medium' }
+      })
+    )
+
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap' })
+    try {
+      await expect(daemon.start()).rejects.toThrow(/duplicate active agent id "bot-a"/)
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('boots and routes a synthetic message through to a prompt', async () => {

@@ -40,13 +40,16 @@ import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
  * instead THROWS on an unsafe layout — an un-sandboxable config must not silently
  * run unconfined.
  */
-export type SandboxMechanism = 'bwrap'
+export type SandboxMechanism = 'bwrap' | 'seatbelt'
 
 export interface SrtSandboxPolicy {
   writable: string[]
   denyRead: string[]
   allowRead: string[]
   gitSafeDirectories?: string[]
+  /** No network or Unix-domain socket access and no dynamic approval callback.
+   * Used for audited daemon helpers such as local skills installation. */
+  offline?: boolean
 }
 
 /** Raised when a requested sandbox cannot be established safely (e.g. the cwd escapes
@@ -258,10 +261,12 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
     network: {
       allowedDomains: [],
       deniedDomains: [],
-      // Linux cannot filter AF_UNIX by pathname. Keep it available for the ACP
-      // parent and the model-side Git credential helper; filesystem and network
-      // namespace visibility limit which host sockets are reachable.
-      allowAllUnixSockets: true
+      // Linux cannot filter AF_UNIX by pathname, so an ordinary ACP host keeps
+      // Unix sockets available for the parent and the model-side Git credential
+      // helper; filesystem and network namespace visibility limit which host
+      // sockets are reachable. The offline skills sandbox is stricter — it blocks
+      // ALL Unix sockets through the apply-seccomp helper — so deny them there.
+      allowAllUnixSockets: policy.offline !== true
     },
     filesystem: {
       // SRT's shared default temp path is not part of AgentConnect's per-agent
@@ -306,6 +311,8 @@ export function sandboxWrap(
     writable: string[]
     settingsPath?: string
     cwd?: string
+    offline?: boolean
+    startGated?: boolean
   }
 ): { cmd: string; args: string[] } {
   if (!opts.settingsPath || !isAbsolute(opts.settingsPath)) {
@@ -317,6 +324,16 @@ export function sandboxWrap(
   const provider = sandboxProviderLauncher()
   return {
     cmd: provider.cmd,
-    args: [...provider.args, '__sandbox-runtime', opts.settingsPath, String(process.pid), opts.cwd, '--', cmd, ...args]
+    args: [
+      ...provider.args,
+      opts.offline ? '__sandbox-runtime-offline' : '__sandbox-runtime',
+      opts.settingsPath,
+      String(process.pid),
+      opts.cwd,
+      ...(opts.startGated ? ['--start-gated'] : []),
+      '--',
+      cmd,
+      ...args
+    ]
   }
 }

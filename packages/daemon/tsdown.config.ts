@@ -1,4 +1,14 @@
 import { defineConfig } from 'tsdown'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+
+const require = createRequire(import.meta.url)
+const skillsPackageJson = require.resolve('skills/package.json')
+const skillsManifest = require(skillsPackageJson) as { version?: unknown }
+if (skillsManifest.version !== '1.5.21') {
+  throw new Error(`build requires exact skills@1.5.21, found ${String(skillsManifest.version)}`)
+}
+const skillsCliEntry = join(dirname(skillsPackageJson), 'dist', 'cli.mjs')
 
 // Modules that cannot be bundled — kept external:
 // - bufferutil / utf-8-validate: ws's OPTIONAL native speedups, loaded via
@@ -21,7 +31,19 @@ const nativeExternals = ['bufferutil', 'utf-8-validate']
 // dependencies first (`pnpm --filter '{.}^...' build && tsdown`), so the bundle
 // always inlines fresh shared packages without reaching into their source trees.
 export default defineConfig({
-  entry: ['src/index.ts'],
+  // `skills` must be a separate executable because the daemon invokes it in a
+  // private child-process cell. A dynamic package lookup would work in the
+  // monorepo but fail after release strips runtime dependencies, so bundle the
+  // audited entry as a second published artifact.
+  // Preserve the upstream package-relative layout for the bundled executable.
+  // skills@1.5.21 reads ../package.json relative to its CLI module for its
+  // version/telemetry identity, so emitting it beside index.js would make it
+  // accidentally read the daemon manifest instead.
+  entry: {
+    index: 'src/index.ts',
+    'skills/dist/cli': skillsCliEntry,
+    'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts'
+  },
   format: ['esm'],
   platform: 'node',
   // platform:'node' defaults to fixed .mjs/.cjs extensions; keep dist/index.js

@@ -323,12 +323,17 @@ compromise, not a stale note. The console surfaces candidates as
 recommendations with the full `SKILL.md` and script bodies rendered for
 review. Per candidate, the user can:
 
-- **Accept** — the daemon materializes the skill into the agent's skills
-  location. With the shared-skills flow in place, acceptance registers the
-  staged directory as a local skill source on the agent (installed into the
-  workspace before each runtime spawn, per that design); until then, a direct
-  copy into the agent root's skills directory is the fallback. The
-  `DreamRecord.skills[]` entry moves to `accepted`.
+- **Accept** — under the per-agent admission/host fence, the reviewed bundle is
+  copied into a daemon-owned digest-addressed directory
+  `<agent-root>/skills/.bundles/<name>-<sha256>` and an atomically replaced
+  `accepted-skills.json` index selects that immutable revision. The accepted
+  source is re-hashed against the index before use, and the installer verifies
+  the same expected digest again when it snapshots the source. Only then does
+  it join Git and managed sources in the same exact isolated
+  `skills@1.5.21` CLI pipeline. Acceptance is not hot-injected into an existing
+  host, and there is no Dream-specific workspace materializer or harness
+  directory map. The `DreamRecord.skills[]` entry moves to `accepted` only
+  after publication succeeds.
 - **Dismiss** — the candidate is deleted and recorded as `dismissed`.
   Dismissed skill names are fed back into subsequent dream prompts as
   "previously declined" so the same recommendation doesn't reappear every

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
@@ -10,7 +10,14 @@ import { loadAgents, selectAgent, type LoadedAgent } from './agents/load-agents.
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
 import { diffAgents } from './reconciler/reconciler.js'
-import { resolveRoot, statePath, mcpSocketPath, daemonEntryForShims, cliEntryPointer } from './paths.js'
+import {
+  resolveRoot,
+  statePath,
+  agentRemovalObligationsDir,
+  mcpSocketPath,
+  daemonEntryForShims,
+  cliEntryPointer
+} from './paths.js'
 import {
   LocalStore,
   sessionKey,
@@ -26,7 +33,7 @@ import {
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason, type AcpPermissionPolicyEvent } from './acp/acp-host.js'
-import { detectSandbox, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
+import { detectSandbox, sandboxBoundary, SandboxError, type SandboxMechanism } from './acp/sandbox.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './acp/runtime-launch.js'
 import { permissionModeDisplayLabel } from './acp/permission-modes.js'
 import {
@@ -123,9 +130,11 @@ import {
   isWorkspaceEmpty,
   prepareWorkspace,
   prepareWorkspaceForActivation,
+  resolvePreparedWorkspaceCwd,
   prefetchWorkspace
 } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
+import { persistSkillSandboxRequirement, skillSandboxRequirementPresent } from './skills/skill-sandbox-policy.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -220,9 +229,13 @@ import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
+  agentRemovalTombstones,
   agentMoveStages,
+  clearAgentRemoval,
+  clearAgentRemovalForReadd,
   clearAgentMoveStage,
   commitAgentMove,
+  markAgentRemoval,
   stageAgentMove,
   type AgentMoveStageMetadata
 } from './agents/write-agent.js'
@@ -335,6 +348,55 @@ function formatErr(err: unknown): string {
     return `${e.name ?? 'Error'}: ${e.message ?? ''} (code=${e.code})${data}`
   }
   return e?.stack ?? String(err)
+}
+
+/** Validate the same trusted workspace boundary that every real ACP spawn will
+ * receive, before clone/skill preparation can mutate that path. Canonical
+ * workspace-root aliases and overlaps are exclusive across local agent
+ * principals. The separate durable ledger serializes and owns the exact
+ * prepared ACP cwd; it is not the authority for this broader root check. */
+function assertExclusiveAgentWorkspaces(agents: readonly LoadedAgent[]): void {
+  const workspaces: Array<{ agentId: string; path: string }> = []
+  for (const agent of agents) {
+    const workspace = sandboxBoundary({
+      agentDir: agent.dir,
+      cwd: agent.workspace.path,
+      runtimeHome: runtimeHomePath(agent.dir)
+    }).gitSafeDirectories?.[0]
+    if (!workspace) throw new SandboxError(`sandbox workspace boundary is missing for agent "${agent.id}"`)
+    for (const existing of workspaces) {
+      if (existing.agentId === agent.id) continue
+      const fromExisting = relative(existing.path, workspace)
+      const fromWorkspace = relative(workspace, existing.path)
+      const overlaps =
+        fromExisting === '' ||
+        (!isAbsolute(fromExisting) && fromExisting !== '..' && !fromExisting.startsWith(`..${sep}`)) ||
+        (!isAbsolute(fromWorkspace) && fromWorkspace !== '..' && !fromWorkspace.startsWith(`..${sep}`))
+      if (overlaps) {
+        throw new SandboxError(
+          `agents "${existing.agentId}" and "${agent.id}" have overlapping writable workspaces ` +
+            `"${existing.path}" and "${workspace}"`
+        )
+      }
+    }
+    workspaces.push({ agentId: agent.id, path: workspace })
+  }
+}
+
+function mergeAgentWorkspaceAuthorities(...sets: readonly LoadedAgent[][]): LoadedAgent[] {
+  const byId = new Map<string, LoadedAgent>()
+  for (const agents of sets) {
+    for (const agent of agents) {
+      const existing = byId.get(agent.id)
+      if (existing && existing.dir !== agent.dir) {
+        throw new SandboxError(
+          `duplicate active agent id "${agent.id}" appears in "${existing.dir}" and "${agent.dir}"`
+        )
+      }
+      byId.set(agent.id, agent)
+    }
+  }
+  return [...byId.values()]
 }
 
 /**
@@ -1325,10 +1387,7 @@ export class Daemon {
     (id) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
-      return memoryKindOf(agent) === 'native' &&
-        effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
-        ? runtimeHomePath(agent.dir)
-        : agent.dir
+      return memoryKindOf(agent) === 'native' && this.agentRunsInSandbox(agent) ? runtimeHomePath(agent.dir) : agent.dir
     },
     (id) => {
       const a = this.agents.get(id)
@@ -1508,12 +1567,15 @@ export class Daemon {
   // Monotonic per-agent fence. stop/evict increments it so an older async startup
   // (including its retry loop) can never publish or retry after teardown.
   private hostStartGeneration = new Map<string, number>()
+  /** Hosts whose initialize handshake completed for the current generation. */
+  private readyHosts = new Set<string>()
   // Wakes a retry that is sleeping in backoff when its generation is invalidated.
   // Without this, shutdown could return while an old timer still owns executable work.
   private hostStartAborts = new Map<string, AbortController>()
   private watcher?: FSWatcher
   private debounceTimer?: NodeJS.Timeout
   private agentsDir = ''
+  private removalObligationsDir = ''
   private cfg!: ReturnType<typeof loadConfig>
   private log: Logger = makeLogger('info')
   private root = ''
@@ -1528,6 +1590,9 @@ export class Daemon {
   // per-agent requests are ineffective; security.requireSandbox refuses startup
   // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
+  /** Daemon-wide same-UID boundary. It is established before the first real ACP
+   * child, so no earlier unconfined sibling can pre-forge later skill authority. */
+  private globalSkillSandboxRequired = false
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
   // Models learned by actively probing each runtime (registry id -> model ids).
@@ -1612,6 +1677,10 @@ export class Daemon {
   // Only a later authoritative CP upsert/snapshot may revive them; until then
   // this separate latch keeps the admission gate closed.
   private cpDroppedAgents = new Set<string>()
+  // Durable counterpart of a remove/drop gate. It survives a crash between
+  // admission and root deletion, keeping a stale CP replica out of the offline
+  // effective roster until authoritative removal or re-add converges.
+  private removedAgentTombstones = new Set<string>()
   // Pause/loop interruption keeps an agent-level admission gate latched until every
   // targeted turn has fully unwound (including cancel backstops). This prevents a
   // quick reset or another-thread message from starting work an old backstop could kill.
@@ -1628,17 +1697,32 @@ export class Daemon {
   /** Suppress reconcile's fire-and-forget clone while an acknowledged activation
    *  owns atomic workspace materialization. */
   private preparingWorkspaces = new Set<string>()
-  // Per-agent queue + same-request join. CP has its own move mutex, but daemon
-  // handlers still need serialization because transport retransmits a REQ up to
-  // five times and different lifecycle frames may arrive before an ACK lands.
-  private agentMoveTails = new Map<string, Promise<void>>()
+  // Per-agent lifecycle queue + same-move-request join. CP has its own move
+  // mutex, but daemon handlers still need serialization because transport may
+  // deliver remove/upsert while an older async remove or move is quiescing.
+  private agentLifecycleTails = new Map<string, Promise<void>>()
+  private agentLifecycleFailures = new Map<string, { owner: string; error: Error }>()
   private agentMoveInFlight = new Map<string, Promise<Ack>>()
+  /** Removal reservations are published synchronously, before their lifecycle
+   *  queue entry runs. Older async work may not clear the shared drain gate or
+   *  republish the root while a newer remove/drop reservation is pending. */
+  private pendingAgentRemovals = new Map<string, number>()
+  /** Stop/detach also close admission before their queued body can run. Keep a
+   *  distinct reservation because they do not necessarily delete CP authority,
+   *  but an older launch/activate must still be unable to reopen the gate. */
+  private pendingAgentDrains = new Map<string, { count: number; preexisting: boolean; preserve: boolean }>()
   // dispatchOne leases close the pre-pending gap: a turn captures its platform
   // connection before sessions.handle() returns and before it appears in `pending`.
   // Agent detach waits these leases before archiving/closing the last connection.
   private activeDispatchesByAgent = new Map<string, Set<Promise<void>>>()
   private activeDispatchDoneByKey = new Map<string, Promise<void>>()
   private workspaceFileWrites = new Map<string, Promise<void>>()
+  /** Whole per-agent workspace-mutation tails. Preparation (managed-cache
+   * resolution, clone/pull, immutable snapshots, skill reconciliation) and CP
+   * editor/Dream/Git writes share this lane, so no two authorities mutate the
+   * same root concurrently. Session abort only fences the caller; admitted I/O
+   * remains in this tail until it has actually settled. */
+  private workspacePreparationTails = new Map<string, Promise<void>>()
   // Connection-specific half of the same lease. Unlike `pending[].conn`, this is
   // acquired immediately when dispatchOne captures replyConn, before its first
   // await, so ordinary config reconciliation cannot close that pre-pending use.
@@ -1858,6 +1942,12 @@ export class Daemon {
         'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
     }
+    // Skills are mutable executable authority stored under the daemon's UID.
+    // Establish the fleet-wide boundary on first boot, before probes or hosts;
+    // waiting until a skill exists would let an earlier unconfined ACP sibling
+    // forge the marker, registry, ledger, and installed bytes retroactively.
+    await persistSkillSandboxRequirement(root)
+    this.globalSkillSandboxRequired = true
     // Mint a stable local daemonId only when we are NOT onboarding via a CP
     // token: with a `controlPlane.key` and no explicit id, the CP assigns the
     // id from the token's `sub` and the daemon adopts it (see startCpClient).
@@ -1922,22 +2012,47 @@ export class Daemon {
       `control plane: ${cfg.controlPlane?.enabled ? `enabled (${cfg.controlPlane.url ?? 'no url'})` : 'disabled — running local'}`
     )
     this.agentsDir = cfg.agentsDir!
+    this.removalObligationsDir = agentRemovalObligationsDir(root)
+    this.removedAgentTombstones = agentRemovalTombstones(this.agentsDir, this.removalObligationsDir)
+    for (const agentId of this.removedAgentTombstones) {
+      this.drainingAgents.add(agentId)
+      this.cpDroppedAgents.add(agentId)
+    }
     this.moveStageMetadata = agentMoveStages(this.agentsDir)
     this.moveStagedAgents = new Set(
       [...this.moveStageMetadata].filter(([, metadata]) => metadata.state === 'staging').map(([agentId]) => agentId)
     )
     for (const agentId of this.moveStagedAgents) this.drainingAgents.add(agentId)
     const discoveredAgents = this.loadAgentList()
+    const agents = discoveredAgents.filter(
+      (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
+    )
+    // Fail before clone cleanup/prefetch or skill reconciliation can touch a
+    // workspace that the kernel sandbox would later reject or another local
+    // agent could already hold writable.
+    if (!this.opts.hostFactory) {
+      const activeFleet = this.opts.agentName ? loadAgents(this.agentsDir) : agents
+      assertExclusiveAgentWorkspaces(
+        mergeAgentWorkspaceAuthorities(
+          activeFleet.filter(
+            (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
+          ),
+          agents
+        )
+      )
+    }
     for (const agent of discoveredAgents) {
-      try {
-        const removed = cleanupStaleWorkspaceClones(agent)
-        if (removed > 0) {
-          this.log.info(`workspace: removed ${removed} stale conversion clone(s) for agent "${agent.id}"`)
+      if (!this.removedAgentTombstones.has(agent.id)) {
+        try {
+          const removed = cleanupStaleWorkspaceClones(agent)
+          if (removed > 0) {
+            this.log.info(`workspace: removed ${removed} stale conversion clone(s) for agent "${agent.id}"`)
+          }
+        } catch (err) {
+          // A stale temp tree must never prevent the daemon from serving the real
+          // workspace. A later restart can retry the best-effort cleanup.
+          this.log.warn(`workspace: stale conversion clone cleanup failed for agent "${agent.id}" (${formatErr(err)})`)
         }
-      } catch (err) {
-        // A stale temp tree must never prevent the daemon from serving the real
-        // workspace. A later restart can retry the best-effort cleanup.
-        this.log.warn(`workspace: stale conversion clone cleanup failed for agent "${agent.id}" (${formatErr(err)})`)
       }
       // No host is running at boot, so no materialized config-file secret should
       // exist. A clean shutdown removed them in stopHost; sweep what a
@@ -1946,7 +2061,6 @@ export class Daemon {
       if (staleConfigFiles)
         this.log.warn(`config-files: startup cleanup for agent "${agent.id}" failed — ${staleConfigFiles}`)
     }
-    const agents = discoveredAgents.filter((agent) => !this.moveStagedAgents.has(agent.id))
     this.fileAgents = new Map(discoveredAgents.map((a) => [a.id, a]))
     // `this.agents` is populated from the file agents once the CP registries are
     // built below; see effectiveAgents().
@@ -2264,14 +2378,13 @@ export class Daemon {
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
       hostFor: (agentId) => this.ensureHostAsync(agentId),
-      // Whether the runtime process is already up. When it isn't, hostFor cold-starts
-      // it, so the workspace (and skills) must be prepared first — see SessionManager.
-      isHostRunning: (agentId) => this.hosts.has(agentId),
+      // A constructed AcpHost is not yet running. Keep the session on the cold
+      // path until initialize succeeds so concurrent waiters consume hostFor's
+      // single preparation rather than starting a warm preparation afterward.
+      isHostRunning: (agentId) => this.readyHosts.has(agentId),
       agentById: (id) => this.agents.get(id),
-      prepareWorkspace: (agent) =>
-        prepareWorkspace(agent, {
-          managedSkills: (value) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([])
-        }),
+      prepareWorkspace: (agent, expectedWarmHost) => this.prepareAgentWorkspace(agent, expectedWarmHost),
+      resolvePreparedWorkspace: (agent) => resolvePreparedWorkspaceCwd(agent),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
         this.log.warn(
@@ -2352,7 +2465,7 @@ export class Daemon {
             enabled: agent.mcpServers,
             defs: this.mcpServerDefs,
             caps: this.runtimeMcpCaps.get(agent.runtime),
-            ...(effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
+            ...(this.agentRunsInSandbox(agent)
               ? {
                   resolveStdioCommand: (command: string, entries: { name: string; value: string }[]) =>
                     resolveTrustedExecutable(command, {
@@ -2472,7 +2585,7 @@ export class Daemon {
     this.watcher = chokidarWatch(this.agentsDir, {
       ignoreInitial: true,
       depth: 4,
-      ignored: (p: string) => /[\\/](node_modules|\.git|\.detached|\.staged)([\\/]|$)/.test(p)
+      ignored: (p: string) => /[\\/](node_modules|\.git|\.detached|\.staged|\.removed)([\\/]|$)/.test(p)
     })
     const debounced = () => {
       clearTimeout(this.debounceTimer)
@@ -2511,7 +2624,9 @@ export class Daemon {
     // Integrations live on disk in each agent.json (CP pushes are persisted by
     // CpIntegrationRegistry before reconcile re-loads), so the file agents ARE
     // the effective set — no in-memory overlay.
-    return [...this.fileAgents.values()].filter((agent) => !this.moveStagedAgents.has(agent.id))
+    return [...this.fileAgents.values()].filter(
+      (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
+    )
   }
 
   /**
@@ -2546,8 +2661,35 @@ export class Daemon {
 
   private async runReconcile(): Promise<void> {
     const files = this.loadAgentList()
-    this.fileAgents = new Map(files.map((a) => [a.id, a]))
-    const desired = this.effectiveAgents()
+    const nextFileAgents = new Map(files.map((a) => [a.id, a]))
+    const desired = [...nextFileAgents.values()].filter(
+      (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
+    )
+    // Keep the previous live roster intact when an incoming config would create
+    // an unsafe/aliased workspace authority.
+    if (!this.opts.hostFactory) {
+      // Use the raw discovered list in multi-agent mode: constructing a Map has
+      // last-writer-wins semantics and must not hide two directories that claim
+      // the same active agent ID from authority validation.
+      const activeFleet = this.opts.agentName ? loadAgents(this.agentsDir) : files
+      assertExclusiveAgentWorkspaces(
+        // Include both old and desired authorities. A batched workspace swap or
+        // transfer must not publish A's new config while B's old host still has
+        // kernel write access; same-agent old/new entries are intentionally
+        // ignored by the overlap checker.
+        [
+          ...this.agents.values(),
+          ...mergeAgentWorkspaceAuthorities(
+            activeFleet.filter(
+              (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
+            ),
+            desired
+          )
+        ]
+      )
+    }
+    this.fileAgents = nextFileAgents
+    await this.activateGlobalSkillSandbox(false, desired)
     const { toStart, toStop, toChange } = diffAgents(desired, this.agents)
     if (toStart.length || toStop.length || toChange.length)
       this.log.info(
@@ -2588,7 +2730,9 @@ export class Daemon {
       // removal needs no permanent gate once the host is proven stopped (the agent is
       // absent); a later toStart can then serve it normally. Safety-drain state is NOT
       // cleared here — in particular, a cold force-stop failure must remain fail-closed.
-      if (!wasDraining && !this.moveStagedAgents.has(id)) this.drainingAgents.delete(id)
+      if (!wasDraining && !this.moveStagedAgents.has(id) && !this.agentDestructivePending(id)) {
+        this.drainingAgents.delete(id)
+      }
     }
     let connectionsDirty = toStart.length > 0 || toStop.length > 0
     for (const change of toChange) {
@@ -2614,7 +2758,9 @@ export class Daemon {
       // stale checkout.
       if (change.workspaceRepoRename) {
         try {
-          await convergeGithubAppWorkspaceRename(a as LoadedAgent)
+          await this.enqueueAgentWorkspacePreparation(a as LoadedAgent, () =>
+            convergeGithubAppWorkspaceRename(a as LoadedAgent)
+          )
         } catch (err) {
           workspaceNeedsColdRecovery = true
           this.log.warn(
@@ -2657,7 +2803,7 @@ export class Daemon {
           }
           await this.revokeRemoteWebchatGrantsForAgent(a.id, 'agent_detached')
         } finally {
-          if (!wasDraining) this.drainingAgents.delete(a.id)
+          if (!wasDraining && !this.agentDestructivePending(a.id)) this.drainingAgents.delete(a.id)
         }
       }
       // workspace change → eagerly (re-)materialize the checkout in the background so
@@ -2707,7 +2853,17 @@ export class Daemon {
    */
   private prefetchClone(agent: LoadedAgent): void {
     if (this.preparingWorkspaces.has(agent.id)) return
-    void prefetchWorkspace(agent).catch((err) =>
+    if (this.draining || this.drainingAgents.has(agent.id) || this.safetyDrainingAgents.has(agent.id)) return
+    let prefetch: Promise<void>
+    try {
+      prefetch = this.enqueueAgentWorkspacePreparation(agent, () => this.runAgentWorkspacePrefetch(agent))
+    } catch (err) {
+      this.log.warn(
+        `workspace: prefetch clone for "${agent.id}" failed (will retry at first session): ${formatErr(err)}`
+      )
+      return
+    }
+    void prefetch.catch((err) =>
       this.log.warn(
         `workspace: prefetch clone for "${agent.id}" failed (will retry at first session): ${formatErr(err)}`
       )
@@ -3770,6 +3926,174 @@ export class Daemon {
     })
   }
 
+  /** The one daemon-owned workspace preparation contract used by ordinary
+   * sessions and by the cold-host lifecycle gate below. Keeping the managed
+   * cache, trusted installer state, and runtime CLI identity together prevents
+   * a non-session warmup from spawning with a weaker preparation path. */
+  private agentRunsInSandbox(agent: Agent): boolean {
+    const requireSandbox =
+      this.cfg.security.requireSandbox || (this.globalSkillSandboxRequired && this.opts.hostFactory === undefined)
+    return effectiveRunInSandbox(requireSandbox, agent.runInSandbox, this.sandboxMechanism)
+  }
+
+  private async activateGlobalSkillSandbox(
+    force = false,
+    agents: readonly Agent[] = [...this.agents.values()]
+  ): Promise<void> {
+    if (!force && !skillSandboxRequirementPresent(this.root, agents)) return
+    const transitioned = !this.globalSkillSandboxRequired
+    if (transitioned) {
+      // Publish the sticky boundary before stopping current hosts. A crash at any
+      // later point therefore makes the next daemon fail closed before ACP spawn.
+      await persistSkillSandboxRequirement(this.root)
+      this.globalSkillSandboxRequired = true
+    }
+
+    if (transitioned && !this.opts.hostFactory) {
+      for (const agentId of [...this.hosts.keys()]) {
+        const wasDraining = this.drainingAgents.has(agentId)
+        this.drainingAgents.add(agentId)
+        this.interruptAgentTurns(agentId, 'stop')
+        try {
+          await this.stopHost(agentId)
+        } finally {
+          if (!wasDraining && !this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
+        }
+      }
+    }
+    if (!this.sandboxMechanism && !this.opts.hostFactory) {
+      throw new Error(
+        'AgentConnect skill authority requires every real ACP host to use a supported Linux SRT/bwrap sandbox'
+      )
+    }
+  }
+
+  private async runAgentWorkspacePreparation(agent: Agent): Promise<string> {
+    if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
+    await this.activateGlobalSkillSandbox(false, [agent])
+    return prepareWorkspace(agent, {
+      managedSkills: (value) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
+      skillsStateDir: join(this.root, 'skill-installs'),
+      skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null
+    })
+  }
+
+  private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
+    return prefetchWorkspace(agent)
+  }
+
+  private workspacePreparationAuthority(agent: Agent): string {
+    const dir = (agent as Agent & { dir?: string }).dir
+    return JSON.stringify({
+      dir,
+      runtime: agent.runtime,
+      workspace: agent.workspace,
+      skills: agent.skills,
+      managedSkills: agent.managedSkills
+    })
+  }
+
+  private assertCurrentWorkspacePreparation(agent: Agent, expectedWarmHost?: AcpHost, allowAgentDrain = false): void {
+    if (this.draining || (!allowAgentDrain && this.drainingAgents.has(agent.id))) {
+      throw new Error(`workspace preparation blocked while agent authority is draining (${agent.id})`)
+    }
+    const current = this.agents.get(agent.id)
+    if (!current || this.workspacePreparationAuthority(current) !== this.workspacePreparationAuthority(agent)) {
+      throw new Error(`workspace preparation blocked for superseded agent authority (${agent.id})`)
+    }
+    if (expectedWarmHost && (this.hosts.get(agent.id) !== expectedWarmHost || !this.readyHosts.has(agent.id))) {
+      throw new Error(`workspace preparation blocked for superseded warm host (${agent.id})`)
+    }
+  }
+
+  private enqueueAgentWorkspacePreparation<T>(
+    agent: Agent,
+    operation: () => Promise<T>,
+    expectedWarmHost?: AcpHost,
+    allowAgentDrain = false
+  ): Promise<T> {
+    // SessionManager's abort fence intentionally cannot cancel filesystem/network
+    // work already admitted here. Register every session preparation and eager
+    // prefetch synchronously in one per-agent tail: a reconciled generation may
+    // start only after stale work has settled and its own final operation has run.
+    // Rejections release the queue; a hung mutation keeps later generations and
+    // destructive authority release fail-closed behind it.
+    this.assertCurrentWorkspacePreparation(agent, expectedWarmHost, allowAgentDrain)
+    return this.enqueueAgentWorkspaceMutation(agent.id, () => {
+      // The host or agent authority may be superseded while this operation waits
+      // behind an older preparation or file publication. Re-check at the exact
+      // mutation boundary.
+      this.assertCurrentWorkspacePreparation(agent, expectedWarmHost, allowAgentDrain)
+      return operation()
+    })
+  }
+
+  private enqueueAgentWorkspaceMutation<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+    const prior = this.workspacePreparationTails.get(agentId) ?? Promise.resolve()
+    const run = prior.then(operation)
+    const tail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    this.workspacePreparationTails.set(agentId, tail)
+    void tail.then(() => {
+      if (this.workspacePreparationTails.get(agentId) === tail) this.workspacePreparationTails.delete(agentId)
+    })
+    return run
+  }
+
+  private prepareAgentWorkspace(agent: Agent, expectedWarmHost?: AcpHost, allowAgentDrain = false): Promise<string> {
+    return this.enqueueAgentWorkspacePreparation(
+      agent,
+      () => this.runAgentWorkspacePreparation(agent),
+      expectedWarmHost,
+      allowAgentDrain
+    )
+  }
+
+  private async waitForWorkspacePreparations(agentId: string): Promise<void> {
+    while (true) {
+      const tail = this.workspacePreparationTails.get(agentId)
+      if (!tail) return
+      await tail
+    }
+  }
+
+  private async waitForWorkspaceFileWrites(agentId: string): Promise<void> {
+    while (true) {
+      const write = this.workspaceFileWrites.get(agentId)
+      if (!write) return
+      await write
+    }
+  }
+
+  /** Destructive authority-release fence. Unlike an ordinary host eviction, a
+   * detach/remove may archive or delete the exact paths captured by a pre-Pending
+   * SessionManager call, so abort those callers immediately, stop every selected
+   * cell, and wait for their uncancellable workspace I/O before returning. */
+  private async quiesceAgentWorkspaceAuthority(agentId: string): Promise<void> {
+    const selected = [...this.pending.values()].filter((turn) => turn.agentId === agentId)
+    this.interruptAgentTurns(agentId, 'stop')
+    for (const entry of this.activeGateEntries.values()) {
+      if (entry.agentId !== agentId) continue
+      entry.cancelledReason ??= 'stop'
+      entry.initAbort.abort(new Error('stop'))
+    }
+    await this.stopSelectedTurnHosts(selected)
+    await this.stopHost(agentId)
+    // A dispatch admitted before the drain may still be waiting for a workspace
+    // file-write lease. Release/join that lease first, then collect the dispatch
+    // it registers; reversing the order leaves a late active-dispatch join gap.
+    await this.waitForWorkspaceFileWrites(agentId)
+    while (this.activeDispatchesByAgent.get(agentId)?.size) {
+      await Promise.all([...this.activeDispatchesByAgent.get(agentId)!])
+    }
+    await this.waitForWorkspacePreparations(agentId)
+    // Close the late-construction window one final time. A caller that had not
+    // registered before abort is rejected by the expected-host/authority guard.
+    await this.stopHost(agentId)
+  }
+
   private ensureHost(agentId: string, cfg: ReturnType<typeof loadConfig>): AcpHost {
     let host = this.hosts.get(agentId)
     if (host) return host
@@ -3811,7 +4135,7 @@ export class Daemon {
       // runtimeOverrides env (a user-supplied GIT_CONFIG_* would reopen
       // the machine-credential leak the injection exists to close).
       const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
-      const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
+      const runInSandbox = this.agentRunsInSandbox(agent)
       if (agent.runInSandbox && !runInSandbox) {
         this.log.warn(
           `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
@@ -4523,6 +4847,10 @@ export class Daemon {
         this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion sync failed (${err instanceof Error ? err.name : 'unknown'})`)
         ),
+      withSkillAcceptance: async (agentId, publish) => {
+        await this.activateGlobalSkillSandbox(true)
+        return this.withWorkspaceFileWrite(agentId, publish)
+      },
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
@@ -9391,11 +9719,10 @@ export class Daemon {
   }
 
   private async withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
-    while (this.workspaceFileWrites.has(agentId)) await this.workspaceFileWrites.get(agentId)
-    let release!: () => void
-    const done = new Promise<void>((resolve) => (release = resolve))
-    this.workspaceFileWrites.set(agentId, done)
-    try {
+    // Admission into the shared mutation tail is synchronous: a preparation or
+    // second publication accepted in the next call stack can only run after this
+    // complete stop+write operation, and vice versa.
+    const run = this.enqueueAgentWorkspaceMutation(agentId, async () => {
       if (
         this.draining ||
         this.drainingAgents.has(agentId) ||
@@ -9407,10 +9734,16 @@ export class Daemon {
       }
       await this.stopHost(agentId)
       return await write()
-    } finally {
+    })
+    const done = run.then(
+      () => undefined,
+      () => undefined
+    )
+    this.workspaceFileWrites.set(agentId, done)
+    void done.then(() => {
       if (this.workspaceFileWrites.get(agentId) === done) this.workspaceFileWrites.delete(agentId)
-      release()
-    }
+    })
+    return run
   }
 
   private holdReplyConnection(
@@ -13252,6 +13585,7 @@ export class Daemon {
   }
 
   private invalidateHostStart(agentId: string): void {
+    this.readyHosts.delete(agentId)
     this.hostStartGeneration.set(agentId, (this.hostStartGeneration.get(agentId) ?? 0) + 1)
     this.hostStarts.delete(agentId)
     this.hostStartAborts.get(agentId)?.abort(new Error(`host start superseded for ${agentId}`))
@@ -13293,7 +13627,7 @@ export class Daemon {
       this.hostStartGeneration.set(agentId, generation)
       const startAbort = new AbortController()
       this.hostStartAborts.set(agentId, startAbort)
-      p = this.startHostWithRetry(agentId, generation, startAbort.signal)
+      p = this.startHostWithRetry(agentId, generation, startAbort.signal, opts.allowAgentDrain === true)
       this.hostStarts.set(agentId, p)
       // A total failure (all attempts exhausted) must NOT poison the cache: without
       // this the rejected promise stays memoized and every later message re-awaits the
@@ -13318,11 +13652,26 @@ export class Daemon {
    *  builds a FRESH host; a failed start()'s half-spawned child is reaped before the
    *  next try. On success the started host is left memoized in `this.hosts`; when every
    *  attempt fails the last error is thrown (dispatch surfaces it to the session). */
-  private async startHostWithRetry(agentId: string, generation: number, signal: AbortSignal): Promise<AcpHost> {
+  private async startHostWithRetry(
+    agentId: string,
+    generation: number,
+    signal: AbortSignal,
+    allowAgentDrain = false
+  ): Promise<AcpHost> {
     const attempts = Math.max(1, this.cfg.limits.agentStartAttempts)
     if (this.hostStartGeneration.get(agentId) !== generation) throw new Error(`host start superseded for ${agentId}`)
+    const agent = this.agents.get(agentId)
+    if (!agent) throw new Error(`unknown agent ${agentId}`)
     let lastErr: unknown
     for (let i = 1; i <= attempts; i++) {
+      if (this.hostStartGeneration.get(agentId) !== generation) {
+        throw new Error(`host start superseded for ${agentId}`)
+      }
+      // This is the cold-host gate for every daemon caller and every fresh spawn
+      // attempt. A failed ACP child had workspace write authority; re-verify the
+      // immutable skill receipts after it is fully reaped and before constructing
+      // its replacement, rather than trusting the first attempt's gate.
+      await this.prepareAgentWorkspace(agent, undefined, allowAgentDrain)
       if (this.hostStartGeneration.get(agentId) !== generation) {
         throw new Error(`host start superseded for ${agentId}`)
       }
@@ -13332,9 +13681,11 @@ export class Daemon {
         if (this.hostStartGeneration.get(agentId) !== generation) {
           throw new Error(`host start superseded for ${agentId}`)
         }
+        this.readyHosts.add(agentId)
         return host
       } catch (err) {
         lastErr = err
+        this.readyHosts.delete(agentId)
         // Reap the dead child and drop it so the next attempt spawns a fresh one.
         if (this.hosts.get(agentId) === host) this.hosts.delete(agentId)
         await host.stop().catch(() => {})
@@ -13995,14 +14346,23 @@ export class Daemon {
    * pruning while still reporting the older assignment/cron/lease state. */
   private cpLocalState(): RegisterReq['localState'] {
     const agents = this.opts.agentName ? [] : this.effectiveAgents()
+    const agentReplicas = new Map(
+      agents.map((agent) => [
+        agent.id,
+        { agentId: agent.id, origin: agent.origin === 'cp' ? ('cp' as const) : ('unknown' as const) }
+      ])
+    )
+    // A crash-tombstoned root is intentionally absent from effectiveAgents,
+    // but the CP must still see the replica ownership so reconnect can reissue
+    // its interrupted remove/drop. Never report its stale integrations.
+    if (!this.opts.agentName) {
+      for (const agentId of this.removedAgentTombstones) agentReplicas.set(agentId, { agentId, origin: 'cp' })
+    }
     return {
       assignments: [],
       crons: this.cpCronIds(),
       leases: [],
-      agents: agents.map((agent) => ({
-        agentId: agent.id,
-        origin: agent.origin === 'cp' ? 'cp' : 'unknown'
-      })),
+      agents: [...agentReplicas.values()],
       integrations: agents.flatMap((agent) =>
         agent.integrations.map((integration) => ({
           integrationId: integration.id,
@@ -14025,9 +14385,16 @@ export class Daemon {
 
   /** Stop and evict an ACP adapter child, returning the agent to `provisioned`
    *  (config kept; the next message lazily re-spawns it). Idempotent. The teardown
-   *  is registered in `hostStopping` so a concurrent ensureHostAsync waits for it
-   *  instead of spawning a second live child. */
+   *  is registered in `hostStopping` so a concurrent ensureHostAsync waits for
+   *  both the adapter and any superseded cold workspace preparation instead of
+   *  spawning against a still-mutating old generation. */
   private async stopHost(agentId: string, deadlineMs?: number): Promise<void> {
+    const supersededStarts: Promise<AcpHost>[] = []
+    const captureSupersededStart = (): void => {
+      const start = this.hostStarts.get(agentId)
+      if (start && !supersededStarts.includes(start)) supersededStarts.push(start)
+    }
+    captureSupersededStart()
     this.invalidateHostStart(agentId)
     const alreadyStopping = this.hostStopping.get(agentId)
     if (alreadyStopping) {
@@ -14035,6 +14402,7 @@ export class Daemon {
       // alive. Once it settles, fence again before taking a fresh host snapshot:
       // an ensureHostAsync waiter may have resumed at the same promise boundary.
       await alreadyStopping
+      captureSupersededStart()
       this.invalidateHostStart(agentId)
     }
     const host = this.hosts.get(agentId)
@@ -14065,17 +14433,18 @@ export class Daemon {
       const err = cleanupConfigFiles(agentDir)
       if (err) this.log.warn(`config-files: cleanup for agent "${agentId}" failed — ${err}`)
     }
-    if (!host) {
-      clearDeliveryBindings()
-      clearMemoryExtractionQuarantines()
-      removeConfigFiles()
-      return
-    }
-    // AcpHost.stop is async, but injected/test adapters may implement a synchronous
-    // best-effort stop. Normalize both shapes before registering the teardown fence.
-    const stop = Promise.resolve(host.stop(deadlineMs)).finally(() => {
-      if (this.hostStopping.get(agentId) === stop) this.hostStopping.delete(agentId)
-    })
+    // Stop a constructed child while the captured start settles so a start()
+    // that needs stop() to reject cannot deadlock teardown. A preparation-only
+    // generation has no host yet, but its promise remains part of this fence:
+    // reconcile must not release admission while clone/pull/install still runs.
+    const hostStop = host ? Promise.resolve().then(() => host.stop(deadlineMs)) : Promise.resolve()
+    const stop = Promise.allSettled([hostStop, ...supersededStarts])
+      .then(([hostResult]) => {
+        if (hostResult?.status === 'rejected') throw hostResult.reason
+      })
+      .finally(() => {
+        if (this.hostStopping.get(agentId) === stop) this.hostStopping.delete(agentId)
+      })
     this.hostStopping.set(agentId, stop)
     try {
       await stop
@@ -14525,6 +14894,10 @@ export class Daemon {
     // in-flight guard is load-bearing — see recordUnrouted).
     for (const [agentId] of [...this.hosts]) {
       if (this.drainingAgents.has(agentId)) continue
+      // `pending` begins only after session/new|load. A warm dispatch can still
+      // be assembling memory/context or preparing its workspace before that;
+      // reclaiming its host here would detach a live initialization generation.
+      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
       if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
       // A just-started host that hasn't served a turn yet has no recorded activity
       // (`agentLastActivityTs` unset ⇒ 0 ⇒ idle≈now), so without this it would be
@@ -14654,7 +15027,7 @@ export class Daemon {
       await this.stopSelectedTurnHosts(targets)
       await this.stopHost(drain.scope.agentId)
       await this.revokeRemoteWebchatGrantsForAgent(drain.scope.agentId, 'agent_detached')
-      this.drainingAgents.delete(drain.scope.agentId)
+      if (!this.agentDestructivePending(drain.scope.agentId)) this.drainingAgents.delete(drain.scope.agentId)
       released = matched
     } else {
       released = drained
@@ -14667,21 +15040,10 @@ export class Daemon {
    *  leave it gated so it stays down until a matching `agent/launch` revives it. */
   private async stopAgent(agentId: string): Promise<void> {
     const { targets } = await this.drainScope({ kind: 'agent', agentId }, this.cfg.limits.shutdownDrainMs)
-    // Cold heads are not visible to drainScope until session/new|load returns.
-    // Latch/abort them now, then destroy both selected cells and any idle private
-    // cells before waiting on the dispatch leases.
-    this.interruptAgentTurns(agentId, 'stop')
+    // Cold heads are not visible to drainScope until session/new|load returns;
+    // the authority fence below aborts and drains those too.
     await this.stopSelectedTurnHosts(targets)
-    await this.stopHost(agentId)
-    await this.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
-    // A dispatch can have passed the gate and captured its reply connection while
-    // still inside sessions.handle(), before it appears in `pending`. Wait that
-    // whole turn, then stop once more in case it constructed a host after the
-    // first stopHost snapshot.
-    while (this.activeDispatchesByAgent.get(agentId)?.size) {
-      await Promise.all([...this.activeDispatchesByAgent.get(agentId)!])
-    }
-    await this.stopHost(agentId)
+    await this.quiesceAgentWorkspaceAuthority(agentId)
     await this.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
     // gate intentionally left set (drainScope added it): a stopped agent must not
     // auto-respawn on the next message — agent/launch clears the gate.
@@ -14767,6 +15129,166 @@ export class Daemon {
     }
   }
 
+  private reserveAgentRemoval(agentId: string): { release: () => boolean; markerError?: Error } {
+    // Publish the live fail-closed boundary before the durable write. A local
+    // filesystem failure must leave the old replica dark in this process.
+    this.drainingAgents.add(agentId)
+    this.cpDroppedAgents.add(agentId)
+    this.gitCreds?.remove(agentId)
+    this.gitCredServer?.revoke(agentId)
+    // Reserve ordering before I/O. Even if marker publication fails, every
+    // already-queued re-add observes this newer removal and the queued cleanup
+    // below installs a typed failure latch after stopping live authority.
+    this.pendingAgentRemovals.set(agentId, (this.pendingAgentRemovals.get(agentId) ?? 0) + 1)
+    // The filesystem marker is the crash boundary: once this method returns,
+    // restart cannot rediscover and serve an old root even if asynchronous
+    // quiesce/removal never reaches its disk-delete step.
+    let markerError: Error | undefined
+    try {
+      const marker = markAgentRemoval(this.agentsDir, agentId, this.removalObligationsDir)
+      this.removedAgentTombstones.add(agentId)
+      if (marker.degraded.length > 0) {
+        this.log.warn(
+          `cp: agent "${agentId}" removal marker is running on one durable mirror; retry will repair the other (${marker.degraded.map(formatErr).join('; ')})`
+        )
+      }
+    } catch (error) {
+      markerError = error instanceof Error ? error : new Error('agent removal tombstone publication failed')
+    }
+    let released = false
+    const release = () => {
+      if (released) return !this.agentRemovalPending(agentId)
+      released = true
+      const remaining = (this.pendingAgentRemovals.get(agentId) ?? 1) - 1
+      if (remaining > 0) this.pendingAgentRemovals.set(agentId, remaining)
+      else this.pendingAgentRemovals.delete(agentId)
+      return remaining <= 0
+    }
+    return { release, ...(markerError ? { markerError } : {}) }
+  }
+
+  private agentRemovalPending(agentId: string): boolean {
+    return (this.pendingAgentRemovals.get(agentId) ?? 0) > 0
+  }
+
+  /** A durable delete/archive is already the stronger restart fence. Failure to
+   * clear one redundant marker is availability-only, so retain the in-memory
+   * tombstone and let a later CP retry repair it without failing the removal. */
+  private clearRemovalAfterDestruction(agentId: string): void {
+    const cleared = clearAgentRemoval(this.agentsDir, agentId, this.removalObligationsDir)
+    if (cleared.degraded.length > 0) {
+      this.log.warn(
+        `cp: agent "${agentId}" was durably removed but a tombstone mirror could not clear; retry will repair it (${cleared.degraded.map(formatErr).join('; ')})`
+      )
+      return
+    }
+    this.removedAgentTombstones.delete(agentId)
+  }
+
+  /** Re-add is the inverse boundary: every ambiguous marker must clear before
+   * the gate can reopen, otherwise memory and restart authority would diverge. */
+  private clearRemovalForReadd(agentId: string): void {
+    const cleared = clearAgentRemovalForReadd(this.agentsDir, agentId, this.removalObligationsDir)
+    if (cleared.degraded.length > 0) {
+      throw new AggregateError(cleared.degraded, `cannot clear agent "${agentId}" removal tombstone for re-add`)
+    }
+    this.removedAgentTombstones.delete(agentId)
+  }
+
+  /** Publish a stop/detach admission gate synchronously. `release(true)` keeps
+   *  the final gate (successful stop/stage or failed cleanup); `release(false)`
+   *  rolls back a gate introduced solely by reservations whose operations all
+   *  ended without establishing a destructive state. */
+  private reserveAgentDrain(agentId: string): (preserveGate: boolean) => void {
+    let reservation = this.pendingAgentDrains.get(agentId)
+    if (!reservation) {
+      reservation = { count: 0, preexisting: this.drainingAgents.has(agentId), preserve: false }
+      this.pendingAgentDrains.set(agentId, reservation)
+    }
+    reservation.count += 1
+    this.drainingAgents.add(agentId)
+    let released = false
+    return (preserveGate: boolean) => {
+      if (released) return
+      released = true
+      reservation!.preserve ||= preserveGate
+      reservation!.count -= 1
+      if (reservation!.count > 0) return
+      this.pendingAgentDrains.delete(agentId)
+      if (
+        !reservation!.preserve &&
+        !reservation!.preexisting &&
+        !this.agentRemovalPending(agentId) &&
+        !this.moveStagedAgents.has(agentId) &&
+        !this.cpDroppedAgents.has(agentId) &&
+        !this.agentLifecycleFailures.has(agentId)
+      ) {
+        this.drainingAgents.delete(agentId)
+      }
+    }
+  }
+
+  private agentDrainPending(agentId: string): boolean {
+    return (this.pendingAgentDrains.get(agentId)?.count ?? 0) > 0
+  }
+
+  private agentDestructivePending(agentId: string): boolean {
+    return this.agentRemovalPending(agentId) || this.agentDrainPending(agentId)
+  }
+
+  private queueAgentLifecycle<T>(
+    agentId: string,
+    work: () => Promise<T>,
+    opts: { failureOwner?: string; onSettled?: () => void } = {}
+  ): Promise<T> {
+    const prior = this.agentLifecycleTails.get(agentId) ?? Promise.resolve()
+    const run = prior.then(async () => {
+      let workStarted = false
+      try {
+        try {
+          const blocked = this.agentLifecycleFailures.get(agentId)
+          // Remove is the strongest lifecycle operation: it re-quiesces and
+          // durably deletes all authority, so it may recover a prior failed
+          // stop/detach latch. Weaker operations never forgive a failed remove.
+          if (blocked && blocked.owner !== opts.failureOwner && opts.failureOwner !== 'remove') {
+            throw new Error(`agent lifecycle is blocked by an earlier failed ${blocked.owner} cleanup (${agentId})`, {
+              cause: blocked.error
+            })
+          }
+          workStarted = true
+          const result = await work()
+          if (blocked && (blocked.owner === opts.failureOwner || opts.failureOwner === 'remove')) {
+            this.agentLifecycleFailures.delete(agentId)
+          }
+          return result
+        } finally {
+          // Runs inside the lifecycle lane and its failure latch. Removal uses
+          // this to release admission reservations even when pre-work checks
+          // fail, without letting marker-clear ordering escape the queue.
+          opts.onSettled?.()
+        }
+      } catch (error) {
+        if (opts.failureOwner && workStarted) {
+          this.drainingAgents.add(agentId)
+          this.agentLifecycleFailures.set(agentId, {
+            owner: opts.failureOwner,
+            error: error instanceof Error ? error : new Error('agent lifecycle cleanup failed')
+          })
+        }
+        throw error
+      }
+    })
+    const tail = run.then(
+      () => undefined,
+      () => undefined
+    )
+    this.agentLifecycleTails.set(agentId, tail)
+    void tail.then(() => {
+      if (this.agentLifecycleTails.get(agentId) === tail) this.agentLifecycleTails.delete(agentId)
+    })
+    return run
+  }
+
   private queueAgentMove(
     kind: 'detach' | 'activate',
     agentId: string,
@@ -14777,24 +15299,35 @@ export class Daemon {
     const duplicate = this.agentMoveInFlight.get(key)
     if (duplicate) return duplicate
 
-    const prior = this.agentMoveTails.get(agentId) ?? Promise.resolve()
-    const run = prior.catch(() => {}).then(work)
-    const tail = run.then(
-      () => undefined,
-      () => undefined
+    // Detach admission must close the gate before the lifecycle body queues,
+    // but duplicate retransmits join the exact same promise/reservation.
+    const releaseDrain = kind === 'detach' ? this.reserveAgentDrain(agentId) : undefined
+    const lifecycle = this.queueAgentLifecycle(
+      agentId,
+      work,
+      kind === 'detach' ? { failureOwner: `detach:${moveId}` } : {}
     )
+    const run = releaseDrain
+      ? lifecycle.then(
+          (ack) => {
+            releaseDrain(
+              this.moveStagedAgents.has(agentId) ||
+                this.cpDroppedAgents.has(agentId) ||
+                this.agentLifecycleFailures.has(agentId)
+            )
+            return ack
+          },
+          (error) => {
+            releaseDrain(true)
+            throw error
+          }
+        )
+      : lifecycle
     this.agentMoveInFlight.set(key, run)
-    this.agentMoveTails.set(agentId, tail)
-    void run.then(
-      () => {
-        if (this.agentMoveInFlight.get(key) === run) this.agentMoveInFlight.delete(key)
-        if (this.agentMoveTails.get(agentId) === tail) this.agentMoveTails.delete(agentId)
-      },
-      () => {
-        if (this.agentMoveInFlight.get(key) === run) this.agentMoveInFlight.delete(key)
-        if (this.agentMoveTails.get(agentId) === tail) this.agentMoveTails.delete(agentId)
-      }
-    )
+    const clear = () => {
+      if (this.agentMoveInFlight.get(key) === run) this.agentMoveInFlight.delete(key)
+    }
+    void run.then(clear, clear)
     return run
   }
 
@@ -15182,47 +15715,115 @@ export class Daemon {
         if (applied.length) this.log.info(`cp: applied config keys: ${applied.join(', ')}`)
         if (ignored.length) this.log.warn(`cp: ignored config keys: ${ignored.join(', ')}`)
       },
-      applyReconcileSnapshot: (snap: RegisterOk) => {
+      applyReconcileSnapshot: async (snap: RegisterOk) => {
         this.gitCommitIdentity = snap.gitCommitIdentity
-        // Registry FIRST: an AgentSpec may reference one of these definitions,
-        // and static admission must never observe the new agent before at least
-        // a probing (fail-closed) connection entry exists.
+        // Reserve every agent drop before ANY fallible snapshot convergence.
+        // Otherwise an unrelated integration/memory write could abort the frame
+        // while a CP-removed agent remains live with no gate or durable marker.
+        const droppedAgents = snap.drop.agents ?? []
+        if (droppedAgents.length > 0) {
+          await Promise.all(
+            droppedAgents.map(({ agentId, action }) => {
+              // Reserve every drop synchronously while building this array. No
+              // queued lifecycle body runs until the current call stack yields.
+              const removal = this.reserveAgentRemoval(agentId)
+              let completed = false
+              return this.queueAgentLifecycle(
+                agentId,
+                async () => {
+                  this.drainingAgents.add(agentId)
+                  this.cpDroppedAgents.add(agentId)
+                  await this.quiesceAgentWorkspaceAuthority(agentId)
+                  if (!this.cpAgents) throw new Error('agent registry is not ready')
+                  try {
+                    if (action === 'remove') {
+                      this.cpAgents.remove(agentId)
+                      this.moveStageMetadata.delete(agentId)
+                      this.moveStagedAgents.delete(agentId)
+                    } else {
+                      // A missed move is a cold detach: preserve workspace/memory/local
+                      // files, but scrub platform credentials and stop serving immediately.
+                      this.cpAgents.detach(agentId)
+                    }
+                  } catch (cleanupError) {
+                    if (removal.markerError) {
+                      throw new AggregateError(
+                        [removal.markerError, cleanupError],
+                        `agent "${agentId}" removal marker and durable ${action} both failed`
+                      )
+                    }
+                    throw cleanupError
+                  }
+                  if (removal.markerError) {
+                    this.log.warn(
+                      `cp: agent "${agentId}" removal marker publication failed, but durable ${action} completed (${formatErr(removal.markerError)})`
+                    )
+                  }
+                  completed = true
+                },
+                {
+                  failureOwner: 'remove',
+                  onSettled: () => {
+                    const lastReservation = removal.release()
+                    if (completed && lastReservation && !removal.markerError) {
+                      this.clearRemovalAfterDestruction(agentId)
+                    }
+                  }
+                }
+              )
+            })
+          )
+        }
+
+        // Registry before agent re-add: an AgentSpec may reference one of these
+        // definitions, and static admission must never observe the new agent
+        // before at least a probing (fail-closed) connection entry exists.
         this.memoryConnections?.converge(snap.memoryConnections ?? [])
         // Apply only the ownership-aware, CP-authorized drop set. Roster absence
         // by itself is not destructive because this daemon may also host purely
         // local hand-authored agents/integrations.
         for (const integrationId of snap.drop.integrations ?? []) this.cpIntegrations?.remove(integrationId)
-        for (const { agentId, action } of snap.drop.agents ?? []) {
-          // Gate and revoke before either disk mutation: the old platform socket
-          // closes in queued reconcile, so no message may enter in that window.
-          this.drainingAgents.add(agentId)
-          this.cpDroppedAgents.add(agentId)
-          this.gitCreds?.remove(agentId)
-          this.gitCredServer?.revoke(agentId)
-          if (action === 'remove') {
-            this.cpAgents?.remove(agentId)
-            this.moveStageMetadata.delete(agentId)
-            this.moveStagedAgents.delete(agentId)
-            continue
-          }
-          // A missed move is a cold detach: preserve workspace/memory/local
-          // files, but scrub platform credentials and stop serving immediately.
-          this.cpAgents?.detach(agentId)
-        }
 
         // A staged move is a durable tombstone. A register snapshot racing after
         // source detach (but before placement CAS) must not restore its archive or
         // rehydrate credentials. Only the ACKed atomic activate bundle may do so.
         const desiredAgents = (snap.agents ?? []).filter((agent) => !this.moveStagedAgents.has(agent.agentId))
-        for (const { agentId } of desiredAgents) {
+        // The reconnect snapshot is authoritative after every lifecycle frame
+        // already admitted on the old connection. Join those per-agent lanes
+        // before clearing a drop gate or republishing the whole desired set.
+        await Promise.all(desiredAgents.map(({ agentId }) => this.queueAgentLifecycle(agentId, async () => undefined)))
+        // Write the authoritative replicas while any removal tombstone still
+        // excludes them from effectiveAgents. Only complete writes clear the
+        // durable latch and reopen their admission gate.
+        const revivableAgents = desiredAgents.filter(({ agentId }) => !this.agentRemovalPending(agentId))
+        this.cpAgents?.converge(revivableAgents)
+        const desiredIntegrations = (snap.integrations ?? []).filter(
+          (integration) => !this.moveStagedAgents.has(integration.agentId)
+        )
+        this.cpIntegrations?.converge(desiredIntegrations)
+        // Crons AFTER agents: a cron def lands in its owning agent.json, which the
+        // roster may have just created. drop.crons prunes the stale CP entries.
+        for (const id of snap.drop.crons) this.cpCrons?.remove(id)
+        const desiredCrons = (snap.crons ?? []).filter((cron) => !this.moveStagedAgents.has(cron.agentId))
+        this.cpCrons?.converge(desiredCrons)
+        for (const { agentId } of revivableAgents) {
+          if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)) {
+            // A failed/interrupted removal can leave platform credentials in the
+            // old root. Re-add is a complete authority replacement: exact-prune
+            // every absent CP dependent and fsync the resulting bundle while the
+            // tombstone gate is still closed.
+            this.cpAgents?.exactDependents(agentId, {
+              integrationIds: desiredIntegrations
+                .filter((integration) => integration.agentId === agentId)
+                .map((integration) => integration.integrationId),
+              cronIds: desiredCrons.filter((cron) => cron.agentId === agentId).map((cron) => cron.cronId)
+            })
+            this.clearRemovalForReadd(agentId)
+          }
           if (!this.cpDroppedAgents.delete(agentId)) continue
-          this.drainingAgents.delete(agentId)
+          if (!this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
           this.gitCreds?.clearDenied(agentId)
         }
-        this.cpAgents?.converge(desiredAgents)
-        this.cpIntegrations?.converge(
-          (snap.integrations ?? []).filter((integration) => !this.moveStagedAgents.has(integration.agentId))
-        )
         // MCP defs: full-replace the CP set from the per-daemon snapshot (memory-only, so a
         // provider removed while disconnected is pruned on reconnect). Reserved name stripped.
         // The subsequent onReady/register emit re-derives the facts from these defs.
@@ -15234,10 +15835,6 @@ export class Daemon {
         this.mcpServerDefs = this.cpMcpDefs?.effective() ?? this.mcpServerDefs
         this.convergeRelays(snap.relays) // set-converge relay dial-out sockets (DOES prune) + persist for boot re-dial
         this.cpCollab.replace(snap.collabRoutes) // baseline collaboration routing snapshot (P2 terminal-verify)
-        // crons AFTER agents: a cron def lands in its owning agent.json, which the
-        // roster may have just created. drop.crons prunes the stale CP entries.
-        for (const id of snap.drop.crons) this.cpCrons?.remove(id)
-        this.cpCrons?.converge((snap.crons ?? []).filter((cron) => !this.moveStagedAgents.has(cron.agentId)))
         this.cpRouting?.converge({
           routingEpoch: snap.routingEpoch,
           assignments: snap.assignments,
@@ -15247,29 +15844,79 @@ export class Daemon {
         if (snap.assignments.length) this.log.debug(`cp: converged ${snap.assignments.length} assignment(s)`)
         if (snap.agents.length) this.log.debug(`cp: converged ${snap.agents.length} agent spec(s)`)
         if (snap.integrations?.length) this.log.debug(`cp: converged ${snap.integrations.length} integration(s)`)
-      },
-      applyAgentUpsert: async ({ agentId, spec }): Promise<Ack> => {
-        if (this.moveStagedAgents.has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
-        if (!this.cpAgents) return { ok: false, reason: 'agent registry is not ready' }
-        if (this.cpDroppedAgents.delete(agentId)) this.drainingAgents.delete(agentId)
-        // A replicated spec change may re-enable gitcred for a previously denied agent.
-        this.gitCreds?.clearDenied(agentId)
-        this.cpAgents.upsert(agentId, spec)
         await this.flushReconcile()
-        return { ok: true }
       },
+      applyAgentUpsert: ({ agentId, spec }): Promise<Ack> =>
+        this.queueAgentLifecycle(agentId, async () => {
+          if (this.moveStagedAgents.has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
+          if (this.agentRemovalPending(agentId)) return { ok: false, reason: 'agent is pending removal' }
+          if (!this.cpAgents) return { ok: false, reason: 'agent registry is not ready' }
+          // Publish bytes first while a crash tombstone (if present) still keeps
+          // the old/new root outside the effective roster. Clearing it is the
+          // authoritative re-add commit point.
+          const replacingDroppedAuthority =
+            this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)
+          this.cpAgents.upsert(agentId, spec)
+          if (replacingDroppedAuthority) {
+            // A standalone upsert has no dependent bundle. Scrub every stale CP
+            // integration/cron now; subsequent live frames may repopulate them.
+            this.cpAgents.exactDependents(agentId, { integrationIds: [], cronIds: [] })
+          }
+          if (replacingDroppedAuthority) this.clearRemovalForReadd(agentId)
+          if (this.cpDroppedAgents.delete(agentId) && !this.agentDestructivePending(agentId)) {
+            this.drainingAgents.delete(agentId)
+          }
+          // A replicated spec change may re-enable gitcred for a previously denied agent.
+          this.gitCreds?.clearDenied(agentId)
+          await this.flushReconcile()
+          return { ok: true }
+        }),
       applyAgentRemove: (agentId: string) => {
-        // Drop the cached bearer token WITH the agent dir — an orphaned credential
-        // would stay valid network-wide for up to an hour.
-        this.drainingAgents.add(agentId)
-        this.cpDroppedAgents.add(agentId)
-        this.gitCreds?.remove(agentId)
-        this.gitCredServer?.revoke(agentId)
-        this.cpAgents?.remove(agentId)
-        // Clear fail-closed gates only after destructive disk removal succeeds;
-        // otherwise an old active root could become servable again on failure.
-        this.moveStageMetadata.delete(agentId)
-        this.moveStagedAgents.delete(agentId)
+        // Publish the gate and lifecycle-tail reservation synchronously. A later
+        // upsert is queued behind this removal and cannot clear the gate or write
+        // a new root while old workspace authority is still quiescing.
+        const removal = this.reserveAgentRemoval(agentId)
+        let completed = false
+        return this.queueAgentLifecycle(
+          agentId,
+          async () => {
+            this.drainingAgents.add(agentId)
+            this.cpDroppedAgents.add(agentId)
+            await this.quiesceAgentWorkspaceAuthority(agentId)
+            if (!this.cpAgents) throw new Error('agent registry is not ready')
+            try {
+              this.cpAgents.remove(agentId)
+            } catch (cleanupError) {
+              if (removal.markerError) {
+                throw new AggregateError(
+                  [removal.markerError, cleanupError],
+                  `agent "${agentId}" removal marker and durable delete both failed`
+                )
+              }
+              throw cleanupError
+            }
+            if (removal.markerError) {
+              this.log.warn(
+                `cp: agent "${agentId}" removal marker publication failed, but durable delete completed (${formatErr(removal.markerError)})`
+              )
+            }
+            await this.flushReconcile()
+            // Clear fail-closed gates only after destructive disk removal succeeds;
+            // otherwise an old active root could become servable again on failure.
+            this.moveStageMetadata.delete(agentId)
+            this.moveStagedAgents.delete(agentId)
+            completed = true
+          },
+          {
+            failureOwner: 'remove',
+            onSettled: () => {
+              const lastReservation = removal.release()
+              if (completed && lastReservation && !removal.markerError) {
+                this.clearRemovalAfterDestruction(agentId)
+              }
+            }
+          }
+        )
       },
       applyAgentDetach: (detach: AgentDetach): Promise<Ack> => {
         const { agentId, moveId } = detach
@@ -15324,7 +15971,6 @@ export class Daemon {
               clearAgentMoveStage(this.agentsDir, agentId)
               this.moveStageMetadata.delete(agentId)
               this.moveStagedAgents.delete(agentId)
-              this.drainingAgents.delete(agentId)
               await this.flushReconcile()
               return { ok: false, reason: `agent/detach: ${reason}` }
             }
@@ -15390,6 +16036,15 @@ export class Daemon {
             if (activation === 'missing') {
               return { ok: false, reason: `agent/activate: unknown agent ${agentId}` }
             }
+            if (this.agentRemovalPending(agentId)) {
+              return { ok: false, reason: 'agent/activate: superseded by a newer agent removal' }
+            }
+            // The staged-move gate remains closed, so an authoritative activate
+            // can safely clear a failed-removal crash tombstone before its
+            // reconcile/host proof. Any later failure restores the move gate.
+            if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)) {
+              this.clearRemovalForReadd(agentId)
+            }
             // Dependents were pruned while the agent was still invisible. Publish the
             // exact-set config now, but keep the dispatch gate until the host proves ready.
             this.moveStagedAgents.delete(agentId)
@@ -15418,13 +16073,24 @@ export class Daemon {
               await this.flushReconcile()
               return { ok: false, reason: `agent/activate: ${capabilityError}` }
             }
-            let rollbackPreparedWorkspace: (() => Promise<void>) | undefined
+            let rollbackPreparedWorkspace: (() => void) | undefined
             if (activate.prepareWorkspace || activate.reconcileWorkspace) {
               try {
-                rollbackPreparedWorkspace = await prepareWorkspaceForActivation(agent, {
-                  allowExistingCheckout: stage.requireEmptyWorkspace !== true,
-                  reconcileMaterialization: activate.reconcileWorkspace === true
-                })
+                // A prior incarnation of this agent id must relinquish every
+                // queued/running preparation before activation rewrites or
+                // reconciles the target workspace. Register activation's own
+                // mutation in the same tail so remove/shutdown cannot release
+                // its root before the rollback-capable operation settles.
+                rollbackPreparedWorkspace = await this.enqueueAgentWorkspacePreparation(
+                  agent,
+                  () =>
+                    prepareWorkspaceForActivation(agent, {
+                      allowExistingCheckout: stage.requireEmptyWorkspace !== true,
+                      reconcileMaterialization: activate.reconcileWorkspace === true
+                    }),
+                  undefined,
+                  true
+                )
               } catch (err) {
                 this.moveStagedAgents.add(agentId)
                 await this.stopHost(agentId).catch(() => {})
@@ -15450,6 +16116,24 @@ export class Daemon {
               await this.flushReconcile().catch(() => {})
               return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
             }
+            if (this.agentDestructivePending(agentId)) {
+              this.moveStagedAgents.add(agentId)
+              await this.stopHost(agentId).catch(() => {})
+              try {
+                rollbackPreparedWorkspace?.()
+              } catch (rollbackErr) {
+                this.log.error(
+                  `agent/activate: failed to roll workspace back for "${agentId}": ${formatErr(rollbackErr)}`
+                )
+              }
+              await this.flushReconcile().catch(() => {})
+              return {
+                ok: false,
+                reason: this.agentRemovalPending(agentId)
+                  ? 'agent/activate: superseded by agent removal'
+                  : 'agent/activate: superseded by a newer agent drain'
+              }
+            }
             try {
               commitAgentMove(this.agentsDir, agentId, activate.moveId)
             } catch (err) {
@@ -15466,7 +16150,7 @@ export class Daemon {
               return { ok: false, reason: `agent/activate: failed to commit staging fence: ${(err as Error).message}` }
             }
             this.moveStageMetadata.set(agentId, { moveId: activate.moveId, state: 'committed' })
-            this.drainingAgents.delete(agentId)
+            if (!this.agentDestructivePending(agentId)) this.drainingAgents.delete(agentId)
             return { ok: true }
           } finally {
             this.preparingWorkspaces.delete(agentId)
@@ -15532,32 +16216,52 @@ export class Daemon {
       applyRelayRoster: (relays: RelayRosterEntry[]) => this.convergeRelays(relays),
       applyCollabRoutes: (snap) => this.cpCollab.replace(snap),
       // ── lifecycle control (§5.3/§8) ──
-      applyAgentLaunch: async (launch: AgentLaunch): Promise<AgentLaunched> => {
-        if (this.moveStagedAgents.has(launch.agentId)) {
-          throw new Error(`agent/launch: agent ${launch.agentId} is staged for a daemon move`)
-        }
-        const agent = this.agents.get(launch.agentId)
-        if (!agent) throw new Error(`agent/launch: unknown agent ${launch.agentId}`)
-        // Revive a stopped agent (clear any gate) and warm-start its host. The
-        // launchId is a fresh fence value; per-turn mode + launchId-scoped prompt
-        // fencing are out of scope (the daemon prompts from its own ingress).
-        this.drainingAgents.delete(launch.agentId)
-        // Park the CP's launch provenance for the next session this agent
-        // creates, so ingest can attribute it to the launching user (§4.4).
-        if (launch.launchCorrelationId) {
-          this.pendingLaunchCorrelation.set(launch.agentId, launch.launchCorrelationId)
-        }
-        await this.ensureHostAsync(launch.agentId)
-        return {
-          agentId: launch.agentId,
-          launchId: randomUUID(),
-          startedAt: new Date(this.clock.now()).toISOString(),
-          runtime: agent.runtime
-        }
-      },
-      applyAgentStop: async (stop: AgentStop): Promise<Ack> => {
-        await this.stopAgent(stop.agentId)
-        return { ok: true }
+      applyAgentLaunch: (launch: AgentLaunch): Promise<AgentLaunched> =>
+        this.queueAgentLifecycle(launch.agentId, async () => {
+          if (this.moveStagedAgents.has(launch.agentId)) {
+            throw new Error(`agent/launch: agent ${launch.agentId} is staged for a daemon move`)
+          }
+          const agent = this.agents.get(launch.agentId)
+          if (!agent) throw new Error(`agent/launch: unknown agent ${launch.agentId}`)
+          if (this.agentDestructivePending(launch.agentId)) {
+            throw new Error(`agent/launch: superseded by a newer agent drain for ${launch.agentId}`)
+          }
+          // Revive a stopped agent only after every older lifecycle mutation has
+          // settled. The queue prevents launch from clearing a slow remove's gate.
+          this.drainingAgents.delete(launch.agentId)
+          // Park the CP's launch provenance for the next session this agent
+          // creates, so ingest can attribute it to the launching user (§4.4).
+          if (launch.launchCorrelationId) {
+            this.pendingLaunchCorrelation.set(launch.agentId, launch.launchCorrelationId)
+          }
+          await this.ensureHostAsync(launch.agentId)
+          return {
+            agentId: launch.agentId,
+            launchId: randomUUID(),
+            startedAt: new Date(this.clock.now()).toISOString(),
+            runtime: agent.runtime
+          }
+        }),
+      applyAgentStop: (stop: AgentStop): Promise<Ack> => {
+        const releaseDrain = this.reserveAgentDrain(stop.agentId)
+        const run = this.queueAgentLifecycle(
+          stop.agentId,
+          async () => {
+            await this.stopAgent(stop.agentId)
+            return { ok: true }
+          },
+          { failureOwner: 'stop' }
+        )
+        return run.then(
+          (ack) => {
+            releaseDrain(true)
+            return ack
+          },
+          (error) => {
+            releaseDrain(true)
+            throw error
+          }
+        )
       },
       applyDaemonDrain: (drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> =>
         this.runDrain(drain, onProgress),
@@ -15905,6 +16609,24 @@ export class Daemon {
     // authoritatively — and prunes any relay the CP has since dropped — once connected.
     if (this.cfg.relays.length) this.relays.converge(this.cfg.relays)
 
+    const workspaceGit = createWorkspaceGit(
+      (id) => this.agents.get(id)?.workspace.path,
+      (id) => {
+        const workspace = this.agents.get(id)?.workspace
+        return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
+      },
+      (id) => {
+        const workspace = this.agents.get(id)?.workspace
+        return workspace?.mode === 'git-repo' && workspace.gitRepo
+          ? {
+              repo: workspace.gitRepo,
+              branch: workspace.gitBranch,
+              githubApp: workspace.gitCredential === 'github-app'
+            }
+          : undefined
+      }
+    )
+
     this.cpClient = new CpClient({
       url,
       token: cp.key,
@@ -15993,23 +16715,10 @@ export class Daemon {
         },
         (id, write) => this.withWorkspaceFileWrite(id, write)
       ),
-      workspaceGit: createWorkspaceGit(
-        (id) => this.agents.get(id)?.workspace.path,
-        (id) => {
-          const workspace = this.agents.get(id)?.workspace
-          return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
-        },
-        (id) => {
-          const workspace = this.agents.get(id)?.workspace
-          return workspace?.mode === 'git-repo' && workspace.gitRepo
-            ? {
-                repo: workspace.gitRepo,
-                branch: workspace.gitBranch,
-                githubApp: workspace.gitCredential === 'github-app'
-              }
-            : undefined
-        }
-      ),
+      workspaceGit: {
+        status: (id) => workspaceGit.status(id),
+        pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id))
+      },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
@@ -16207,6 +16916,13 @@ export class Daemon {
     // With a hostFactory (unit tests use fake in-memory hosts) we don't spawn real
     // subprocesses unless a probe seam is injected.
     if (this.opts.hostFactory && !this.opts.probeRuntimes) return
+    // Runtime probes are ACP children under the same UID. Never let a pre-skill
+    // unsandboxed probe establish the bootstrap-forgery window that real hosts
+    // are forbidden from creating. Injected probes are trusted test seams.
+    if (!this.sandboxMechanism && !this.opts.probeRuntimes) {
+      this.log.warn('probe: skipped because no supported OS sandbox is available')
+      return
+    }
     if (this.probing) {
       if (includeOrdinary) this.ordinaryProbePending = true
       else this.curatedProbePending = true
@@ -16488,6 +17204,19 @@ export class Daemon {
     const errors: unknown[] = []
     this.scheduler?.stop()
     this.dreamScheduler?.stop()
+    // CP editor writes, accepted Dream publication, and on-demand Git pulls all
+    // hold this identity-tracked lease. The daemon-wide gate above rejects new
+    // admissions; drain every already-admitted mutation before transport/store
+    // teardown so none can outlive the authority that validated its root.
+    while (this.workspaceFileWrites.size > 0) {
+      await Promise.all([...this.workspaceFileWrites.values()])
+    }
+    // A dispatch admitted before shutdown can be parked behind one of those
+    // writes and register its active lease only after drainForShutdown's first
+    // snapshot. Rejoin until the identity-tracked sets are empty.
+    while (this.activeDispatchesByAgent.size > 0) {
+      await Promise.all([...this.activeDispatchesByAgent.values()].flatMap((active) => [...active]))
+    }
     // Revoke live remote MCP grants while the CP transport is still up — after
     // cpClient.stop() the revoke frames have no transport. A failure here is
     // already queued durably in the grant ledger (and any rows this pass could
@@ -16495,6 +17224,12 @@ export class Daemon {
     // proceeds without losing the revocation obligation.
     await this.revokeAllRemoteWebchatGrants('session_closed')
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
+    // The closed CP transport cannot admit another lifecycle frame. Drain every
+    // remove/upsert/move already published into its per-agent queue before any
+    // store or registry it may still touch is closed.
+    while (this.agentLifecycleTails.size > 0) {
+      await Promise.all([...this.agentLifecycleTails.values()])
+    }
     // Stop the body-bearing capture pump before closing its verified clients or
     // SQLite store. Unfinished operations remain durable for restart recovery.
     await Promise.resolve(this.memoryOutbox?.stop()).catch((e) => errors.push(e))
@@ -16513,6 +17248,13 @@ export class Daemon {
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
     await Promise.allSettled(hostStarts)
+    // An aborted warm SessionManager caller can settle before its uncancellable
+    // workspace I/O. Keep the trusted ledger/store boundary alive until every
+    // registered preparation has quiesced; a hung mutation deliberately prevents
+    // shutdown from pretending the workspace is stable.
+    while (this.workspacePreparationTails.size > 0) {
+      await Promise.all([...this.workspacePreparationTails.values()])
+    }
     // After the hosts (and thus their spawned mcp-bridge subprocesses) are gone,
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))

@@ -58,7 +58,7 @@ importers:
         version: 0.19.0(prettier@3.9.6)
       promptfoo:
         specifier: 0.121.19
-        version: 0.121.19(@aws-sdk/credential-provider-node@3.972.72)(@electric-sql/pglite@0.4.3)(@prisma/client@7.9.0)(@smithy/signature-v4@5.6.10)(@types/json-schema@7.0.15)(@types/node@24.13.3)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(mysql2@3.15.3)(pg@8.22.0)(playwright-core@1.62.0)(postgres@3.4.7)(socks@2.8.9)
+        version: 0.121.19(@aws-sdk/credential-provider-node@3.972.72)(@electric-sql/pglite@0.4.3)(@prisma/client@7.9.0)(@smithy/signature-v4@5.6.12)(@types/json-schema@7.0.15)(@types/node@24.13.3)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(mysql2@3.15.3)(pg@8.22.0)(playwright-core@1.62.0)(postgres@3.4.7)(socks@2.8.9)
       semantic-release:
         specifier: ^25.0.8
         version: 25.0.8(typescript@6.0.3)
@@ -274,7 +274,7 @@ importers:
         version: 0.0.67
       '@larksuiteoapi/node-sdk':
         specifier: ^1.71.1
-        version: 1.71.1
+        version: 1.71.1(debug@4.3.4)
       '@modelcontextprotocol/client':
         specifier: 2.0.0
         version: 2.0.0
@@ -332,6 +332,9 @@ importers:
       systeminformation:
         specifier: ^5.33.1
         version: 5.33.1
+      tar:
+        specifier: 7.5.22
+        version: 7.5.22
       undici:
         specifier: ^7.29.0
         version: 7.29.0
@@ -8995,7 +8998,7 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
-  '@azure/ai-projects@2.3.1(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)':
+  '@azure/ai-projects@2.3.1(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)':
     dependencies:
       '@azure-rest/core-client': 2.8.0
       '@azure/abort-controller': 2.2.0
@@ -9009,7 +9012,7 @@ snapshots:
       '@azure/logger': 1.4.0
       '@azure/storage-blob': 12.33.0
       '@opentelemetry/api': 1.9.1
-      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)
+      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       tslib: 2.8.1
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -9926,9 +9929,9 @@ snapshots:
 
   '@kwsites/promise-deferred@1.1.1': {}
 
-  '@larksuiteoapi/node-sdk@1.71.1':
+  '@larksuiteoapi/node-sdk@1.71.1(debug@4.3.4)':
     dependencies:
-      axios: 1.18.1
+      axios: 1.18.1(debug@4.3.4)
       lodash.identity: 3.0.0
       lodash.merge: 4.6.2
       lodash.pickby: 4.6.0
@@ -10267,22 +10270,6 @@ snapshots:
     dependencies:
       '@octokit/openapi-types': 27.0.0
 
-  '@openai/agents-core@0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)':
-    dependencies:
-      debug: 4.4.3
-      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)
-    optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
-      zod: 4.4.3
-    transitivePeerDependencies:
-      - '@aws-sdk/credential-provider-node'
-      - '@cfworker/json-schema'
-      - '@smithy/hash-node'
-      - '@smithy/signature-v4'
-      - supports-color
-      - ws
-    optional: true
-
   '@openai/agents-core@0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)':
     dependencies:
       debug: 4.4.3
@@ -10303,7 +10290,7 @@ snapshots:
     dependencies:
       '@openai/agents-core': 0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       debug: 4.4.3
-      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)
+      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       zod: 4.4.3
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -10333,11 +10320,11 @@ snapshots:
 
   '@openai/agents@0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)':
     dependencies:
-      '@openai/agents-core': 0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)
+      '@openai/agents-core': 0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       '@openai/agents-openai': 0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       '@openai/agents-realtime': 0.11.8(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(zod@4.4.3)
       debug: 4.4.3
-      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)
+      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       zod: 4.4.3
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -11270,7 +11257,7 @@ snapshots:
       '@slack/types': 2.22.0
       '@types/node': 24.13.3
       '@types/retry': 0.12.0
-      axios: 1.18.1
+      axios: 1.18.1(debug@4.3.4)
       eventemitter3: 5.0.4
       form-data: 4.0.6
       is-electron: 2.2.2
@@ -12278,7 +12265,7 @@ snapshots:
       - supports-color
     optional: true
 
-  axios@1.18.1:
+  axios@1.18.1(debug@4.3.4):
     dependencies:
       follow-redirects: 1.16.0(debug@4.3.4)
       form-data: 4.0.6
@@ -14035,7 +14022,7 @@ snapshots:
       jsonwebtoken: 9.0.3
       load-esm: 1.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.18.0)
+      retry-axios: 2.6.0(axios@1.18.0(debug@4.3.4))
       tough-cookie: 4.1.3
     transitivePeerDependencies:
       - supports-color
@@ -15282,20 +15269,12 @@ snapshots:
       wsl-utils: 0.1.0
     optional: true
 
-  openai@6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3):
-    optionalDependencies:
-      '@aws-sdk/credential-provider-node': 3.972.72
-      '@smithy/signature-v4': 5.6.10
-      ws: 8.21.1
-      zod: 4.4.3
-
   openai@6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3):
     optionalDependencies:
       '@aws-sdk/credential-provider-node': 3.972.72
       '@smithy/signature-v4': 5.6.12
       ws: 8.21.1
       zod: 4.4.3
-    optional: true
 
   openapi-types@12.1.3: {}
 
@@ -15712,7 +15691,7 @@ snapshots:
 
   promise-limit@2.7.0: {}
 
-  promptfoo@0.121.19(@aws-sdk/credential-provider-node@3.972.72)(@electric-sql/pglite@0.4.3)(@prisma/client@7.9.0)(@smithy/signature-v4@5.6.10)(@types/json-schema@7.0.15)(@types/node@24.13.3)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(mysql2@3.15.3)(pg@8.22.0)(playwright-core@1.62.0)(postgres@3.4.7)(socks@2.8.9):
+  promptfoo@0.121.19(@aws-sdk/credential-provider-node@3.972.72)(@electric-sql/pglite@0.4.3)(@prisma/client@7.9.0)(@smithy/signature-v4@5.6.12)(@types/json-schema@7.0.15)(@types/node@24.13.3)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(mysql2@3.15.3)(pg@8.22.0)(playwright-core@1.62.0)(postgres@3.4.7)(socks@2.8.9):
     dependencies:
       '@anthropic-ai/sdk': 0.110.0(zod@4.4.3)
       '@apidevtools/json-schema-ref-parser': 15.5.0(@types/json-schema@7.0.15)
@@ -15771,7 +15750,7 @@ snapshots:
       mathjs: 15.2.0
       minimatch: 10.2.5
       nunjucks: 3.2.4(chokidar@5.0.0)
-      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)
+      openai: 6.49.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       opener: 1.5.2
       ora: 9.4.1
       parse5: 8.0.1
@@ -15800,7 +15779,7 @@ snapshots:
       '@aws-sdk/client-s3': 3.1095.0
       '@aws-sdk/client-sagemaker-runtime': 3.1095.0
       '@aws-sdk/credential-provider-sso': 3.973.5
-      '@azure/ai-projects': 2.3.1(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(ws@8.21.1)(zod@4.4.3)
+      '@azure/ai-projects': 2.3.1(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.12)(ws@8.21.1)(zod@4.4.3)
       '@azure/identity': 4.13.1
       '@azure/msal-node': 5.4.2
       '@azure/openai-assistants': 1.0.0-beta.6
@@ -16182,7 +16161,7 @@ snapshots:
 
   ret@0.5.0: {}
 
-  retry-axios@2.6.0(axios@1.18.0):
+  retry-axios@2.6.0(axios@1.18.0(debug@4.3.4)):
     dependencies:
       axios: 1.18.0(debug@4.3.4)
     optional: true

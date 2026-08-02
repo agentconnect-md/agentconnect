@@ -61,6 +61,22 @@ describe('loadAgents', () => {
     expect(loadAgents(dir)[0]?.workspace.agentDir).toBe('../legacy')
   })
 
+  it('loads a prior-wire skill source so daemon startup can omit it during current admission', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
+    writeAgent(dir, 'bot-a', {
+      ...slackAgent('bot-a'),
+      skills: [
+        { name: 'legacy', source: 'https://gitlab.com/acme/legacy' },
+        { name: 'current', source: 'acme/current', skills: ['current'] }
+      ]
+    })
+
+    expect(loadAgents(dir)[0]?.skills).toEqual([
+      { name: 'legacy', source: 'https://gitlab.com/acme/legacy', skills: [] },
+      { name: 'current', source: 'acme/current', skills: ['current'] }
+    ])
+  })
+
   it('skips inactive agents', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
     writeAgent(dir, 'bot-a', slackAgent('bot-a', 'inactive'))

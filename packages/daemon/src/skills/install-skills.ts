@@ -1,78 +1,73 @@
 /**
- * Install an agent's enabled skills into its workspace with the exact-pinned
- * `skills` CLI bundled into the daemon (docs/designs/shared-skills.md §6).
- * Runs after the workspace is ready and before the ACP session starts, so the
- * runtime discovers skills in its project-scope directory.
+ * Unified workspace skill installer.
  *
- * The workspace is agent-writable across sessions while this installer runs
- * with daemon authority. Consequently:
- *
- * - the CLI is launched through the daemon's own hidden entry, never `npx` or
- *   project-local package resolution;
- * - reconciliation state lives below the daemon-owned agent root, not `cwd`;
- * - every workspace path the daemon removes or the CLI writes is checked with
- *   no-follow containment first.
- *
- * Non-blocking by contract: a refused path, offline source, or unsupported
- * runtime degrades to no newly installed skill and the session still starts.
+ * Git sources, centrally managed bundles, and accepted local Dream bundles all
+ * become daemon-owned immutable local snapshots and are passed through the same
+ * exact pinned `skills` CLI. The CLI runs in a disposable private cell and never
+ * sees the live workspace, provider credentials, Git credentials, or ambient
+ * HOME. Its derived filesystem receipt is then reconciled through one trusted
+ * external ownership ledger. Runtime-specific destination layout is therefore
+ * owned exclusively by the CLI, not duplicated here.
  */
-import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, promises as fsp } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, isAbsolute, join, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { promisify } from 'node:util'
-import type { AgentSkillEntry } from '@agentconnect.md/protocol'
+import { constants as fsConstants, promises as fsp, type Stats } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { AgentSkillEntry } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
-import { ContainedPathError, containedRemoveDir, containedTarget } from '../fs/contained-path.js'
-import { skillsAgentId } from './runtime-agent-map.js'
-import { SKILLS_CLI_VERSION } from './version.js'
+import { containedTarget } from '../fs/contained-path.js'
+import { skillsAgentIdForRuntime } from '../runtimes/skills-capability.js'
+import {
+  installedBundlesIntact,
+  assertSkillLedgerOwner,
+  readSkillLedger,
+  reconcileSkillBundles,
+  recoverSkillLedger,
+  skillLedgerLocation,
+  treeDigest,
+  withSkillWorkspaceLock,
+  type CandidateSkillBundle,
+  type SkillGitResolution,
+  SkillLedgerSafetyError,
+  type SkillFileReceipt
+} from './skill-install-ledger.js'
+import { acquireGitSkillSource, resolveBoundedGitSkillSource } from './skill-git-source.js'
+import { snapshotLocalSkillSource } from './skill-source-snapshot.js'
+import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell, type SkillsCliCellResult } from './skills-cli-cell.js'
 
-export { SKILLS_CLI_VERSION } from './version.js'
+export const SKILLS_CLI_SPEC = `skills@${PINNED_SKILLS_CLI_VERSION}`
+const INSTALLER_SCHEMA = 2
+const LEGACY_MARKER_BYTES = 64 * 1024
+const LEGACY_MARKERS = ['skills-install.json', 'dream-skills-install.json'] as const
+const LEGACY_OWNED = /^(?:\.claude\/skills|\.agents\/skills)\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const GIT_SOURCE_SNAPSHOT_LIMITS = {
+  maxFiles: 4_096,
+  maxEntries: 8_192,
+  maxTotalBytes: 64 * 1024 * 1024,
+  maxFileBytes: 4 * 1024 * 1024,
+  maxDepth: 64
+} as const
+const MAX_GIT_SKILL_SOURCES = 64
+const MAX_LOCAL_SKILL_SOURCES = 64
+const MAX_CLI_INVOCATIONS = 128
+const MAX_PUBLISHED_SKILL_BUNDLES = 64
+const MAX_PUBLISHED_SKILL_FILES = 1_024
+const MAX_PUBLISHED_SKILL_BYTES = 64 * 1024 * 1024
+const MAX_INPUT_FILES = 8_192
+const MAX_INPUT_BYTES = 256 * 1024 * 1024
 
-type SkillsExec = (
-  file: string,
-  args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; timeout: number }
-) => Promise<unknown>
-
-const execFileAsync = promisify(execFile) as SkillsExec
-
-const INSTALL_TIMEOUT_MS = 20_000
-const MARKER_DIR = '.agentconnect'
-const MARKER_FILE = 'skills-install.json'
-const MAX_MARKER_BYTES = 64 * 1024
-const LOCAL_LOCK_FILE = 'skills-lock.json'
-const MAX_LOCAL_LOCK_BYTES = 1024 * 1024
-const MAX_WORKSPACE_RECORDS = 16
-const WORKSPACE_ID = /^[0-9a-f]{64}$/
-const WORKSPACE_GENERATION = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const SKILL_ROOTS = ['.claude/skills', '.agents/skills'] as const
-
-interface WorkspaceRecord {
-  fingerprint?: string
-  /** Canonical cwd used to confirm that this directory instance still exists. */
-  workspacePath?: string
-  /** Kernel replacement witness for the actual ACP cwd, including agentDir. */
-  workspaceWitness?: string
-  /** cwd-relative skill dirs this daemon created (for reconcile removal). */
-  installed: string[]
+/** Kept as a compatibility seam for tests/operators, but mutable/floating
+ * overrides are no longer accepted. Runtime execution resolves the installed
+ * exact dependency directly and does not invoke npx. */
+export function resolveSkillsCliSpec(env: NodeJS.ProcessEnv = process.env): string {
+  const requested = env.AC_SKILLS_CLI?.trim()
+  if (requested && requested !== SKILLS_CLI_SPEC) {
+    throw new Error(`AC_SKILLS_CLI must be the exact audited spec ${SKILLS_CLI_SPEC}`)
+  }
+  return SKILLS_CLI_SPEC
 }
 
-interface Marker {
-  /** Daemon-issued identity for the currently materialized workspace tree. */
-  generation?: string
-  /** Ownership records keyed by daemon-computed workspace directory identity. */
-  workspaces: Record<string, WorkspaceRecord>
-}
-
-function isErrno(err: unknown, code: string): boolean {
-  return (err as NodeJS.ErrnoException | null)?.code === code
-}
-
-/** Compose the string handed to `skills add` from a skill entry, folding an
- * optional ref/subDir into the GitHub `tree/<ref>/<subdir>` path form. */
+/** Historical wire-format helper. Acquisition parses the same entry directly;
+ * this remains exported for compatibility and documentation examples. */
 export function composeSource(entry: AgentSkillEntry): string {
   const { source, ref, subDir } = entry
   if (/\/tree\//.test(source)) return source
@@ -84,340 +79,63 @@ export function composeSource(entry: AgentSkillEntry): string {
   return `${base.replace(/\/+$/, '')}/tree/${ref ?? 'main'}${suffix}`
 }
 
-function fingerprint(runtime: string, agentId: string, entries: AgentSkillEntry[], workspaceId: string): string {
-  return createHash('sha256')
-    .update(JSON.stringify({ runtime, agentId, entries, cliVersion: SKILLS_CLI_VERSION, workspaceId }))
-    .digest('hex')
+export interface LocalSkillSource {
+  kind: 'managed' | 'dream'
+  /** Stable, credential-free source identity persisted in receipts. */
+  key: string
+  name: string
+  sourceDir: string
+  /** Stable upstream content identity. For managed sources this is the archive
+   * digest, which is intentionally not the same as the extracted tree digest. */
+  contentDigest?: string
+  /** Optional trusted digest of the extracted local tree itself. */
+  expectedTreeDigest?: string
 }
 
-/** Bind private ownership state to one cwd within a daemon-issued workspace
- * generation. The agent cannot forge the generation in this private marker. */
-interface WorkspaceIdentity {
-  id: string
-  path: string
-  witness: string
+export interface SkillsCliInvocation {
+  sourceDir: string
+  sourceKey: string
+  agentId: string
+  skills: string[]
+  /** Fresh private directory. An injected runner may materialize here. */
+  cellDir: string
 }
 
-function workspaceId(generation: string, path: string): string {
-  return createHash('sha256').update(JSON.stringify({ generation, path })).digest('hex')
+export interface SkillsCliInvocationBundle {
+  relativeRoot: string
+  sourceDir: string
+  /** Optional corroborating fields from a test/embedding runner. The daemon
+   * always independently snapshots and hashes sourceDir before publication. */
+  treeDigest?: string
+  files?: SkillFileReceipt[]
 }
 
-async function directoryWitness(path: string): Promise<string | null> {
-  let stat: import('node:fs').BigIntStats
-  try {
-    stat = await fsp.lstat(path, { bigint: true })
-  } catch (err) {
-    if (isErrno(err, 'ENOENT') || isErrno(err, 'ENOTDIR')) return null
-    throw err
-  }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) return null
-  // birthtime is stable across writes but changes when a directory is replaced.
-  // Some filesystems expose no birthtime; ctime is a conservative fail-closed
-  // fallback there (ordinary top-level edits may invalidate ownership early).
-  const born = stat.birthtimeNs > 0n ? ['birth', stat.birthtimeNs] : ['ctime', stat.ctimeNs]
-  return createHash('sha256')
-    .update(JSON.stringify({ dev: String(stat.dev), ino: String(stat.ino), born: born.map(String) }))
-    .digest('hex')
+export interface SkillsCliInvocationResult {
+  bundles: SkillsCliInvocationBundle[]
+  stdoutDigest: string
+  stderrDigest: string
+  cleanup?: () => void
 }
 
-async function workspaceIdentity(cwd: string, generation: string): Promise<WorkspaceIdentity> {
-  const canonical = await fsp.realpath(cwd)
-  const witness = await directoryWitness(canonical)
-  if (!witness) throw new ContainedPathError('skills workspace is not a real directory')
-  return { id: workspaceId(generation, canonical), path: canonical, witness }
-}
+export type SkillsCliInvoker = (input: SkillsCliInvocation) => Promise<SkillsCliInvocationResult>
 
-function markerPath(stateDir: string): string {
-  return join(stateDir, MARKER_DIR, MARKER_FILE)
-}
+export type GitSkillAcquirer = (
+  entry: AgentSkillEntry,
+  options: { destination: string; agentId: string; useGitCredential: boolean }
+) => Promise<{ sourceDir: string; resolvedCommit: string }>
 
-async function atomicContainedWrite(
-  boundary: string,
-  root: string,
-  destination: string,
-  body: string,
-  label: string,
-  mode = 0o600
-): Promise<void> {
-  const target = await containedTarget(boundary, root, destination, { create: true, label })
-  if (!target) throw new ContainedPathError(`${label} could not be resolved`)
-  const temp = join(dirname(target), `.agentconnect-${randomUUID()}.tmp`)
-  try {
-    const handle = await fsp.open(temp, 'wx', mode)
-    try {
-      await handle.writeFile(body, 'utf8')
-    } finally {
-      await handle.close()
-    }
-    await fsp.rename(temp, target)
-  } catch (err) {
-    await fsp.rm(temp, { force: true }).catch(() => undefined)
-    throw err
-  }
-}
-
-async function readMarker(stateDir: string): Promise<Marker> {
-  const target = await containedTarget(stateDir, join(stateDir, MARKER_DIR), markerPath(stateDir), {
-    create: false,
-    label: 'skills marker'
-  })
-  if (!target) return { workspaces: {} }
-  let stat: import('node:fs').Stats
-  try {
-    stat = await fsp.lstat(target)
-  } catch (err) {
-    if (isErrno(err, 'ENOENT')) return { workspaces: {} }
-    throw err
-  }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new ContainedPathError('skills marker is not a regular file')
-  }
-  if (stat.size > MAX_MARKER_BYTES) throw new ContainedPathError('skills marker exceeds its size cap')
-  const raw = JSON.parse(await fsp.readFile(target, 'utf8')) as { generation?: unknown; workspaces?: unknown }
-  const generation =
-    typeof raw.generation === 'string' && WORKSPACE_GENERATION.test(raw.generation) ? raw.generation : undefined
-  if (!raw.workspaces || typeof raw.workspaces !== 'object' || Array.isArray(raw.workspaces)) {
-    return { ...(generation ? { generation } : {}), workspaces: {} }
-  }
-  const workspaces: Record<string, WorkspaceRecord> = {}
-  for (const [workspaceId, value] of Object.entries(raw.workspaces)) {
-    if (!WORKSPACE_ID.test(workspaceId) || !value || typeof value !== 'object' || Array.isArray(value)) continue
-    const record = value as {
-      fingerprint?: unknown
-      workspacePath?: unknown
-      workspaceWitness?: unknown
-      installed?: unknown
-    }
-    workspaces[workspaceId] = {
-      ...(typeof record.fingerprint === 'string' ? { fingerprint: record.fingerprint } : {}),
-      ...(typeof record.workspacePath === 'string' &&
-      isAbsolute(record.workspacePath) &&
-      !record.workspacePath.includes('\0')
-        ? { workspacePath: record.workspacePath }
-        : {}),
-      ...(typeof record.workspaceWitness === 'string' && WORKSPACE_ID.test(record.workspaceWitness)
-        ? { workspaceWitness: record.workspaceWitness }
-        : {}),
-      installed: Array.isArray(record.installed)
-        ? record.installed.filter((path): path is string => typeof path === 'string')
-        : []
-    }
-    if (Object.keys(workspaces).length > MAX_WORKSPACE_RECORDS) {
-      throw new ContainedPathError('skills marker has too many workspace records')
-    }
-  }
-  return { ...(generation ? { generation } : {}), workspaces }
-}
-
-async function writeMarker(stateDir: string, marker: Marker): Promise<void> {
-  await atomicContainedWrite(
-    stateDir,
-    join(stateDir, MARKER_DIR),
-    markerPath(stateDir),
-    JSON.stringify(marker) + '\n',
-    'skills marker'
-  )
-}
-
-/** Invalidate every deletion grant before the daemon replaces a workspace
- * tree. A random generation cannot alias a later directory through inode reuse. */
-export async function rotateSkillsWorkspaceGeneration(stateDir: string): Promise<void> {
-  await readMarker(stateDir)
-  await writeMarker(stateDir, { generation: randomUUID(), workspaces: {} })
-}
-
-/** Reserve one bounded private-state slot before invoking the CLI. A record is
- * reclaimable when it owns nothing or its exact directory instance no longer
- * exists. Refuse a new workspace rather than evict ownership from a live one. */
-async function ensureWorkspaceCapacity(marker: Marker, workspace: WorkspaceIdentity): Promise<Marker> {
-  if (marker.workspaces[workspace.id]) return marker
-  const workspaces = { ...marker.workspaces }
-  let size = Object.keys(workspaces).length
-  for (const [id, record] of Object.entries(workspaces)) {
-    if (size < MAX_WORKSPACE_RECORDS) break
-    let reclaimable = record.installed.length === 0
-    if (!reclaimable && record.workspacePath) {
-      if (record.workspacePath === workspace.path) {
-        reclaimable = true
-      } else {
-        const witness = await directoryWitness(record.workspacePath)
-        reclaimable = !witness || witness !== record.workspaceWitness
-      }
-    }
-    if (!reclaimable) continue
-    delete workspaces[id]
-    size -= 1
-  }
-  if (size >= MAX_WORKSPACE_RECORDS) {
-    throw new ContainedPathError('skills ownership state is full')
-  }
-  return { ...marker, workspaces }
-}
-
-function withWorkspaceRecord(marker: Marker, workspaceId: string, record: WorkspaceRecord): Marker {
-  return { ...marker, workspaces: { ...marker.workspaces, [workspaceId]: record } }
-}
-
-/** Only a direct child of a known project skill root can be daemon-owned. */
-function isTrackedSkillDir(rel: string): boolean {
-  const match = /^(\.claude\/skills|\.agents\/skills)\/([^/]+)$/.exec(rel)
-  return match !== null && match[2] !== '.' && match[2] !== '..' && !match[2]!.includes('\0')
-}
-
-function trackedPath(cwd: string, rel: string): { root: string; target: string } {
-  const rootRel = rel.slice(0, rel.lastIndexOf('/'))
-  return {
-    root: join(cwd, ...rootRel.split('/')),
-    target: join(cwd, ...rel.split('/'))
-  }
-}
-
-/** Resolve a skill root by walking every parent with lstat. Passing a synthetic
- * child makes the root itself part of that walk, so a symlink at `.claude`,
- * `.agents`, or `skills` is refused rather than followed. */
-async function safeSkillRoot(cwd: string, rootRel: (typeof SKILL_ROOTS)[number], create: boolean) {
-  const root = join(cwd, ...rootRel.split('/'))
-  const probe = await containedTarget(cwd, root, join(root, '.agentconnect-path-check'), {
-    create,
-    label: 'skill root'
-  })
-  return probe ? dirname(probe) : null
-}
-
-async function skillDirSnapshot(cwd: string): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
-  for (const rootRel of SKILL_ROOTS) {
-    const root = await safeSkillRoot(cwd, rootRel, false)
-    if (!root) continue
-    let entries: import('node:fs').Dirent[]
-    try {
-      entries = await fsp.readdir(root, { withFileTypes: true })
-    } catch (err) {
-      if (isErrno(err, 'ENOENT')) continue
-      throw err
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const stat = await fsp.lstat(join(root, entry.name))
-      if (!stat.isDirectory() || stat.isSymbolicLink()) continue
-      // The pinned CLI replaces a target directory before copying. Tracking the
-      // inode/timestamps as well as new names lets the first private-marker pass
-      // adopt copies installed by an older daemon without reading its untrusted
-      // workspace marker.
-      out.set(`${rootRel}/${entry.name}`, `${stat.dev}:${stat.ino}:${stat.ctimeMs}:${stat.mtimeMs}`)
-    }
-  }
-  return out
-}
-
-async function validateSkillRoots(cwd: string): Promise<void> {
-  for (const rootRel of SKILL_ROOTS) await safeSkillRoot(cwd, rootRel, false)
-}
-
-async function trackedTargetIntact(cwd: string, rel: string): Promise<boolean> {
-  const { root, target } = trackedPath(cwd, rel)
-  const resolved = await containedTarget(cwd, root, target, { create: false, label: 'skill path' })
-  if (!resolved) return false
-  try {
-    const stat = await fsp.lstat(resolved)
-    return stat.isDirectory() && !stat.isSymbolicLink()
-  } catch (err) {
-    if (isErrno(err, 'ENOENT')) return false
-    throw err
-  }
-}
-
-/** `skills add` writes this project lock alongside the skill roots. Refuse a
- * symlink, special file, hard link, or unbounded file before handing the path to
- * the trusted CLI; the agent is not running concurrently with this prep step. */
-async function assertSafeLocalLock(cwd: string): Promise<void> {
-  const target = join(cwd, LOCAL_LOCK_FILE)
-  let stat: import('node:fs').Stats
-  try {
-    stat = await fsp.lstat(target)
-  } catch (err) {
-    if (isErrno(err, 'ENOENT')) return
-    throw err
-  }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
-    throw new ContainedPathError(`${LOCAL_LOCK_FILE} is not a private regular file`)
-  }
-  if (stat.size > MAX_LOCAL_LOCK_BYTES) throw new ContainedPathError(`${LOCAL_LOCK_FILE} exceeds its size cap`)
-}
-
-/** Remove the obsolete workspace marker only by unlinking its final entry. Its
- * contents never influence ownership; a symlink parent is refused and ignored. */
-async function removeLegacyMarker(cwd: string): Promise<void> {
-  try {
-    const root = join(cwd, MARKER_DIR)
-    const target = await containedTarget(cwd, root, join(root, MARKER_FILE), {
-      create: false,
-      label: 'legacy skills marker'
-    })
-    if (!target) return
-    const stat = await fsp.lstat(target)
-    if (stat.isFile() || stat.isSymbolicLink()) await fsp.unlink(target)
-  } catch {
-    // Private state is already authoritative; legacy cleanup is cosmetic.
-  }
-}
-
-/** Source/dev runs through tsx; the published self-contained daemon re-enters
- * its dist entry directly. Neither path consults the workspace's node_modules. */
-function skillsCliLauncher(): { cmd: string; args: string[] } {
-  const sourceEntry = fileURLToPath(new URL('../index.ts', import.meta.url))
-  if (existsSync(sourceEntry)) {
-    const req = createRequire(import.meta.url)
-    return { cmd: process.execPath, args: [req.resolve('tsx/cli'), sourceEntry] }
-  }
-  const entry = process.argv[1]
-  if (!entry) throw new Error('cannot locate the AgentConnect skills CLI entry')
-  return { cmd: process.execPath, args: [entry] }
-}
-
-/** Walk up to the repository root so exclude patterns work for a nested ACP cwd. */
-function findRepoRoot(cwd: string): string | undefined {
-  let dir = cwd
-  for (;;) {
-    if (existsSync(join(dir, '.git'))) return dir
-    const parent = dirname(dir)
-    if (parent === dir) return undefined
-    dir = parent
-  }
-}
-
-/** Cosmetic only, but still a daemon-authority write into an agent-writable repo.
- * Use the same no-follow + atomic publish discipline as correctness state. */
-async function excludeFromGit(cwd: string): Promise<void> {
-  const repoRoot = findRepoRoot(cwd)
-  if (!repoRoot) return
-  const gitPath = join(repoRoot, '.git')
-  try {
-    const gitStat = await fsp.lstat(gitPath)
-    if (!gitStat.isDirectory() || gitStat.isSymbolicLink()) return // linked worktree or refused link
-    const info = join(gitPath, 'info')
-    const exclude = join(info, 'exclude')
-    const target = await containedTarget(repoRoot, info, exclude, { create: true, label: 'git exclude' })
-    if (!target) return
-    let current = ''
-    try {
-      const stat = await fsp.lstat(target)
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_LOCAL_LOCK_BYTES) return
-      current = await fsp.readFile(target, 'utf8')
-    } catch (err) {
-      if (!isErrno(err, 'ENOENT')) return
-    }
-    const prefix = relative(repoRoot, cwd)
-    const rooted = prefix ? `${prefix}/` : ''
-    const want = [...SKILL_ROOTS.map((root) => `${rooted}${root}/`), `${rooted}${MARKER_DIR}/`]
-    const lines = new Set(current.split(/\r?\n/))
-    const missing = want.filter((entry) => !lines.has(entry))
-    if (missing.length === 0) return
-    const next = current + (current === '' || current.endsWith('\n') ? '' : '\n') + missing.join('\n') + '\n'
-    await atomicContainedWrite(repoRoot, info, exclude, next, 'git exclude')
-  } catch {
-    // A dirty status is cosmetic; path refusal must not block the session.
-  }
+export interface InstallSkillsOptions {
+  /** Trusted daemon-owned state root, never inside the agent-writable cwd. */
+  stateDir?: string
+  /** Audited skills CLI identity from the resolved runtime capability. */
+  /** `null` explicitly disables an otherwise-audited runtime id. Omission uses
+   * the daemon's trusted built-in compatibility overlay. */
+  skillsAgentId?: string | null
+  localSkills?: LocalSkillSource[]
+  useGitCredential?: boolean
+  runCli?: SkillsCliInvoker
+  acquireGit?: GitSkillAcquirer
+  warn?: (message: string) => void
 }
 
 export interface InstallSkillsResult {
@@ -427,160 +145,479 @@ export interface InstallSkillsResult {
   errors: Array<{ source: string; error: string }>
 }
 
-export interface InstallSkillsOptions {
-  /** Trusted loader-derived agent root; never derive this from workspace config. */
-  stateDir: string
-  env?: NodeJS.ProcessEnv
-  warn?: (msg: string) => void
-  /** Test seam; production always uses Node + the daemon's hidden CLI entry. */
-  execFile?: SkillsExec
+interface PreparedSource {
+  key: string
+  name: string
+  sourceDir: string
+  skills: string[]
+  contentDigest: string
 }
 
-/** Install and reconcile agent skills. Never throws. */
+/** Reconcile all source classes in one ordered transaction. Expected source
+ * misses degrade to no AgentConnect-managed skills; a containment/journal
+ * failure throws because starting with ambiguous stale executable content is
+ * less safe than refusing the workspace. */
 export async function installSkills(
-  agent: Pick<Agent, 'id' | 'runtime' | 'skills'>,
+  agent: Pick<Agent, 'id' | 'runtime' | 'skills'> & { dir?: string },
+  cwd: string,
+  opts: InstallSkillsOptions = {}
+): Promise<InstallSkillsResult> {
+  const stateDir =
+    opts.stateDir ?? join(agent.dir ?? dirname(await fsp.realpath(cwd)), '.agentconnect', 'skill-installer')
+  return withSkillWorkspaceLock(cwd, () => installSkillsLocked(agent, cwd, { ...opts, stateDir }), stateDir)
+}
+
+async function installSkillsLocked(
+  agent: Pick<Agent, 'id' | 'runtime' | 'skills'> & { dir?: string },
   cwd: string,
   opts: InstallSkillsOptions
 ): Promise<InstallSkillsResult> {
   const result: InstallSkillsResult = { installed: [], removed: [], skipped: null, errors: [] }
-  const entries = agent.skills ?? []
-  const agentId = skillsAgentId(agent.runtime)
-  // The bundled upstream module cannot discover its own package.json after
-  // bundling; disable its optional telemetry rather than reporting the daemon's
-  // package version as the CLI version.
-  const env = { GIT_TERMINAL_PROMPT: '0', ...process.env, ...opts.env, DISABLE_TELEMETRY: '1' }
+  const wireGitSources = agent.skills ?? []
+  const localSources = opts.localSkills ?? []
+  if (localSources.length > MAX_LOCAL_SKILL_SOURCES) throw new Error('too many local skill sources')
+  const gitSources: AgentSkillEntry[] = []
+  const sourceNames = new Set<string>()
+  for (const [index, entry] of wireGitSources.entries()) {
+    const parsed = AgentSkillEntry.safeParse(entry)
+    if (!parsed.success) {
+      opts.warn?.(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
+      continue
+    }
+    if (sourceNames.has(parsed.data.name)) {
+      opts.warn?.(`skills: omitted duplicate historical Git source name "${parsed.data.name}"`)
+      continue
+    }
+    if (gitSources.length >= MAX_GIT_SKILL_SOURCES) {
+      opts.warn?.(`skills: omitted historical Git source ${index + 1}; at most ${MAX_GIT_SKILL_SOURCES} are installed`)
+      continue
+    }
+    sourceNames.add(parsed.data.name)
+    gitSources.push(parsed.data)
+  }
+  const invocationCount = gitSources.length + localSources.length
+  if (invocationCount > MAX_CLI_INVOCATIONS) throw new Error('too many skills CLI invocations')
+  const agentId =
+    opts.skillsAgentId === undefined ? skillsAgentIdForRuntime(agent.runtime) : (opts.skillsAgentId ?? undefined)
+  const hasDesired = gitSources.length > 0 || localSources.length > 0
+  if (!agentId && hasDesired) {
+    opts.warn?.(`skills: runtime "${agent.runtime}" has not passed skills CLI compatibility admission`)
+  }
 
+  const stateDir =
+    opts.stateDir ?? join(agent.dir ?? dirname(await fsp.realpath(cwd)), '.agentconnect', 'skill-installer')
+  await ensurePrivateStateRoot(stateDir)
+  const runsDir = join(stateDir, 'runs')
+  await fsp.mkdir(runsDir, { recursive: true, mode: 0o700 })
+  await fsp.chmod(runsDir, 0o700)
+  const scratch = await fsp.mkdtemp(join(runsDir, 'install-'))
+  await fsp.chmod(scratch, 0o700)
+  let retainedGitResolutions: SkillGitResolution[] = []
+
+  const localPrepared: PreparedSource[] = []
+  let inputFiles = 0
+  let inputBytes = 0
+  const accountInput = (fileCount: number, totalBytes: number): void => {
+    inputFiles += fileCount
+    inputBytes += totalBytes
+    if (inputFiles > MAX_INPUT_FILES || inputBytes > MAX_INPUT_BYTES) {
+      throw new Error('aggregate skill sources exceed the installer limits')
+    }
+  }
   try {
-    const loadedMarker = await readMarker(opts.stateDir)
-    const generation = loadedMarker.generation ?? randomUUID()
-    // Pre-generation records used reusable filesystem identities. Forget their
-    // deletion grants rather than risk applying one to a fresh materialization.
-    const generatedMarker = loadedMarker.generation
-      ? loadedMarker
-      : { generation, workspaces: {} as Record<string, WorkspaceRecord> }
-    const workspace = await workspaceIdentity(cwd, generation)
-    const fp = fingerprint(agent.runtime, agentId ?? '', entries, workspace.id)
-    const marker = await ensureWorkspaceCapacity(generatedMarker, workspace)
-    // Create/validate the private marker parent before mutating the workspace.
-    await containedTarget(opts.stateDir, join(opts.stateDir, MARKER_DIR), markerPath(opts.stateDir), {
-      create: true,
-      label: 'skills marker'
-    })
-    const prior = marker.workspaces[workspace.id] ?? { installed: [] }
-    const priorMatchesWorkspace = prior.workspaceWitness === workspace.witness
-    const priorTracked = priorMatchesWorkspace ? prior.installed.filter(isTrackedSkillDir) : []
-
-    // Validate existing roots before any reconcile operation. This rejects a
-    // planted root symlink even when it is unrelated to the first tracked path.
-    if (priorTracked.length > 0 || entries.length > 0) await validateSkillRoots(cwd)
-
-    const intact = await Promise.all(priorTracked.map((rel) => trackedTargetIntact(cwd, rel)))
-    const targetsIntact = priorTracked.length === prior.installed.length && intact.every(Boolean)
-    const cacheCoversDesired = entries.length === 0 || priorTracked.length > 0
-    if (priorMatchesWorkspace && prior.fingerprint === fp && targetsIntact && cacheCoversDesired) {
-      if (prior.workspacePath !== workspace.path) {
-        await writeMarker(
-          opts.stateDir,
-          withWorkspaceRecord(marker, workspace.id, { ...prior, workspacePath: workspace.path })
-        )
+    for (const [index, source] of localSources.entries()) {
+      const destination = join(scratch, 'inputs', `local-${index}`)
+      await prepareSnapshotDestination(destination)
+      const snapshot = await snapshotLocalSkillSource(source.sourceDir, destination)
+      accountInput(snapshot.fileCount, snapshot.totalBytes)
+      if (source.expectedTreeDigest && source.expectedTreeDigest !== snapshot.sha256) {
+        throw new Error(`local skill source "${source.name}" does not match its declared content digest`)
       }
-      await removeLegacyMarker(cwd)
+      localPrepared.push({
+        key: source.key,
+        name: source.name,
+        sourceDir: destination,
+        skills: [source.name],
+        contentDigest: snapshot.sha256
+      })
+    }
+
+    const planFingerprint = fingerprint({
+      schema: INSTALLER_SCHEMA,
+      cli: SKILLS_CLI_SPEC,
+      runtime: agent.runtime,
+      agentId: agentId ?? '',
+      git: gitSources,
+      local: localPrepared.map(({ key, name, contentDigest }) => ({ key, name, contentDigest }))
+    })
+    const legacyState = await readLegacyOwned(cwd)
+    const location = await skillLedgerLocation(cwd, stateDir)
+    let ledger = await readSkillLedger(location)
+    if (ledger) {
+      assertSkillLedgerOwner(ledger, agent.id)
+      ledger = await recoverSkillLedger(cwd, location, ledger)
+    }
+    retainedGitResolutions = currentGitResolutions(gitSources, ledger?.gitResolutions ?? [])
+    const desiredGitResolutionCount = new Set(gitSources.map(gitResolutionDigest)).size
+    assertNoUnmigratedLegacyState(legacyState)
+    // Claim every prepared workspace, even before it has executable skills.
+    // Otherwise another agent can keep a live sandbox with write authority to
+    // this cwd and tamper a bundle that is published here later. The external
+    // workspace lock makes this first-owner decision serial across daemons.
+    if (
+      ledger?.phase === 'ready' &&
+      ledger.fingerprint === planFingerprint &&
+      retainedGitResolutions.length === desiredGitResolutionCount &&
+      (await installedBundlesIntact(cwd, ledger.owned, location.workspaceIdentity))
+    ) {
       result.skipped = 'unchanged'
       return result
     }
 
-    // Failed removals stay owned in the private marker so a later prep retries.
-    const retained: string[] = []
-    for (const rel of priorTracked) {
-      const { root, target } = trackedPath(cwd, rel)
-      try {
-        await containedRemoveDir(cwd, root, target)
-        result.removed.push(rel)
-      } catch (err) {
-        retained.push(rel)
-        opts.warn?.(`skills: could not remove stale skill "${rel}" — ${err instanceof Error ? err.message : ''}`)
-      }
-    }
-
-    if (entries.length === 0 || !agentId) {
-      if (!agentId && entries.length > 0) {
-        opts.warn?.(`skills: no installer mapping for runtime "${agent.runtime}"; skipping install`)
-      }
-      await writeMarker(
-        opts.stateDir,
-        withWorkspaceRecord(marker, workspace.id, {
-          ...(retained.length === 0 ? { fingerprint: fp } : {}),
-          workspacePath: workspace.path,
-          workspaceWitness: (await workspaceIdentity(cwd, generation)).witness,
-          installed: retained
-        })
-      )
-      await removeLegacyMarker(cwd)
+    if (!agentId) {
+      const reconciled = await reconcileSkillBundles({
+        cwd,
+        stateDir,
+        agentId: agent.id,
+        runtime: agent.runtime,
+        cliVersion: PINNED_SKILLS_CLI_VERSION,
+        fingerprint: planFingerprint,
+        candidates: [],
+        gitResolutions: retainedGitResolutions,
+        legacyOwned: legacyState.owned,
+        lockHeld: true
+      })
+      result.removed.push(...reconciled.removed)
       return result
     }
 
-    const rootRel = agentId === 'claude-code' ? '.claude/skills' : '.agents/skills'
-    await safeSkillRoot(cwd, rootRel, true)
-    await assertSafeLocalLock(cwd)
-    const before = await skillDirSnapshot(cwd)
-    const launch = skillsCliLauncher()
-    const run = opts.execFile ?? execFileAsync
+    const prepared: PreparedSource[] = []
+    const resolutionsByDefinition = new Map(
+      retainedGitResolutions.map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
+    )
+    for (const [index, entry] of gitSources.entries()) {
+      const acquisitionDir = join(scratch, 'acquired', `git-${index}`)
+      await fsp.mkdir(dirname(acquisitionDir), { recursive: true, mode: 0o700 })
+      await fsp.mkdir(acquisitionDir, { mode: 0o700 })
+      const definitionDigest = gitResolutionDigest(entry)
+      const retainedCommit = resolutionsByDefinition.get(definitionDigest)
+      const acquisitionEntry = retainedCommit ? { ...entry, ref: retainedCommit } : entry
+      const acquired = await (opts.acquireGit ?? acquireGitSkillSource)(acquisitionEntry, {
+        destination: acquisitionDir,
+        agentId: agent.id,
+        useGitCredential: opts.useGitCredential === true
+      })
+      const resolvedCommit = acquired.resolvedCommit.toLowerCase()
+      if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (retainedCommit && resolvedCommit !== retainedCommit)) {
+        throw new Error(`Git source "${entry.name}" did not resolve to its retained commit`)
+      }
+      resolutionsByDefinition.set(definitionDigest, resolvedCommit)
+      const destination = join(scratch, 'inputs', `git-${index}`)
+      await prepareSnapshotDestination(destination)
+      const snapshot = await snapshotLocalSkillSource(acquired.sourceDir, destination, {
+        // A Git source is a collection which may contain many independent
+        // skills; individual installed bundles remain subject to the much
+        // smaller CLI-cell and local-bundle limits.
+        limits: GIT_SOURCE_SNAPSHOT_LIMITS
+      })
+      accountInput(snapshot.fileCount, snapshot.totalBytes)
+      // One source invocation may carry all selected skills. We independently
+      // require the exact selected leaf-name set below, so a CLI that returns
+      // success after installing only a valid subset still fails the transaction.
+      const selections = [entry.skills]
+      for (const skills of selections) {
+        prepared.push({
+          key: `git:${index}:${definitionDigest}:${resolvedCommit}${skills.length > 0 ? `:${fingerprint(skills)}` : ''}`,
+          name: entry.name,
+          sourceDir: destination,
+          skills,
+          contentDigest: snapshot.sha256
+        })
+      }
+    }
+    prepared.push(...localPrepared)
+    const nextGitResolutions = currentGitResolutions(
+      gitSources,
+      [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
+    )
 
-    for (const entry of entries) {
-      const composed = composeSource(entry)
-      if (composed.startsWith('-')) {
-        result.errors.push({ source: entry.name, error: 'source resolves to an option-like argument' })
-        opts.warn?.(`skills: skipping option-like source for "${entry.name}": ${composed}`)
-        continue
-      }
-      const skillFlags = entry.skills.filter((skill) => !skill.startsWith('-'))
-      if (skillFlags.length !== entry.skills.length) {
-        opts.warn?.(`skills: dropped option-like skill name(s) for "${entry.name}"`)
-      }
-      const args = [
-        ...launch.args,
-        '__skills-cli',
-        'add',
-        composed,
-        '-a',
-        agentId,
-        '-y',
-        '--copy',
-        ...skillFlags.flatMap((skill) => ['-s', skill])
-      ]
+    const runCli = opts.runCli ?? runPinnedSkillsCli
+    const candidatesByPath = new Map<string, CandidateSkillBundle>()
+    let stagedCandidateFiles = 0
+    let stagedCandidateBytes = 0
+    for (const [index, source] of prepared.entries()) {
+      const cellDir = join(scratch, 'cells', `${index}-${randomUUID()}`)
+      await fsp.mkdir(cellDir, { recursive: true, mode: 0o700 })
+      let invocation: SkillsCliInvocationResult | undefined
       try {
-        await run(launch.cmd, args, { cwd, env, timeout: INSTALL_TIMEOUT_MS })
-        result.installed.push(entry.name)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        result.errors.push({ source: entry.name, error: message })
-        opts.warn?.(`skills: install failed for "${entry.name}" (${composed}): ${message}`)
+        invocation = await runCli({
+          sourceDir: source.sourceDir,
+          sourceKey: source.key,
+          agentId,
+          skills: source.skills,
+          cellDir
+        })
+        if (invocation.bundles.length === 0) {
+          throw new Error(`skills CLI produced no bundles for ${source.name}`)
+        }
+        if (source.skills.length > 0) {
+          const expected = [...source.skills].sort()
+          const actual = invocation.bundles.map((bundle) => bundle.relativeRoot.split('/').at(-1) ?? '').sort()
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+            throw new Error(`skills CLI output did not exactly match selection for ${source.name}`)
+          }
+        }
+        for (const [bundleIndex, bundle] of invocation.bundles.entries()) {
+          const destination = join(scratch, 'candidates', `${index}-${bundleIndex}`)
+          await prepareSnapshotDestination(destination)
+          const snap = await snapshotLocalSkillSource(bundle.sourceDir, destination)
+          stagedCandidateFiles += snap.fileCount
+          stagedCandidateBytes += snap.totalBytes
+          const files: SkillFileReceipt[] = snap.files.map((file) => ({
+            path: file.path,
+            mode: file.mode & 0o111 ? 0o700 : 0o600,
+            size: file.size,
+            sha256: stripShaPrefix(file.sha256)
+          }))
+          const candidate: CandidateSkillBundle = {
+            relativeRoot: bundle.relativeRoot,
+            sourceKey: source.key,
+            sourceDir: destination,
+            files,
+            treeDigest: treeDigest(files)
+          }
+          const replaced = candidatesByPath.get(candidate.relativeRoot)
+          if (replaced) {
+            opts.warn?.(
+              `skills: source "${source.name}" overrides "${replaced.sourceKey}" at CLI-derived path ${candidate.relativeRoot}`
+            )
+          }
+          candidatesByPath.set(candidate.relativeRoot, candidate)
+          if (replaced) {
+            await fsp.rm(replaced.sourceDir, { recursive: true, force: true })
+            stagedCandidateFiles -= replaced.files.length
+            stagedCandidateBytes -= replaced.files.reduce((total, file) => total + file.size, 0)
+          }
+          if (
+            candidatesByPath.size > MAX_PUBLISHED_SKILL_BUNDLES ||
+            stagedCandidateFiles > MAX_PUBLISHED_SKILL_FILES ||
+            stagedCandidateBytes > MAX_PUBLISHED_SKILL_BYTES
+          ) {
+            throw new Error('aggregate skills CLI output exceeds the publication limits')
+          }
+        }
+      } finally {
+        invocation?.cleanup?.()
       }
     }
 
-    const after = await skillDirSnapshot(cwd)
-    const created = [...after].filter(([path, signature]) => before.get(path) !== signature).map(([path]) => path)
-    await excludeFromGit(cwd)
-    const effective = retained.length === 0 && result.errors.length === 0 && created.length > 0
-    await writeMarker(
-      opts.stateDir,
-      withWorkspaceRecord(marker, workspace.id, {
-        ...(effective ? { fingerprint: fp } : {}),
-        workspacePath: workspace.path,
-        workspaceWitness: (await workspaceIdentity(cwd, generation)).witness,
-        installed: [...new Set([...retained, ...created])]
-      })
+    const candidates = [...candidatesByPath.values()]
+    const candidateFiles = candidates.reduce((total, candidate) => total + candidate.files.length, 0)
+    const candidateBytes = candidates.reduce(
+      (total, candidate) => total + candidate.files.reduce((bytes, file) => bytes + file.size, 0),
+      0
     )
-    await removeLegacyMarker(cwd)
+    if (
+      candidates.length > MAX_PUBLISHED_SKILL_BUNDLES ||
+      candidateFiles > MAX_PUBLISHED_SKILL_FILES ||
+      candidateBytes > MAX_PUBLISHED_SKILL_BYTES
+    ) {
+      throw new Error('aggregate skills CLI output exceeds the publication limits')
+    }
+
+    const reconciled = await reconcileSkillBundles({
+      cwd,
+      stateDir,
+      agentId: agent.id,
+      runtime: agent.runtime,
+      cliVersion: PINNED_SKILLS_CLI_VERSION,
+      fingerprint: planFingerprint,
+      candidates,
+      gitResolutions: nextGitResolutions,
+      legacyOwned: legacyState.owned,
+      lockHeld: true
+    })
+    result.installed.push(...reconciled.installed)
+    result.removed.push(...reconciled.removed)
+    result.skipped = reconciled.skipped
     return result
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+  } catch (error) {
+    if (error instanceof SkillLedgerSafetyError) throw error
+    const message = error instanceof Error ? error.message : 'unknown skill installation error'
     result.errors.push({ source: '*', error: message })
-    opts.warn?.(
-      err instanceof ContainedPathError
-        ? `skills: refused workspace installation — ${message}`
-        : `skills: could not prepare workspace installation — ${message}`
-    )
-    return result
+    opts.warn?.(`skills: unified install failed; clearing previously managed skills (${message})`)
+    try {
+      const legacyState = await readLegacyOwned(cwd)
+      const cleanupLocation = await skillLedgerLocation(cwd, stateDir)
+      let cleanupLedger = await readSkillLedger(cleanupLocation)
+      if (cleanupLedger) {
+        assertSkillLedgerOwner(cleanupLedger, agent.id)
+        cleanupLedger = await recoverSkillLedger(cwd, cleanupLocation, cleanupLedger)
+      }
+      retainedGitResolutions = currentGitResolutions(gitSources, cleanupLedger?.gitResolutions ?? [])
+      assertNoUnmigratedLegacyState(legacyState)
+      const cleared = await reconcileSkillBundles({
+        cwd,
+        stateDir,
+        agentId: agent.id,
+        runtime: agent.runtime,
+        cliVersion: PINNED_SKILLS_CLI_VERSION,
+        fingerprint: `failed:${randomUUID()}`,
+        candidates: [],
+        gitResolutions: retainedGitResolutions,
+        legacyOwned: legacyState.owned,
+        lockHeld: true
+      })
+      result.removed.push(...cleared.removed)
+      return result
+    } catch (cleanupError) {
+      throw new Error(
+        `skill installation failed and stale executable content could not be reconciled: ${cleanupError instanceof Error ? cleanupError.message : 'unknown error'}`,
+        { cause: error }
+      )
+    }
+  } finally {
+    await fsp.rm(scratch, { recursive: true, force: true }).catch(() => undefined)
   }
+}
+
+async function runPinnedSkillsCli(input: SkillsCliInvocation): Promise<SkillsCliInvocationResult> {
+  const result: SkillsCliCellResult = await stageSkillsCliCell({
+    sourceSnapshot: input.sourceDir,
+    agentId: input.agentId,
+    selectedSkills: input.skills,
+    tempParent: input.cellDir
+  })
+  return {
+    bundles: result.bundles.map((bundle) => ({ relativeRoot: bundle.relativePath, sourceDir: bundle.absolutePath })),
+    stdoutDigest: fingerprint(result.execution.stdout),
+    stderrDigest: fingerprint(result.execution.stderr),
+    cleanup: result.cleanup
+  }
+}
+
+interface LegacyOwnershipState {
+  markers: string[]
+  owned: string[]
+}
+
+async function readLegacyOwned(cwd: string): Promise<LegacyOwnershipState> {
+  const markers: string[] = []
+  const owned = new Set<string>()
+  for (const markerName of LEGACY_MARKERS) {
+    try {
+      const root = join(cwd, '.agentconnect')
+      const target = await containedTarget(cwd, root, join(root, markerName), {
+        create: false,
+        label: 'legacy skill marker'
+      })
+      if (!target) continue
+      let stat: Stats
+      try {
+        stat = await fsp.lstat(target)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      markers.push(markerName)
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > LEGACY_MARKER_BYTES) {
+        throw new Error('legacy marker is not a bounded regular file')
+      }
+      const parsed = JSON.parse((await readBoundedRegularFile(target, stat)).toString('utf8')) as {
+        installed?: unknown
+      }
+      if (!Array.isArray(parsed.installed)) throw new Error('legacy marker does not contain an installed array')
+      for (const value of parsed.installed) {
+        if (typeof value !== 'string' || !LEGACY_OWNED.test(value)) {
+          throw new Error('legacy marker contains an unsafe installed path')
+        }
+        owned.add(value)
+      }
+    } catch (error) {
+      if (error instanceof SkillLedgerSafetyError) throw error
+      throw new SkillLedgerSafetyError(
+        `legacy skill ownership marker ${markerName} is unsafe and must be removed explicitly`,
+        { cause: error }
+      )
+    }
+  }
+  return { markers, owned: [...owned].sort() }
+}
+
+function assertNoUnmigratedLegacyState(legacy: LegacyOwnershipState): void {
+  if (legacy.markers.length === 0) return
+  throw new SkillLedgerSafetyError(
+    'legacy skill installation state requires explicit migration: move or remove every skill path listed by ' +
+      '.agentconnect/skills-install.json or .agentconnect/dream-skills-install.json, then remove those markers; ' +
+      'the unified installer will not trust them as deletion authority'
+  )
+}
+
+async function readBoundedRegularFile(path: string, before: Stats): Promise<Buffer> {
+  const handle = await fsp.open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+  try {
+    const opened = await handle.stat()
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1 ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.size !== before.size ||
+      opened.size > LEGACY_MARKER_BYTES
+    ) {
+      throw new Error('legacy marker changed while opening')
+    }
+    const body = Buffer.alloc(opened.size)
+    let offset = 0
+    while (offset < body.length) {
+      const { bytesRead } = await handle.read(body, offset, body.length - offset, offset)
+      if (bytesRead === 0) throw new Error('legacy marker changed while reading')
+      offset += bytesRead
+    }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) {
+      throw new Error('legacy marker changed while reading')
+    }
+    const after = await handle.stat()
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) {
+      throw new Error('legacy marker changed while reading')
+    }
+    return body
+  } finally {
+    await handle.close()
+  }
+}
+
+async function ensurePrivateStateRoot(stateDir: string): Promise<void> {
+  await fsp.mkdir(stateDir, { recursive: true, mode: 0o700 })
+  const stat = await fsp.lstat(stateDir)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('skill installer state root is unsafe')
+  await fsp.chmod(stateDir, 0o700)
+}
+
+async function prepareSnapshotDestination(destination: string): Promise<void> {
+  const parent = dirname(destination)
+  await fsp.mkdir(parent, { recursive: true, mode: 0o700 })
+  await fsp.chmod(parent, 0o700)
+}
+
+function currentGitResolutions(entries: AgentSkillEntry[], resolutions: SkillGitResolution[]): SkillGitResolution[] {
+  const desired = new Set(entries.map(gitResolutionDigest))
+  return resolutions
+    .filter((resolution) => desired.has(resolution.definitionDigest))
+    .sort((a, b) => a.definitionDigest.localeCompare(b.definitionDigest))
+}
+
+function gitResolutionDigest(entry: AgentSkillEntry): string {
+  const source = resolveBoundedGitSkillSource(entry)
+  return fingerprint({ githubRepoId: entry.githubRepoId, cloneUrl: source.cloneUrl, ref: source.ref ?? 'HEAD' })
+}
+
+function fingerprint(value: unknown): string {
+  return createHash('sha256')
+    .update(typeof value === 'string' ? value : JSON.stringify(value))
+    .digest('hex')
+}
+
+function stripShaPrefix(value: string): string {
+  return value.startsWith('sha256:') ? value.slice('sha256:'.length) : value
 }

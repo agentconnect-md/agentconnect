@@ -2,9 +2,10 @@
  * `http/routes/skill-sources.ts` (design docs/designs/shared-skills.md §4).
  *
  * CRUD for org-level shared-skills sources. A source records only WHERE skills
- * come from (a repo / git URL / tree path) plus an optional ref + skill filter —
- * skill CONTENT never touches the CP. The daemon installs enabled skills via
- * `npx skills` after clone and before the ACP host spawns.
+ * come from (a bounded public GitHub repository/tree path) plus its numeric
+ * repository identity, optional ref, and skill filter — skill CONTENT never
+ * touches the CP. The daemon acquires a commit-bound snapshot and installs it
+ * with its bundled exact CLI before the ACP host spawns.
  *
  * There is NO secret side-table and NO grant (unlike MCP providers): skills carry
  * no upstream credential. This release supports PUBLIC sources only — a private
@@ -307,7 +308,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Register a skill source',
           description:
-            'Register an org-level shared-skills source (a repo / git URL / tree path fed to `npx skills`). `skills` empty ⇒ install every skill the source exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
+            'Register an org-level public GitHub skill source and numeric repository identity. An omitted migration-compatible identity leaves the row visible but non-installable until bound: projection omits it from AgentSpec. The daemon acquires a bounded local snapshot; the remote source is never passed to the CLI. `skills` empty ⇒ install every skill the snapshot exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
           operationId: 'createSkillSource',
           body: CreateSkillSourceBody,
           response: { 201: SkillSourceDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }

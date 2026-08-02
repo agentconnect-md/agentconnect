@@ -12,6 +12,14 @@ export const RuntimeDefSchema = z.object({
   command: z.string(),
   args: z.array(z.string()).default([]),
   env: NameValueList,
+  // Audited identity passed to the exact `skills` CLI. This is capability
+  // metadata, not a destination path. null explicitly marks an otherwise-known
+  // runtime id unsupported for an operator override.
+  skillsAgentId: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+    .nullable()
+    .optional(),
   // Operator/registry-owned read-only installation roots needed by a runtime
   // whose executable or dependencies live below a host path hidden from the
   // sandbox (most commonly HOME). Agent configuration can select a runtime but

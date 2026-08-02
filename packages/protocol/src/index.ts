@@ -86,6 +86,7 @@ export {
   GitCloneUrlError,
   normalizeAllowedWorkspaceGitUrl,
   normalizeGitCloneUrl,
+  normalizeGitHubSkillSource,
   normalizeGithubRepoUrl,
   normalizeGitUrl,
   normalizeWorkspaceGitOrigin,

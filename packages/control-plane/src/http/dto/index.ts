@@ -21,6 +21,7 @@ import {
   SessionImageAttachment,
   MAX_WORKSPACE_EDIT_BYTES,
   MAX_GIT_REPO_LENGTH,
+  normalizeGitHubSkillSource,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
   normalizeRepoSubdir
@@ -377,15 +378,16 @@ const SkillSourceName = z
   .max(64)
   .regex(SKILL_SOURCE_NAME, { message: 'name may contain only letters, digits, dot, underscore, or hyphen' })
 
-// A skill name that becomes a `-s <name>` argument to `npx skills`. It must NOT
-// start with "-" (that would be read as a flag rather than a value), so the first
-// char is constrained to letters/digits/dot/underscore.
-const SkillFilterName = z
-  .string()
-  .regex(/^[A-Za-z0-9._][A-Za-z0-9._-]*$/, { message: 'skill name may not start with "-"' })
+// A skill name that becomes a `-s <name>` argument to the exact skills CLI.
+// Match the daemon publisher's bundle grammar so every API-valid name remains
+// installable instead of invalidating a later AgentSpec/reconcile.
+const SkillFilterName = z.string().regex(/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9_])?$/, {
+  message: 'skill name must be the canonical lowercase CLI name without a trailing dot or hyphen'
+})
 
-// A source string that becomes a positional argument to `npx skills add`. Reject
-// option-looking values for the same reason.
+// A credential-free source string parsed by the bounded GitHub acquisition
+// boundary. The CLI sees only the resulting local snapshot. Reject
+// option-looking values before the source reaches either boundary.
 //
 // Also reject secret carriers. A skill source is org metadata: it travels inline on
 // every referring AgentSpec and is shown next to the agents that install it (see
@@ -397,12 +399,13 @@ const SkillFilterName = z
 //     authority match is greedy so `user:p@ss@host` is caught by its LAST `@`. The
 //     scp-like `git@github.com:owner/repo` form has no `://` and is unaffected;
 //     `ssh://git@host/repo` names a ROLE, so colon-free userinfo stays allowed there.
-//   - query/fragment — `?access_token=…`, `#…`. `npx skills` has no use for either,
+//   - query/fragment — `?access_token=…`, `#…`. Acquisition has no use for either,
 //     and both are places a token hides in plain sight.
 const SkillSourceArg = z
   .string()
   .trim()
   .min(1)
+  .max(MAX_GIT_REPO_LENGTH)
   .refine((s) => !s.startsWith('-'), { message: 'source must not start with "-"' })
   .refine((s) => !s.includes('?') && !s.includes('#'), {
     message: 'source must not carry a query or fragment; they can hide a credential'
@@ -415,16 +418,54 @@ const SkillSourceArg = z
     },
     { message: 'source must not embed credentials; use a public repository' }
   )
+  .refine(
+    (s) => {
+      try {
+        normalizeGitHubSkillSource(s)
+        return true
+      } catch {
+        return false
+      }
+    },
+    { message: 'source must be a bounded GitHub repository source' }
+  )
+
+const SkillSourceRef = z
+  .string()
+  .trim()
+  .min(1)
+  .max(256)
+  .refine((s) => !/[\0\r\n]/.test(s), { message: 'ref must be a single line' })
+
+const SkillSourceSubDir = z
+  .string()
+  .trim()
+  .min(1)
+  .max(1_024)
+  .refine(
+    (s) =>
+      !s.startsWith('/') &&
+      !s.includes('\\') &&
+      !/[\0\r\n]/.test(s) &&
+      s.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..'),
+    { message: 'subDir must be a safe relative path' }
+  )
 
 // Enabled shared-skills (docs/designs/shared-skills.md): each entry is
 // "<sourceName>/<skillName>", "<sourceName>/*" (the whole source), or a bare
 // "<sourceName>". The source segment mirrors SkillSourceName; the skill segment
-// forbids a leading "-" (SkillFilterName grammar) so it can't inject a CLI flag.
-const SkillEnableBody = z.array(
-  z.string().regex(/^[A-Za-z0-9._-]+(\/([A-Za-z0-9._][A-Za-z0-9._-]*|\*))?$/, {
-    message: 'must be "<source>", "<source>/<skill>", or "<source>/*" (skill may not start with "-")'
-  })
-)
+// uses the same installable SkillFilterName grammar.
+const SkillEnableBody = z
+  .array(
+    z
+      .string()
+      .max(193)
+      .regex(/^[A-Za-z0-9._-]+(\/([a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9_])?|\*))?$/, {
+        message: 'must be "<source>", "<source>/<canonical-lowercase-skill>", or "<source>/*"'
+      })
+  )
+  .max(64)
+  .refine((refs) => new Set(refs).size === refs.length, { message: 'skill enablement refs must be unique' })
 const ManagedSkillEnableBody = z
   .array(z.string().uuid())
   .max(64)
@@ -866,17 +907,42 @@ export const McpProviderCreatedDto = McpProviderDto.extend({
 
 // ── shared-skills sources (docs/designs/shared-skills.md) ────────────────────
 
-/** `POST /skill-sources` — register an org-level skills source. `source` is the
- *  string handed to `npx skills add` (owner/repo | git URL | tree/<ref>/<subdir>).
- *  `skills` empty ⇒ install every skill the source exposes. */
+/** A GitHub repository's numeric id as a decimal string (BigInt on the wire).
+ *  Must be a positive integer within signed 64-bit range: GitHub ids are stored
+ *  as PostgreSQL BIGINT, so reject 0, negatives, non-numeric input, and values
+ *  above 2^63-1 that a row could never hold. */
+const MAX_BIGINT = 9223372036854775807n
+const GithubRepoId = z
+  .string()
+  .regex(/^[1-9]\d*$/, 'githubRepoId must be a positive integer')
+  // zod runs refinements even after the regex fails, so guard the BigInt parse:
+  // a non-numeric value would otherwise throw out of safeParse.
+  .refine((value) => {
+    try {
+      return BigInt(value) <= MAX_BIGINT
+    } catch {
+      return false
+    }
+  }, 'githubRepoId exceeds the maximum repository id')
+
+/** `POST /skill-sources` — register an org-level public GitHub skill source.
+ *  `source` is a bounded acquisition input (owner/repo | canonical GitHub URL |
+ *  tree/<ref>/<subdir>); the CLI receives only a local snapshot. `skills` empty
+ *  ⇒ install every skill the source exposes. */
 export const CreateSkillSourceBody = z
   .object({
     name: SkillSourceName,
     source: SkillSourceArg,
-    githubRepoId: z.string().optional(), // numeric id as string (BigInt on the wire)
-    ref: z.string().trim().optional(),
-    subDir: z.string().trim().optional(),
-    skills: z.array(SkillFilterName).default([]),
+    // Exact decimal identity (BigInt on the wire). Optional only so historical
+    // unbound rows can be repaired; projection omits them until bound.
+    githubRepoId: GithubRepoId.optional(),
+    ref: SkillSourceRef.optional(),
+    subDir: SkillSourceSubDir.optional(),
+    skills: z
+      .array(SkillFilterName)
+      .max(64)
+      .refine((skills) => new Set(skills).size === skills.length, { message: 'skill filters must be unique' })
+      .default([]),
     visibility: ResourceVisibilityEnum.optional(),
     sharedWith: z.array(z.string()).optional()
   })
@@ -888,10 +954,14 @@ export const CreateSkillSourceBody = z
 export const UpdateSkillSourceBody = z
   .object({
     source: SkillSourceArg.optional(),
-    githubRepoId: z.string().nullable().optional(),
-    ref: z.string().trim().nullable().optional(),
-    subDir: z.string().trim().nullable().optional(),
-    skills: z.array(SkillFilterName).optional()
+    githubRepoId: GithubRepoId.nullable().optional(),
+    ref: SkillSourceRef.nullable().optional(),
+    subDir: SkillSourceSubDir.nullable().optional(),
+    skills: z
+      .array(SkillFilterName)
+      .max(64)
+      .refine((skills) => new Set(skills).size === skills.length, { message: 'skill filters must be unique' })
+      .optional()
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, { message: 'no fields to update' })
@@ -973,11 +1043,12 @@ export type SkillSourceDtoT = z.infer<typeof SkillSourceDto>
 
 /** `GET /agents/:id/skill-sources` — the registry rows this agent's enable-list
  *  actually references, resolved for anyone who can view the AGENT rather than the
- *  source. What an agent already installs is part of the agent (the definition
- *  rides inline on its AgentSpec either way), so a source restricted away from the
- *  caller still resolves here — otherwise the console can only show a bare name.
- *  Slimmer than {@link SkillSourceDto}: no visibility/share fields, since seeing an
- *  agent does not entitle the caller to the source's own share set. */
+ *  source. A current-valid bound definition rides inline on AgentSpec regardless
+ *  of source visibility, so a source restricted away from the caller still
+ *  resolves here — otherwise the console can only show a bare name. A historical
+ *  unbound/invalid row may still be shown for repair even though strict projection
+ *  omits it. Slimmer than {@link SkillSourceDto}: no visibility/share fields, since
+ *  seeing an agent does not entitle the caller to the source's own share set. */
 export const AgentSkillSourceDto = z.object({
   id: z.string(),
   name: z.string(),

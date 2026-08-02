@@ -31,7 +31,8 @@ export const RegisterReq = z.object({
     assignments: z.array(z.string()), // sessionKeys it is actively serving
     crons: z.array(z.string()), // cronIds it has scheduled
     leases: z.array(z.string()), // leaseIds it holds
-    // Active on-disk replicas. `unknown` is the rolling-upgrade/legacy value:
+    // Active on-disk replicas plus fail-closed interrupted-removal markers.
+    // `unknown` is the rolling-upgrade/legacy value:
     // the CP may prune it only when the durable row proves the replica moved.
     // Defaults keep an older daemon compatible with a newer CP.
     agents: z.array(z.object({ agentId: z.string(), origin: z.enum(['cp', 'unknown']) })).default([]),

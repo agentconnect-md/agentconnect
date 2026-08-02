@@ -153,6 +153,92 @@ export function normalizeGitCloneUrl(input: string): string {
   return normalized
 }
 
+const GITHUB_SKILL_COMPONENT_RE = /^[A-Za-z0-9_.-]+$/
+const GITHUB_SKILL_DOT_SEGMENT_RE = /\/(?:\.|%2e)(?:\.|%2e)?(?:\/|$)/i
+
+/** Normalize the deliberately narrow source vocabulary supported by the
+ * daemon's bounded GitHub archive acquisition path. Unlike generic workspaces,
+ * skill sources cannot name arbitrary Git servers until an equally bounded
+ * transport exists for them. */
+export function normalizeGitHubSkillSource(input: string): string {
+  const normalized = normalizeGitCloneUrl(input)
+  // WHATWG URL parsing collapses literal and percent-encoded dot segments.
+  // Reject them before parsing so admission cannot silently reinterpret an
+  // unsafe tree subdirectory as a different ref/path.
+  if (GITHUB_SKILL_DOT_SEGMENT_RE.test(normalized)) {
+    invalidCloneUrl('GitHub skill source must not contain dot path segments')
+  }
+  const scp = SCP_PARTS_RE.exec(normalized)
+  if (scp) {
+    if (scp[1] !== 'git' || scp[2]!.toLowerCase().replace(/\.+$/, '') !== 'github.com') {
+      invalidCloneUrl('skill source must use GitHub')
+    }
+    assertGitHubSkillRepositoryPath(scp[3]!, false, false)
+    return normalized
+  }
+
+  const url = new URL(normalized)
+  const protocol = url.protocol
+  if (url.hostname.toLowerCase().replace(/\.+$/, '') !== 'github.com' || url.port) {
+    invalidCloneUrl('skill source must use canonical GitHub')
+  }
+  if (protocol === 'https:') {
+    if (url.username || url.password) invalidCloneUrl('GitHub skill source must not contain credentials')
+  } else if (protocol === 'ssh:') {
+    if (url.username !== 'git' || url.password) {
+      invalidCloneUrl('GitHub SSH skill source must use the git role')
+    }
+  } else {
+    invalidCloneUrl('GitHub skill source must use https or ssh')
+  }
+  assertGitHubSkillRepositoryPath(url.pathname, protocol === 'https:', true)
+  return normalized
+}
+
+function assertGitHubSkillRepositoryPath(path: string, allowTree: boolean, urlPath: boolean): void {
+  // URL pathnames have exactly one structural leading slash; scp paths have
+  // none. Do not trim an arbitrary run here: doing so would admit nonstandard
+  // server-side absolute paths that the bounded daemon transport cannot safely
+  // canonicalize to GitHub HTTPS.
+  if (urlPath ? !path.startsWith('/') || path.startsWith('//') : path.startsWith('/') || path.startsWith('~')) {
+    invalidCloneUrl('GitHub skill source must use a repository-relative path')
+  }
+  const encodedParts = (urlPath ? path.slice(1) : path).split('/')
+  if (encodedParts.some((part) => !part)) {
+    invalidCloneUrl('GitHub skill source path must not contain empty components')
+  }
+
+  let parts: string[]
+  try {
+    parts = encodedParts.map((part) => decodeURIComponent(part))
+  } catch {
+    invalidCloneUrl('GitHub skill source contains malformed URL encoding')
+  }
+  if (parts.some((part) => !part || part.includes('/') || part.includes('\\') || CONTROL_RE.test(part))) {
+    invalidCloneUrl('GitHub skill source contains an unsafe encoded path component')
+  }
+  if (parts.length < 2 || !parts[0] || !parts[1]) {
+    invalidCloneUrl('GitHub skill source must identify owner/repository')
+  }
+  const owner = parts[0]!
+  const repo = parts[1]!.replace(/\.git$/i, '')
+  if (!GITHUB_SKILL_COMPONENT_RE.test(owner) || !GITHUB_SKILL_COMPONENT_RE.test(repo)) {
+    invalidCloneUrl('GitHub skill source contains an invalid owner or repository')
+  }
+  if (parts.length === 2) return
+  if (!allowTree || parts.length < 4 || parts[2] !== 'tree' || parts.slice(3).some((part) => !part)) {
+    invalidCloneUrl('GitHub skill source path must be owner/repository or owner/repository/tree/ref[/subdir]')
+  }
+  const ref = parts[3]!
+  if (ref.length > 256 || ref === '.' || ref === '..') {
+    invalidCloneUrl('GitHub skill source contains an unsafe tree ref')
+  }
+  const subDir = parts.slice(4)
+  if (subDir.join('/').length > 1_024 || subDir.some((part) => part === '.' || part === '..')) {
+    invalidCloneUrl('GitHub skill source contains an unsafe tree subdirectory')
+  }
+}
+
 function canonicalGitOrigin(protocol: 'https:' | 'ssh:', hostname: string, port: string): string {
   // A final DNS root dot does not select a different host. WHATWG already
   // does this for special schemes; reparse through HTTPS because SSH is a

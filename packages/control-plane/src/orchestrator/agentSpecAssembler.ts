@@ -25,7 +25,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { AgentRecord, AgentSecretStore, OrganizationKnowledgeRepo, SkillSourceRepo } from '../persistence/ports.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
-import { resolveAgentSkillEntries } from './skillSource.js'
+import { resolveAgentSkillEntries, type InvalidSkillSourceProjection } from './skillSource.js'
 
 /** The wire spec plus the id it is keyed by on `agent/upsert` / the roster. */
 export type AssembledAgentSpec = AgentSpec & { agentId: string }
@@ -39,14 +39,15 @@ export class AgentSpecAssembler {
     private readonly skillSources?: SkillSourceRepo,
     // Optional for older/minimal test graphs. Production resolves explicitly
     // enabled centrally-managed skill ids into immutable revision metadata.
-    private readonly organizationKnowledge?: OrganizationKnowledgeRepo
+    private readonly organizationKnowledge?: OrganizationKnowledgeRepo,
+    private readonly onInvalidSkillSource?: (agentId: string, invalid: InvalidSkillSourceProjection) => void
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
     const [secrets, skillEntries, managedSkillEntries] = await Promise.all([
       this.secrets.get(a.id),
-      resolveAgentSkillEntries(a, this.skillSources),
+      resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
       this.managedSkillsOf(a)
     ])
     return this.project(a, secrets, skillEntries, managedSkillEntries)
@@ -82,8 +83,8 @@ export class AgentSpecAssembler {
   /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so
    *  the authoritative `agent/activate` path ships them (a bare `project` would
    *  default to [], which `writeAgentSpec` reads as "clear", wiping skills on move). */
-  skillsOf(a: Pick<AgentRecord, 'orgId' | 'skills'>): Promise<AgentSkillEntry[]> {
-    return resolveAgentSkillEntries(a, this.skillSources)
+  skillsOf(a: Pick<AgentRecord, 'id' | 'orgId' | 'skills'>): Promise<AgentSkillEntry[]> {
+    return resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid))
   }
 
   /** Resolve enabled managed-skill ids into the exact immutable revisions the

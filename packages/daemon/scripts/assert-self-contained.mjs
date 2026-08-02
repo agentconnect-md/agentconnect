@@ -8,7 +8,9 @@
 //
 // This check turns that silent degradation into a hard build failure. It runs
 // after tsdown in the daemon's `build` script; it ships nowhere (files: ["dist"]).
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 const bundlePath = new URL('../dist/index.js', import.meta.url)
 const bundle = readFileSync(bundlePath, 'utf8')
@@ -35,4 +37,35 @@ if (leaked.length > 0) {
   process.exit(1)
 }
 
-console.log('✓ daemon bundle is self-contained (workspace packages and skills CLI are bundled)')
+const skillsCli = new URL('../dist/skills/dist/cli.js', import.meta.url)
+if (!existsSync(skillsCli)) {
+  console.error('✗ daemon bundle is missing the separately bundled skills CLI')
+  process.exit(1)
+}
+for (const asset of ['LICENSE', 'ThirdPartyNoticeText.txt', 'workspace-mutation.js']) {
+  if (!existsSync(new URL(`../dist/skills/${asset}`, import.meta.url))) {
+    console.error(`✗ daemon bundle is missing skills redistribution asset ${asset}`)
+    process.exit(1)
+  }
+}
+const version = spawnSync(process.execPath, [fileURLToPath(skillsCli), '--version'], {
+  encoding: 'utf8',
+  timeout: 10_000,
+  env: { PATH: process.env.PATH ?? '' }
+})
+if (version.status !== 0 || version.stdout.trim() !== '1.5.21') {
+  console.error('✗ bundled skills CLI did not report the audited 1.5.21 version')
+  process.exit(1)
+}
+
+// SRT's native apply-seccomp helper cannot be inlined by tsdown; it must be
+// staged beside the bundle for both released Linux arches or the confined skills
+// sandbox silently loses Unix-socket blocking at runtime.
+for (const arch of ['x64', 'arm64']) {
+  if (!existsSync(new URL(`../dist/vendor/seccomp/${arch}/apply-seccomp`, import.meta.url))) {
+    console.error(`✗ daemon bundle is missing the SRT apply-seccomp helper for ${arch}`)
+    process.exit(1)
+  }
+}
+
+console.log('✓ daemon bundle is self-contained (including skills CLI 1.5.21 and SRT seccomp helpers)')

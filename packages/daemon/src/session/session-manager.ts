@@ -238,13 +238,19 @@ export class SessionManager {
     private deps: {
       store: LocalStore
       hostFor: (agentId: string) => Promise<AcpHost>
-      /** Whether the runtime process is already running (so hostFor won't cold-start
-       *  it). When it's cold, the workspace + skills must be prepared before hostFor. */
+      /** Whether the runtime initialize handshake completed. A cold hostFor may
+       * own preparation itself when resolvePreparedWorkspace is also supplied. */
       isHostRunning?: (agentId: string) => boolean
       agentById: (id: string) => LoadedAgent | undefined
-      /** Daemon seam for cache-backed managed skill materialization. Tests and
-       * the standalone chat CLI use the ordinary workspace preparer. */
-      prepareWorkspace?: (agent: Agent) => Promise<string>
+      /** Daemon seam for the unified Git/managed/accepted-local skill
+       * reconciliation. Tests and the standalone chat CLI use the ordinary
+       * workspace preparer. Production also passes the ordinary warm host so
+       * teardown can reject a preparation registered by a stale generation. */
+      prepareWorkspace?: (agent: Agent, expectedWarmHost?: AcpHost) => Promise<string>
+      /** Resolve the cwd produced by hostFor's cold preparation without
+       * repeating pull/source acquisition/reconciliation. Production supplies
+       * this seam; lightweight host mocks fall back to pre-host preparation. */
+      resolvePreparedWorkspace?: (agent: Agent) => string
       /** The agent memory provider — seeds the memory dir and supplies the index
        *  injected at the start of a fresh session. */
       memory: MemoryProvider
@@ -490,18 +496,24 @@ export class SessionManager {
         (originSessionId !== undefined &&
           rec?.originSessionId !== undefined &&
           originSessionId !== rec.originSessionId))
-    // Prepare the workspace (clone/pull + skill install) BEFORE acquiring the host,
-    // but ONLY when the runtime process is COLD — that's when hostFor spawns it, so
-    // skills must be on disk first (design §6). This covers both a brand-new session
-    // and a persisted session whose host was evicted/restarted (resume cold-start). A
-    // warm turn on a live host must NOT re-run prepareWorkspace: pulling/reconciling
-    // would mutate a checkout the running ACP process is using — the per-branch
-    // prepareWorkspace below handles the warm-host new-session/resume cases instead.
+    // Production hostFor owns the single cold-host preparation gate before spawn.
+    // After it resolves, consume that already-prepared cwd through the pure resolver.
+    // Lightweight embedders without that contract retain the legacy pre-host fallback.
+    // A warm turn on a live host does not prepare here; the per-branch preparation
+    // below handles only warm-host new-session/resume cases.
     const hostCold = options.host ? false : !(this.deps.isHostRunning?.(agentId) ?? false)
-    const preparedCwd = hostCold
-      ? await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal)
-      : undefined
+    let preparedCwd =
+      hostCold && !this.deps.resolvePreparedWorkspace
+        ? await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal)
+        : undefined
     const host = options.host ?? (await abortable(() => this.deps.hostFor(agentId), signal))
+    // Explicit private-cell hosts are not owned by the daemon's ordinary host
+    // map. Only an ordinary warm host carries generation identity into the
+    // preparation seam; its daemon can then reject a late post-stop mutation.
+    const expectedWarmHost = options.host ? undefined : host
+    if (hostCold && this.deps.resolvePreparedWorkspace) {
+      preparedCwd = await abortable(() => this.deps.resolvePreparedWorkspace!(agent), signal)
+    }
     // The sticky per-session effort override rides session `_meta` on new/load so the
     // `ultracode` sentinel (rejected by the `thought_level` select) takes effect.
     // Resolve chat authority immediately before each request, then fence the await:
@@ -731,7 +743,11 @@ export class SessionManager {
       // brand-new session; use the pre-host preparation when the host was cold, else
       // prepare now (warm host — ordering vs spawn is moot).
       const cwd =
-        preparedCwd ?? (await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal))
+        preparedCwd ??
+        (await abortable(
+          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost) ?? prepareWorkspace(agent),
+          signal
+        ))
       const mcpServers = [
         ...(this.deps.mcpServersFor?.({
           agent,
@@ -781,7 +797,11 @@ export class SessionManager {
       // Resume: use the pre-host preparation when the host cold-started here (persisted
       // session after restart/eviction — skills must precede spawn), else prepare now.
       const cwd =
-        preparedCwd ?? (await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal))
+        preparedCwd ??
+        (await abortable(
+          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost) ?? prepareWorkspace(agent),
+          signal
+        ))
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.

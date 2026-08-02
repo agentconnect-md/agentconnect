@@ -121,6 +121,10 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client
         run: pnpm -r prisma:generate
+      # NOTE: this job runs bwrap-free on purpose. The confined skills suites
+      # (which need the OS sandbox) self-skip here and run in the dedicated
+      # `skill-sandbox` job below; keeping bwrap out avoids forcing every other
+      # bwrap-gated suite to run under the runner's kernel sandbox.
       - name: Unit tests
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
@@ -163,6 +167,48 @@ jobs:
             cat "$CAPTURED_JOB_SUMMARY"
             echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
+
+  # The confined skills suites drive the pinned CLI + workspace mutation inside
+  # the OS kernel sandbox (bwrap on Linux). They self-skip in the bwrap-free Unit
+  # Test job above and run for real here, on a runner made bwrap-capable. Kept in
+  # its own job so enabling the kernel sandbox does not force every other
+  # bwrap-gated suite (e.g. the ACP credential-isolation tests) to run under it.
+  skill-sandbox:
+    name: Skill sandbox (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm -r prisma:generate
+      - name: Install and enable the Linux kernel sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap ripgrep socat
+          # Ubuntu 24.04 runners restrict unprivileged user namespaces via
+          # AppArmor; bwrap (and therefore the SRT sandbox) requires them.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          # Fail loudly rather than letting the confined skills suites silently
+          # skip if bwrap cannot start on this runner.
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc /usr/bin/true
+      - name: Confined skills suites
+        run: >
+          pnpm --filter @agentconnect.md/daemon exec vitest run
+          test/skills-cli-golden.test.ts
+          test/unified-skills.test.ts
+          test/skill-workspace-lock.test.ts
+          test/skill-install-ledger.test.ts
 
   # control-plane integration tests against a real Postgres booted by
   # Testcontainers. Each Vitest worker gets an isolated database cloned from one

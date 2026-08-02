@@ -5,6 +5,7 @@ import {
   GitCloneUrlError,
   normalizeAllowedWorkspaceGitUrl,
   normalizeGitCloneUrl,
+  normalizeGitHubSkillSource,
   normalizeGithubRepoUrl,
   normalizeGitUrl,
   normalizeWorkspaceGitOrigin,
@@ -102,6 +103,52 @@ describe('normalizeGitCloneUrl', () => {
       'ssh://git@github.com/acme/infra#'
     ]) {
       expect(() => normalizeGitCloneUrl(url), url).toThrow(GitCloneUrlError)
+    }
+  })
+})
+
+describe('normalizeGitHubSkillSource', () => {
+  it('accepts the bounded GitHub source vocabulary', () => {
+    expect(normalizeGitHubSkillSource('acme/skills')).toBe('https://github.com/acme/skills')
+    expect(normalizeGitHubSkillSource('github.com/acme/skills')).toBe('https://github.com/acme/skills')
+    expect(normalizeGitHubSkillSource('https://github.com/acme/skills.git')).toBe('https://github.com/acme/skills.git')
+    expect(normalizeGitHubSkillSource('https://github.com/acme/skills/tree/main/packs/core')).toBe(
+      'https://github.com/acme/skills/tree/main/packs/core'
+    )
+    expect(normalizeGitHubSkillSource('ssh://git@github.com/acme/skills.git')).toBe(
+      'ssh://git@github.com/acme/skills.git'
+    )
+    expect(normalizeGitHubSkillSource('git@github.com:acme/skills.git')).toBe('git@github.com:acme/skills.git')
+  })
+
+  it('rejects other hosts, nonstandard roles, ports, and repository path shapes', () => {
+    for (const source of [
+      'gitlab.com/acme/skills',
+      'https://example.test/acme/skills',
+      'https://github.com:8443/acme/skills',
+      'ssh://git@github.com:2222/acme/skills',
+      'ssh://deploy@github.com/acme/skills',
+      'deploy@github.com:acme/skills',
+      'ssh://git@github.com//acme/skills',
+      'git@github.com:/acme/skills',
+      'git@github.com:acme/skills/extra',
+      'https://github.com/acme/skills/extra'
+    ]) {
+      expect(() => normalizeGitHubSkillSource(source), source).toThrow(GitCloneUrlError)
+    }
+  })
+
+  it('rejects malformed or unsafe decoded GitHub tree components', () => {
+    for (const source of [
+      'https://github.com/acme/skills/tree/%0A/packs',
+      'https://github.com/acme/skills/tree/main/../escape',
+      'https://github.com/acme/skills/tree/main/%2E%2E/escape',
+      'https://github.com/acme/skills/tree/main/%2Fescape',
+      'https://github.com/acme/skills/tree/main/%5Cescape',
+      `https://github.com/acme/skills/tree/${'r'.repeat(257)}`,
+      'https://github.com/acme/skills/tree/%ZZ/packs'
+    ]) {
+      expect(() => normalizeGitHubSkillSource(source), source).toThrow(GitCloneUrlError)
     }
   })
 })

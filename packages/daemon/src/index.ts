@@ -1,32 +1,17 @@
 #!/usr/bin/env node
 import { startDaemonOpenTelemetry } from './observability.js'
-import { SKILLS_CLI_VERSION } from './skills/version.js'
 import { DAEMON_VERSION } from './version.js'
 
 // Internal per-ACP-host SRT provider. Fast-path it before telemetry/Commander:
 // the process is only a stdio-preserving sandbox parent and must not initialize
 // a second daemon's observability or CLI lifecycle.
-if (process.argv[2] === '__sandbox-runtime') {
+if (process.argv[2] === '__sandbox-runtime' || process.argv[2] === '__sandbox-runtime-offline') {
   const { runSandboxRuntimeProvider } = await import('./acp/sandbox-runtime-provider.js')
-  process.exit(await runSandboxRuntimeProvider(process.argv.slice(3)))
-}
-
-// Internal, exact-pinned skills installer. The daemon launches this hidden
-// command with its own Node entry instead of `npx`, so an agent-controlled
-// workspace cannot shadow the trusted CLI with `node_modules/.bin/skills`.
-// Remove the internal selector before loading the upstream CLI: it reads
-// `process.argv.slice(2)` and owns process exit after the command completes.
-if (process.argv[2] === '__skills-cli') {
-  if (process.argv[3] === '--version' || process.argv[3] === '-v') {
-    console.log(SKILLS_CLI_VERSION)
-    process.exit(0)
-  }
-  process.argv.splice(2, 1)
-  await import('skills/dist/cli.mjs')
-  // The upstream module starts (but does not export/await) its async main and
-  // calls process.exit when that finishes. Keep this entry from falling through
-  // into the daemon CLI while that owned lifecycle is still running.
-  await new Promise<never>(() => undefined)
+  process.exit(
+    await runSandboxRuntimeProvider(process.argv.slice(3), {
+      offline: process.argv[2] === '__sandbox-runtime-offline'
+    })
+  )
 }
 
 const telemetry = startDaemonOpenTelemetry({ serviceVersion: DAEMON_VERSION })

@@ -1,5 +1,10 @@
 import { z } from 'zod'
-import { AgentMemoryBinding, AgentSkillEntry, FeishuRegion, ManagedSkillEntry } from '@agentconnect.md/protocol'
+import {
+  AgentMemoryBinding,
+  CompatibleAgentSkillEntry,
+  FeishuRegion,
+  ManagedSkillEntry
+} from '@agentconnect.md/protocol'
 
 export const BindMatchSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention') }),
@@ -202,12 +207,13 @@ export const AgentSchema = z.object({
   // at ACP session/new|load, after the daemon's own bridge entry. Empty ⇒ none;
   // unknown names are skipped with a warn (see mcp/resolve-servers.ts).
   mcpServers: z.array(z.string()).default([]),
-  // Skill sources to install into the workspace via the daemon-bundled `skills`
-  // CLI after clone and before the ACP host spawns (design: docs/designs/shared-skills.md). CP-owned,
-  // shipped inline on AgentSpec.skills — each entry is self-contained so the daemon
-  // needs nothing but agent.json to install. Supersedes the deprecated
+  // Public GitHub skill sources to acquire as bounded local snapshots and install
+  // with the bundled exact CLI after clone and before the ACP host spawns (design:
+  // docs/designs/shared-skills.md). CP-owned, shipped inline on AgentSpec.skills —
+  // each entry is self-contained so the daemon needs nothing but agent.json to
+  // install. Supersedes the deprecated
   // `workspace.skills` string list below (which is now an unused no-op).
-  skills: z.array(AgentSkillEntry).default([]),
+  skills: z.array(CompatibleAgentSkillEntry).default([]),
   // Centrally accepted immutable `.skill` revisions. Content stays in the
   // daemon-owned cache and is materialized into the workspace before session
   // creation; this metadata is the exact CP-authorized revision set.

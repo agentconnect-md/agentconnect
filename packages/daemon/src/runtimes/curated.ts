@@ -16,7 +16,7 @@ export interface CuratedRuntimeEntry {
 export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntry>> = Object.freeze({
   'hermes-agent': {
     name: 'Hermes Agent',
-    runtime: { command: 'hermes', args: ['acp'], env: [] }
+    runtime: { command: 'hermes', args: ['acp'], env: [], skillsAgentId: 'hermes-agent' }
   },
   'open-interpreter': {
     name: 'Open Interpreter',
@@ -24,7 +24,7 @@ export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntr
   },
   'kiro-cli': {
     name: 'Kiro CLI',
-    runtime: { command: 'kiro-cli', args: ['acp'], env: [] }
+    runtime: { command: 'kiro-cli', args: ['acp'], env: [], skillsAgentId: 'kiro-cli' }
   },
   maki: {
     name: 'Maki',
@@ -43,13 +43,13 @@ export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntr
   // PATH once installed globally.
   'qoder-cli': {
     name: 'Qoder CLI',
-    runtime: { command: 'qodercli', args: ['--acp'], env: [] }
+    runtime: { command: 'qodercli', args: ['--acp'], env: [], skillsAgentId: 'qoder' }
   },
   // Qoder CN CLI (Lingma) is the same product line for the China region,
   // distributed as @qodercn-ai/qoderclicn with the `qoderclicn` binary and its
   // own ~/.qoder-cn state dir. Same `--acp` launch flag.
   'qoder-cli-cn': {
     name: 'Qoder CN CLI',
-    runtime: { command: 'qoderclicn', args: ['--acp'], env: [] }
+    runtime: { command: 'qoderclicn', args: ['--acp'], env: [], skillsAgentId: 'qoder-cn' }
   }
 })

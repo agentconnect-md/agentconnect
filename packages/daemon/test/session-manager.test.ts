@@ -71,6 +71,25 @@ describe('SessionManager', () => {
     store.close()
   })
 
+  it('passes the ordinary warm host identity to workspace preparation', async () => {
+    const store = newStore()
+    const host = fakeHost()
+    const prepareWorkspace = vi.fn(async () => agent.workspace.path)
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      isHostRunning: () => true,
+      agentById: () => agent,
+      prepareWorkspace,
+      memory
+    })
+
+    await sm.handle('bot-a', msg({ ts: '100.2', thread: '100.2', text: 'warm session' }))
+
+    expect(prepareWorkspace).toHaveBeenCalledWith(agent, host)
+    store.close()
+  })
+
   it('initializes a self-authored root session without a turn and replays the root on the first real reply', async () => {
     const store = newStore()
     const host = fakeHost()
@@ -170,7 +189,15 @@ describe('SessionManager', () => {
 
   it('does not replay transcript context from another physical bot with the same channel coordinates', async () => {
     const store = newStore()
-    const agentB = { ...agent, id: 'bot-b', name: 'bot-b' }
+    // A distinct physical bot owns its own agent root and workspace; sharing bot-a's
+    // paths would make them contend for one skill-install ledger (a test artifact).
+    const agentB = {
+      ...agent,
+      id: 'bot-b',
+      name: 'bot-b',
+      dir: mkdtempSync(join(tmpdir(), 'ac-sm-root-b-')),
+      workspace: { ...agent.workspace, path: join(mkdtempSync(join(tmpdir(), 'ac-sm-ws-b-')), 'ws') }
+    }
     const hosts = new Map([
       ['bot-a', { newSession: vi.fn(async () => 'acp-a') } as any],
       ['bot-b', { newSession: vi.fn(async () => 'acp-b') } as any]
