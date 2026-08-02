@@ -26,7 +26,21 @@ import { adoptTitle, liftTitle, restoreTitle, TITLE_STASH } from './tooltip-titl
 
 /** Matches both a not-yet-lifted title and the element currently holding one. */
 const SOURCE_SELECTOR = `[title],[${TITLE_STASH}]`
+const FOCUS_SOURCE_SELECTOR = `[data-tooltip-focus][title],[data-tooltip-focus][${TITLE_STASH}]`
 const TOOLTIP_ID = 'ac-tooltip'
+
+/** CSS keeps responsive duplicates mounted; focus must anchor to the rendered one. */
+function isRendered(el: HTMLElement): boolean {
+  for (let current: HTMLElement | null = el; current; current = current.parentElement) {
+    const style = window.getComputedStyle(current)
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false
+  }
+  return true
+}
+
+function visibleDescendant(root: HTMLElement, selector: string): HTMLElement | null {
+  return Array.from(root.querySelectorAll<HTMLElement>(selector)).find(isRendered) ?? null
+}
 
 export function TooltipLayer() {
   const [text, setText] = useState<string | null>(null)
@@ -153,7 +167,10 @@ export function TooltipLayer() {
       // Walk up first — but a focusable container can hold its hint on an inner
       // element (a list row whose description hangs off the name, so a hover
       // opens it where the pointer is reading). `closest` only looks upward.
-      const source = (el.closest(SOURCE_SELECTOR) ?? el.querySelector(SOURCE_SELECTOR)) as HTMLElement | null
+      const source =
+        (el.closest(SOURCE_SELECTOR) as HTMLElement | null) ??
+        visibleDescendant(el, FOCUS_SOURCE_SELECTOR) ??
+        visibleDescendant(el, SOURCE_SELECTOR)
       if (source) schedule(source, true)
     }
 

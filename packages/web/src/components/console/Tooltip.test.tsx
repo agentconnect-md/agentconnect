@@ -168,6 +168,33 @@ describe('TooltipLayer', () => {
     expect(tooltip()?.textContent).toBe('Ships and rolls back deploys from chat.')
   })
 
+  it('uses the visible primary hint when a focused row has responsive duplicates', async () => {
+    const link = document.createElement('a')
+    link.href = '#'
+    host.appendChild(link)
+
+    const privacy = document.createElement('span')
+    privacy.setAttribute('title', 'Private session')
+    link.appendChild(privacy)
+
+    const mobileRoster = document.createElement('span')
+    mobileRoster.setAttribute('title', 'planner\nreviewer')
+    mobileRoster.setAttribute('data-tooltip-focus', '')
+    mobileRoster.style.display = 'none'
+    link.appendChild(mobileRoster)
+
+    const desktopRoster = document.createElement('span')
+    desktopRoster.setAttribute('title', 'planner\nreviewer')
+    desktopRoster.setAttribute('data-tooltip-focus', '')
+    link.appendChild(desktopRoster)
+
+    await focus(link)
+
+    expect(tooltip()?.textContent).toBe('planner\nreviewer')
+    expect(mobileRoster.getAttribute('title')).toBe('planner\nreviewer')
+    expect(desktopRoster.hasAttribute('title')).toBe(false)
+  })
+
   it('releases a focused title before keyboard activation updates it', async () => {
     const btn = iconButton('Show secret')
     // A control whose activation drops its own title (the reveal toggles do this
