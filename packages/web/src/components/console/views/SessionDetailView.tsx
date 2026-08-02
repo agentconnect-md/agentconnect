@@ -539,13 +539,23 @@ type Turn =
     }
   | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[] }
 
+type SessionParticipant = {
+  id: string
+  sp: ReturnType<typeof speaker>
+  agent: Agent | null
+  avatarUrl?: string | null
+  avatarInitials?: string
+  isCron: boolean
+}
+
 function ParticipantAvatar({
   agent,
   avatarUrl,
   avatarInitials,
   platformMark,
   sp,
-  isCron
+  isCron,
+  showNameTitle = true
 }: {
   agent: Agent | null
   avatarUrl?: string | null
@@ -553,13 +563,15 @@ function ParticipantAvatar({
   platformMark?: string
   sp: ReturnType<typeof speaker>
   isCron: boolean
+  showNameTitle?: boolean
 }) {
   return (
     <span
       className={`av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
         !agent && !isCron ? 'bg-transparent' : ''
       }`}
-      title={sp.name}
+      title={showNameTitle ? sp.name : undefined}
+      aria-hidden={showNameTitle ? undefined : true}
     >
       {agent ? (
         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
@@ -582,6 +594,65 @@ function ParticipantAvatar({
           fontSize={9.5}
         />
       )}
+    </span>
+  )
+}
+
+function SessionParticipantsHover({
+  label,
+  participants,
+  platformMark
+}: {
+  label: string
+  participants: SessionParticipant[]
+  platformMark?: string
+}) {
+  const tooltipId = useId()
+
+  return (
+    <span className="group relative inline-flex min-w-0 flex-[0_1_auto]">
+      <button
+        type="button"
+        aria-describedby={tooltipId}
+        className="inline-flex min-w-0 cursor-default items-center gap-[6px] rounded-xs border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            event.currentTarget.blur()
+          }
+        }}
+      >
+        <Icon name="users" size={13} className="flex-none" />
+        <span className="truncate">{label}</span>
+      </button>
+      <span
+        id={tooltipId}
+        role="tooltip"
+        className="pointer-events-none invisible absolute top-full left-0 z-40 mt-2 w-[220px] max-w-[calc(100vw-40px)] -translate-y-1 rounded-lg border border-(--border-default) bg-(--surface-card) p-2 opacity-0 shadow-(--shadow-lg) transition-[opacity,transform,visibility] group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
+      >
+        <span className="block px-2 pt-1 font-sans text-[10.5px] font-semibold leading-normal tracking-[0.06em] text-(--text-tertiary) uppercase">
+          Participants
+        </span>
+        <span className="mt-[5px] flex flex-col gap-[2px]">
+          {participants.map((participant) => (
+            <span key={participant.id} className="flex min-w-0 items-center gap-[9px] rounded-md px-2 py-[6px]">
+              <ParticipantAvatar
+                agent={participant.agent}
+                avatarUrl={participant.avatarUrl}
+                avatarInitials={participant.avatarInitials}
+                platformMark={platformMark}
+                sp={participant.sp}
+                isCron={participant.isCron}
+                showNameTitle={false}
+              />
+              <span className="min-w-0 truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
+                {participant.sp.name}
+              </span>
+            </span>
+          ))}
+        </span>
+      </span>
     </span>
   )
 }
@@ -1281,13 +1352,36 @@ export default function SessionDetailView() {
   }
 
   const turns: Turn[] = []
-  const speakers = new Map<string, string>()
+  const speakers = new Map<string, SessionParticipant>()
+  const rememberParticipant = (id: string, participant: Omit<SessionParticipant, 'id'>): void => {
+    const current = speakers.get(id)
+    speakers.set(id, {
+      id,
+      ...participant,
+      agent: participant.agent ?? current?.agent ?? null,
+      avatarUrl: participant.avatarUrl ?? current?.avatarUrl,
+      avatarInitials: participant.avatarInitials ?? current?.avatarInitials
+    })
+  }
+  const rememberAgentParticipant = (id: string, name: string, agent: Agent | null): void => {
+    rememberParticipant(id, { sp: speaker(id, name), agent, isCron: false })
+  }
+  const pushUserTurn = (id: string, turn: Extract<Turn, { kind: 'user' }>): void => {
+    rememberParticipant(id, {
+      sp: turn.sp,
+      agent: turn.agent,
+      avatarUrl: turn.avatarUrl,
+      avatarInitials: turn.avatarInitials,
+      isCron: turn.isCron
+    })
+    turns.push(turn)
+  }
   // Another agent speaking in this session — a webchat peer participant or a
   // trusted a2a bot — renders as its own left-side agent block: the right side
   // is reserved for humans. Groups consecutive rows like live bot steps.
   const pushAgentTurn = (agent: Agent, step: FmtStep): void => {
     const name = agentLabel(agent)
-    speakers.set(agent.id, name)
+    rememberAgentParticipant(agent.id, name, agent)
     let last = turns[turns.length - 1]
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
@@ -1336,8 +1430,7 @@ export default function SessionDetailView() {
               senderAgentName ?? m.sender,
               cron?.name ?? (cron ? 'Schedule' : senderLabel(m.sender, m.senderName ?? hookFallback))
             )
-        speakers.set(senderAgent?.id ?? m.sender, participant.name)
-        turns.push({
+        pushUserTurn(senderAgent?.id ?? m.sender, {
           kind: 'user',
           sp: participant,
           agent: senderAgent ?? null,
@@ -1369,8 +1462,7 @@ export default function SessionDetailView() {
         const participant = self
           ? speaker('@you')
           : speaker(senderAgentName ?? who, cron?.name ?? (cron ? 'Schedule' : senderAgentName))
-        speakers.set(senderAgent?.id ?? who, participant.name)
-        turns.push({
+        pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
           sp: participant,
           agent: senderAgent ?? null,
@@ -1392,7 +1484,9 @@ export default function SessionDetailView() {
         // session state) and adopted sessions never had a roster.
         const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
-        if (stp.agentId && stp.agentId !== session.agentId) speakers.set(stp.agentId, stepAgentName)
+        if (stp.agentId && stp.agentId !== session.agentId) {
+          rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
+        }
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
@@ -1429,8 +1523,7 @@ export default function SessionDetailView() {
           continue
         }
         const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
-        speakers.set(senderAgent?.id ?? who, participant.name)
-        turns.push({
+        pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
           sp: participant,
           agent: senderAgent ?? null,
@@ -1446,7 +1539,9 @@ export default function SessionDetailView() {
       } else {
         const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
-        if (stp.agentId && stp.agentId !== session.agentId) speakers.set(stp.agentId, stepAgentName)
+        if (stp.agentId && stp.agentId !== session.agentId) {
+          rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
+        }
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
@@ -1476,8 +1571,9 @@ export default function SessionDetailView() {
   // triggeredBy id, not the display `user`, since a resolved name would mask the match.
   const soleAuthor = senderLabel(session.triggeredBy, session.user)
   const soleSpeaker = speakers.size === 1 ? speakers.entries().next().value : undefined
-  const participantsLabel = speakers.size > 1 ? speakers.size + ' participants' : (soleSpeaker?.[1] ?? soleAuthor)
-  const participantsTitle = speakers.size > 1 ? [...speakers.values()].join('\n') : undefined
+  const participants = [...speakers.values()]
+  const participantsLabel =
+    speakers.size > 1 ? speakers.size + ' participants' : (soleSpeaker?.[1].sp.name ?? soleAuthor)
   // The session's `daemon` is the owning agent's daemonId (or '—' when unplaced);
   // resolve it to the daemon's display name — never surface the raw id/host
   // (short-id fallback when it isn't in the fleet), matching the Agents list.
@@ -1716,11 +1812,14 @@ export default function SessionDetailView() {
               <Icon name="calendar-clock" size={13} className="flex-none" />
               <span className="truncate">{headerCron.name || 'Schedule'}</span>
             </Link>
+          ) : participants.length > 1 ? (
+            <SessionParticipantsHover
+              label={participantsLabel}
+              participants={participants}
+              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+            />
           ) : (
-            <span
-              className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
-              title={participantsTitle}
-            >
+            <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
               <Icon name="users" size={13} className="flex-none" />
               <span className="truncate">{participantsLabel}</span>
             </span>
