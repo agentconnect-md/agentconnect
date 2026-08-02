@@ -38,6 +38,7 @@ import {
 } from './memory.js'
 import {
   buildDreamExplorationPrompt,
+  dreamSessionFileName,
   renderDreamSessionFile,
   dreamSystemPrompt,
   MAX_SKILL_BODY_BYTES,
@@ -452,7 +453,7 @@ export class DreamRunner {
       for (const transcript of transcripts) {
         const body = renderDreamSessionFile(transcript)
         if (!body.trim()) continue
-        await fsp.writeFile(join(sessionsDir, `${transcript.sessionId}.md`), body, 'utf8')
+        await fsp.writeFile(join(sessionsDir, `${dreamSessionFileName(transcript.sessionId)}.md`), body, 'utf8')
         materializedSessionIds.push(transcript.sessionId)
       }
 
