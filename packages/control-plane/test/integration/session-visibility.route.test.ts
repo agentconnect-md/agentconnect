@@ -150,7 +150,7 @@ describe('session visibility — list & detail', () => {
     expect(collected).toEqual(visible)
   })
 
-  it('hides a private child and parent from the detail relationship links', async () => {
+  it('hides private relatives from the detail relationship links', async () => {
     const viewer = await makeUser('sv-rel', 'collaborator')
     const other = await makeUser('sv-rel-other', 'collaborator')
     const daemonId = await seedDaemon(prisma, randomUUID())
@@ -171,6 +171,11 @@ describe('session visibility — list & detail', () => {
     }
     expect(body.childSessions.map((c) => c.id)).toEqual([visibleChild])
     expect(body.childSessions.map((c) => c.id)).not.toContain(hiddenChild)
+
+    const visibleChildBody = (
+      await appAs(viewer).app.inject({ method: 'GET', url: `${ORG}/sessions/${visibleChild}` })
+    ).json() as { siblingSessions: Array<{ id: string }> }
+    expect(visibleChildBody.siblingSessions).toEqual([])
   })
 })
 

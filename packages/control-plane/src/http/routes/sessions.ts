@@ -516,7 +516,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get session metadata',
           description:
-            'Returns CP-stored session metadata plus visible parent and child session links; transcript bodies remain daemon-local.',
+            'Returns CP-stored session metadata plus visible parent, sibling, and child session links; transcript bodies remain daemon-local.',
           operationId: 'getSession',
           params: IdParam,
           response: { 200: SessionDetailDto, 404: ErrorDto }
@@ -534,23 +534,34 @@ export function sessionRoutes(deps: HttpDeps) {
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const ctx = ctxOf(req)
-        const [parent, children, usage] = await Promise.all([
+        const [parent, children, siblingCandidates, usage] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
           deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
+          s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, visibleAgentIds) : Promise.resolve([]),
           deps.repos.sessionUsage.get(s.agentId, s.id)
         ])
-        const related = [...(parent ? [parent] : []), ...children]
+        const siblings = siblingCandidates.filter((candidate) => candidate.id !== s.id)
+        const related = [...(parent ? [parent] : []), ...siblings, ...children]
         const relatedAccess = await sessionAccess.forSessions(req, related)
         const parentVisible =
           parent !== null &&
           visibleAgentIdSet.has(parent.agentId) &&
           canViewSession(parent, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
+        // A hidden parent is indistinguishable from no parent. Keep its sibling
+        // branch hidden too, otherwise the response would still reveal the
+        // relationship through the parent's other children.
+        const visibleSiblings = parentVisible
+          ? siblings.filter((sibling) =>
+              canViewSession(sibling, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
+            )
+          : []
         const visibleChildren = children.filter((child) =>
           canViewSession(child, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
         )
         return {
           id: s.id,
           parentSession: parentVisible ? sessionRelation(parent) : null,
+          siblingSessions: visibleSiblings.map(sessionRelation),
           childSessions: visibleChildren.map(sessionRelation),
           agentId: s.agentId,
           launchId: s.launchId,

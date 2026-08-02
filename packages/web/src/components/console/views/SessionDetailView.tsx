@@ -590,24 +590,26 @@ function SessionRelationLink({
   )
 }
 
-function SessionFamilyLinks({
+function MobileSessionFamilyLinks({
   parent,
+  siblings,
   children,
   agentById,
   orgPath
 }: {
   parent: SessionRelationDto | null
+  siblings: SessionRelationDto[]
   children: SessionRelationDto[]
   agentById: ReadonlyMap<string, Agent>
   orgPath: (path: string) => string
 }) {
-  if (!parent && children.length === 0) return null
+  if (!parent && siblings.length === 0 && children.length === 0) return null
   return (
-    <div className="card mx-4 mt-4 overflow-hidden desktop:mx-0 desktop:mt-0 desktop:mb-4">
+    <div className="card mx-4 mt-4 overflow-hidden desktop:hidden">
       {parent && (
         <div
-          className={`grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4 desktop:grid-cols-[118px_minmax(0,1fr)] ${
-            children.length > 0 ? 'border-b border-(--border-subtle)' : ''
+          className={`grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4 ${
+            siblings.length > 0 || children.length > 0 ? 'border-b border-(--border-subtle)' : ''
           }`}
         >
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
@@ -616,8 +618,30 @@ function SessionFamilyLinks({
           <SessionRelationLink relation={parent} agent={agentById.get(parent.agentId)} orgPath={orgPath} />
         </div>
       )}
+      {siblings.length > 0 && (
+        <div
+          className={`grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4 ${
+            children.length > 0 ? 'border-b border-(--border-subtle)' : ''
+          }`}
+        >
+          <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
+            {siblings.length === 1 ? 'Sibling session' : `Sibling sessions (${siblings.length})`}
+          </span>
+          <div className="min-w-0">
+            {siblings.map((sibling, index) => (
+              <SessionRelationLink
+                key={sibling.id}
+                relation={sibling}
+                agent={agentById.get(sibling.agentId)}
+                orgPath={orgPath}
+                bordered={index > 0}
+              />
+            ))}
+          </div>
+        </div>
+      )}
       {children.length > 0 && (
-        <div className="grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4 desktop:grid-cols-[118px_minmax(0,1fr)]">
+        <div className="grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4">
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
             {children.length === 1 ? 'Child session' : `Child sessions (${children.length})`}
           </span>
@@ -781,7 +805,7 @@ export default function SessionDetailView() {
   const agentRuntime = session?.runtime || owner?.runtime || ''
   const runtimeMeta = acpRuntime(acpRegistry, agentRuntime)
 
-  // Sibling sessions for the left rail. Like the agent page's Recent-sessions card
+  // Other sessions for the left rail. Like the agent page's Recent-sessions card
   // this reads an AGENT-FILTERED page, not the org-wide `allSessions` window — a
   // busy org's newest 50 may not include this agent at all, which would hide the
   // rail on an agent that has plenty of runs. The org key stays null until the
@@ -1398,7 +1422,13 @@ export default function SessionDetailView() {
     // the 880px body. With no rail the body is still an 880px block centred in that
     // track — geometrically identical to when it was the wrap itself.
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
-      <SessionRail sessions={railSessions} current={session} total={railSessionTotal} agentId={session.agentId} />
+      <SessionRail
+        sessions={railSessions}
+        current={session}
+        total={railSessionTotal}
+        agentId={session.agentId}
+        family={sessionDetail?.id === session.id ? sessionDetail : undefined}
+      />
       <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
         {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
           in the top-bar crumb; with the crumb gone the page has to name itself. The
@@ -1604,8 +1634,9 @@ export default function SessionDetailView() {
         )}
 
         {sessionDetail?.id === session.id && (
-          <SessionFamilyLinks
+          <MobileSessionFamilyLinks
             parent={sessionDetail.parentSession}
+            siblings={sessionDetail.siblingSessions ?? []}
             children={sessionDetail.childSessions}
             agentById={agentById}
             orgPath={orgPath}

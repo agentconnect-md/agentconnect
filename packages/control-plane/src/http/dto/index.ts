@@ -2314,6 +2314,7 @@ export const SessionRelationDto = z.object({
 export const SessionDetailDto = z.object({
   id: z.string(),
   parentSession: SessionRelationDto.nullable(),
+  siblingSessions: z.array(SessionRelationDto),
   childSessions: z.array(SessionRelationDto),
   agentId: z.string(),
   launchId: z.string().nullable(),

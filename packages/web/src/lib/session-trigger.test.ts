@@ -115,6 +115,7 @@ describe('sessionTriggerKind', () => {
     const detail: SessionDetailDto = {
       id: 'dream-session-1',
       parentSession: null,
+      siblingSessions: [],
       childSessions: [],
       agentId: 'target-agent',
       platform: 'dream',

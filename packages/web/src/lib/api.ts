@@ -394,6 +394,8 @@ export interface SessionRelationDto {
 export interface SessionDetailDto {
   id: string
   parentSession: SessionRelationDto | null
+  /** Absent on a Control Plane that predates sibling navigation. */
+  siblingSessions?: SessionRelationDto[]
   childSessions: SessionRelationDto[]
   agentId: string
   platform: string | null

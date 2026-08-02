@@ -1,10 +1,11 @@
 'use client'
 
-// The session detail page's left rail: every session of the CURRENT agent, so a
-// run you are comparing against is one click away instead of a round trip through
-// /sessions. It only appears when the agent has ≥2 sessions (a single-session
-// agent's rail would just repeat the page you are on) and only on desktop —
-// ≤768px navigates sessions through the Shell app bar's back affordance.
+// The session detail page's left rail: the open session's direct family (parent,
+// siblings, and children) followed by the other sessions of the CURRENT agent.
+// Family rows stay in their tree even when pinned and are removed from the ordinary
+// list below, so lineage never appears twice. The rail only appears when there is
+// another session to navigate to and only on desktop — ≤768px uses the relation
+// card in SessionDetailView plus the Shell app bar's back affordance.
 //
 // A row is the owning integration's platform mark (Slack / Telegram / … ) plus the
 // title, and nothing else: at 224px a per-row timestamp crowds out the one thing
@@ -24,7 +25,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { canonicalSessionId, mergeCanonicalSessions, sessionChannelDisplay, type Session } from '@/lib/data'
-import { fetchSessionDetail, sessionFromDetailDto } from '@/lib/api'
+import { fetchSessionDetail, sessionFromDetailDto, type SessionDetailDto, type SessionRelationDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
@@ -40,11 +41,22 @@ import {
   type SessionPin
 } from '@/lib/session-pins'
 
+interface RailRow {
+  id: string
+  agentId?: string
+  platform: string
+  title: string
+  tooltip: string
+}
+
+const EMPTY_RELATIONS: SessionRelationDto[] = []
+
 export function SessionRail({
   sessions,
   current,
   total,
-  agentId
+  agentId,
+  family
 }: {
   /** The agent-filtered first page of sessions, newest first. */
   sessions: Session[]
@@ -54,6 +66,8 @@ export function SessionRail({
   total: number
   /** Owning agent — scopes the pins and the footer link. */
   agentId: string | undefined
+  /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
+  family?: Pick<SessionDetailDto, 'parentSession' | 'siblingSessions' | 'childSessions'>
 }) {
   const { orgPath, activeOrg } = useOrgs()
   // Schedule-triggered rows show the schedule's name, so the rail needs the crons
@@ -70,9 +84,9 @@ export function SessionRail({
   }, [])
 
   const togglePin = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, rowAgentId?: string) => {
       setPins((prev) => {
-        const next = toggleSessionPin(prev, sessionId, agentId ?? '')
+        const next = toggleSessionPin(prev, sessionId, rowAgentId ?? agentId ?? '')
         writeSessionPins(next)
         return next
       })
@@ -80,13 +94,30 @@ export function SessionRail({
     [agentId]
   )
 
+  const currentId = canonicalSessionId(current)
+  const parent = family?.parentSession ?? null
+  const siblings = family?.siblingSessions ?? EMPTY_RELATIONS
+  const children = family?.childSessions ?? EMPTY_RELATIONS
+  const hasFamily = Boolean(parent || siblings.length > 0 || children.length > 0)
+  const relatedIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (!hasFamily) return ids
+    ids.add(currentId)
+    if (parent) ids.add(parent.id)
+    for (const relation of siblings) ids.add(relation.id)
+    for (const relation of children) ids.add(relation.id)
+    return ids
+  }, [children, currentId, hasFamily, parent, siblings])
+
   // Pinned rows for THIS agent that the loaded page does not carry. Fetched by id
   // because the list endpoint cannot filter by id; a rail holds a handful of pins,
   // and the cap only bounds a pathological list. A row that fails to load is simply
   // not rendered — a 404 here means "missing or not authorized", which is not proof
   // of deletion, so the pin is left alone (see lib/session-pins.ts).
-  const currentId = canonicalSessionId(current)
-  const loadedIds = useMemo(() => new Set([...sessions.map(canonicalSessionId), currentId]), [sessions, currentId])
+  const loadedIds = useMemo(
+    () => new Set([...sessions.map(canonicalSessionId), currentId, ...relatedIds]),
+    [sessions, currentId, relatedIds]
+  )
   const missingPinIds = useMemo(
     () =>
       pinnedIdsForAgent(pins, agentId ?? '')
@@ -120,7 +151,11 @@ export function SessionRail({
     [sessions, current, hydratedPins]
   )
 
-  const { pinned, rest } = useMemo(() => partitionPinned(rows, pins), [rows, pins])
+  const ordinaryRows = useMemo(
+    () => (hasFamily ? rows.filter((session) => !relatedIds.has(session.id)) : rows),
+    [hasFamily, relatedIds, rows]
+  )
+  const { pinned, rest } = useMemo(() => partitionPinned(ordinaryRows, pins), [ordinaryRows, pins])
   // Dated groups cover the UNPINNED rows only — a pin is an explicit "keep this at
   // the top", which outranks how old the run is. `now` is read per render; the rail
   // only renders once its agent-filtered page has landed on the client, so there is
@@ -130,49 +165,75 @@ export function SessionRail({
   // The agent's real session count, not the loaded-page length — a 60-session agent
   // must not read "50". This also gates the rail, so it does not blink into view
   // once page one lands.
-  const count = Math.max(total, rows.length)
+  const count = Math.max(total, rows.length, relatedIds.size)
 
-  // A rail that would only show the session already on screen is noise.
-  if (count < 2) return null
+  // A rail that would only show the session already on screen is noise. Direct
+  // lineage still makes it useful when the current agent itself has one session.
+  if (count < 2 && !hasFamily) return null
 
-  const row = (s: Session, isPinned: boolean) => {
+  const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
-    const on = s.id === currentId
+    return {
+      id: canonicalSessionId(s),
+      agentId: s.agentId ?? agentId,
+      platform: channel.platform,
+      title: s.title,
+      tooltip: `${s.title}\n${s.time} · ${channel.label}`
+    }
+  }
+  const relationRow = (relation: SessionRelationDto): RailRow => {
+    const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
+    return {
+      id: relation.id,
+      agentId: relation.agentId,
+      platform: relation.platform,
+      title,
+      tooltip: title
+    }
+  }
+  const isPinned = (sessionId: string) => pins.some((pin) => pin.id === sessionId)
+  const row = (item: RailRow, pinnedRow: boolean, depth: 0 | 1 | 2 = 0, on = false) => {
     return (
       <div
-        key={s.id}
-        className={`group flex w-full items-center gap-2 rounded-sm px-[9px] py-[6px] ${
+        key={item.id}
+        className={`group flex w-full items-center gap-2 rounded-sm py-[6px] pr-[9px] ${
+          depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
+        } ${
           on
             ? 'bg-(--brand-soft) text-(--text-primary)'
             : 'text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
         }`}
       >
         <Link
-          href={orgPath(`/sessions/${encodeURIComponent(s.id)}`)}
-          // The two facts the row itself drops — when it ran and where — plus the
-          // untruncated title. `\n` is a real break: the tooltip layer renders
-          // whitespace-pre-line.
-          title={`${s.title}\n${s.time} · ${channel.label}`}
+          href={orgPath(`/sessions/${encodeURIComponent(item.id)}`)}
+          title={item.tooltip}
+          aria-current={on ? 'page' : undefined}
           className="flex min-w-0 flex-1 items-center gap-2"
         >
+          {depth > 0 && (
+            <span
+              aria-hidden="true"
+              className="-mt-2 h-[15px] w-[13px] flex-none rounded-bl-[4px] border-b-[1.5px] border-l-[1.5px] border-(--border-strong)"
+            />
+          )}
           <span className="imark h-[18px] w-[18px] flex-none rounded-xs">
-            <PlatformMark platform={channel.platform} fillPct={100} />
+            <PlatformMark platform={item.platform} fillPct={100} />
           </span>
           <span
             className={`min-w-0 flex-1 truncate font-sans text-[12.5px] leading-normal ${
               on ? 'font-semibold' : 'font-medium'
             }`}
           >
-            {s.title}
+            {item.title}
           </span>
         </Link>
         <button
           type="button"
-          onClick={() => togglePin(s.id)}
-          aria-pressed={isPinned}
-          title={isPinned ? 'Unpin session' : 'Pin session'}
+          onClick={() => togglePin(item.id, item.agentId)}
+          aria-pressed={pinnedRow}
+          title={pinnedRow ? 'Unpin session' : 'Pin session'}
           className={`-my-[2px] h-[19px] w-[19px] flex-none items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
-            isPinned ? 'flex text-(--brand)' : 'hidden text-(--text-tertiary) group-hover:flex group-focus-within:flex'
+            pinnedRow ? 'flex text-(--brand)' : 'hidden text-(--text-tertiary) group-hover:flex group-focus-within:flex'
           }`}
         >
           <Icon name="pin" size={12} />
@@ -191,7 +252,20 @@ export function SessionRail({
           <span className="mono flex-none text-[11px] text-(--text-tertiary)">{count}</span>
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto">
-          {pinned.map((s) => row(s, true))}
+          {hasFamily && (
+            <>
+              <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                Related
+              </div>
+              {parent && row(relationRow(parent), isPinned(parent.id))}
+              {row(sessionRow(current), isPinned(currentId), parent ? 1 : 0, true)}
+              {children.map((child) => row(relationRow(child), isPinned(child.id), parent ? 2 : 1))}
+              {siblings.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
+              {siblings.map((sibling) => row(relationRow(sibling), isPinned(sibling.id), 1))}
+              {ordinaryRows.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
+            </>
+          )}
+          {pinned.map((s) => row(sessionRow(s), true, 0, canonicalSessionId(s) === currentId))}
           {pinned.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
           {groups.map((g, i) => (
             <Fragment key={g.bucket}>
@@ -204,7 +278,7 @@ export function SessionRail({
               >
                 {g.label}
               </div>
-              {g.rows.map((s) => row(s, false))}
+              {g.rows.map((s) => row(sessionRow(s), false, 0, canonicalSessionId(s) === currentId))}
             </Fragment>
           ))}
         </div>
