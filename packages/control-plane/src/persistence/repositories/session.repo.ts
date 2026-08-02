@@ -289,9 +289,11 @@ function conversationKeyJoinSql(a: Prisma.Sql, b: Prisma.Sql): Prisma.Sql {
   `
 }
 
-/** In-process mirror of `conversationKeyJoinSql` for bucketing fetched rows. */
+/** In-process mirror of `conversationKeyJoinSql` for bucketing fetched rows.
+ *  NUL-joined like the §5.1 codec — a printable separator could collide on
+ *  parts that contain it. */
 function conversationKeyOf(row: Pick<SessionMeta, 'platform' | 'tenantScope' | 'channel' | 'thread'>): string {
-  return [row.platform ?? 'slack', row.tenantScope ?? '', row.channel ?? '', row.thread ?? ''].join(' ')
+  return [row.platform ?? 'slack', row.tenantScope ?? '', row.channel ?? '', row.thread ?? ''].join('\u0000')
 }
 
 const SESSION_ORDER: Prisma.SessionMetaOrderByWithRelationInput[] = [
