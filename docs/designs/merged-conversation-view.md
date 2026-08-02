@@ -79,7 +79,7 @@ grouping, attribution — is shared.
 
 |                             | Webchat                                                                                                                                                               | Slack                                                                                            |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **Identity (grouping key)** | `conversationId` (the session's `channel`)                                                                                                                            | `(platform, channel, thread)`                                                                    |
+| **Identity (grouping key)** | `conversationId` (the session's `channel`)                                                                                                                            | `(platform, tenantScope, channel, thread)` (§5.1)                                                |
 | **Duplicate identity**      | raw `ts` string (== canonical `at` minted at origin, collision-bumped — [webchat-multi-agents.md §5](webchat-multi-agents.md)), identical in every participant's copy | raw `ts` string (the platform message `ts`), identical in every participant's copy               |
 | **Ordering**                | normalized event time (§6): canonical `at` (epoch ms) → µs                                                                                                            | normalized event time (§6): platform `ts` (decimal seconds) and daemon work-row stamps (ms) → µs |
 | **Roster**                  | explicit, owner-assembled (`webchat_conversation_agent`; served on the session detail DTO)                                                                            | emergent — derived from the merged rows (senders + trusted a2a bots)                             |
@@ -144,26 +144,31 @@ aggregation that still streams per-source and persists nothing is the fallback
 ### 5.1 Key encoding
 
 - Webchat: `conversationId` (already a UUID; the session row's `channel`).
-- Slack: `platform:transportScope:channel:thread` (empty scope segment when
-  null), base64url-encoded for the URL. `thread` falls back to the
+- Slack: `platform:tenantScope:channel:thread` (empty scope segment when
+  unknown), base64url-encoded for the URL. `thread` falls back to the
   channel-root marker exactly as sessions record it, so a channel-root
   conversation groups its root-thread sessions.
 
-Thread identity in this system is `(platform, channel, thread)` **plus the
-daemon's `transportScope`** wherever a shared ingress multiplexes
-installations — the scope is already part of the daemon session key and of
-the daemon's transcript channel key, but it is not reported to the CP today.
-C1 closes that gap: `event/session` gains an optional `transportScope`,
-`SessionMeta` stores it (nullable), and the conversation key is
-`(platform, transportScope ?? '', channel, thread)` — two installations
-sharing a channel id can never merge into one conversation when the daemon
-itself keeps them apart. Pre-upgrade rows carry a null scope and may
-transiently render as a separate conversation from post-upgrade scoped rows
-of the same thread — a display artifact that ages out with activity, accepted
-for C1. Socket-mode connections have no transportScope; a cross-**workspace**
-channel-id collision there is the same pre-existing (and unobserved) exposure
-the daemon's own keys carry, and lifting workspace identity (the platform team
-id) into both layers together is platform-identity work outside this design.
+Raw `(channel, thread)` coordinates are not a shared namespace across
+installations — the daemon already keeps them apart (its session key and
+transcript channel key both carry a scope). The conversation key needs a
+scope too, and the right one already crosses the wire: `event/session`
+carries the protocol's **durable workspace/tenant scope**
+(`EventSession.transportScope` — a Slack team id, Feishu tenant key, or a
+minted stable per-integration scope; the daemon fills it for Socket Mode and
+HTTP ingress alike once the workspace is known). That field is explicitly
+NOT the daemon session key's credential-derived physical transport scope —
+that value is hashed from bot/app tokens and rotates with them, so grouping
+on it would split a workspace's conversations at every token rotation
+(review finding; the two scopes also carry different security semantics —
+the durable one already anchors `ownerIdentity` for session visibility).
+C1 persists the durable value under an unambiguous CP name — a nullable
+`SessionMeta.tenantScope` column (today it is only folded into
+`ownerIdentity`, not queryable) — and the conversation key is
+`(platform, tenantScope ?? '', channel, thread)`. Pre-upgrade rows carry a
+null scope and may transiently render apart from post-upgrade rows of the
+same thread — a display artifact that ages out with activity, accepted for
+C1.
 
 ### 5.2 Grouped list is the default
 
@@ -192,17 +197,31 @@ caller never contributes):
 }
 ```
 
-Pagination stays newest-first by `lastActivityAt` with **no aggregate
-query**, but naive streaming dedupe is not enough: dedupe state resets at
-every page boundary, so a conversation whose members' activity straddles a
-cursor would reappear on a later page (review finding). The stateless rule is
-**emit-at-max**: a scanned row yields its conversation only if it IS the
-conversation's newest member row, checked with an indexed exists-newer probe
-per candidate on `(platform, transportScope, channel, thread, lastActivityAt)`
-— the C1 replacement of today's `@@index([platform, channel])`, which also
-serves the member backfill. Rows failing the probe are skipped: their
-conversation already surfaced (or will) at its true max position, on whatever
-page that position falls. The scan itself still pages on the existing
+Pagination stays newest-first with **no aggregate query**, but naive
+streaming dedupe is not enough: dedupe state resets at every page boundary,
+so a conversation whose members' activity straddles a cursor would reappear
+on a later page (review finding). The stateless rule is **emit-at-max**,
+made exact by two requirements (review finding):
+
+- **Total order, not bare `lastActivityAt`.** The representative is the
+  maximum member row under the flat cursor's full tuple
+  `(lastActivityAt, startedAt, id)` — two members sharing the same
+  millisecond cannot both win, so a conversation is emitted exactly once.
+- **The probe applies the outer scan's own predicate.** The exists-newer
+  check runs under the identical org and session-visibility filter —
+  otherwise a newer invisible or cross-org member row would suppress a
+  conversation the caller can legitimately see. Grouping is
+  visibility-filtered, so the representative is the caller's newest VISIBLE
+  member.
+
+A scanned row yields its conversation only if no same-key member row is
+strictly greater in that tuple under that predicate — one indexed probe per
+candidate on the C1 index
+`(orgId, platform, tenantScope, channel, thread, lastActivityAt, startedAt, id)`
+(replacing today's `@@index([platform, channel])`; it also serves the member
+backfill). Rows failing the probe are skipped: their conversation already
+surfaced (or will) at its true max position, on whatever page that position
+falls. The scan itself still pages on the existing
 `session_meta_org_visibility_page_idx`, so grouped cost ≈ the flat scan + one
 index probe per scanned row + one member-backfill batch per page.
 
@@ -249,11 +268,20 @@ Inputs: per-member transcript pages, each row carrying
 session (`sessionId`, `agentId`).
 
 1. **Union** all rows from all readable sources.
-2. **Dedupe text rows by raw `ts` string equality** within the conversation
-   (equality only — never order). Rows sharing the exact `ts` string are
-   copies of the same message (webchat: canonical `at`, probe-and-bump
-   guarantees distinct posts got distinct `ts`; Slack: the platform-assigned
-   `ts`, identical in every delivery).
+2. **Dedupe is scoped to `kind === 'text'` rows and is provenance-aware**
+   (raw `ts` equality only — never order). A `ts` string identifies the same
+   message across copies only when the coordinate was minted once for all of
+   them: webchat rows always qualify (origin-minted canonical `at`,
+   probe-and-bump guarantees distinct posts got distinct `ts`); Slack rows
+   qualify only when `ts` is the provider-native decimal-seconds form
+   (`\d+.\d+` — the platform message id, identical in every delivery).
+   Daemon-local text rows — a2a report-backs and other silent deliveries
+   stamped with process-local millisecond `monotonicTs()` — exist in exactly
+   one source transcript and are NEVER deduped across sources: two daemons
+   can mint the same millisecond for distinct rows, and raw equality would
+   discard one (review finding). Work-lane rows never dedupe (step 3), so a
+   coincidental `ts` collision between a text row and a tool/reasoning row
+   is inert.
    Precedence among copies:
    - **Author copy wins**: the row whose source session's `agentId` matches
      the row's author (`sender === source.agentId`, or the daemon-relabeled
@@ -399,11 +427,11 @@ how divergence starts.
 
 - **C1 — grouped sessions list.** CP grouped-by-default list with the
   `view=flat` escape hatch (emit-at-max scan + member backfill, §5.2), the
-  `(platform, transportScope, channel, thread, lastActivityAt)` index, the
-  `event/session` `transportScope` report + nullable `SessionMeta` column
-  (§5.1), grouped rendering (participant avatar stack, single row per
-  conversation, both platforms). Fixes the most visible confusion (N rows
-  per conversation).
+  `(orgId, platform, tenantScope, channel, thread, lastActivityAt, startedAt, id)`
+  index, persistence of the already-reported durable tenant scope as
+  `SessionMeta.tenantScope` (§5.1), grouped rendering (participant avatar
+  stack, single row per conversation, both platforms). Fixes the most
+  visible confusion (N rows per conversation).
 - **C2 — merged page.** `conversation-merge.ts` (union/dedupe/order, unit
   tests over both adapters' fixtures), `/conversations/:key` route, renderer
   reuse, partial-merge notices, session→conversation deep-link redirects
@@ -439,11 +467,10 @@ how divergence starts.
    operation's default response shape.
 2. **Pagination is emit-at-max — still no aggregate query.** A scanned row
    yields its conversation only when it is the conversation's newest member
-   row (indexed exists-newer probe on the C1
-   `(platform, transportScope, channel, thread, lastActivityAt)` index); the
-   plain streaming-dedupe shortcut was wrong across page boundaries and is
-   rejected (review finding). The scan still pages on
-   `session_meta_org_visibility_page_idx`.
+   row under the full `(lastActivityAt, startedAt, id)` total order AND the
+   outer scan's own org/visibility predicate (indexed exists-newer probe on
+   the C1 index, §5.2); the plain streaming-dedupe shortcut was wrong across
+   page boundaries and is rejected (review finding).
 3. **Per-agent session pages are not surfaced for multi-participant
    conversations.** Every entry point leads to the merged page; existing
    session deep links redirect with `?focus=<agentId>`; the conversation
@@ -453,14 +480,21 @@ how divergence starts.
 5. **Lineage never changes conversation membership** — parent/child edges are
    linked (attribution in-thread, navigation across conversations), never
    merged (§9).
-6. **Review revisions (v2).** Conversation keys carry the daemon's
-   `transportScope` (reported on `event/session`, stored nullable on
-   `SessionMeta`); authorization-hidden members are absent, never counted;
-   ordering uses the daemon's normalized event-time axis (`transcriptEventTimeUs`
-   semantics) with raw `ts` demoted to duplicate identity; member resolution
-   collapses to one current session per agent, retiring superseded ACP rows
-   from the merge.
-7. **Co-membership is not siblinghood.** Sessions sharing a room relate
+6. **Review revisions (v2).** Authorization-hidden members are absent,
+   never counted; ordering uses the daemon's normalized event-time axis
+   (`transcriptEventTimeUs` semantics) with raw `ts` demoted to duplicate
+   identity; member resolution collapses to one current session per agent,
+   retiring superseded ACP rows from the merge. (v2's scope proposal is
+   superseded by v3's durable tenant scope.)
+7. **Review revisions (v3).** Conversation scope is the protocol's DURABLE
+   workspace/tenant scope (`EventSession.transportScope`, persisted as
+   `SessionMeta.tenantScope`) — never the credential-derived rotating
+   physical scope; emit-at-max selects its representative by the full
+   `(lastActivityAt, startedAt, id)` tuple under the outer scan's own
+   org/visibility predicate; text-row dedupe is provenance-aware (webchat
+   canonical `at` always, Slack only provider-native decimal `ts`,
+   daemon-local millisecond rows never).
+8. **Co-membership is not siblinghood.** Sessions sharing a room relate
    through conversation membership only; "sibling" keeps its lineage meaning
    (same parent session). An edge whose endpoints share the conversation key
    renders as attribution and is excluded from lifted navigation — the
