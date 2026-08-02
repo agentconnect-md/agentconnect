@@ -430,9 +430,11 @@ multi-agent webchat adopts the same workflow with three adaptations:
   replacement's generation ordinal) — not a terminal frame: the turn still
   ends with exactly one `done`, so replay windows, busy state, and older
   browsers (which ignore unknown event kinds) stay coherent. The console
-  collapses the lane with a "the conversation moved on — updating this
-  answer" marker and the replacement generation streams under the same
-  `turnId`. Only the accepted generation becomes the canonical post, fans
+  folds the discarded blocks into the collapsible work lane together with a
+  "the conversation moved on — updating this answer" marker at the point the
+  update happened — live-only chrome, since a refresh rebuilds from the
+  persisted transcript, which records only the accepted generation — and the
+  replacement streams under the same `turnId`. Only the accepted generation becomes the canonical post, fans
   out as context, and is recorded as delivered; discarded generations follow
   that design's transcript and usage rules — audit-visible, usage counted,
   never delivered.

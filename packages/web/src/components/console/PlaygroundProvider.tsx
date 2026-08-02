@@ -357,12 +357,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             if (step.boundary) break
             if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan' }
           }
-          // The marker is a VISIBLE conversation step ('done', not the
-          // collapsible work lane) fenced with `boundary` so replacement chunks
-          // never merge into it.
+          // The marker lives INSIDE the collapsible work lane ('plan'), at the
+          // chronological point the update happened — it is live-only chrome (a
+          // refresh rebuilds from the persisted transcript, which never records
+          // it), so it must not masquerade as standing conversation content.
+          // `boundary` still fences it: replacement chunks start fresh blocks.
           return [
             ...collapsed,
-            lane({ kind: 'done', text: 'The conversation moved on — updating this answer…', boundary: true })
+            lane({ kind: 'plan', text: 'The conversation moved on — updating this answer…', boundary: true })
           ]
         }
         if (ev.kind === 'message') {
