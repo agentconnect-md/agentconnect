@@ -333,6 +333,32 @@ describe('prepareRuntimeLaunch', () => {
 const runtime = (command: string, args: string[] = ['acp']): RuntimeDef => ({ command, args, env: [] })
 
 describe('composeRuntimeLaunch', () => {
+  it.each([
+    ['codex-acp', 'codex-acp', 'CODEX_HOME', '.codex'],
+    ['claude-acp', 'claude-agent-acp', 'CLAUDE_CONFIG_DIR', '.claude']
+  ])('keeps unsandboxed %s state under the agent HOME', (runtimeId, command, stateEnv, stateDir) => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const composed = composeRuntimeLaunch({
+      runtimeId,
+      runtime: runtime(command),
+      provider: 'managed',
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      explicitEnv: {
+        HOME: '/tmp/escape-home',
+        [stateEnv]: '/tmp/escape-state'
+      },
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const privateHome = join(scopeDir, 'home')
+    expect(composed.launch.inheritProcessEnv).toBe(false)
+    expect(composed.launch.sandbox).toBeUndefined()
+    expect(composed.launch.env.HOME).toBe(privateHome)
+    expect(composed.launch.env[stateEnv]).toBe(join(privateHome, stateDir))
+  })
+
   it('pins Anthropic profile discovery away from the actual sandboxed child HOME', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const composed = composeRuntimeLaunch({

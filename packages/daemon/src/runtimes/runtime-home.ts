@@ -20,7 +20,7 @@ const LEGACY_RUNTIME_STATE: Record<string, string[]> = {
   'codex-acp': ['.codex']
 }
 
-/** Persistent private user environment for an agent runtime while it is sandboxed. */
+/** Persistent private user environment for one agent runtime. */
 export function runtimeHomePath(scopeDir: string): string {
   return join(resolve(scopeDir), 'home')
 }

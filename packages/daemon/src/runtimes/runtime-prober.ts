@@ -448,7 +448,6 @@ export function preparedProbeLaunch(
     provider: 'managed',
     scopeDir,
     cwd,
-    isolateHome: true,
     runInSandbox: opts.runInSandbox ?? false,
     daemonRoot: opts.daemonRoot,
     agentsRoot: opts.agentsRoot,

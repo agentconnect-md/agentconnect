@@ -134,9 +134,9 @@ export function effectiveRunInSandbox(
   return requireSandbox || (requested && mechanism !== undefined)
 }
 
-/** Prepare one ACP adapter launch. A private HOME is normally part of sandbox
- * isolation, but security probes and runtimes with generated private policy may
- * request the same environment isolation without an OS sandbox. */
+/** Prepare one ACP adapter launch. HOME isolation and OS confinement are separate:
+ * composed agent/probe launches always request a private HOME, while low-level
+ * direct callers may still inherit the daemon environment explicitly. */
 export function prepareRuntimeLaunch(opts: {
   runtimeId: string
   runtime?: RuntimeDef

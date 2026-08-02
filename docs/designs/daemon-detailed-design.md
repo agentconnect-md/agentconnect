@@ -311,6 +311,14 @@ On POSIX hosts, AgentConnect removes group/other access from existing
 `0600`. Agent directories created by the daemon use `0700`; existing custom
 agent directories and higher custom parents are left unchanged.
 
+Every composed ACP runtime launch receives an agent-scoped user environment under
+`<agent-dir>/home`: `HOME`, the XDG state roots, and verified runtime-specific
+locations such as `CODEX_HOME` and `CLAUDE_CONFIG_DIR` cannot resolve to the daemon
+account's shared directories. This applies whether or not the OS sandbox is enabled
+and prevents accidental cross-agent session/config/cache mixing. It is not a security
+boundary by itself: an unsandboxed runtime still has the daemon account's filesystem
+authority and can deliberately access other same-user paths.
+
 ### Linux ACP runtime sandbox
 
 AgentConnect currently enables runtime sandboxing on Linux only. The daemon uses
@@ -320,9 +328,9 @@ state is never shared between agents. The host must provide working `bwrap`,
 `socat`, and `rg` executables and permit unprivileged user namespaces. Startup
 performs a live probe rather than treating installed binaries as sufficient.
 
-An enabled sandbox gives the runtime a private HOME, hides daemon-owned agent
-metadata and the host source from which that runtime state was seeded, and
-re-allows reads only for the workspace, private HOME, managed memory,
+An enabled sandbox confines the already-private runtime environment, hides
+daemon-owned agent metadata and the host source from which runtime state was
+seeded, and re-allows reads only for the workspace, private HOME, managed memory,
 `run/config-files`, `.agentconnect/runtime-policy`, trusted runtime installation
 roots, and the runtime's selected host credential path. Writes are limited to
 the workspace, private HOME, managed memory, SRT temporary storage, and that

@@ -1401,14 +1401,14 @@ export class Daemon {
   private mcp!: McpControlServer
   // The agent memory provider. Per-agent: it dispatches each call to the agent's
   // configured backend (managed = our <agent-root>/memory/ dir; native = the
-  // runtime's own memory redirected under the private runtime HOME only while the
-  // agent runs in the sandbox). Backs the memory MCP tools, the session-start index
-  // injection, and the CP console's memory reads.
+  // runtime's own memory redirected under the private runtime HOME). Backs the
+  // memory MCP tools, the session-start index injection, and the CP console's
+  // memory reads.
   private memory: DispatchingMemoryProvider = createMemoryProvider(
     (id) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
-      return memoryKindOf(agent) === 'native' && this.agentRunsInSandbox(agent) ? runtimeHomePath(agent.dir) : agent.dir
+      return memoryKindOf(agent) === 'native' ? runtimeHomePath(agent.dir) : agent.dir
     },
     (id) => {
       const a = this.agents.get(id)
@@ -4183,8 +4183,7 @@ export class Daemon {
         `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
       )
     }
-    const memoryAgent =
-      memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
+    const memoryAgent = memoryKindOf(agent) === 'native' ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
     const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
     const env: Record<string, string> = {
       ...baseEnv,

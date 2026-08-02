@@ -119,8 +119,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
   Object.assign(agentEnv, configFiles.env)
   for (const notice of configFiles.notices) out.write(`⚠️ ${notice}\n`)
-  const memoryAgent =
-    memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
+  const memoryAgent = memoryKindOf(agent) === 'native' ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
   const composed = composeRuntimeLaunch({
     runtimeId: agent.runtime,
     runtime,

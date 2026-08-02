@@ -145,7 +145,6 @@ export function composeRuntimeLaunch(opts: {
   explicitEnv?: Record<string, string>
   stateSourceEnv?: NodeJS.ProcessEnv
   hostEnv?: NodeJS.ProcessEnv
-  isolateHome?: boolean
   runInSandbox: boolean
   daemonRoot?: string
   agentsRoot?: string
@@ -175,7 +174,11 @@ export function composeRuntimeLaunch(opts: {
     scopeDir: opts.scopeDir,
     cwd: opts.cwd,
     runInSandbox: opts.runInSandbox,
-    isolateHome: opts.isolateHome || (protectedMemory && policyId === 'hermes-agent'),
+    // Runtime state is agent-scoped even when the operator deliberately runs the
+    // process without OS confinement. The sandbox controls filesystem authority;
+    // it must not be the switch that decides whether HOME/XDG/session state is
+    // shared with the daemon account.
+    isolateHome: true,
     explicitEnv: opts.explicitEnv,
     stateSourceEnv,
     hostEnv: opts.hostEnv,
