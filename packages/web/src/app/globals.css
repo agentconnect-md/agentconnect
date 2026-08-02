@@ -1035,7 +1035,7 @@
   /* The runtime brand mark falls through to a bare <img> (no data attribute) —
      a colored logo, not a monochrome glyph, so the dark inverse plate shows
      through its transparent areas. Keep the plate transparent (as with glyphs)
-     so the mark reads on the card surface, e.g. Usage "By type" rows. */
+     so the mark reads on the card surface, e.g. Usage "By runtime" rows. */
   .av:has(> img:not([data-agent-icon-image])) {
     background: transparent;
   }

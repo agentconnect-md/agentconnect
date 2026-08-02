@@ -30,13 +30,13 @@ const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
 const USAGE_REFRESH_MS = 30_000
 
 // How the by-agent table is rolled up. `agent` is the raw per-agent breakdown
-// (rows tap through to the agent); `type` sums agents sharing a runtime (bot
-// type) — grouped rows are inert. Both roll up the same per-agent aggregate
-// client-side, so adding a dimension is just another case here.
-type GroupBy = 'agent' | 'type'
+// (rows tap through to the agent); `runtime` sums agents sharing a runtime —
+// grouped rows are inert. Both roll up the same per-agent aggregate client-side,
+// so adding a dimension is just another case here.
+type GroupBy = 'agent' | 'runtime'
 const GROUPS: { key: GroupBy; label: string }[] = [
   { key: 'agent', label: 'By agent' },
-  { key: 'type', label: 'By type' }
+  { key: 'runtime', label: 'By runtime' }
 ]
 
 // Buckets are aligned to the viewer's local day/hour (the CP flooring uses the
@@ -105,7 +105,7 @@ export default function UsageView() {
     }
   })
 
-  // Roll up to the selected grouping. `agent` is the raw list; `type` sums agents
+  // Roll up to the selected grouping. `agent` is the raw list; `runtime` sums agents
   // sharing a runtime and drops the per-agent icon/nav (`navId` absent) so grouped
   // rows are inert and show the runtime glyph.
   type Entry = {
@@ -119,12 +119,12 @@ export default function UsageView() {
     costAmount: number
   }
   let entries: Entry[]
-  if (groupBy === 'type') {
-    const byType = new Map<string, Entry>()
+  if (groupBy === 'runtime') {
+    const byRuntime = new Map<string, Entry>()
     for (const e of enriched) {
       const rt = e.runtime || 'unknown'
-      const g = byType.get(rt) ?? {
-        key: `type:${rt}`,
+      const g = byRuntime.get(rt) ?? {
+        key: `runtime:${rt}`,
         name: runtimeLabel(rt),
         runtime: rt,
         totalTokens: 0,
@@ -134,9 +134,9 @@ export default function UsageView() {
       g.totalTokens += e.totalTokens
       g.sessions += e.sessions
       g.costAmount += e.costAmount
-      byType.set(rt, g)
+      byRuntime.set(rt, g)
     }
-    entries = [...byType.values()].sort((a, b) => b.totalTokens - a.totalTokens)
+    entries = [...byRuntime.values()].sort((a, b) => b.totalTokens - a.totalTokens)
   } else {
     entries = enriched.map((e) => ({ ...e, key: e.agentId, navId: e.agentId }))
   }
@@ -340,7 +340,7 @@ export default function UsageView() {
 
         {/* Desktop table header */}
         <div className={`row h hidden desktop:grid ${GRID}`}>
-          <span>{groupBy === 'type' ? 'Type' : 'Agent'}</span>
+          <span>{groupBy === 'runtime' ? 'Runtime' : 'Agent'}</span>
           <span className="text-right">Sessions</span>
           <span className="text-right">Tokens</span>
           <span className="text-right">Spend</span>

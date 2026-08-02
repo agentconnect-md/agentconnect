@@ -543,6 +543,15 @@ export function preferredModelFor(daemon: Pick<DaemonRow, 'runtimeModels'> | und
   return dflt && models.includes(dflt) ? dflt : models[0]!
 }
 
+/** Runtime ids the daemon REPORTS but cannot launch. The daemon's facts snapshot
+ *  carries the admitted (launchable) set plus any curated candidate whose fresh probe
+ *  came back "authentication required" — installed on the host but logged out, and
+ *  admission keeps those unlaunchable until a probe succeeds. So an agent pinned to
+ *  one could never take a session; the runtime pickers offer them disabled. */
+export function unavailableRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'> | undefined): string[] {
+  return (daemon?.runtimeModels ?? []).filter((r) => r.authRequired).map((r) => r.runtime)
+}
+
 /** One rendered effort choice; `description` (when the runtime provides one)
  *  goes on the control's title attribute. */
 export interface EffortChoice {

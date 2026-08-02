@@ -583,7 +583,9 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 type="button"
                 onClick={toggleRail}
                 className="railtoggle"
-                title={railCollapsed ? 'Expand sidebar' : undefined}
+                // No `title`: the icon already reads as the collapse/expand affordance,
+                // and a tooltip on the collapsed rail's own toggle is noise. Screen
+                // readers still get the state from aria-label.
                 aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
                 <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />

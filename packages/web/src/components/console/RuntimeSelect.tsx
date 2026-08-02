@@ -4,21 +4,33 @@ import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { runtimeLabel } from '@/lib/data'
 
+/** Why an option is offered but not choosable. Today the daemon reports exactly one
+ *  such case: a curated runtime whose last probe came back "authentication required"
+ *  — installed on the host, but logged out, so the daemon keeps it unlaunchable. */
+const UNAVAILABLE_HINT = 'Not signed in on this daemon — sign in to the runtime on the daemon host'
+
 export function RuntimeSelect({
   value,
   options,
+  unavailable,
+  unavailableHint = UNAVAILABLE_HINT,
   onChange,
   ariaLabel = 'Runtime'
 }: {
   value: string
   options: readonly string[]
+  /** Ids the daemon reports but cannot currently run — shown dimmed and unpickable.
+   *  The CURRENT value is never disabled, so a form always has a way back to itself. */
+  unavailable?: readonly string[]
+  unavailableHint?: string
   onChange: (value: string) => void
   ariaLabel?: string
 }) {
   const registry = useAcpRegistry()
   const rows = options.map((id) => ({
     id,
-    label: runtimeLabel(id, acpRuntime(registry, id)?.name)
+    label: runtimeLabel(id, acpRuntime(registry, id)?.name),
+    disabled: id !== value && !!unavailable?.includes(id)
   }))
   const selectedIndex = Math.max(
     0,
@@ -47,33 +59,41 @@ export function RuntimeSelect({
     closeAndFocus()
   }
 
+  // Keyboard travel lands only on choosable rows: step from `from` in `delta` steps
+  // until one is enabled, wrapping. Returns `from` when every row is disabled, which
+  // can't happen while a value is set (its own row is always enabled).
+  const nextEnabled = (from: number, delta: number) => {
+    for (let i = 1; i <= rows.length; i++) {
+      const index = (from + delta * i + rows.length * i) % rows.length
+      if (!rows[index]?.disabled) return index
+    }
+    return from
+  }
+  const firstEnabled = (from: number) => (rows[from]?.disabled ? nextEnabled(from, 1) : from)
+
   const openFromKeyboard = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
-      setActiveIndex(event.key === 'ArrowDown' ? selectedIndex : rows.length - 1)
+      setActiveIndex(event.key === 'ArrowDown' ? firstEnabled(selectedIndex) : nextEnabled(0, -1))
       setOpen(true)
     }
-  }
-
-  const moveActive = (delta: number) => {
-    setActiveIndex((current) => (current + delta + rows.length) % rows.length)
   }
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
-      moveActive(event.key === 'ArrowDown' ? 1 : -1)
+      setActiveIndex((current) => nextEnabled(current, event.key === 'ArrowDown' ? 1 : -1))
       return
     }
     if (event.key === 'Home' || event.key === 'End') {
       event.preventDefault()
-      setActiveIndex(event.key === 'Home' ? 0 : rows.length - 1)
+      setActiveIndex(event.key === 'Home' ? firstEnabled(0) : nextEnabled(0, -1))
       return
     }
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
       const active = rows[activeIndex]
-      if (active) pick(active.id)
+      if (active && !active.disabled) pick(active.id)
       return
     }
     if (event.key === 'Escape') {
@@ -100,7 +120,7 @@ export function RuntimeSelect({
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         onClick={() => {
-          setActiveIndex(selectedIndex)
+          setActiveIndex(firstEnabled(selectedIndex))
           setOpen((current) => !current)
         }}
         onKeyDown={openFromKeyboard}
@@ -153,15 +173,22 @@ export function RuntimeSelect({
                   role="option"
                   tabIndex={-1}
                   aria-selected={isSelected}
+                  // aria-disabled, not the `disabled` attribute: a disabled button
+                  // emits no pointer events, so the tooltip layer would never get to
+                  // show WHY the row can't be picked.
+                  aria-disabled={row.disabled || undefined}
+                  title={row.disabled ? unavailableHint : undefined}
                   className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
-                    isSelected
-                      ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
-                      : isActive
-                        ? 'bg-(--surface-hover)'
-                        : ''
+                    row.disabled
+                      ? 'cursor-not-allowed opacity-45 hover:bg-transparent'
+                      : isSelected
+                        ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
+                        : isActive
+                          ? 'bg-(--surface-hover)'
+                          : ''
                   }`}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onClick={() => pick(row.id)}
+                  onMouseEnter={() => !row.disabled && setActiveIndex(index)}
+                  onClick={() => !row.disabled && pick(row.id)}
                 >
                   <span className="imark h-7 w-7 flex-none rounded-md">
                     <AgentMark model={row.id} />

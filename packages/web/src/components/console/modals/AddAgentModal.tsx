@@ -8,6 +8,7 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
+  unavailableRuntimeIds,
   agentSlugFinalize,
   agentSlugSanitize,
   effortChoicesFor,
@@ -337,8 +338,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // that round-trip back to the launch key — so a created agent actually resolves.
   // No daemon (or none reported) ⇒ the static fallback list.
   const runtimeIds = daemon?.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
-  // Keep the selection valid as the option set changes with the daemon.
-  const effectiveRuntime = runtimeIds.includes(runtime) ? runtime : (runtimeIds[0] ?? '')
+  // Reported but unlaunchable (installed, logged out) — offered disabled, and never
+  // the fallback: an agent pinned to one could not take a session.
+  const unavailableRuntimes = unavailableRuntimeIds(daemon)
+  const firstUsableRuntime = runtimeIds.find((id) => !unavailableRuntimes.includes(id)) ?? runtimeIds[0] ?? ''
+  // Keep the selection valid as the option set changes with the daemon. The picker
+  // can't hand back an unavailable id, so one only ever arrives here as the initial
+  // seed — fall back rather than carry it.
+  const effectiveRuntime =
+    runtimeIds.includes(runtime) && !unavailableRuntimes.includes(runtime) ? runtime : firstUsableRuntime
   // Models come from the chosen daemon's reported capabilities for this runtime.
   // There is no separate "Default" entry: with real models known, the picker
   // preselects the runtime's resolved default (else the first model) and the
@@ -966,6 +974,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   <RuntimeSelect
                     value={effectiveRuntime}
                     options={runtimeIds}
+                    unavailable={unavailableRuntimes}
                     onChange={(nextRuntime) => {
                       setRuntime(nextRuntime)
                       setEffort('')

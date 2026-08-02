@@ -255,26 +255,29 @@ export default function HomeView() {
     // content caps.
     if (isMobile) return { sessionRows: MOBILE_SESSION_ROWS, agentRows: MAX_AGENT_ROWS, cronRows: MAX_CRON_ROWS }
     // An empty card still draws its placeholder row, so it costs a row either way.
-    const haveSessions = Math.max(1, allSessions.length)
-    const haveAgents = Math.min(MAX_AGENT_ROWS, Math.max(1, rankedAgents.length))
-    const haveCrons = Math.min(MAX_CRON_ROWS, Math.max(1, crons.length))
+    let a = Math.min(MAX_AGENT_ROWS, Math.max(1, rankedAgents.length))
+    let c = Math.min(MAX_CRON_ROWS, Math.max(1, crons.length))
     // Whole rows the leftover viewport can hold — unmeasured (mobile / first paint)
     // means no cap, so the cards start at their content-driven maximum.
     const capacity = availableHeight
       ? Math.max(3, Math.floor((availableHeight - CARD_CHROME_H) / DASH_ROW_H))
       : Number.POSITIVE_INFINITY
-    const budget = Math.min(capacity, haveSessions)
-    let a = haveAgents
-    let c = haveCrons
-    // Trim the right column until the left card can cover it. Schedules give way
-    // first, but in two passes down to a 2-row floor before either list is taken
-    // to a single row — so a cramped window thins both cards instead of gutting one.
+    // Trim the right column until the matching left card fits the viewport. Schedules
+    // give way first, but in two passes down to a 2-row floor before either list is
+    // taken to a single row — so a cramped window thins both cards instead of gutting
+    // one. Only the VIEWPORT trims here: a thin session list must not shrink the other
+    // two cards, because the left card can't grow to match them anyway (below).
     for (const floor of [2, 1]) {
-      while (a + c + 1 > budget && c > floor) c--
-      while (a + c + 1 > budget && a > floor) a--
+      while (a + c + 1 > capacity && c > floor) c--
+      while (a + c + 1 > capacity && a > floor) a--
     }
-    return { sessionRows: Math.min(budget, a + c + 1), agentRows: a, cronRows: c }
-  }, [isMobile, availableHeight, allSessions.length, rankedAgents.length, crons.length])
+    // The left card always asks for one row more than the right column shows — that IS
+    // the identity. An org with fewer sessions than that is the one case it can't hold
+    // up: the right column's floor is two cards (two heads + a row each = three left
+    // rows), which no shorter card can reach. There the card renders what it has and
+    // stretches to the row height, so the bottoms still meet.
+    return { sessionRows: a + c + 1, agentRows: a, cronRows: c }
+  }, [isMobile, availableHeight, rankedAgents.length, crons.length])
 
   const topAgents = rankedAgents.slice(0, agentRows)
   const scheduled = crons.slice(0, cronRows)
