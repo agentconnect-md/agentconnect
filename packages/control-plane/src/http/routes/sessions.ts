@@ -531,14 +531,20 @@ export function sessionRoutes(deps: HttpDeps) {
         // Relationships may cross agents (and daemons), so apply the same
         // owning-agent visibility rule to every linked session. A hidden parent
         // is indistinguishable from no parent; hidden children are omitted.
-        const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id)
+        const visibleAgents = await deps.repos.agent.list(orgOf(req), ctxOf(req))
+        const visibleAgentIds = visibleAgents.map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const ctx = ctxOf(req)
-        const [parent, children, siblingCandidates, usage] = await Promise.all([
+        const [parent, children, siblingCandidates, usage, webchatRoster] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
           deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
           s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, visibleAgentIds) : Promise.resolve([]),
-          deps.repos.sessionUsage.get(s.agentId, s.id)
+          deps.repos.sessionUsage.get(s.agentId, s.id),
+          // A webchat session's channel IS its conversation id; the roster feeds
+          // the adopted-session composer/header, which has no relay socket.
+          s.platform === 'webchat' && s.channel
+            ? deps.repos.webchatConversation.participants(s.channel)
+            : Promise.resolve([])
         ])
         const siblings = siblingCandidates.filter((candidate) => candidate.id !== s.id)
         const related = [...(parent ? [parent] : []), ...siblings, ...children]
@@ -579,6 +585,14 @@ export function sessionRoutes(deps: HttpDeps) {
           channelName: s.channelName,
           triggeredByName: s.triggeredByName,
           threadUrl: s.threadUrl,
+          participants:
+            webchatRoster.length > 1
+              ? webchatRoster.map((p) => ({
+                  agentId: p.agentId,
+                  name: visibleAgents.find((a) => a.id === p.agentId)?.name ?? null,
+                  primary: p.role === 'primary'
+                }))
+              : null,
           runtime: s.runtime,
           model: s.model,
           effort: s.effort,

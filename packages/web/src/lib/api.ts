@@ -477,6 +477,10 @@ export interface SessionDetailDto {
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   accessSyncDegraded?: boolean
+  /** Multi-agent webchat conversation roster, in pick order. Null for single-agent
+   *  conversations and other platforms; absent on a CP that predates the feature.
+   *  `name` is null when the caller cannot view that participant's agent. */
+  participants?: Array<{ agentId: string; name: string | null; primary: boolean }> | null
 }
 
 // The full ACP tool body (protocol `ToolBody`), transported as a JSON STRING in
@@ -1738,7 +1742,16 @@ export function sessionFromDto(d: SessionDto): Session {
  *  pages. Detail carries its own latest usage snapshot so a direct link can show
  *  this session's token/cost accounting without depending on list pagination. */
 export function sessionFromDetailDto(d: SessionDetailDto): Session {
-  return sessionFromDto({
+  // The adopted-session composer/header needs the conversation roster before any
+  // relay socket exists; short-id fallback mirrors the provider's ready-frame path.
+  const participants = d.participants?.length
+    ? d.participants.map((p) => ({
+        agentId: p.agentId,
+        name: p.name ?? p.agentId.slice(0, 8),
+        ...(p.primary ? { primary: true } : {})
+      }))
+    : undefined
+  const base = sessionFromDto({
     sessionId: d.id,
     sessionKey: {
       platform: d.platform ?? 'slack',
@@ -1763,6 +1776,7 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     outputMode: d.outputMode,
     daemonId: d.daemonId
   })
+  return participants ? { ...base, participants } : base
 }
 
 /** Keep local/live session fields while refreshing usage from the independently
