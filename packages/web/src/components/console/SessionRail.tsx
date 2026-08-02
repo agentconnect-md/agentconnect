@@ -47,6 +47,7 @@ import {
   agentLabel,
   canonicalSessionId,
   conversationRowKey,
+  isMergedConversationRow,
   mergeCanonicalSessions,
   sessionChannelDisplay,
   type Agent,
@@ -268,12 +269,7 @@ export function SessionRail({
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
     const id = canonicalSessionId(s)
-    // The merged page is the only surfaced view of a MULTI-participant
-    // conversation (§5.3). The test is MEMBERSHIP, not the key every grouped row
-    // now carries and not `participants` — under an agent filter a shared thread
-    // returns one row, and reading that as a single-agent session would send the
-    // reader to a member session that immediately redirects here anyway.
-    const merged = pinIdsOf(s).length > 1 && s.conversationKey
+    const merged = isMergedConversationRow(s)
     return {
       // The SESSION id: it is what `current` is matched against and what a fresh
       // pin records. Pin LOOKUP goes through every member (see sessionPinIds).

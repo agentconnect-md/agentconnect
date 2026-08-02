@@ -20,12 +20,15 @@ export function sessionFilterAgentKey(agentId: SessionListFilters['agentId']): s
 export function useSessionList(
   orgId: string | null | undefined,
   filters: SessionListFilters = {},
-  // The sessions LIST page reads the grouped conversation view (one row per
-  // conversation, merged-conversation-view.md §5.2); every other consumer
-  // (rails, agent pages) keeps the flat rows.
+  // GROUPED by default — one row per conversation (merged-conversation-view.md
+  // §5.2). A conversation is the unit the console talks about everywhere it
+  // lists runs, so the flat view is the exception, not the default: reading it
+  // by accident lists a thread once per agent that answered in it, and once
+  // more per superseded ACP session. `grouped: false` is for a consumer that
+  // genuinely wants session rows.
   options: { grouped?: boolean } = {}
 ) {
-  const grouped = options.grouped === true
+  const grouped = options.grouped !== false
   // The key is a scalar cache discriminator, so a multi-agent filter travels as
   // one comma-joined string and the fetcher splits it back into repeated params.
   const agentId = sessionFilterAgentKey(filters.agentId)

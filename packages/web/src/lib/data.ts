@@ -962,6 +962,21 @@ export function conversationRowKey(session: Pick<Session, 'id' | 'realSessionId'
   return session.conversationKey ?? canonicalSessionId(session)
 }
 
+/**
+ * Whether a row's only surfaced view is the merged conversation page
+ * (merged-conversation-view.md §5.3), i.e. whether it should link there rather
+ * than to a member session that would bounce straight back through the redirect.
+ *
+ * The test is MEMBERSHIP, which the CP reports over everything the caller can
+ * see. Not the key — every grouped row carries one now, including conversations
+ * of one. Not `participants` either: an agent filter narrows that to the rows it
+ * returned, so a shared thread would read as a single-agent session precisely
+ * when a filter is what made it look like one.
+ */
+export function isMergedConversationRow(session: Pick<Session, 'conversationKey' | 'memberSessionIds'>): boolean {
+  return (session.memberSessionIds?.length ?? 0) > 1 && Boolean(session.conversationKey)
+}
+
 export function mergeCanonicalSessions(sessions: readonly Session[]): Session[] {
   const byId = new Map<string, Session>()
   for (const session of sessions) {
