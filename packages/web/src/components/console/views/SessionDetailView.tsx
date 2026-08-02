@@ -170,11 +170,13 @@ function msgStep(m: SessionMessageDto): FmtStep {
 }
 
 /** Whether a member-source read failure may surface in the offline notice.
- *  Authorization answers (403/404) stay SILENT — a visibility change racing
- *  the roster must not disclose that a protected source exists (§7); only a
- *  confirmed non-authorization failure is an operational condition. */
+ *  Only a CONFIRMED daemon-offline response counts (the CP answers 503 when
+ *  the owning daemon has no connection; 502/504 are its gateway shapes).
+ *  Everything else stays silent — above all the authorization answers
+ *  (403/404): a visibility change racing the roster snapshot must never
+ *  disclose that a protected source exists (§7). */
 function countsAsOfflineSource(error: unknown): boolean {
-  return !(error instanceof ApiError && (error.status === 403 || error.status === 404))
+  return error instanceof ApiError && (error.status === 502 || error.status === 503 || error.status === 504)
 }
 
 /** Render input for conversation mode: mergeConversation over the CURRENT
