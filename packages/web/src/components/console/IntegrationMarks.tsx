@@ -1,5 +1,4 @@
 import { GithubMark, PlatformMark } from '@/components/marks'
-import { Icon } from '@/components/ui'
 
 type HookKind = 'webhook' | 'github'
 
@@ -36,15 +35,17 @@ export function IntegrationMarks({
         {visibleHookKinds.map((kind, index) => (
           <span
             key={kind}
-            className={`imark h-[21px] w-[21px] ${visibleIntegrations.length + index === 0 ? '' : 'imark-overlap -ml-[7px]'} ${kind === 'webhook' ? 'bg-(--surface-inverse)' : ''}`}
+            className={`imark h-[21px] w-[21px] ${visibleIntegrations.length + index === 0 ? '' : 'imark-overlap -ml-[7px]'}`}
             title={kind === 'github' ? 'GitHub events' : 'Inbound webhook'}
           >
             {kind === 'github' ? (
               <span className="flex h-[13px] w-[13px] items-center justify-center">
-                <GithubMark />
+                <GithubMark fillPct={90} />
               </span>
             ) : (
-              <Icon name="webhook" size={11} color="#fff" />
+              // The brand-pink webhook mark, not a white glyph on an inverted plate:
+              // unplated on dark, that glyph had nothing left to sit on.
+              <PlatformMark platform="webhook" />
             )}
           </span>
         ))}

@@ -251,10 +251,25 @@
   --shadow-xl: 0 12px 28px rgba(0, 0, 0, 0.55), 0 32px 72px rgba(0, 0, 0, 0.72);
 }
 /* Component-level dark tweaks that a token swap alone can't express. */
+/* Mark tiles go plateless on dark: a light plate under every brand logo turns lists
+   and rows into a strip of bright chips, and the logos read fine straight on the
+   surface (full-color ones as-is, `currentColor` ones on the base `.imark` color,
+   which is `--text-primary`). The overlap spacer goes with the plate — without one
+   there are no tile edges left to separate. Unlayered on purpose: the dark `.imark`
+   plate this replaced had to outrank `bg-*` utilities, and so does the reset. */
 :root[data-theme='dark'] .imark {
-  background: #e8ecf1;
-  border-color: #e8ecf1;
-  color: var(--surface-inverse);
+  background: transparent;
+  border-color: transparent;
+}
+:root[data-theme='dark'] .imark.imark-overlap {
+  box-shadow: none;
+}
+/* Same on the avatar tile: an uploaded icon's white plate (see `.av:has(…)` below,
+   plus the matching `bg-white` on the <img> itself) is there so a transparent PNG
+   doesn't sit on the dark fallback plate — on a dark surface it is just a white
+   card. Opaque uploads cover the tile either way, so only alpha ones change. */
+:root[data-theme='dark'] .av:has(> [data-agent-icon-image]) {
+  background: transparent;
 }
 :root[data-theme='dark'] .pill.on {
   background: #2f2440;

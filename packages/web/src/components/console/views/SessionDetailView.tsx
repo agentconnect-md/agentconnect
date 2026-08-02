@@ -840,11 +840,9 @@ export default function SessionDetailView() {
   const [transcriptSessionId, setTranscriptSessionId] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
-  // by turn index), overriding the default that turn's content implies. Stored as the
-  // explicit desired state, so a hidden panel stays hidden when streaming flips the
-  // default — see workPanelOpen().
+  // by turn index). Every panel starts collapsed — see workPanelOpen().
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
-  const toggleWork = (ti: number, autoOpen: boolean) => setWorkOverride((prev) => toggleWorkPanel(prev, ti, autoOpen))
+  const toggleWork = (ti: number) => setWorkOverride((prev) => toggleWorkPanel(prev, ti))
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -1825,8 +1823,8 @@ export default function SessionDetailView() {
             </span>
           )}
           <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-            <span className="imark h-4 w-4 flex-none rounded-xs">
-              <PlatformMark platform={channelDisplay.platform} fillPct={100} />
+            <span className="imark h-5 w-5 flex-none rounded-xs">
+              <PlatformMark platform={channelDisplay.platform} />
             </span>
             {session.threadUrl ? (
               <a
@@ -2100,11 +2098,7 @@ export default function SessionDetailView() {
                     // EDIT rows, since one EDIT row can touch several files).
                     const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                     const summary = workSummary(thinkCount, toolCount, editCount)
-                    // Auto-open while a turn has produced only work (mid-stream), so the
-                    // live agent isn't hidden; collapse once its answer text lands. Either
-                    // default stays user-overridable, so thinking-only turns can be closed.
-                    const autoOpen = textSteps.length === 0
-                    const openWork = workPanelOpen(workOverride.get(ti), autoOpen)
+                    const openWork = workPanelOpen(workOverride.get(ti))
                     return (
                       <div key={`${session.id}:${ti}`} className="flex items-start gap-[9px]">
                         <span className="av h-[26px] w-[26px] flex-none rounded-md">
@@ -2147,7 +2141,7 @@ export default function SessionDetailView() {
                             <>
                               <button
                                 type="button"
-                                onClick={() => toggleWork(ti, autoOpen)}
+                                onClick={() => toggleWork(ti)}
                                 className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
                                 title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
                               >
