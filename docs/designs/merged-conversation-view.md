@@ -325,8 +325,11 @@ session (`sessionId`, `agentId`).
    already normalizes every stored form onto epoch microseconds for its own
    chronological reads (`transcriptEventTimeUs`); the merge module implements
    the same normalization (the console's timestamp parser already matches it
-   row-wise), sorts ascending, and breaks ties by `(sender, sessionId)` while
-   preserving each source's own relative row order (stable merge).
+   row-wise) and sorts ascending; ties group by source (deterministic across
+   reloads) and then follow each source's own row order — a hierarchical,
+   transitive tie-break that never reorders a source's internal sequence.
+   (A sender-first tie-break was rejected in review: it reverses same-source
+   rows sharing a timestamp and breaks comparator transitivity.)
 5. **Attribution and turn grouping reuse the session detail machinery**: the
    merged row list feeds the same turn builder the per-agent page uses — the
    right side is reserved for the viewer, every agent renders as its own
