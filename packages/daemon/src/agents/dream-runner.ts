@@ -49,7 +49,6 @@ import {
   type TrustedOrganizationSkillTarget
 } from './memory-dreamer.js'
 import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
-import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
 
 /**
  * `DreamRunner` — the daemon's dream-job engine (design:
@@ -1159,17 +1158,13 @@ export class DreamRunner {
 
       const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
       // Same-bytes review fence (task #36 Phase B): bind acceptance to the exact
-      // staged skill bytes the caller reviewed. inspectLocalSkillSource uses the
-      // same canonical no-follow walker + digest as the publish snapshot, so any
-      // change to the staged skill since review yields a different digest and
-      // forces a re-review instead of accepting un-reviewed bytes.
-      if (reviewToken !== undefined && (await inspectLocalSkillSource(staged)).sha256 !== reviewToken) {
-        throw new DreamStateError(
-          'the staged skill changed since it was reviewed; re-review the current skill before accepting'
-        )
-      }
+      // staged skill bytes the caller reviewed. The check runs INSIDE
+      // publishAcceptedDreamSkill against its own capture snapshot (not a separate
+      // preflight inspection), so a concurrent writer cannot swap the staged bytes
+      // between inspection and capture — the digest verified is the digest that is
+      // actually pinned and published.
       const publish = async (): Promise<void> => {
-        await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged, name })
+        await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged, name, expectedDigest: reviewToken })
       }
       if (this.deps.withSkillAcceptance) await this.deps.withSkillAcceptance(agentId, publish)
       else await publish()

@@ -170,6 +170,12 @@ export async function publishAcceptedDreamSkill(input: {
   agentDir: string
   sourceDir: string
   name: string
+  /** Same-bytes review fence (task #36 Phase B): when set, the digest of the
+   *  captured publication snapshot must equal this reviewed digest, else publish
+   *  refuses. Checked against the SNAPSHOT (not a separate preflight inspection)
+   *  so a concurrent writer cannot swap staged bytes between review and capture —
+   *  the digest verified is the digest actually pinned and activated. */
+  expectedDigest?: string
 }): Promise<{ sourceDir: string; digest: string }> {
   if (!SKILL_DIR_RE.test(input.name)) throw new Error('invalid accepted Dream skill name')
   const { root, bundles } = await ensureAcceptedRoots(input.agentDir)
@@ -182,6 +188,10 @@ export async function publishAcceptedDreamSkill(input: {
   await pruneUnreferencedBundles(root, records)
   const temporary = join(bundles, `.new-${randomUUID()}`)
   const snapshot = await snapshotLocalSkillSource(input.sourceDir, temporary)
+  if (input.expectedDigest !== undefined && snapshot.sha256 !== input.expectedDigest) {
+    await fsp.rm(temporary, { recursive: true, force: true }).catch(() => undefined)
+    throw new Error('the staged skill changed since it was reviewed; re-review the current skill before accepting')
+  }
   const hex = snapshot.sha256.replace('sha256:', '')
   const directory = `${BUNDLES_DIRNAME}/${input.name}-${hex}`
   const target = join(root, ...directory.split('/'))

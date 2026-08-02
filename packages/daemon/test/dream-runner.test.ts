@@ -1510,19 +1510,27 @@ describe('DreamRunner skill mining (D-3)', () => {
     expect(withSkillAcceptance).toHaveBeenCalledOnce()
   })
 
-  it('binds skill acceptance to the reviewed staged bytes (same-bytes review fence)', async () => {
+  it('binds skill acceptance to the PUBLISHED bytes: wrong token or a post-review mutation is refused', async () => {
     const { dir, runner, dreamId } = await mining(grounded)
     const staged = join(dir, 'memory-dreams', dreamId, 'skills', 'deploy-staging')
+    const skillMd = join(staged, 'SKILL.md')
     const token = (await inspectLocalSkillSource(staged)).sha256
 
-    // A stale/incorrect token is refused before the skill is published.
+    // A stale/incorrect token is refused.
     await expect(runner.skillAccept('a1', dreamId, 'deploy-staging', `sha256:${'0'.repeat(64)}`)).rejects.toThrow(
       /re-review/i
     )
 
-    // The exact reviewed digest accepts (proving the failed attempt left the
-    // candidate reviewable).
-    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging', token)
+    // A mutation AFTER the token was minted is caught at the publication snapshot
+    // (the fence is verified against publish's own capture, not a preflight
+    // inspection), so a concurrent swap of staged bytes can never publish
+    // un-reviewed content.
+    await writeFile(skillMd, `${await readFile(skillMd, 'utf8')}\n<!-- tampered -->\n`, 'utf8')
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging', token)).rejects.toThrow(/re-review/i)
+
+    // Re-reviewing the current bytes (fresh token) accepts.
+    const current = (await inspectLocalSkillSource(staged)).sha256
+    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging', current)
     expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
   })
 
