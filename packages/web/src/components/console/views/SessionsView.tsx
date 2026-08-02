@@ -299,8 +299,8 @@ export default function SessionsView() {
     )
   }
   // Multi-participant conversation rows (merged-conversation-view.md §5.2):
-  // stacked participant icons replace the single agent face; the compact label
-  // carries the total while its tooltip names the visible roster.
+  // stacked participant icons replace the single agent face; each icon names
+  // its agent on hover, while the compact label carries only the total.
   const agentCell = (s: Session, av: string, size: number, label: string) => {
     const roster = s.participants ?? []
     if (roster.length <= 1) {
@@ -311,17 +311,30 @@ export default function SessionsView() {
         </>
       )
     }
-    const rosterNames = roster.map((participant) => participant.name)
+    const participantName = (participant: (typeof roster)[number]) => {
+      const agent = agentById.get(participant.agentId)
+      if (agent) return agentLabel(agent)
+      const fallback = participant.name.trim()
+      return fallback && fallback !== participant.agentId && fallback !== participant.agentId.slice(0, 8)
+        ? fallback
+        : 'Agent'
+    }
+    const rosterNames = roster.map(participantName)
     return (
       <>
         <span className="flex flex-none items-center -space-x-[5px]">
-          {roster.slice(0, 4).map((p) => (
-            <span key={p.agentId} className={`av flex-none ${av}`}>
+          {roster.slice(0, 4).map((p, index) => (
+            <span
+              key={p.agentId}
+              className={`av flex-none ${av}`}
+              title={participantName(p)}
+              data-tooltip-focus={index === 0 ? '' : undefined}
+            >
               {agentAvatar(p.agentId, undefined, size)}
             </span>
           ))}
         </span>
-        <span className={`truncate ${label}`} title={rosterNames.join('\n')} data-tooltip-focus>
+        <span className={`truncate ${label}`}>
           <span aria-hidden="true">+{roster.length}</span>
           <span className="sr-only">
             {roster.length} agents: {rosterNames.join(', ')}
