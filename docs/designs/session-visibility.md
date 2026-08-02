@@ -561,13 +561,14 @@ learned from it"); silence is not an option.
   and user access. Provider-bound visibility is
   read-only; unresolved history and transient provider failures are surfaced
   without widening access.
-- Session links emitted into Slack and GitHub carry a non-authoritative provider
+- Session links emitted into Slack, Feishu/Lark, and GitHub carry a non-authoritative provider
   hint. When such a deep link still resolves to the generic 404 page, the Console
-  offers `Link Slack profile` or `Link GitHub profile` only if that provider is
-  configured and the viewer has not linked it already. Unsupported providers,
-  ordinary/handwritten URLs, and linked viewers get no extra action. The hint is
-  intentionally forgeable and never consulted for authorization, so it cannot
-  confirm whether the session exists; the protected session route remains 404.
+  offers `Link Slack profile`, `Link Lark profile`, `Link Feishu profile`, or
+  `Link GitHub profile` only if that provider is configured and the viewer has not
+  linked it already. Unsupported providers, ordinary/handwritten URLs, and linked
+  viewers get no extra action. The hint is intentionally forgeable and never
+  consulted for authorization, so it cannot confirm whether the session exists;
+  the protected session route remains 404.
 - The existing client-side "mine" heuristic
   (`packages/web/src/lib/session-trigger.ts` email/userId matching) stays as a
   display concern (the "you" label) but is no longer doing authorization work.

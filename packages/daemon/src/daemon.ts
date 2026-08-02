@@ -8871,7 +8871,7 @@ export class Daemon {
       }
       const info = this.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
       const link = acpSessionId
-        ? this.sessionLink(acpSessionId, msg.platform === 'slack' ? 'slack' : undefined)
+        ? this.sessionLink(acpSessionId, this.sessionLinkSource(msg.platform, target.integrationId))
         : undefined
       if (msg.platform === 'telegram') {
         // HTML chrome (not recorded) — renders the compact line + a tappable View link.
@@ -10725,7 +10725,7 @@ export class Daemon {
       botUrl: this.agentLink(agentId),
       runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
       model: this.buildStatusInfo(p).model ?? turnModel ?? 'default',
-      sessionUrl: this.sessionLink(sessionId, msg.platform === 'slack' ? 'slack' : undefined)
+      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(msg.platform, integrationId))
     })
     try {
       if (!p.selectedHost) {
@@ -12315,7 +12315,7 @@ export class Daemon {
         p.feishuCardAttempted = true
         p.feishuCard = await conn.startStreamingCard(p.channel, p.thread, {
           sessionKey: p.sessionKey,
-          sessionUrl: this.sessionLink(p.acpSessionId),
+          sessionUrl: this.sessionLink(p.acpSessionId, this.sessionLinkSource(p.platform, p.integrationId)),
           ...(p.integrationId ? { target: { v: 1, agentId: p.agentId, integrationId: p.integrationId } as const } : {})
         })
         return
@@ -12390,12 +12390,21 @@ export class Daemon {
    *  when the CP couldn't resolve it; then the segment is dropped. */
   private cpOrgSlug?: string
 
+  /** Presentation-only source hint carried by provider-rendered session links. Feishu and
+   *  Lark share one protocol platform, so their integration region supplies the visible brand. */
+  private sessionLinkSource(platform: string, integrationId?: string): 'slack' | 'github' | FeishuRegion | undefined {
+    if (platform === 'slack' || platform === 'github') return platform
+    if (platform !== 'feishu' || !integrationId) return undefined
+    const integration = this.integrationConfigById(integrationId)
+    return integration?.platform === 'feishu' ? integration.feishu.region : undefined
+  }
+
   /** The Web App console URL for a session: `<base>/<orgSlug>/sessions/<id>`, where base is
    *  the explicit local `webAppUrl`, else the CP-provided origin, else the local default
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
-   *  known; without it the link falls back to `<base>/sessions/<id>`. Slack/GitHub links
-   *  carry a presentation-only source hint for the generic 404 profile-linking action. */
-  private sessionLink(acpSessionId: string, source?: 'slack' | 'github'): string {
+   *  known; without it the link falls back to `<base>/sessions/<id>`. Provider-rendered
+   *  links carry a presentation-only source hint for the generic 404 profile-linking action. */
+  private sessionLink(acpSessionId: string, source?: 'slack' | 'github' | FeishuRegion): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
     const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
     return source ? `${link}?source=${source}` : link

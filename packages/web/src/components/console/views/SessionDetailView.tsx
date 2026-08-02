@@ -55,6 +55,7 @@ import {
   memberDisplayName,
   mergeSessionDetailUsage,
   sessionFromDetailDto,
+  type SessionProfileProvider,
   type SessionDetailDto,
   type SessionMessageDto,
   type SessionRelationDto,
@@ -1133,16 +1134,16 @@ export default function SessionDetailView() {
   // equivalent.
   const source = searchParams.get('source')
   const integration = searchParams.get('integration')
-  const hintedProvider =
-    source === 'slack' || source === 'github'
-      ? source
-      : integration === 'slack' || integration === 'github'
-        ? integration
-        : undefined
+  const profileProviderHint = (value: string | null): SessionProfileProvider | undefined =>
+    value === 'slack' || value === 'github' || value === 'lark' || value === 'feishu' ? value : undefined
+  const hintedProvider = profileProviderHint(source) ?? profileProviderHint(integration)
   const profileLinkProvider =
     hintedProvider && socialLoginProviders().some((provider) => provider.target === hintedProvider)
       ? hintedProvider
       : undefined
+  const profileLinkProviderName = socialLoginProviders().find(
+    (provider) => provider.target === profileLinkProvider
+  )?.name
   const profileLinkCandidate =
     sessionDetailError instanceof ApiError &&
     sessionDetailError.status === 404 &&
@@ -1744,9 +1745,9 @@ export default function SessionDetailView() {
             actionLabel="Back to sessions"
             actionHref={orgPath('/sessions')}
             secondaryAction={
-              showProfileLink && profileLinkProvider
+              showProfileLink && profileLinkProviderName
                 ? {
-                    label: `Link ${profileLinkProvider === 'slack' ? 'Slack' : 'GitHub'} profile`,
+                    label: `Link ${profileLinkProviderName} profile`,
                     href: orgPath('/profile#sign-in-methods'),
                     icon: 'link'
                   }
