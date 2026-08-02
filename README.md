@@ -111,7 +111,7 @@ workspaces, and runtime credentials.
 
 For image pinning, production networking, sign-in, secrets, GitHub App setup,
 and optional Mem0 configuration, see the
-[AgentConnect OSS guide](https://docs.agentconnect.md/docs/get-started).
+[AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
 
 ### AgentConnect Cloud
 
@@ -195,7 +195,7 @@ This repository is a pnpm workspace. Product packages live under `packages/`:
 ## Explore
 
 - [Public documentation](https://docs.agentconnect.md)
-- [Self-host AgentConnect OSS](https://docs.agentconnect.md/docs/get-started)
+- [Self-host AgentConnect OSS](https://docs.agentconnect.md/docs/oss-get-started)
 - [Architecture and detailed designs](docs/designs/)
 - [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
 - [Daemon configuration](docs/designs/daemon-detailed-design.md)
