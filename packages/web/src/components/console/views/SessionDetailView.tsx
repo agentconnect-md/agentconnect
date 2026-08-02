@@ -12,6 +12,7 @@ import {
 import Link from 'next/link'
 import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
+import { focusAction } from '@/lib/conversation-focus'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -49,6 +50,7 @@ import {
   fetchSessionMessages,
   fetchSessionDetail,
   fetchToolBody,
+  fmtCost,
   fmtCountCompact,
   memberDisplayName,
   mergeSessionDetailUsage,
@@ -168,6 +170,10 @@ function msgStep(m: SessionMessageDto): FmtStep {
     time: formatTranscriptTime(m.ts)
   }
 }
+
+/** Focus auto-paging budget (§5.3): how many older windows the ?focus landing
+ *  may pull looking for the focused participant's first block. */
+const MAX_FOCUS_PAGES = 10
 
 /** Whether a member-source read failure may surface in the offline notice.
  *  Only a CONFIRMED daemon-offline response counts (the CP answers 503 when
@@ -747,13 +753,20 @@ function MobileSessionFamilyLinks({
   siblings,
   children,
   agentById,
-  orgPath
+  orgPath,
+  conversation = false,
+  childOriginById
 }: {
   parent: SessionRelationDto | null
   siblings: SessionRelationDto[]
   children: SessionRelationDto[]
   agentById: ReadonlyMap<string, Agent>
   orgPath: (path: string) => string
+  /** Conversation-level lineage (merged-conversation-view.md §9.2): relabels
+   *  the sections and groups delegations by their waking member. */
+  conversation?: boolean
+  /** Delegation target id → waking member agentId (conversation mode). */
+  childOriginById?: ReadonlyMap<string, string>
 }) {
   if (!parent && siblings.length === 0 && children.length === 0) return null
   return (
@@ -765,7 +778,7 @@ function MobileSessionFamilyLinks({
           }`}
         >
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            Parent session
+            {conversation ? 'Parent conversation' : 'Parent session'}
           </span>
           <SessionRelationLink relation={parent} agent={agentById.get(parent.agentId)} orgPath={orgPath} />
         </div>
@@ -795,18 +808,36 @@ function MobileSessionFamilyLinks({
       {children.length > 0 && (
         <div className="grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4">
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            {children.length === 1 ? 'Child session' : `Child sessions (${children.length})`}
+            {conversation
+              ? children.length === 1
+                ? 'Delegation'
+                : `Delegations (${children.length})`
+              : children.length === 1
+                ? 'Child session'
+                : `Child sessions (${children.length})`}
           </span>
           <div className="min-w-0">
-            {children.map((child, index) => (
-              <SessionRelationLink
-                key={child.id}
-                relation={child}
-                agent={agentById.get(child.agentId)}
-                orgPath={orgPath}
-                bordered={index > 0}
-              />
-            ))}
+            {children.map((child, index) => {
+              const origin = childOriginById?.get(child.id)
+              const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
+              const originAgent = origin ? agentById.get(origin) : undefined
+              const newGroup = origin !== undefined && origin !== previousOrigin
+              return (
+                <div key={child.id}>
+                  {newGroup && (
+                    <div className="pt-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
+                      via {originAgent ? agentLabel(originAgent) : origin}
+                    </div>
+                  )}
+                  <SessionRelationLink
+                    relation={child}
+                    agent={agentById.get(child.agentId)}
+                    orgPath={orgPath}
+                    bordered={index > 0 && !newGroup}
+                  />
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -843,6 +874,117 @@ export default function SessionDetailView() {
       ?.map((m) => m.sessionId)
       .sort()
       .join(',') ?? ''
+  // §5.3: the redirect carries whose perspective was linked; scroll to and
+  // briefly flash that participant's first block once the merge renders.
+  const focusAgentId = conversationKey ? searchParams.get('focus') : null
+  // Conversation-level usage roll-up (C3): the header sums the CURRENT member
+  // sessions rather than showing only the representative's share.
+  const conversationUsage = useMemo(() => {
+    if (!conversationKey || !conversationMembers || conversationMembers.length <= 1) return null
+    let tokens = 0
+    let cost = 0
+    let currency: string | undefined
+    for (const member of conversationMembers) {
+      tokens += member.usage?.totalTokens ?? 0
+      cost += member.usage?.costAmount ?? 0
+      currency ??= member.usage?.costCurrency ?? undefined
+    }
+    return { tokens: fmtCountCompact(tokens), cost: fmtCost(cost || undefined, currency) }
+  }, [conversationKey, conversationMembers])
+  // Conversation-level lineage lift (merged-conversation-view.md §9.2): union
+  // the members' parent/child links, keep only CROSS-conversation edges, and
+  // link targets as /sessions/:id — the §5.3 self-redirect forwards
+  // multi-participant targets to THEIR merged page. Intra-room vs cross-room
+  // is decided by conversation LOCATION (the target's own conversation key),
+  // not by membership in the collapsed current-session set — an edge to a
+  // SUPERSEDED session at this location is still intra-room (§9.1). Each
+  // lifted delegation preserves its waking member so the UI groups
+  // delegations by origin.
+  const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
+  const { data: conversationLineage } = useSWR(
+    conversationMode && activeOrg?.id
+      ? (['conversation-lineage', activeOrg.id, conversationKey, conversationSourceKey] as const)
+      : null,
+    async ([, orgId]) => {
+      const details = await Promise.all(
+        (conversationMembers ?? []).map((member) => fetchSessionDetail(member.sessionId, orgId).catch(() => null))
+      )
+      const parents = new Map<string, SessionRelationDto>()
+      const children = new Map<string, SessionRelationDto>()
+      const childOriginById = new Map<string, string>()
+      for (const detail of details) {
+        if (!detail) continue
+        const parent = detail.parentSession
+        if (parent && !parents.has(parent.id)) parents.set(parent.id, parent)
+        for (const child of detail.childSessions) {
+          if (!children.has(child.id)) {
+            children.set(child.id, child)
+            childOriginById.set(child.id, detail.agentId)
+          }
+        }
+      }
+      // Location filter: fetch each candidate target's own conversation key
+      // and drop same-location edges. A target whose detail can't be read is
+      // dropped too (fail closed — the caller couldn't open it anyway).
+      const candidateIds = [...new Set([...parents.keys(), ...children.keys()])]
+      // Three-way sentinel: an encoded key, 'singleton' (readable target with
+      // no groupable channel/thread — necessarily cross-conversation relative
+      // to this merged page), or 'unreadable' (fail closed).
+      const targetKeys = new Map<
+        string,
+        { kind: 'key'; key: string } | { kind: 'singleton' } | { kind: 'unreadable' }
+      >()
+      await Promise.all(
+        candidateIds.map(async (targetId) => {
+          try {
+            const target = await fetchSessionDetail(targetId, orgId)
+            const key = encodeConversationKey({
+              platform: target.platform ?? 'slack',
+              tenantScope: target.tenantScope ?? null,
+              channel: target.channel,
+              thread: target.thread
+            })
+            targetKeys.set(targetId, key === null ? { kind: 'singleton' } : { kind: 'key', key })
+          } catch {
+            targetKeys.set(targetId, { kind: 'unreadable' })
+          }
+        })
+      )
+      const crossRoom = (targetId: string): boolean => {
+        const target = targetKeys.get(targetId)
+        if (!target || target.kind === 'unreadable') return false
+        return target.kind === 'singleton' || target.key !== conversationKey
+      }
+      const crossParents = [...parents.values()].filter((parent) => crossRoom(parent.id))
+      const crossChildren = [...children.values()]
+        .filter((child) => crossRoom(child.id))
+        // Origin-adjacent order — the family UI renders delegation groups
+        // from this plus childOriginById.
+        .sort((a, b) => {
+          const ao = childOriginById.get(a.id) ?? ''
+          const bo = childOriginById.get(b.id) ?? ''
+          return ao < bo ? -1 : ao > bo ? 1 : a.id < b.id ? -1 : 1
+        })
+      const [firstParent, ...moreParents] = crossParents
+      return {
+        family: {
+          // The family UI models ONE parent; extra cross-room delegation
+          // origins surface beside the delegations.
+          parentSession: firstParent ?? null,
+          siblingSessions: moreParents,
+          childSessions: crossChildren
+        },
+        childOriginById
+      }
+    },
+    { revalidateOnFocus: false }
+  )
+  // Conversation mode NEVER falls back to the representative's raw family —
+  // an empty aggregate means "no cross-room edges", not "show the intra-room
+  // links the filter just removed".
+  const conversationFamily = conversationMode
+    ? (conversationLineage?.family ?? { parentSession: null, siblingSessions: [], childSessions: [] })
+    : undefined
   const {
     agents,
     allSessions,
@@ -889,7 +1031,15 @@ export default function SessionDetailView() {
   const conversationSourcesRef = useRef<{
     rows: Map<string, SessionMessageDto[]>
     cursors: Map<string, string | null>
-  }>({ rows: new Map(), cursors: new Map() })
+    older: Map<string, string | null>
+  }>({ rows: new Map(), cursors: new Map(), older: new Map() })
+  const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
+  const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
+  // Which conversation key the CURRENT fan-out state belongs to — the focus
+  // effect's readiness signal. Null while a (new) key is loading, so a
+  // key-to-key navigation in the persistent layout can never act on the
+  // previous conversation's leftover msgs/cursors.
+  const [conversationLoadedKey, setConversationLoadedKey] = useState<string | null>(null)
   const conversationMembersRef = useRef<{ sessionId: string; agentId: string; platform: string }[] | null>(null)
   // Merge sources in CANONICAL order — sessionId sort, decoupled from the
   // resolver's representative-first response, whose activity-based order is
@@ -905,6 +1055,12 @@ export default function SessionDetailView() {
         }))
     : null
   const [conversationOffline, setConversationOffline] = useState(0)
+  // ?focus scroll/flash (one-shot per mount): the ref attaches to the focused
+  // participant's first block during render; once the transcript is in, scroll
+  // it to center and flash its background briefly.
+  const focusRef = useRef<HTMLDivElement | null>(null)
+  const focusDoneRef = useRef(false)
+  const [focusFlash, setFocusFlash] = useState(false)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
   const [msgErr, setMsgErr] = useState<string | null>(null)
@@ -1220,31 +1376,32 @@ export default function SessionDetailView() {
       // roster in the first place.
       const sources = conversationMembersRef.current ?? []
       if (sources.length === 0) return
+      setConversationLoadedKey(null)
       const rowsBySession = new Map<string, SessionMessageDto[]>()
       const cursors = new Map<string, string | null>()
+      const older = new Map<string, string | null>()
       let failed = 0
       ;(async () => {
         await Promise.all(
           sources.map(async (src) => {
             try {
-              let all: SessionMessageDto[] = []
-              let cursor: string | undefined
-              for (let i = 0; i < MAX_PAGES; i++) {
-                const page = await fetchSessionMessages(src.sessionId, { ...(cursor ? { cursor } : {}) })
-                if (!active) return
-                if (i === 0) cursors.set(src.sessionId, page.liveCursor ?? null)
-                all = [...page.messages, ...all]
-                if (!page.nextCursor) break
-                cursor = page.nextCursor
-              }
-              rowsBySession.set(src.sessionId, all)
+              // Newest window only — one page per member (C3 §5.2). Older
+              // history loads on demand via the per-source cursors below,
+              // capping a cold open at N requests instead of N × MAX_PAGES.
+              const page = await fetchSessionMessages(src.sessionId, {})
+              if (!active) return
+              cursors.set(src.sessionId, page.liveCursor ?? null)
+              older.set(src.sessionId, page.nextCursor ?? null)
+              rowsBySession.set(src.sessionId, page.messages)
             } catch (error) {
               if (countsAsOfflineSource(error)) failed += 1
             }
           })
         )
         if (!active) return
-        conversationSourcesRef.current = { rows: rowsBySession, cursors }
+        conversationSourcesRef.current = { rows: rowsBySession, cursors, older }
+        setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
+        setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
         setMsgs(mergeConversationRows(sources, rowsBySession))
         setMsgLoading(false)
@@ -1403,6 +1560,34 @@ export default function SessionDetailView() {
     return run
   }, [wantTranscript, sid, aid, session?.platform, reconcileLiveSteps, conversationKey])
 
+  // C3 §5.2 cross-source "load earlier": one strictly-older page per member
+  // that still has history, prepended per source, then re-merged.
+  const loadEarlierConversation = useCallback(async (): Promise<void> => {
+    if (!conversationKey || conversationPagingEarlier) return
+    const sources = conversationMembersRef.current ?? []
+    const state = conversationSourcesRef.current
+    setConversationPagingEarlier(true)
+    try {
+      await Promise.all(
+        sources.map(async (src) => {
+          const cursor = state.older.get(src.sessionId)
+          if (!cursor) return
+          try {
+            const page = await fetchSessionMessages(src.sessionId, { cursor })
+            state.rows.set(src.sessionId, [...page.messages, ...(state.rows.get(src.sessionId) ?? [])])
+            state.older.set(src.sessionId, page.nextCursor ?? null)
+          } catch {
+            // Keep this source's window; the button stays for a retry.
+          }
+        })
+      )
+      setMsgs(mergeConversationRows(sources, state.rows))
+      setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
+    } finally {
+      setConversationPagingEarlier(false)
+    }
+  }, [conversationKey, conversationPagingEarlier])
+
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
   useEffect(() => {
     if (!visibleTailReady || sessionBusy) return
@@ -1414,6 +1599,54 @@ export default function SessionDetailView() {
     const timer = window.setInterval(() => void refreshTranscriptTail(), 15_000)
     return () => window.clearInterval(timer)
   }, [visibleTailReady, refreshTranscriptTail])
+
+  const focusPagesRef = useRef(0)
+  // The persistent layout survives key-to-key navigation: re-arm the one-shot
+  // focus state whenever the (conversation, participant) target changes.
+  useEffect(() => {
+    focusDoneRef.current = false
+    focusPagesRef.current = 0
+    setFocusFlash(false)
+  }, [conversationKey, focusAgentId])
+  useEffect(() => {
+    if (!focusAgentId || focusDoneRef.current) return
+    // The decision is pure (conversation-focus.ts) and every input is SCOPED
+    // to the current key: `transcriptReady` compares the fan-out's stamped key
+    // against this render's, so a key-to-key navigation in the persistent
+    // layout can never page or give up on the previous conversation's state.
+    const action = focusAction({
+      targetVisible: focusRef.current !== null,
+      transcriptReady: !msgLoading && conversationLoadedKey === conversationKey,
+      hasEarlier: conversationHasEarlier,
+      paging: conversationPagingEarlier,
+      pagesUsed: focusPagesRef.current,
+      pageBudget: MAX_FOCUS_PAGES
+    })
+    if (action === 'wait' || action === 'pause') return
+    if (action === 'page') {
+      focusPagesRef.current += 1
+      void loadEarlierConversation()
+      return
+    }
+    if (action === 'give-up') {
+      focusDoneRef.current = true
+      return
+    }
+    focusDoneRef.current = true
+    focusRef.current!.scrollIntoView({ block: 'center' })
+    setFocusFlash(true)
+    const timer = window.setTimeout(() => setFocusFlash(false), 1_800)
+    return () => window.clearTimeout(timer)
+  }, [
+    focusAgentId,
+    msgLoading,
+    msgs,
+    conversationKey,
+    conversationLoadedKey,
+    conversationHasEarlier,
+    conversationPagingEarlier,
+    loadEarlierConversation
+  ])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -1865,6 +2098,10 @@ export default function SessionDetailView() {
     }
   }
 
+  // The focused participant's FIRST block (§5.3 ?focus): ref target for the
+  // one-shot scroll/flash above.
+  const focusTurnIndex = focusAgentId ? turns.findIndex((t) => t.kind === 'bot' && t.agentId === focusAgentId) : -1
+
   // Transcript visibility is presentation-only: keep the complete turn list for
   // usage/duration accounting, and derive a filtered tree for rendering. Live PLAN
   // steps are the playground equivalent of persisted THINK messages.
@@ -2005,8 +2242,8 @@ export default function SessionDetailView() {
   // is not here: it rides the top-bar crumb as a pill next to the session name.
   const headerFacts: { icon: string; label: string; value: string }[] = [
     { icon: 'clock', label: 'Duration', value: displayDuration },
-    { icon: 'coins', label: 'Tokens', value: session.tokens },
-    { icon: 'circle-dollar-sign', label: 'Cost', value: session.cost },
+    { icon: 'coins', label: 'Tokens', value: conversationUsage?.tokens ?? session.tokens },
+    { icon: 'circle-dollar-sign', label: 'Cost', value: conversationUsage?.cost ?? session.cost },
     { icon: 'wrench', label: 'Tool calls', value: String(displayToolCount) }
   ]
   if (daemonName) headerFacts.push({ icon: 'server', label: 'Daemon', value: daemonName })
@@ -2017,8 +2254,8 @@ export default function SessionDetailView() {
   // Mobile header-region derivations (≤768px meta strip + agent config row).
   const metaCells: { label: string; value: string }[] = [
     { label: 'Dur', value: displayDuration },
-    { label: 'Tokens', value: session.tokens },
-    { label: 'Cost', value: session.cost },
+    { label: 'Tokens', value: conversationUsage?.tokens ?? session.tokens },
+    { label: 'Cost', value: conversationUsage?.cost ?? session.cost },
     { label: 'Tools', value: displayToolCount }
   ]
   const cfgLine = [
@@ -2047,7 +2284,9 @@ export default function SessionDetailView() {
         agentIds={railFilter.agentIds}
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
-        family={currentSessionDetail?.id === session.id ? currentSessionDetail : undefined}
+        family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
+        conversation={conversationMode}
+        childOriginById={conversationLineage?.childOriginById}
         onSelect={setRouteSession}
       />
       <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
@@ -2261,14 +2500,26 @@ export default function SessionDetailView() {
           </div>
         )}
 
-        {currentSessionDetail?.id === session.id && (
+        {conversationFamily ? (
           <MobileSessionFamilyLinks
-            parent={currentSessionDetail.parentSession}
-            siblings={currentSessionDetail.siblingSessions ?? []}
-            children={currentSessionDetail.childSessions}
+            parent={conversationFamily.parentSession}
+            siblings={conversationFamily.siblingSessions}
+            children={conversationFamily.childSessions}
             agentById={agentById}
             orgPath={orgPath}
+            conversation
+            childOriginById={conversationLineage?.childOriginById}
           />
+        ) : (
+          currentSessionDetail?.id === session.id && (
+            <MobileSessionFamilyLinks
+              parent={currentSessionDetail.parentSession}
+              siblings={currentSessionDetail.siblingSessions ?? []}
+              children={currentSessionDetail.childSessions}
+              agentById={agentById}
+              orgPath={orgPath}
+            />
+          )
         )}
 
         {owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
@@ -2313,6 +2564,17 @@ export default function SessionDetailView() {
           </div>
         )}
 
+        {conversationKey && conversationHasEarlier && (
+          <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
+            <button
+              className="lnk text-[12px]"
+              onClick={() => void loadEarlierConversation()}
+              disabled={conversationPagingEarlier}
+            >
+              {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
+            </button>
+          </div>
+        )}
         {visibleMsgPaging && (
           <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
             <Spinner size={14} />
@@ -2376,7 +2638,13 @@ export default function SessionDetailView() {
                     const summary = workSummary(thinkCount, toolCount, editCount)
                     const openWork = workPanelOpen(workOverride.get(ti))
                     return (
-                      <div key={`${session.id}:${ti}`} className="flex items-start gap-[9px]">
+                      <div
+                        key={`${session.id}:${ti}`}
+                        ref={ti === focusTurnIndex ? focusRef : undefined}
+                        className={`flex items-start gap-[9px] rounded-md transition-colors duration-700 ${
+                          ti === focusTurnIndex && focusFlash ? 'bg-(--surface-active)' : ''
+                        }`}
+                      >
                         <span className="av h-[26px] w-[26px] flex-none rounded-md">
                           <AgentIconView
                             icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
