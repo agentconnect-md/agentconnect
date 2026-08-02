@@ -1052,6 +1052,7 @@ export default function SessionDetailView() {
     setWorkOverride(new Map())
     setImagePreparing(false)
     setImageError(null)
+    if (imageInputRef.current) imageInputRef.current.value = ''
     setAttachMenuOpen(false)
     setComposerMenuOpen(null)
   }, [id])
