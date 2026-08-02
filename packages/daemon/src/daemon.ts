@@ -4601,9 +4601,9 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     // Credential isolation (task #36 A2): the dream runs on its OWN dedicated,
-    // sandbox-forced host — NOT the agent's warm host — so the attacker-controlled
-    // transcript can never reach provider credentials, and the confined child is
-    // torn down the moment the extraction settles.
+    // one-off host — NOT the agent's warm host — sandboxed whenever the agent
+    // runs sandboxed so the attacker-controlled transcript is confined from
+    // provider credentials, and torn down the moment the extraction settles.
     const host = await this.buildDreamHost(agent, context.inputDir)
     const ref: { sessionId?: string } = {}
     try {
@@ -4624,30 +4624,24 @@ export class Daemon {
   }
 
   /**
-   * Build + start a DEDICATED, sandbox-forced, one-off host for a single dream
-   * (task #36 A2). Fail closed if this host has no sandbox mechanism: without
-   * confinement the mined (attacker-controlled) transcript could drive the
-   * runtime's native tools against the host and its credentials. A sandboxed
-   * runtime is denied the HOST's credentials (HOME + runtime-state dirs are
-   * denyRead), and on Claude the inner sandbox also denies the agent's own
-   * provider credential to the model's bash, so the dream model reads its
-   * materialized inputs (cwd) yet cannot read those secrets.
+   * Build + start a DEDICATED, one-off host for a single dream (task #36 A2).
    *
-   * All agent harnesses are supported by default (owner decision): on runtimes
-   * without an inner provider-credential confinement (e.g. Codex) the agent's
-   * OWN provider auth can still be reached by the model's own tools, since it
-   * must stay readable by the runtime parent to authenticate. That residual gap
-   * is a tracked P2 to be closed by a per-runtime credential broker; it does NOT
-   * gate which harnesses may dream.
+   * Dreams are supported in every environment — with OR without a sandbox — and
+   * NEVER fail closed on a missing sandbox mechanism (owner principle: any
+   * feature must run with or without a sandbox; trusted agents may run
+   * unsandboxed). The dedicated host follows the agent's own effective sandbox
+   * decision (`agentRunsInSandbox`): when the agent runs sandboxed the dream is
+   * confined too — best-effort isolation of the attacker-controlled transcript,
+   * since a sandboxed runtime is denied the HOST's credentials (HOME +
+   * runtime-state dirs are denyRead) and, on Claude, the inner sandbox also
+   * denies the agent's own provider credential to the model's bash. When the
+   * agent runs unsandboxed (trusted, or no mechanism available) the dream runs
+   * unsandboxed too; the residual credential exposure there is a tracked P2 (as
+   * with the Codex provider-credential gap), not a gate on dreaming.
    */
   private async buildDreamHost(agent: LoadedAgent, cwd: string): Promise<AcpHost> {
-    if (!this.sandboxMechanism) {
-      throw new DreamStateError(
-        'memory dream requires a supported OS sandbox to isolate provider credentials from the mined transcript; none is available on this host'
-      )
-    }
     const { host } = this.buildAcpHost(agent, this.cfg, {
-      runInSandbox: true,
+      runInSandbox: this.agentRunsInSandbox(agent),
       cwd,
       // A dream needs only its materialized inputs, never the agent's tool
       // credentials — keep github-app/gh/`*_DATA` secrets out of the

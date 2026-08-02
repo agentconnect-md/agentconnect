@@ -721,3 +721,23 @@ needs it, and log only the agent, repository, credential plane, and outcome.
 This is defense in depth against casual extraction, not a claim that software can
 hide a bearer token from a host administrator who can inspect or modify the daemon
 and its child processes.
+
+## Sandbox availability and feature support
+
+Every feature is supported in environments both **with and without** an OS sandbox,
+and a trusted agent may deliberately run unsandboxed. A sandbox is a best-effort
+isolation layer, never a precondition: no feature may fail closed just because the
+host has no sandbox mechanism (for example macOS, or a Linux host without
+bubblewrap) or because the agent is configured to run outside one. Doing so would
+silently make the feature unavailable in a supported environment, which is a
+regression, not a safety win.
+
+When a feature processes attacker-influenced input — the clearest case is memory
+dreaming, whose consolidation reads the agent's own past sessions — it confines that
+work exactly when the agent itself runs sandboxed, as best-effort isolation of that
+input from provider and host credentials. When the agent runs unsandboxed (trusted,
+or no mechanism available) the feature still runs; the residual credential exposure
+in that mode is an accepted, documented trade-off, closed later by per-runtime
+credential brokering, not by refusing to run. Independent, sandbox-agnostic
+mitigations (for example excluding an agent's tool credentials from a dream's
+environment entirely) still apply in both modes.

@@ -27,6 +27,8 @@ import {
   type MemoryHistoryRecord
 } from '../src/agents/memory.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
+import { storeDigest } from '../src/agents/memory-dreamer.js'
+import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 
 const silent = { info() {}, warn() {} }
 
@@ -457,6 +459,30 @@ describe('DreamRunner adoption', () => {
     const history = await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8')
     expect(history).toContain('"source":"dream"')
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
+  })
+
+  it('binds adoption to the reviewed staged bytes (same-bytes review fence)', async () => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // The review token is the digest of the exact staged output the user reviewed.
+    const out = join(dir, 'memory-dreams', started.dreamId, 'output')
+    const names = await readdir(out)
+    const stagedFiles = await Promise.all(
+      names.map(async (name) => ({ name, content: await readFile(join(out, name), 'utf8') }))
+    )
+    const token = storeDigest(stagedFiles)
+
+    // A stale/incorrect token is refused before any mutation — the reviewed bytes
+    // must match what is about to be adopted.
+    await expect(runner.adopt('a1', started.dreamId, false, `sha256:${'0'.repeat(64)}`)).rejects.toThrow(/re-review/i)
+    expect(store.dreams.get(started.dreamId)?.status).toBe('completed')
+
+    // The exact reviewed digest adopts cleanly.
+    const adopted = await runner.adopt('a1', started.dreamId, false, token)
+    expect(adopted.status).toBe('adopted')
+    expect(await readMemoryFile(dir, 'prefs.md')).toBe('- Uses tabs, not spaces (2026-07-24).\n')
   })
 
   it('records the exact add, update, and delete set with live before snapshots', async () => {
@@ -1482,6 +1508,30 @@ describe('DreamRunner skill mining (D-3)', () => {
     await expect(runner.skillAccept('a1', dreamId, 'deploy-staging')).resolves.toMatchObject({})
     expect(events.filter((event) => event.type === 'memory.dream.skill_accepted')).toHaveLength(1)
     expect(withSkillAcceptance).toHaveBeenCalledOnce()
+  })
+
+  it('binds skill acceptance to the PUBLISHED bytes: wrong token or a post-review mutation is refused', async () => {
+    const { dir, runner, dreamId } = await mining(grounded)
+    const staged = join(dir, 'memory-dreams', dreamId, 'skills', 'deploy-staging')
+    const skillMd = join(staged, 'SKILL.md')
+    const token = (await inspectLocalSkillSource(staged)).sha256
+
+    // A stale/incorrect token is refused.
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging', `sha256:${'0'.repeat(64)}`)).rejects.toThrow(
+      /re-review/i
+    )
+
+    // A mutation AFTER the token was minted is caught at the publication snapshot
+    // (the fence is verified against publish's own capture, not a preflight
+    // inspection), so a concurrent swap of staged bytes can never publish
+    // un-reviewed content.
+    await writeFile(skillMd, `${await readFile(skillMd, 'utf8')}\n<!-- tampered -->\n`, 'utf8')
+    await expect(runner.skillAccept('a1', dreamId, 'deploy-staging', token)).rejects.toThrow(/re-review/i)
+
+    // Re-reviewing the current bytes (fresh token) accepts.
+    const current = (await inspectLocalSkillSource(staged)).sha256
+    const after = await runner.skillAccept('a1', dreamId, 'deploy-staging', current)
+    expect(after.skills?.[0]).toMatchObject({ state: 'accepted' })
   })
 
   it('an accepted skill survives discarding the dream it came from', async () => {

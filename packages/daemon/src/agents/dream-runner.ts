@@ -811,7 +811,7 @@ export class DreamRunner {
    * `.history` record is distill-sourced, those additions are replayed onto the
    * replacement and adoption proceeds; anything else still refuses.
    */
-  async adopt(agentId: string, dreamId: string, force: boolean): Promise<DreamInfo> {
+  async adopt(agentId: string, dreamId: string, force: boolean, reviewToken?: string): Promise<DreamInfo> {
     this.assertStagedContentAllowed()
     const dir = this.dirFor(agentId)
     return this.withLock(agentId, async () => {
@@ -820,10 +820,26 @@ export class DreamRunner {
       if (this.active.has(agentId)) throw new DreamStateError('a dream is in flight for this agent; wait or cancel it')
 
       const out = join(this.dreamDir(agentId, dreamId), 'output')
-      const staged = (await fsp.readdir(out, { withFileTypes: true }))
+      const stagedNames = (await fsp.readdir(out, { withFileTypes: true }))
         .filter((entry) => entry.isFile() && stagedPathOk(entry.name))
         .map((entry) => entry.name)
-      if (!staged.includes(MEMORY_INDEX)) throw new DreamStateError('this dream has no staged index to adopt')
+      if (!stagedNames.includes(MEMORY_INDEX)) throw new DreamStateError('this dream has no staged index to adopt')
+      // Read the staged bytes once; they define both the replacement and the
+      // same-bytes review fence below.
+      const stagedFiles = await Promise.all(
+        stagedNames.map(async (name) => ({ name, content: await fsp.readFile(join(out, name), 'utf8') }))
+      )
+      // Same-bytes review fence (task #36 Phase B): when the caller adopts a
+      // proposal it reviewed, bind adoption to those exact staged bytes. Any
+      // change to the staging since review (a re-run, a distill rebase, manual
+      // edit) yields a different digest, so adoption is refused and the user must
+      // re-review the current proposal rather than silently adopt un-reviewed
+      // content. Auto-adopt passes no token (it opted out of content review).
+      if (reviewToken !== undefined && storeDigest(stagedFiles) !== reviewToken) {
+        throw new DreamStateError(
+          'the staged proposal changed since it was reviewed; re-review the current proposal before adopting'
+        )
+      }
 
       const live = memoryDir(dir)
       const at = this.nowIso()
@@ -834,9 +850,8 @@ export class DreamRunner {
       const replacement = join(dir, `.memory.adopting-${dreamId}`)
       await fsp.rm(replacement, { recursive: true, force: true })
       await fsp.mkdir(replacement, { recursive: true })
-      for (const name of staged) {
-        const content = await fsp.readFile(join(out, name), 'utf8')
-        await fsp.writeFile(join(replacement, name), content, 'utf8')
+      for (const file of stagedFiles) {
+        await fsp.writeFile(join(replacement, file.name), file.content, 'utf8')
       }
 
       // 2) Fence + swap under the shared memory-dir lock, so no writeMemoryFile
@@ -943,7 +958,7 @@ export class DreamRunner {
           this.emitLifecycle({ type: 'memory.dream.adopted', dream: adopted })
           const superseded = await this.supersedeCompletedDreams(agentId, dreamId, adoptedAt)
           this.deps.log.info(
-            `dream ${dreamId} adopted for agent ${agentId} (${staged.length} files, ${superseded} competing proposal(s) superseded)`
+            `dream ${dreamId} adopted for agent ${agentId} (${stagedFiles.length} files, ${superseded} competing proposal(s) superseded)`
           )
           return adopted
         })
@@ -1133,7 +1148,7 @@ export class DreamRunner {
   /** Accept a mined skill by publishing an immutable bounded local-source
    * revision under the daemon-owned agent root. Workspace materialization is
    * deferred to the unified installer and the warm host is fenced first. */
-  async skillAccept(agentId: string, dreamId: string, name: string): Promise<DreamInfo> {
+  async skillAccept(agentId: string, dreamId: string, name: string, reviewToken?: string): Promise<DreamInfo> {
     this.assertStagedContentAllowed()
     const dir = this.dirFor(agentId)
     return this.withLock(agentId, async () => {
@@ -1142,8 +1157,14 @@ export class DreamRunner {
       if (skill.state === 'dismissed') throw new DreamStateError('this skill candidate was already dismissed')
 
       const staged = join(this.dreamDir(agentId, dreamId), 'skills', name)
+      // Same-bytes review fence (task #36 Phase B): bind acceptance to the exact
+      // staged skill bytes the caller reviewed. The check runs INSIDE
+      // publishAcceptedDreamSkill against its own capture snapshot (not a separate
+      // preflight inspection), so a concurrent writer cannot swap the staged bytes
+      // between inspection and capture — the digest verified is the digest that is
+      // actually pinned and published.
       const publish = async (): Promise<void> => {
-        await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged, name })
+        await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged, name, expectedDigest: reviewToken })
       }
       if (this.deps.withSkillAcceptance) await this.deps.withSkillAcceptance(agentId, publish)
       else await publish()
