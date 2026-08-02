@@ -779,13 +779,26 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                   {githubNotice.message}
                 </span>
-                <Link
-                  href={orgPath('/settings')}
-                  className="lnk flex-none text-[12px]"
-                  onClick={() => setGithubNotice(null)}
-                >
-                  Settings
-                </Link>
+                {authOn ? (
+                  <Link
+                    href={orgPath('/settings')}
+                    className="lnk flex-none text-[12px]"
+                    onClick={() => setGithubNotice(null)}
+                  >
+                    Settings
+                  </Link>
+                ) : (
+                  <button
+                    type="button"
+                    className="lnk flex-none text-[12px]"
+                    onClick={() => {
+                      setGithubNotice(null)
+                      openModal('agent')
+                    }}
+                  >
+                    Add agent
+                  </button>
+                )}
                 <button
                   type="button"
                   className="iconbtn -m-1 h-7 w-7 flex-none"
