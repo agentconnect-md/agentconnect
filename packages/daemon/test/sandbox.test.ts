@@ -212,7 +212,9 @@ describe('Claude credential environment isolation', () => {
     const identityToken = 'trusted-parent-identity-token'
     const awsWebIdentityTokenFile = join(root, 'aws-web-identity.jwt')
     const awsWebIdentityToken = 'trusted-parent-aws-token'
-    const privateClaudeConfig = join(root, 'private-home', '.claude')
+    const privateHome = join(root, 'private-home')
+    const privateTmp = join(privateHome, '.tmp')
+    const privateClaudeConfig = join(privateHome, '.claude')
     const privateClaudeSettings = join(privateClaudeConfig, 'settings.json')
     const credentialSocket = join(root, 'run', 'gitcred.sock')
     let credentialRequest: Record<string, unknown> | undefined
@@ -238,8 +240,17 @@ describe('Claude credential environment isolation', () => {
       AWS_CONTAINER_AUTHORIZATION_TOKEN: 'trusted-parent-container-token',
       AWS_WEB_IDENTITY_TOKEN_FILE: awsWebIdentityTokenFile
     }
+    // Mirror sandbox-runtime-provider: SRT's shared /tmp/claude fallback may
+    // not exist, while production always gives the child a private HOME temp.
+    const sandboxEnvironment = {
+      HOME: privateHome,
+      TMPDIR: privateTmp,
+      CLAUDE_CODE_TMPDIR: privateTmp,
+      CLAUDE_TMPDIR: privateTmp
+    }
     mkdirSync(workspace)
     mkdirSync(privateClaudeConfig, { recursive: true })
+    mkdirSync(privateTmp)
     mkdirSync(join(root, 'run'))
     writeFileSync(identityTokenFile, identityToken, { mode: 0o600 })
     writeFileSync(awsWebIdentityTokenFile, awsWebIdentityToken, { mode: 0o600 })
@@ -250,11 +261,15 @@ describe('Claude credential environment isolation', () => {
     )
     const settings = claudeInnerSandboxSettings([identityTokenFile, awsWebIdentityTokenFile, privateClaudeConfig], true)
     const names = settings.credentials.envVars.map(({ name }) => name)
-    const restoredNames = new Set([...names, ...Object.keys(seededCredentialEnvironment)])
+    const restoredNames = new Set([
+      ...names,
+      ...Object.keys(seededCredentialEnvironment),
+      ...Object.keys(sandboxEnvironment)
+    ])
     const previous = new Map([...restoredNames].map((name) => [name, process.env[name]]))
 
     for (const name of names) process.env[name] = `secret-for-${name}`
-    Object.assign(process.env, seededCredentialEnvironment)
+    Object.assign(process.env, seededCredentialEnvironment, sandboxEnvironment)
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -263,7 +278,7 @@ describe('Claude credential environment isolation', () => {
       })
       const config = SandboxRuntimeConfigSchema.parse({
         network: { allowedDomains: [], deniedDomains: [], ...settings.network },
-        filesystem: { ...settings.filesystem, allowWrite: [workspace] },
+        filesystem: { ...settings.filesystem, allowWrite: [workspace, privateHome] },
         credentials: settings.credentials
       })
       await SandboxManager.initialize(config, async () => false)
