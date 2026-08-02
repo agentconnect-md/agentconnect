@@ -104,9 +104,8 @@ export function duplicateIdentity(platform: string, row: SessionMessageDto): str
  * author-copy precedence, and order on the normalized event-time axis.
  *
  * Ordering is a STABLE merge: rows compare by `eventTimeUs`; ties break by
- * `(sender, sourceSessionId)` and finally by each source's own row order, so
- * a source's internal sequence is never reordered and merges are
- * deterministic across reloads.
+ * source (deterministic across reloads) and then by each source's own row
+ * order, so a source's internal sequence is never reordered.
  */
 export function mergeConversation(sources: MergeSource[]): MergedRow[] {
   type Decorated = MergedRow & { us: number; order: number }
@@ -143,9 +142,13 @@ export function mergeConversation(sources: MergeSource[]): MergedRow[] {
       }
     }
   }
+  // Hierarchical, TRANSITIVE tie-break: equal timestamps group by source first
+  // (deterministic across reloads), and within a source the original row order
+  // decides — a source's own sequence is never reordered. (A sender-first
+  // tie-break would both reverse same-source rows and break comparator
+  // transitivity across sources.)
   kept.sort((a, b) => {
     if (a.us !== b.us) return a.us - b.us
-    if (a.row.sender !== b.row.sender) return a.row.sender < b.row.sender ? -1 : 1
     if (a.sourceSessionId !== b.sourceSessionId) return a.sourceSessionId < b.sourceSessionId ? -1 : 1
     return a.order - b.order
   })

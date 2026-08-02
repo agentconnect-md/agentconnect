@@ -169,6 +169,14 @@ function msgStep(m: SessionMessageDto): FmtStep {
   }
 }
 
+/** Whether a member-source read failure may surface in the offline notice.
+ *  Authorization answers (403/404) stay SILENT — a visibility change racing
+ *  the roster must not disclose that a protected source exists (§7); only a
+ *  confirmed non-authorization failure is an operational condition. */
+function countsAsOfflineSource(error: unknown): boolean {
+  return !(error instanceof ApiError && (error.status === 403 || error.status === 404))
+}
+
 /** Render input for conversation mode: mergeConversation over the CURRENT
  *  per-member row map (merged-conversation-view.md §6). */
 function mergeConversationRows(
@@ -1218,8 +1226,8 @@ export default function SessionDetailView() {
                 cursor = page.nextCursor
               }
               rowsBySession.set(src.sessionId, all)
-            } catch {
-              failed += 1
+            } catch (error) {
+              if (countsAsOfflineSource(error)) failed += 1
             }
           })
         )
@@ -1326,8 +1334,8 @@ export default function SessionDetailView() {
               }
               if (!page.liveMore || page.liveCursor === null) break
             }
-          } catch {
-            failed += 1
+          } catch (error) {
+            if (countsAsOfflineSource(error)) failed += 1
           }
         }
         if (tailSessionRef.current !== sid) return

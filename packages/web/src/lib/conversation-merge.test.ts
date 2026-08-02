@@ -94,6 +94,18 @@ describe('mergeConversation', () => {
     expect(merged[0]!.row.senderName).toBe('Dana')
   })
 
+  it('never reorders same-source rows that share a normalized timestamp', () => {
+    // Regression (review finding): a sender-first tie-break flipped
+    // ['first', 'second'] because 'z' > 'a'. Source order must decide.
+    const merged = mergeConversation([
+      src(A, 'slack', [
+        row({ sender: 'z-user', ts: '5000', text: 'first' }),
+        row({ sender: 'a-user', ts: '5000', text: 'second' })
+      ])
+    ])
+    expect(merged.map((m) => m.row.text)).toEqual(['first', 'second'])
+  })
+
   it('orders on the normalized axis with per-source stability', () => {
     // Slack text (seconds domain) must interleave with work rows (ms domain)
     // chronologically, and each source's internal order survives ties.
