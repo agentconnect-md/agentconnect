@@ -1239,24 +1239,32 @@ export default function SessionDetailView() {
   // edited one does not.
   //
   // Seeded DURING RENDER rather than in an effect. An effect commits one frame in
-  // which the filter is still empty while `sessionAgentId` is already known — long
-  // enough to paint "All agents" over org-wide rows and fire the unfiltered request
-  // before snapping to the default. `seedRailAgentFilter` is pure and returns an
-  // edited filter unchanged, so the stored state only ever holds the reader's own
-  // choice and the seed is recomputed from the route every time.
-  const sessionAgentId = session?.agentId ?? ''
+  // which the filter is still empty while the roster is already known — long enough
+  // to paint "All agents" over org-wide rows and fire the unfiltered request before
+  // snapping to the default. `seedRailAgentFilter` is pure and returns an edited
+  // filter unchanged, so the stored state only ever holds the reader's own choice
+  // and the seed is recomputed from the route every time.
+  //
+  // The seed is the whole conversation roster: in conversation mode the resolver's
+  // members, in session mode the same resolver's probe (already fetched above for
+  // the §5.3 redirect), falling back to the lone owning agent.
+  const railSeedAgentIds = useMemo(() => {
+    const roster = conversationKey ? conversationMembers : (selfConversation?.sessions ?? null)
+    if (roster && roster.length > 0) return roster.map((member) => member.agentId ?? '')
+    return session?.agentId ? [session.agentId] : []
+  }, [conversationKey, conversationMembers, selfConversation, session?.agentId])
   const [chosenRailFilter, setChosenRailFilter] = useState<RailAgentFilter>(EMPTY_RAIL_AGENT_FILTER)
-  const railFilter = seedRailAgentFilter(chosenRailFilter, sessionAgentId)
+  const railFilter = seedRailAgentFilter(chosenRailFilter, railSeedAgentIds)
   const setRailAgentIds = useCallback((agentIds: string[]) => setChosenRailFilter({ agentIds, touched: true }), [])
 
-  // With an agent selected this reads an AGENT-FILTERED page, not the org-wide
-  // `allSessions` window — a busy org's newest 50 may not include this agent at
-  // all, which would hide the rail on an agent that has plenty of runs. Cleared,
-  // the unfiltered page IS the question being asked. A null query means the filter
-  // has nothing to say yet (no session, and the reader has not touched it), so the
-  // org key stays null and no page is fetched to be thrown away.
+  // With agents selected this reads a FILTERED page, not the org-wide `allSessions`
+  // window — a busy org's newest 50 may not include them at all, which would hide
+  // the rail on an agent that has plenty of runs. Cleared, the unfiltered page IS
+  // the question being asked. A null query means the filter has nothing to say yet
+  // (no session, and the reader has not touched it), so the org key stays null and
+  // no page is fetched to be thrown away.
   const railQuery = railAgentFilterQuery(railFilter)
-  const railAgentId = railQuery?.agentId ?? ''
+  const railAgentIds = railQuery?.agentId ?? []
   const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
     MOCK_MODE || !railQuery ? null : activeOrg?.id,
     railQuery ?? {}
@@ -1264,8 +1272,14 @@ export default function SessionDetailView() {
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
-    return railAgentId ? getSessions(railAgentId) : allSessions
-  }, [allSessions, getSessions, railAgentId, railQuery, railSessionRows])
+    if (railAgentIds.length === 0) return allSessions
+    if (railAgentIds.length === 1) return getSessions(railAgentIds[0]!)
+    // The demo fixtures carry no conversation grouping, so stand in for it with
+    // the channel — enough for the multi-agent filter to behave like the real one.
+    const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform} ${s.channel}`))
+    const shared = railAgentIds.map(channelsOf).reduce((a, b) => new Set([...a].filter((c) => b.has(c))))
+    return allSessions.filter((s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform} ${s.channel}`))
+  }, [allSessions, getSessions, railAgentIds, railQuery, railSessionRows])
   const sessionBusy = session ? isPgBusy(session.id) : false
   const sessionBusyRef = useRef(sessionBusy)
   sessionBusyRef.current = sessionBusy

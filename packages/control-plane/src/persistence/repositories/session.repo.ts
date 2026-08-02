@@ -244,7 +244,43 @@ function integrationSql(q: SessionFilterQuery, a: Prisma.Sql = S): Prisma.Sql | 
   return platformSql(q.integration, a)
 }
 
-function pageWhereSql(q: SessionFilterQuery, includeCursor: boolean, a: Prisma.Sql = S): Prisma.Sql {
+// "Conversations these agents took part in", one EXISTS per requested agent. No
+// single row can be owned by two agents, so the predicate has to be asked of the
+// row's CONVERSATION instead — each agent must have its own row under the same
+// §5.1 key. The probe re-applies the caller's visibility predicate: a session
+// only they cannot see must never be what makes a conversation qualify.
+//
+// One agent produces nothing — `agentId IN (…)` already implies it — so every
+// existing single-agent query keeps its exact plan. Rows with a NULL channel or
+// thread (cron/hook/dream singletons) drop out on their own: the key join
+// compares those columns with `=`, which no NULL satisfies, and a conversation
+// of one can never hold a second participant anyway.
+function conversationParticipantsSql(q: SessionFilterQuery, a: Prisma.Sql, probePrefix: string): Prisma.Sql[] {
+  const wanted = q.conversationAgentIds ?? []
+  if (wanted.length < 2) return []
+  return wanted.map((agentId, index) => {
+    const p = Prisma.raw(`${probePrefix}${index}`)
+    const viewerArm = sessionViewerSql(q.viewer, p)
+    return Prisma.sql`
+      EXISTS (
+        SELECT 1
+        FROM "session_meta" AS ${p}
+        WHERE ${p}."agentId" = ${agentId}
+          AND ${conversationKeyJoinSql(p, a)}
+          ${viewerArm ? Prisma.sql`AND ${viewerArm}` : Prisma.empty}
+      )
+    `
+  })
+}
+
+function pageWhereSql(
+  q: SessionFilterQuery,
+  includeCursor: boolean,
+  a: Prisma.Sql = S,
+  // Distinct per alias: the emit-at-max probe nests one `pageWhereSql` inside
+  // another, and reusing a name there would shadow the outer participant probe.
+  probePrefix = 'cp'
+): Prisma.Sql {
   const filters: Prisma.Sql[] = [Prisma.sql`${a}."agentId" IN (${Prisma.join(queryAgentIds(q))})`]
   const viewerArm = sessionViewerSql(q.viewer, a)
   if (viewerArm) filters.push(viewerArm)
@@ -254,6 +290,7 @@ function pageWhereSql(q: SessionFilterQuery, includeCursor: boolean, a: Prisma.S
   if (q.channel) filters.push(Prisma.sql`${a}."channel" = ${q.channel}`)
   if (q.triggeredBy) filters.push(Prisma.sql`${a}."triggeredBy" = ${q.triggeredBy}`)
   if (q.hookTriggerIds) filters.push(hookTriggerSql(q.hookTriggerIds, a))
+  filters.push(...conversationParticipantsSql(q, a, probePrefix))
   if (includeCursor && q.cursor) {
     filters.push(Prisma.sql`
       (${a}."lastActivityAt", ${a}."startedAt", ${a}."id") < (
@@ -913,7 +950,7 @@ export class PgSessionRepo implements SessionRepo {
     // the inner row — a newer row the caller cannot see must not suppress a
     // conversation they can (merged-conversation-view.md §5.2). Cursor excluded:
     // the probe asks about the whole authorized row set, not the current page.
-    const probeWhere = pageWhereSql({ ...q, cursor: undefined }, false, N)
+    const probeWhere = pageWhereSql({ ...q, cursor: undefined }, false, N, 'cn')
     const countWhere = pageWhereSql(q, false)
     // Emit-at-max: a row yields its conversation only when no same-key row is
     // strictly greater under the full page tuple. Rows without a groupable key
@@ -1046,6 +1083,10 @@ export class PgSessionRepo implements SessionRepo {
 
     const agentQuery = { ...q }
     delete agentQuery.agentId
+    // The agent facet answers "who else could I pick", so it drops the agent
+    // filter in BOTH its forms — leaving the participant arm would only ever
+    // return the agents already selected.
+    delete agentQuery.conversationAgentIds
     const integrationQuery = { ...q }
     delete integrationQuery.integration
     const channelQuery = { ...q }

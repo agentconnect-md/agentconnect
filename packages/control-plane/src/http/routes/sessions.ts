@@ -39,7 +39,11 @@ import {
 } from '../dto/index.js'
 
 const SessionFilterQueryDto = z.object({
-  agentId: z.string().optional(),
+  // Repeatable: `?agentId=a` scopes to one agent's rows (unchanged), while
+  // `?agentId=a&agentId=b` asks for the CONVERSATIONS both took part in and
+  // returns each of their sessions in those threads. Fastify's querystring
+  // parser hands repeated keys over as an array.
+  agentId: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
   platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream']).optional(),
   integration: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github', 'dream']).optional(),
   channel: z.string().optional(),
@@ -70,6 +74,15 @@ type HookSessionMetadata = {
   kind: 'webhook' | 'github'
   name: string
   repoId: bigint | null
+}
+
+/** The agent filter as a de-duplicated list, whichever form it arrived in. One id
+ *  scopes to that agent's sessions; several ask for the conversations all of them
+ *  took part in (merged-conversation-view.md §5.1 grouping). */
+function requestedAgentIds(query: z.infer<typeof SessionFilterQueryDto>): string[] {
+  const raw = query.agentId
+  if (raw === undefined) return []
+  return [...new Set(Array.isArray(raw) ? raw : [raw])].filter((id) => id.length > 0)
 }
 
 const HOOK_TRIGGER_PREFIX = 'hook:'
@@ -424,13 +437,19 @@ export function sessionRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
-        if (req.query.agentId && !new Set<string>(visibleAgentIds).has(req.query.agentId)) {
+        const requested = requestedAgentIds(req.query)
+        if (requested.some((id) => !new Set<string>(visibleAgentIds).has(id))) {
           return { agents: [], integrations: [], channels: [], triggers: [] }
         }
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
+        // A multi-agent request narrows to the qualifying CONVERSATIONS and then
+        // reads facets off every member row the caller can see, rather than only
+        // the selected agents' rows: a facet answers "what else can I narrow by",
+        // and a conversation's channel is the same whichever member you read.
         const query = {
           agentIds: visibleAgentIds,
-          ...(req.query.agentId ? { agentId: AgentId(req.query.agentId) } : {}),
+          ...(requested.length === 1 ? { agentId: AgentId(requested[0]!) } : {}),
+          ...(requested.length > 1 ? { conversationAgentIds: requested.map(AgentId) } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
@@ -479,11 +498,17 @@ export function sessionRoutes(deps: HttpDeps) {
         // title/channel/usage metadata reaches the caller.
         const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
-        const selectedAgentIds = req.query.agentId
-          ? visibleAgentIdSet.has(req.query.agentId)
-            ? [AgentId(req.query.agentId)]
-            : []
-          : visibleAgentIds
+        // Every requested agent must be visible. One the caller cannot see makes
+        // the whole answer empty rather than being quietly dropped: silently
+        // widening a two-agent question to a one-agent one would answer a
+        // question they did not ask with rows they may not have wanted.
+        const requested = requestedAgentIds(req.query)
+        const selectedAgentIds =
+          requested.length > 0
+            ? requested.every((id) => visibleAgentIdSet.has(id))
+              ? requested.map(AgentId)
+              : []
+            : visibleAgentIds
         // Org-level "any session exists" boolean (first page only). Computed over the
         // FULL org — including sessions the caller can't see — which is safe precisely
         // because it is a bare boolean; the getting-started conversation step derives
@@ -503,6 +528,10 @@ export function sessionRoutes(deps: HttpDeps) {
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, false)
         const query = {
           agentIds: selectedAgentIds,
+          // Two or more selected agents ask for the threads they SHARE. The rows
+          // stay scoped to those agents (`agentIds`), so `?agentId=a` keeps
+          // returning exactly what it always did.
+          ...(requested.length > 1 ? { conversationAgentIds: selectedAgentIds } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),

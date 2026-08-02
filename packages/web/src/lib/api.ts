@@ -418,7 +418,9 @@ export interface SessionListPageDto {
 }
 
 export interface SessionListFilters {
-  agentId?: string
+  /** One agent scopes to that agent's sessions; several ask for the conversations
+   *  all of them took part in, and return each of their sessions in those threads. */
+  agentId?: string | string[]
   platform?: string
   integration?: string
   channel?: string
@@ -1956,7 +1958,11 @@ export async function fetchConversations(
 }
 
 function appendSessionFilters(q: URLSearchParams, filters: SessionListFilters): void {
-  if (filters.agentId) q.set('agentId', filters.agentId)
+  // Repeated `agentId` is the multi-agent form the CP reads as a conversation
+  // participant filter; a lone id serializes identically to the old single form.
+  for (const agentId of typeof filters.agentId === 'string' ? [filters.agentId] : (filters.agentId ?? [])) {
+    if (agentId) q.append('agentId', agentId)
+  }
   if (filters.platform) q.set('platform', filters.platform)
   if (filters.integration) q.set('integration', filters.integration)
   if (filters.channel) q.set('channel', filters.channel)

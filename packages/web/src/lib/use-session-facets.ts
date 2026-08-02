@@ -1,6 +1,7 @@
 import useSWR from 'swr'
 import { fetchSessionFacets, type SessionFacets, type SessionListFilters } from './api'
 import { consoleKeys } from './swr-keys'
+import { sessionFilterAgentKey } from './use-session-list'
 
 type SessionFacetKey = NonNullable<ReturnType<typeof consoleKeys.sessionFacets>>
 export const SESSION_FACET_REFRESH_MS = 60_000
@@ -10,7 +11,7 @@ export function useSessionFacets(
   filters: SessionListFilters = {},
   fallbackData?: SessionFacets
 ) {
-  const agentId = filters.agentId ?? ''
+  const agentId = sessionFilterAgentKey(filters.agentId)
   const integration = filters.integration ?? ''
   const platform = filters.platform ?? ''
   const channel = filters.channel ?? ''
@@ -23,7 +24,7 @@ export function useSessionFacets(
       const [, keyOrgId, , keyAgentId, keyIntegration, keyPlatform, keyChannel, keyTriggeredBy, keyGithubRepoId] =
         args as SessionFacetKey
       return fetchSessionFacets(keyOrgId, {
-        ...(keyAgentId ? { agentId: keyAgentId } : {}),
+        ...(keyAgentId ? { agentId: keyAgentId.split(',') } : {}),
         ...(keyIntegration ? { integration: keyIntegration } : {}),
         ...(keyPlatform ? { platform: keyPlatform } : {}),
         ...(keyChannel ? { channel: keyChannel } : {}),

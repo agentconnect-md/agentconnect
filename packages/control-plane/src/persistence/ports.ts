@@ -1035,6 +1035,14 @@ export interface SessionFilterQuery extends SessionQuery {
   triggeredBy?: string
   githubHookIds?: HookId[]
   hookTriggerIds?: HookId[]
+  /** Conversation-participant filter: keep only rows whose CONVERSATION
+   *  (merged-conversation-view.md §5.1 key) carries a visible session for every
+   *  listed agent. `agentIds` still decides which rows come back; this decides
+   *  which conversations qualify at all, which is the only way to ask for a
+   *  thread several agents worked in — no single row is owned by all of them.
+   *  Fewer than two ids is a no-op: one participant is already implied by the
+   *  row's own `agentId`. */
+  conversationAgentIds?: AgentId[]
   /** Session-visibility predicate inputs (session-visibility.md §5): human
    *  viewers see baseline `org`, identity-owned `private`, and request-resolved
    *  provider `external` rows. Absent ⇒ no session predicate — the internal
