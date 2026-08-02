@@ -526,12 +526,15 @@ export function sessionRoutes(deps: HttpDeps) {
         // GitHub is a semantic subtype of hook sessions. Resolve definitions only
         // when integration classification or a repository-wide trigger filter needs them.
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, false)
+        // Two or more selected agents ask for the threads they SHARE. The rows stay
+        // scoped to those agents (`agentIds`), so `?agentId=a` keeps returning
+        // exactly what it always did. Every branch below reads this one binding —
+        // a path that took `agentIds` alone would silently answer the wider
+        // "either agent" question under the same query string.
+        const conversationAgentIds = requested.length > 1 ? selectedAgentIds : undefined
         const query = {
           agentIds: selectedAgentIds,
-          // Two or more selected agents ask for the threads they SHARE. The rows
-          // stay scoped to those agents (`agentIds`), so `?agentId=a` keeps
-          // returning exactly what it always did.
-          ...(requested.length > 1 ? { conversationAgentIds: selectedAgentIds } : {}),
+          ...(conversationAgentIds ? { conversationAgentIds } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
@@ -548,7 +551,11 @@ export function sessionRoutes(deps: HttpDeps) {
         // a direct conversation load — the paginated list is not a key lookup.
         if (conversationKey) {
           const members = await deps.repos.session.listConversationMembers(
-            { agentIds: selectedAgentIds, viewer },
+            // Carries the participant arm too: addressing a conversation by key
+            // must not widen the same repeated `agentId` into an `IN` filter, or
+            // a key that holds A but not B would answer with A's members when
+            // the caller asked for a conversation the two of them share.
+            { agentIds: selectedAgentIds, conversationAgentIds, viewer },
             conversationKey
           )
           const hookMetadata = await hookMetadataForSessions(deps, members, orgOf(req))

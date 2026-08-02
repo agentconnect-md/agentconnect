@@ -348,6 +348,48 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     ])
   })
 
+  it('holds the key-addressed resolver to the same question as the list', async () => {
+    await seedDaemon(prisma, DAEMON)
+    for (const agent of [AGENT_A, AGENT_B]) await seedAgent(prisma, agent, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    await slackReport('sess-shared-a', AGENT_A, 1_000)
+    await slackReport('sess-shared-b', AGENT_B, 2_000)
+    await slackReport('sess-a-only', AGENT_A, 3_000, { thread: 'T-2' })
+
+    const keyOf = (thread: string) =>
+      encodeURIComponent(encodeConversationKey({ platform: 'slack', tenantScope: 'TEAM-1', channel: 'C-OPS', thread })!)
+    const pair = `agentId=${AGENT_A}&agentId=${AGENT_B}`
+
+    const shared = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${keyOf('T-1')}&${pair}`
+    })
+    expect((shared.json() as ConversationsBody).conversations[0]!.sessions.map((s) => s.sessionId)).toEqual([
+      'sess-shared-b',
+      'sess-shared-a'
+    ])
+
+    // T-2 holds A but not B. Addressing it by key must not fall back to an `IN`
+    // filter and answer with A's members — that is the wider "either agent"
+    // question, under the very same query string.
+    const soloByKey = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${keyOf('T-2')}&${pair}`
+    })
+    expect(soloByKey.statusCode).toBe(200)
+    expect((soloByKey.json() as ConversationsBody).conversations).toHaveLength(0)
+
+    // …while the one-agent form still resolves it.
+    const soloAlone = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${keyOf('T-2')}&agentId=${AGENT_A}`
+    })
+    expect((soloAlone.json() as ConversationsBody).conversations[0]!.sessions.map((s) => s.sessionId)).toEqual([
+      'sess-a-only'
+    ])
+  })
+
   it('answers empty when any requested agent is not visible to the caller', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
