@@ -30,6 +30,7 @@ import {
   type OrderedWebchatCursor,
   type OrderedWebchatResult
 } from '@/lib/webchat-stream'
+import { cursorKeyFor as cursorKeyForLanes, laneAgentId, laneKey, lanesOf as lanesOfLanes } from '@/lib/webchat-lanes'
 
 interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own). */
@@ -204,7 +205,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // lane lazily instead of dropping the reply.
   const pendingTurnIds = useRef<Map<string, string>>(new Map())
   // One ordering cursor per stream LANE — a multi-agent turn runs one lane per
-  // targeted participant (webchat-multi-agents.md §5.3), keyed `${id} ${agentId}`.
+  // targeted participant (webchat-multi-agents.md §5.3); keys from lib/webchat-lanes.ts.
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
   const reconnectAttempts = useRef<Map<string, number>>(new Map())
   // Standalone set_* operations cannot bind until the first daemon session exists.
@@ -431,22 +432,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // ── stream lanes ──────────────────────────────────────────────────────────
-  // Cursor keys are `${id} ${agentId}`. A frame from an older daemon omits
-  // agentId — it resolves to the session's sole lane.
-  const laneKey = (id: string, agentId?: string): string => `${id} ${agentId ?? ''}`
-  const lanesOf = (id: string): string[] => [...streamCursors.current.keys()].filter((k) => k.startsWith(`${id} `))
-  const laneAgentId = (key: string): string | undefined => {
-    const agentId = key.slice(key.indexOf(' ') + 1)
-    return agentId || undefined
-  }
-  const cursorKeyFor = (id: string, agentId?: string): string | undefined => {
-    const exact = laneKey(id, agentId)
-    if (streamCursors.current.has(exact)) return exact
-    const lanes = lanesOf(id)
-    // Legacy frames without agentId (or a lane created before the ready roster
-    // landed) resolve to the sole lane when there is exactly one.
-    return lanes.length === 1 ? lanes[0] : undefined
-  }
+  // Cursor keys come from lib/webchat-lanes.ts. Agent-tagged frames match their
+  // exact lane only — an unknown tagged participant is admitted lazily from its
+  // ack — while the sole-lane fallback is reserved for legacy frames that omit
+  // agentId.
+  const lanesOf = (id: string): string[] => lanesOfLanes(streamCursors.current, id)
+  const cursorKeyFor = (id: string, agentId?: string): string | undefined =>
+    cursorKeyForLanes(streamCursors.current, id, agentId)
   const dropLanes = (id: string): void => {
     for (const key of lanesOf(id)) streamCursors.current.delete(key)
   }
