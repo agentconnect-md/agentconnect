@@ -334,10 +334,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         ]
         if (ev.kind === 'superseded') {
           // Turn-final context refresh discarded the streamed candidate
-          // (webchat-multi-agents.md §5.4): break the lane with a marker so the
-          // replacement generation starts a fresh block instead of merging into
-          // the discarded text.
-          return [...steps, lane({ kind: 'plan', text: 'The conversation moved on — updating this answer…' })]
+          // (webchat-multi-agents.md §5.4): COLLAPSE the discarded answer —
+          // this lane's streamed 'done' blocks since the last user message move
+          // into the collapsible work lane ('plan') — then break the lane with
+          // a marker so the replacement starts a fresh answer block.
+          const collapsed = [...steps]
+          for (let i = collapsed.length - 1; i >= 0; i--) {
+            const step = collapsed[i]!
+            if (step.kind === 'msg' && step.agentId === undefined) break
+            if ((step.agentId ?? undefined) !== agentId) continue
+            if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan' }
+          }
+          return [...collapsed, lane({ kind: 'plan', text: 'The conversation moved on — updating this answer…' })]
         }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {

@@ -5255,6 +5255,19 @@ export class Daemon {
       this.agents.get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
     const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime, remoteMcp)
     if (postSink) stream.postSink = postSink
+    // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the
+    // user message at ADMISSION — not only when its turn eventually runs — so a
+    // generation already in flight for this agent can see it at the final fence
+    // and coalesce the queued activation. The identical later append from
+    // SessionManager.handle dedups in place (same canonical ts, sender, text).
+    if (post && this.cfg.features.turnFinalContextRefresh) {
+      const observedMention = attachmentMention(msg.attachments)
+      this.appendWebchatTextRow(transcriptChannelKey(chatId, undefined), `webchat:${chatId}`, String(post.at), {
+        sender: user,
+        recipient: result.agentId,
+        text: observedMention ? `${text}\n${observedMention}`.trim() : text
+      })
+    }
     void this.dispatch(result.agentId, msg, undefined, stream).catch((err) => {
       if (!(err instanceof LifecycleCleanupBlockedError))
         this.log.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
@@ -8309,6 +8322,14 @@ export class Daemon {
         continue
       }
       count += 1
+      if (entry.webchat && !entry.webchat.doneSent) {
+        entry.webchat.doneSent = true
+        entry.webchat.sink.done({
+          conversationId: entry.webchat.conversationId,
+          turnId: entry.webchat.turnId,
+          stopReason: 'coalesced_into_turn'
+        })
+      }
       const { thread, ts } = transcriptCoords(entry.msg)
       const mention = attachmentMention(entry.msg.attachments)
       this.store.appendTranscript({
@@ -10629,17 +10650,21 @@ export class Daemon {
         // runtime ready gates were awaiting. Queue entries remain untouched until
         // every gate above has succeeded.
         const initialRefresh = await this.refreshTurnContext(p, baseRevision, providerCheckpoint, false)
+        // Webchat: a co-hosted participant's recipient-delivery bump can re-surface
+        // this agent's OWN trigger during the pre-prompt gates too — same exclusion
+        // as the final fence (the trigger's canonical ts rides the message).
+        const initialEvents = p.webchatRefresh
+          ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
+          : initialRefresh.events
         const representedEventTs = new Set([
           ...(handled.contextEventTs ?? []),
-          ...initialRefresh.events.map((event) => event.ts)
+          ...initialEvents.map((event) => event.ts)
         ])
         const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []
-        if (initialRefresh.events.length > 0) {
+        if (initialEvents.length > 0) {
           deltaBlocks.push({
             type: 'text',
-            text: initialContextDeltaText(initialRefresh.events, (event) =>
-              this.observedQuoteBlock(event, initialRefresh.events)
-            )
+            text: initialContextDeltaText(initialEvents, (event) => this.observedQuoteBlock(event, initialEvents))
           })
         }
         promptBlocks.push(...deltaBlocks)
@@ -10776,19 +10801,11 @@ export class Daemon {
 
         this.discardStagedAttempt(p)
         if (p.webchatRefresh && p.webchat) {
-          // The live stream already showed the discarded candidate (webchat
-          // streams are never staged, §5.4) — tell the browser to collapse the
-          // lane in place; the replacement generation streams under the SAME
-          // turnId. The canonical post must carry only the accepted text.
+          // The canonical post — and post-turn memory / turn.completed.output —
+          // must carry only the accepted generation. Webchat chunks accumulate
+          // into BOTH buffers (the stream is never staged), so clear both.
           p.webchat.replyText = ''
-          if (!p.webchat.doneSent) {
-            p.webchat.sink.output({
-              conversationId: p.webchat.conversationId,
-              turnId: p.webchat.turnId,
-              index: p.webchat.index++,
-              event: { kind: 'superseded', generation: generation + 1 }
-            })
-          }
+          p.replyText = ''
         }
         this.emitEvaluation({
           type: 'turn.context_changed',
@@ -10857,6 +10874,17 @@ export class Daemon {
 
         // Retry-budget decision precedes queue mutation. Only activations whose
         // provider ids are present in this exact replacement prompt are absorbed.
+        // The browser supersession marker fires HERE — after the budget check —
+        // so it is only ever followed by a real replacement generation, never by
+        // the context-churn terminal (§5.4: "the replacement streams next").
+        if (p.webchatRefresh && p.webchat && !p.webchat.doneSent) {
+          p.webchat.sink.output({
+            conversationId: p.webchat.conversationId,
+            turnId: p.webchat.turnId,
+            index: p.webchat.index++,
+            event: { kind: 'superseded', generation: generation + 1 }
+          })
+        }
         defaultTurnOutputMetrics.candidateDiscarded('context_changed')
         this.coalesceQueuedContext(key, sessionId, eventTs)
         baseRevision = this.store.threadTranscriptRevision(p.transcriptChannel, p.statusThread)
