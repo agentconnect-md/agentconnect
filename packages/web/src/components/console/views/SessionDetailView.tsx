@@ -532,7 +532,9 @@ function ParticipantAvatar({
 }) {
   return (
     <span
-      className="av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal"
+      className={`av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
+        !agent && !isCron ? 'bg-transparent' : ''
+      }`}
       title={sp.name}
     >
       {agent ? (
