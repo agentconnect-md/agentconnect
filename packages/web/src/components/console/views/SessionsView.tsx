@@ -322,7 +322,7 @@ export default function SessionsView() {
     const rosterNames = roster.map(participantName)
     return (
       <>
-        <span className="flex flex-none items-center -space-x-[5px]" title={rosterNames.join('\n')} data-tooltip-focus>
+        <span className="flex flex-none items-center -space-x-[5px]" data-tooltip-focus-text={rosterNames.join('\n')}>
           {roster.slice(0, 4).map((p) => (
             <span key={p.agentId} className={`av flex-none ${av}`} title={participantName(p)}>
               {agentAvatar(p.agentId, undefined, size)}
