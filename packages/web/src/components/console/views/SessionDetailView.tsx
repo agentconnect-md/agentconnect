@@ -78,6 +78,12 @@ import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { SessionRail } from '@/components/console/SessionRail'
+import {
+  EMPTY_RAIL_AGENT_FILTER,
+  railAgentFilterQuery,
+  seedRailAgentFilter,
+  type RailAgentFilter
+} from '@/lib/session-rail-filter'
 import { useSessionList } from '@/lib/use-session-list'
 import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import {
@@ -965,20 +971,38 @@ export default function SessionDetailView() {
   const agentRuntime = session?.runtime || owner?.runtime || ''
   const runtimeMeta = acpRuntime(acpRegistry, agentRuntime)
 
-  // Other sessions for the left rail. Like the agent page's Recent-sessions card
-  // this reads an AGENT-FILTERED page, not the org-wide `allSessions` window — a
-  // busy org's newest 50 may not include this agent at all, which would hide the
-  // rail on an agent that has plenty of runs. The org key stays null until the
-  // agent is known so no unfiltered page is fetched on the way there.
-  const railAgentId = session?.agentId ?? ''
+  // Other sessions for the left rail, scoped by the rail's own agent filter — see
+  // lib/session-rail-filter.ts for why an untouched filter follows the route and an
+  // edited one does not.
+  //
+  // Seeded DURING RENDER rather than in an effect. An effect commits one frame in
+  // which the filter is still empty while `sessionAgentId` is already known — long
+  // enough to paint "All agents" over org-wide rows and fire the unfiltered request
+  // before snapping to the default. `seedRailAgentFilter` is pure and returns an
+  // edited filter unchanged, so the stored state only ever holds the reader's own
+  // choice and the seed is recomputed from the route every time.
+  const sessionAgentId = session?.agentId ?? ''
+  const [chosenRailFilter, setChosenRailFilter] = useState<RailAgentFilter>(EMPTY_RAIL_AGENT_FILTER)
+  const railFilter = seedRailAgentFilter(chosenRailFilter, sessionAgentId)
+  const setRailAgentIds = useCallback((agentIds: string[]) => setChosenRailFilter({ agentIds, touched: true }), [])
+
+  // With an agent selected this reads an AGENT-FILTERED page, not the org-wide
+  // `allSessions` window — a busy org's newest 50 may not include this agent at
+  // all, which would hide the rail on an agent that has plenty of runs. Cleared,
+  // the unfiltered page IS the question being asked. A null query means the filter
+  // has nothing to say yet (no session, and the reader has not touched it), so the
+  // org key stays null and no page is fetched to be thrown away.
+  const railQuery = railAgentFilterQuery(railFilter)
+  const railAgentId = railQuery?.agentId ?? ''
   const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
-    MOCK_MODE || !railAgentId ? null : activeOrg?.id,
-    { agentId: railAgentId }
+    MOCK_MODE || !railQuery ? null : activeOrg?.id,
+    railQuery ?? {}
   )
-  const railSessions = useMemo(
-    () => (MOCK_MODE ? (railAgentId ? getSessions(railAgentId) : []) : railSessionRows),
-    [getSessions, railAgentId, railSessionRows]
-  )
+  const railSessions = useMemo(() => {
+    if (!MOCK_MODE) return railSessionRows
+    if (!railQuery) return []
+    return railAgentId ? getSessions(railAgentId) : allSessions
+  }, [allSessions, getSessions, railAgentId, railQuery, railSessionRows])
   const sessionBusy = session ? isPgBusy(session.id) : false
   const sessionBusyRef = useRef(sessionBusy)
   sessionBusyRef.current = sessionBusy
@@ -1755,7 +1779,9 @@ export default function SessionDetailView() {
         sessions={railSessions}
         current={session}
         total={railSessionTotal}
-        agentId={session.agentId}
+        agentIds={railFilter.agentIds}
+        filterTouched={railFilter.touched}
+        onAgentIdsChange={setRailAgentIds}
         family={currentSessionDetail?.id === session.id ? currentSessionDetail : undefined}
         onSelect={setRouteSession}
       />
