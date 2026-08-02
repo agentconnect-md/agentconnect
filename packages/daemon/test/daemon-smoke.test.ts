@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,7 +39,7 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
 }
 
 describe('Daemon (no Slack, injected ACP host)', () => {
-  it('forces every real ACP host through the daemon-wide sandbox boundary', async () => {
+  it('sandboxes a host only when the agent opts in — skills are not force-sandboxed (#36)', async () => {
     const root = scaffold()
     const daemon = new Daemon({
       root,
@@ -48,8 +48,18 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     try {
       await daemon.start()
-      const host = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
-      expect((host as any).opts.sandbox).toMatchObject({ mechanism: 'bwrap' })
+      const agent = (daemon as any).agents.get('bot-a')
+      // Sandbox-optional principle: a default agent is NOT force-sandboxed by the
+      // skill-authority requirement, even with a mechanism available.
+      expect((daemon as any).agentRunsInSandbox(agent)).toBe(false)
+      const defaultHost = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
+      expect((defaultHost as any).opts.sandbox).toBeUndefined()
+      // Opting the agent into the sandbox confines it via the available mechanism.
+      ;(daemon as any).hosts.delete('bot-a')
+      agent.runInSandbox = true
+      expect((daemon as any).agentRunsInSandbox(agent)).toBe(true)
+      const sandboxed = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
+      expect((sandboxed as any).opts.sandbox).toMatchObject({ mechanism: 'bwrap' })
     } finally {
       await daemon.stop().catch(() => undefined)
       const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
@@ -70,15 +80,18 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     )
   })
 
-  it('refuses every real ACP host without a sandbox before any skills exist', async () => {
+  it('does not force the skill sandbox or fail closed when the host has no sandbox mechanism (#36)', async () => {
     const root = scaffold()
     const daemon = new Daemon({ root, sandboxMechanism: null })
     try {
+      // Sandbox-optional principle: skills are NOT force-sandboxed fleet-wide, so
+      // boot/reconcile must not throw on a host with no OS sandbox (the exact
+      // reconcile/CP-handshake path that used to break).
       await daemon.start()
-      await expect((daemon as any).ensureHostAsync('bot-a')).rejects.toThrow(
-        /skill authority requires every real ACP host.*sandbox/
-      )
-      expect(existsSync(join(root, 'skill-installs', 'sandbox-required-v1'))).toBe(true)
+      // The agent follows its OWN sandbox decision — unset ⇒ unsandboxed — rather
+      // than a forced skill-authority requirement. (start() completing already
+      // proves boot/reconcile did not fail closed on this no-sandbox host.)
+      expect((daemon as any).agentRunsInSandbox((daemon as any).agents.get('bot-a'))).toBe(false)
     } finally {
       await daemon.stop().catch(() => undefined)
       rmSync(root, { recursive: true, force: true })

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { FakeClock } from './cp/fake-clock.js'
@@ -63,6 +64,33 @@ describe('daemon curated runtime admission', () => {
       await daemon.stop()
     }
   })
+
+  it('probes and admits a curated runtime UNSANDBOXED on a host with no sandbox mechanism (#36)', async () => {
+    // Regression: the probe used to be skipped on a no-sandbox host, so curated
+    // runtimes were never admitted and their agents could not run there. With no
+    // injected probe and no hostFactory this exercises the REAL probe path.
+    const fakeAgent = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-acp-agent.mjs')
+    const runtime = { command: process.execPath, args: [fakeAgent], env: [] }
+    const daemon = new Daemon({
+      root: root(),
+      sandboxMechanism: null,
+      resolveCatalog: async () => ({
+        entries: { 'hermes-agent': { runtime, source: 'curated', name: 'Hermes Agent', version: '' } },
+        runtimes: { 'hermes-agent': runtime }
+      }),
+      installed: (runtimes) => runtimes
+    })
+    try {
+      await daemon.start()
+      // The real probe runs unconfined instead of skipping, so the curated runtime
+      // is admitted (recorded) and becomes launchable.
+      await vi.waitFor(() => expect(Object.keys((daemon as any).runtimes)).toContain('hermes-agent'), {
+        timeout: 10_000
+      })
+    } finally {
+      await daemon.stop()
+    }
+  }, 20_000)
 
   it('reports an auth-required curated runtime with the login warning without admitting it', async () => {
     const probe = vi.fn(async (runtimes: Record<string, unknown>) =>
