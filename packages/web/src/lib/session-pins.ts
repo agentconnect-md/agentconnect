@@ -15,8 +15,10 @@
 //
 // The list is GLOBAL across agents. A pin is a session bookmark, not an agent-list
 // preference: opening it restores that session and therefore its current position
-// in the related-session tree. The rail fetches the handful of pinned rows that are
-// not on the loaded page (see SESSION_PIN_HYDRATE_MAX).
+// in the related-session tree. Each entry keeps its organization only so one org's
+// inaccessible ids cannot consume another org's hydration budget; it does not scope
+// the bookmark to an agent. The rail fetches the handful of pinned rows that are not
+// on the loaded page (see SESSION_PIN_HYDRATE_MAX).
 //
 // Forgetting is by RECENCY ONLY: `writeSessionPins` keeps the newest
 // SESSION_PINS_MAX entries and drops the tail. Nothing here ever infers that a
@@ -24,9 +26,11 @@
 // the console has no cheap proof of deletion (the detail endpoint answers 404 for
 // unauthorized as well as missing). Growth is bounded by the cap instead.
 
-/** One pinned session. */
+/** One pinned session and the organization in which it can be opened. */
 export interface SessionPin {
   id: string
+  /** Empty only for entries written before organization scope was recorded. */
+  orgId: string
 }
 
 /** localStorage key holding the pinned sessions, newest pin first. */
@@ -43,7 +47,8 @@ export const SESSION_PINS_MAX = 200
 export const SESSION_PIN_HYDRATE_MAX = 12
 
 /** The stored pins, newest first. `[]` on SSR, malformed JSON, or blocked storage.
- *  Accepts both the legacy flat `string[]` shape and prior `{ id, agentId }` rows. */
+ *  Accepts the legacy flat `string[]` shape and prior `{ id, agentId }` / `{ id }`
+ *  rows as unscoped pins. */
 export function readSessionPins(): SessionPin[] {
   if (typeof window === 'undefined') return []
   try {
@@ -71,13 +76,22 @@ export function writeSessionPins(pins: SessionPin[]): void {
 
 /** `pins` with `sessionId` pinned (newest first) or unpinned. Pure — persist via
  *  `writeSessionPins`, so the caller can update React state from the same value. */
-export function toggleSessionPin(pins: SessionPin[], sessionId: string): SessionPin[] {
-  return pins.some((p) => p.id === sessionId) ? pins.filter((p) => p.id !== sessionId) : [{ id: sessionId }, ...pins]
+export function toggleSessionPin(pins: SessionPin[], sessionId: string, orgId: string): SessionPin[] {
+  return pins.some((p) => p.id === sessionId)
+    ? pins.filter((p) => p.id !== sessionId)
+    : [{ id: sessionId, orgId }, ...pins]
+}
+
+/** Ids that can be hydrated in `orgId`, newest pin first. Legacy unscoped entries
+ *  still lift rows already present in the rail, but are not fetched speculatively:
+ *  their organization cannot be recovered from local storage and 404 is ambiguous. */
+export function pinnedIdsForOrg(pins: SessionPin[], orgId: string): string[] {
+  return orgId ? pins.filter((p) => p.orgId === orgId).map((p) => p.id) : []
 }
 
 /** Split `sessions` into the pinned ones (in pin order, newest pin first) and the
- *  rest (input order preserved). Matches on id alone, so a pin whose agent was
- *  never recorded still groups correctly on the rail it appears in. */
+ *  rest (input order preserved). Matches on id alone, so a legacy pin whose
+ *  organization was never recorded still groups correctly once its row appears. */
 export function partitionPinned<T extends { id: string }>(
   sessions: T[],
   pins: SessionPin[]
@@ -96,11 +110,11 @@ export function partitionPinned<T extends { id: string }>(
 }
 
 function asPin(entry: unknown): SessionPin | null {
-  if (typeof entry === 'string') return entry ? { id: entry } : null
+  if (typeof entry === 'string') return entry ? { id: entry, orgId: '' } : null
   if (!entry || typeof entry !== 'object') return null
-  const { id } = entry as { id?: unknown }
+  const { id, orgId } = entry as { id?: unknown; orgId?: unknown }
   if (typeof id !== 'string' || !id) return null
-  return { id }
+  return { id, orgId: typeof orgId === 'string' ? orgId : '' }
 }
 
 function dedupe(pins: SessionPin[]): SessionPin[] {

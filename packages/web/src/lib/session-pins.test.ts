@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   partitionPinned,
+  pinnedIdsForOrg,
   readSessionPins,
   SESSION_PINS_KEY,
   SESSION_PINS_MAX,
@@ -22,7 +23,7 @@ function stubStorage(initial?: string) {
   return store
 }
 
-const pin = (id: string): SessionPin => ({ id })
+const pin = (id: string, orgId = 'o1'): SessionPin => ({ id, orgId })
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -34,8 +35,8 @@ describe('readSessionPins', () => {
   })
 
   it('reads stored pins in order', () => {
-    stubStorage(JSON.stringify([pin('b'), pin('a')]))
-    expect(readSessionPins()).toEqual([pin('b'), pin('a')])
+    stubStorage(JSON.stringify([pin('b'), pin('a', 'o2')]))
+    expect(readSessionPins()).toEqual([pin('b'), pin('a', 'o2')])
   })
 
   it('returns [] for an unset key, malformed JSON, or a non-array', () => {
@@ -49,12 +50,12 @@ describe('readSessionPins', () => {
 
   it('migrates the legacy flat string[] shape to session pins', () => {
     stubStorage(JSON.stringify(['s1', 's2']))
-    expect(readSessionPins()).toEqual([{ id: 's1' }, { id: 's2' }])
+    expect(readSessionPins()).toEqual([pin('s1', ''), pin('s2', '')])
   })
 
-  it('drops unusable entries, migrates prior agent-scoped rows, and de-duplicates by id', () => {
+  it('drops unusable entries, migrates prior unscoped rows, and de-duplicates by id', () => {
     stubStorage(JSON.stringify([{ id: 'a', agentId: 'a1' }, 3, null, '', { id: 'b' }, { agentId: 'a1' }, pin('a')]))
-    expect(readSessionPins()).toEqual([pin('a'), pin('b')])
+    expect(readSessionPins()).toEqual([pin('a', ''), pin('b', '')])
   })
 
   it('survives storage that throws (private mode)', () => {
@@ -91,16 +92,29 @@ describe('writeSessionPins', () => {
 })
 
 describe('toggleSessionPin', () => {
-  it('pins to the front and unpins by session id', () => {
-    expect(toggleSessionPin([pin('a')], 'b')).toEqual([pin('b'), pin('a')])
-    expect(toggleSessionPin([pin('b'), pin('a')], 'b')).toEqual([pin('a')])
-    expect(toggleSessionPin([], 'a')).toEqual([pin('a')])
+  it('pins to the front with its organization and unpins by session id', () => {
+    expect(toggleSessionPin([pin('a')], 'b', 'o1')).toEqual([pin('b'), pin('a')])
+    expect(toggleSessionPin([pin('b'), pin('a')], 'b', 'o2')).toEqual([pin('a')])
+    expect(toggleSessionPin([], 'a', 'o2')).toEqual([pin('a', 'o2')])
   })
 
   it('does not mutate the input', () => {
     const pins = [pin('a')]
-    toggleSessionPin(pins, 'b')
+    toggleSessionPin(pins, 'b', 'o1')
     expect(pins).toEqual([pin('a')])
+  })
+})
+
+describe('pinnedIdsForOrg', () => {
+  it('filters by organization before the hydration cap is applied', () => {
+    const pins = [pin('a', 'o1'), pin('b', 'o2'), pin('c', 'o1')]
+    expect(pinnedIdsForOrg(pins, 'o1')).toEqual(['a', 'c'])
+    expect(pinnedIdsForOrg(pins, 'o2')).toEqual(['b'])
+  })
+
+  it('does not speculate about legacy unscoped pins or an unknown organization', () => {
+    expect(pinnedIdsForOrg([pin('old', ''), pin('a')], 'o1')).toEqual(['a'])
+    expect(pinnedIdsForOrg([pin('a')], '')).toEqual([])
   })
 })
 
@@ -122,7 +136,7 @@ describe('partitionPinned', () => {
   })
 
   it('groups a pin that is on the page', () => {
-    expect(partitionPinned(rows, [{ id: 'b' }])).toEqual({
+    expect(partitionPinned(rows, [pin('b', '')])).toEqual({
       pinned: [{ id: 'b' }],
       rest: [{ id: 'a' }, { id: 'c' }]
     })

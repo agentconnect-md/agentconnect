@@ -35,6 +35,7 @@ import { PlatformMark } from '@/components/marks'
 import { groupSessionsByAge } from '@/lib/session-age'
 import {
   partitionPinned,
+  pinnedIdsForOrg,
   readSessionPins,
   SESSION_PIN_HYDRATE_MAX,
   toggleSessionPin,
@@ -64,7 +65,7 @@ export function SessionRail({
   current: Session
   /** The agent's full session count (CP `total`); 0 when unknown (mock). */
   total: number
-  /** Owning agent — scopes the pins and the footer link. */
+  /** Owning agent — scopes the footer link. */
   agentId: string | undefined
   /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
   family?: Pick<SessionDetailDto, 'parentSession' | 'siblingSessions' | 'childSessions'>
@@ -83,13 +84,16 @@ export function SessionRail({
     setPins(readSessionPins())
   }, [])
 
-  const togglePin = useCallback((sessionId: string) => {
-    setPins((prev) => {
-      const next = toggleSessionPin(prev, sessionId)
-      writeSessionPins(next)
-      return next
-    })
-  }, [])
+  const togglePin = useCallback(
+    (sessionId: string) => {
+      setPins((prev) => {
+        const next = toggleSessionPin(prev, sessionId, activeOrg?.id ?? '')
+        writeSessionPins(next)
+        return next
+      })
+    },
+    [activeOrg?.id]
+  )
 
   const currentId = canonicalSessionId(current)
   const parent = family?.parentSession ?? null
@@ -118,11 +122,10 @@ export function SessionRail({
   )
   const missingPinIds = useMemo(
     () =>
-      pins
-        .map((pin) => pin.id)
+      pinnedIdsForOrg(pins, activeOrg?.id ?? '')
         .filter((id) => !loadedIds.has(id))
         .slice(0, SESSION_PIN_HYDRATE_MAX),
-    [pins, loadedIds]
+    [pins, activeOrg?.id, loadedIds]
   )
   const { data: hydratedPins } = useSWR(
     missingPinIds.length > 0 ? ['session-rail-pins', activeOrg?.id ?? '', missingPinIds.join(',')] : null,
