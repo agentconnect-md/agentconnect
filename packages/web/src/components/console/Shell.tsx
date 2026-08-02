@@ -124,6 +124,8 @@ const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/home', label: 'Home' },
   { prefix: '/agents', label: 'Agents' },
   { prefix: '/sessions', label: 'Sessions' },
+  // Merged conversation pages live in the Sessions section (§5.3).
+  { prefix: '/conversations', label: 'Sessions' },
   { prefix: '/crons', label: 'Schedules' },
   { prefix: '/daemons', label: 'Daemons' },
   { prefix: '/tools', label: 'Tools & Skills' },
@@ -133,7 +135,11 @@ const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/profile', label: 'Profile' }
 ]
 
-const isActive = (pathname: string, href: string) => pathname === href || pathname.startsWith(href + '/')
+const isActive = (pathname: string, href: string) =>
+  pathname === href ||
+  pathname.startsWith(href + '/') ||
+  // /conversations/:key is the Sessions section's merged detail page.
+  (href === '/sessions' && pathname.startsWith('/conversations/'))
 
 // Rail-footer "Help & resources" menu targets. `mcp` is the connector guide (how to
 // wire Claude — or any MCP client — to AgentConnect), reached as the "More" link of

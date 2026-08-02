@@ -946,7 +946,10 @@ export default function SessionDetailView() {
   const conversationSourcesRef = useRef<{
     rows: Map<string, SessionMessageDto[]>
     cursors: Map<string, string | null>
-  }>({ rows: new Map(), cursors: new Map() })
+    older: Map<string, string | null>
+  }>({ rows: new Map(), cursors: new Map(), older: new Map() })
+  const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
+  const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
   const conversationMembersRef = useRef<{ sessionId: string; agentId: string; platform: string }[] | null>(null)
   // Merge sources in CANONICAL order — sessionId sort, decoupled from the
   // resolver's representative-first response, whose activity-based order is
@@ -1285,29 +1288,28 @@ export default function SessionDetailView() {
       if (sources.length === 0) return
       const rowsBySession = new Map<string, SessionMessageDto[]>()
       const cursors = new Map<string, string | null>()
+      const older = new Map<string, string | null>()
       let failed = 0
       ;(async () => {
         await Promise.all(
           sources.map(async (src) => {
             try {
-              let all: SessionMessageDto[] = []
-              let cursor: string | undefined
-              for (let i = 0; i < MAX_PAGES; i++) {
-                const page = await fetchSessionMessages(src.sessionId, { ...(cursor ? { cursor } : {}) })
-                if (!active) return
-                if (i === 0) cursors.set(src.sessionId, page.liveCursor ?? null)
-                all = [...page.messages, ...all]
-                if (!page.nextCursor) break
-                cursor = page.nextCursor
-              }
-              rowsBySession.set(src.sessionId, all)
+              // Newest window only — one page per member (C3 §5.2). Older
+              // history loads on demand via the per-source cursors below,
+              // capping a cold open at N requests instead of N × MAX_PAGES.
+              const page = await fetchSessionMessages(src.sessionId, {})
+              if (!active) return
+              cursors.set(src.sessionId, page.liveCursor ?? null)
+              older.set(src.sessionId, page.nextCursor ?? null)
+              rowsBySession.set(src.sessionId, page.messages)
             } catch (error) {
               if (countsAsOfflineSource(error)) failed += 1
             }
           })
         )
         if (!active) return
-        conversationSourcesRef.current = { rows: rowsBySession, cursors }
+        conversationSourcesRef.current = { rows: rowsBySession, cursors, older }
+        setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationOffline(failed)
         setMsgs(mergeConversationRows(sources, rowsBySession))
         setMsgLoading(false)
@@ -1465,6 +1467,34 @@ export default function SessionDetailView() {
     tailInFlightRef.current = run
     return run
   }, [wantTranscript, sid, aid, session?.platform, reconcileLiveSteps, conversationKey])
+
+  // C3 §5.2 cross-source "load earlier": one strictly-older page per member
+  // that still has history, prepended per source, then re-merged.
+  const loadEarlierConversation = useCallback(async (): Promise<void> => {
+    if (!conversationKey || conversationPagingEarlier) return
+    const sources = conversationMembersRef.current ?? []
+    const state = conversationSourcesRef.current
+    setConversationPagingEarlier(true)
+    try {
+      await Promise.all(
+        sources.map(async (src) => {
+          const cursor = state.older.get(src.sessionId)
+          if (!cursor) return
+          try {
+            const page = await fetchSessionMessages(src.sessionId, { cursor })
+            state.rows.set(src.sessionId, [...page.messages, ...(state.rows.get(src.sessionId) ?? [])])
+            state.older.set(src.sessionId, page.nextCursor ?? null)
+          } catch {
+            // Keep this source's window; the button stays for a retry.
+          }
+        })
+      )
+      setMsgs(mergeConversationRows(sources, state.rows))
+      setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
+    } finally {
+      setConversationPagingEarlier(false)
+    }
+  }, [conversationKey, conversationPagingEarlier])
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
   useEffect(() => {
@@ -2399,6 +2429,17 @@ export default function SessionDetailView() {
           </div>
         )}
 
+        {conversationKey && conversationHasEarlier && (
+          <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
+            <button
+              className="lnk text-[12px]"
+              onClick={() => void loadEarlierConversation()}
+              disabled={conversationPagingEarlier}
+            >
+              {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
+            </button>
+          </div>
+        )}
         {visibleMsgPaging && (
           <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
             <Spinner size={14} />
