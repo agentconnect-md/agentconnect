@@ -400,8 +400,14 @@ export interface ConversationDto {
   platform: string | null
   channel: string | null
   thread: string | null
-  /** Current member sessions, representative (newest visible) first. */
+  /** Current member sessions, representative (newest visible) first. Narrowed by
+   *  an `agentId` filter — these are the rows the query asked for, not the
+   *  conversation's membership. */
   sessions: SessionDto[]
+  /** Every visible member's session id, the ones an `agentId` filter kept out of
+   *  `sessions` included. Absent on a CP that predates the field, where the
+   *  filtered rows are the best membership available. */
+  memberSessionIds?: string[]
 }
 
 export interface SessionListPageDto {
@@ -1936,22 +1942,25 @@ export async function fetchConversations(
     const members = conversation.sessions.map(sessionFromDto)
     const rep = members[0]!
     // Conversation IDENTITY rides along whatever the member count. Filtering to a
-    // single participant still returns the conversation, only with one member, and
+    // single participant still returns the conversation, only with fewer rows, and
     // a row that dropped its key there could not be recognised as the same
-    // conversation the reader has open. What marks a row as a MERGED view is
-    // `participants`, not the key. `memberSessionIds` names every member so a
-    // consumer keyed on the representative — which moves as participants take
-    // turns — can follow the conversation instead of the session.
+    // conversation the reader has open. Membership comes from `memberSessionIds`,
+    // which the CP reports over everything the caller can see — `sessions` is
+    // narrowed by the filter, so counting it would lose a participant exactly when
+    // the filter is what made the row ambiguous. An older CP omits it; its
+    // filtered rows are then the best membership on offer.
+    const memberSessionIds = conversation.memberSessionIds ?? members.map((member) => member.id)
     const identity = {
       ...(conversation.key !== null ? { conversationKey: conversation.key } : {}),
-      memberSessionIds: members.map((member) => member.id)
+      memberSessionIds
     }
-    if (members.length <= 1) return { ...rep, ...identity }
+    if (memberSessionIds.length <= 1) return { ...rep, ...identity }
     return {
       ...rep,
       ...identity,
-      // Names resolve at render time from the org agent list (the DTO carries
-      // ids only); the placeholder keeps the field shape valid.
+      // The members the FILTER returned, which is what the row can name. Names
+      // resolve at render time from the org agent list (the DTO carries ids only);
+      // the placeholder keeps the field shape valid.
       participants: members.map((member, i) => ({
         agentId: member.agentId ?? '',
         name: member.agentName ?? member.agentId ?? '',

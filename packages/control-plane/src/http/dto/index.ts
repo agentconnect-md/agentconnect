@@ -2383,7 +2383,14 @@ export const ConversationDto = z.object({
   /** Current member sessions, representative (the caller's newest visible
    *  member) first, one row per agent. Singleton conversations carry exactly
    *  one session; its row renders like the flat list's. */
-  sessions: SessionListDto
+  sessions: SessionListDto,
+  /** Every member session the caller can see, newest first, one per agent —
+   *  INCLUDING the members an `agentId` filter left out of `sessions`. A filter
+   *  narrows which rows are returned, not who took part, and a client that read
+   *  membership off `sessions` would lose track of a conversation the moment the
+   *  filter hid the member it had been identifying it by. Ids only: the metadata
+   *  of a filtered-out member is not part of the answer. */
+  memberSessionIds: z.array(z.string())
 })
 
 export const SessionListPageDto = z.object({

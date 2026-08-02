@@ -535,6 +535,9 @@ export function sessionRoutes(deps: HttpDeps) {
         const query = {
           agentIds: selectedAgentIds,
           ...(conversationAgentIds ? { conversationAgentIds } : {}),
+          // Membership is read over everything the caller may see, so a grouped row
+          // still names the participants an agent filter kept out of its `sessions`.
+          ...(requested.length > 0 ? { memberAgentIds: visibleAgentIds } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
@@ -568,7 +571,10 @@ export function sessionRoutes(deps: HttpDeps) {
                       platform: conversationKey.platform,
                       channel: conversationKey.channel,
                       thread: conversationKey.thread,
-                      sessions: members.map((session) => sessionDto(session, hookMetadata))
+                      sessions: members.map((session) => sessionDto(session, hookMetadata)),
+                      // The resolver already answers per agent over what the caller
+                      // asked for, so its rows ARE its membership.
+                      memberSessionIds: members.map((session) => session.id)
                     }
                   ]
                 : [],
@@ -604,7 +610,8 @@ export function sessionRoutes(deps: HttpDeps) {
             platform: c.key.platform,
             channel: c.key.channel,
             thread: c.key.thread,
-            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata))
+            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata)),
+            memberSessionIds: c.memberSessionIds
           })),
           total: page.total,
           nextCursor,

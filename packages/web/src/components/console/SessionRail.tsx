@@ -269,9 +269,11 @@ export function SessionRail({
     const channel = sessionChannelDisplay(s, cronName)
     const id = canonicalSessionId(s)
     // The merged page is the only surfaced view of a MULTI-participant
-    // conversation (§5.3). A conversation of one is still read as a session, so
-    // the test is `participants` and not the key every grouped row now carries.
-    const merged = (s.participants?.length ?? 0) > 1 && s.conversationKey
+    // conversation (§5.3). The test is MEMBERSHIP, not the key every grouped row
+    // now carries and not `participants` — under an agent filter a shared thread
+    // returns one row, and reading that as a single-agent session would send the
+    // reader to a member session that immediately redirects here anyway.
+    const merged = pinIdsOf(s).length > 1 && s.conversationKey
     return {
       // The SESSION id: it is what `current` is matched against and what a fresh
       // pin records. Pin LOOKUP goes through every member (see sessionPinIds).

@@ -178,9 +178,9 @@ export default function SessionsView() {
     (session: Session) => {
       // A multi-participant conversation row links to the merged page — the
       // only surfaced view for it (merged-conversation-view.md §5.3). The test is
-      // `participants`, not the key: every grouped row carries a key now, and a
-      // one-participant conversation is still read as a session.
-      if ((session.participants?.length ?? 0) > 1 && session.conversationKey) {
+      // MEMBERSHIP, not the key every grouped row carries now, and not
+      // `participants`, which an agent filter narrows to the rows it returned.
+      if ((session.memberSessionIds?.length ?? 0) > 1 && session.conversationKey) {
         return orgPath(`/conversations/${encodeURIComponent(session.conversationKey)}`)
       }
       const id = canonicalSessionId(session)

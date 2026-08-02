@@ -1057,6 +1057,11 @@ export interface SessionFilterQuery extends SessionQuery {
 export interface SessionPageQuery extends SessionFilterQuery {
   limit: number
   includeTotal: boolean
+  /** Agents whose sessions count as conversation MEMBERS, when the caller may see
+   *  more than the filter returns. Absent ⇒ `agentIds`, i.e. membership and row
+   *  scope are the same set. Only widens `memberSessionIds`; which conversations
+   *  qualify, their order, and the rows returned all stay on `agentIds`. */
+  memberAgentIds?: AgentId[]
 }
 
 export type SessionFacetQuery = Omit<SessionFilterQuery, 'cursor' | 'limit'>
@@ -1085,6 +1090,10 @@ export interface ConversationRecord {
    *  history, not members). The first entry is the conversation's
    *  representative — the caller's newest visible member row. */
   sessions: SessionListRecord[]
+  /** The same collapse over every member the caller may see, ids only — the
+   *  members an agent filter kept out of `sessions` included. Who took part is a
+   *  property of the conversation, not of the filter reading it. */
+  memberSessionIds: string[]
 }
 
 export interface ConversationPageRecord {

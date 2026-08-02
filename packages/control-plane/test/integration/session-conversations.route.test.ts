@@ -77,6 +77,7 @@ type ConversationsBody = {
     channel: string | null
     thread: string | null
     sessions: Array<{ sessionId: string; agentId: string }>
+    memberSessionIds: string[]
   }>
   total: number | null
   nextCursor: string | null
@@ -298,6 +299,50 @@ describe('GET /sessions — multi-agent conversation filter', () => {
       'sess-a-only',
       'sess-shared-a'
     ])
+  })
+
+  it('names every visible member even when the filter returns one of them', async () => {
+    await seedDaemon(prisma, DAEMON)
+    for (const agent of [AGENT_A, AGENT_B]) await seedAgent(prisma, agent, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    await slackReport('sess-a-old', AGENT_A, 1_000)
+    await slackReport('sess-a', AGENT_A, 2_000)
+    await slackReport('sess-b', AGENT_B, 3_000)
+
+    // Filtered to A: the ROWS are A's, but who took part is a property of the
+    // conversation. A client that read membership off `sessions` would lose B —
+    // and with it any way to keep following this conversation once B is the
+    // newest member it is named after.
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?agentId=${AGENT_A}` })
+    const conv = (res.json() as ConversationsBody).conversations[0]!
+    expect(conv.sessions.map((s) => s.sessionId)).toEqual(['sess-a'])
+    expect(conv.memberSessionIds).toEqual(['sess-b', 'sess-a'])
+
+    // Unfiltered, membership and rows are the same set — superseded rows are
+    // history in both.
+    const all = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
+    const unfiltered = (all.json() as ConversationsBody).conversations[0]!
+    expect(unfiltered.memberSessionIds).toEqual(unfiltered.sessions.map((s) => s.sessionId))
+    expect(unfiltered.memberSessionIds).toEqual(['sess-b', 'sess-a'])
+  })
+
+  it('keeps a member the caller cannot see out of the membership it reports', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    const stranger = await prisma.user.create({
+      data: { id: randomUUID(), email: `stranger-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Stranger' }
+    })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', ownerUserId: stranger.id })
+    running = buildHttpApp(prisma)
+
+    await slackReport('sess-vis', AGENT_A, 1_000)
+    await slackReport('sess-hidden', AGENT_B, 2_000)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?agentId=${AGENT_A}` })
+    const body = res.json() as ConversationsBody
+    expect(body.conversations[0]!.memberSessionIds).toEqual(['sess-vis'])
+    expect(JSON.stringify(body)).not.toContain('sess-hidden')
   })
 
   it('never lets an invisible participant qualify a conversation', async () => {
