@@ -176,7 +176,7 @@ describe('organization Skills library', () => {
       )
     })
     await act(async () => buttonWithText('Add').click())
-    await act(async () => buttonWithText('Install from skills.sh').click())
+    await act(async () => buttonWithText('Search skills.sh').click())
 
     await typeInto(host.querySelector<HTMLInputElement>('input.inp')!, 'pdf')
     await settleUntil(() => host.textContent?.includes('169.9K installs') === true, 40)

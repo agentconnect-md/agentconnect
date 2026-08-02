@@ -8,8 +8,8 @@
 //
 // A Git source is registered two ways, both behind the header's "Add" menu (same
 // shape as the MCP servers card): "Import from GitHub" takes a repository you
-// already know, and "Install from skills.sh" searches the public registry by
-// skill name (InstallRegistrySkillModal). Both end at the same POST — the second
+// already know, and "Search skills.sh" searches the public registry by skill
+// name (InstallRegistrySkillModal). Both end at the same POST — the second
 // just fills the source string and skill filter from the hit you picked.
 //
 // A source records only WHERE skills come from (source string + optional ref /
@@ -112,10 +112,10 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
                       </span>
                       <span className="flex min-w-0 flex-col">
                         <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                          Install from skills.sh
+                          Search skills.sh
                         </span>
                         <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-                          Search the public registry by skill name
+                          Find a skill in the public registry by name
                         </span>
                       </span>
                     </button>
