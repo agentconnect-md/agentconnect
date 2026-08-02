@@ -775,6 +775,7 @@ export function buildContainer(
     // The live connection index doubles as the read model's liveness overlay
     // (structurally a `DaemonLiveness`): it knows who is connected RIGHT NOW.
     liveness: connReg,
+    daemonConns: connReg,
     control: sender,
     visibilityPush,
     relayControl,
@@ -1025,6 +1026,7 @@ export function buildContainer(
       tokens: webchatTokens,
       agents: repos.agent,
       daemons: connReg,
+      conversations: repos.webchatConversation,
       remoteMcp: webchatRemoteMcp
     }),
     // Current-permission fallback for GitHub comment webhooks whose

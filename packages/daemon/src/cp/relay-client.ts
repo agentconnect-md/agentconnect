@@ -21,7 +21,8 @@ import {
   type RdAgentMsg,
   type RdAgentMsgFwd,
   type RdAgentMsgAck,
-  type RdChatEvent
+  type RdChatEvent,
+  type RdWebchatPost
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -52,8 +53,15 @@ export interface RelayClientDeps {
    * The `chat` callback streams a
    * webchat reply back over THIS relay's socket (`rd/chat`); for a hook fire it
    * is a no-op — the turn's outcome goes to the CP as `hook/report` instead.
+   * The optional `post` callback (webchat only) sends a completed reply as a
+   * canonical conversation post (`rd/webchat-post`) over the same socket so the
+   * relay can fan it to the other participants' daemons as context.
    */
-  onRelayMsg: (msg: RdMsg, chat: (event: RdChatEvent) => void) => RdAck | Promise<RdAck>
+  onRelayMsg: (
+    msg: RdMsg,
+    chat: (event: RdChatEvent) => void,
+    post?: (p: RdWebchatPost) => void
+  ) => RdAck | Promise<RdAck>
   /**
    * Handle a forwarded cross-daemon agent-call (`rd/agentmsg/fwd`, agent-collaboration
    * P2): the relay validated the caller and minted a TRUSTED claim. The daemon
@@ -203,7 +211,8 @@ export class RelayClient {
   private async handleMsg(reqId: string, msg: RdMsg): Promise<void> {
     const chat =
       msg.source === 'webchat' ? (event: RdChatEvent) => this.sendChat(msg.chatId, event) : (): void => undefined
-    const ack = await this.deps.onRelayMsg(msg, chat)
+    const post = msg.source === 'webchat' ? (p: RdWebchatPost) => this.sendWebchatPost(p) : undefined
+    const ack = await this.deps.onRelayMsg(msg, chat, post)
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/ack', ack, { corr: reqId })))
   }
 
@@ -219,6 +228,13 @@ export class RelayClient {
     }
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/agentmsg/ack', ack, { corr: reqId })))
   }
+  /** One completed conversation post (fire-and-forget EVT). Sent on the same
+   *  socket the turn arrived on; a dead transport drops it — bounded loss, the
+   *  transcript row already exists on the authoring daemon. */
+  private sendWebchatPost(post: RdWebchatPost): void {
+    this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/webchat-post', post)))
+  }
+
   private sendChat(chatId: string, event: RdChatEvent): void {
     const seq = (this.seqByChat.get(chatId) ?? 0) + 1
     this.seqByChat.set(chatId, seq)

@@ -116,7 +116,9 @@ answer publication boundary.
   chrome. The context revision is advanced by newly observed conversational messages.
 - Headless hooks, cron turns without an IM destination, GitHub final comments, and
   webchat are outside the initial rollout. Webchat can adopt the same staging contract
-  later, but it has no independent shared IM thread to refresh today.
+  later, but a single-agent webchat conversation has no independent shared IM thread
+  to refresh today. Multi-agent webchat conversations do, and specify that adoption in
+  [webchat-multi-agents.md](webchat-multi-agents.md) section 5.4.
 - The design does not merge ACP sessions between agents. Each agent still has its own
   ACP session and catches up through normalized thread text.
 

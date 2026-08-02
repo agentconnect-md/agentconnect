@@ -14,6 +14,7 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId } from '../../domain/ids.js'
@@ -33,9 +34,44 @@ const WebchatTokenDto = z.object({
   conversationId: z.string()
 })
 
+const ConversationParams = z.object({ orgId: z.string() })
+const AddAgentParams = z.object({ orgId: z.string(), conversationId: z.string().uuid() })
+const AddAgentBody = z.object({ agentId: z.string().uuid() })
+const ConversationParticipantsDto = z.object({
+  participants: z.array(z.object({ agentId: z.string(), primary: z.boolean().optional() }))
+})
+const WEBCHAT_ROSTER_CAP = 8
+// Exactly one of the two: `agentIds` creates (roster fixed at creation, first
+// entry = primary, webchat-multi-agents.md §3.1), `conversationId` resumes.
+const ConversationBody = z
+  .object({
+    conversationId: z.string().uuid().optional(),
+    agentIds: z.array(z.string().uuid()).min(1).max(8).optional()
+  })
+  .refine((b) => (b.conversationId === undefined) !== (b.agentIds === undefined), {
+    message: 'provide exactly one of conversationId (resume) or agentIds (create)'
+  })
+
 export function webchatTokenRoutes(deps: HttpDeps) {
   return async function webchatTokenRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+
+    /** Mint-time fence (webchat-multi-agents.md §10.2): a resume requires the
+     *  owner to currently `canView` EVERY participant, not only the primary —
+     *  losing access to one restricted member revokes the whole conversation,
+     *  since the minted token exposes and targets the full roster. */
+    const allParticipantsViewable = async (
+      conversationId: string,
+      orgId: string,
+      ctx: ReturnType<typeof ctxOf>
+    ): Promise<boolean> => {
+      const roster = await deps.repos.webchatConversation.participants(conversationId)
+      for (const p of roster) {
+        const member = await deps.repos.agent.get(p.agentId)
+        if (!member || member.orgId !== orgId || !canView(member, ctx)) return false
+      }
+      return true
+    }
 
     r.post(
       '/agents/:agentId/webchat/token',
@@ -68,7 +104,10 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
         const binding = { conversationId, userId, agentId: agent.id, orgId: agent.orgId }
         if (req.body.conversationId) {
-          if (!(await deps.repos.webchatConversation.owns(binding))) {
+          if (
+            !(await deps.repos.webchatConversation.owns(binding)) ||
+            !(await allParticipantsViewable(conversationId, agent.orgId, ctxOf(req)))
+          ) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
           }
         } else {
@@ -82,6 +121,173 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           conversationId
         })
         return reply.send({ token, relayUrl, conversationId })
+      }
+    )
+
+    // Conversation-scoped mint (webchat-multi-agents.md §6.2): creates a
+    // conversation with its full roster in one call, or resumes an existing one
+    // by id alone. The token claims stay primary-shaped — the relay resolves the
+    // roster at verification time from the durable participant rows.
+    r.post(
+      '/webchat/conversations/token',
+      {
+        preHandler: app.humanAuth,
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Mint a conversation webchat token',
+          description:
+            'Mints a short-lived token the browser presents to the relay pool. Pass `agentIds` (first entry is the primary) to create a conversation — the roster is fixed at creation — or `conversationId` to resume one owned by the authenticated user. Creating with more than one agent requires every selected agent to be placed on a daemon that supports multi-agent webchat.',
+          operationId: 'mintWebchatConversationToken',
+          params: ConversationParams,
+          body: ConversationBody,
+          response: { 200: WebchatTokenDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const relayUrl = deps.config.PUBLIC_RELAY_URL
+        if (!relayUrl) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'webchat relay pool not configured' })
+        }
+        const userId = req.principal!.userId
+        const orgId = req.orgCtx!.orgId
+
+        if (req.body.conversationId) {
+          const conversationId = req.body.conversationId.toLowerCase()
+          const owned = await deps.repos.webchatConversation.ownedBy(conversationId, orgId, userId)
+          if (!owned) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+          }
+          // EVERY participant must still be viewable — the minted token exposes
+          // and targets the full roster, so losing access to one restricted
+          // member revokes resume for the whole conversation.
+          const primary = await deps.repos.agent.get(owned.primaryAgentId)
+          if (
+            !primary ||
+            primary.orgId !== orgId ||
+            !canView(primary, ctxOf(req)) ||
+            !(await allParticipantsViewable(conversationId, orgId, ctxOf(req)))
+          ) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+          }
+          const token = await deps.webchatTokens.mint({
+            userId,
+            user: req.principal!.email ?? userId,
+            agentId: primary.id,
+            orgId,
+            conversationId
+          })
+          return reply.send({ token, relayUrl, conversationId })
+        }
+
+        const agentIds = [...new Set(req.body.agentIds!)]
+        const agents = []
+        for (const id of agentIds) {
+          const agent = await deps.repos.agent.get(AgentId(id))
+          if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+          }
+          agents.push(agent)
+        }
+        if (agents.length > 1) {
+          // Capability gate at creation (webchat-multi-agents.md §6.3): every
+          // selected agent's daemon must advertise multi-agent webchat support.
+          for (const agent of agents) {
+            const daemon = agent.daemonId ? deps.daemonConns.get(agent.daemonId) : undefined
+            if (!daemon?.capabilities?.features?.includes(WEBCHAT_MULTI_AGENT_FEATURE)) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: `agent ${agent.id} is not on a daemon that supports multi-agent conversations`
+              })
+            }
+          }
+        }
+        const conversationId = randomUUID()
+        const [primary, ...members] = agents
+        await deps.repos.webchatConversation.create(
+          { conversationId, userId, agentId: primary!.id, orgId },
+          members.map((a) => a.id)
+        )
+        const token = await deps.webchatTokens.mint({
+          userId,
+          user: req.principal!.email ?? userId,
+          agentId: primary!.id,
+          orgId,
+          conversationId
+        })
+        return reply.send({ token, relayUrl, conversationId })
+      }
+    )
+
+    // Mid-conversation join (webchat-multi-agents.md §3.1): the owner may ADD a
+    // participant to an existing conversation; removal stays unsupported. The
+    // browser refreshes the relay's cached roster by simply reconnecting — a
+    // fresh mint + rc/verify returns the grown roster, so no relay protocol is
+    // involved. Growing past one participant suspends the delegated admin MCP
+    // via the live per-request authority check (§10.3).
+    r.post(
+      '/webchat/conversations/:conversationId/agents',
+      {
+        preHandler: app.humanAuth,
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Add an agent to a webchat conversation',
+          description:
+            'Adds a participant agent to a conversation owned by the authenticated user (mid-conversation join). The agent must be viewable and placed on a daemon that supports multi-agent webchat — as must every existing participant. Idempotent for an agent already in the roster.',
+          operationId: 'addWebchatConversationAgent',
+          params: AddAgentParams,
+          body: AddAgentBody,
+          response: { 200: ConversationParticipantsDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const userId = req.principal!.userId
+        const orgId = req.orgCtx!.orgId
+        const conversationId = req.params.conversationId.toLowerCase()
+        const owned = await deps.repos.webchatConversation.ownedBy(conversationId, orgId, userId)
+        if (!owned) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+        }
+        const agent = await deps.repos.agent.get(AgentId(req.body.agentId))
+        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        }
+        const roster = await deps.repos.webchatConversation.participants(conversationId)
+        const respond = async () => {
+          const updated = await deps.repos.webchatConversation.participants(conversationId)
+          return reply.send({
+            participants: updated.map((p) => ({
+              agentId: p.agentId,
+              ...(p.role === 'primary' ? { primary: true } : {})
+            }))
+          })
+        }
+        if (roster.some((p) => p.agentId === agent.id)) return respond()
+        if (roster.length >= WEBCHAT_ROSTER_CAP) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'conversation is full' })
+        }
+        // Every participant of a multi-agent conversation — the new agent AND
+        // the existing roster — must sit on a capability-advertising daemon
+        // (webchat-multi-agents.md §6.3, enforced at each growth point).
+        const rosterAgents = [agent]
+        for (const p of roster) {
+          const existing = await deps.repos.agent.get(p.agentId)
+          if (existing) rosterAgents.push(existing)
+        }
+        for (const member of rosterAgents) {
+          const daemon = member.daemonId ? deps.daemonConns.get(member.daemonId) : undefined
+          if (!daemon?.capabilities?.features?.includes(WEBCHAT_MULTI_AGENT_FEATURE)) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: `agent ${member.id} is not on a daemon that supports multi-agent conversations`
+            })
+          }
+        }
+        await deps.repos.webchatConversation.addParticipant(conversationId, agent.id, userId)
+        return respond()
       }
     )
   }

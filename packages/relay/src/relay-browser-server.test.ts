@@ -174,7 +174,7 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
 
     ws.send(JSON.stringify({ text: 'hello agent' }))
     const ack = await nextFrame(ws, 'ack')
-    expect(ack).toEqual({ type: 'ack', ack: { accepted: true } })
+    expect(ack).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT } })
     expect(sent).toHaveLength(1)
     expect(sent[0]).toMatchObject({
       source: 'webchat',
@@ -230,12 +230,15 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
     await nextFrame(ws, 'ack')
 
     expect(sent[0]?.remoteMcp).toEqual(ENTITLEMENT)
-    expect(sent[0]?.payload).toEqual({
+    // The relay mints the turn correlation id and the canonical post identity
+    // itself (webchat-multi-agents.md §5.1) — neither comes from the browser.
+    expect(sent[0]?.payload).toMatchObject({
       op: 'turn',
       text: 'trusted binding only',
       user: 'ada',
       runtime: { model: 'claude' }
     })
+    expect(sent[0]?.payload).not.toHaveProperty('remoteMcp')
     ws.close()
   })
 

@@ -40,12 +40,33 @@ export type WebchatImageAttachment = z.infer<typeof WebchatImageAttachment>
 // The webchat turn verdict — `dispatchWebchatTurn` returns this and the relay path folds
 // it into `rd/ack` (accepted + the turnId that correlates the reply stream; `reason`
 // explains a rejection). Not a wire frame of its own anymore.
+// `agentId` attributes the verdict in a multi-agent conversation: a multi-target turn
+// produces one ack per targeted agent. Absent ⇒ the conversation's sole agent.
 export const WebchatAck = z.object({
   accepted: z.boolean(),
   turnId: z.string().uuid(), // correlates the streamed output to this turn
-  reason: z.enum(['queued', 'no_agent', 'busy', 'paused', 'draining']).optional()
+  agentId: z.string().uuid().optional(),
+  reason: z.enum(['queued', 'no_agent', 'busy', 'paused', 'draining', 'not_participant']).optional()
 })
 export type WebchatAck = z.infer<typeof WebchatAck>
+
+// One canonical conversation post — the unit every participant daemon records and
+// the browser merges by `(at, postId)`. Identity (`postId`, `at`) is minted exactly
+// ONCE at the origin (the relay for a user turn, the owning daemon for an agent
+// reply) and carried on every frame that transports the post, so all copies agree
+// on ordering and the shared transcript dedupes across co-hosted participants.
+export const WebchatPost = z.object({
+  postId: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  author: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('user'), user: z.string().optional() }),
+    z.object({ kind: z.literal('agent'), agentId: z.string().uuid() })
+  ]),
+  text: z.string(),
+  at: z.number().int(), // canonical epoch-ms timestamp, minted once at origin
+  attachments: z.array(WebchatImageAttachment).max(1).optional()
+})
+export type WebchatPost = z.infer<typeof WebchatPost>
 
 // One structured chunk of the agent's reply stream. Ordered per-connection (TCP);
 // 'index' is a per-turn monotonic counter for client-side assembly (NOT a global fence).
@@ -106,6 +127,9 @@ export const WebchatOutput = z
   .object({
     conversationId: z.string().uuid(),
     turnId: z.string().uuid(),
+    // Which participant is streaming — a multi-agent conversation renders one
+    // stream lane per (turnId, agentId). Absent ⇒ the conversation's sole agent.
+    agentId: z.string().uuid().optional(),
     index: z.number().int(),
     event: WebchatEvent.optional(),
     status: WebchatStatus.optional()
@@ -124,6 +148,8 @@ export type WebchatOutput = z.infer<typeof WebchatOutput>
 export const WebchatDone = z.object({
   conversationId: z.string().uuid(),
   turnId: z.string().uuid(),
+  // Which participant's turn ended (multi-agent attribution, as on WebchatOutput).
+  agentId: z.string().uuid().optional(),
   // Last output index emitted before this terminal marker. A reconnecting browser
   // holds `done` until it has assembled every output through this index, so an
   // early terminal frame cannot hide a gap. Optional for rolling compatibility.

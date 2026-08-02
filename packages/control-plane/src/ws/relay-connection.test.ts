@@ -19,6 +19,7 @@ import type { ApiKeyRepo, RelayRepo, RelayRecord } from '../persistence/ports.js
 import type { Clock } from '../domain/clock.js'
 import type { WebchatTokenClaims } from '../registry/webchatToken.js'
 import { createWebchatTokenVerifier, type WebchatVerificationDeps } from '../registry/webchatVerification.js'
+import { AgentId } from '../domain/ids.js'
 
 const NOW = 1_700_000_000_000
 const clock = { now: () => NOW } as unknown as Clock
@@ -166,6 +167,13 @@ function buildWebchatVerifier(
     daemonId?: string | null
     daemonState?: string
     daemonFeatures?: string[]
+    /** Roster returned by the conversations repo (default: empty — the
+     *  pre-participant single-agent shape). */
+    participants?: Awaited<ReturnType<WebchatVerificationDeps['conversations']['participants']>>
+    /** Per-agent lookups for roster MEMBERS (the primary keeps the defaults). */
+    agentById?: Record<string, { orgId: string; daemonId: string | null } | null>
+    /** Per-daemon connection state for member placements. */
+    daemonById?: Record<string, { state: string; features?: string[] }>
     establish?: WebchatVerificationDeps['remoteMcp']['establish']
   } = {}
 ) {
@@ -180,19 +188,31 @@ function buildWebchatVerifier(
         }
       : over.tokenClaims
   )
-  const getAgent = vi.fn(async () => ({
-    orgId: 'org-1',
-    daemonId: over.daemonId === undefined ? WEBCHAT_DAEMON_ID : over.daemonId
-  }))
-  const getDaemon = vi.fn(() => ({
-    state: over.daemonState ?? 'READY',
-    capabilities: {
-      platforms: [],
-      runtimes: [],
-      acp: true,
-      features: over.daemonFeatures ?? [WEBCHAT_REMOTE_MCP_FEATURE]
+  const getAgent = vi.fn(async (id: string) => {
+    if (over.agentById && id in over.agentById) return over.agentById[id] ?? null
+    return {
+      orgId: 'org-1',
+      daemonId: over.daemonId === undefined ? WEBCHAT_DAEMON_ID : over.daemonId
     }
-  }))
+  })
+  const getDaemon = vi.fn((id: string) => {
+    const member = over.daemonById?.[id]
+    if (member) {
+      return {
+        state: member.state,
+        capabilities: { platforms: [], runtimes: [], acp: true, features: member.features ?? [] }
+      }
+    }
+    return {
+      state: over.daemonState ?? 'READY',
+      capabilities: {
+        platforms: [],
+        runtimes: [],
+        acp: true,
+        features: over.daemonFeatures ?? [WEBCHAT_REMOTE_MCP_FEATURE]
+      }
+    }
+  })
   const establish =
     over.establish ??
     vi.fn(async () => ({
@@ -209,6 +229,9 @@ function buildWebchatVerifier(
       tokens: { verify },
       agents: { get: getAgent },
       daemons: { get: getDaemon },
+      // Default: pre-participant conversation — the empty roster degrades to the
+      // token's primary (single-agent shape), keeping the remote-MCP gate reachable.
+      conversations: { participants: async () => over.participants ?? [] },
       remoteMcp: { establish }
     })
   }
@@ -685,5 +708,79 @@ describe('RelayConnection FSM', () => {
     expect(transport.lastRep('error')).toMatchObject({ corr: req.id, payload: { code: 'INTERNAL', retryable: true } })
     expect(transport.lastRep('rc/github-rerequest/ok')).toBeUndefined()
     expect(conn.state).toBe('READY')
+  })
+})
+
+describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2)', () => {
+  const MEMBER_AGENT_ID = '77777777-7777-4777-8777-777777777777'
+  const MEMBER_DAEMON_ID = '88888888-8888-4888-8888-888888888888'
+  const ROSTER = [
+    { agentId: AgentId(WEBCHAT_AGENT_ID), role: 'primary' as const },
+    { agentId: AgentId(MEMBER_AGENT_ID), role: 'member' as const }
+  ]
+
+  it('returns the roster primary-first with member placements and suppresses remote-MCP', async () => {
+    const h = buildWebchatVerifier({
+      participants: ROSTER,
+      agentById: { [MEMBER_AGENT_ID]: { orgId: 'org-1', daemonId: MEMBER_DAEMON_ID } },
+      daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
+    })
+
+    const result = await h.verifier('browser-credential')
+
+    expect(result.ok).toBe(true)
+    expect(result.participants).toEqual([
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
+      { agentId: MEMBER_AGENT_ID, daemonId: MEMBER_DAEMON_ID }
+    ])
+    // Delegated administration is a single-participant privilege: even though
+    // the primary's daemon advertises the remote-MCP capability, no
+    // establishment is attempted for a multi-agent conversation.
+    expect(result.remoteMcp).toBeUndefined()
+    expect(h.establish).not.toHaveBeenCalled()
+  })
+
+  it('lists a member WITHOUT a placement when its daemon is not READY', async () => {
+    const h = buildWebchatVerifier({
+      participants: ROSTER,
+      agentById: { [MEMBER_AGENT_ID]: { orgId: 'org-1', daemonId: MEMBER_DAEMON_ID } },
+      daemonById: { [MEMBER_DAEMON_ID]: { state: 'DEGRADED' } }
+    })
+
+    const result = await h.verifier('browser-credential')
+
+    expect(result.ok).toBe(true)
+    expect(result.participants).toEqual([
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
+      { agentId: MEMBER_AGENT_ID } // no daemonId ⇒ the relay refuses turns targeting it
+    ])
+  })
+
+  it('lists a cross-org or vanished member WITHOUT a placement (fail-closed targeting)', async () => {
+    const h = buildWebchatVerifier({
+      participants: ROSTER,
+      agentById: { [MEMBER_AGENT_ID]: { orgId: 'org-OTHER', daemonId: MEMBER_DAEMON_ID } },
+      daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
+    })
+
+    const result = await h.verifier('browser-credential')
+
+    expect(result.ok).toBe(true)
+    expect(result.participants).toEqual([
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
+      { agentId: MEMBER_AGENT_ID }
+    ])
+
+    const vanished = buildWebchatVerifier({
+      participants: ROSTER,
+      agentById: { [MEMBER_AGENT_ID]: null },
+      daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
+    })
+    const gone = await vanished.verifier('browser-credential')
+    expect(gone.ok).toBe(true)
+    expect(gone.participants).toEqual([
+      { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true },
+      { agentId: MEMBER_AGENT_ID }
+    ])
   })
 })

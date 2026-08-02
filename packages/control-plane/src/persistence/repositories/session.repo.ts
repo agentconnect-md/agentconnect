@@ -629,9 +629,19 @@ export class PgSessionRepo implements SessionRepo {
     const webchatConversationId =
       ev.platform === 'webchat' && ev.channel && UUID_RE.test(ev.channel) ? ev.channel : null
     if (webchatConversationId) {
+      // Any PARTICIPANT's session serializes on the conversation row (the
+      // roster is fixed at creation; `agentId` on the conversation is the
+      // primary mirror, so member agents match through the participant table).
       await tx.$queryRaw(Prisma.sql`
-        SELECT "id" FROM "webchat_conversation"
-        WHERE "id" = ${webchatConversationId}::uuid AND "agentId" = ${ev.agentId}::uuid
+        SELECT c."id" FROM "webchat_conversation" AS c
+        WHERE c."id" = ${webchatConversationId}::uuid
+          AND (
+            c."agentId" = ${ev.agentId}::uuid
+            OR EXISTS (
+              SELECT 1 FROM "webchat_conversation_agent" AS p
+              WHERE p."conversationId" = c."id" AND p."agentId" = ${ev.agentId}::uuid
+            )
+          )
         FOR UPDATE
       `)
     }
@@ -767,6 +777,21 @@ export class PgSessionRepo implements SessionRepo {
           AND NOT EXISTS (
             SELECT 1 FROM "session_meta" AS cur
             WHERE cur."id" = c."currentSessionId" AND cur."startedAt" >= ${session.startedAt}
+          )
+      `)
+      // The reporting participant's OWN pointer (webchat-multi-agents.md §3.1) —
+      // the primary's row mirrors the conversation-level fence above; a member's
+      // row is the only place its current session is recorded.
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "webchat_conversation_agent" AS p
+        SET "currentSessionId" = ${session.id},
+            "currentSessionRev" = p."currentSessionRev" + 1
+        WHERE p."conversationId" = ${webchatConversationId}::uuid
+          AND p."agentId" = ${ev.agentId}::uuid
+          AND p."currentSessionId" IS DISTINCT FROM ${session.id}
+          AND NOT EXISTS (
+            SELECT 1 FROM "session_meta" AS cur
+            WHERE cur."id" = p."currentSessionId" AND cur."startedAt" >= ${session.startedAt}
           )
       `)
     }

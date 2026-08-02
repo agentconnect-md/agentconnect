@@ -1253,7 +1253,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(stale).toEqual([]) // delayed generation never steals the stream transport
     expect(second.at(-1)).toEqual({
       kind: 'done',
-      done: { conversationId: CONV, turnId, lastIndex: 1, stopReason: 'end_turn' }
+      done: { conversationId: CONV, turnId, agentId: AGENT_ID, lastIndex: 1, stopReason: 'end_turn' }
     })
 
     const terminalResume = (daemon as any).handleRelayMsg(
@@ -1264,11 +1264,17 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(third).toEqual([
       {
         kind: 'output',
-        output: { conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'second' } }
+        output: {
+          conversationId: CONV,
+          turnId,
+          agentId: AGENT_ID,
+          index: 1,
+          event: { kind: 'message', text: 'second' }
+        }
       },
       {
         kind: 'done',
-        done: { conversationId: CONV, turnId, lastIndex: 1, stopReason: 'end_turn' }
+        done: { conversationId: CONV, turnId, agentId: AGENT_ID, lastIndex: 1, stopReason: 'end_turn' }
       }
     ])
     await daemon.stop()
@@ -1303,17 +1309,35 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(original).toEqual([
       {
         kind: 'output',
-        output: { conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } }
+        output: {
+          conversationId: CONV,
+          turnId,
+          agentId: AGENT_ID,
+          index: 0,
+          event: { kind: 'message', text: 'missed' }
+        }
       }
     ])
     expect(resumed).toEqual([
       {
         kind: 'output',
-        output: { conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'missed' } }
+        output: {
+          conversationId: CONV,
+          turnId,
+          agentId: AGENT_ID,
+          index: 0,
+          event: { kind: 'message', text: 'missed' }
+        }
       },
       {
         kind: 'output',
-        output: { conversationId: CONV, turnId, index: 1, event: { kind: 'message', text: 'continued' } }
+        output: {
+          conversationId: CONV,
+          turnId,
+          agentId: AGENT_ID,
+          index: 1,
+          event: { kind: 'message', text: 'continued' }
+        }
       }
     ])
     await daemon.stop()
@@ -1497,7 +1521,9 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       msgId: 'm-close',
       accepted: true
     })
-    expect(cancel).toHaveBeenCalledWith(CONV)
+    // Cancel is agent-scoped now: the relay addresses each participant daemon
+    // with its own agent, so the frame's agentId rides along.
+    expect(cancel).toHaveBeenCalledWith(CONV, AGENT_ID)
     expect(close).toHaveBeenCalledWith(CONV)
     await daemon.stop()
   })

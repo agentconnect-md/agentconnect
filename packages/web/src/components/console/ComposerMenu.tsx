@@ -29,6 +29,7 @@ export function ComposerMenu({
   trailing,
   footer,
   triggerClassName,
+  iconOnly = false,
   tooltips = true,
   onOpenChange,
   onChange
@@ -49,6 +50,9 @@ export function ComposerMenu({
   footer?: ReactNode
   /** Overrides the default trigger look (e.g. the Home composer's design pills). */
   triggerClassName?: string
+  /** Icon-only trigger (e.g. the Home composer's "+ add agents" chip): render only
+   *  `leading` — no selected-value label, no chevron. */
+  iconOnly?: boolean
   /** Hover-tooltip the trigger + options (via the console Tooltip layer). Turn off
    *  for self-explanatory menus (model / effort / permission) where the popover is noise. */
   tooltips?: boolean
@@ -112,9 +116,9 @@ export function ComposerMenu({
         }}
       >
         {leading}
-        <span>{selected?.label ?? value}</span>
+        {!iconOnly && <span>{selected?.label ?? value}</span>}
         {trailing}
-        <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
+        {!iconOnly && <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />}
       </button>
       {open && (
         <>

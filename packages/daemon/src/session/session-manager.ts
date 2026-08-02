@@ -406,11 +406,14 @@ export class SessionManager {
     const { thread, ts: coordTs } = transcriptCoords(msg)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
-    // every follow-up user message (only the first turn is ever recorded). Stamp each
-    // webchat turn with a fresh strictly-monotonic ts (shared with the reply recording in
+    // every follow-up user message (only the first turn is ever recorded). Prefer the
+    // relay-minted canonical post timestamp when the turn carries one
+    // (webchat-multi-agents.md §5.1: minted ONCE at origin, shared by every participant
+    // copy so co-hosted agents collapse onto one shared text row + recipient entries);
+    // otherwise stamp a fresh strictly-monotonic ts (shared with the reply recording in
     // daemon.ts, so the user message and its reply never collide on the same ms) — the
     // whole conversation is recorded, and thread stays stable → one session.
-    const ts = msg.platform === 'webchat' ? monotonicTs() : coordTs
+    let ts = msg.platform === 'webchat' ? (msg.transcriptTs ?? monotonicTs()) : coordTs
     const transportScope = msg.transportScope
     const legacyKey = sessionKey(msg.platform, msg.channel, thread, agentId)
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
@@ -427,6 +430,21 @@ export class SessionManager {
     // for prompt replay; bounded inline webchat images remain daemon-local for UI replay)
     const mention = attachmentMention(msg.attachments)
     const transcriptAttachments = transcriptImageAttachments(msg.attachments)
+    const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
+    // Webchat rows dedup on (channel, thread, ts) alone, and a carried canonical
+    // `at` can land on a millisecond a DIFFERENT post (a peer's context copy)
+    // already occupies on this daemon — probe the slot and bump instead of
+    // letting INSERT OR IGNORE silently drop this message. An identical row
+    // (the co-hosted-participant fan-out case) keeps the shared slot.
+    if (msg.platform === 'webchat') {
+      let slot = BigInt(ts)
+      for (let attempt = 0; attempt < 32; attempt++) {
+        const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot))
+        if (!existing || (existing.sender === msg.sender.id && existing.text === transcriptText)) break
+        slot += 1n
+      }
+      ts = String(slot)
+    }
     this.deps.store.appendTranscript({
       channel: transcriptChannel,
       thread,
@@ -436,7 +454,7 @@ export class SessionManager {
       // recipient — the console session view scopes to what THIS agent received + produced.
       recipient: agentId,
       kind: 'text',
-      text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
+      text: transcriptText,
       ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
     })
 

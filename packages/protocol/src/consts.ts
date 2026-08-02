@@ -28,6 +28,15 @@ export const SESSION_VISIBILITY_FEATURE = 'session-visibility-v1'
 /** Daemon/runtime support private, session-scoped remote MCP headers and stable invocation ids. */
 export const WEBCHAT_REMOTE_MCP_FEATURE = 'webchat_remote_mcp_v1'
 
+/**
+ * Daemon understands multi-agent webchat conversations: `mentions`/`post` on
+ * webchat turns, the transcript-only `context` op, agent-attributed
+ * ack/output/done, and `rd/webchat-post` reply fan-out
+ * (webchat-multi-agents.md). The CP refuses to CREATE a conversation with more
+ * than one agent unless every selected agent's daemon advertises this.
+ */
+export const WEBCHAT_MULTI_AGENT_FEATURE = 'webchat_multi_agent_v1'
+
 /** Daemon and Control Plane support Organization Knowledge, Dream suggestions,
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'

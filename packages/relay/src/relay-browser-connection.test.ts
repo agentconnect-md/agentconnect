@@ -7,6 +7,7 @@ import type { Logger } from './log.js'
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = '11111111-1111-4111-8111-111111111111'
+const DAEMON = '99999999-9999-4999-8999-999999999999'
 const USER = 'ada@example.com'
 const ENTITLEMENT: WebchatRemoteMcpEntitlement = {
   authorityId: '33333333-3333-4333-8333-333333333333',
@@ -62,9 +63,10 @@ function build(
   const conn = new RelayBrowserConnection(transport, {
     chatId: CHAT,
     agentId: AGENT,
+    participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
     user: USER,
     ...(over.remoteMcp ? { remoteMcp: over.remoteMcp } : {}),
-    daemonConn: () => daemon,
+    daemonConnFor: () => daemon,
     register,
     unregister,
     log: over.log ?? silentLog
@@ -77,21 +79,25 @@ const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 describe('parseBrowserFrame', () => {
   it('maps a bare {text} and {type:"message",text} to a turn op carrying the user', () => {
-    expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: 'turn', text: 'hi', user: USER })
+    expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })
     expect(parseBrowserFrame({ type: 'message', text: 'hi', turnId: AGENT }, USER)).toEqual({
-      op: 'turn',
-      text: 'hi',
-      user: USER,
-      turnId: AGENT
+      op: {
+        op: 'turn',
+        text: 'hi',
+        user: USER,
+        turnId: AGENT
+      }
     })
   })
   it('carries staged runtime choices on the first turn', () => {
     const runtime = { model: 'gpt-5.6-sol', effort: 'xhigh', permissionMode: 'full-access', fastMode: true }
     expect(parseBrowserFrame({ text: 'hi', runtime }, USER)).toEqual({
-      op: 'turn',
-      text: 'hi',
-      user: USER,
-      runtime
+      op: {
+        op: 'turn',
+        text: 'hi',
+        user: USER,
+        runtime
+      }
     })
     expect(parseBrowserFrame({ text: 'hi', runtime: { fastMode: 'yes' } }, USER)).toBeNull()
   })
@@ -102,34 +108,37 @@ describe('parseBrowserFrame', () => {
       data: Buffer.from('image').toString('base64')
     }
     expect(parseBrowserFrame({ text: '', user: 'spoofed', attachments: [attachment] }, USER)).toEqual({
-      op: 'turn',
-      text: '',
-      user: USER,
-      attachments: [attachment]
+      op: {
+        op: 'turn',
+        text: '',
+        user: USER,
+        attachments: [attachment]
+      }
     })
     expect(parseBrowserFrame({ text: '', attachments: [{ ...attachment, data: 'invalid' }] }, USER)).toBeNull()
   })
   it('maps the session-control envelopes', () => {
     expect(parseBrowserFrame({ type: 'resume', turnId: AGENT, generation: 3, afterIndex: 4 }, USER)).toEqual({
-      op: 'resume',
-      turnId: AGENT,
-      generation: 3,
-      afterIndex: 4
+      op: {
+        op: 'resume',
+        turnId: AGENT,
+        generation: 3,
+        afterIndex: 4
+      }
     })
     expect(parseBrowserFrame({ type: 'set_model', model: 'claude' }, USER)).toEqual({
-      op: 'set_model',
-      model: 'claude'
+      op: { op: 'set_model', model: 'claude' }
     })
     expect(parseBrowserFrame({ type: 'set_effort', effort: 'high' }, USER)).toEqual({
-      op: 'set_effort',
-      effort: 'high'
+      op: { op: 'set_effort', effort: 'high' }
     })
     expect(parseBrowserFrame({ type: 'set_permission_mode', permissionMode: 'plan' }, USER)).toEqual({
-      op: 'set_permission_mode',
-      permissionMode: 'plan'
+      op: { op: 'set_permission_mode', permissionMode: 'plan' }
     })
-    expect(parseBrowserFrame({ type: 'set_fast', fastMode: true }, USER)).toEqual({ op: 'set_fast', fastMode: true })
-    expect(parseBrowserFrame({ type: 'cancel' }, USER)).toEqual({ op: 'cancel' })
+    expect(parseBrowserFrame({ type: 'set_fast', fastMode: true }, USER)).toEqual({
+      op: { op: 'set_fast', fastMode: true }
+    })
+    expect(parseBrowserFrame({ type: 'cancel' }, USER)).toEqual({ op: { op: 'cancel' } })
   })
   it('rejects malformed / unknown envelopes', () => {
     expect(parseBrowserFrame({ type: 'set_model' }, USER)).toBeNull() // no model
@@ -148,7 +157,12 @@ describe('RelayBrowserConnection', () => {
   it('registers and greets the browser with a ready frame on start', () => {
     const { transport, register } = build()
     expect(register).toHaveBeenCalledWith(CHAT, expect.any(RelayBrowserConnection))
-    expect(transport.last('ready')).toEqual({ type: 'ready', conversationId: CHAT, agentId: AGENT })
+    expect(transport.last('ready')).toEqual({
+      type: 'ready',
+      conversationId: CHAT,
+      agentId: AGENT,
+      participants: [{ agentId: AGENT, primary: true }]
+    })
   })
 
   it('bridges a {text} turn to an rd/msg(turn) and forwards the daemon ack', async () => {
@@ -163,7 +177,7 @@ describe('RelayBrowserConnection', () => {
       sessionKey: CHAT,
       payload: { op: 'turn', text: 'hello there', user: USER }
     })
-    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true } })
+    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT } })
   })
 
   it('copies the verified remote-MCP entitlement to every webchat operation', async () => {
@@ -216,10 +230,10 @@ describe('RelayBrowserConnection', () => {
       USER
     )
 
-    expect(parsed).toEqual({ op: 'turn', text: 'try to escape', user: USER, runtime: { model: 'claude' } })
-    expect(parsed).not.toHaveProperty('remoteMcp')
-    expect(parsed).not.toHaveProperty('payload')
-    expect(parsed).not.toHaveProperty('runtime.remoteMcp')
+    expect(parsed).toEqual({ op: { op: 'turn', text: 'try to escape', user: USER, runtime: { model: 'claude' } } })
+    expect(parsed).not.toHaveProperty('op.remoteMcp')
+    expect(parsed).not.toHaveProperty('op.payload')
+    expect(parsed).not.toHaveProperty('op.runtime.remoteMcp')
   })
 
   it('bridges an image-only turn without putting the bytes on any control-plane path', async () => {
@@ -241,7 +255,7 @@ describe('RelayBrowserConnection', () => {
     const { transport } = build({ ack: { msgId: 'x', accepted: false, reason: 'paused' } })
     transport.feed({ text: 'hi' })
     await tick()
-    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: false, reason: 'paused' } })
+    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: false, agentId: AGENT, reason: 'paused' } })
   })
 
   it('forwards a resume cursor and surfaces its replay verdict', async () => {
@@ -252,7 +266,7 @@ describe('RelayBrowserConnection', () => {
     expect(sent[0]).toMatchObject({ payload: { op: 'resume', turnId, generation: 4, afterIndex: 7 } })
     expect(transport.last('resumed')).toEqual({
       type: 'resumed',
-      ack: { accepted: true, turnId }
+      ack: { accepted: true, turnId, agentId: AGENT }
     })
   })
 
@@ -299,8 +313,9 @@ describe('RelayBrowserConnection', () => {
     new RelayBrowserConnection(transport, {
       chatId: CHAT,
       agentId: AGENT,
+      participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
       user: USER,
-      daemonConn: () => daemon,
+      daemonConnFor: () => daemon,
       register: vi.fn(),
       unregister: vi.fn(),
       log: silentLog

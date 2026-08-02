@@ -14,6 +14,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import {
+  WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   isFrame,
   type AnyFrame,
@@ -33,6 +34,7 @@ import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const RELAY_URL = 'https://relay.example.com'
 const AGENT = 'a9a9a9a9-aaaa-4aaa-8aaa-a9a9a9a9a9a9'
+const AGENT_B = 'b8b8b8b8-bbbb-4bbb-8bbb-b8b8b8b8b8b8'
 
 const API_KEY_PEPPER = 'relay-gw-pepper-0123456789abcdefghij'
 const RELAY_TOKEN = 'relay-shared-secret-0123456789abcdef' // ≥32, dot-free
@@ -493,6 +495,101 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect(typeof ok.user).toBe('string') // the transcript author handle from the token
     ws.close()
     daemonWs.close()
+  })
+
+  // ── multi-agent conversations (webchat-multi-agents.md §3.1 / §6.2) ──
+
+  it('POST …/webchat/conversations/token creates a multi-agent roster when every daemon is capable', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, [WEBCHAT_MULTI_AGENT_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, name: 'agent-b' })
+
+    const res = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/token`,
+      payload: { agentIds: [AGENT, AGENT_B] }
+    })
+    expect(res.statusCode).toBe(200)
+    const minted = res.json() as { token: string; conversationId: string }
+
+    const roster = await prisma.webchatConversationAgent.findMany({
+      where: { conversationId: minted.conversationId },
+      orderBy: { ord: 'asc' }
+    })
+    expect(roster.map((r) => ({ agentId: r.agentId, role: r.role }))).toEqual([
+      { agentId: AGENT, role: 'primary' },
+      { agentId: AGENT_B, role: 'member' }
+    ])
+
+    // rc/verify returns the roster with placements, primary first — and no
+    // delegated MCP entitlement (single-participant privilege, §10.3).
+    const { ws, result } = await verifyWebchat(base, minted.token, 'pod-multi')
+    expect(result.ok).toBe(true)
+    expect(result.participants).toEqual([
+      { agentId: AGENT, daemonId: DAEMON, primary: true },
+      { agentId: AGENT_B, daemonId: DAEMON }
+    ])
+    expect(result.remoteMcp).toBeUndefined()
+    ws.close()
+    daemonWs.close()
+  })
+
+  it('POST …/webchat/conversations/token → 409 when a selected daemon lacks multi-agent support', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base) // READY but no features
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, name: 'agent-b' })
+    const res = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/token`,
+      payload: { agentIds: [AGENT, AGENT_B] }
+    })
+    expect(res.statusCode).toBe(409)
+    daemonWs.close()
+  })
+
+  it('POST …/webchat/conversations/:id/agents joins mid-conversation (idempotent) and grows the verified roster', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, [WEBCHAT_MULTI_AGENT_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, name: 'agent-b' })
+    const fresh = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { conversationId: string }
+    const join = () =>
+      app.http.inject({
+        method: 'POST',
+        url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${fresh.conversationId}/agents`,
+        payload: { agentId: AGENT_B }
+      })
+
+    const first = await join()
+    expect(first.statusCode).toBe(200)
+    expect((first.json() as { participants: unknown }).participants).toEqual([
+      { agentId: AGENT, primary: true },
+      { agentId: AGENT_B }
+    ])
+    expect((await join()).statusCode).toBe(200) // idempotent re-join
+
+    // The browser refreshes the relay roster by reconnecting: a resume mint +
+    // rc/verify now carries both participants.
+    const resumed = (await mintWebchatToken(app, AGENT, { conversationId: fresh.conversationId }).then((r) =>
+      r.json()
+    )) as { token: string }
+    const { ws, result } = await verifyWebchat(base, resumed.token, 'pod-join')
+    expect(result.participants?.map((p) => p.agentId)).toEqual([AGENT, AGENT_B])
+    ws.close()
+    daemonWs.close()
+  })
+
+  it('POST …/webchat/conversations/:id/agents → 404 for an unknown or foreign conversation', async () => {
+    const { app } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    await seedAgent(prisma, AGENT)
+    const res = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${randomUUID()}/agents`,
+      payload: { agentId: AGENT }
+    })
+    expect(res.statusCode).toBe(404)
   })
 
   it('rc/verify(webchat-token) establishes a preset delegation when the daemon capability passes', async () => {

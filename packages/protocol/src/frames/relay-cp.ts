@@ -98,6 +98,16 @@ export type RcVerify = z.infer<typeof RcVerify>
 //  - webchat-token  → userId (+ display `user`) + agentId + daemonId + orgId +
 //    conversationId, where daemonId is the agent's CURRENT placement and the
 //    conversation id is the CP-authorized binding carried by the token.
+// One conversation participant, as resolved at verification time. `daemonId` is
+// the agent's CURRENT placement; absent when the agent is unplaced or its daemon
+// is not READY (the relay then refuses turns targeting it with `no_agent`).
+export const RcWebchatParticipant = z.object({
+  agentId: z.string().uuid(),
+  daemonId: z.string().uuid().optional(),
+  primary: z.boolean().optional()
+})
+export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>
+
 export const RcVerifyResult = z.object({
   ok: z.boolean(),
   reason: z.string().optional(),
@@ -107,6 +117,10 @@ export const RcVerifyResult = z.object({
   user: z.string().optional(), // display handle for the transcript author line
   agentId: z.string().uuid().optional(),
   conversationId: z.string().uuid().optional(),
+  // The conversation's full roster (multi-agent webchat). Singular agentId/daemonId
+  // above stay the PRIMARY's values for rolling compatibility; `participants`
+  // always includes the primary. Absent ⇒ single-agent conversation on an older CP.
+  participants: z.array(RcWebchatParticipant).max(16).optional(),
   remoteMcp: WebchatRemoteMcpEntitlement.optional()
 })
 export type RcVerifyResult = z.infer<typeof RcVerifyResult>

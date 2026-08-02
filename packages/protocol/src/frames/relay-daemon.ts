@@ -8,7 +8,7 @@ import {
 } from '../normalized-message.js'
 import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
-import { WebchatDone, WebchatImageAttachment, WebchatOutput } from './webchat.js'
+import { WebchatDone, WebchatImageAttachment, WebchatOutput, WebchatPost } from './webchat.js'
 import { GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
 import { CronTarget } from './cron.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -87,17 +87,37 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     // New browsers allocate this before sending so a pre-ack reconnect can name
     // the exact turn. Optional for older clients; the daemon allocates a fallback.
     turnId: z.string().uuid().optional(),
+    // Structured mentions from the composer (agent ids ⊆ the conversation roster).
+    // The daemon maps them onto `mentionedBots` so a mentioned agent activates
+    // with `trigger:'mention'`. Targeting is separate: the relay already picked
+    // THIS frame's target (RdMsgWebchat.agentId); mentions are prompt context.
+    mentions: z.array(z.string().uuid()).max(16).optional(),
+    // Canonical post identity, minted ONCE by the relay when it accepts the turn
+    // and shared by every per-target copy — see WebchatPost. Absent on frames
+    // from an older relay; the daemon then mints locally (single-agent shape).
+    post: z.object({ postId: z.string().uuid(), at: z.number().int() }).optional(),
     attachments: z.array(WebchatImageAttachment).max(1).optional(),
     // A fresh Playground has no daemon session to receive standalone `set_*`
     // operations yet. Carry only the settings the user changed with its first turn.
     runtime: WebchatRuntimeConfig.optional()
   }),
+  // A conversation post another participant produced (a user turn targeted
+  // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's
+  // agent sees the full conversation at its next activation. Transcript-only:
+  // the daemon records it (deduplicated by postId) and NEVER activates on it.
+  z.object({
+    op: z.literal('context'),
+    post: WebchatPost
+  }),
   // Rebind an in-flight/recent turn to this relay connection and replay every
   // output after the browser's contiguous cursor. The generation monotonically
   // fences delayed resume requests from older browser connections.
+  // `agentId` addresses the stream's owner in a multi-agent conversation (streams
+  // are keyed per (turnId, agentId)); absent ⇒ the conversation's sole agent.
   z.object({
     op: z.literal('resume'),
     turnId: z.string().uuid(),
+    agentId: z.string().uuid().optional(),
     generation: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     afterIndex: z.number().int().min(-1)
   }),
@@ -105,7 +125,9 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   z.object({ op: z.literal('set_effort'), effort: z.string() }),
   z.object({ op: z.literal('set_permission_mode'), permissionMode: z.string() }),
   z.object({ op: z.literal('set_fast'), fastMode: z.boolean() }),
-  z.object({ op: z.literal('cancel') }),
+  // `agentId` cancels one participant's live turn; absent ⇒ every live turn in
+  // the conversation (and the sole agent's, in a single-agent conversation).
+  z.object({ op: z.literal('cancel'), agentId: z.string().uuid().optional() }),
   z.object({ op: z.literal('close') })
 ])
 export type RelayWebchatOp = z.infer<typeof RelayWebchatOp>
@@ -512,6 +534,21 @@ export const RdChat = z.object({
 })
 export type RdChat = z.infer<typeof RdChat>
 
+// D→R EVT — one completed conversation post from a participant agent (its
+// canonical identity was minted by the owning daemon at the reply-record
+// boundary). The relay (a) delivers it to the browser sink when one is
+// connected — the live stream already showed the text, so this is the
+// canonical `(postId, at)` the browser keys the message by — and (b) fans it
+// as a `context` op to every OTHER participant's daemon so the whole roster
+// sees the conversation at its next activation. Fire-and-forget with `postId`
+// dedup downstream.
+export const RdWebchatPost = z.object({
+  conversationId: z.string().uuid(),
+  agentId: z.string().uuid(), // authoring participant (== post.author.agentId)
+  post: WebchatPost
+})
+export type RdWebchatPost = z.infer<typeof RdWebchatPost>
+
 // ── the wire union ───────────────────────────────────────────────────────────
 
 /** `type` string → payload schema for the relay↔daemon wire. */
@@ -524,6 +561,7 @@ export const RELAY_DAEMON_SCHEMAS = {
   'rd/agentmsg/fwd': RdAgentMsgFwd,
   'rd/agentmsg/ack': RdAgentMsgAck,
   'rd/chat': RdChat,
+  'rd/webchat-post': RdWebchatPost,
   error: ErrorFrame
 } as const
 
@@ -543,6 +581,7 @@ export const RelayDaemonFrame = z.discriminatedUnion('type', [
   frameSchema('rd/agentmsg/fwd', RELAY_DAEMON_SCHEMAS['rd/agentmsg/fwd']),
   frameSchema('rd/agentmsg/ack', RELAY_DAEMON_SCHEMAS['rd/agentmsg/ack']),
   frameSchema('rd/chat', RELAY_DAEMON_SCHEMAS['rd/chat']),
+  frameSchema('rd/webchat-post', RELAY_DAEMON_SCHEMAS['rd/webchat-post']),
   frameSchema('error', RELAY_DAEMON_SCHEMAS['error'])
 ])
 export type RelayDaemonFrame = z.infer<typeof RelayDaemonFrame>

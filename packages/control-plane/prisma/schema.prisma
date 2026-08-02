@@ -658,6 +658,7 @@ model Agent {
   repoAuths             AgentRepoAuthorization[]
   secrets               AgentSecret[]
   webchatConversations  WebchatConversation[]
+  webchatParticipations WebchatConversationAgent[]
   webchatMcpDelegations WebchatMcpDelegation[]
   presetRecords         PresetAgent[]
 
@@ -920,7 +921,8 @@ model SessionMeta {
   daemon        Daemon?        @relation(fields: [daemonId], references: [id], onDelete: SetNull)
   externalScope ExternalScope? @relation(fields: [externalScopeId, orgId, externalProvider], references: [id, orgId, provider], onDelete: Restrict, onUpdate: Restrict)
 
-  webchatCurrentFor WebchatConversation[] @relation("WebchatCurrentSession")
+  webchatCurrentFor      WebchatConversation[]      @relation("WebchatCurrentSession")
+  webchatAgentCurrentFor WebchatConversationAgent[] @relation("WebchatAgentCurrentSession")
 
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
@@ -1001,18 +1003,44 @@ model WebchatConversation {
   currentSessionRev    Int      @default(0) // bumped in the same tx as any pointer change
   createdAt            DateTime @default(now()) @db.Timestamptz(6)
 
-  org            Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  agent          Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  currentSession SessionMeta?           @relation("WebchatCurrentSession", fields: [currentSessionId], references: [id], onDelete: SetNull)
+  org            Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent          Agent                      @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user           User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currentSession SessionMeta?               @relation("WebchatCurrentSession", fields: [currentSessionId], references: [id], onDelete: SetNull)
   delegations    WebchatMcpDelegation[]
   mcpOperations  WebchatMcpOperation[]
+  participants   WebchatConversationAgent[]
 
   @@index([orgId])
   @@index([agentId])
   @@index([userId])
   @@index([currentSessionId])
   @@map("webchat_conversation")
+}
+
+// One participant agent of a webchat conversation (webchat-multi-agents.md §3.1).
+// The roster is fixed at creation; `WebchatConversation.agentId` always mirrors
+// the `role='primary'` row. `ord` preserves the pick order (primary is ord 0).
+// Each participant carries its OWN current-session pointer, maintained by the
+// session-milestone upsert exactly like the conversation-level fence.
+model WebchatConversationAgent {
+  conversationId    String   @db.Uuid
+  agentId           String   @db.Uuid
+  role              String   @default("member") // 'primary' | 'member'
+  ord               Int      @default(0)
+  addedByUserId     String
+  addedAt           DateTime @default(now()) @db.Timestamptz(6)
+  currentSessionId  String?
+  currentSessionRev Int      @default(0)
+
+  conversation   WebchatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  agent          Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  currentSession SessionMeta?        @relation("WebchatAgentCurrentSession", fields: [currentSessionId], references: [id], onDelete: SetNull)
+
+  @@id([conversationId, agentId])
+  @@index([agentId])
+  @@index([currentSessionId])
+  @@map("webchat_conversation_agent")
 }
 
 // Durable, generation-fenced authority for one browser conversation to invoke

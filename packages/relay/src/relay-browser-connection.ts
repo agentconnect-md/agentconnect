@@ -1,16 +1,21 @@
 /**
  * `RelayBrowserConnection` — the per-socket actor for a browser playground webchat
- * session (shared-bot-relay.md §7.2 / §10). One socket == one conversation.
+ * conversation (shared-bot-relay.md §7.2 / §10, webchat-multi-agents.md §5/§6).
+ * One socket == one conversation, which may have SEVERAL participant agents on
+ * different daemons.
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
- * `{text, turnId, attachments?, runtime?}` (a turn with at most one bounded inline image) or
+ * `{text, turnId, mentions?, targets?, attachments?, runtime?}` (a turn) or
  * `{type:'resume'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
- * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'error'}`. Internally each inbound
- * op becomes an `rd/msg(webchat)` bridged onto the target daemon's rd/* socket, and
- * each `rd/chat` chunk the daemon streams back is translated to `{type:'output'|'done'}`.
+ * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'post'|'error'}`.
+ * A turn fans out as one pre-addressed `rd/msg(webchat)` per targeted agent's
+ * daemon (targets are validated against the verified roster) plus a transcript-only
+ * `context` copy to every other participant's daemon; each `rd/chat` chunk a daemon
+ * streams back is translated to `{type:'output'|'done'}` (agent-attributed).
  *
- * The daemon target is resolved once at connect (the token's current placement); if the
- * daemon has no live rd/* socket on THIS relay the op fails with an error frame.
+ * Daemon placements are resolved once at connect (the token's verified roster); if a
+ * participant's daemon has no live rd/* socket on THIS relay its target fails with a
+ * per-agent nack.
  */
 import { randomUUID } from 'node:crypto'
 import {
@@ -18,6 +23,8 @@ import {
   RelayWebchatOp,
   type RdChat,
   type RdMsgWebchat,
+  type RdWebchatPost,
+  type WebchatPost,
   type WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 import { WireError, type ServerTransport } from '@agentconnect.md/connection'
@@ -33,6 +40,8 @@ const REMOTE_PROTOCOL_CODES: ReadonlySet<string> = new Set([
   'PROTOCOL_STATE',
   'BAD_PAYLOAD'
 ])
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * Preserve actionable delivery telemetry without ever copying error messages or
@@ -57,36 +66,71 @@ function deliveryFailureDiagnostic(error: unknown): string {
   return `kind=${kind} code=${code} retryable=${error.retryable}`
 }
 
+/** One conversation participant, as verified by the CP at connect. */
+export interface BrowserConnParticipant {
+  agentId: string
+  /** Current placement; absent ⇒ unplaced / daemon not READY at verify (turns
+   *  targeting it are refused with `no_agent`). */
+  daemonId?: string
+  primary?: boolean
+}
+
 export interface RelayBrowserConnDeps {
   /** The conversation id (== chatId == sessionKey); fresh or resumed. */
   chatId: string
+  /** The primary participant (the token's compatibility agent). */
   agentId: string
+  /** The conversation's full verified roster (always includes the primary). */
+  participants: BrowserConnParticipant[]
   /** Display handle for the transcript author line (from the verified token). */
   user: string
   /** Non-secret MCP entitlement from the verified CP result, never browser input. */
   remoteMcp?: WebchatRemoteMcpEntitlement
-  /** Resolve a live rd/* connection to the target daemon (may be absent if it dropped). */
-  daemonConn: () => RelayDaemonConnection | undefined
+  /** Resolve a live rd/* connection to a participant's daemon (absent if it dropped). */
+  daemonConnFor: (daemonId: string) => RelayDaemonConnection | undefined
   register: (chatId: string, sink: ChatSink) => void
   unregister: (chatId: string, sink: ChatSink) => void
   log: Logger
 }
 
-/** Parse a browser envelope into a webchat op, or null if unrecognized. */
-export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | null {
+/** A parsed browser op plus the relay-level targeting the envelope carried. */
+export interface ParsedBrowserOp {
+  op: RelayWebchatOp
+  /** `turn` only: the agents this turn activates (composer-computed ladder,
+   *  webchat-multi-agents.md §4.2). Validated against the roster before fan-out. */
+  targets?: string[]
+}
+
+function uuidArray(value: unknown, max: number): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) return undefined
+  const out: string[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !UUID_RE.test(entry)) return undefined
+    const id = entry.toLowerCase()
+    if (!out.includes(id)) out.push(id)
+  }
+  return out
+}
+
+/** Parse a browser envelope into a webchat op (+ targeting), or null if unrecognized. */
+export function parseBrowserFrame(msg: unknown, user: string): ParsedBrowserOp | null {
   if (typeof msg !== 'object' || msg === null) return null
   const m = msg as Record<string, unknown>
   // A bare message envelope (no type) or {type:'message', ...} is a turn.
   if ((m.type === undefined || m.type === 'message') && (typeof m.text === 'string' || Array.isArray(m.attachments))) {
+    const mentions = m.mentions !== undefined ? uuidArray(m.mentions, 16) : undefined
     const parsed = RelayWebchatOp.safeParse({
       op: 'turn',
       text: typeof m.text === 'string' ? m.text : '',
       user,
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
+      ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
       ...(m.runtime !== undefined ? { runtime: m.runtime } : {})
     })
-    return parsed.success && parsed.data.op === 'turn' ? parsed.data : null
+    if (!parsed.success || parsed.data.op !== 'turn') return null
+    const targets = m.targets !== undefined ? uuidArray(m.targets, 16) : undefined
+    return { op: parsed.data, ...(targets ? { targets } : {}) }
   }
   switch (m.type) {
     case 'resume':
@@ -94,26 +138,32 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
         (m.afterIndex as number) >= -1 &&
         typeof m.turnId === 'string' &&
         Number.isSafeInteger(m.generation) &&
-        (m.generation as number) >= 1
+        (m.generation as number) >= 1 &&
+        (m.agentId === undefined || (typeof m.agentId === 'string' && UUID_RE.test(m.agentId)))
         ? {
-            op: 'resume',
-            turnId: m.turnId,
-            generation: m.generation as number,
-            afterIndex: m.afterIndex as number
+            op: {
+              op: 'resume',
+              turnId: m.turnId,
+              ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {}),
+              generation: m.generation as number,
+              afterIndex: m.afterIndex as number
+            }
           }
         : null
     case 'set_model':
-      return typeof m.model === 'string' ? { op: 'set_model', model: m.model } : null
+      return typeof m.model === 'string' ? { op: { op: 'set_model', model: m.model } } : null
     case 'set_effort':
-      return typeof m.effort === 'string' ? { op: 'set_effort', effort: m.effort } : null
+      return typeof m.effort === 'string' ? { op: { op: 'set_effort', effort: m.effort } } : null
     case 'set_permission_mode':
       return typeof m.permissionMode === 'string'
-        ? { op: 'set_permission_mode', permissionMode: m.permissionMode }
+        ? { op: { op: 'set_permission_mode', permissionMode: m.permissionMode } }
         : null
     case 'set_fast':
-      return typeof m.fastMode === 'boolean' ? { op: 'set_fast', fastMode: m.fastMode } : null
+      return typeof m.fastMode === 'boolean' ? { op: { op: 'set_fast', fastMode: m.fastMode } } : null
     case 'cancel':
-      return { op: 'cancel' }
+      return m.agentId === undefined || (typeof m.agentId === 'string' && UUID_RE.test(m.agentId))
+        ? { op: { op: 'cancel', ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {}) } }
+        : null
     default:
       return null
   }
@@ -122,6 +172,11 @@ export function parseBrowserFrame(msg: unknown, user: string): RelayWebchatOp | 
 export class RelayBrowserConnection implements ChatSink {
   private closed = false
   private readonly remoteMcp?: Readonly<WebchatRemoteMcpEntitlement>
+  private readonly byAgentId = new Map<string, BrowserConnParticipant>()
+  /** Canonical post timestamps for user turns — minted ONCE here (the origin) and
+   *  strictly increasing per conversation so every participant copy of a turn
+   *  shares one transcript ts (webchat-multi-agents.md §5.1). */
+  private lastPostAt = 0
 
   constructor(
     private readonly transport: ServerTransport,
@@ -136,12 +191,26 @@ export class RelayBrowserConnection implements ChatSink {
           expiresAt: deps.remoteMcp.expiresAt
         })
       : undefined
+    for (const p of deps.participants) this.byAgentId.set(p.agentId, p)
+    // The primary is always addressable even on a pre-roster CP verdict.
+    if (!this.byAgentId.has(deps.agentId)) {
+      this.byAgentId.set(deps.agentId, { agentId: deps.agentId, primary: true })
+    }
   }
 
   start(): void {
     this.deps.register(this.deps.chatId, this)
     // The client correlates its session on this frame (matches the old gateway).
-    this.send({ type: 'ready', conversationId: this.deps.chatId, agentId: this.deps.agentId })
+    // `participants` is the verified roster, primary first.
+    this.send({
+      type: 'ready',
+      conversationId: this.deps.chatId,
+      agentId: this.deps.agentId,
+      participants: this.deps.participants.map((p) => ({
+        agentId: p.agentId,
+        ...(p.primary ? { primary: true } : {})
+      }))
+    })
     this.transport.onMessage((t) => this.onText(t))
     this.transport.onClose(() => this.onClose())
   }
@@ -150,6 +219,18 @@ export class RelayBrowserConnection implements ChatSink {
   onChat(chat: RdChat): void {
     if (chat.event.kind === 'output') this.send({ type: 'output', output: chat.event.output })
     else this.send({ type: 'done', done: chat.event.done })
+  }
+
+  /**
+   * A participant's completed reply post (`rd/webchat-post`, routed here by
+   * conversationId): forward the canonical record to the browser. Peer-daemon
+   * context fan-out happens at the router level from the cached roster — NOT
+   * here — so it survives the browser closing mid-turn
+   * (webchat-multi-agents.md §5.2).
+   */
+  onPost(p: RdWebchatPost): void {
+    if (p.conversationId !== this.deps.chatId) return
+    this.send({ type: 'post', post: p.post })
   }
 
   private onText(text: string): void {
@@ -168,15 +249,99 @@ export class RelayBrowserConnection implements ChatSink {
     void this.sendOp(op)
   }
 
-  private async sendOp(op: RelayWebchatOp): Promise<void> {
-    const daemon = this.deps.daemonConn()
+  private async sendOp(parsed: ParsedBrowserOp): Promise<void> {
+    const op = parsed.op
+    if (op.op === 'turn') return this.sendTurn(op, parsed.targets)
+    if (op.op === 'cancel' && op.agentId === undefined && this.byAgentId.size > 1) {
+      // Conversation-wide cancel fans to every participant's daemon.
+      for (const p of this.byAgentId.values()) void this.sendToParticipant(p.agentId, { op: 'cancel' }, 'cancel')
+      return
+    }
+    // Single-daemon ops: resume/cancel go to the named participant, everything
+    // else (set_*) to the primary — multi-agent conversations expose no runtime
+    // override (webchat-multi-agents.md §9.3), so set_* only occurs single-agent.
+    const targetAgent = op.op === 'resume' || op.op === 'cancel' ? (op.agentId ?? this.deps.agentId) : this.deps.agentId
+    await this.sendToParticipant(targetAgent, op, op.op)
+  }
+
+  /** Fan one user turn out to its targeted participants + context to the rest. */
+  private async sendTurn(op: Extract<RelayWebchatOp, { op: 'turn' }>, requestedTargets?: string[]): Promise<void> {
+    // The composer-computed ladder travels explicitly as `targets`; an older
+    // browser sends none and falls back to mentions, then to the primary.
+    const targets = requestedTargets?.length
+      ? requestedTargets
+      : op.mentions?.length
+        ? op.mentions
+        : [this.deps.agentId]
+    const turnId = op.turnId ?? randomUUID()
+    this.lastPostAt = Math.max(Date.now(), this.lastPostAt + 1)
+    const post = { postId: randomUUID(), at: this.lastPostAt }
+    const invalid = targets.filter((t) => !this.byAgentId.has(t))
+    for (const t of invalid) {
+      this.send({ type: 'ack', ack: { accepted: false, turnId, agentId: t, reason: 'not_participant' } })
+    }
+    const valid = targets.filter((t) => this.byAgentId.has(t))
+    if (valid.length === 0) return
+
+    const turn: RelayWebchatOp = { ...op, turnId, post }
+    await Promise.all(valid.map((agentId) => this.sendToParticipant(agentId, turn, 'turn')))
+
+    // Context copies for the non-targeted participants, so the whole roster sees
+    // the conversation at its next activation. Fire-and-forget with postId dedup.
+    const contextPost: WebchatPost = {
+      postId: post.postId,
+      conversationId: this.deps.chatId,
+      author: { kind: 'user', user: this.deps.user },
+      text: op.text,
+      at: post.at,
+      ...(op.attachments?.length ? { attachments: op.attachments } : {})
+    }
+    for (const p of this.byAgentId.values()) {
+      if (valid.includes(p.agentId) || !p.daemonId) continue
+      const conn = this.deps.daemonConnFor(p.daemonId)
+      if (!conn) continue
+      void conn
+        .sendMsg({
+          source: 'webchat',
+          agentId: p.agentId,
+          sessionKey: this.deps.chatId,
+          msgId: randomUUID(),
+          chatId: this.deps.chatId,
+          payload: { op: 'context', post: contextPost }
+        })
+        .catch((error) => {
+          this.deps.log.warn(`relay: webchat context fan-out failed ${deliveryFailureDiagnostic(error)}`)
+        })
+    }
+  }
+
+  /** Send one op to one participant's daemon, translating the verdict for the browser. */
+  private async sendToParticipant(agentId: string, op: RelayWebchatOp, kind: RelayWebchatOp['op']): Promise<void> {
+    const participant = this.byAgentId.get(agentId)
+    const daemon = participant?.daemonId ? this.deps.daemonConnFor(participant.daemonId) : undefined
     if (!daemon) {
-      this.send({ type: 'error', message: 'agent daemon offline' })
+      // A single-participant conversation keeps the legacy error frame; a
+      // multi-agent one degrades per agent so the other targets still run.
+      if (this.byAgentId.size === 1) {
+        this.send({ type: 'error', message: 'agent daemon offline' })
+      } else if (kind === 'turn') {
+        this.send({
+          type: 'ack',
+          ack: {
+            accepted: false,
+            ...(op.op === 'turn' && op.turnId ? { turnId: op.turnId } : {}),
+            agentId,
+            reason: 'no_agent'
+          }
+        })
+      } else if (kind === 'resume') {
+        this.send({ type: 'resumed', ack: { accepted: false, agentId, reason: 'no_agent' } })
+      }
       return
     }
     const rdMsg: RdMsgWebchat = {
       source: 'webchat',
-      agentId: this.deps.agentId,
+      agentId,
       sessionKey: this.deps.chatId,
       msgId: randomUUID(),
       chatId: this.deps.chatId,
@@ -188,18 +353,31 @@ export class RelayBrowserConnection implements ChatSink {
       const browserAck = {
         accepted: ack.accepted,
         ...(ack.turnId ? { turnId: ack.turnId } : {}),
+        agentId,
         ...(ack.reason ? { reason: ack.reason } : {})
       }
-      if (op.op === 'turn') {
+      if (kind === 'turn') {
         this.send({ type: 'ack', ack: browserAck })
-      } else if (op.op === 'resume') {
+      } else if (kind === 'resume') {
         this.send({ type: 'resumed', ack: browserAck })
       }
     } catch (error) {
       // Lower layers may include the outbound frame in an error. Do not let the opaque
       // remote-MCP entitlement become log content.
       this.deps.log.warn(`relay: webchat op delivery failed ${deliveryFailureDiagnostic(error)}`)
-      this.send({ type: 'error', message: 'delivery failed' })
+      if (this.byAgentId.size > 1 && kind === 'turn') {
+        this.send({
+          type: 'ack',
+          ack: {
+            accepted: false,
+            ...(op.op === 'turn' && op.turnId ? { turnId: op.turnId } : {}),
+            agentId,
+            reason: 'no_agent'
+          }
+        })
+      } else {
+        this.send({ type: 'error', message: 'delivery failed' })
+      }
     }
   }
 
@@ -211,16 +389,19 @@ export class RelayBrowserConnection implements ChatSink {
   private onClose(): void {
     this.closed = true
     this.deps.unregister(this.deps.chatId, this)
-    // Best-effort: tell the daemon that the browser conversation closed.
-    const daemon = this.deps.daemonConn()
-    if (daemon) void this.forwardClose(daemon)
+    // Best-effort: tell every participant's daemon that the browser conversation closed.
+    for (const p of this.byAgentId.values()) {
+      if (!p.daemonId) continue
+      const daemon = this.deps.daemonConnFor(p.daemonId)
+      if (daemon) void this.forwardClose(daemon, p.agentId)
+    }
   }
 
-  private async forwardClose(daemon: RelayDaemonConnection): Promise<void> {
+  private async forwardClose(daemon: RelayDaemonConnection, agentId: string): Promise<void> {
     try {
       await daemon.sendMsg({
         source: 'webchat',
-        agentId: this.deps.agentId,
+        agentId,
         sessionKey: this.deps.chatId,
         msgId: randomUUID(),
         chatId: this.deps.chatId,
