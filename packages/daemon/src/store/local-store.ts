@@ -2463,10 +2463,16 @@ export class LocalStore {
    *  `INSERT OR IGNORE` under the `transcript_text_ts` unique index would silently
    *  drop a DIFFERENT post landing on an occupied millisecond, so writers check
    *  the slot first and bump when it holds foreign content. */
-  transcriptTextAt(channel: string, thread: string, ts: string): { sender: string; text: string } | undefined {
+  transcriptTextAt(
+    channel: string,
+    thread: string,
+    ts: string
+  ): { sender: string; text: string; postId: string | null } | undefined {
     return this.db
-      .prepare(`SELECT sender, text FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'`)
-      .get(channel, thread, ts) as { sender: string; text: string } | undefined
+      .prepare(
+        `SELECT sender, text, postId FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
+      )
+      .get(channel, thread, ts) as { sender: string; text: string; postId: string | null } | undefined
   }
 
   appendTranscript(e: TranscriptEntry): void {
@@ -2552,7 +2558,16 @@ export class LocalStore {
         .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
         .run(deliveryRevision, e.channel, e.thread, e.ts)
       this.transcriptRevision = deliveryRevision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], deliveryRevision)
+      // An in-place upgrade mutates the SHARED row: every agent whose scoped
+      // view already contains it must be invalidated, not just this append's
+      // sender/recipient — a co-hosted participant delivered earlier would
+      // otherwise keep serving the stale copy until an unrelated mutation.
+      const sharedRecipients = (
+        this.db
+          .prepare('SELECT agentId FROM transcript_recipient WHERE channel = ? AND thread = ? AND ts = ?')
+          .all(e.channel, e.thread, e.ts) as { agentId: string }[]
+      ).map((r) => r.agentId)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient, ...sharedRecipients], deliveryRevision)
     }
   }
 

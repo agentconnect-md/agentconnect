@@ -387,4 +387,46 @@ describe('webchat turn-final context refresh', () => {
     expect(replies).toEqual([])
     await daemon.stop()
   })
+  it('distinct canonical posts sharing millisecond, sender, and text occupy separate slots', async () => {
+    // The C2 dedupe prerequisite: `at` minting is connection-local, so two
+    // tabs can mint distinct posts on the same millisecond — and a same-user
+    // repeat ("ok" twice) also matches the legacy (sender, text) heuristic.
+    // Only a matching canonical postId may reuse an occupied slot; a distinct
+    // id must bump, or the second post is silently lost.
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => ({ start: vi.fn(async () => {}) }) as any
+    })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const dup = (n: number) => ({
+      postId: `0000000${n}-1111-4000-8000-00000000000${n}`,
+      conversationId: CONV,
+      author: { kind: 'agent' as const, agentId: PEER_ID },
+      text: 'ok',
+      at: 7_000
+    })
+    expect(
+      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-1' }), () => {})
+    ).toMatchObject({ accepted: true })
+    expect(
+      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(2) }, { msgId: 'c-2' }), () => {})
+    ).toMatchObject({ accepted: true })
+    // An identical re-fan of post 1 dedups in place (no third row).
+    expect(
+      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-3' }), () => {})
+    ).toMatchObject({ accepted: true })
+
+    const rows = (daemon as any).store.transcriptSince(
+      transcriptChannelKey(CONV, undefined),
+      `webchat:${CONV}`,
+      null
+    ) as { ts: string; postId?: string | null }[]
+    expect(rows.map((r) => [r.ts, r.postId])).toEqual([
+      ['7000', dup(1).postId],
+      ['7001', dup(2).postId]
+    ])
+    await daemon.stop()
+  })
 })

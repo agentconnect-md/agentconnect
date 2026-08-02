@@ -440,7 +440,15 @@ export class SessionManager {
       let slot = BigInt(ts)
       for (let attempt = 0; attempt < 32; attempt++) {
         const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot))
-        if (!existing || (existing.sender === msg.sender.id && existing.text === transcriptText)) break
+        // Mirror the daemon-side probe (§6): matching canonical postId is what
+        // proves the occupant is this same post; (sender, text) only decides
+        // for legacy rows without an id on either side.
+        const samePost =
+          existing !== undefined &&
+          (msg.transcriptPostId && existing.postId
+            ? existing.postId === msg.transcriptPostId
+            : existing.sender === msg.sender.id && existing.text === transcriptText)
+        if (!existing || samePost) break
         slot += 1n
       }
       ts = String(slot)

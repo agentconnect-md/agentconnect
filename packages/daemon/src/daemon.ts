@@ -8202,7 +8202,17 @@ export class Daemon {
     let slot = BigInt(ts)
     for (let attempt = 0; attempt < 32; attempt++) {
       const existing = this.store.transcriptTextAt(channel, thread, String(slot))
-      if (!existing || (existing.sender === entry.sender && existing.text === entry.text)) {
+      // Canonical identity decides slot reuse (§6): two DISTINCT posts can share
+      // sender, text, AND millisecond (`at` minting is connection-local, so two
+      // tabs can collide) — only a matching postId proves the occupant IS this
+      // post. Rows without an id on either side keep the historical
+      // (sender, text) heuristic as the legacy fallback.
+      const samePost =
+        existing !== undefined &&
+        (entry.postId && existing.postId
+          ? existing.postId === entry.postId
+          : existing.sender === entry.sender && existing.text === entry.text)
+      if (!existing || samePost) {
         this.store.appendTranscript({ channel, thread, ts: String(slot), kind: 'text', ...entry })
         return String(slot)
       }
