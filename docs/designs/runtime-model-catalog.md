@@ -207,9 +207,9 @@ agents:
 
 - **An isolated HOME is mandatory, not preferred.** Some agents persist
   `set_config_option` values as user defaults. Enumeration must never touch the
-  real HOME. Reuse curated probe's isolated launch
-  (`composeRuntimeLaunch` with `isolateHome: true`), which applies even without
-  an OS sandbox. If a runtime cannot pass authentication in isolation because
+  real HOME. Reuse the curated probe's composed launch; `composeRuntimeLaunch`
+  always supplies the probe scope's private HOME, including without an OS
+  sandbox. If a runtime cannot pass authentication in isolation because
   credentials live in the real HOME, **skip enumeration for that runtime** and
   accept phase-1-only data, with static UI fallback. Missing matrix data is
   preferable to rewriting user configuration.
