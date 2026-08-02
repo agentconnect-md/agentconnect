@@ -105,6 +105,10 @@ export const SessionMessage = z.object({
   // compatibility and absent on legacy rows or every non-Slack transport.
   trustedAgentBot: z.boolean().optional(),
   ts: z.string(), // platform timestamp (daemon-local string form)
+  // Normalized chronological coordinate (epoch µs) from the daemon's event-time
+  // axis — provider-authoritative when the platform supplied its send time.
+  // Absent on legacy rows; consumers fall back to deriving it from `ts`.
+  eventTimeUs: z.number().int().positive().optional(),
   // Canonical webchat post identity (merged-conversation-view.md §6): minted once
   // at origin and identical on every participant's copy, independent of a
   // collision-bumped `ts`. Absent on non-webchat rows and pre-upgrade rows.

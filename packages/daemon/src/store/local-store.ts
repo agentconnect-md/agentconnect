@@ -198,6 +198,11 @@ export interface TranscriptEntry {
    *  origin, identical on every participant's copy regardless of a
    *  collision-bumped `ts`. Text rows only; absent everywhere else. */
   postId?: string
+  /** Provider-authoritative event time (epoch µs) for the normalized
+   *  chronological axis — platforms whose message ids carry no time
+   *  (Telegram/Feishu) supply it from the message's own send time. Computed
+   *  from `ts` when absent. */
+  eventTimeUs?: number
   /** True only when the daemon verified that this Slack history row came from an
    *  AgentConnect-managed bot identity. Legacy rows and all other platforms omit it. */
   trustedAgentBot?: boolean
@@ -2490,7 +2495,7 @@ export class LocalStore {
         ...entry,
         recipient: e.recipient ?? null,
         postId: e.postId ?? null,
-        eventTimeUs: transcriptEventTimeUs(e.ts),
+        eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
         attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
         quoteJson: durableQuoteJson,
         trustedAgentBot: trustedAgentBot ? 1 : null,

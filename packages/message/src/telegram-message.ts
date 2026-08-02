@@ -186,6 +186,9 @@ export function normalizeTelegramMessage(
 
   return {
     msgId: `telegram:${message.chat.id}:${message.message_id}`,
+    // Telegram message ids are per-chat sequences with no embedded time — the
+    // platform's send time is the only chronological coordinate.
+    ...(message.date !== undefined ? { platformTimeMs: message.date * 1000 } : {}),
     traceId: context.traceId,
     source: 'user',
     platform: 'telegram',

@@ -299,6 +299,7 @@ export function createSessionReader(
           ...(senderAvatarUrl ? { senderAvatarUrl } : {}),
           ...(r.trustedAgentBot ? { trustedAgentBot: true } : {}),
           ts: r.ts,
+          ...(r.eventTimeUs ? { eventTimeUs: r.eventTimeUs } : {}),
           ...(r.postId ? { postId: r.postId } : {}),
           kind: r.kind,
           text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),

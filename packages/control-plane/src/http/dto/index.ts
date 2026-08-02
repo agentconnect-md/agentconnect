@@ -2508,6 +2508,10 @@ export const SessionMessageDto = z.object({
   senderAvatarUrl: z.string().url().optional(), // public provider-hosted profile image
   trustedAgentBot: z.boolean().optional(), // daemon-verified AgentConnect Slack bot provenance
   ts: z.string(),
+  // Normalized chronological coordinate (epoch µs) from the daemon's
+  // event-time axis; provider-authoritative when the platform supplied its
+  // send time. Absent on legacy rows.
+  eventTimeUs: z.number().optional(),
   // Canonical webchat post identity (merged-conversation-view.md §6) — identical
   // on every participant's copy; absent on non-webchat and pre-upgrade rows.
   postId: z.string().optional(),
