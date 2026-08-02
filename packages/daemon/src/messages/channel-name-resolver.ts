@@ -21,7 +21,9 @@ export interface ChannelInfoSource {
     /** That space's display name (the Discord server name). */
     spaceName?: string
   }>
-  getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
+  getUserProfile(
+    user: string
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
 }
 
 /**
@@ -61,6 +63,8 @@ export interface ResolvedChannelScope {
 export interface ChannelNameResolverOpts {
   /** Sink for the conversation's scope, saved next to its display name. */
   saveScope?: (id: string, scope: ResolvedChannelScope) => void
+  /** Public provider-hosted user avatar cache sink. */
+  saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void
   log?: Logger
   now?: () => number
 }
@@ -69,6 +73,7 @@ export class ChannelNameResolver {
   /** channel id → epoch ms until which we won't re-attempt a lookup. */
   private nextAttemptAt = new Map<string, number>()
   private saveScope?: (id: string, scope: ResolvedChannelScope) => void
+  private saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void
   private log?: Logger
   private now: () => number
 
@@ -77,6 +82,7 @@ export class ChannelNameResolver {
     opts: ChannelNameResolverOpts = {}
   ) {
     this.saveScope = opts.saveScope
+    this.saveAvatar = opts.saveAvatar
     this.log = opts.log
     this.now = opts.now ?? Date.now
   }
@@ -161,6 +167,7 @@ export class ChannelNameResolver {
         const p = await src.getUserProfile(triggeredBy)
         const name = p.realName || p.name
         if (name) this.save(channel, `@${name}`)
+        if (p.avatarUrl) this.saveAvatar?.(src, triggeredBy, p.avatarUrl)
       }
     } catch (err) {
       this.nextAttemptAt.set(channel, this.now() + FAIL_TTL_MS)
@@ -177,6 +184,7 @@ export class ChannelNameResolver {
       const p = await src.getUserProfile(user)
       const name = p.realName || p.name
       if (name) this.save(user, name)
+      if (p.avatarUrl) this.saveAvatar?.(src, user, p.avatarUrl)
     } catch (err) {
       this.nextAttemptAt.set(user, this.now() + FAIL_TTL_MS)
       this.log?.debug(`name lookup failed for user ${user}: ${(err as Error).message}`)

@@ -263,12 +263,15 @@ describe('SessionReader', () => {
 
   it('history labels senders with cached names and leaves unknown ids raw', () => {
     const s = store()
+    const transportScope = 'slack:one'
+    const transcriptChannel = transcriptChannelKey('C1', transportScope)
     s.upsertSession({
-      key: sessionKey('slack', 'C1', 'T1', AGENT),
+      key: sessionKey('slack', 'C1', 'T1', AGENT, transportScope),
       agentId: AGENT,
       platform: 'slack',
       channel: 'C1',
       thread: 'T1',
+      transportScope,
       acpSessionId: 'acp-1',
       state: 'idle',
       lastDeliveredTs: null,
@@ -276,7 +279,7 @@ describe('SessionReader', () => {
     })
     // The inbound message is delivered TO this agent (recipient), the reply is FROM it.
     s.appendTranscript({
-      channel: 'C1',
+      channel: transcriptChannel,
       thread: 'T1',
       ts: '1',
       sender: 'U1',
@@ -284,14 +287,22 @@ describe('SessionReader', () => {
       kind: 'text',
       text: 'hi'
     })
-    s.appendTranscript({ channel: 'C1', thread: 'T1', ts: '2', sender: AGENT, kind: 'text', text: 'hello' })
+    s.appendTranscript({
+      channel: transcriptChannel,
+      thread: 'T1',
+      ts: '2',
+      sender: AGENT,
+      kind: 'text',
+      text: 'hello'
+    })
     s.setDisplayName('U1', 'Dana Reyes', 1)
+    s.setProfileAvatar(transportScope, 'U1', 'https://avatars.example.test/dana.png', 1)
 
     const reader = createSessionReader(s)
     const { messages } = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
-    expect(messages.map((m) => [m.sender, m.senderName])).toEqual([
-      ['U1', 'Dana Reyes'],
-      [AGENT, undefined] // agent-id senders have no display_names entry → omitted
+    expect(messages.map((m) => [m.sender, m.senderName, m.senderAvatarUrl])).toEqual([
+      ['U1', 'Dana Reyes', 'https://avatars.example.test/dana.png'],
+      [AGENT, undefined, undefined] // agent-id senders have no cached provider profile → omitted
     ])
     s.close()
   })

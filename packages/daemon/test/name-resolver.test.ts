@@ -7,7 +7,12 @@ import { ChannelNameResolver, type ChannelInfoSource } from '../src/messages/cha
 function fakeConn(over: Partial<Pick<SlackConnection, 'getChannelInfo' | 'getUserProfile'>> = {}) {
   return {
     getChannelInfo: vi.fn(async (id: string) => ({ id, name: 'deploys' })),
-    getUserProfile: vi.fn(async (id: string) => ({ id, name: 'dana', realName: 'Dana Reyes' })),
+    getUserProfile: vi.fn(async (id: string) => ({
+      id,
+      name: 'dana',
+      realName: 'Dana Reyes',
+      avatarUrl: 'https://avatars.example.test/dana.png'
+    })),
     ...over
   } as unknown as SlackConnection & {
     getChannelInfo: ReturnType<typeof vi.fn>
@@ -22,13 +27,20 @@ const flush = () => new Promise((r) => setImmediate(r))
 describe('SlackNameResolver', () => {
   it('resolves channel + human sender once and saves realName over handle', async () => {
     const saved = new Map<string, string>()
+    const avatars = new Map<string, string>()
     const conn = fakeConn()
-    const r = new SlackNameResolver((id, name) => saved.set(id, name))
+    const r = new SlackNameResolver(
+      (id, name) => saved.set(id, name),
+      undefined,
+      Date.now,
+      (_conn, id, avatarUrl) => avatars.set(id, avatarUrl)
+    )
     r.noteMessage(conn, msg('C1', 'U1'))
     r.noteMessage(conn, msg('C1', 'U1')) // same ids again — must not re-hit the API
     await flush()
     expect(saved.get('C1')).toBe('deploys')
     expect(saved.get('U1')).toBe('Dana Reyes')
+    expect(avatars.get('U1')).toBe('https://avatars.example.test/dana.png')
     expect(conn.getChannelInfo).toHaveBeenCalledTimes(1)
     expect(conn.getUserProfile).toHaveBeenCalledTimes(1)
   })
@@ -92,7 +104,12 @@ describe('SlackNameResolver', () => {
 describe('ChannelNameResolver', () => {
   const source = (info: Awaited<ReturnType<ChannelInfoSource['getChannelInfo']>>): ChannelInfoSource => ({
     getChannelInfo: vi.fn(async () => info),
-    getUserProfile: vi.fn(async (id: string) => ({ id, name: 'dana', realName: 'Dana Reyes' }))
+    getUserProfile: vi.fn(async (id: string) => ({
+      id,
+      name: 'dana',
+      realName: 'Dana Reyes',
+      avatarUrl: 'https://avatars.example.test/dana.png'
+    }))
   })
 
   it('labels a Discord thread with its enclosing channel, not the thread title', async () => {
@@ -130,12 +147,17 @@ describe('ChannelNameResolver', () => {
 
   it('noteMessage caches the human sender and the users they mentioned', async () => {
     const saved = new Map<string, string>()
+    const avatars = new Map<string, string>()
     const src = source({ id: 'C1', name: 'general' })
-    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    const r = new ChannelNameResolver((id, name) => saved.set(id, name), {
+      saveAvatar: (_source, id, avatarUrl) => avatars.set(id, avatarUrl)
+    })
     r.noteMessage(src, { channel: 'C1', sender: { id: 'U9', isBot: false }, mentionedUserIds: ['U7'] })
     await flush()
     expect(saved.get('U9')).toBe('Dana Reyes')
     expect(saved.get('U7')).toBe('Dana Reyes')
+    expect(avatars.get('U9')).toBe('https://avatars.example.test/dana.png')
+    expect(avatars.get('U7')).toBe('https://avatars.example.test/dana.png')
   })
 
   it('noteMessage skips a bot sender (agent frames are labelled by agentId upstream)', async () => {

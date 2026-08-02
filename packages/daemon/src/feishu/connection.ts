@@ -136,7 +136,9 @@ export interface FeishuApi {
   /** im.chat.list (capped). */
   listChats(cap: number): Promise<{ id: string; name?: string }[]>
   /** contact.user.get. */
-  getUser(userId: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
+  getUser(
+    userId: string
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
 }
@@ -311,9 +313,23 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
       const res = (await client.contact.user.get({
         path: { user_id: userId },
         params: { user_id_type: 'open_id' }
-      })) as { data?: { user?: { name?: string; en_name?: string } } }
+      })) as {
+        data?: {
+          user?: {
+            name?: string
+            en_name?: string
+            avatar?: { avatar_72?: string; avatar_240?: string; avatar_origin?: string }
+          }
+        }
+      }
       const u = res?.data?.user ?? {}
-      return { id: userId, ...(u.name ? { name: u.name } : {}), ...(u.en_name ? { realName: u.en_name } : {}) }
+      const avatarUrl = u.avatar?.avatar_72 ?? u.avatar?.avatar_240 ?? u.avatar?.avatar_origin
+      return {
+        id: userId,
+        ...(u.name ? { name: u.name } : {}),
+        ...(u.en_name ? { realName: u.en_name } : {}),
+        ...(avatarUrl ? { avatarUrl } : {})
+      }
     },
     async getBotInfo() {
       const res = (await client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })) as {
@@ -992,7 +1008,9 @@ export class FeishuConnection {
     }
   }
 
-  async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {
+  async getUserProfile(
+    user: string
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
     try {
       return await this.handle.api.getUser(user)
     } catch (err) {

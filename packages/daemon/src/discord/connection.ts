@@ -318,6 +318,7 @@ export class DiscordConnection {
       content: text,
       authorId: interaction.user.id,
       authorIsBot: interaction.user.bot,
+      authorAvatarUrl: interaction.user.displayAvatarURL(),
       inGuild: interaction.inGuild(),
       isThread: interaction.channel?.isThread() ?? false,
       mentionUserIds: [],
@@ -336,6 +337,7 @@ export class DiscordConnection {
       content: message.content,
       authorId: message.author.id,
       authorIsBot: message.author.bot,
+      authorAvatarUrl: message.author.displayAvatarURL(),
       inGuild: message.inGuild(),
       isThread: message.channel.isThread(),
       mentionUserIds: [...message.mentions.users.keys()],
@@ -697,10 +699,18 @@ export class DiscordConnection {
     }
   }
 
-  async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {
+  async getUserProfile(
+    user: string
+  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
     try {
       const u = await this.client.users.fetch(user)
-      return { id: user, name: u.username, realName: u.globalName ?? undefined, isBot: u.bot }
+      return {
+        id: user,
+        name: u.username,
+        realName: u.globalName ?? undefined,
+        isBot: u.bot,
+        avatarUrl: u.displayAvatarURL()
+      }
     } catch {
       return { id: user }
     }

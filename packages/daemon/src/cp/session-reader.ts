@@ -282,13 +282,21 @@ export function createSessionReader(
       const names = store.getDisplayNames(
         projected.flatMap(({ row, sender }) => [sender, ...mentionedUserIds(row.text)])
       )
+      const avatars = rec.transportScope
+        ? store.getProfileAvatars(
+            rec.transportScope,
+            projected.map(({ sender }) => sender)
+          )
+        : new Map<string, string>()
       const built = projected.map<SessionMessage>(({ row: r, sender }) => {
         const senderName = names.get(sender)
+        const senderAvatarUrl = avatars.get(sender)
         const attachments = transcriptAttachments(r.attachmentsJson)
         const base: SessionMessage = {
           seq: r.seq,
           sender,
           ...(senderName ? { senderName } : {}),
+          ...(senderAvatarUrl ? { senderAvatarUrl } : {}),
           ...(r.trustedAgentBot ? { trustedAgentBot: true } : {}),
           ts: r.ts,
           kind: r.kind,

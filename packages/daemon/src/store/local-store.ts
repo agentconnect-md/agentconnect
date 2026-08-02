@@ -535,6 +535,12 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS display_names (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, updatedAt INTEGER
       );
+      -- Platform id → public provider-hosted profile image. Kept separate from
+      -- display_names because a provider may expose an avatar without a name.
+      CREATE TABLE IF NOT EXISTS profile_avatars (
+        transportScope TEXT NOT NULL, id TEXT NOT NULL, url TEXT NOT NULL, updatedAt INTEGER,
+        PRIMARY KEY (transportScope, id)
+      );
       -- Where a conversation id SITS: its enclosing channel (a Discord thread's parent
       -- channel — a session keys on the thread id, so the reachable channel it belongs
       -- to is otherwise unrecoverable) and its enclosing space (the Discord guild, whose
@@ -2745,6 +2751,38 @@ export class LocalStore {
       .prepare(`SELECT id, name FROM display_names WHERE id IN (${unique.map(() => '?').join(',')})`)
       .all(...unique) as unknown as { id: string; name: string }[]
     for (const r of rows) if (r.name) out.set(r.id, r.name)
+    return out
+  }
+
+  /** Cache a public provider-hosted profile image. Latest-wins as users update avatars. */
+  setProfileAvatar(transportScope: string, id: string, url: string, updatedAt: number): void {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return
+    }
+    if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.username || parsed.password) return
+    this.db
+      .prepare(
+        `INSERT INTO profile_avatars (transportScope, id, url, updatedAt) VALUES (?, ?, ?, ?)
+         ON CONFLICT(transportScope, id) DO UPDATE SET url=excluded.url, updatedAt=excluded.updatedAt`
+      )
+      .run(transportScope, id, url, updatedAt)
+  }
+
+  /** Profile images for platform ids on one physical provider connection. */
+  getProfileAvatars(transportScope: string, ids: string[]): Map<string, string> {
+    const out = new Map<string, string>()
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return out
+    const rows = this.db
+      .prepare(
+        `SELECT id, url FROM profile_avatars
+         WHERE transportScope = ? AND id IN (${unique.map(() => '?').join(',')})`
+      )
+      .all(transportScope, ...unique) as unknown as { id: string; url: string }[]
+    for (const row of rows) if (row.url) out.set(row.id, row.url)
     return out
   }
 

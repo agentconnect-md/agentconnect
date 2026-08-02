@@ -100,6 +100,7 @@ export const SessionMessage = z.object({
   seq: z.number().int(), // daemon-local insertion order within the session
   sender: z.string(), // platform handle/id of the author
   senderName: z.string().optional(), // display name (daemon-resolved; absent if unknown)
+  senderAvatarUrl: z.string().url().optional(), // public provider profile image; absent if unavailable
   // Daemon-verified AgentConnect Slack app/bot provenance. Optional for rolling
   // compatibility and absent on legacy rows or every non-Slack transport.
   trustedAgentBot: z.boolean().optional(),

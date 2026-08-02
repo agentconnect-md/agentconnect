@@ -490,6 +490,21 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     s.close()
   })
 
+  it('profile avatars: latest-wins upsert, batch lookup returns only known ids', () => {
+    const s = store()
+    s.setProfileAvatar('slack:one', 'bad', 'not-a-url', 1)
+    s.setProfileAvatar('slack:one', 'U1', 'https://avatars.example.test/old.png', 1)
+    s.setProfileAvatar('slack:one', 'U1', 'https://avatars.example.test/new.png', 2)
+    s.setProfileAvatar('slack:two', 'U1', 'https://avatars.example.test/other.png', 2)
+    const avatars = s.getProfileAvatars('slack:one', ['U1', 'U-unknown'])
+    expect(avatars.get('U1')).toBe('https://avatars.example.test/new.png')
+    expect(avatars.has('U-unknown')).toBe(false)
+    expect(s.getProfileAvatars('slack:two', ['U1']).get('U1')).toBe('https://avatars.example.test/other.png')
+    expect(s.getProfileAvatars('slack:one', ['bad']).size).toBe(0)
+    expect(s.getProfileAvatars('slack:one', []).size).toBe(0)
+    s.close()
+  })
+
   it('channel scopes: latest-wins, batch lookup returns only known ids', () => {
     const s = store()
     s.setChannelScope('T1', { parentId: 'C1' }, 1)

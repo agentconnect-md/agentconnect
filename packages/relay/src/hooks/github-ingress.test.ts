@@ -2185,10 +2185,16 @@ describe('buildGithubContext', () => {
     const c = buildGithubContext('pull_request', {
       action: 'opened',
       repository: { id: REPO_ID, full_name: 'acme/infra' },
-      sender: { login: 'alice', type: 'User' },
+      sender: { login: 'alice', type: 'User', avatar_url: 'https://avatars.example.test/alice.png' },
       pull_request: { number: 7, title: 'fix', body: 'diff', html_url: 'u', author_association: 'OWNER', labels: [] }
     })
-    expect(c).toMatchObject({ source: 'github', number: 7, title: 'fix', bodyExcerpt: 'diff' })
+    expect(c).toMatchObject({
+      source: 'github',
+      number: 7,
+      title: 'fix',
+      senderAvatarUrl: 'https://avatars.example.test/alice.png',
+      bodyExcerpt: 'diff'
+    })
   })
 
   it('a null subject body yields no excerpt and truncated:false', () => {

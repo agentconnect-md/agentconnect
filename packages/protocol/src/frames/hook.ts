@@ -162,6 +162,7 @@ export const HookContext = z.object({
   number: z.number().int().optional(), // issue/PR number
   title: z.string().optional(),
   senderLogin: z.string().optional(),
+  senderAvatarUrl: z.string().url().optional(),
   authorAssociation: z.string().optional(),
   labels: z.array(z.string()).optional(),
   htmlUrl: z.string().optional(),

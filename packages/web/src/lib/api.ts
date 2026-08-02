@@ -502,6 +502,7 @@ export interface SessionMessageDto {
   seq: number
   sender: string
   senderName?: string // daemon-resolved display name; absent if unknown
+  senderAvatarUrl?: string // public provider-hosted profile image
   trustedAgentBot?: boolean // daemon-verified AgentConnect Slack bot provenance
   ts: string
   kind: string
