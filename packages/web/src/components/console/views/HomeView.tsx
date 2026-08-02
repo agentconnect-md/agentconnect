@@ -17,6 +17,12 @@ import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { Card, CardLink, EmptyRow, RecentSessionsCard } from '@/components/console/RecentSessionsCard'
+import {
+  dashboardRowBudget,
+  MAX_AGENT_ROWS,
+  MAX_CRON_ROWS,
+  MOBILE_SESSION_ROWS
+} from '@/components/console/dashboard-rows'
 import { Icon } from '@/components/ui'
 import { AgentIconView, ModelMark, LoadingState, LogoMark } from '@/components/marks'
 import { useProfile } from '@/lib/profile'
@@ -44,24 +50,6 @@ import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 const CHIP =
   'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
 
-// ── Dashboard row budget ────────────────────────────────────────────────────
-// The dashboard is one left card (Recent) beside a stack of two (Agents you use,
-// Scheduled runs), and all three have to end on the same line with no half-drawn
-// row and no dead strip inside a card. That falls out of one identity: every row
-// is pinned to DASH_ROW_H and every card costs the same fixed chrome — its own two
-// borders plus the head (2 + 45) — so the right column's SECOND card, gutter
-// included, costs 2 + 45 + 16 = 63px, i.e. EXACTLY one row. The columns therefore
-// match when the left card shows one row MORE than the right column shows in total:
-//
-//     47 + (n+1)·63  ==  (47 + a·63) + 16 + (47 + c·63)   for a + c == n
-//
-// (Hence 63 as the row height, not a rounder number — it is what the second card's
-// chrome measures. Changing `gap-4` on the grid, the card border, or `.cardhead`
-// padding changes it.) All the sizing below does is spend that budget: take as many
-// whole rows as the leftover viewport height allows, then trim the right column —
-// schedules first, then the agent list — until the left card can cover it.
-const DASH_ROW_H = 63
-const CARD_CHROME_H = 47
 // The literal Tailwind spelling of DASH_ROW_H (`.row` is a components-layer class, so
 // these utilities win). `content-center` centres the row's single grid track inside the
 // taller box instead of stretching it, which is what keeps a cell's `self-start` (the
@@ -69,9 +57,6 @@ const CARD_CHROME_H = 47
 // Desktop only: the mobile layer stacks the cards, so there is nothing to align there
 // and rows keep their natural height.
 const DASH_ROW = 'desktop:h-[63px] desktop:content-center desktop:py-0'
-const MAX_AGENT_ROWS = 4
-const MAX_CRON_ROWS = 3
-const MOBILE_SESSION_ROWS = 6
 
 // Leftover height under the composer, measured against the SCROLL CONTAINER — never
 // against the dashboard's own box, so a taller grid can't feed back into the row
@@ -246,38 +231,29 @@ export default function HomeView() {
     [agents, sessionsByAgent]
   )
 
-  // How many rows each dashboard card draws — see the row-budget note above.
+  // How many rows each dashboard card draws — see `dashboard-rows.ts` for the identity
+  // that makes the two columns end on the same line.
   const isMobile = useIsMobile()
   const gridRef = useRef<HTMLDivElement>(null)
   const availableHeight = useAvailableHeight(gridRef, !isMobile, blocked)
-  const { sessionRows, agentRows, cronRows } = useMemo(() => {
-    // Mobile stacks the three cards, so there is nothing to align — keep the plain
-    // content caps.
-    if (isMobile) return { sessionRows: MOBILE_SESSION_ROWS, agentRows: MAX_AGENT_ROWS, cronRows: MAX_CRON_ROWS }
-    // An empty card still draws its placeholder row, so it costs a row either way.
-    let a = Math.min(MAX_AGENT_ROWS, Math.max(1, rankedAgents.length))
-    let c = Math.min(MAX_CRON_ROWS, Math.max(1, crons.length))
-    // Whole rows the leftover viewport can hold — unmeasured (mobile / first paint)
-    // means no cap, so the cards start at their content-driven maximum.
-    const capacity = availableHeight
-      ? Math.max(3, Math.floor((availableHeight - CARD_CHROME_H) / DASH_ROW_H))
-      : Number.POSITIVE_INFINITY
-    // Trim the right column until the matching left card fits the viewport. Schedules
-    // give way first, but in two passes down to a 2-row floor before either list is
-    // taken to a single row — so a cramped window thins both cards instead of gutting
-    // one. Only the VIEWPORT trims here: a thin session list must not shrink the other
-    // two cards, because the left card can't grow to match them anyway (below).
-    for (const floor of [2, 1]) {
-      while (a + c + 1 > capacity && c > floor) c--
-      while (a + c + 1 > capacity && a > floor) a--
-    }
-    // The left card always asks for one row more than the right column shows — that IS
-    // the identity. An org with fewer sessions than that is the one case it can't hold
-    // up: the right column's floor is two cards (two heads + a row each = three left
-    // rows), which no shorter card can reach. There the card renders what it has and
-    // stretches to the row height, so the bottoms still meet.
-    return { sessionRows: a + c + 1, agentRows: a, cronRows: c }
-  }, [isMobile, availableHeight, rankedAgents.length, crons.length])
+  const { sessionRows, agentRows, cronRows, aligned } = useMemo(
+    () =>
+      isMobile
+        ? // Mobile stacks the three cards: nothing to align, plain content caps.
+          {
+            sessionRows: MOBILE_SESSION_ROWS,
+            agentRows: MAX_AGENT_ROWS,
+            cronRows: MAX_CRON_ROWS,
+            aligned: false
+          }
+        : dashboardRowBudget({
+            availableHeight,
+            sessions: allSessions.length,
+            agents: rankedAgents.length,
+            crons: crons.length
+          }),
+    [isMobile, availableHeight, allSessions.length, rankedAgents.length, crons.length]
+  )
 
   const topAgents = rankedAgents.slice(0, agentRows)
   const scheduled = crons.slice(0, cronRows)
@@ -486,6 +462,12 @@ export default function HomeView() {
           they come out the same height — see the row-budget note at the top of the file.
           `gap-4` is the 16px the budget accounts for; changing it changes DASH_ROW_H. */}
       <div ref={gridRef} className="grid grid-cols-1 gap-4 desktop:grid-cols-[1.5fr_1fr]">
+        {/* `self-start` is the sparse-state treatment. With enough sessions the card
+            already measures exactly the row height, so it changes nothing; with fewer
+            (a new or quiet org) it stops the grid stretching a two-row card down to
+            the right column's floor, which would trade a shared bottom edge for a tall
+            blank strip. A short card beside a taller column reads as "not much here
+            yet" — the stretched one just reads as broken. */}
         <RecentSessionsCard
           sessions={allSessions}
           loading={loading}
@@ -493,6 +475,7 @@ export default function HomeView() {
           emptyText="No sessions yet — ask an agent above to start one."
           limit={sessionRows}
           rowClassName={DASH_ROW}
+          className={aligned ? undefined : 'desktop:self-start'}
         />
 
         <div className="flex flex-col gap-4">
