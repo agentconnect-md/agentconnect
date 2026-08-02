@@ -137,6 +137,28 @@ describe('SlackConnection.downloadFile', () => {
   })
 })
 
+describe('SlackConnection.openDirectMessage', () => {
+  it('resolves a Slack member to the app DM channel', async () => {
+    const open = vi.fn(async () => ({ channel: { id: 'D123' } }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          client: { conversations: { open } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    await expect(conn.openDirectMessage('U123')).resolves.toBe('D123')
+    expect(open).toHaveBeenCalledWith({ users: 'U123' })
+  })
+})
+
 describe('SlackConnection.listBotChannels', () => {
   const fakeAppWithConversations = (pages: any[], fail = false) => {
     let call = 0

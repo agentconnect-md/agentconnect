@@ -27,6 +27,7 @@ const authorIdentity = { agentAuthorId: 'bot-a' }
 
 function fakeGateway(over: Partial<MessageGateway> = {}): MessageGateway {
   return {
+    openDirectMessage: vi.fn(async (user) => `D-${user}`),
     postMessage: vi.fn(async () => 'ts-123'),
     getChannelInfo: vi.fn(async (id) => ({ id, name: 'general' })),
     listMembers: vi.fn(async () => [{ id: 'U1', name: 'alice', isBot: false }]),
@@ -501,9 +502,10 @@ describe('executeTool: sendMessage (channel post)', () => {
     const res = (await executeTool(ctx, 'sendMessage', { toUser: 'U9', message: 'ping' }, d)) as {
       post: Record<string, unknown>
     }
-    expect(gw.postMessage).toHaveBeenCalledWith('U9', 'ping', undefined, authorIdentity)
-    expect(recorded).toEqual([{ channel: 'U9', thread: 'ts-123', text: 'ping', ts: 'ts-123' }])
-    expect(res.post).toMatchObject({ platform: 'slack', channel: 'U9', thread: null, ts: 'ts-123' })
+    expect(gw.openDirectMessage).toHaveBeenCalledWith('U9')
+    expect(gw.postMessage).toHaveBeenCalledWith('D-U9', 'ping', undefined, authorIdentity)
+    expect(recorded).toEqual([{ channel: 'D-U9', thread: 'ts-123', text: 'ping', ts: 'ts-123' }])
+    expect(res.post).toMatchObject({ platform: 'slack', channel: 'D-U9', thread: null, ts: 'ts-123' })
   })
 
   it('rejects toUser off Slack before posting', async () => {

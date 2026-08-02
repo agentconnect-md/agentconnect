@@ -277,6 +277,7 @@ type AppLike = {
       delete: (a: unknown) => Promise<unknown>
     }
     conversations: {
+      open: (a: unknown) => Promise<{ channel?: { id?: string } }>
       info: (a: unknown) => Promise<{
         channel?: {
           id?: string
@@ -1116,6 +1117,16 @@ export class SlackConnection {
   }
 
   // ── MCP MessageGateway: read helpers backing the injected channel tools ──
+
+  /** Open or reuse the app's actual DM with one Slack member. Passing a U… id
+   * directly to chat.postMessage while customizing the agent identity makes Slack
+   * deliver through its notification-only USLACK conversation instead. */
+  async openDirectMessage(user: string): Promise<string> {
+    const res = await this.app.client.conversations.open({ users: user })
+    const channel = res.channel?.id
+    if (!channel) throw new Error('Slack conversations.open did not return a direct-message channel')
+    return channel
+  }
 
   async getChannelInfo(
     channel: string
