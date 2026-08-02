@@ -93,15 +93,30 @@ describe('prepareRuntimeLaunch', () => {
       explicitEnv: {
         AGENT_VALUE: 'yes',
         ANTHROPIC_IDENTITY_TOKEN_FILE: identityTokenFile,
-        AWS_WEB_IDENTITY_TOKEN_FILE: awsWebIdentityTokenFile
+        AWS_WEB_IDENTITY_TOKEN_FILE: awsWebIdentityTokenFile,
+        SSH_AUTH_SOCK: '/run/user/1000/ssh-agent.sock',
+        DOCKER_HOST: 'unix:///run/docker.sock',
+        BUILDKIT_HOST: 'tcp://builder.example.test:1234'
       },
-      hostEnv: { HOME: hostHome, CLAUDE_CONFIG_DIR: customClaudeConfig, PATH: '/usr/bin' }
+      hostEnv: {
+        HOME: hostHome,
+        CLAUDE_CONFIG_DIR: customClaudeConfig,
+        PATH: '/usr/bin',
+        XDG_RUNTIME_DIR: '/run/user/1000',
+        DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus'
+      }
     })
 
     expect(launch.inheritProcessEnv).toBe(false)
     expect(launch.runtimeHome).toBe(join(scopeDir, 'home'))
     expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
     expect(launch.env.AGENT_VALUE).toBe('yes')
+    expect(launch.env.XDG_RUNTIME_DIR).toBe(realpathSync(join(scopeDir, 'home', '.run')))
+    expect(statSync(launch.env.XDG_RUNTIME_DIR).mode & 0o777).toBe(0o700)
+    expect(launch.env.SSH_AUTH_SOCK).toBeUndefined()
+    expect(launch.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
+    expect(launch.env.DOCKER_HOST).toBeUndefined()
+    expect(launch.env.BUILDKIT_HOST).toBe('tcp://builder.example.test:1234')
     expect(launch.sandbox?.mechanism).toBe('bwrap')
     expect(statSync(join(cwd, '.claude')).isDirectory()).toBe(true)
     expect(existsSync(join(cwd, '.claude', 'settings.json'))).toBe(false)
@@ -122,6 +137,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.ANTHROPIC_IDENTITY_TOKEN_FILE).toBe(canonicalIdentityToken)
     expect(launch.env.AWS_WEB_IDENTITY_TOKEN_FILE).toBe(canonicalAwsWebIdentityToken)
     expect(coveredBy(settings.filesystem.denyRead, canonicalHostHome)).toBe(true)
+    expect(coveredBy(settings.filesystem.denyRead, '/run')).toBe(true)
     expect(coveredBy(settings.filesystem.denyRead, realpathSync(customClaudeConfig))).toBe(true)
     expect(coveredBy(settings.filesystem.denyRead, realpathSync(dirname(scopeDir)))).toBe(true)
     expect(settings.filesystem.allowRead).toEqual(

@@ -150,9 +150,10 @@ function canonicalTarget(path: string): string {
  * Writable set: the cwd, one private runtime HOME, and the managed-memory dir.
  * A runtime credential adapter may add one credential-only host file/directory;
  * it is a separate trusted write capability, never a general read root.
- * Unix-socket policy deliberately remains compatibility-open during the SRT
- * migration. The exact daemon MCP socket is re-exposed read-only when an ancestor
- * is hidden; this does not make its directory a writable filesystem surface.
+ * AF_UNIX remains available to the trusted ACP parent because it needs the daemon
+ * MCP/git credential channels and may launch a nested tool sandbox. Host socket
+ * trees are hidden by the caller; the exact daemon MCP socket is re-exposed
+ * read-only when an ancestor is hidden, without making its directory writable.
  */
 export function sandboxBoundary(opts: {
   agentDir: string
@@ -257,8 +258,9 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
     network: {
       allowedDomains: [],
       deniedDomains: [],
-      // Socket restrictions are a separate policy project. Preserve all current
-      // MCP/git/runtime behavior while replacing only the filesystem wrapper.
+      // Linux cannot filter AF_UNIX by pathname. Keep it available to the trusted
+      // ACP parent; filesystem visibility limits reachable host sockets, while a
+      // runtime-native inner sandbox may apply seccomp to model-authored tools.
       allowAllUnixSockets: true
     },
     filesystem: {

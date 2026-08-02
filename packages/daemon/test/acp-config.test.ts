@@ -262,6 +262,9 @@ describe('claudeSessionMeta', () => {
       failIfUnavailable: true,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
+      network: {
+        allowAllUnixSockets: false
+      },
       filesystem: {
         denyRead: [credentialRoot],
         denyWrite: [credentialRoot]

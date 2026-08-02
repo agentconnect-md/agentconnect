@@ -37,6 +37,51 @@ function disabledClaudeProfileRoot(scopeDir: string): string {
   return realpathSync(target)
 }
 
+/** Ambient desktop/session IPC must not reconnect a sandboxed runtime to host
+ * services merely because the daemon inherited a pointer to their socket. */
+const HOST_SOCKET_POINTER_ENV = [
+  'SSH_AUTH_SOCK',
+  'SSH_AGENT_PID',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'DBUS_SYSTEM_BUS_ADDRESS',
+  'DISPLAY',
+  'WAYLAND_DISPLAY',
+  'PULSE_SERVER',
+  'PIPEWIRE_REMOTE',
+  'GPG_AGENT_INFO',
+  'GNOME_KEYRING_CONTROL',
+  'SESSION_MANAGER',
+  'TMUX',
+  'VSCODE_IPC_HOOK_CLI',
+  'NOTIFY_SOCKET',
+  'TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE'
+] as const
+
+const LOCAL_CONTAINER_ENDPOINT_ENV = ['DOCKER_HOST', 'CONTAINER_HOST', 'BUILDKIT_HOST', 'PODMAN_HOST'] as const
+
+function isLocalSocketEndpoint(value: string): boolean {
+  const endpoint = value.trim().toLowerCase()
+  return endpoint.startsWith('/') || /^(?:unix|npipe|fd):/.test(endpoint)
+}
+
+function isolateHostSocketEnvironment(env: Record<string, string>, runtimeHome: string): void {
+  const runtimeDir = join(runtimeHome, '.run')
+  if (existsSync(runtimeDir)) {
+    const stat = lstatSync(runtimeDir)
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`private XDG runtime path must be a real directory: ${runtimeDir}`)
+    }
+  }
+  mkdirSync(runtimeDir, { recursive: true, mode: 0o700 })
+  chmodSync(runtimeDir, 0o700)
+
+  for (const name of HOST_SOCKET_POINTER_ENV) delete env[name]
+  for (const name of LOCAL_CONTAINER_ENDPOINT_ENV) {
+    if (env[name] && isLocalSocketEndpoint(env[name])) delete env[name]
+  }
+  env.XDG_RUNTIME_DIR = realpathSync(runtimeDir)
+}
+
 export interface PreparedRuntimeLaunch {
   env: Record<string, string>
   /** Sandboxed launches carry a sanitized environment; unsandboxed launches inherit the daemon environment. */
@@ -151,6 +196,10 @@ export function prepareRuntimeLaunch(opts: {
     const sharedTempRoots = ['/tmp', '/var/tmp', stateSourceEnv.TMPDIR, stateSourceEnv.TMP, stateSourceEnv.TEMP]
       .filter((path): path is string => Boolean(path))
       .map((path) => safeRoot(path, 'shared temp root'))
+    // Linux service sockets conventionally live below /run; /var/run resolves
+    // there as well. The outer parent keeps AF_UNIX available for AgentConnect's
+    // exact carve-backs, so mount visibility is the host-socket boundary.
+    const hostSocketRoots = [safeRoot('/run', 'host socket root')]
     protectedRuntimeStateRoots = Object.keys(RUNTIME_STATE_LOCATIONS).flatMap((id) =>
       runtimeStateLocations(id, stateSourceEnv).map((location) => safeRoot(location.source, `${id} host state root`))
     )
@@ -159,7 +208,8 @@ export function prepareRuntimeLaunch(opts: {
       agentRoot,
       ...(opts.agentsRoot ? [safeRoot(opts.agentsRoot, 'agents root')] : []),
       ...hostHomeRoots,
-      ...sharedTempRoots
+      ...sharedTempRoots,
+      ...hostSocketRoots
     ]
     protectedRoots = [...protectedBoundaryRoots, ...protectedRuntimeStateRoots]
     denyReadRoots = compactReadRoots(protectedRoots)
@@ -199,6 +249,8 @@ export function prepareRuntimeLaunch(opts: {
     ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, opts.hostEnv),
     ...credentials?.env
   }
+
+  if (opts.runInSandbox) isolateHostSocketEnvironment(env, runtimeHome)
 
   if (!opts.runInSandbox) {
     return { env, inheritProcessEnv: false, runtimeHome }

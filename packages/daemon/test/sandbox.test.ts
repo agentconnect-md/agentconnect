@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import {
   mkdirSync,
   mkdtempSync,
@@ -234,7 +234,7 @@ describe('Claude credential environment isolation', () => {
 
     try {
       const config = SandboxRuntimeConfigSchema.parse({
-        network: { allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true },
+        network: { allowedDomains: [], deniedDomains: [], ...settings.network },
         filesystem: { ...settings.filesystem, allowWrite: [workspace] },
         credentials: settings.credentials
       })
@@ -279,6 +279,25 @@ describe('Claude credential environment isolation', () => {
           })
         ).toThrow()
       }
+
+      const socketPath = join(workspace, 'model-bash.sock')
+      const socketScript =
+        "require('node:net').createServer().on('error',(error)=>{console.error(error.code);process.exit(2)}).listen(process.argv[1],()=>process.exit(0))"
+      const socketAttempt = await SandboxManager.wrapWithSandboxArgv(
+        `${process.execPath} -e ${JSON.stringify(socketScript)} ${JSON.stringify(socketPath)}`,
+        undefined,
+        undefined,
+        undefined,
+        workspace
+      )
+      const socketResult = spawnSync(socketAttempt.argv[0]!, socketAttempt.argv.slice(1), {
+        cwd: workspace,
+        env: socketAttempt.env,
+        encoding: 'utf8'
+      })
+      expect(socketResult.status).toBe(2)
+      expect(socketResult.stderr).toMatch(/EPERM|operation not permitted/i)
+      expect(existsSync(socketPath)).toBe(false)
     } finally {
       SandboxManager.cleanupAfterCommand()
       await SandboxManager.reset()

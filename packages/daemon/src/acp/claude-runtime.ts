@@ -110,6 +110,9 @@ export interface ClaudeInnerSandboxSettings {
   failIfUnavailable: true
   autoAllowBashIfSandboxed: true
   allowUnsandboxedCommands: false
+  network: {
+    allowAllUnixSockets: false
+  }
   filesystem: {
     denyRead: string[]
     denyWrite: string[]
@@ -131,6 +134,12 @@ export function claudeInnerSandboxSettings(protectedCredentialRoots: readonly st
     failIfUnavailable: true,
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
+    // The trusted Claude parent stays in the outer AgentConnect sandbox, where
+    // it may use mcp.sock and create the nested SRT helpers. Model-authored Bash
+    // gets a second seccomp layer and cannot create AF_UNIX sockets at all.
+    network: {
+      allowAllUnixSockets: false
+    },
     filesystem: {
       denyRead: roots,
       denyWrite: roots
