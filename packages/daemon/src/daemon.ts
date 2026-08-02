@@ -1611,8 +1611,6 @@ export class Daemon {
   // per-agent requests are ineffective; security.requireSandbox refuses startup
   // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
-  /** Daemon-wide same-UID boundary. It is established before the first real ACP
-   * child, so no earlier unconfined sibling can pre-forge later skill authority. */
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
   // Models learned by actively probing each runtime (registry id -> model ids).
@@ -1962,10 +1960,6 @@ export class Daemon {
         'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
     }
-    // Skills are mutable executable authority stored under the daemon's UID.
-    // Establish the fleet-wide boundary on first boot, before probes or hosts;
-    // waiting until a skill exists would let an earlier unconfined ACP sibling
-    // forge the marker, registry, ledger, and installed bytes retroactively.
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
     // daemon boots, reconciles, and connects on hosts with or without an OS
@@ -17400,13 +17394,12 @@ export class Daemon {
     // With a hostFactory (unit tests use fake in-memory hosts) we don't spawn real
     // subprocesses unless a probe seam is injected.
     if (this.opts.hostFactory && !this.opts.probeRuntimes) return
-    // Runtime probes are ACP children under the same UID. Never let a pre-skill
-    // unsandboxed probe establish the bootstrap-forgery window that real hosts
-    // are forbidden from creating. Injected probes are trusted test seams.
-    if (!this.sandboxMechanism && !this.opts.probeRuntimes) {
-      this.log.warn('probe: skipped because no supported OS sandbox is available')
-      return
-    }
+    // Runtime probes are ACP children under the same UID. Sandbox-optional
+    // principle (#36): probe sandboxed when a mechanism exists (launchFor below
+    // sets runInSandbox from `this.sandboxMechanism`), but still probe UNSANDBOXED
+    // when none is available — otherwise curated runtimes are never admitted and
+    // their agents cannot run on a no-sandbox host. The explicit operator
+    // `security.requireSandbox` already refused boot without a mechanism.
     if (this.probing) {
       if (includeOrdinary) this.ordinaryProbePending = true
       else this.curatedProbePending = true
