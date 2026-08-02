@@ -9,6 +9,7 @@
  * CP-minted token; the relay `rc/verify`s it, then bridges the conversation onto the
  * target daemon's rd/* socket (`rd/msg` in, `rd/chat` out) — content never touches the CP.
  */
+import { randomUUID } from 'node:crypto'
 import { RELAY_CP_SUBPROTOCOL } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { loadConfig, resolveAuth, toWsOrigin } from './config.js'
@@ -289,7 +290,29 @@ async function main(): Promise<void> {
     relayId: () => client.relayId,
     clock: systemClock,
     onChat: (chat) => router.deliver(chat),
-    onWebchatPost: (post) => router.deliverPost(post),
+    // A completed reply post: render to the browser (if attached), then fan a
+    // transcript-only context copy to every OTHER participant's daemon from the
+    // router's roster cache — independent of the browser sink, so a mid-turn
+    // browser close cannot drop the canonical post for the peers
+    // (webchat-multi-agents.md §5.2).
+    onWebchatPost: (post) => {
+      router.deliverPost(post)
+      for (const p of router.rosterOf(post.conversationId)) {
+        if (p.agentId === post.agentId || !p.daemonId) continue
+        const conn = rdServer.get(p.daemonId)
+        if (!conn) continue
+        void conn
+          .sendMsg({
+            source: 'webchat',
+            agentId: p.agentId,
+            sessionKey: post.conversationId,
+            msgId: randomUUID(),
+            chatId: post.conversationId,
+            payload: { op: 'context', post: post.post }
+          })
+          .catch((err) => log.warn(`relay: webchat post context fan-out failed: ${(err as Error).message}`))
+      }
+    },
     onAgentMsg: (fromDaemonId, msg) => routeAgentMsg(fromDaemonId, msg),
     log
   })

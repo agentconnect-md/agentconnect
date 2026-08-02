@@ -88,6 +88,12 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
       // The verified roster (webchat-multi-agents.md §6.2). A pre-roster CP omits
       // it — degrade to the singular primary binding (the single-agent shape).
       const participants = result.participants?.length ? result.participants : [{ agentId, daemonId, primary: true }]
+      // Cache the roster ON THE ROUTER (not only the connection): a completed
+      // reply's context fan-out must survive the browser closing mid-turn.
+      deps.router.rememberRoster(
+        conversationId,
+        participants.map((p) => ({ agentId: p.agentId, ...(p.daemonId ? { daemonId: p.daemonId } : {}) }))
+      )
 
       wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {
         trackAlive(raw)

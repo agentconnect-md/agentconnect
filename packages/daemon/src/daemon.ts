@@ -305,6 +305,7 @@ import type {
   WebchatPost,
   WebchatRuntimeConfig,
   RdWebchatPost,
+  SessionImageAttachment,
   RdMsg,
   RdMsgWebchat,
   WebchatImageAttachment,
@@ -7951,6 +7952,43 @@ export class Daemon {
   }
 
   /**
+   * Append one webchat conversation text row at (or just after) `ts`. The
+   * `(channel, thread, ts)` unique index dedups by timestamp alone, and two
+   * daemons can mint the same millisecond for DISTINCT concurrent posts — an
+   * unchecked `INSERT OR IGNORE` would silently drop the later one. Probe the
+   * slot: an identical post dedups in place (the recipient delivery is still
+   * recorded), a foreign occupant bumps the ts by 1 ms (bounded). Returns the
+   * ts actually used, which becomes the post's canonical `at` when the caller
+   * is the origin.
+   */
+  private appendWebchatTextRow(
+    channel: string,
+    thread: string,
+    ts: string,
+    entry: {
+      sender: string
+      recipient?: string
+      text: string
+      trustedAgentBot?: boolean
+      attachments?: SessionImageAttachment[]
+    }
+  ): string {
+    let slot = BigInt(ts)
+    for (let attempt = 0; attempt < 32; attempt++) {
+      const existing = this.store.transcriptTextAt(channel, thread, String(slot))
+      if (!existing || (existing.sender === entry.sender && existing.text === entry.text)) {
+        this.store.appendTranscript({ channel, thread, ts: String(slot), kind: 'text', ...entry })
+        return String(slot)
+      }
+      slot += 1n
+    }
+    // Pathological pile-up — fall back to the process-monotonic clock (locally unique).
+    const fallback = monotonicTs()
+    this.store.appendTranscript({ channel, thread, ts: fallback, kind: 'text', ...entry })
+    return fallback
+  }
+
+  /**
    * Record a conversation post another participant produced (relay `context` op —
    * webchat-multi-agents.md §5.2). Transcript-only, NEVER an activation: the row
    * lands in the shared conversation log with the carried canonical `at`, and the
@@ -7965,16 +8003,13 @@ export class Daemon {
     if (!contextPost.text.trim() && !contextPost.attachments?.length) return
     const sender =
       contextPost.author.kind === 'agent' ? contextPost.author.agentId : (contextPost.author.user ?? 'webchat')
-    this.store.appendTranscript({
-      channel: transcriptChannelKey(chatId, undefined),
-      thread: `webchat:${chatId}`,
-      // The canonical origin-minted ts. INSERT OR IGNORE makes a re-fanned copy a
-      // no-op; the recipient tag below still records the delivery for THIS agent
-      // when the text row was already written by a co-hosted participant's turn.
-      ts: String(contextPost.at),
+    // The canonical origin-minted ts. A re-fanned identical copy dedups in place
+    // (the recipient tag still records the delivery for THIS agent when the text
+    // row was already written by a co-hosted participant's turn); a foreign post
+    // occupying the slot bumps by 1 ms instead of being silently dropped.
+    this.appendWebchatTextRow(transcriptChannelKey(chatId, undefined), `webchat:${chatId}`, String(contextPost.at), {
       sender,
       recipient: agentId,
-      kind: 'text',
       text: contextPost.text,
       ...(contextPost.author.kind === 'agent' ? { trustedAgentBot: true } : {}),
       ...(contextPost.attachments?.length
@@ -10823,15 +10858,11 @@ export class Daemon {
         if (p.webchat.replyText.trim()) {
           // Shares the strictly-monotonic clock with the inbound user message so a fast
           // turn can't stamp both with the same ms and lose the reply to the unique index.
-          // This ts doubles as the reply post's canonical `at` (minted ONCE here, the
-          // origin) carried to every other participant's copy via rd/webchat-post.
-          const replyTs = monotonicTs()
-          this.store.appendTranscript({
-            channel: p.transcriptChannel,
-            thread: statusThread,
-            ts: replyTs,
+          // The ts the row actually lands on (post-collision-bump) doubles as the reply
+          // post's canonical `at` (minted ONCE here, the origin) carried to every other
+          // participant's copy via rd/webchat-post.
+          const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
             sender: agentId,
-            kind: 'text',
             text: p.webchat.replyText
           })
           // Fan the completed reply out as a canonical conversation post so the
@@ -10963,13 +10994,8 @@ export class Daemon {
           statusThread
         })
         if (p.webchat.replyText.trim()) {
-          const replyTs = monotonicTs()
-          this.store.appendTranscript({
-            channel: p.transcriptChannel,
-            thread: statusThread,
-            ts: replyTs,
+          const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
             sender: agentId,
-            kind: 'text',
             text: p.webchat.replyText
           })
           // A partial reply is still conversation content the other participants

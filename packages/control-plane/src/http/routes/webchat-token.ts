@@ -56,6 +56,23 @@ export function webchatTokenRoutes(deps: HttpDeps) {
   return async function webchatTokenRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
+    /** Mint-time fence (webchat-multi-agents.md §10.2): a resume requires the
+     *  owner to currently `canView` EVERY participant, not only the primary —
+     *  losing access to one restricted member revokes the whole conversation,
+     *  since the minted token exposes and targets the full roster. */
+    const allParticipantsViewable = async (
+      conversationId: string,
+      orgId: string,
+      ctx: ReturnType<typeof ctxOf>
+    ): Promise<boolean> => {
+      const roster = await deps.repos.webchatConversation.participants(conversationId)
+      for (const p of roster) {
+        const member = await deps.repos.agent.get(p.agentId)
+        if (!member || member.orgId !== orgId || !canView(member, ctx)) return false
+      }
+      return true
+    }
+
     r.post(
       '/agents/:agentId/webchat/token',
       {
@@ -87,7 +104,10 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
         const binding = { conversationId, userId, agentId: agent.id, orgId: agent.orgId }
         if (req.body.conversationId) {
-          if (!(await deps.repos.webchatConversation.owns(binding))) {
+          if (
+            !(await deps.repos.webchatConversation.owns(binding)) ||
+            !(await allParticipantsViewable(conversationId, agent.orgId, ctxOf(req)))
+          ) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
           }
         } else {
@@ -139,10 +159,16 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           if (!owned) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
           }
-          // The primary must still be viewable — losing access to a restricted
-          // agent revokes resume, exactly like the legacy per-agent path.
+          // EVERY participant must still be viewable — the minted token exposes
+          // and targets the full roster, so losing access to one restricted
+          // member revokes resume for the whole conversation.
           const primary = await deps.repos.agent.get(owned.primaryAgentId)
-          if (!primary || primary.orgId !== orgId || !canView(primary, ctxOf(req))) {
+          if (
+            !primary ||
+            primary.orgId !== orgId ||
+            !canView(primary, ctxOf(req)) ||
+            !(await allParticipantsViewable(conversationId, orgId, ctxOf(req)))
+          ) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
           }
           const token = await deps.webchatTokens.mint({

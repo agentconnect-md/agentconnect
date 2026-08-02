@@ -2443,6 +2443,17 @@ export class LocalStore {
     })
   }
 
+  /** The conversational text row occupying one exact `(channel, thread, ts)` slot,
+   *  if any — the probe behind webchat's canonical-timestamp collision bump:
+   *  `INSERT OR IGNORE` under the `transcript_text_ts` unique index would silently
+   *  drop a DIFFERENT post landing on an occupied millisecond, so writers check
+   *  the slot first and bump when it holds foreign content. */
+  transcriptTextAt(channel: string, thread: string, ts: string): { sender: string; text: string } | undefined {
+    return this.db
+      .prepare(`SELECT sender, text FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'`)
+      .get(channel, thread, ts) as { sender: string; text: string } | undefined
+  }
+
   appendTranscript(e: TranscriptEntry): void {
     const { attachments, trustedAgentBot, quoted, quoteJson, ...entry } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)

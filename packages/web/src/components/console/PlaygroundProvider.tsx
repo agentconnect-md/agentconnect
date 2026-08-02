@@ -314,9 +314,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       mutateSteps(id, (steps) => {
         // Concurrent participant streams interleave: accumulate each chunk into
         // the most recent step OF THIS LANE (same agentId), not the array tail.
+        // A user message is a hard turn boundary — never merge across it, or a
+        // participant's SECOND reply would append into its previous turn's
+        // block, rendered above the prompt that caused it.
         const laneIndex = (() => {
           for (let i = steps.length - 1; i >= 0; i--) {
-            if ((steps[i]!.agentId ?? undefined) === agentId) return i
+            const step = steps[i]!
+            if (step.kind === 'msg' && step.agentId === undefined) return -1
+            if ((step.agentId ?? undefined) === agentId) return i
           }
           return -1
         })()

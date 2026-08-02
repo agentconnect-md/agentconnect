@@ -223,39 +223,14 @@ export class RelayBrowserConnection implements ChatSink {
 
   /**
    * A participant's completed reply post (`rd/webchat-post`, routed here by
-   * conversationId): forward the canonical record to the browser and fan a
-   * transcript-only `context` copy to every OTHER participant's daemon
-   * (webchat-multi-agents.md §5.2). The authoring daemon already holds its row.
+   * conversationId): forward the canonical record to the browser. Peer-daemon
+   * context fan-out happens at the router level from the cached roster — NOT
+   * here — so it survives the browser closing mid-turn
+   * (webchat-multi-agents.md §5.2).
    */
   onPost(p: RdWebchatPost): void {
     if (p.conversationId !== this.deps.chatId) return
     this.send({ type: 'post', post: p.post })
-    this.fanContext(p.post, p.agentId)
-  }
-
-  /** The conversation's roster (for the daemon-facing post fan-out path). */
-  participantIds(): string[] {
-    return [...this.byAgentId.keys()]
-  }
-
-  private fanContext(post: WebchatPost, excludeAgentId?: string): void {
-    for (const p of this.byAgentId.values()) {
-      if (p.agentId === excludeAgentId || !p.daemonId) continue
-      const conn = this.deps.daemonConnFor(p.daemonId)
-      if (!conn) continue
-      void conn
-        .sendMsg({
-          source: 'webchat',
-          agentId: p.agentId,
-          sessionKey: this.deps.chatId,
-          msgId: randomUUID(),
-          chatId: this.deps.chatId,
-          payload: { op: 'context', post }
-        })
-        .catch((error) => {
-          this.deps.log.warn(`relay: webchat context fan-out failed ${deliveryFailureDiagnostic(error)}`)
-        })
-    }
   }
 
   private onText(text: string): void {
