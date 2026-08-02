@@ -552,26 +552,85 @@ recorded in the author's own session.
 
 ## 9. Web UI
 
-- **Creation**: the new-conversation composer gains a multi-select of agents
-  (first pick = primary), gated on the CP feature flag and per-agent daemon
-  capability; the existing single-agent entry points are the one-agent case of
-  the same flow.
-- **Composer**: `@` opens autocomplete over the roster only. Agents outside
-  the roster are not offered (the roster is creation-fixed; the affordance for
-  "bring in another agent" is starting a new conversation). Mention chips
-  serialize to `mentions[]`; the ladder of section 4.2 computes `targets[]`.
-- **Header**: participant chips with icons; primary marked.
-- **Streams**: one lane per `(turnId, agentId)`; per-agent typing/streaming
-  indicators; per-agent ack failures surfaced inline ("B is busy — queued").
+### 9.1 Entry: the composer is the assembly area
+
+There is no separate "new multi-agent conversation" screen. The existing entry
+points keep working and gain roster assembly in place:
+
+- **Home composer** (`packages/web/src/components/console/views/HomeView.tsx`)
+  — the main entry. The Agent pill stays the single-select fast path: pick one
+  agent and send, identical to today. Beside it, a `+` chip (rendered only
+  when the CP feature flag is on) opens the same `ComposerMenu` list as a
+  multi-select; agents whose daemon lacks `webchat_multi_agent_v1` are dimmed
+  with the reason in the description line, exactly like today's offline/auth
+  dimming. With two or more selected, the pill expands into a **roster chip
+  row** — first chip is the primary, marked "default"; chips are removable
+  until the first send.
+- **`@` in the composer text** is the second way in: before the first send the
+  autocomplete lists eligible org agents, and picking one joins the roster and
+  inserts a mention chip — so "@b @c compare your answers" composes the
+  conversation and its first turn in one gesture.
+- **Agent detail and Getting started** keep their one-click single-agent
+  entries (`AgentDetailView.tsx` `onPlayground`, `GettingStarted.tsx`); the
+  live conversation composer allows `@`-adding agents only until the first
+  message is sent.
+
+**Freeze point.** The user-visible rule is "choose who's in the room before
+you start talking": the roster is editable until the first message and frozen
+after. The Home path already creates the conversation at send
+(`HomeView.tsx:169-182` calls `openPlayground` inside `send()`), so it simply
+mints with `agentIds[]`. The eager-warm paths (agent detail, getting started)
+mint a single-agent conversation at open; if the user adds agents before the
+first message, the client abandons that still-empty conversation and mints a
+fresh one with the final roster — "a different agent set means a new
+conversation" applied literally, with no roster-mutation API. The synthetic
+`pg_` route id keeps the URL stable across the re-mint, and the abandoned
+zero-message row is inert.
+
+### 9.2 In-conversation composer
+
+- After the first send, `@` autocomplete covers the roster only. Mention
+  chips serialize to `mentions[]`; the ladder of section 4.2 computes
+  `targets[]`.
+- **Routing is always visible**: the composer footer shows a small
+  "→ <agent>" indicator of who will receive the message — the mentioned set
+  when chips are present, else the affinity/primary target — so the implicit
+  rungs of the ladder are never a surprise.
+- Non-roster agents still appear in the autocomplete, dimmed, with a one-click
+  "New chat with …" action that pre-stages a fresh Home composer holding the
+  current roster plus that agent — the escape hatch that keeps the immutable
+  roster from feeling like a wall.
+
+### 9.3 Conversation header and streams
+
+- Header: participant chips with icons, primary marked. Clicking a chip opens
+  the per-agent popover: runtime controls (model/effort/permission/fast via
+  the per-agent `set_*` ops) and a deep link to that agent's session for
+  audit.
+- One stream lane per `(turnId, agentId)`; per-agent typing/streaming
+  indicators; per-agent ack failures surfaced inline ("B is busy — queued");
+  a superseded generation collapses and re-streams in place (section 5.4).
+
+### 9.4 Sessions list and resume
+
+- Conversation rows group by `channel` and show stacked participant avatars
+  plus the conversation title (the primary's `session_info`, section 8);
+  per-agent rows remain reachable for audit.
+- Resume reopens the merged conversation view (section 8) with the roster in
+  the header.
+
+### 9.5 Provider and mobile
+
 - **PlaygroundProvider** (`packages/web/src/components/console/PlaygroundProvider.tsx`)
   keys optimistic steps and cursors by `(turnId, agentId)` instead of `turnId`;
   the synthetic `pg_` session becomes a synthetic conversation that adopts N
   real session ids as they are reported (`applyStatus` already carries
-  `sessionId` per stream).
-- **Runtime controls** (model/effort/permission/fast) become per-agent — the
-  existing `set_*` ops gain `agentId` and the UI scopes the control popover to
-  an agent chip. Mobile keeps the single responsive tree per the console
-  conventions.
+  `sessionId` per stream). Staged runtime settings ride the first turn
+  per-agent (`stageRuntimeChange` already keys by agent).
+- **Mobile** keeps the single responsive tree per the console conventions:
+  the roster multi-select and the per-agent popover render as bottom sheets,
+  the roster chip row scrolls horizontally, and the `@` autocomplete is
+  unchanged.
 
 ## 10. Limits, gating, and security
 
