@@ -861,6 +861,45 @@ export default function SessionDetailView() {
     }
     return { tokens: fmtCountCompact(tokens), cost: fmtCost(cost || undefined, currency) }
   }, [conversationKey, conversationMembers])
+  // Conversation-level lineage lift (merged-conversation-view.md §9.2): union
+  // the members' parent/child links, keep only CROSS-conversation edges (a
+  // target inside the member set is an intra-room edge — attribution, not
+  // navigation, per §9.1), and link targets as /sessions/:id — the §5.3
+  // self-redirect forwards multi-participant targets to THEIR merged page, so
+  // no per-target resolver probes are needed.
+  const { data: conversationMemberDetails } = useSWR(
+    conversationKey && activeOrg?.id && conversationMembers && conversationMembers.length > 1
+      ? (['conversation-lineage', activeOrg.id, conversationSourceKey] as const)
+      : null,
+    ([, orgId]) =>
+      Promise.all(
+        (conversationMembers ?? []).map((member) => fetchSessionDetail(member.sessionId, orgId).catch(() => null))
+      ),
+    { revalidateOnFocus: false }
+  )
+  const conversationFamily = useMemo(() => {
+    if (!conversationKey || !conversationMembers || conversationMembers.length <= 1) return undefined
+    const memberIds = new Set(conversationMembers.map((m) => m.sessionId))
+    const parents = new Map<string, SessionRelationDto>()
+    const children = new Map<string, SessionRelationDto>()
+    for (const detail of conversationMemberDetails ?? []) {
+      if (!detail) continue
+      const parent = detail.parentSession
+      if (parent && !memberIds.has(parent.id)) parents.set(parent.id, parent)
+      for (const child of detail.childSessions) {
+        if (!memberIds.has(child.id)) children.set(child.id, child)
+      }
+    }
+    if (parents.size === 0 && children.size === 0) return undefined
+    const [firstParent, ...moreParents] = [...parents.values()]
+    return {
+      // The family UI models ONE parent; multiple cross-room delegation
+      // origins are rare — surface the extras beside the delegations.
+      parentSession: firstParent ?? null,
+      siblingSessions: moreParents,
+      childSessions: [...children.values()]
+    }
+  }, [conversationKey, conversationMembers, conversationMemberDetails])
   const {
     agents,
     allSessions,
@@ -2084,7 +2123,7 @@ export default function SessionDetailView() {
         agentIds={railFilter.agentIds}
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
-        family={currentSessionDetail?.id === session.id ? currentSessionDetail : undefined}
+        family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
         onSelect={setRouteSession}
       />
       <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
@@ -2298,14 +2337,24 @@ export default function SessionDetailView() {
           </div>
         )}
 
-        {currentSessionDetail?.id === session.id && (
+        {conversationFamily ? (
           <MobileSessionFamilyLinks
-            parent={currentSessionDetail.parentSession}
-            siblings={currentSessionDetail.siblingSessions ?? []}
-            children={currentSessionDetail.childSessions}
+            parent={conversationFamily.parentSession}
+            siblings={conversationFamily.siblingSessions}
+            children={conversationFamily.childSessions}
             agentById={agentById}
             orgPath={orgPath}
           />
+        ) : (
+          currentSessionDetail?.id === session.id && (
+            <MobileSessionFamilyLinks
+              parent={currentSessionDetail.parentSession}
+              siblings={currentSessionDetail.siblingSessions ?? []}
+              children={currentSessionDetail.childSessions}
+              agentById={agentById}
+              orgPath={orgPath}
+            />
+          )
         )}
 
         {owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
