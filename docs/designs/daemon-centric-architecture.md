@@ -2,7 +2,7 @@
 
 > Status: Implemented (current architecture) — the architecture described here has been implemented in `packages/{message,protocol,daemon,control-plane,relay}` and serves as the upstream anchor for the detailed design documents
 > Scope: A new system that bridges messaging platforms (such as Slack and Telegram) to AI coding agents
-> Keywords: daemon-owned platform integrations, local ACP, control-plane/data-plane separation
+> Keywords: daemon-owned platform integrations, local ACP, control-plane/data-plane separation, operator trust, optional sandboxing, daemon visibility
 
 ---
 
@@ -211,7 +211,53 @@ The Control Plane achieves "orchestration without touching messages" over the co
 
 ---
 
-## 9. Security and Credential Management
+## 9. Security, Trust, and Credential Management
+
+### 9.1 Execution trust model
+
+This subsection is the normative trust model for daemon execution. Feature-specific
+designs must not silently strengthen it.
+
+A **daemon operator** is the person who controls the host, the daemon OS account,
+the daemon process, and its connection credential. This is an operational role, not
+an organization RBAC role. The organization trusts that operator to decide which
+agents may execute on the machine and what host access those agents may receive.
+
+An agent that runs without the AgentConnect OS sandbox is **operator-trusted code**,
+not a hostile tenant that is expected to be isolated from the daemon user. Its ACP
+runtime, model-authored tools, and child processes have the ambient authority of the
+daemon OS account, including access to same-user host resources and daemon state.
+AgentConnect should discourage this mode for unknown or untrusted workloads, but it
+must remain supported when an operator deliberately trusts the agent or is using a
+disposable test environment.
+
+The operator has three independent controls:
+
+| Control                                                                         | Trust consequence                                                                                                                                                                               |
+| ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Restrict [daemon visibility](resource-visibility.md) to selected people         | Limits which organization members can discover, select, or manage the daemon as a placement target; selecting only the operator makes it private to them. It does not create process isolation. |
+| Enable **Run in sandbox** on an agent                                           | Treats that agent as untrusted relative to the host and confines its runtime when the daemon supports the sandbox.                                                                              |
+| Start the daemon with `--require-sandbox` or set `security.requireSandbox=true` | Requires every agent on that daemon to run sandboxed and fails closed when the host cannot enforce it.                                                                                          |
+
+A host without a supported sandbox remains usable for operator-trusted agents unless
+the operator explicitly enabled the daemon-wide requirement. The daemon and console
+must report the missing capability clearly; they must never describe an unsandboxed
+runtime as confined.
+
+Daemon visibility and runtime isolation are orthogonal. An operator who shares a
+daemon without requiring sandboxing is choosing to trust the authorized members and
+agents placed there. An operator who does not want that trust relationship must keep
+the daemon restricted, require sandboxing for the whole daemon, or both.
+
+**Implementation invariant:** a feature must not turn optional agent sandboxing into
+an implicit daemon-wide requirement merely because it stores mutable state under the
+daemon OS user or because the organization has multiple members. Integrity against an
+unsandboxed same-user agent is outside the isolation guarantee by design: the operator
+has declared that agent trusted. Feature-specific helpers may retain their own narrow
+isolation boundaries; only explicit operator policy may require every ordinary ACP
+host to run sandboxed.
+
+### 9.2 Credentials and cross-workspace isolation
 
 > Platform credentials are distributed across edge nodes, making this the part of the architecture that needs the most careful design.
 
@@ -226,7 +272,11 @@ The Control Plane achieves "orchestration without touching messages" over the co
   secret-manager references.
 - **Least privilege**: a daemon receives credentials only for the workspaces and platforms for which it is responsible.
 - **Control-plane authentication**: long-lived, revocable opaque API keys authenticate daemon, user, relay, and OAuth principals. The Control Plane stores only an HMAC lookup value, validates keys during authentication, and supports rotation and revocation. These credentials are independent of machine scope-attestation capabilities. See [daemon-api-key-auth.md](daemon-api-key-auth.md).
-- **Isolation**: sessions and credentials for different workspaces are logically isolated inside the daemon. Requirements for stronger isolation can dedicate a daemon to each workspace.
+- **Isolation**: AgentConnect scopes sessions and credentials to their assigned
+  agents and workspaces. The OS sandbox supplies the process boundary for agents
+  that are not trusted with the daemon user's ambient authority. Unsandboxed agents
+  share that trust domain by operator choice. Requirements for stronger isolation
+  can use separate daemon users, machines, or daemons.
 
 ---
 
