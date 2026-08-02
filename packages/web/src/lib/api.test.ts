@@ -9,6 +9,7 @@ import {
   deleteOrgIcon,
   fetchAllGithubRepos,
   fetchGithubRepoRoster,
+  fetchMySessionIdentity,
   fetchMemoryAdminSurface,
   fmtCountCompact,
   invalidateGithubRepoRosterCache,
@@ -45,6 +46,29 @@ describe('fmtCountCompact', () => {
     [undefined, '—']
   ])('formats %s as %s', (value, expected) => {
     expect(fmtCountCompact(value)).toBe(expected)
+  })
+})
+
+describe('session profile identity hints', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('checks Lark and Feishu as distinct linked social targets', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              identities: [{ target: 'lark' }],
+              hasSecurityVerificationMethod: true
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+      )
+    )
+
+    await expect(fetchMySessionIdentity('lark')).resolves.toEqual({ linked: true })
+    await expect(fetchMySessionIdentity('feishu')).resolves.toEqual({ linked: false })
   })
 })
 

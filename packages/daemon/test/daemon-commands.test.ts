@@ -1991,7 +1991,34 @@ describe('Slack interactive status bar', () => {
     expect((daemon as any).sessionLink('acp-1')).toBe('http://localhost:3000/sessions/acp-1')
     expect((daemon as any).sessionLink('acp-1', 'slack')).toBe('http://localhost:3000/sessions/acp-1?source=slack')
     expect((daemon as any).sessionLink('acp-1', 'github')).toBe('http://localhost:3000/sessions/acp-1?source=github')
+    expect((daemon as any).sessionLink('acp-1', 'lark')).toBe('http://localhost:3000/sessions/acp-1?source=lark')
+    expect((daemon as any).sessionLink('acp-1', 'feishu')).toBe('http://localhost:3000/sessions/acp-1?source=feishu')
     expect((daemon as any).agentLink('bot-a')).toBe('http://localhost:3000/agents/bot-a')
+  })
+
+  it('uses the Feishu integration region as the session-link source hint', () => {
+    const daemon = new Daemon()
+    ;(daemon as any).cfg = {}
+    ;(daemon as any).agents.set('bot-a', {
+      integrations: [
+        {
+          id: 'int-lark',
+          platform: 'feishu',
+          feishu: {
+            mode: 'shared',
+            appId: 'cli_lark',
+            appSecret: 'secret',
+            region: 'lark',
+            allowedUserIds: [],
+            bindRules: []
+          }
+        }
+      ]
+    })
+
+    const source = (daemon as any).sessionLinkSource('feishu', 'int-lark')
+    expect(source).toBe('lark')
+    expect((daemon as any).sessionLink('acp-1', source)).toBe('http://localhost:3000/sessions/acp-1?source=lark')
   })
 
   it('falls back to the probed runtime models when the persisted session is cold', async () => {

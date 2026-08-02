@@ -2016,6 +2016,7 @@ export async function putSessionVisibility(
 }
 
 export type SessionAccessProvider = 'slack' | 'github' | 'feishu'
+export type SessionProfileProvider = SessionAccessProvider | 'lark'
 
 export interface SessionExternalAccessDto {
   provider: SessionAccessProvider
@@ -3250,7 +3251,7 @@ export type MySlackIdentityDto =
     }
 
 /** Narrow linked/not-linked status used by supported provider profile-linking hints. */
-export async function fetchMySessionIdentity(provider: SessionAccessProvider): Promise<{ linked: boolean }> {
+export async function fetchMySessionIdentity(provider: SessionProfileProvider): Promise<{ linked: boolean }> {
   if (provider === 'slack') return apiGet<MySlackIdentityDto>('/me/social-identities/slack')
   const account = await fetchMySocialAccount()
   return { linked: account.identities.some((identity) => identity.target === provider) }
