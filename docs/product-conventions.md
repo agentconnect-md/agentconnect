@@ -355,6 +355,8 @@ default affects only future agents and never rewrites an existing agent's persis
 A local or otherwise unconfigured agent also defaults to `all` for compatibility.
 The organization-wide creation default is a first-class Settings card at the same
 hierarchy as Session access, not a field inside the Edit organization dialog.
+The Settings page starts directly with its Organization card rather than a generic
+page subtitle, keeping organization-wide controls at the primary content level.
 
 **Two unrelated settings are both called "visibility".** The `callPolicy` /
 `outboundPolicy` pair above is what the console labels "Agent visibility", and it is the
