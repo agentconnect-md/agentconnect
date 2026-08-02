@@ -2507,14 +2507,15 @@ export class LocalStore {
     // The same canonical post can be recorded first by a pre-upgrade write (no
     // postId column value) and re-observed by a copy that carries it. Upgrade in
     // place; an identity can be added but never changed or cleared.
-    if (Number(inserted.changes) === 0 && e.postId) {
-      this.db
-        .prepare(
-          `UPDATE transcript SET postId = ?
-           WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
-        )
-        .run(e.postId, e.channel, e.thread, e.ts)
-    }
+    const postIdUpgraded =
+      Number(inserted.changes) === 0 && e.postId
+        ? this.db
+            .prepare(
+              `UPDATE transcript SET postId = ?
+               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
+            )
+            .run(e.postId, e.channel, e.thread, e.ts)
+        : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
     // a provider snapshot subsequently re-appends the same text row without metadata.
@@ -2543,6 +2544,7 @@ export class LocalStore {
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
+      Number(postIdUpgraded?.changes ?? 0) === 1 ||
       Number(delivered?.changes ?? 0) === 1
     ) {
       const deliveryRevision = this.transcriptRevision + 1
