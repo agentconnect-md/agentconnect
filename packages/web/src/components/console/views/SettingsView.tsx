@@ -9,6 +9,7 @@
 // and the Roles explainer.
 
 import { Fragment, useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { Avatar, Button, Icon, Toggle } from '@/components/ui'
@@ -843,6 +844,7 @@ function BotsCard({
   targetBotId: string | null
   onDelete: (b: BotDto) => void
 }) {
+  const { orgPath } = useOrgs()
   const {
     bots,
     integrations,
@@ -1129,15 +1131,18 @@ function BotsCard({
                   b.agentIds.map((id, idx) => {
                     const ag = getAgent(id)
                     return (
-                      <span
+                      <Link
                         key={id}
+                        href={orgPath(`/agents/${encodeURIComponent(id)}?tab=config`)}
+                        aria-label={`Open ${ag ? agentLabel(ag) : id} configuration`}
                         title={ag ? agentLabel(ag) : id}
-                        className={`av h-[22px] w-[22px] rounded-[6px] ${
+                        className={`av h-[22px] w-[22px] rounded-[6px] no-underline focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
                           idx > 0 ? '-ml-[6px] shadow-[-1px_0_0_0_var(--surface-card)]' : ''
                         }`}
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <AgentIconView icon={ag?.icon} runtime={ag?.runtime || ag?.model || ''} size={22} />
-                      </span>
+                      </Link>
                     )
                   })
                 ) : (
