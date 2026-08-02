@@ -875,10 +875,24 @@ export class AcpHost {
     // ultracode already forces effort to xhigh).
     const ultracode = this.isClaudeRuntime() && this.opts.configPrefs?.reasoningEffort === ULTRACODE_EFFORT
     const fastMode = this.opts.configPrefs?.fastMode
+    const permissionMode = this.opts.configPrefs?.permissionMode
+    const approvalsReviewer = this.opts.configPrefs?.approvalsReviewer
+    // Clear Auto-review before widening permissions; when enabling it, establish
+    // Agent mode first. This also protects restored sessions whose persisted
+    // selector state differs from the Agent's current configuration.
+    const permissionPrefs: Array<[category: string, desired: string | undefined]> =
+      approvalsReviewer === 'user'
+        ? [
+            [APPROVALS_REVIEWER_CATEGORY, approvalsReviewer],
+            ['mode', permissionMode]
+          ]
+        : [
+            ['mode', permissionMode],
+            [APPROVALS_REVIEWER_CATEGORY, approvalsReviewer]
+          ]
     const prefs: Array<[category: string, desired: string | undefined]> = [
       ['model', this.opts.configPrefs?.model],
-      ['mode', this.opts.configPrefs?.permissionMode],
-      [APPROVALS_REVIEWER_CATEGORY, this.opts.configPrefs?.approvalsReviewer],
+      ...permissionPrefs,
       ['thought_level', ultracode ? undefined : this.opts.configPrefs?.reasoningEffort],
       // Fast mode comes AFTER model: the option is only advertised (and the
       // reconciled option set only carries it) once a fast-capable model is set.

@@ -94,6 +94,15 @@ rl.on('line', async (line) => {
     sessionReviewers.set(sessionId, 'user')
     send({ jsonrpc: '2.0', id, result: { sessionId, configOptions: configOptions(sessionId) } })
   } else if (method === 'session/set_config_option') {
+    if (
+      process.env.AC_REJECT_AUTO_FULL_ACCESS === '1' &&
+      params.configId === 'mode' &&
+      params.value === 'agent-full-access' &&
+      sessionReviewers.get(params.sessionId) === 'auto_review'
+    ) {
+      send({ jsonrpc: '2.0', id, error: { code: -32000, message: 'Auto-review must be disabled first' } })
+      return
+    }
     if (params.configId === 'model' && modelList.includes(params.value))
       sessionModels.set(params.sessionId, params.value)
     if (params.configId === 'mode' && permissionModeList.includes(params.value))
@@ -102,6 +111,10 @@ rl.on('line', async (line) => {
       sessionReviewers.set(params.sessionId, params.value)
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })
   } else if (method === 'session/load') {
+    if (process.env.AC_LOAD_PERMISSION_MODE)
+      sessionPermissionModes.set(params.sessionId, process.env.AC_LOAD_PERMISSION_MODE)
+    if (process.env.AC_LOAD_APPROVALS_REVIEWER)
+      sessionReviewers.set(params.sessionId, process.env.AC_LOAD_APPROVALS_REVIEWER)
     if (process.env.AC_LOAD_UPDATES) {
       send({
         jsonrpc: '2.0',

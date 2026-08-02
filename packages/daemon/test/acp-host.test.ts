@@ -103,6 +103,30 @@ describe('AcpHost session/load update filtering', () => {
     await host.stop()
   }, 15_000)
 
+  it('disables Auto-review before widening permissions on a restored session', async () => {
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: {
+          AC_APPROVALS_REVIEWER: '1',
+          AC_LOAD_APPROVALS_REVIEWER: 'auto_review',
+          AC_LOAD_PERMISSION_MODE: 'agent',
+          AC_LOAD_UPDATES: '1',
+          AC_PERMISSION_MODES: 'read-only,agent,agent-full-access',
+          AC_REJECT_AUTO_FULL_ACCESS: '1'
+        },
+        configPrefs: { permissionMode: 'agent-full-access', approvalsReviewer: 'user' }
+      }
+    )
+    await host.start()
+    await host.loadSession('persisted-auto-session', '/tmp')
+    const options = host.sessionConfigOptions('persisted-auto-session')
+    expect(options?.find((option) => option.category === 'mode')?.currentValue).toBe('agent-full-access')
+    expect(options?.find((option) => option.category === '_approvals_reviewer')?.currentValue).toBe('user')
+    await host.stop()
+  }, 15_000)
+
   it('allows only latest-wins metadata through during load', () => {
     expect(shouldForwardUpdateDuringLoad({ sessionUpdate: 'session_info_update', title: 'Restored' })).toBe(true)
     expect(shouldForwardUpdateDuringLoad({ sessionUpdate: 'usage_update', used: 1, size: 10 } as any)).toBe(true)
