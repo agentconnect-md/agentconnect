@@ -1383,7 +1383,6 @@ export default function SessionDetailView() {
         // session state) and adopted sessions never had a roster.
         const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
-        if (stp.agentId || stp.who) speakers.set(stp.agentId ?? stepAgentName, stepAgentName)
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
@@ -1437,7 +1436,6 @@ export default function SessionDetailView() {
       } else {
         const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
-        if (stp.agentId || stp.who) speakers.set(stp.agentId ?? stepAgentName, stepAgentName)
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
