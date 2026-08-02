@@ -219,39 +219,13 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     }
   }, 15_000)
 
-  // task #36 A2 — credential isolation: the dream runs on a DEDICATED,
-  // sandbox-forced host and is torn down after, so the attacker-controlled
-  // transcript is never mined next to provider credentials.
-  it('fails closed when the host has no OS sandbox to isolate dream credentials', async () => {
-    const root = scaffold()
-    const hostFactory = vi.fn(() => ({}) as any)
-    const daemon = new Daemon({ root, hostFactory, dreamOperationPolicy: 'test-only' })
-    await daemon.start()
-    try {
-      const inner = daemon as any
-      // test-only policy admits the extraction past the operation gate; without a
-      // sandbox mechanism the dedicated dream host must refuse rather than run the
-      // dream model unconfined next to credentials.
-      inner.sandboxMechanism = undefined
-      await expect(
-        inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
-          dreamId: 'drm-nosandbox',
-          trigger: 'manual',
-          sessionIds: [],
-          inputDir: join(root, 'in')
-        })
-      ).rejects.toThrow(/sandbox/i)
-      // Fail-closed happens before any host is built.
-      expect(hostFactory).not.toHaveBeenCalled()
-    } finally {
-      await daemon.stop()
-    }
-  }, 15_000)
-
-  it('runs the dream on a dedicated sandboxed host (cwd = input dir) then tears it down', async () => {
-    const root = scaffold()
-    let stopped = 0
-    const dreamHost = {
+  // task #36 A2 — the dream runs on a DEDICATED one-off host, torn down after.
+  // Sandboxed when the AGENT runs sandboxed (best-effort isolation of the
+  // attacker-controlled transcript), but supported WITH OR WITHOUT a sandbox and
+  // never fail-closed on a missing mechanism (owner principle: trusted agents
+  // may run unsandboxed).
+  const stubDreamHost = (onStop: () => void) =>
+    ({
       start: async () => {},
       hasSession: () => true,
       usesMetaSystemPrompt: () => false,
@@ -262,16 +236,49 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
       prompt: async () => ({ stopReason: 'end_turn' }),
       discardSession: () => {},
       cancel: async () => {},
-      stop: async () => {
-        stopped++
-      }
-    }
-    const hostFactory = vi.fn(() => dreamHost as any)
+      stop: async () => onStop()
+    }) as any
+
+  it('runs the dream without a sandbox mechanism, on an unsandboxed dedicated host', async () => {
+    const root = scaffold()
+    let stopped = 0
+    const hostFactory = vi.fn(() => stubDreamHost(() => stopped++))
     const daemon = new Daemon({ root, hostFactory, dreamOperationPolicy: 'test-only' })
     await daemon.start()
     try {
       const inner = daemon as any
-      inner.sandboxMechanism = 'bwrap' // simulate a host with an OS sandbox
+      inner.sandboxMechanism = undefined // no OS sandbox available on this host
+      const buildSpy = vi.spyOn(inner, 'buildAcpHost')
+      const res = await inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
+        dreamId: 'drm-nosandbox',
+        trigger: 'manual',
+        sessionIds: [],
+        inputDir: join(root, 'in')
+      })
+      // Never fail-closed: the dream still runs, on an unsandboxed dedicated host.
+      expect(buildSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'bot-a' }),
+        expect.anything(),
+        expect.objectContaining({ runInSandbox: false, cwd: join(root, 'in') })
+      )
+      expect(stopped).toBe(1)
+      expect(inner.hosts.has('bot-a')).toBe(false)
+      expect(res.sessionId).toBe('dream-sess')
+    } finally {
+      await daemon.stop()
+    }
+  }, 15_000)
+
+  it('sandboxes the dedicated dream host when the agent runs sandboxed, then tears it down', async () => {
+    const root = scaffold()
+    let stopped = 0
+    const hostFactory = vi.fn(() => stubDreamHost(() => stopped++))
+    const daemon = new Daemon({ root, hostFactory, dreamOperationPolicy: 'test-only' })
+    await daemon.start()
+    try {
+      const inner = daemon as any
+      inner.sandboxMechanism = 'bwrap'
+      inner.agents.get('bot-a').runInSandbox = true // the agent opts into the sandbox
       const buildSpy = vi.spyOn(inner, 'buildAcpHost')
       const res = await inner.runDreamExtraction('bot-a', 'system', 'prompt', new AbortController().signal, {
         dreamId: 'drm-sandboxed',
@@ -279,8 +286,8 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
         sessionIds: [],
         inputDir: join(root, 'in')
       })
-      // The dedicated dream host is built with sandbox FORCED on + cwd = the
-      // materialized input dir — never the agent's warm (possibly unsandboxed) host.
+      // Sandboxed (agent runs sandboxed + a mechanism exists) + cwd = the
+      // materialized input dir — never the agent's warm host.
       expect(buildSpy).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'bot-a' }),
         expect.anything(),
