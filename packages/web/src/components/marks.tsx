@@ -17,6 +17,13 @@ import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 const fill = { width: '60%', height: '60%', display: 'block' } as const
 
+// Dark-mode treatment for the brand logos we can only load as an <img> (ACP registry
+// / lobehub SVGs, so no per-path recoloring): most are `currentColor`-black and have
+// to be flipped to read on the dark surface, but a plain `invert` also rotates the
+// hue of the colored ones (Kiro's purple ghost came out green). The extra 180°
+// rotation puts those hues back; on a pure black glyph it is a no-op.
+const DARK_MARK_FILTER = "[html[data-theme='dark']_&]:invert [html[data-theme='dark']_&]:hue-rotate-180"
+
 export function AgentMark({ model, fillPct = 60 }: { model: string; fillPct?: number }) {
   const registry = useAcpRegistry()
   const registryIcon = acpRuntime(registry, model)?.icon
@@ -26,7 +33,7 @@ export function AgentMark({ model, fillPct = 60 }: { model: string; fillPct?: nu
       src={registryIcon}
       alt=""
       style={{ width: `${fillPct}%`, height: `${fillPct}%` }}
-      className="block object-contain [html[data-theme='dark']_&]:invert"
+      className={`block object-contain ${DARK_MARK_FILTER}`}
     />
   )
 }
@@ -102,7 +109,7 @@ export function ModelMark({
       alt=""
       onError={() => setFailedSlug(slug)}
       style={{ width: `${fillPct}%`, height: `${fillPct}%` }}
-      className="block object-contain [html[data-theme='dark']_&]:invert"
+      className={`block object-contain ${DARK_MARK_FILTER}`}
     />
   )
 }
@@ -150,7 +157,7 @@ export function AgentIconView({ icon, runtime, size }: { icon?: AgentIcon | null
         src={icon.url}
         alt=""
         data-agent-icon-image="true"
-        className="rounded-[inherit] bg-white object-cover"
+        className="rounded-[inherit] bg-white object-cover [html[data-theme='dark']_&]:bg-transparent"
         style={{ width: '100%', height: '100%' }}
       />
     )
@@ -191,8 +198,10 @@ export function OrgIconView({
 
 // GitHub octocat mark — rendered on the workspace tiles and cards instead of
 // <Icon name="github" /> (which lucide no longer ships).
-export function GithubMark({ color = 'currentColor' }: { color?: string }) {
-  return <SiGithub className="block h-[60%] w-[60%]" color={color} aria-hidden />
+export function GithubMark({ color = 'currentColor', fillPct = 60 }: { color?: string; fillPct?: number }) {
+  return (
+    <SiGithub style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
+  )
 }
 
 export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fillPct?: number }) {
@@ -217,7 +226,10 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   if (x.includes('dream')) {
     return (
       <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
-        <Icon name="moon" className="h-full w-full text-(--brand-soft-text)" />
+        {/* --brand, not --brand-soft-text: that token swings with the theme (a pale tint
+            on dark, a deep wine on light), while one magenta reads on both surfaces —
+            and matches the webhook mark above, the other brand-colored glyph here. */}
+        <Icon name="moon" className="h-full w-full text-(--brand)" />
       </span>
     )
   }
