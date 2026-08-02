@@ -260,13 +260,10 @@ function AgentVisibilityCard({
   return (
     <div className="card mt-[18px]">
       <div className="cardhead">
-        <span className="cardtitle">Agent visibility</span>
+        <span className="cardtitle">Default agent visibility</span>
       </div>
       <div className="px-4 py-[15px]">
-        <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-          Default for new agents
-        </div>
-        <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+        <div className="font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
           Choose whether newly created agents can collaborate with every agent or start isolated. Existing agents keep
           their own settings.
         </div>
