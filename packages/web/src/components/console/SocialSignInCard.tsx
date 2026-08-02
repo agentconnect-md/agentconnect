@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { SocialLoginMark } from '@/components/marks'
@@ -23,7 +23,7 @@ import {
   type AccountNotice
 } from '@/lib/logto-account'
 import { rememberOwnershipProof, reusableOwnershipProof } from '@/lib/ownership-proof'
-import { socialLoginProviders, type SocialLoginProvider } from '@/lib/social-login-providers'
+import { socialLoginProviders, type SocialLoginProvider, type SocialLoginTarget } from '@/lib/social-login-providers'
 
 const byTarget = (account: MySocialAccountDto, target: string): MySocialIdentityDto | undefined =>
   account.identities.find((identity) => identity.target === target)
@@ -275,11 +275,17 @@ function Notice({ notice }: { notice: AccountNotice }) {
 export default function SocialSignInCard({
   mobile = false,
   notice,
-  onNotice
+  onNotice,
+  autoLinkTarget,
+  onAutoLinkHandled
 }: {
   mobile?: boolean
   notice?: AccountNotice
   onNotice: (notice: AccountNotice) => void
+  /** Continue an explicit upstream action (currently a verified GitHub App
+   *  install) through the same state-bound link flow as the row button. */
+  autoLinkTarget?: SocialLoginTarget
+  onAutoLinkHandled?: () => void
 }) {
   const {
     data: account,
@@ -296,6 +302,7 @@ export default function SocialSignInCard({
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
   const [pendingVerify, setPendingVerify] = useState<SocialLoginProvider>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
+  const handledAutoLink = useRef<SocialLoginTarget | undefined>(undefined)
   const currentAccount = error ? undefined : account
   const linkedProviderCount = currentAccount
     ? socialLoginProviders().filter((provider) => byTarget(currentAccount, provider.target)).length
@@ -348,6 +355,18 @@ export default function SocialSignInCard({
       setBusyProvider(undefined)
     }
   }
+
+  useEffect(() => {
+    if (!autoLinkTarget || !currentAccount || handledAutoLink.current === autoLinkTarget) return
+    const provider = socialLoginProviders().find((candidate) => candidate.target === autoLinkTarget)
+    handledAutoLink.current = autoLinkTarget
+    onAutoLinkHandled?.()
+    if (!provider) {
+      onNotice({ message: 'GitHub profile linking is not available on this deployment.' })
+      return
+    }
+    if (!byTarget(currentAccount, autoLinkTarget)) beginLink(provider)
+  }, [autoLinkTarget, currentAccount, onAutoLinkHandled, onNotice])
 
   const unlink = async (provider: SocialLoginProvider) => {
     await unlinkMySocialIdentity(provider.target)

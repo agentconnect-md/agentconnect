@@ -469,10 +469,17 @@ export function githubCallbackRoutes(deps: HttpDeps) {
         // 302 target is PINNED to the configured console origin — never a
         // request-supplied URL (open-redirect). Unset ⇒ plain-text fallback.
         const consoleUrl = resolveWebAppUrl(deps.config)
-        const back = (note: string) =>
-          consoleUrl
-            ? reply.redirect(`${consoleUrl}/?github=${encodeURIComponent(note)}`)
-            : reply.type('text/plain').send(`GitHub App: ${note}. You can close this tab and open the console.`)
+        const back = (note: string) => {
+          if (!consoleUrl) {
+            return reply.type('text/plain').send(`GitHub App: ${note}. You can close this tab and open the console.`)
+          }
+          // A verified install is also a clear request to use GitHub. Continue
+          // through Profile so an unlinked user can authorize their OWN
+          // identity via Logto's state-bound flow; never infer it from the
+          // installation account (which may be an organization).
+          const path = note === 'installed' ? '/profile' : '/'
+          return reply.redirect(`${consoleUrl}${path}?github=${encodeURIComponent(note)}`)
+        }
 
         // Admin-approval flow: a non-admin requested the install — no usable
         // installation yet. After approval the user must restart the org-bound

@@ -8,7 +8,7 @@
 // the two must agree). Personal access tokens and "last active" have no backend
 // yet: they render the design's demo values only in mock mode, otherwise empty / '—'.
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
@@ -46,6 +46,18 @@ export default function ProfileView() {
   // ProfileView survives its desktop-first hydration switch to the mobile tree,
   // so it holds the card's failure notice instead of either short-lived card.
   const [socialNotice, setSocialNotice] = useState<AccountNotice>()
+  const [autoLinkGithub, setAutoLinkGithub] = useState(false)
+
+  // The GitHub Setup URL only sends a verified installation here. Consume the
+  // marker before starting the provider round trip so cancel/reload cannot loop.
+  useEffect(() => {
+    if (!authOn) return
+    const url = new URL(window.location.href)
+    if (url.searchParams.get('github') !== 'installed') return
+    url.searchParams.delete('github')
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+    setAutoLinkGithub(true)
+  }, [authOn])
   // The signed-in user's membership — the same row the Settings page lists.
   // Matched by userId when the CP profile is known (exact), by email otherwise.
   // With no match (mock mode / CP down) the fields fall back to the design's
@@ -123,7 +135,15 @@ export default function ProfileView() {
             </div>
           </div>
 
-          {authOn ? <SocialSignInCard mobile notice={socialNotice} onNotice={setSocialNotice} /> : null}
+          {authOn ? (
+            <SocialSignInCard
+              mobile
+              notice={socialNotice}
+              onNotice={setSocialNotice}
+              autoLinkTarget={autoLinkGithub ? 'github' : undefined}
+              onAutoLinkHandled={() => setAutoLinkGithub(false)}
+            />
+          ) : null}
 
           {/* Personal API keys — the caller's own REST credentials */}
           <ApiKeysCard orgs={orgs} defaultOrgId={activeOrg?.id} mobile />
@@ -184,7 +204,14 @@ export default function ProfileView() {
         </div>
       </div>
 
-      {authOn ? <SocialSignInCard notice={socialNotice} onNotice={setSocialNotice} /> : null}
+      {authOn ? (
+        <SocialSignInCard
+          notice={socialNotice}
+          onNotice={setSocialNotice}
+          autoLinkTarget={autoLinkGithub ? 'github' : undefined}
+          onAutoLinkHandled={() => setAutoLinkGithub(false)}
+        />
+      ) : null}
 
       <ApiKeysCard orgs={orgs} defaultOrgId={activeOrg?.id} />
 
