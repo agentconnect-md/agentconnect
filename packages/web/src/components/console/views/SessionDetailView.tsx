@@ -547,7 +547,6 @@ function ParticipantAvatar({
           bg={sp.avBg}
           fg={sp.avText}
           fontSize={9.5}
-          style={{ borderRadius: 'inherit' }}
         />
       )}
     </span>
