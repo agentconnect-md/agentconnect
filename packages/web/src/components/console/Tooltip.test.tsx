@@ -195,6 +195,31 @@ describe('TooltipLayer', () => {
     expect(desktopRoster.hasAttribute('title')).toBe(false)
   })
 
+  it('keeps focus-only text out of the hover title hierarchy', async () => {
+    const link = document.createElement('a')
+    link.href = '#'
+    host.appendChild(link)
+
+    const roster = document.createElement('span')
+    roster.setAttribute('data-tooltip-focus-text', 'planner\nreviewer')
+    link.appendChild(roster)
+    const planner = document.createElement('span')
+    planner.setAttribute('title', 'planner')
+    roster.appendChild(planner)
+
+    await hover(planner)
+
+    expect(tooltip()?.textContent).toBe('planner')
+    expect(planner.hasAttribute('title')).toBe(false)
+    expect(roster.hasAttribute('title')).toBe(false)
+
+    await unhover()
+    await focus(link)
+
+    expect(tooltip()?.textContent).toBe('planner\nreviewer')
+    expect(roster.hasAttribute('title')).toBe(false)
+  })
+
   it('releases a focused title before keyboard activation updates it', async () => {
     const btn = iconButton('Show secret')
     // A control whose activation drops its own title (the reveal toggles do this

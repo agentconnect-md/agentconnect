@@ -11,7 +11,9 @@
 // Working off the attribute rather than a <Tooltip> wrapper is deliberate —
 // `title` is already on ~150 controls, and one layer keeps every one of them on
 // the same delay. Call sites keep writing plain `title="…"`; opt a subtree out
-// with `data-no-tooltip`.
+// with `data-no-tooltip`. A hint that should appear only when an ancestor takes
+// keyboard focus can use `data-tooltip-focus-text` without becoming a hover or
+// native-title source.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -26,7 +28,8 @@ import { adoptTitle, liftTitle, restoreTitle, TITLE_STASH } from './tooltip-titl
 
 /** Matches both a not-yet-lifted title and the element currently holding one. */
 const SOURCE_SELECTOR = `[title],[${TITLE_STASH}]`
-const FOCUS_SOURCE_SELECTOR = `[data-tooltip-focus][title],[data-tooltip-focus][${TITLE_STASH}]`
+const FOCUS_TEXT = 'data-tooltip-focus-text'
+const FOCUS_SOURCE_SELECTOR = `[${FOCUS_TEXT}],[data-tooltip-focus][title],[data-tooltip-focus][${TITLE_STASH}]`
 const TOOLTIP_ID = 'ac-tooltip'
 
 /** CSS keeps responsive duplicates mounted; focus must anchor to the rendered one. */
@@ -84,13 +87,18 @@ export function TooltipLayer() {
 
   const open = useCallback((el: HTMLElement) => {
     const title = el.getAttribute('title')
-    if (title === null || !isTooltipSource(el.tagName, title) || !el.isConnected) return
+    const value = title ?? el.getAttribute(FOCUS_TEXT)
+    if (value === null || !isTooltipSource(el.tagName, value) || !el.isConnected) return
     // Lifting the attribute is what suppresses the browser's own tooltip; it
     // goes back on the element the moment the pointer leaves (see release()).
-    if (liftTitle(el, TOOLTIP_ID) === null) return
+    if (title !== null && liftTitle(el, TOOLTIP_ID) === null) return
     heldRef.current = el
     anchorRef.current = el.getBoundingClientRect()
-    setText(title.trim())
+    setText(value.trim())
+
+    // Focus-only text is metadata, not a native title, so there is nothing to
+    // lift or watch. The focused row already owns the accessible roster text.
+    if (title === null) return
 
     // A control can re-title itself while its tooltip is up — a copy button
     // flipping to "Copied" on activation, or back again on a timer. React
