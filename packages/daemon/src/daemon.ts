@@ -4505,7 +4505,7 @@ export class Daemon {
     systemPrompt: string,
     prompt: string,
     signal: AbortSignal,
-    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[] }
+    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string }
   ): Promise<{
     output: string
     sessionId: string
@@ -4524,11 +4524,11 @@ export class Daemon {
     // Capture the transport capability from THIS host so the extraction policy
     // uses the same dedicated-system-prompt or inline path as the proposal run.
     const trusted = host.usesMetaSystemPrompt()
-    let cwd = this.memoryExtractionDirs.get(agentId)
-    if (!cwd) {
-      cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
-      this.memoryExtractionDirs.set(agentId, cwd)
-    }
+    // The dream's working directory IS its materialized input dir (memory
+    // snapshot at the root + sessions/<id>.md), so the model explores its inputs
+    // with its own read-only file tools (task #36) instead of receiving them
+    // pre-stuffed in the prompt. Per-dream and daemon-owned (under memory-dreams/).
+    const cwd = context.inputDir
     // Abort can land during the awaited setup below, before any prompt exists —
     // then `session/cancel` has nothing to cancel. Guard on the signal after each
     // await and immediately before dispatch so a canceled dream bails instead of
