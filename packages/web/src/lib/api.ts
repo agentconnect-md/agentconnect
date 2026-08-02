@@ -7,6 +7,7 @@
 import type {
   Agent,
   AgentCallPolicy,
+  ApprovalsReviewer,
   ConnectionStatusKey,
   DaemonRow,
   ResourceVisibility,
@@ -265,6 +266,7 @@ export interface AgentDto {
   showStatusBar: boolean // render Slack's persistent session status row; defaults true
   fastMode: boolean | null // runtime fast mode; null when never set (runtime default)
   permissionMode: string | null // runtime permission/approval mode; null when never set
+  approvalsReviewer: ApprovalsReviewer | null // null when never set (runtime default)
   allowRuntimeChangesInChat: boolean // explicit opt-in; defaults false
   pause: boolean | null // operational message-processing toggle; true ⇒ agent skips all messages; null ⇒ not paused
   env: Record<string, string> // extra env injected into the runtime
@@ -797,6 +799,7 @@ export interface UpdateAgentInput {
   showStatusBar?: boolean
   fastMode?: boolean | null
   permissionMode?: string | null
+  approvalsReviewer?: ApprovalsReviewer | null
   allowRuntimeChangesInChat?: boolean
   /** Operational message-processing toggle; true ⇒ agent skips all messages; null clears. */
   pause?: boolean | null
@@ -955,6 +958,7 @@ export interface CreateAgentInput {
   showStatusBar?: boolean
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
+  approvalsReviewer?: ApprovalsReviewer // who reviews eligible Codex approval requests
   allowRuntimeChangesInChat?: boolean
   pause?: boolean // operational message-processing toggle; true ⇒ agent skips all messages
   env?: Record<string, string>
@@ -1579,6 +1583,7 @@ export function agentFromDto(d: AgentDto): Agent {
         }
       : {}),
     permissionMode: d.permissionMode ?? '',
+    ...(d.approvalsReviewer ? { approvalsReviewer: d.approvalsReviewer } : {}),
     allowRuntimeChangesInChat: d.allowRuntimeChangesInChat ?? false,
     env: Object.entries(d.env ?? {}).map(([k, v]) => ({ k, v })),
     secretKeys: d.secretKeys ?? [],

@@ -208,6 +208,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       model: null,
       reasoningEffort: null,
       permissionMode: null,
+      approvalsReviewer: null,
       showFooter: true,
       showStatusBar: true,
       allowRuntimeChangesInChat: false,

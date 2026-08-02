@@ -3,7 +3,7 @@
  */
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
-import { redactGitUrlSecrets, type AgentMemoryBinding } from '@agentconnect.md/protocol'
+import { redactGitUrlSecrets, type AgentMemoryBinding, type ApprovalsReviewer } from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
   AgentCallPolicy,
@@ -130,6 +130,7 @@ type RuntimeOverrides = {
   showStatusBar?: boolean
   fastMode?: boolean
   permissionMode?: string
+  approvalsReviewer?: ApprovalsReviewer
   allowRuntimeChangesInChat?: boolean
   // Operational message-processing toggle (#288). Stored in the overrides bag for
   // consistency with the sibling boolean toggles; the daemon skips all turn dispatch
@@ -225,6 +226,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     showStatusBar: ov.showStatusBar ?? true,
     fastMode: ov.fastMode ?? null,
     permissionMode: ov.permissionMode ?? null,
+    approvalsReviewer: ov.approvalsReviewer ?? null,
     allowRuntimeChangesInChat: ov.allowRuntimeChangesInChat ?? false,
     pause: ov.pause ?? null,
     env: ov.env ?? {},
@@ -318,6 +320,7 @@ export class PgAgentRepo implements AgentRepo {
           input.showStatusBar !== undefined ||
           input.fastMode !== undefined ||
           input.permissionMode ||
+          input.approvalsReviewer ||
           input.allowRuntimeChangesInChat !== undefined ||
           input.pause !== undefined ||
           input.env ||
@@ -333,6 +336,7 @@ export class PgAgentRepo implements AgentRepo {
                   ...(input.showStatusBar !== undefined ? { showStatusBar: input.showStatusBar } : {}),
                   ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
                   ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+                  ...(input.approvalsReviewer ? { approvalsReviewer: input.approvalsReviewer } : {}),
                   ...(input.allowRuntimeChangesInChat !== undefined
                     ? { allowRuntimeChangesInChat: input.allowRuntimeChangesInChat }
                     : {}),
@@ -411,6 +415,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.showStatusBar !== undefined ||
       patch.fastMode !== undefined ||
       patch.permissionMode !== undefined ||
+      patch.approvalsReviewer !== undefined ||
       patch.allowRuntimeChangesInChat !== undefined ||
       patch.pause !== undefined ||
       patch.env !== undefined ||
@@ -472,6 +477,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.permissionMode !== undefined) {
         if (patch.permissionMode === null) delete next.permissionMode
         else next.permissionMode = patch.permissionMode
+      }
+      if (patch.approvalsReviewer !== undefined) {
+        if (patch.approvalsReviewer === null) delete next.approvalsReviewer
+        else next.approvalsReviewer = patch.approvalsReviewer
       }
       if (patch.allowRuntimeChangesInChat !== undefined) {
         next.allowRuntimeChangesInChat = patch.allowRuntimeChangesInChat

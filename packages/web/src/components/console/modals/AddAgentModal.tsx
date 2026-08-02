@@ -8,6 +8,8 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import {
   FALLBACK_RUNTIME_IDS,
+  approvalsReviewerDefault,
+  approvalsReviewerOptions,
   loginRequiredRuntimeIds,
   agentSlugFinalize,
   agentSlugSanitize,
@@ -23,6 +25,9 @@ import {
   resolveEffortForModel,
   permissionModeChoicesFor,
   permissionModeDefault,
+  supportsApprovalsReviewer,
+  type AgentCallPolicy,
+  type ApprovalsReviewer,
   supportsModes
 } from '@/lib/data'
 import {
@@ -46,7 +51,6 @@ import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
 import { Button, Icon } from '@/components/ui'
 import { VisibilityField, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
-import type { AgentCallPolicy } from '@/lib/data'
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { RuntimeChatField } from '@/components/console/RuntimeChatField'
 import { SandboxField } from '@/components/console/SandboxField'
@@ -199,6 +203,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [memoryProvider, setMemoryProvider] = useState<MemoryProviderChoice>('managed')
   const [externalMemory, setExternalMemory] = useState<ExternalMemoryBindingDraft>(DEFAULT_EXTERNAL_MEMORY_BINDING)
   const [permissionMode, setPermissionMode] = useState(permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!))
+  const [approvalsReviewer, setApprovalsReviewer] = useState<ApprovalsReviewer | ''>('')
   const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(false)
   const [description, setDescription] = useState('')
   const [daemonId, setDaemonId] = useState('')
@@ -387,6 +392,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // Edit, nothing in this modal is stored yet.
   const selectedPermissionMode = resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
   const permissionOptions = permissionChoices
+  const showApprovalsReviewer = supportsApprovalsReviewer(effectiveRuntime)
+  const selectedApprovalsReviewer = approvalsReviewer || approvalsReviewerDefault(effectiveRuntime)
+  const approvalsReviewerChoices = approvalsReviewerOptions(effectiveRuntime)
 
   // A daemon selection defines the product default: optional means off; required
   // means on and immutable. Capability refreshes converge the same way.
@@ -805,6 +813,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
+        ...(showApprovalsReviewer && selectedApprovalsReviewer ? { approvalsReviewer: selectedApprovalsReviewer } : {}),
         allowRuntimeChangesInChat,
         workspace,
         // Atomic restricted-create: the CP intersects sharedWith with org members.
@@ -979,6 +988,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       setRuntime(nextRuntime)
                       setEffort('')
                       setPermissionMode(permissionModeDefault(nextRuntime))
+                      setApprovalsReviewer(approvalsReviewerDefault(nextRuntime))
                     }}
                   />
                 </div>
@@ -1031,7 +1041,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           <section ref={sectionRef('runtime')} className="mt-5 border-t border-(--border-subtle) pt-5">
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Runtime</div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              {(showEffort || fastModeAvailable || showPermission) && (
+              {(showEffort || fastModeAvailable || showPermission || showApprovalsReviewer) && (
                 <div className="fld desktop:col-span-2">
                   <div className="grid grid-cols-1 gap-x-7 gap-y-[14px] desktop:grid-cols-[minmax(0,1fr)_auto]">
                     {showEffort && (
@@ -1096,6 +1106,28 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                                   : 'pill px-[10px] py-1 text-[12px]'
                               }
                               onClick={() => setPermissionMode(o.v)}
+                            >
+                              {o.l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {showApprovalsReviewer && (
+                      <div className="flex min-w-0 flex-col gap-[6px] desktop:col-span-2">
+                        <span className="fldlbl">Approval reviewer</span>
+                        <div className="pillbar self-start">
+                          {approvalsReviewerChoices.map((o) => (
+                            <button
+                              key={o.v}
+                              type="button"
+                              title={o.description}
+                              className={
+                                selectedApprovalsReviewer === o.v
+                                  ? 'pill on px-[10px] py-1 text-[12px]'
+                                  : 'pill px-[10px] py-1 text-[12px]'
+                              }
+                              onClick={() => setApprovalsReviewer(o.v)}
                             >
                               {o.l}
                             </button>
