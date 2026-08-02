@@ -49,6 +49,7 @@ import {
   fetchSessionMessages,
   fetchSessionDetail,
   fetchToolBody,
+  fmtCost,
   fmtCountCompact,
   memberDisplayName,
   mergeSessionDetailUsage,
@@ -843,6 +844,23 @@ export default function SessionDetailView() {
       ?.map((m) => m.sessionId)
       .sort()
       .join(',') ?? ''
+  // §5.3: the redirect carries whose perspective was linked; scroll to and
+  // briefly flash that participant's first block once the merge renders.
+  const focusAgentId = conversationKey ? searchParams.get('focus') : null
+  // Conversation-level usage roll-up (C3): the header sums the CURRENT member
+  // sessions rather than showing only the representative's share.
+  const conversationUsage = useMemo(() => {
+    if (!conversationKey || !conversationMembers || conversationMembers.length <= 1) return null
+    let tokens = 0
+    let cost = 0
+    let currency: string | undefined
+    for (const member of conversationMembers) {
+      tokens += member.usage?.totalTokens ?? 0
+      cost += member.usage?.costAmount ?? 0
+      currency ??= member.usage?.costCurrency ?? undefined
+    }
+    return { tokens: fmtCountCompact(tokens), cost: fmtCost(cost || undefined, currency) }
+  }, [conversationKey, conversationMembers])
   const {
     agents,
     allSessions,
@@ -905,6 +923,12 @@ export default function SessionDetailView() {
         }))
     : null
   const [conversationOffline, setConversationOffline] = useState(0)
+  // ?focus scroll/flash (one-shot per mount): the ref attaches to the focused
+  // participant's first block during render; once the transcript is in, scroll
+  // it to center and flash its background briefly.
+  const focusRef = useRef<HTMLDivElement | null>(null)
+  const focusDoneRef = useRef(false)
+  const [focusFlash, setFocusFlash] = useState(false)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
   const [msgErr, setMsgErr] = useState<string | null>(null)
@@ -1416,6 +1440,15 @@ export default function SessionDetailView() {
   }, [visibleTailReady, refreshTranscriptTail])
 
   useEffect(() => {
+    if (!focusAgentId || focusDoneRef.current || msgLoading || !focusRef.current) return
+    focusDoneRef.current = true
+    focusRef.current.scrollIntoView({ block: 'center' })
+    setFocusFlash(true)
+    const timer = window.setTimeout(() => setFocusFlash(false), 1_800)
+    return () => window.clearTimeout(timer)
+  }, [focusAgentId, msgLoading, msgs])
+
+  useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
     setNowMs(Date.now())
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
@@ -1865,6 +1898,10 @@ export default function SessionDetailView() {
     }
   }
 
+  // The focused participant's FIRST block (§5.3 ?focus): ref target for the
+  // one-shot scroll/flash above.
+  const focusTurnIndex = focusAgentId ? turns.findIndex((t) => t.kind === 'bot' && t.agentId === focusAgentId) : -1
+
   // Transcript visibility is presentation-only: keep the complete turn list for
   // usage/duration accounting, and derive a filtered tree for rendering. Live PLAN
   // steps are the playground equivalent of persisted THINK messages.
@@ -2005,8 +2042,8 @@ export default function SessionDetailView() {
   // is not here: it rides the top-bar crumb as a pill next to the session name.
   const headerFacts: { icon: string; label: string; value: string }[] = [
     { icon: 'clock', label: 'Duration', value: displayDuration },
-    { icon: 'coins', label: 'Tokens', value: session.tokens },
-    { icon: 'circle-dollar-sign', label: 'Cost', value: session.cost },
+    { icon: 'coins', label: 'Tokens', value: conversationUsage?.tokens ?? session.tokens },
+    { icon: 'circle-dollar-sign', label: 'Cost', value: conversationUsage?.cost ?? session.cost },
     { icon: 'wrench', label: 'Tool calls', value: String(displayToolCount) }
   ]
   if (daemonName) headerFacts.push({ icon: 'server', label: 'Daemon', value: daemonName })
@@ -2017,8 +2054,8 @@ export default function SessionDetailView() {
   // Mobile header-region derivations (≤768px meta strip + agent config row).
   const metaCells: { label: string; value: string }[] = [
     { label: 'Dur', value: displayDuration },
-    { label: 'Tokens', value: session.tokens },
-    { label: 'Cost', value: session.cost },
+    { label: 'Tokens', value: conversationUsage?.tokens ?? session.tokens },
+    { label: 'Cost', value: conversationUsage?.cost ?? session.cost },
     { label: 'Tools', value: displayToolCount }
   ]
   const cfgLine = [
@@ -2376,7 +2413,13 @@ export default function SessionDetailView() {
                     const summary = workSummary(thinkCount, toolCount, editCount)
                     const openWork = workPanelOpen(workOverride.get(ti))
                     return (
-                      <div key={`${session.id}:${ti}`} className="flex items-start gap-[9px]">
+                      <div
+                        key={`${session.id}:${ti}`}
+                        ref={ti === focusTurnIndex ? focusRef : undefined}
+                        className={`flex items-start gap-[9px] rounded-md transition-colors duration-700 ${
+                          ti === focusTurnIndex && focusFlash ? 'bg-(--surface-active)' : ''
+                        }`}
+                      >
                         <span className="av h-[26px] w-[26px] flex-none rounded-md">
                           <AgentIconView
                             icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
