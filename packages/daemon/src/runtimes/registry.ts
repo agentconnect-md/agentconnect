@@ -5,6 +5,7 @@ import type { RuntimeDef, Config } from '../config/config-schema.js'
 import { registryPath, registryCachePath } from '../paths.js'
 import { CURATED_RUNTIME_CATALOG } from './curated.js'
 import { skillsAgentIdForRuntime } from './skills-capability.js'
+import { MANAGED_RUNTIME_CATALOG } from './managed.js'
 
 const PackageDistSchema = z.object({ package: z.string(), args: z.array(z.string()).default([]) })
 const BinaryPlatformSchema = z.object({
@@ -34,7 +35,7 @@ export const RegistryDocSchema = z
   }))
 export type RegistryDoc = { agents: Record<string, RegistryEntry> }
 
-export type RuntimeSource = 'curated' | 'registry' | 'user'
+export type RuntimeSource = 'curated' | 'registry' | 'managed' | 'user'
 
 export interface ResolvedRuntimeEntry {
   runtime: RuntimeDef
@@ -209,7 +210,8 @@ function runtimeMap(entries: Record<string, ResolvedRuntimeEntry>): Record<strin
   return Object.fromEntries(Object.entries(entries).map(([id, entry]) => [id, entry.runtime]))
 }
 
-/** Resolve curated, usable registry, and explicit user definitions with source metadata. */
+/** Resolve curated, usable registry, AgentConnect-managed, and explicit user
+ * definitions with source metadata. Later layers take precedence. */
 export async function resolveRuntimeCatalog(
   cfg: Config,
   root: string,
@@ -228,8 +230,9 @@ export async function resolveRuntimeCatalog(
   )
   const userRuntimes = cfg.runtimes ?? {}
   const needed = opts.neededRuntimes
-  const userCoversNeeded = needed && needed.length > 0 && needed.every((id) => userRuntimes[id])
-  const registry = userCoversNeeded
+  const localCoversNeeded =
+    needed && needed.length > 0 && needed.every((id) => userRuntimes[id] || MANAGED_RUNTIME_CATALOG[id])
+  const registry = localCoversNeeded
     ? (readCachedDoc(root) ?? { agents: {} })
     : await registryDocForResolution(root, opts)
 
@@ -237,6 +240,9 @@ export async function resolveRuntimeCatalog(
     const runtime = toRuntimeDef(entry)
     if (!runtime) continue
     entries[id] = resolvedRuntimeEntry(id, runtime, 'registry', entry.name || id, entry.version)
+  }
+  for (const [id, entry] of Object.entries(MANAGED_RUNTIME_CATALOG)) {
+    entries[id] = resolvedRuntimeEntry(id, entry.runtime, 'managed', entry.name, entry.version)
   }
   for (const [id, runtime] of Object.entries(userRuntimes)) {
     entries[id] = resolvedRuntimeEntry(id, runtime, 'user', id, '')

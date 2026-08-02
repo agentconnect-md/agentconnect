@@ -69,7 +69,7 @@ const TARGETS = (process.env.REMOTE_MCP_ADAPTER_IT ?? '')
  */
 const ADAPTERS: Record<string, { command: string; args: string[] }> = {
   'claude-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'] },
-  'codex-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.1.7'] },
+  'codex-acp': { command: 'npx', args: ['-y', '@agentconnect.md/codex-acp@agentconnect'] },
   opencode: { command: './opencode', args: ['acp'] },
   'grok-build': { command: 'npx', args: ['-y', '@xai-official/grok@0.2.118', 'agent', 'stdio'] }
 }

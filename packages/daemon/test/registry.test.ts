@@ -9,6 +9,7 @@ import {
   resolveRuntimeCatalog
 } from '../src/runtimes/registry.js'
 import { CURATED_RUNTIME_CATALOG } from '../src/runtimes/curated.js'
+import { MANAGED_RUNTIME_CATALOG } from '../src/runtimes/managed.js'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -172,6 +173,41 @@ describe('cachedRuntimeNames', () => {
 })
 
 describe('resolveRuntimes', () => {
+  it('uses the managed Codex build by default while preserving operator overrides', async () => {
+    const root = tmpRoot()
+    const registry = {
+      agents: {
+        'codex-acp': {
+          id: 'codex-acp',
+          name: 'Registry Codex',
+          version: '1.1.8',
+          distribution: { npx: { package: '@agentclientprotocol/codex-acp@1.1.8' } }
+        }
+      }
+    }
+    const fetchImpl = (async () => new Response(JSON.stringify(registry), { status: 200 })) as typeof fetch
+
+    const managed = await resolveRuntimeCatalog({} as any, root, { neededRuntimes: ['other'], fetchImpl })
+    expect(managed.entries['codex-acp']).toEqual({
+      ...MANAGED_RUNTIME_CATALOG['codex-acp'],
+      source: 'managed',
+      skillsAgentId: 'codex'
+    })
+
+    const configured = await resolveRuntimeCatalog(
+      { runtimes: { 'codex-acp': { command: '/custom/codex-acp', args: [], env: [] } } } as any,
+      root,
+      { neededRuntimes: ['codex-acp'], fetchImpl }
+    )
+    expect(configured.entries['codex-acp']).toEqual({
+      runtime: { command: '/custom/codex-acp', args: [], env: [] },
+      source: 'user',
+      name: 'codex-acp',
+      version: '',
+      skillsAgentId: null
+    })
+  })
+
   it('skips the registry fetch entirely when config covers all needed runtimes', async () => {
     let called = false
     const fetchImpl = (async () => {
