@@ -77,13 +77,13 @@ Non-goals (v1):
 A conversation is defined by four things. Everything else — rendering, turn
 grouping, attribution — is shared.
 
-|                             | Webchat                                                                                                                                                               | Slack                                                                                            |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **Identity (grouping key)** | `conversationId` (the session's `channel`)                                                                                                                            | `(platform, tenantScope, channel, thread)` (§5.1)                                                |
-| **Duplicate identity**      | raw `ts` string (== canonical `at` minted at origin, collision-bumped — [webchat-multi-agents.md §5](webchat-multi-agents.md)), identical in every participant's copy | raw `ts` string (the platform message `ts`), identical in every participant's copy               |
-| **Ordering**                | normalized event time (§6): canonical `at` (epoch ms) → µs                                                                                                            | normalized event time (§6): platform `ts` (decimal seconds) and daemon work-row stamps (ms) → µs |
-| **Roster**                  | explicit, owner-assembled (`webchat_conversation_agent`; served on the session detail DTO)                                                                            | emergent — derived from the merged rows (senders + trusted a2a bots)                             |
-| **Composer**                | full send (fans out to the roster, all-respond semantics)                                                                                                             | read-only; "Open in Slack" deep link (`threadUrl`)                                               |
+|                             | Webchat                                                                                                                                                                                       | Slack                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **Identity (grouping key)** | `conversationId` (the session's `channel`)                                                                                                                                                    | `(platform, tenantScope, channel, thread)` (§5.1)                                                |
+| **Duplicate identity**      | canonical `postId` (minted once at origin — [webchat-multi-agents.md §5](webchat-multi-agents.md)), persisted on the row and exposed to the merge at C2; independent of collision-bumped `ts` | raw `ts` string (the platform message `ts`), identical in every participant's copy               |
+| **Ordering**                | normalized event time (§6): canonical `at` (epoch ms) → µs                                                                                                                                    | normalized event time (§6): platform `ts` (decimal seconds) and daemon work-row stamps (ms) → µs |
+| **Roster**                  | explicit, owner-assembled (`webchat_conversation_agent`; served on the session detail DTO)                                                                                                    | emergent — derived from the merged rows (senders + trusted a2a bots)                             |
+| **Composer**                | full send (fans out to the roster, all-respond semantics)                                                                                                                                     | read-only; "Open in Slack" deep link (`threadUrl`)                                               |
 
 Two observations that make the Slack adapter _cheaper_ than the webchat one:
 
@@ -279,23 +279,35 @@ Inputs: per-member transcript pages, each row carrying
 session (`sessionId`, `agentId`).
 
 1. **Union** all rows from all readable sources.
-2. **Dedupe is scoped to `kind === 'text'` rows and is provenance-aware**
-   (raw `ts` equality only — never order). A `ts` string identifies the same
-   message across copies only when the coordinate was minted once for all of
-   them: webchat rows always qualify (origin-minted canonical `at`,
-   probe-and-bump guarantees distinct posts got distinct `ts`); Slack rows
-   qualify only when `ts` is the provider-native decimal-seconds form —
-   exactly `^\d+\.\d+$`, anchored with the dot escaped, so an integer
-   `monotonicTs()` millisecond value can never match (the merge tests carry
-   integer-local vs decimal-provider fixtures for this predicate). The
-   matched value is the platform message id, identical in every delivery.
-   Daemon-local text rows — a2a report-backs and other silent deliveries
-   stamped with process-local millisecond `monotonicTs()` — exist in exactly
-   one source transcript and are NEVER deduped across sources: two daemons
-   can mint the same millisecond for distinct rows, and raw equality would
-   discard one (review finding). Work-lane rows never dedupe (step 3), so a
-   coincidental `ts` collision between a text row and a tool/reasoning row
-   is inert.
+2. **Dedupe is scoped to `kind === 'text'` rows and is provenance-explicit**
+   (identity equality only — never order). A row deduplicates across sources
+   only when it carries an identity minted once for every copy:
+   - **Webchat: canonical `postId`.** Timestamp shape cannot establish
+     provenance here — canonical `at` and daemon-local `monotonicTs()` stamps
+     share the integer-millisecond domain, so a local a2a report-back in one
+     source colliding with a distinct canonical post in another would be
+     wrongly merged (review finding). Instead, C2 has the daemon persist the
+     origin-minted `postId` on webchat text rows (nullable column) and expose
+     it on the messages DTO; the merge dedupes webchat rows only on equal
+     `postId`. This is also more correct than raw `ts` in the OTHER
+     direction: a collision-bumped copy carries a different `ts` than its
+     siblings, which raw equality would fail to dedupe — `postId` identifies
+     copies regardless of the bump, and the author copy's coordinates win
+     for placement. Rows without a `postId` (daemon-local report-backs,
+     pre-C2 legacy rows) never dedupe across sources — failing toward a
+     visible duplicate, never toward data loss.
+   - **Slack: provider-native `ts` form.** Rows qualify only when `ts` is
+     exactly `^\d+\.\d+$` (anchored, dot escaped) — the platform message
+     id, identical in every delivery; an integer `monotonicTs()` value can
+     never match. Daemon-local text rows are single-source by construction
+     and never dedupe: two daemons can mint the same millisecond for
+     distinct rows.
+
+   The merge tests carry integer-local vs decimal-provider fixtures for the
+   Slack predicate, plus webchat canonical-vs-local same-millisecond
+   collision and collision-bumped-copy fixtures. Work-lane rows never dedupe
+   (step 3), so a coincidental `ts` collision between a text row and a
+   tool/reasoning row is inert.
    Precedence among copies:
    - **Author copy wins**: the row whose source session's `agentId` matches
      the row's author (`sender === source.agentId`, or the daemon-relabeled
@@ -303,6 +315,7 @@ session (`sessionId`, `agentId`).
    - Human/system rows (identical in every copy): first source in stable
      order — roster order for webchat, `sessionId` sort for Slack — so the
      merge is deterministic across reloads.
+
 3. **Work-lane rows pass through un-deduped**: `kind: tool | reasoning` rows
    exist only in their author's transcript. They interleave by `ts` and render
    inside that agent's collapsible work lane, exactly as on its own page.
@@ -450,9 +463,11 @@ how divergence starts.
 - **C2 — merged page.** `conversation-merge.ts` (union/dedupe/order, unit
   tests over both adapters' fixtures), `/conversations/:key` route, renderer
   reuse, partial-merge notices, session→conversation deep-link redirects
-  (`?focus=<agentId>`), conversation-level lineage links (§9.2). Webchat
-  composer wired through the existing adoption path; Slack read-only with
-  deep link. Playground refresh lands here.
+  (`?focus=<agentId>`), conversation-level lineage links (§9.2). Daemon
+  prerequisite: persist the canonical `postId` on webchat text rows and
+  expose it on the messages DTO (§6 step 2). Webchat composer wired through
+  the existing adoption path; Slack read-only with deep link. Playground
+  refresh lands here.
 - **C3 — polish.** Conversation-level usage roll-up (sum of member sessions),
   "load earlier" cross-source paging, mobile pass, default-collapsed work
   lanes for non-focused participants.
@@ -509,7 +524,15 @@ how divergence starts.
    org/visibility predicate; text-row dedupe is provenance-aware (webchat
    canonical `at` always, Slack only provider-native decimal `ts`,
    daemon-local millisecond rows never).
-8. **Co-membership is not siblinghood.** Sessions sharing a room relate
+8. **Review revisions (v4/v5).** Direct conversation loads resolve members
+   through a bounded key-addressed metadata query
+   (`GET /sessions?conversationKey=…`); the Slack provenance predicate is
+   exact (`^\d+\.\d+$`); webchat duplicate identity moves from raw `at`
+   equality to the origin-minted canonical `postId` persisted on the row —
+   timestamp shape cannot prove provenance in webchat's integer-millisecond
+   domain, and `postId` also survives collision-bumped copies. No-`postId`
+   rows never dedupe (duplicate over data loss).
+9. **Co-membership is not siblinghood.** Sessions sharing a room relate
    through conversation membership only; "sibling" keeps its lineage meaning
    (same parent session). An edge whose endpoints share the conversation key
    renders as attribution and is excluded from lifted navigation — the
