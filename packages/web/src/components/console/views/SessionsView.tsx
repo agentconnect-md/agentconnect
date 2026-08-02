@@ -176,6 +176,9 @@ export default function SessionsView() {
   }, [params])
   const sessionHref = useCallback(
     (session: Session) => {
+      // A multi-participant conversation row links to the merged page — the
+      // only surfaced view for it (merged-conversation-view.md §5.3).
+      if (session.conversationKey) return orgPath(`/conversations/${encodeURIComponent(session.conversationKey)}`)
       const id = canonicalSessionId(session)
       const query = new URLSearchParams(filterQuery)
       const provider = sessionPlatform(session)

@@ -11,6 +11,8 @@ import {
 } from 'react'
 import Link from 'next/link'
 import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
+import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
+import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
@@ -42,6 +44,7 @@ import {
 } from '@/lib/data'
 import {
   ApiError,
+  fetchConversationByKey,
   fetchMySessionIdentity,
   fetchSessionMessages,
   fetchSessionDetail,
@@ -164,6 +167,20 @@ function msgStep(m: SessionMessageDto): FmtStep {
     files: [],
     time: formatTranscriptTime(m.ts)
   }
+}
+
+/** Render input for conversation mode: mergeConversation over the CURRENT
+ *  per-member row map (merged-conversation-view.md §6). */
+function mergeConversationRows(
+  sources: { sessionId: string; agentId: string; platform: string }[],
+  rows: Map<string, SessionMessageDto[]>
+): SessionMessageDto[] {
+  const merged = mergeConversation(
+    sources
+      .filter((source) => rows.has(source.sessionId))
+      .map((source) => ({ ...source, rows: rows.get(source.sessionId)! }) satisfies MergeSource)
+  )
+  return merged.map((m) => m.row)
 }
 
 interface FmtStep {
@@ -792,7 +809,26 @@ export default function SessionDetailView() {
   const { activeOrg, orgPath } = useOrgs()
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { id } = useParams<{ id: string }>()
+  const { id: routeId, key: conversationKeyParam } = useParams<{ id?: string; key?: string }>()
+  // Merged conversation mode (merged-conversation-view.md §5.3): /conversations/:key
+  // resolves the roster through the bounded key-addressed resolver; the
+  // REPRESENTATIVE (newest visible member) then drives every session-scoped
+  // affordance below — detail metadata, live adoption, the composer target —
+  // exactly like a /sessions/:id load. Peer members only feed the transcript
+  // fan-out and the participants roster.
+  const conversationKey = conversationKeyParam ? decodeURIComponent(conversationKeyParam) : null
+  const {
+    data: conversationRoster,
+    error: conversationError,
+    isLoading: conversationLoading
+  } = useSWR(
+    conversationKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, conversationKey] as const) : null,
+    ([, orgId, key]) => fetchConversationByKey(key, orgId),
+    { refreshInterval: 30_000, revalidateOnFocus: false }
+  )
+  const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
+  const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
+  const conversationSourceKey = conversationMembers?.map((m) => m.sessionId).join(',') ?? ''
   const {
     agents,
     allSessions,
@@ -833,6 +869,22 @@ export default function SessionDetailView() {
       return { ...next, dismissed: next.hovered || next.focused ? current.dismissed : false }
     })
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
+  // Conversation mode: per-member fetched rows + live cursors; the rendered
+  // transcript is always mergeConversation() over the CURRENT map, so every
+  // update path (initial load, tail pages) stays consistent by construction.
+  const conversationSourcesRef = useRef<{
+    rows: Map<string, SessionMessageDto[]>
+    cursors: Map<string, string | null>
+  }>({ rows: new Map(), cursors: new Map() })
+  const conversationMembersRef = useRef<{ sessionId: string; agentId: string; platform: string }[] | null>(null)
+  conversationMembersRef.current = conversationMembers
+    ? conversationMembers.map((m) => ({
+        sessionId: m.sessionId,
+        agentId: m.agentId ?? '',
+        platform: conversationRoster?.platform ?? 'slack'
+      }))
+    : null
+  const [conversationOffline, setConversationOffline] = useState(0)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
   const [msgErr, setMsgErr] = useState<string | null>(null)
@@ -950,10 +1002,47 @@ export default function SessionDetailView() {
   // The conversation roster only exists on the detail snapshot (list rows and
   // adopted local state don't carry it); a live playground session's own roster
   // (which tracks mid-conversation joins) stays authoritative when present.
+  // Conversation mode synthesizes the roster from the resolver's members when
+  // the detail snapshot carries none (Slack threads have no explicit roster);
+  // names resolve at render time from the org agent list.
+  const conversationParticipants =
+    conversationKey && conversationMembers && conversationMembers.length > 1
+      ? conversationMembers.map((m, i) => ({
+          agentId: m.agentId ?? '',
+          name: m.agentId ?? '',
+          ...(i === 0 ? { primary: true } : {})
+        }))
+      : null
+  const rosterParticipants = detailSession?.participants ?? conversationParticipants ?? undefined
   const sessionBase =
-    sessionMerged && !sessionMerged.participants && detailSession?.participants
-      ? { ...sessionMerged, participants: detailSession.participants }
+    sessionMerged && !sessionMerged.participants && rosterParticipants
+      ? { ...sessionMerged, participants: rosterParticipants }
       : sessionMerged
+  // Session mode: does this session belong to a multi-participant conversation?
+  // One bounded resolver probe per detail view (same SWR cache family as
+  // conversation mode); a hit redirects to the merged page (§5.3), carrying
+  // whose perspective was linked as ?focus.
+  const selfKey = useMemo(() => {
+    if (conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') return null
+    return encodeConversationKey({
+      platform: currentSessionDetail.platform ?? 'slack',
+      tenantScope: currentSessionDetail.tenantScope ?? null,
+      channel: currentSessionDetail.channel,
+      thread: currentSessionDetail.thread
+    })
+  }, [conversationKey, currentSessionDetail])
+  const { data: selfConversation } = useSWR(
+    selfKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, selfKey] as const) : null,
+    ([, orgId, key]) => fetchConversationByKey(key, orgId),
+    { revalidateOnFocus: false }
+  )
+  const selfConversationRedirect =
+    selfKey && selfConversation && selfConversation.sessions.length > 1
+      ? orgPath(`/conversations/${encodeURIComponent(selfKey)}?focus=${currentSessionDetail?.agentId ?? ''}`)
+      : null
+  useEffect(() => {
+    if (selfConversationRedirect) router.replace(selfConversationRedirect)
+  }, [selfConversationRedirect, router])
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents])
   const owner = sessionBase?.agentId ? agentById.get(sessionBase.agentId) : undefined
   const session =
@@ -1013,10 +1102,25 @@ export default function SessionDetailView() {
   useEffect(() => {
     const realSessionId = session?.platform === 'playground' ? session.realSessionId : undefined
     if (!realSessionId || id === realSessionId) return
-    router.replace(`${orgPath(`/sessions/${encodeURIComponent(realSessionId)}`)}${window.location.search}`, {
+    // A multi-participant conversation's canonical URL is the merged page —
+    // refresh must land where the live Playground already looks merged
+    // (merged-conversation-view.md §5.3). channelId is the conversation id.
+    const conversationId = (session?.participants?.length ?? 0) > 1 ? session?.channelId : undefined
+    const target = conversationId
+      ? orgPath(`/conversations/${encodeURIComponent(conversationId)}`)
+      : orgPath(`/sessions/${encodeURIComponent(realSessionId)}`)
+    router.replace(`${target}${window.location.search}`, {
       scroll: false
     })
-  }, [id, orgPath, router, session?.platform, session?.realSessionId])
+  }, [
+    id,
+    orgPath,
+    router,
+    session?.platform,
+    session?.realSessionId,
+    session?.participants?.length,
+    session?.channelId
+  ])
 
   // A real (CP) session arrives with an empty `steps` — its transcript is a
   // separate on-demand pull from the owning daemon. Playground + mock sessions
@@ -1087,6 +1191,63 @@ export default function SessionDetailView() {
     // nextCursor, prepending each page. Bounded so a pathological session can't
     // keep the proxy busy forever.
     const MAX_PAGES = 40
+    if (conversationKey) {
+      // Merged conversation (merged-conversation-view.md §4/§6): pull every
+      // member's history through the SAME bounded per-session reads, then
+      // render mergeConversation() over the union. A member whose read fails
+      // (daemon offline) degrades to a partial merge with a notice — never a
+      // page-level failure; authorization-hidden members never reached the
+      // roster in the first place.
+      const sources = conversationMembersRef.current ?? []
+      if (sources.length === 0) return
+      const rowsBySession = new Map<string, SessionMessageDto[]>()
+      const cursors = new Map<string, string | null>()
+      let failed = 0
+      ;(async () => {
+        await Promise.all(
+          sources.map(async (src) => {
+            try {
+              let all: SessionMessageDto[] = []
+              let cursor: string | undefined
+              for (let i = 0; i < MAX_PAGES; i++) {
+                const page = await fetchSessionMessages(src.sessionId, { ...(cursor ? { cursor } : {}) })
+                if (!active) return
+                if (i === 0) cursors.set(src.sessionId, page.liveCursor ?? null)
+                all = [...page.messages, ...all]
+                if (!page.nextCursor) break
+                cursor = page.nextCursor
+              }
+              rowsBySession.set(src.sessionId, all)
+            } catch {
+              failed += 1
+            }
+          })
+        )
+        if (!active) return
+        conversationSourcesRef.current = { rows: rowsBySession, cursors }
+        setConversationOffline(failed)
+        setMsgs(mergeConversationRows(sources, rowsBySession))
+        setMsgLoading(false)
+        setMsgPaging(false)
+        liveCursorRef.current = cursors.get(sid) ?? null
+        tailReadyRef.current = true
+        setTailReady(true)
+        const repRows = rowsBySession.get(sid)
+        if (repRows && !sessionBusyRef.current) reconcileLiveSteps(sid, repRows, aid)
+      })().catch((e) => {
+        if (!active) return
+        setMsgErr(e instanceof Error ? e.message : String(e))
+        setMsgLoading(false)
+        setMsgPaging(false)
+      })
+      return () => {
+        active = false
+        if (tailSessionRef.current === sid) {
+          tailSessionRef.current = null
+          tailReadyRef.current = false
+        }
+      }
+    }
     ;(async () => {
       let all: SessionMessageDto[] = []
       let cursor: string | undefined
@@ -1127,7 +1288,9 @@ export default function SessionDetailView() {
         tailReadyRef.current = false
       }
     }
-  }, [wantTranscript, sid, aid, reconcileLiveSteps])
+    // conversationSourceKey keys the fan-out on the member SET — a roster
+    // refresh with identical members must not refetch every transcript.
+  }, [wantTranscript, sid, aid, reconcileLiveSteps, conversationKey, conversationSourceKey])
 
   const refreshTranscriptTail = useCallback((): Promise<void> => {
     if (!wantTranscript || !sid || !tailReadyRef.current || sessionBusyRef.current) return Promise.resolve()
@@ -1136,6 +1299,46 @@ export default function SessionDetailView() {
       return tailInFlightRef.current
     }
     const platform = session?.platform ?? ''
+    if (conversationKey) {
+      const sources = conversationMembersRef.current ?? []
+      const run = (async () => {
+        const state = conversationSourcesRef.current
+        const repRows: SessionMessageDto[] = []
+        for (const src of sources) {
+          let cursor = state.cursors.get(src.sessionId) ?? null
+          for (let pageNo = 0; pageNo < 20; pageNo++) {
+            const page = await fetchSessionMessages(src.sessionId, {
+              ...(cursor !== null ? { after: cursor } : {}),
+              limit: 200
+            })
+            if (tailSessionRef.current !== sid) return
+            const current = state.rows.get(src.sessionId) ?? []
+            state.rows.set(src.sessionId, mergeSessionMessages(current, page.messages, src.platform))
+            if (src.sessionId === sid) repRows.push(...page.messages)
+            if (page.liveCursor !== null) {
+              cursor = page.liveCursor
+              state.cursors.set(src.sessionId, cursor)
+            }
+            if (!page.liveMore || page.liveCursor === null) break
+          }
+        }
+        setMsgs(mergeConversationRows(sources, state.rows))
+        if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
+          reconcileLiveSteps(sid, repRows, aid)
+      })()
+        .catch(() => {
+          // Keep the last good transcript; the next signal retries.
+        })
+        .finally(() => {
+          if (tailInFlightRef.current !== run) return
+          tailInFlightRef.current = null
+          const retry = tailDirtyRef.current && tailSessionRef.current === sid
+          tailDirtyRef.current = false
+          if (retry) void refreshTranscriptTail()
+        })
+      tailInFlightRef.current = run
+      return run
+    }
     const run = (async () => {
       let cursor = liveCursorRef.current
       const persisted: SessionMessageDto[] = []
@@ -1168,7 +1371,7 @@ export default function SessionDetailView() {
       })
     tailInFlightRef.current = run
     return run
-  }, [wantTranscript, sid, aid, session?.platform, reconcileLiveSteps])
+  }, [wantTranscript, sid, aid, session?.platform, reconcileLiveSteps, conversationKey])
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
   useEffect(() => {
@@ -1224,6 +1427,40 @@ export default function SessionDetailView() {
     setAttachMenuOpen(false)
     setComposerMenuOpen(null)
   }, [id])
+
+  // A multi-participant conversation is surfaced ONLY at /conversations/:key
+  // (merged-conversation-view.md §5.3): a session deep link into one redirects,
+  // preserving whose perspective was linked as ?focus.
+  if (!conversationKey && selfConversationRedirect) {
+    return (
+      <div className="wrap max-w-[880px] max-desktop:p-4">
+        <LoadingState fill />
+      </div>
+    )
+  }
+  if (conversationKey && (conversationLoading || (!conversationRoster && !conversationError))) {
+    return (
+      <div className="wrap max-w-[880px] max-desktop:p-4">
+        <LoadingState fill />
+      </div>
+    )
+  }
+  if (conversationKey && (conversationError || !conversationRoster || conversationRoster.sessions.length === 0)) {
+    return (
+      <div className="wrap max-w-[880px] max-desktop:p-4">
+        <NotFound
+          icon="message-square-off"
+          kind="CONVERSATION"
+          title="Conversation not found"
+          pre="No conversation "
+          chip={conversationKey}
+          post=" in this organization — or none of its participants are visible to you."
+          actionLabel="Back to sessions"
+          actionHref={orgPath('/sessions')}
+        />
+      </div>
+    )
+  }
 
   if (!session) {
     // Shell owns detail navigation at both breakpoints; this branch only renders the
@@ -2017,6 +2254,15 @@ export default function SessionDetailView() {
         {wantTranscript && visibleMsgLoading && (
           <div className="flex justify-center py-10">
             <Spinner size={30} />
+          </div>
+        )}
+        {conversationOffline > 0 && (
+          <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+            <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+            <span>
+              Some participants&apos; records are on an offline daemon — this view may be missing part of the
+              conversation until it reconnects.
+            </span>
           </div>
         )}
         {wantTranscript && visibleMsgErr && (
