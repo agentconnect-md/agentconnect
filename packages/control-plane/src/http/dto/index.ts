@@ -2461,6 +2461,9 @@ export const SessionDetailDto = z.object({
   participants: z
     .array(z.object({ agentId: z.string(), name: z.string().nullable(), primary: z.boolean() }))
     .nullable(),
+  /** Durable workspace/tenant scope (merged-conversation-view.md §5.1) — lets the
+   *  console compute this session's conversation key without a second lookup. */
+  tenantScope: z.string().nullable(),
   startedAt: z.string(), // ISO-8601
   endedAt: z.string().nullable()
 })

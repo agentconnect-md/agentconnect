@@ -651,6 +651,7 @@ export function sessionRoutes(deps: HttpDeps) {
           channelName: s.channelName,
           triggeredByName: s.triggeredByName,
           threadUrl: s.threadUrl,
+          tenantScope: s.tenantScope ?? null,
           participants:
             webchatRoster.length > 1
               ? webchatRoster.map((p) => ({

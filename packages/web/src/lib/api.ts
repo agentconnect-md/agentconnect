@@ -495,6 +495,9 @@ export interface SessionDetailDto {
    *  conversations and other platforms; absent on a CP that predates the feature.
    *  `name` is null when the caller cannot view that participant's agent. */
   participants?: Array<{ agentId: string; name: string | null; primary: boolean }> | null
+  /** Durable workspace/tenant scope (merged-conversation-view.md §5.1) — part of
+   *  the conversation key. Absent on a CP that predates the feature. */
+  tenantScope?: string | null
 }
 
 // The full ACP tool body (protocol `ToolBody`), transported as a JSON STRING in
@@ -1900,6 +1903,15 @@ export async function fetchSessions(
     ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {}),
     ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {})
   }
+}
+
+/** Resolve one conversation's current visible member sessions by its §5.1 key
+ *  (the bounded key-addressed resolver). Null when the caller can see none of
+ *  the members (indistinguishable from a conversation that never existed). */
+export async function fetchConversationByKey(key: string, orgId?: string): Promise<ConversationDto | null> {
+  const q = new URLSearchParams({ conversationKey: key })
+  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
+  return page.conversations?.[0] ?? null
 }
 
 /** The grouped sessions list (merged-conversation-view.md §5.2): one row per

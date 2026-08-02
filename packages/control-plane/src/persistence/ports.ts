@@ -979,6 +979,8 @@ export interface SessionMetaRecord {
   platform: Platform | null
   channel: string | null
   thread: string | null
+  /** Durable workspace/tenant scope (merged-conversation-view.md §5.1). */
+  tenantScope: string | null
   phase: SessionPhase
   link: string | null
   summary: string | null

@@ -56,6 +56,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     platform: (s.platform as Platform | null) ?? null,
     channel: s.channel,
     thread: s.thread,
+    tenantScope: s.tenantScope,
     phase: s.phase as SessionPhase,
     link: s.link,
     summary: s.summary,
