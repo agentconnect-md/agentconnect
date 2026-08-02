@@ -327,7 +327,18 @@ describe('Claude credential environment isolation', () => {
       // exercise the real helper, not just a generic socket connect.
       const req = createRequire(import.meta.url)
       const daemonEntry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
-      const helperCommand = [process.execPath, req.resolve('tsx/cli'), daemonEntry, 'git-credential', 'agent-1', 'get']
+      // Resolve workspace packages from source without tsx CLI's temp IPC server.
+      const helperCommand = [
+        process.execPath,
+        '--conditions',
+        'development',
+        '--import',
+        req.resolve('tsx'),
+        daemonEntry,
+        'git-credential',
+        'agent-1',
+        'get'
+      ]
         .map(JSON.stringify)
         .join(' ')
       const socketAttempt = await SandboxManager.wrapWithSandboxArgv(
