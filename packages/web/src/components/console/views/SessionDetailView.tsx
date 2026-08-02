@@ -838,7 +838,11 @@ export default function SessionDetailView() {
   )
   const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
   const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
-  const conversationSourceKey = conversationMembers?.map((m) => m.sessionId).join(',') ?? ''
+  const conversationSourceKey =
+    conversationMembers
+      ?.map((m) => m.sessionId)
+      .sort()
+      .join(',') ?? ''
   const {
     agents,
     allSessions,
@@ -887,12 +891,18 @@ export default function SessionDetailView() {
     cursors: Map<string, string | null>
   }>({ rows: new Map(), cursors: new Map() })
   const conversationMembersRef = useRef<{ sessionId: string; agentId: string; platform: string }[] | null>(null)
+  // Merge sources in CANONICAL order — sessionId sort, decoupled from the
+  // resolver's representative-first response, whose activity-based order is
+  // mutable: a 30s roster refresh must never swap which recipient copy wins
+  // the first-source rule in mergeConversation().
   conversationMembersRef.current = conversationMembers
-    ? conversationMembers.map((m) => ({
-        sessionId: m.sessionId,
-        agentId: m.agentId ?? '',
-        platform: conversationRoster?.platform ?? 'slack'
-      }))
+    ? [...conversationMembers]
+        .sort((a, b) => (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0))
+        .map((m) => ({
+          sessionId: m.sessionId,
+          agentId: m.agentId ?? '',
+          platform: conversationRoster?.platform ?? 'slack'
+        }))
     : null
   const [conversationOffline, setConversationOffline] = useState(0)
   const [msgLoading, setMsgLoading] = useState(false)

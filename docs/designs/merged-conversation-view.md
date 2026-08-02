@@ -312,9 +312,11 @@ session (`sessionId`, `agentId`).
    - **Author copy wins**: the row whose source session's `agentId` matches
      the row's author (`sender === source.agentId`, or the daemon-relabeled
      own-bot frames). The author copy is the full-fidelity one.
-   - Human/system rows (identical in every copy): first source in stable
-     order — roster order for webchat, `sessionId` sort for Slack — so the
-     merge is deterministic across reloads.
+   - Human/system rows (identical in every copy): first source in CANONICAL
+     order — a `sessionId` sort on every platform, decoupled from the
+     resolver's activity-ordered response (which is mutable and would flip
+     the surviving copy between refreshes) — so the merge is deterministic
+     across reloads.
 
 3. **Work-lane rows pass through un-deduped**: `kind: tool | reasoning` rows
    exist only in their author's transcript. They interleave by `ts` and render

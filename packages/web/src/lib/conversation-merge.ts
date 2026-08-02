@@ -7,9 +7,10 @@ import type { SessionMessageDto } from '@/lib/api'
 
 /** One member session's transcript page, in the order the daemon served it
  *  (each source is internally chronological; the merge preserves that
- *  relative order — a stable merge). Callers pass sources in a stable order
- *  (webchat roster order; sessionId sort otherwise): the FIRST source holding
- *  a duplicate wins when no author copy exists. */
+ *  relative order — a stable merge). Callers MUST pass sources in canonical
+ *  sessionId order — never an activity-derived order, which is mutable: the
+ *  FIRST source holding a duplicate wins when no author copy exists, and a
+ *  reordered source list would flip the surviving copy between refreshes. */
 export interface MergeSource {
   sessionId: string
   agentId: string
