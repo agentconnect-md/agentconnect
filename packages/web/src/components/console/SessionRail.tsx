@@ -68,6 +68,17 @@ interface RailRow {
 
 const EMPTY_RELATIONS: SessionRelationDto[] = []
 
+/**
+ * The rail's footprint with nothing in it. The detail body is centred in whatever
+ * horizontal space the rail leaves, so a column that arrives late slides the whole
+ * transcript sideways under a reader who is already reading it. Every state that
+ * expects a rail but cannot draw one yet — the loading branches, and the rail's own
+ * page still in flight — holds this instead of collapsing to nothing.
+ */
+export function SessionRailSlot() {
+  return <div aria-hidden="true" className="hidden w-[224px] flex-none desktop:block" />
+}
+
 export function SessionRail({
   sessions,
   current,
@@ -78,6 +89,7 @@ export function SessionRail({
   family,
   conversation = false,
   childOriginById,
+  pending = false,
   onSelect
 }: {
   /** The filtered first page of sessions, newest first. */
@@ -99,6 +111,9 @@ export function SessionRail({
   conversation?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
+  /** Whether the rail's own session page is still in flight, so "no rail" is not
+   *  yet an answer — hold the column rather than collapsing it (SessionRailSlot). */
+  pending?: boolean
   /** Seed the persistent detail view before the route id changes. */
   onSelect: (session: Session) => void
 }) {
@@ -203,7 +218,14 @@ export function SessionRail({
   // come from `filterTouched` and not from comparing `agentIds` against the open
   // session — filtering to agent B and then opening B's only session lands on a
   // filter that LOOKS like the default while still being the reader's own.
-  if (Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched) return null
+  //
+  // While `pending`, the same test is only true because the answer has not arrived:
+  // the rail's page is a second round-trip behind the session, and `rows` is the
+  // open session alone until it lands. Collapsing on that would paint the body
+  // 125px left of where it belongs and then shove it across — hold the column.
+  if (Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched) {
+    return pending ? <SessionRailSlot /> : null
+  }
 
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
