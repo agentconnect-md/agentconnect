@@ -214,6 +214,7 @@ import {
   effectiveMemoryDreamingPolicy,
   gitRepoLabel
 } from '@agentconnect.md/protocol'
+import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
 import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
@@ -1274,7 +1275,7 @@ interface Pending {
    * accumulates the agent's message chunks so the finished reply is recorded to the
    * transcript once (webchat has no Slack post boundary where text is otherwise saved).
    */
-  webchat?: WebchatTurnContext & { index: number; replyText: string }
+  webchat?: WebchatTurnContext & { index: number; replyText: string; heldText: string; messageEmitted: boolean }
 }
 
 /** Visible Slack thread messages that establish a new chronological boundary. Any live
@@ -8034,6 +8035,22 @@ export class Daemon {
     return fallback
   }
 
+  /** Release stream text held back by the no-response sentinel check once the
+   *  turn is known to be a real reply (it diverged only at the very end, e.g. a
+   *  body shorter than the sentinel). */
+  private flushHeldWebchatText(wc: NonNullable<Pending['webchat']>): void {
+    if (!wc.heldText) return
+    const held = wc.heldText
+    wc.heldText = ''
+    wc.messageEmitted = true
+    wc.sink.output({
+      conversationId: wc.conversationId,
+      turnId: wc.turnId,
+      index: wc.index++,
+      event: { kind: 'message', text: held }
+    })
+  }
+
   /**
    * Record a conversation post another participant produced (relay `context` op —
    * webchat-multi-agents.md §5.2). Transcript-only, NEVER an activation: the row
@@ -10468,7 +10485,9 @@ export class Daemon {
     // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
     // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
     // signal each copy once.
-    const pendingWebchat = webchat ? Object.assign(webchat, { index: 0, replyText: '' }) : undefined
+    const pendingWebchat = webchat
+      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
+      : undefined
     if (!entry.selectedHost) {
       const ordinaryHost = this.hosts.get(agentId)
       if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
@@ -10831,8 +10850,11 @@ export class Daemon {
         if (p.webchatRefresh && p.webchat) {
           // The canonical post — and post-turn memory / turn.completed.output —
           // must carry only the accepted generation. Webchat chunks accumulate
-          // into BOTH buffers (the stream is never staged), so clear both.
+          // into BOTH buffers (the stream is never staged), so clear both — and
+          // reset the sentinel hold so the replacement gets its own check.
           p.webchat.replyText = ''
+          p.webchat.heldText = ''
+          p.webchat.messageEmitted = false
           p.replyText = ''
         }
         this.emitEvaluation({
@@ -10871,6 +10893,7 @@ export class Daemon {
             // fanned out. Close the browser turn explicitly — a bare return
             // would leave the stream open and the composer stuck busy.
             p.webchat.replyText = ''
+            p.webchat.heldText = ''
             if (!p.webchat.doneSent) {
               p.webchat.doneSent = true
               p.webchat.sink.output({
@@ -10962,7 +10985,17 @@ export class Daemon {
         // Record the agent's reply as a transcript text row (sender = agentId), so a
         // webchat session reads back with its reply like any Slack session does — the
         // Slack path records this at its `post` boundary, which webchat never hits.
-        if (p.webchat.replyText.trim()) {
+        const trimmedWebchatReply = p.webchat.replyText.trim()
+        if (trimmedWebchatReply && isNoResponseBody(trimmedWebchatReply)) {
+          // Silent decline (the conversation-wide activation was not for this
+          // agent): drop the held stream text — nothing was ever streamed — and
+          // commit no canonical post or transcript reply row.
+          p.webchat.heldText = ''
+          p.replyText = ''
+        } else if (trimmedWebchatReply) {
+          // A real reply that never diverged from the sentinel prefix mid-stream
+          // (shorter than the sentinel) is still held — release it before commit.
+          this.flushHeldWebchatText(p.webchat)
           // Shares the strictly-monotonic clock with the inbound user message so a fast
           // turn can't stamp both with the same ms and lose the reply to the unique index.
           // The ts the row actually lands on (post-collision-bump) doubles as the reply
@@ -11100,7 +11133,9 @@ export class Daemon {
           thread: msg.thread,
           statusThread
         })
-        if (p.webchat.replyText.trim()) {
+        const trimmedPartialReply = p.webchat.replyText.trim()
+        if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
+          this.flushHeldWebchatText(p.webchat)
           const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
             sender: agentId,
             text: p.webchat.replyText
@@ -13778,7 +13813,22 @@ export class Daemon {
         const text = update.content?.type === 'text' ? (update.content.text ?? '') : ''
         if (text) {
           wc.replyText += text // recorded once at turn end (no Slack post boundary)
-          for (const t of chunkText(text)) emit({ kind: 'message', text: t })
+          // Response-choice hold (product-conventions §No-response control marker):
+          // while the whole accumulated body could still be the bare sentinel,
+          // keep it off the live stream — an agent silently declining a
+          // conversation-wide activation must not flash AC_NO_RESPONSE into the
+          // browser. Everything is released the instant the body diverges.
+          if (wc.messageEmitted) {
+            for (const t of chunkText(text)) emit({ kind: 'message', text: t })
+          } else {
+            wc.heldText += text
+            if (!isNoResponsePrefix(wc.heldText.trim())) {
+              const held = wc.heldText
+              wc.heldText = ''
+              wc.messageEmitted = true
+              for (const t of chunkText(held)) emit({ kind: 'message', text: t })
+            }
+          }
         }
         return
       }

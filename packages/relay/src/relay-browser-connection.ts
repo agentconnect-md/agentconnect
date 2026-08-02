@@ -266,13 +266,15 @@ export class RelayBrowserConnection implements ChatSink {
 
   /** Fan one user turn out to its targeted participants + context to the rest. */
   private async sendTurn(op: Extract<RelayWebchatOp, { op: 'turn' }>, requestedTargets?: string[]): Promise<void> {
-    // The composer-computed ladder travels explicitly as `targets`; an older
-    // browser sends none and falls back to mentions, then to the primary.
+    // Conversation membership is a STANDING mention (webchat-multi-agents.md
+    // §4.2): an unmentioned message activates the WHOLE roster — each agent may
+    // still decline via the no-response contract — while explicit @mentions (or
+    // an explicit `targets` list) narrow the turn to the named participants.
     const targets = requestedTargets?.length
       ? requestedTargets
       : op.mentions?.length
         ? op.mentions
-        : [this.deps.agentId]
+        : [...this.byAgentId.keys()]
     const turnId = op.turnId ?? randomUUID()
     this.lastPostAt = Math.max(Date.now(), this.lastPostAt + 1)
     const post = { postId: randomUUID(), at: this.lastPostAt }

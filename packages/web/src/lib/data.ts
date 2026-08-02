@@ -885,9 +885,6 @@ export interface Session {
   /** Multi-agent webchat roster (webchat-multi-agents.md §3.1), primary first —
    *  present on live conversations with more than one participant. */
   participants?: Array<{ agentId: string; name: string; primary?: boolean }>
-  /** The participant that most recently replied — rung 2 of the composer's
-   *  targeting ladder (mention → last responder → primary). */
-  lastResponderAgentId?: string
   /** Runtime id + daemonId the session ran with: the session-recorded snapshot,
    *  with the owning agent's current values as the legacy-row fallback (attached
    *  at flatten time, like `model`). Views resolve `daemon` to a display name. */

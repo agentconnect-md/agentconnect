@@ -198,6 +198,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // Creation-time roster per session id (primary first) — drives the
   // conversation-scoped token mint for a multi-agent create.
   const rosterAgentIds = useRef<Map<string, string[]>>(new Map())
+  // The in-flight send's requested turnId — lets an accepted ack from a
+  // participant the client did NOT explicitly lane (a resumed conversation
+  // where the relay applied the all-participants default) create its stream
+  // lane lazily instead of dropping the reply.
+  const pendingTurnIds = useRef<Map<string, string>>(new Map())
   // One ordering cursor per stream LANE — a multi-agent turn runs one lane per
   // targeted participant (webchat-multi-agents.md §5.3), keyed `${id} ${agentId}`.
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
@@ -482,14 +487,6 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ...(name ? { who: name } : {}),
           text: `⚠️ ${result.done.error}`
         })
-      } else if (agentId) {
-        // Rung 2 of the composer targeting ladder: the last participant to
-        // complete a reply is the default target of an unmentioned follow-up.
-        setPgSessions((cur) => {
-          const s = cur[id]
-          if (!s || s.lastResponderAgentId === agentId) return cur
-          return { ...cur, [id]: { ...s, lastResponderAgentId: agentId } }
-        })
       }
       // The turn stays busy until every targeted participant's lane finished.
       if (lanesOf(id).length === 0) setBusy(id, false)
@@ -673,7 +670,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               } else if (m.type === 'done') {
                 if (m.done) receiveDone(id, m.done)
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
-                const key = cursorKeyFor(id, m.ack?.agentId)
+                let key = cursorKeyFor(id, m.ack?.agentId)
+                // The relay may target participants the client did not lane (a
+                // resumed conversation without a local roster): admit the lane
+                // on its ack so the reply stream binds instead of dropping.
+                if (!key && m.ack?.agentId && m.ack.turnId === pendingTurnIds.current.get(id)) {
+                  key = laneKey(id, m.ack.agentId)
+                  streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(m.ack.turnId))
+                }
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
               } else if (m.type === 'resumed' && m.ack?.accepted !== false) {
@@ -860,9 +864,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgImage(id)
       setBusy(id, true)
       const requestedTurnId = crypto.randomUUID()
-      // The composer targeting ladder (webchat-multi-agents.md §4.2), computed
-      // client-side: @mentions in the text → the last responder → the primary.
-      // The relay validates targets against the verified roster.
+      // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
+      // STANDING mention — an unmentioned message goes to the WHOLE roster
+      // (each agent may silently decline); explicit @mentions narrow the turn
+      // to the named participants. The relay validates against its verified
+      // roster, and also applies the same all-participants default itself, so a
+      // resumed conversation with no client-side roster still reaches everyone.
       const session = pgSessions[id]
       const roster = session?.participants ?? []
       const mentions =
@@ -873,13 +880,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               )
               .map((p) => p.agentId)
           : []
-      const lastResponder = session?.lastResponderAgentId
-      const targets =
-        roster.length > 1
-          ? mentions.length
-            ? mentions
-            : [lastResponder && roster.some((p) => p.agentId === lastResponder) ? lastResponder : agentForId]
-          : [agentForId]
+      const targets = roster.length > 1 ? (mentions.length ? mentions : roster.map((p) => p.agentId)) : [agentForId]
+      pendingTurnIds.current.set(id, requestedTurnId)
       for (const target of targets) {
         streamCursors.current.set(laneKey(id, target), createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
       }
