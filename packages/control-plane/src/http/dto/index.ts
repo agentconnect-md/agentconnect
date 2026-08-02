@@ -2505,6 +2505,9 @@ export const SessionMessageDto = z.object({
   senderAvatarUrl: z.string().url().optional(), // public provider-hosted profile image
   trustedAgentBot: z.boolean().optional(), // daemon-verified AgentConnect Slack bot provenance
   ts: z.string(),
+  // Canonical webchat post identity (merged-conversation-view.md §6) — identical
+  // on every participant's copy; absent on non-webchat and pre-upgrade rows.
+  postId: z.string().optional(),
   kind: z.string(),
   text: z.string(),
   attachments: z.array(SessionImageAttachment).max(1).optional(),

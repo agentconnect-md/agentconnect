@@ -142,6 +142,19 @@ describe('webchat turn-final context refresh', () => {
       .filter((row: { sender: string }) => row.sender === AGENT_ID)
       .map((row: { text: string }) => row.text)
     expect(replies).toEqual(['fresh replacement'])
+
+    // Canonical post identity (merged-conversation-view.md §6): every webchat
+    // text row persists the origin-minted postId — the trigger carries the
+    // relay-minted one, the peer's context copy the peer's, and the reply row
+    // the SAME id its rd/webchat-post fan-out announced.
+    const rows = (daemon as any).store.transcriptSince(
+      transcriptChannelKey(CONV, undefined),
+      `webchat:${CONV}`,
+      null
+    ) as { sender: string; text: string; postId?: string | null }[]
+    expect(rows.find((r) => r.text === 'original request')?.postId).toBe(TURN)
+    expect(rows.find((r) => r.text === 'peer answer 1')?.postId).toBe(peerPost(1, 0).postId)
+    expect(rows.find((r) => r.text === 'fresh replacement')?.postId).toBe(posts[0]!.post.postId)
     await daemon.stop()
   })
 
@@ -372,6 +385,100 @@ describe('webchat turn-final context refresh', () => {
       .transcriptSince(transcriptChannelKey(CONV, undefined), `webchat:${CONV}`, null)
       .filter((row: { sender: string }) => row.sender === AGENT_ID)
     expect(replies).toEqual([])
+    await daemon.stop()
+  })
+  it('distinct canonical posts sharing millisecond, sender, and text occupy separate slots', async () => {
+    // The C2 dedupe prerequisite: `at` minting is connection-local, so two
+    // tabs can mint distinct posts on the same millisecond — and a same-user
+    // repeat ("ok" twice) also matches the legacy (sender, text) heuristic.
+    // Only a matching canonical postId may reuse an occupied slot; a distinct
+    // id must bump, or the second post is silently lost.
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => ({ start: vi.fn(async () => {}) }) as any
+    })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const dup = (n: number) => ({
+      postId: `0000000${n}-1111-4000-8000-00000000000${n}`,
+      conversationId: CONV,
+      author: { kind: 'agent' as const, agentId: PEER_ID },
+      text: 'ok',
+      at: 7_000
+    })
+    expect(
+      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-1' }), () => {})
+    ).toMatchObject({ accepted: true })
+    expect(
+      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(2) }, { msgId: 'c-2' }), () => {})
+    ).toMatchObject({ accepted: true })
+    // An identical re-fan of post 1 dedups in place (no third row).
+    expect(
+      (daemon as any).handleRelayMsg(rd({ op: 'context', post: dup(1) }, { msgId: 'c-3' }), () => {})
+    ).toMatchObject({ accepted: true })
+
+    const rows = (daemon as any).store.transcriptSince(
+      transcriptChannelKey(CONV, undefined),
+      `webchat:${CONV}`,
+      null
+    ) as { ts: string; postId?: string | null }[]
+    expect(rows.map((r) => [r.ts, r.postId])).toEqual([
+      ['7000', dup(1).postId],
+      ['7001', dup(2).postId]
+    ])
+    await daemon.stop()
+  })
+  it('turn ADMISSION writes carry the canonical id — distinct same-text turns bump, not merge', async () => {
+    // The pre-queue observed-inbound write must be identity-aware too: two
+    // tabs can mint distinct turn posts on one millisecond with the same user
+    // and text. Without the id on the admission append, the second turn would
+    // reuse the first row — no new revision, nothing for the in-flight
+    // generation to coalesce, and a lost post if its queued activation never
+    // runs.
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>((resolve) => (releaseFirst = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-wc-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => {
+        await firstBlocked
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const turnPost = (n: number) => ({ postId: `0000000${n}-2222-4000-8000-00000000000${n}`, at: 9_000 })
+    const t1 = '11111111-aaaa-4aaa-8aaa-111111111111'
+    const t2 = '22222222-bbbb-4bbb-8bbb-222222222222'
+    expect(
+      (daemon as any).handleRelayMsg(
+        rd({ op: 'turn', text: 'same words', user: 'owner', turnId: t1, post: turnPost(1) }),
+        () => {}
+      )
+    ).toMatchObject({ accepted: true })
+    expect(
+      (daemon as any).handleRelayMsg(
+        rd({ op: 'turn', text: 'same words', user: 'owner', turnId: t2, post: turnPost(2) }, { msgId: 'm-2' }),
+        () => {}
+      )
+    ).toMatchObject({ accepted: true })
+
+    const rows = (daemon as any).store.transcriptSince(
+      transcriptChannelKey(CONV, undefined),
+      `webchat:${CONV}`,
+      null
+    ) as { ts: string; postId?: string | null; text: string }[]
+    expect(rows.filter((r) => r.text === 'same words').map((r) => [r.ts, r.postId])).toEqual([
+      ['9000', turnPost(1).postId],
+      ['9001', turnPost(2).postId]
+    ])
+    releaseFirst()
     await daemon.stop()
   })
 })

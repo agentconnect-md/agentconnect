@@ -105,6 +105,10 @@ export const SessionMessage = z.object({
   // compatibility and absent on legacy rows or every non-Slack transport.
   trustedAgentBot: z.boolean().optional(),
   ts: z.string(), // platform timestamp (daemon-local string form)
+  // Canonical webchat post identity (merged-conversation-view.md §6): minted once
+  // at origin and identical on every participant's copy, independent of a
+  // collision-bumped `ts`. Absent on non-webchat rows and pre-upgrade rows.
+  postId: z.string().uuid().optional(),
   kind: z.string(), // "text" / tool / … (daemon transcript kind)
   text: z.string(),
   attachments: z.array(SessionImageAttachment).max(1).optional(),

@@ -440,7 +440,15 @@ export class SessionManager {
       let slot = BigInt(ts)
       for (let attempt = 0; attempt < 32; attempt++) {
         const existing = this.deps.store.transcriptTextAt(transcriptChannel, thread, String(slot))
-        if (!existing || (existing.sender === msg.sender.id && existing.text === transcriptText)) break
+        // Mirror the daemon-side probe (§6): matching canonical postId is what
+        // proves the occupant is this same post; (sender, text) only decides
+        // for legacy rows without an id on either side.
+        const samePost =
+          existing !== undefined &&
+          (msg.transcriptPostId && existing.postId
+            ? existing.postId === msg.transcriptPostId
+            : existing.sender === msg.sender.id && existing.text === transcriptText)
+        if (!existing || samePost) break
         slot += 1n
       }
       ts = String(slot)
@@ -450,6 +458,9 @@ export class SessionManager {
       thread,
       ts,
       sender: msg.sender.id,
+      // The canonical webchat post identity travels with the canonical ts —
+      // identical on every participant copy even when `ts` was bumped (§6).
+      ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
       // This message was delivered TO this agent (handle() runs for `agentId`), so tag the
       // recipient — the console session view scopes to what THIS agent received + produced.
       recipient: agentId,

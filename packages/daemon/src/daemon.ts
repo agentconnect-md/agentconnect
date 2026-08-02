@@ -5386,7 +5386,7 @@ export class Daemon {
       // participant copy of this turn records the SAME transcript ts, which is
       // what lets co-hosted participants share one text row and cross-daemon
       // transcripts merge by (at, postId) (webchat-multi-agents.md §5.1).
-      ...(post ? { transcriptTs: String(post.at) } : {}),
+      ...(post ? { transcriptTs: String(post.at), transcriptPostId: post.postId } : {}),
       ...(inlineImages?.length
         ? {
             attachments: inlineImages.map((image, index) => {
@@ -5435,6 +5435,11 @@ export class Daemon {
         {
           sender: user,
           recipient: result.agentId,
+          // The canonical identity must ride the ADMISSION write too — without
+          // it the probe falls back to (sender, text) and a distinct same-ms
+          // same-text post from another tab would reuse this row instead of
+          // bumping (§6).
+          postId: post.postId,
           text: observedMention ? `${text}\n${observedMention}`.trim() : text
         }
       )
@@ -8187,6 +8192,8 @@ export class Daemon {
       sender: string
       recipient?: string
       text: string
+      /** Canonical webchat post id — persisted on the row (§6). */
+      postId?: string
       trustedAgentBot?: boolean
       attachments?: SessionImageAttachment[]
     }
@@ -8194,7 +8201,17 @@ export class Daemon {
     let slot = BigInt(ts)
     for (let attempt = 0; attempt < 32; attempt++) {
       const existing = this.store.transcriptTextAt(channel, thread, String(slot))
-      if (!existing || (existing.sender === entry.sender && existing.text === entry.text)) {
+      // Canonical identity decides slot reuse (§6): two DISTINCT posts can share
+      // sender, text, AND millisecond (`at` minting is connection-local, so two
+      // tabs can collide) — only a matching postId proves the occupant IS this
+      // post. Rows without an id on either side keep the historical
+      // (sender, text) heuristic as the legacy fallback.
+      const samePost =
+        existing !== undefined &&
+        (entry.postId && existing.postId
+          ? existing.postId === entry.postId
+          : existing.sender === entry.sender && existing.text === entry.text)
+      if (!existing || samePost) {
         this.store.appendTranscript({ channel, thread, ts: String(slot), kind: 'text', ...entry })
         return String(slot)
       }
@@ -8244,6 +8261,7 @@ export class Daemon {
     this.appendWebchatTextRow(transcriptChannelKey(chatId, undefined), `webchat:${chatId}`, String(contextPost.at), {
       sender,
       recipient: agentId,
+      postId: contextPost.postId,
       text: contextPost.text,
       ...(contextPost.author.kind === 'agent' ? { trustedAgentBot: true } : {}),
       ...(contextPost.attachments?.length
@@ -11170,7 +11188,9 @@ export class Daemon {
           // The ts the row actually lands on (post-collision-bump) doubles as the reply
           // post's canonical `at` (minted ONCE here, the origin) carried to every other
           // participant's copy via rd/webchat-post.
+          const replyPostId = randomUUID()
           const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
+            postId: replyPostId,
             sender: agentId,
             text: p.webchat.replyText
           })
@@ -11181,7 +11201,7 @@ export class Daemon {
             conversationId: p.webchat.conversationId,
             agentId,
             post: {
-              postId: randomUUID(),
+              postId: replyPostId,
               conversationId: p.webchat.conversationId,
               author: { kind: 'agent', agentId },
               text: p.webchat.replyText,
@@ -11305,7 +11325,9 @@ export class Daemon {
         const trimmedPartialReply = p.webchat.replyText.trim()
         if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
           this.flushHeldWebchatText(p.webchat)
+          const partialPostId = randomUUID()
           const replyTs = this.appendWebchatTextRow(p.transcriptChannel, statusThread, monotonicTs(), {
+            postId: partialPostId,
             sender: agentId,
             text: p.webchat.replyText
           })
@@ -11315,7 +11337,7 @@ export class Daemon {
             conversationId: p.webchat.conversationId,
             agentId,
             post: {
-              postId: randomUUID(),
+              postId: partialPostId,
               conversationId: p.webchat.conversationId,
               author: { kind: 'agent', agentId },
               text: p.webchat.replyText,

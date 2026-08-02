@@ -194,6 +194,10 @@ export interface TranscriptEntry {
   // prompt replay still compares the original platform `ts`.
   ts: string
   sender: string
+  /** Canonical webchat post id (merged-conversation-view.md §6): minted once at
+   *  origin, identical on every participant's copy regardless of a
+   *  collision-bumped `ts`. Text rows only; absent everywhere else. */
+  postId?: string
   /** True only when the daemon verified that this Slack history row came from an
    *  AgentConnect-managed bot identity. Legacy rows and all other platforms omit it. */
   trustedAgentBot?: boolean
@@ -580,7 +584,8 @@ export class LocalStore {
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
         sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
         tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
-        attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0
+        attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
+        postId TEXT
       );
       CREATE INDEX IF NOT EXISTS transcript_thread_seq ON transcript (channel, thread, seq);
       -- Dedup conversational rows by platform ts (double-fired inbound / redelivery);
@@ -1050,6 +1055,8 @@ export class LocalStore {
     const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'attachmentsJson'))
       this.db.exec('ALTER TABLE transcript ADD COLUMN attachmentsJson TEXT')
+    // Canonical webchat post identity (merged-conversation-view.md §6).
+    if (!cols.some((c) => c.name === 'postId')) this.db.exec('ALTER TABLE transcript ADD COLUMN postId TEXT')
   }
 
   /** Add daemon-private quoted-reply context to existing transcript tables. The JSON
@@ -2456,10 +2463,16 @@ export class LocalStore {
    *  `INSERT OR IGNORE` under the `transcript_text_ts` unique index would silently
    *  drop a DIFFERENT post landing on an occupied millisecond, so writers check
    *  the slot first and bump when it holds foreign content. */
-  transcriptTextAt(channel: string, thread: string, ts: string): { sender: string; text: string } | undefined {
+  transcriptTextAt(
+    channel: string,
+    thread: string,
+    ts: string
+  ): { sender: string; text: string; postId: string | null } | undefined {
     return this.db
-      .prepare(`SELECT sender, text FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'`)
-      .get(channel, thread, ts) as { sender: string; text: string } | undefined
+      .prepare(
+        `SELECT sender, text, postId FROM transcript WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'`
+      )
+      .get(channel, thread, ts) as { sender: string; text: string; postId: string | null } | undefined
   }
 
   appendTranscript(e: TranscriptEntry): void {
@@ -2469,13 +2482,14 @@ export class LocalStore {
     const inserted = this.db
       .prepare(
         `INSERT OR IGNORE INTO transcript
-           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision)
+           (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
          VALUES
-           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision)`
+           (@channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`
       )
       .run({
         ...entry,
         recipient: e.recipient ?? null,
+        postId: e.postId ?? null,
         eventTimeUs: transcriptEventTimeUs(e.ts),
         attachmentsJson: attachments?.length ? JSON.stringify(attachments) : null,
         quoteJson: durableQuoteJson,
@@ -2495,6 +2509,18 @@ export class LocalStore {
                  AND COALESCE(trustedAgentBot, 0) = 0`
             )
             .run(e.channel, e.thread, e.ts)
+        : undefined
+    // The same canonical post can be recorded first by a pre-upgrade write (no
+    // postId column value) and re-observed by a copy that carries it. Upgrade in
+    // place; an identity can be added but never changed or cleared.
+    const postIdUpgraded =
+      Number(inserted.changes) === 0 && e.postId
+        ? this.db
+            .prepare(
+              `UPDATE transcript SET postId = ?
+               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND postId IS NULL`
+            )
+            .run(e.postId, e.channel, e.thread, e.ts)
         : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
@@ -2524,6 +2550,7 @@ export class LocalStore {
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
+      Number(postIdUpgraded?.changes ?? 0) === 1 ||
       Number(delivered?.changes ?? 0) === 1
     ) {
       const deliveryRevision = this.transcriptRevision + 1
@@ -2531,7 +2558,16 @@ export class LocalStore {
         .prepare("UPDATE transcript SET revision = ? WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text'")
         .run(deliveryRevision, e.channel, e.thread, e.ts)
       this.transcriptRevision = deliveryRevision
-      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], deliveryRevision)
+      // An in-place upgrade mutates the SHARED row: every agent whose scoped
+      // view already contains it must be invalidated, not just this append's
+      // sender/recipient — a co-hosted participant delivered earlier would
+      // otherwise keep serving the stale copy until an unrelated mutation.
+      const sharedRecipients = (
+        this.db
+          .prepare('SELECT agentId FROM transcript_recipient WHERE channel = ? AND thread = ? AND ts = ?')
+          .all(e.channel, e.thread, e.ts) as { agentId: string }[]
+      ).map((r) => r.agentId)
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient, ...sharedRecipients], deliveryRevision)
     }
   }
 

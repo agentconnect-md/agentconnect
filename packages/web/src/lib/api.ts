@@ -523,6 +523,9 @@ export interface SessionMessageDto {
   senderAvatarUrl?: string // public provider-hosted profile image
   trustedAgentBot?: boolean // daemon-verified AgentConnect Slack bot provenance
   ts: string
+  /** Canonical webchat post identity (merged-conversation-view.md §6) — identical
+   *  on every participant's copy; absent on non-webchat and pre-upgrade rows. */
+  postId?: string
   kind: string
   text: string
   attachments?: SessionImage[]
