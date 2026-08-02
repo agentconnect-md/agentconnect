@@ -4265,7 +4265,8 @@ export class Daemon {
           : undefined,
         explicitEnv: { ...runtimeEnv, ...env },
         sandboxMechanism: this.sandboxMechanism,
-        mcpSocketPath: mcpSocketPath(this.root)
+        mcpSocketPath: mcpSocketPath(this.root),
+        allowModelToolUnixSockets: githubAppCredentials
       })
       launch = composed.launch
       launchRuntime = composed.runtime
@@ -4290,7 +4291,7 @@ export class Daemon {
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,
-      sandbox: launch.sandbox ? { ...launch.sandbox, allowModelToolUnixSockets: githubAppCredentials } : undefined,
+      sandbox: launch.sandbox,
       configPrefs: {
         model: agent.runtimeOverrides?.model,
         permissionMode: agent.permissionMode,

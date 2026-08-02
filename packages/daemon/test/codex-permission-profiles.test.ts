@@ -16,6 +16,29 @@ describe('Codex permission profile launch config', () => {
       expect.stringContaining('"/agent/home/.codex" = "deny"')
     ])
     expect(config.configOverrides).toContain('permissions.agentconnect-protected-full-access.network.enabled=true')
+    expect(config.configOverrides).not.toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
+    expect(config.configOverrides).not.toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
+  })
+
+  it('opens the inner network layer only for a daemon-provided credential channel', () => {
+    const config = codexPermissionProfileConfig(['/agent/home/.codex'], true)!
+
+    expect(config.configOverrides).toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
+    expect(config.configOverrides).toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
+  })
+
+  it('can open the credential channel without adding empty filesystem overrides', () => {
+    const config = codexPermissionProfileConfig([], true)!
+
+    expect(config.configOverrides).toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
+    expect(config.configOverrides).toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
+    expect(
+      config.configOverrides.filter(
+        (value) =>
+          value.includes('agentconnect-protected-workspace.filesystem=') ||
+          value.includes('agentconnect-protected-read-only.filesystem=')
+      )
+    ).toEqual([])
   })
 
   it('rejects non-absolute policy roots', () => {

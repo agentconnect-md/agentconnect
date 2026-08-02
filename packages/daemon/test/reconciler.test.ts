@@ -74,6 +74,7 @@ describe('diffAgents', () => {
       // fastMode is baked into the host's configPrefs at construction, so an edit
       // must evict the host (unlike output.mode, which is read live per dispatch).
       { fastMode: true },
+      { permissionMode: 'agent-full-access' },
       { approvalsReviewer: 'auto_review' },
       { runtimeOverrides: { model: undefined as any, env: [{ name: 'FOO', value: 'bar' }] } },
       // Secrets are baked into the child env (and materialized as config files)

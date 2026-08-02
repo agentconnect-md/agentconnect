@@ -37,6 +37,35 @@ function settings(path: string): { filesystem: { allowWrite: string[] } } {
 }
 
 describe('Linux shared runtime login', () => {
+  it('opens the Codex credential channel even when the outer sandbox is disabled', () => {
+    const { scopeDir, cwd } = fixture()
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      allowModelToolUnixSockets: true,
+      explicitEnv: {
+        CODEX_CONFIG: JSON.stringify({
+          model: 'gpt-test',
+          permissions: { attacker: { extends: ':workspace' } },
+          features: { fast_mode: true }
+        })
+      }
+    })
+
+    const profileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as {
+      configOverrides: string[]
+      modeProfiles: Record<string, string>
+    }
+    expect(launch.inheritProcessEnv).toBe(true)
+    expect(launch.sandbox).toBeUndefined()
+    expect(profileConfig.modeProfiles.agent).toBe('agentconnect-protected-workspace')
+    expect(profileConfig.configOverrides).toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
+    expect(profileConfig.configOverrides).toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
+    expect(JSON.parse(launch.env.CODEX_CONFIG!)).toEqual({ model: 'gpt-test', features: { fast_mode: true } })
+  })
+
   it('trusts the host Claude config directory by default without rewriting its settings', () => {
     const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
     const hostClaude = join(hostHome, '.claude')
@@ -199,6 +228,7 @@ describe('Linux shared runtime login', () => {
       agentsRoot: join(daemonRoot, 'agents'),
       runInSandbox: true,
       sandboxMechanism: 'bwrap',
+      allowModelToolUnixSockets: true,
       credentialPlatform: 'linux',
       explicitEnv: {
         [CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]: '{"modeProfiles":{"agent":"attacker"}}',
@@ -226,6 +256,9 @@ describe('Linux shared runtime login', () => {
       modeProfiles: Record<string, string>
     }
     expect(profileConfig.modeProfiles.agent).toBe('agentconnect-protected-workspace')
+    expect(launch.sandbox?.allowModelToolUnixSockets).toBe(true)
+    expect(profileConfig.configOverrides).toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
+    expect(profileConfig.configOverrides).toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
     expect(JSON.parse(launch.env.CODEX_CONFIG!)).toEqual({
       model: 'gpt-test',
       features: { fast_mode: true }

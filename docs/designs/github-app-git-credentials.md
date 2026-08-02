@@ -793,9 +793,15 @@ Injection uses **two channels**:
    subprocess serves only one agent. On spawn, `env` is merged directly into
    the subprocess (`acp-host.ts:225-255`; opts.env is the outermost layer at
    `:239`; `CLAUDE_CODE_EXECUTABLE` at `:243-249` is set only if absent, so it
-   does not overwrite injection). The entire process tree inherits it, and the
-   agent's git process is a direct child with no sandbox stripping the
-   environment.
+   does not overwrite injection). The entire process tree inherits it. When a
+   runtime adds its own nested tool sandbox, the daemon must deliberately keep
+   the credential socket reachable without exposing credential files. On Linux,
+   Codex couples Unix `connect()` to its network permission, so AgentConnect
+   enables that inner layer only for a configured GitHub credential channel;
+   when enabled, the outer SRT sandbox remains authoritative for egress and
+   host-socket visibility. If the operator disables the outer sandbox, the
+   runtime-native profile still receives the same channel permission within
+   that explicitly unconfined launch.
    - **Do not carry session-level injection through `GIT_CONFIG_COUNT`.**
      `GIT_CONFIG_COUNT` does **not compose across
      processes**. If the agent's own toolchain sets `GIT_CONFIG_COUNT`, it
