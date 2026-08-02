@@ -303,14 +303,26 @@ from them. The two graphs are orthogonal by construction:
 
 The design connects them at three points:
 
-### 9.1 In-thread wakes are intra-conversation edges
+### 9.1 Intra-conversation edges are attribution, not navigation
 
-A `sendMessage` in channel/thread form posts into a thread, so the woken
-agent's session shares `(platform, channel, thread)` with the waker — same
-conversation. The merged view already shows both parties in full; the lineage
-edge contributes **attribution, not navigation**: the woken agent's first turn
-can carry a "woken by <agent>" affordance (C3 chrome). Membership neither
-grows nor splits because of the edge.
+The classifying rule is **whether the edge's two sessions share the
+conversation key** — not the wake form. An in-thread `sendMessage` wakes an
+agent into the same `(platform, channel, thread)`, so both endpoints are
+already in the room; the merged view shows both parties in full, and the
+lineage edge contributes only attribution: the woken agent's first turn can
+carry a "woken by <agent>" affordance (C3 chrome). Membership neither grows
+nor splits because of the edge, and intra-conversation edges are **excluded**
+from the lifted navigation in §9.2 — otherwise a co-participant that is also
+a lineage child (A wakes B and C into the same thread: room-mates AND
+lineage-siblings) would be listed twice.
+
+Co-membership itself is NOT siblinghood: "sibling sessions" keeps its precise
+lineage meaning (other children of the same parent session). Sessions in one
+room are already fully related by conversation membership — encoding that
+relation a second time as synthetic lineage would demand a fabricated common
+parent (a user message is not a session) and retroactive edge maintenance as
+the roster grows. The per-agent detail DTO's parent/sibling/child computation
+is untouched by this design.
 
 ### 9.2 Cross-conversation edges lift to conversation-level navigation
 
@@ -319,10 +331,11 @@ coordinate — its own, usually single-member, conversation. That edge crosses
 conversations, and its navigation today lives on the per-agent session detail
 page (parent/sibling/child links) — a page this design stops surfacing for
 multi-participant conversations. The merged page therefore inherits it at
-conversation level: the union of member sessions' lineage links, each mapped
-to the conversation its target session belongs to, rendered as **"Parent
-conversation"** and **"Delegations"** (child conversations, grouped by the
-waking member). No new CP surface — the member detail DTOs already carry the
+conversation level: the union of member sessions' lineage links whose target
+lies in a DIFFERENT conversation (§9.1 filters the intra-room ones), each
+mapped to the conversation its target session belongs to, rendered as
+**"Parent conversation"** and **"Delegations"** (child conversations, grouped
+by the waking member). No new CP surface — the member detail DTOs already carry the
 links, and mapping a session to its conversation key is a metadata lookup.
 (C2 ships the links; grouping delegations by waking turn is C3.)
 
@@ -400,3 +413,8 @@ how divergence starts.
 5. **Lineage never changes conversation membership** — parent/child edges are
    linked (attribution in-thread, navigation across conversations), never
    merged (§9).
+6. **Co-membership is not siblinghood.** Sessions sharing a room relate
+   through conversation membership only; "sibling" keeps its lineage meaning
+   (same parent session). An edge whose endpoints share the conversation key
+   renders as attribution and is excluded from lifted navigation — the
+   room-mates-AND-siblings overlap is displayed once, not twice (§9.1).
