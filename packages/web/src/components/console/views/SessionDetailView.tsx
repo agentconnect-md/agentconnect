@@ -706,7 +706,13 @@ export default function SessionDetailView() {
   const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
   const detailTooltipId = useId()
-  const [detailOpen, setDetailOpen] = useState(false)
+  const [detailInteraction, setDetailInteraction] = useState({ hovered: false, focused: false, dismissed: false })
+  const detailOpen = (detailInteraction.hovered || detailInteraction.focused) && !detailInteraction.dismissed
+  const updateDetailPresence = (key: 'hovered' | 'focused', value: boolean) =>
+    setDetailInteraction((current) => {
+      const next = { ...current, [key]: value }
+      return { ...next, dismissed: next.hovered || next.focused ? current.dismissed : false }
+    })
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
@@ -747,7 +753,7 @@ export default function SessionDetailView() {
       if (event.key !== 'Escape') return
       event.preventDefault()
       event.stopPropagation()
-      setDetailOpen(false)
+      setDetailInteraction((current) => ({ ...current, dismissed: true }))
     }
     document.addEventListener('keydown', dismissDetails, true)
     return () => document.removeEventListener('keydown', dismissDetails, true)
@@ -1068,7 +1074,7 @@ export default function SessionDetailView() {
   useEffect(() => {
     imagePrepareGenerationRef.current += 1
     setCopied(false)
-    setDetailOpen(false)
+    setDetailInteraction({ hovered: false, focused: false, dismissed: false })
     setWorkOverride(new Map())
     setImagePreparing(false)
     setImageError(null)
@@ -1611,10 +1617,10 @@ export default function SessionDetailView() {
             the hover target remains continuous. */}
           <div
             className="relative ml-[-3px] flex flex-none items-center"
-            onMouseEnter={() => setDetailOpen(true)}
-            onMouseLeave={() => setDetailOpen(false)}
-            onFocus={() => setDetailOpen(true)}
-            onBlur={() => setDetailOpen(false)}
+            onMouseEnter={() => updateDetailPresence('hovered', true)}
+            onMouseLeave={() => updateDetailPresence('hovered', false)}
+            onFocus={() => updateDetailPresence('focused', true)}
+            onBlur={() => updateDetailPresence('focused', false)}
           >
             <button
               type="button"
