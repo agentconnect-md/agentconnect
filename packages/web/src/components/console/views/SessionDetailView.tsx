@@ -1383,6 +1383,7 @@ export default function SessionDetailView() {
         // session state) and adopted sessions never had a roster.
         const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
+        if (stp.agentId && stp.agentId !== session.agentId) speakers.set(stp.agentId, stepAgentName)
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
@@ -1436,6 +1437,7 @@ export default function SessionDetailView() {
       } else {
         const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
         const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
+        if (stp.agentId && stp.agentId !== session.agentId) speakers.set(stp.agentId, stepAgentName)
         let last = turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
@@ -1466,6 +1468,7 @@ export default function SessionDetailView() {
   const soleAuthor = senderLabel(session.triggeredBy, session.user)
   const soleSpeaker = speakers.size === 1 ? speakers.entries().next().value : undefined
   const participantsLabel = speakers.size > 1 ? speakers.size + ' participants' : (soleSpeaker?.[1] ?? soleAuthor)
+  const participantsTitle = speakers.size > 1 ? [...speakers.values()].join('\n') : undefined
   // The session's `daemon` is the owning agent's daemonId (or '—' when unplaced);
   // resolve it to the daemon's display name — never surface the raw id/host
   // (short-id fallback when it isn't in the fleet), matching the Agents list.
@@ -1705,7 +1708,10 @@ export default function SessionDetailView() {
               <span className="truncate">{headerCron.name || 'Schedule'}</span>
             </Link>
           ) : (
-            <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
+            <span
+              className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
+              title={participantsTitle}
+            >
               <Icon name="users" size={13} className="flex-none" />
               <span className="truncate">{participantsLabel}</span>
             </span>
