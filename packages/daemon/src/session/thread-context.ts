@@ -1,6 +1,34 @@
 import type { LocalStore, TranscriptEntry, TranscriptRow } from '../store/local-store.js'
+import { NO_RESPONSE_SENTINEL } from './no-response.js'
 
 export const MAX_CONTEXT_REFRESH_EVENTS = 50
+
+/** How a delta row's sender is presented to the model. Resolved by the daemon edge
+ *  (agent registry + CP collab snapshot + verified Slack bot authorship); the
+ *  coordinator itself stays platform- and registry-agnostic. */
+export interface ContextEventSender {
+  /** Directory display name when known; callers fall back to the raw transcript sender. */
+  label: string
+  /** True only when the daemon VERIFIED this sender is another AgentConnect agent. */
+  peerAgent: boolean
+}
+
+type SenderResolver = (event: TranscriptRow) => ContextEventSender | undefined
+
+function renderEventRows(
+  events: readonly TranscriptRow[],
+  quoteFor?: (event: TranscriptRow) => string | undefined,
+  senderFor?: SenderResolver
+): string[] {
+  return events.flatMap((event) => {
+    const quote = quoteFor?.(event)
+    const sender = senderFor?.(event)
+    // A raw agent UUID gives the model no way to tell that a delta row is a peer
+    // assistant's own answer rather than the human moving on — name it and say so.
+    const label = sender?.peerAgent ? `${sender.label} (another agent)` : (sender?.label ?? event.sender)
+    return [...(quote ? [quote] : []), `[${label}] ${event.text}`]
+  })
+}
 
 export type ContextCompleteness = 'authoritative' | 'observed-only'
 
@@ -99,32 +127,52 @@ export class ThreadContextCoordinator {
 }
 
 /** Stable, provider-neutral replacement prompt. The bounded newest suffix matches
- * the daemon's existing replay cap and keeps chronological order inside the suffix. */
+ * the daemon's existing replay cap and keeps chronological order inside the suffix.
+ *
+ * Two headings, chosen by what actually churned. When the delta is ONLY peer-agent
+ * replies (a parallel answer race, the multi-agent-webchat norm), the generic
+ * "conversation changed — re-evaluate the task" wording reads as "you were scooped"
+ * and steers the response-choice rule into declining COMPLEMENTARY answers (each
+ * agent introducing itself, each reporting its own status). That branch instead
+ * states the one decision that matters: the activation is still addressed to you —
+ * deliver unless the peer replies made your answer fully redundant. Any human
+ * message in the delta keeps the original re-evaluate framing: the task itself may
+ * genuinely have changed. */
 export function contextUpdateText(
   events: readonly TranscriptRow[],
-  quoteFor?: (event: TranscriptRow) => string | undefined
+  quoteFor?: (event: TranscriptRow) => string | undefined,
+  senderFor?: SenderResolver
 ): string {
   const suffix = events.slice(-MAX_CONTEXT_REFRESH_EVENTS)
   const elided = events.length - suffix.length
-  const heading =
-    '(AgentConnect context update: the conversation changed while you were working.\n' +
-    'Your previous candidate answer was not delivered. Re-evaluate the task using the new\n' +
-    'thread messages below and produce a replacement final answer. Preserve useful work\n' +
-    'already completed, do not repeat side effects blindly, and do not mention this retry\n' +
-    'unless it matters to the user.)'
-  const deltaHeading =
-    elided > 0 ? `(new thread messages — ${elided} earlier message(s) elided)` : '(new thread messages)'
-  const rows = suffix.flatMap((event) => {
-    const quote = quoteFor?.(event)
-    return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
-  })
+  const peerOnly = events.length > 0 && events.every((event) => senderFor?.(event)?.peerAgent === true)
+  const heading = peerOnly
+    ? '(AgentConnect context update: while you were answering, other agents in this\n' +
+      'conversation posted the replies below. The message that activated you is still\n' +
+      'addressed to you, and you have not answered it yet; your previous candidate\n' +
+      'answer was not delivered. If it still adds information the replies below do not\n' +
+      'cover — especially anything only you can provide, such as your own identity,\n' +
+      'status, or perspective — produce it again as your final answer, adjusted for\n' +
+      `those replies. Reply \`${NO_RESPONSE_SENTINEL}\` only if those replies make your\n` +
+      'answer fully redundant. Preserve useful work already completed, do not repeat\n' +
+      'side effects blindly, and do not mention this retry unless it matters to the\n' +
+      'user.)'
+    : '(AgentConnect context update: the conversation changed while you were working.\n' +
+      'Your previous candidate answer was not delivered. Re-evaluate the task using the new\n' +
+      'thread messages below and produce a replacement final answer. Preserve useful work\n' +
+      'already completed, do not repeat side effects blindly, and do not mention this retry\n' +
+      'unless it matters to the user.)'
+  const deltaLabel = peerOnly ? 'new replies from other agents' : 'new thread messages'
+  const deltaHeading = elided > 0 ? `(${deltaLabel} — ${elided} earlier message(s) elided)` : `(${deltaLabel})`
+  const rows = renderEventRows(suffix, quoteFor, senderFor)
   return `${heading}\n\n${deltaHeading}\n${rows.join('\n')}`
 }
 
 /** Initial-fence deltas use a shorter heading: there is no discarded candidate yet. */
 export function initialContextDeltaText(
   events: readonly TranscriptRow[],
-  quoteFor?: (event: TranscriptRow) => string | undefined
+  quoteFor?: (event: TranscriptRow) => string | undefined,
+  senderFor?: SenderResolver
 ): string {
   const suffix = events.slice(-MAX_CONTEXT_REFRESH_EVENTS)
   const elided = events.length - suffix.length
@@ -132,9 +180,6 @@ export function initialContextDeltaText(
     elided > 0
       ? `(additional thread messages before this turn started — ${elided} earlier message(s) elided)`
       : '(additional thread messages before this turn started)'
-  const rows = suffix.flatMap((event) => {
-    const quote = quoteFor?.(event)
-    return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
-  })
+  const rows = renderEventRows(suffix, quoteFor, senderFor)
   return `${heading}\n${rows.join('\n')}`
 }

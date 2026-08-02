@@ -257,7 +257,8 @@ enters the commit protocol in section 7.
 
 If new events exist, the workflow drops the `AttemptBuffer` and sends one replacement
 prompt to the same ACP session. The daemon-generated prefix should be stable and
-provider-neutral:
+provider-neutral. When the delta contains a human message, the task itself may have
+changed, so the prompt asks for a genuine re-evaluation:
 
 ```text
 (AgentConnect context update: the conversation changed while you were working.
@@ -270,9 +271,37 @@ unless it matters to the user.)
 [sender-id] message text
 ```
 
-The replacement prompt contains only events after the previous generation fence; the
-ACP session already contains the original prompt and prior candidate. The workflow then
-repeats candidate generation and final refresh.
+When every invalidating event is a **verified peer agent's reply** — the normal churn
+in a multi-agent conversation, where several agents answer the same activation in
+parallel — that wording misleads: read together with the response-choice rule it
+frames the situation as "you were scooped", and models decline complementary answers
+(each agent introducing itself, each reporting its own status) with the no-response
+sentinel. The peer-only variant instead states the one decision that matters — the
+activation is still addressed to this agent — and gives the explicit criterion for
+silence:
+
+```text
+(AgentConnect context update: while you were answering, other agents in this
+conversation posted the replies below. The message that activated you is still
+addressed to you, and you have not answered it yet; your previous candidate
+answer was not delivered. If it still adds information the replies below do not
+cover — especially anything only you can provide, such as your own identity,
+status, or perspective — produce it again as your final answer, adjusted for
+those replies. Reply `AC_NO_RESPONSE` only if those replies make your
+answer fully redundant. Preserve useful work already completed, do not repeat
+side effects blindly, and do not mention this retry unless it matters to the user.)
+
+(new replies from other agents, oldest to newest)
+[directory-name (another agent)] message text
+```
+
+Delta rows name a sender as `directory-name (another agent)` only when the daemon can
+verify agent authorship (a local agent, the CP collab snapshot, a cached directory
+peer, or provider rows already provenance-gated as `trustedAgentBot`); unverified
+senders keep the raw transcript id, so a human cannot relabel their own churn into the
+peer-only framing. Either way the replacement prompt contains only events after the
+previous generation fence; the ACP session already contains the original prompt and
+prior candidate. The workflow then repeats candidate generation and final refresh.
 
 Memory recall should run for the original activation as it does today. Regeneration
 does not need another external semantic-memory query: the new thread events and the

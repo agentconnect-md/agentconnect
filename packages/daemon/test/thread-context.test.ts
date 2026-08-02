@@ -6,7 +6,9 @@ import { LocalStore } from '../src/store/local-store.js'
 import {
   MAX_CONTEXT_REFRESH_EVENTS,
   ThreadContextCoordinator,
-  contextUpdateText
+  contextUpdateText,
+  initialContextDeltaText,
+  type ContextEventSender
 } from '../src/session/thread-context.js'
 
 function store(): LocalStore {
@@ -153,5 +155,79 @@ describe('ThreadContextCoordinator', () => {
     expect(prompt).toContain('[U1] message-2')
     expect(prompt).toContain(`[U1] message-${MAX_CONTEXT_REFRESH_EVENTS + 1}`)
     db.close()
+  })
+
+  describe('replacement prompt framing', () => {
+    const agentNames = new Map([
+      ['bot-b', 'Beta'],
+      ['bot-c', 'Gamma']
+    ])
+    const senderFor = (event: { sender: string }): ContextEventSender | undefined =>
+      agentNames.has(event.sender) ? { label: agentNames.get(event.sender)!, peerAgent: true } : undefined
+
+    async function refreshFor(entries: [string, string][]) {
+      const db = store()
+      const coordinator = new ThreadContextCoordinator(db)
+      entries.forEach(([sender, body], index) => coordinator.observeInbound(text(`100.${index}`, sender, body)))
+      const refresh = await coordinator.refresh({
+        agentId: 'bot-a',
+        transcriptChannel: 'scope:C1',
+        thread: 'T1',
+        afterRevision: 0
+      })
+      db.close()
+      return refresh
+    }
+
+    it('re-frames peer-only churn as still-addressed instead of re-evaluate', async () => {
+      const refresh = await refreshFor([
+        ['bot-b', 'I am Beta, a coding assistant.'],
+        ['bot-c', 'I am Gamma.']
+      ])
+      const prompt = contextUpdateText(refresh.events, undefined, senderFor)
+
+      expect(prompt).toContain('other agents in this')
+      expect(prompt).toContain('The message that activated you is still')
+      expect(prompt).toContain('AC_NO_RESPONSE')
+      expect(prompt).toContain('(new replies from other agents)')
+      expect(prompt).toContain('[Beta (another agent)] I am Beta, a coding assistant.')
+      expect(prompt).toContain('[Gamma (another agent)] I am Gamma.')
+      expect(prompt).not.toContain('Re-evaluate the task')
+    })
+
+    it('keeps the re-evaluate framing when any human message is in the delta', async () => {
+      const refresh = await refreshFor([
+        ['bot-b', 'I am Beta.'],
+        ['U1', 'actually, use the staging config']
+      ])
+      const prompt = contextUpdateText(refresh.events, undefined, senderFor)
+
+      expect(prompt).toContain('the conversation changed while you were working')
+      expect(prompt).toContain('produce a replacement final answer')
+      expect(prompt).toContain('(new thread messages)')
+      expect(prompt).toContain('[Beta (another agent)] I am Beta.')
+      expect(prompt).toContain('[U1] actually, use the staging config')
+    })
+
+    it('keeps the historical prompt byte-for-byte without a sender resolver', async () => {
+      const refresh = await refreshFor([['bot-b', 'peer answer']])
+      const prompt = contextUpdateText(refresh.events)
+
+      expect(prompt).toContain('the conversation changed while you were working')
+      expect(prompt).toContain('[bot-b] peer answer')
+      expect(prompt).not.toContain('another agent')
+    })
+
+    it('labels peer agents in initial-fence deltas too', async () => {
+      const refresh = await refreshFor([
+        ['bot-b', 'I am Beta.'],
+        ['U1', 'hello everyone']
+      ])
+      const prompt = initialContextDeltaText(refresh.events, undefined, senderFor)
+
+      expect(prompt).toContain('(additional thread messages before this turn started)')
+      expect(prompt).toContain('[Beta (another agent)] I am Beta.')
+      expect(prompt).toContain('[U1] hello everyone')
+    })
   })
 })

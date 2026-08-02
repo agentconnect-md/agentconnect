@@ -52,6 +52,7 @@ import {
   ThreadContextCoordinator,
   contextUpdateText,
   initialContextDeltaText,
+  type ContextEventSender,
   type ContextRefresh,
   type ThreadContextSnapshot
 } from './session/thread-context.js'
@@ -8500,6 +8501,23 @@ export class Daemon {
       .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
   }
 
+  /** How a context-delta row's sender is shown to the model. A sender counts as a peer
+   *  agent only when the daemon can verify it — a LOCAL agent, a CP collab-snapshot
+   *  member, a cached directory peer, or a Slack history row whose AgentConnect bot
+   *  authorship this daemon already verified (`trustedAgentBot`). Anything else
+   *  (humans, unknown ids) keeps the raw transcript sender: an unverified id must
+   *  never be promoted to "another agent", or a human could relabel their own churn
+   *  and weaken the peer-only replacement framing. */
+  private contextEventSender(event: TranscriptRow): ContextEventSender | undefined {
+    const peerAgent =
+      this.agents.has(event.sender) ||
+      this.cpCollab.nameOf(event.sender) !== undefined ||
+      this.channelAgentNames.has(event.sender) ||
+      event.trustedAgentBot === true
+    if (!peerAgent) return undefined
+    return { label: this.agentDisplayLabel(event.sender), peerAgent: true }
+  }
+
   private queuedEntriesMatchingContext(key: string, eventTs: ReadonlySet<string>): QueueEntry[] {
     return (this.serialQueue.get(key) ?? []).filter((entry) => eventTs.has(transcriptCoords(entry.msg).ts))
   }
@@ -10867,7 +10885,11 @@ export class Daemon {
         if (initialEvents.length > 0) {
           deltaBlocks.push({
             type: 'text',
-            text: initialContextDeltaText(initialEvents, (event) => this.observedQuoteBlock(event, initialEvents))
+            text: initialContextDeltaText(
+              initialEvents,
+              (event) => this.observedQuoteBlock(event, initialEvents),
+              (event) => this.contextEventSender(event)
+            )
           })
         }
         promptBlocks.push(...deltaBlocks)
@@ -11099,7 +11121,11 @@ export class Daemon {
         promptBlocks = [
           {
             type: 'text',
-            text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents))
+            text: contextUpdateText(
+              invalidatingEvents,
+              (event) => this.observedQuoteBlock(event, invalidatingEvents),
+              (event) => this.contextEventSender(event)
+            )
           }
         ]
         finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
