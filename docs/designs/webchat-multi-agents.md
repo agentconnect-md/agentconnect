@@ -38,7 +38,8 @@ This design turns a webchat conversation into a **recorded conversation with a
 participant roster** — a private mini-channel owned by one human:
 
 - The conversation keeps one owner (`userId`) and gains an ordered set of
-  **participant agents** with a designated **primary agent**.
+  **participant agents** with a designated **primary agent**, both fixed at
+  creation in v1.
 - The browser addresses agents with **structured mentions**; an unmentioned
   turn routes by a deterministic client-side ladder (mention → last responder →
   primary agent), validated server-side against the roster.
@@ -125,28 +126,36 @@ model WebchatConversationAgent {
 - **Roster cap:** 8 participants. The cap bounds relay fan-out and browser
   stream multiplexing; it is a config constant, not a schema property.
 
-Roster mutations are CP HTTP, owner-only:
+**The roster is fixed at creation (v1).** The owner selects the participating
+agents when starting the conversation; the first selection is the primary.
+There is no add or remove after creation — a different agent set means a new
+conversation. Consequences, all simplifying:
 
-```
-POST   /orgs/:orgId/webchat/conversations/:conversationId/agents   { agentId }
-DELETE /orgs/:orgId/webchat/conversations/:conversationId/agents/:agentId
-```
+- The primary never changes for the life of a conversation. No transfer, no
+  promotion logic, no primary-related UI.
+- Selecting an agent at creation requires the owner to currently `canView` it —
+  the same check the token mint applies today (`webchat-token.ts:40-86`).
+  Because participation is an explicit creation-time act by a user who can see
+  the agent, a `restricted` agent needs no extra gating rule: selecting it
+  _is_ the per-conversation enablement (the webchat analogue of the gated
+  Off/Mention/All model in
+  `packages/control-plane/src/orchestrator/placement.ts:188`).
+- The roster a relay caches at token verification is valid for the
+  conversation's lifetime; only daemon placements can move.
 
-Adding requires the owner to currently `canView` the agent — the same check the
-token mint applies today (`webchat-token.ts:40-86`). Because participation is
-an explicit per-conversation act by a user who can see the agent, a
-`restricted` agent needs no extra gating rule: adding it _is_ the
-per-conversation enablement (the webchat analogue of the gated Off/Mention/All
-model in `packages/control-plane/src/orchestrator/placement.ts:188`). Removing
-a participant closes its current session pointer; its transcript rows remain.
+### 3.1a Future: roster mutation
 
-Removing the **primary** is allowed and **auto-promotes** the longest-standing
-remaining member (ordered by `addedAt`, tie-broken by `agentId`): the CP swaps
-the `role='primary'` row and the mirrored `WebchatConversation.agentId` column
-in one transaction. No separate "make primary" mutation exists — primary is a
-derived anchor, not a user-facing concept, and the deterministic promotion
-keeps it filled without new UI. Removing the **last** participant is refused: a
-conversation always has at least one agent.
+When post-creation add/remove is wanted, the upgrade path is already shaped by
+this design and is recorded here so it is not re-derived: owner-only
+`POST/DELETE /orgs/:orgId/webchat/conversations/:conversationId/agents`
+endpoints with the same `canView` + capability checks as creation; removal
+closes the participant's current session pointer while its transcript rows
+remain; removing the primary auto-promotes the longest-standing remaining
+member (by `addedAt`, tie-broken by `agentId`, swapped with the mirrored
+`agentId` column in one transaction); removing the last participant is
+refused; a `roster_refresh` op lets the browser tell the relay to re-verify
+after a mutation; and growing a preset conversation's roster rotates its
+delegated-MCP authority generation (section 10.3). None of this ships in v1.
 
 ### 3.2 The conversation becomes a recorded coordinate
 
@@ -390,31 +399,29 @@ concurrent agent streams need only an attribution field:
 
 - **Token mint** moves to the conversation:
   `POST /orgs/:orgId/webchat/conversations/token` with an optional
-  `conversationId` (absent = create, with `agentId` naming the initial
-  primary). The legacy per-agent path stays as an alias that creates or
-  resumes a single-participant conversation.
+  `conversationId` (absent = create, with `agentIds[]` naming the roster —
+  first entry is the primary). The legacy per-agent path stays as an alias
+  that creates or resumes a single-participant conversation.
 - **`rc/verify`** (`relay-cp.ts:82-112`): the verdict returns the roster with
   placements — `participants: [{ agentId, daemonId, primary }]` — instead of
   the singular `agentId`/`daemonId`. The relay caches it per browser
-  connection. After a roster mutation the browser (which made the HTTP call)
-  sends a `roster_refresh` op; the relay re-verifies the token and re-caches.
-  A placement moved between refreshes surfaces as a failed delivery and the
-  relay re-verifies once — the same lazy re-resolution reconnects use. The CP
-  stays off the per-message path.
-- The `ready` frame to the browser carries the roster; roster changes are
-  re-emitted so all tabs converge.
+  connection; since the roster is creation-fixed, the cache is valid for the
+  connection's lifetime. A daemon placement moved mid-connection surfaces as a
+  failed delivery and the relay re-verifies once — the same lazy re-resolution
+  reconnects use. The CP stays off the per-message path.
+- The `ready` frame to the browser carries the roster.
 - `CollabRoutesSnapshot` gains the webchat rosters slice (section 3.2).
 
 ### 6.3 Capability negotiation
 
 Daemons advertise `webchat_multi_agent_v1` (register capability, re-announced
-via `capabilities/update`). Enforcement sits at the **roster mutation**: the CP
-refuses to add an agent whose daemon does not advertise the capability, and
-refuses to add any agent while the _primary's_ daemon lacks it. Existing
-one-participant conversations therefore never require the capability, and the
+via `capabilities/update`). Enforcement sits at **conversation creation**: the
+CP refuses to create a conversation with more than one agent unless every
+selected agent's daemon advertises the capability. Single-agent creates never
+require it, so existing flows and older daemons are untouched, and the
 relay/browser never see a mixed-capability roster. Relay and web ship the
-feature versioned as usual; the browser gates the "Add agent" affordance on a
-CP-reported feature flag.
+feature versioned as usual; the browser gates the multi-agent creation
+affordance on a CP-reported feature flag.
 
 ## 7. Agent-to-agent inside the conversation
 
@@ -480,12 +487,15 @@ recorded in the author's own session.
 
 ## 9. Web UI
 
-- **Composer**: `@` opens roster autocomplete; picking a non-participant agent
-  offers "Add to conversation" (runs the roster POST, then inserts the chip).
-  Mention chips serialize to `mentions[]`; the ladder of section 4.2 computes
-  `targets[]`.
-- **Header**: participant chips with icons; add/remove affordances
-  (owner-only); primary marked.
+- **Creation**: the new-conversation composer gains a multi-select of agents
+  (first pick = primary), gated on the CP feature flag and per-agent daemon
+  capability; the existing single-agent entry points are the one-agent case of
+  the same flow.
+- **Composer**: `@` opens autocomplete over the roster only. Agents outside
+  the roster are not offered (the roster is creation-fixed; the affordance for
+  "bring in another agent" is starting a new conversation). Mention chips
+  serialize to `mentions[]`; the ladder of section 4.2 computes `targets[]`.
+- **Header**: participant chips with icons; primary marked.
 - **Streams**: one lane per `(turnId, agentId)`; per-agent typing/streaming
   indicators; per-agent ack failures surfaced inline ("B is busy — queued").
 - **PlaygroundProvider** (`packages/web/src/components/console/PlaygroundProvider.tsx`)
@@ -514,54 +524,51 @@ recorded in the author's own session.
 
 ### 10.2 Authorization summary
 
-| Action                           | Check                                                                |
-| -------------------------------- | -------------------------------------------------------------------- |
-| Mint conversation token          | owner + `canView` every participant's agent at mint                  |
-| Add participant                  | owner + `canView(agent)` + daemon capability                         |
-| Remove participant               | owner                                                                |
-| Target a turn at an agent        | relay: target ∈ roster                                               |
-| Agent wakes peer in conversation | directional call policy + caller ∈ roster (else `a2a:` substitution) |
-| Read conversation                | session visibility per participant session (owner-private default)   |
+| Action                             | Check                                                                 |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| Create conversation (fixes roster) | owner + `canView` every selected agent + daemon capability when N > 1 |
+| Mint conversation token            | owner + `canView` every participant's agent at mint                   |
+| Target a turn at an agent          | relay: target ∈ roster                                                |
+| Agent wakes peer in conversation   | directional call policy + caller ∈ roster (else `a2a:` substitution)  |
+| Read conversation                  | session visibility per participant session (owner-private default)    |
 
-A `restricted` agent is addable only by users who can view it, and its
+A `restricted` agent is selectable only by users who can view it, and its
 participation is conversation-scoped — the same fail-closed posture as gated
 IM conversations.
 
 ### 10.3 Delegated admin MCP
 
 A conversation containing the built-in `agentconnect` preset **may** be
-multi-agent, but the administrative catalog is available only while the
-conversation is single-participant. The grant's logical-authority tuple binds
+multi-agent, but the administrative catalog is available only in
+single-participant conversations. The grant's logical-authority tuple binds
 one `agentId` and the confirmation UX assumes one acting agent
 ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md) §3),
-so instead of refusing roster growth:
-
-- Growing the roster beyond one participant **rotates the conversation's
-  authority generation**: all active `agentconnect-admin` grants are revoked
-  atomically and issuance is suspended while the roster has more than one
-  member. This is an additional entry in that design's §5.3 revocation list,
-  enforced CP-side, so a delayed daemon cannot keep a live descriptor working.
-- The daemon removes the descriptor through the existing revision-fenced
-  lifecycle; the session surfaces "administration tools are unavailable in
-  multi-agent conversations" the same way descriptor-attachment failure does.
-- Shrinking the roster back to exactly the preset resumes issuance through the
-  normal two-phase activation under the new authority generation.
+so grant **issuance gains the condition `roster size == 1`** alongside that
+design's §5.2 issuance rules. A preset selected into a multi-agent roster at
+creation simply never gets the `agentconnect-admin` descriptor, and the
+session surfaces "administration tools are unavailable in multi-agent
+conversations" the same way descriptor-attachment failure does. Because the
+v1 roster is creation-fixed, no revocation-on-growth machinery is needed; if
+roster mutation ships later (section 3.1a), growth past one participant must
+rotate the conversation's authority generation and suspend issuance, as an
+additional entry in that design's §5.3 revocation list.
 
 Extending the grant model to multiple acting agents is explicitly out of scope
 here.
 
 ## 11. Rollout
 
-- **M0 — schema + roster API.** `WebchatConversationAgent`, backfill, roster
-  endpoints, conversation-scoped token mint (legacy alias kept), per-agent
-  current-session pointers. No behavior change for existing conversations.
+- **M0 — schema + multi-agent create.** `WebchatConversationAgent`, backfill,
+  conversation-scoped token mint with creation-time `agentIds[]` (legacy alias
+  kept), per-agent current-session pointers. No behavior change for existing
+  conversations.
 - **M1 — multi-target turns.** `rc/verify` roster verdict, relay fan-out with
   membership validation, `RdMsgWebchat` additions, canonical `at`/`postId`,
   per-agent acks/streams, context fan-out of user turns and agent replies
   (attachments included), composer mentions + targeting ladder, per-agent
-  stream lanes. Capability `webchat_multi_agent_v1` gates roster growth.
-  Roster-growth grant revocation for preset conversations (section 10.3) lands
-  here, with the matching §5.3 addition to
+  stream lanes. Capability `webchat_multi_agent_v1` gates multi-agent
+  creation. The preset issuance condition `roster size == 1` (section 10.3)
+  lands here, with the matching §5.2 addition to
   [webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md).
 - **M2 — a2a in-conversation.** Roster slice in `CollabRoutesSnapshot`, the
   recorded-coordinate carve-out in both collaboration routers,
@@ -603,20 +610,21 @@ user-facing product ("talk to several agents in one Playground conversation").
 
 Questions resolved during design review:
 
-1. **Primary removal** — no user-facing "transfer primary" concept. Removing
-   the primary auto-promotes the longest-standing remaining member; primary is
-   a derived compatibility/default anchor, not something owners manage
-   (section 3.1).
-2. **Attachment fan-out** — full fan-out: a turn's image travels with its
+1. **Roster is fixed at creation (v1)** — no add or remove after a
+   conversation exists; a different agent set is a new conversation. Roster
+   mutation is future work with its shape recorded in section 3.1a.
+2. **Primary never changes** — it is the first agent selected at creation, a
+   derived compatibility/default anchor with no user-facing management. (The
+   auto-promotion rule in section 3.1a applies only if mutation ships later.)
+3. **Attachment fan-out** — full fan-out: a turn's image travels with its
    context copies to every participant, bounded by roster cap × the 160 KiB
    image cap (sections 5.1, 10.1).
-3. **Conversation title** — taken from the primary agent's `session_info`
+4. **Conversation title** — taken from the primary agent's `session_info`
    stream; other participants title only their own session rows (section 8).
-4. **Preset conversations** — the built-in `agentconnect` preset may be in a
-   multi-agent conversation; the delegated admin catalog is simply revoked and
-   suspended while the roster has more than one member, and resumes when it
-   shrinks back (section 10.3).
-5. **No automatic round-table** — a multi-target turn produces independent
+5. **Preset conversations** — the built-in `agentconnect` preset may be in a
+   multi-agent conversation; the delegated admin catalog is simply not issued
+   while the roster has more than one member (section 10.3).
+6. **No automatic round-table** — a multi-target turn produces independent
    answers; peers see each other's output only as context at their next
    activation or via an explicit mention, matching Slack-channel behavior
    (section 4.3).
