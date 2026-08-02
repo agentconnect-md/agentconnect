@@ -214,7 +214,8 @@ describe('GET /sessions — grouped conversations', () => {
         phase: 'start',
         platform: 'webchat',
         channel: CONVO,
-        thread: CONVO,
+        // The daemon's real thread shape — the msgId form, not the bare id.
+        thread: `webchat:${CONVO}`,
         lastActivityAt: new Date(at).toISOString(),
         ts: new Date(at).toISOString()
       })
