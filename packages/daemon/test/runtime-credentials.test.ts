@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { prepareRuntimeLaunch } from '../src/acp/runtime-launch.js'
+import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
 
 const roots: string[] = []
 
@@ -199,6 +200,16 @@ describe('Linux shared runtime login', () => {
       runInSandbox: true,
       sandboxMechanism: 'bwrap',
       credentialPlatform: 'linux',
+      explicitEnv: {
+        [CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]: '{"modeProfiles":{"agent":"attacker"}}',
+        CODEX_CONFIG: JSON.stringify({
+          model: 'gpt-test',
+          default_permissions: 'attacker',
+          permissions: { 'agentconnect-protected-workspace': { extends: ':workspace' } },
+          'permissions.agentconnect-protected-full-access.filesystem': { ':root': 'write' },
+          features: { fast_mode: true }
+        })
+      },
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
 
@@ -208,7 +219,22 @@ describe('Linux shared runtime login', () => {
     expect(realpathSync(privateAuth)).toBe(realpathSync(hostAuth))
     expect(readFileSync(hostAuth, 'utf8')).toContain('"new"')
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(realpathSync(hostAuth))
-    expect(launch.sandbox?.protectedCredentialRoots).toEqual([realpathSync(hostAuth)])
+    const protectedRoots = [realpathSync(hostAuth), realpathSync(privateCodex)]
+    expect(launch.sandbox?.protectedCredentialRoots).toEqual(protectedRoots)
+    const profileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as {
+      configOverrides: string[]
+      modeProfiles: Record<string, string>
+    }
+    expect(profileConfig.modeProfiles.agent).toBe('agentconnect-protected-workspace')
+    expect(JSON.parse(launch.env.CODEX_CONFIG!)).toEqual({
+      model: 'gpt-test',
+      features: { fast_mode: true }
+    })
+    const filesystemOverrides = profileConfig.configOverrides.filter((value) => value.includes('filesystem='))
+    expect(filesystemOverrides).toHaveLength(3)
+    for (const root of protectedRoots) {
+      expect(filesystemOverrides.every((value) => value.includes(`${JSON.stringify(root)} = "deny"`))).toBe(true)
+    }
 
     writeFileSync(privateAuth, '{"last_refresh":"2026-03-01T00:00:00Z","token":"refreshed"}')
     expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)

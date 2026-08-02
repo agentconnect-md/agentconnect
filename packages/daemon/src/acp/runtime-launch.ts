@@ -4,7 +4,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from './sandbox.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
-import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
+import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment, runtimeHomePath } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
 import {
@@ -14,6 +14,11 @@ import {
   isClaudeRuntimeDef,
   type ClaudeProtectedSettings
 } from './claude-runtime.js'
+import {
+  CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
+  codexConfigWithoutPermissionOverrides,
+  codexPermissionProfileConfig
+} from './codex-permission-profiles.js'
 
 function disabledClaudeProfileRoot(scopeDir: string): string {
   const root = realpathSync(resolve(scopeDir))
@@ -58,7 +63,6 @@ const HOST_SOCKET_POINTER_ENV = [
 ] as const
 
 const LOCAL_CONTAINER_ENDPOINT_ENV = ['DOCKER_HOST', 'CONTAINER_HOST', 'BUILDKIT_HOST', 'PODMAN_HOST'] as const
-
 function isLocalSocketEndpoint(value: string): boolean {
   const endpoint = value.trim().toLowerCase()
   return endpoint.startsWith('/') || /^(?:unix|npipe|fd):/.test(endpoint)
@@ -245,6 +249,7 @@ export function prepareRuntimeLaunch(opts: {
     credentials?.seedExclusions
   )
   credentials?.preparePrivateHome(runtimeHome)
+  const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   const env = {
     ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, opts.hostEnv),
     ...credentials?.env
@@ -315,6 +320,7 @@ export function prepareRuntimeLaunch(opts: {
         .filter(existsSync)
         .map((path) => realpathSync(path))
     : []
+  const privateCodexStateRoots = credentialProfile === 'codex' ? [realpathSync(join(runtimeHome, '.codex'))] : []
 
   const boundary = sandboxBoundary({
     agentDir: opts.scopeDir,
@@ -345,6 +351,20 @@ export function prepareRuntimeLaunch(opts: {
     allowRead: boundary.allowRead,
     gitSafeDirectories: boundary.gitSafeDirectories
   })
+  const protectedCredentialRoots = compactReadRoots([
+    ...credentialWritableRoots,
+    ...providerCredentialReadRoots,
+    ...privateClaudeStateRoots,
+    ...privateCodexStateRoots
+  ])
+  if (credentialProfile === 'codex') {
+    const profileConfig = codexPermissionProfileConfig(protectedCredentialRoots)
+    if (profileConfig) {
+      const codexConfig = codexConfigWithoutPermissionOverrides(env.CODEX_CONFIG)
+      if (codexConfig !== undefined) env.CODEX_CONFIG = codexConfig
+      env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV] = JSON.stringify(profileConfig)
+    }
+  }
   return {
     env,
     inheritProcessEnv: false,
@@ -356,11 +376,7 @@ export function prepareRuntimeLaunch(opts: {
       cwd: boundary.gitSafeDirectories[0]!,
       denyReadRoots,
       allowReadRoots: boundary.allowRead,
-      protectedCredentialRoots: compactReadRoots([
-        ...credentialWritableRoots,
-        ...providerCredentialReadRoots,
-        ...privateClaudeStateRoots
-      ]),
+      protectedCredentialRoots,
       ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {})
     }
   }
