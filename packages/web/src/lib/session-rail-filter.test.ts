@@ -2,11 +2,19 @@ import { describe, expect, it } from 'vitest'
 import { EMPTY_RAIL_AGENT_FILTER, railAgentFilterQuery, seedRailAgentFilter } from './session-rail-filter'
 
 describe('seedRailAgentFilter', () => {
-  it('defaults to the open conversation’s agents, in roster order', () => {
+  it('defaults to the open conversation’s agents', () => {
     expect(seedRailAgentFilter(EMPTY_RAIL_AGENT_FILTER, ['agent-a', 'agent-b'])).toEqual({
       agentIds: ['agent-a', 'agent-b'],
       touched: false
     })
+  })
+
+  it('does not re-seed when the roster comes back in a different order', () => {
+    // The roster is ordered by last activity, so the same two agents arrive
+    // either way round as they take turns. Re-seeding on that would reshuffle
+    // the reader's chips every time one of them spoke.
+    const seeded = seedRailAgentFilter(EMPTY_RAIL_AGENT_FILTER, ['agent-a', 'agent-b'])
+    expect(seedRailAgentFilter(seeded, ['agent-b', 'agent-a'])).toBe(seeded)
   })
 
   it('drops duplicate and blank roster entries', () => {

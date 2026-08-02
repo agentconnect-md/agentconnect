@@ -145,4 +145,24 @@ describe('partitionPinned', () => {
   it('is a pass-through with no pins', () => {
     expect(partitionPinned(rows, [])).toEqual({ pinned: [], rest: rows })
   })
+
+  it('keeps a conversation pinned after another participant becomes its newest', () => {
+    // A conversation row is identified by its newest member, which moves as the
+    // participants take turns. The pin was written against `m2`; the row now
+    // answers to `m1`, and matching on the row id alone would lose it.
+    const conversation = { id: 'm1', members: ['m1', 'm2'] }
+    const other = { id: 'x', members: ['x'] }
+    expect(partitionPinned([conversation, other], [pin('m2')], (row) => row.members)).toEqual({
+      pinned: [conversation],
+      rest: [other]
+    })
+  })
+
+  it('lists a conversation once when several of its members are pinned', () => {
+    const conversation = { id: 'm1', members: ['m1', 'm2'] }
+    expect(partitionPinned([conversation], [pin('m1'), pin('m2')], (row) => row.members)).toEqual({
+      pinned: [conversation],
+      rest: []
+    })
+  })
 })

@@ -1300,11 +1300,18 @@ export default function SessionDetailView() {
   // the question being asked. A null query means the filter has nothing to say yet
   // (no session, and the reader has not touched it), so the org key stays null and
   // no page is fetched to be thrown away.
+  //
+  // GROUPED, because the filter is conversation-shaped: the flat view returns one
+  // row per member session, so the moment the filter names a whole roster a thread
+  // two agents worked in listed itself once per agent. One row per conversation is
+  // also what the rail was always showing — that only happened to be true while
+  // the filter named a single agent.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
   const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
     MOCK_MODE || !railQuery ? null : activeOrg?.id,
-    railQuery ?? {}
+    railQuery ?? {},
+    { grouped: true }
   )
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
@@ -1317,6 +1324,25 @@ export default function SessionDetailView() {
     const shared = railAgentIds.map(channelsOf).reduce((a, b) => new Set([...a].filter((c) => b.has(c))))
     return allSessions.filter((s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform} ${s.channel}`))
   }, [allSessions, getSessions, railAgentIds, railQuery, railSessionRows])
+  // The open row as the rail sees it: its conversation and, where the resolver
+  // has answered, that conversation's full membership. Both are identity the rail
+  // matches on, and neither is on the session row itself.
+  const railCurrentKey = conversationKey ?? selfKey
+  const railCurrentMemberIds = useMemo(() => {
+    const roster = conversationKey ? conversationMembers : (selfConversation?.sessions ?? null)
+    return roster?.map((member) => member.sessionId) ?? null
+  }, [conversationKey, conversationMembers, selfConversation])
+  const railCurrent = useMemo(
+    () =>
+      session && (railCurrentKey || railCurrentMemberIds)
+        ? {
+            ...session,
+            ...(railCurrentKey ? { conversationKey: railCurrentKey } : {}),
+            ...(railCurrentMemberIds ? { memberSessionIds: railCurrentMemberIds } : {})
+          }
+        : session,
+    [session, railCurrentKey, railCurrentMemberIds]
+  )
   const sessionBusy = session ? isPgBusy(session.id) : false
   const sessionBusyRef = useRef(sessionBusy)
   sessionBusyRef.current = sessionBusy
@@ -2357,7 +2383,14 @@ export default function SessionDetailView() {
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
       <SessionRail
         sessions={railSessions}
-        current={session}
+        // The open row has to name its conversation and its members, because that
+        // is how the rail collapses it against the grouped list and how a pin
+        // finds it — matching on the session id alone would double the row (or
+        // lose its pin) whenever the two disagree on which member is newest.
+        // `selfKey` is the same §5.1 key computed for the redirect probe, so a
+        // single-participant thread is deduplicated on exactly the same terms, and
+        // the roster resolver is not agent-filtered, so its members are complete.
+        current={railCurrent ?? session}
         total={railSessionTotal}
         agentIds={railFilter.agentIds}
         filterTouched={railFilter.touched}

@@ -997,7 +997,22 @@ export class PgSessionRepo implements SessionRepo {
     const groupable = page.filter((r) => r.channel !== null && r.thread !== null)
     const membersByKey = new Map<string, SessionMeta[]>()
     if (groupable.length > 0) {
-      const memberWhere = pageWhereSql({ ...q, cursor: undefined }, false)
+      // Membership is read over `memberAgentIds` — every agent the caller may see
+      // when that is wider than the filter. Who took part is a property of the
+      // conversation, and a client that learned it from the filtered rows would
+      // lose a member the moment the filter hid it. The participant arm goes with
+      // it: these rows are already inside a qualifying conversation, so re-testing
+      // it here would only cost a probe per row. Which conversations qualify, and
+      // in what order, stays on `agentIds` above.
+      const memberWhere = pageWhereSql(
+        {
+          ...q,
+          ...(q.memberAgentIds ? { agentIds: q.memberAgentIds, agentId: undefined } : {}),
+          conversationAgentIds: undefined,
+          cursor: undefined
+        },
+        false
+      )
       const keyTuples = groupable.map(
         (r) => Prisma.sql`(${r.platform ?? 'slack'}, ${r.tenantScope ?? ''}, ${r.channel}, ${r.thread})`
       )
@@ -1021,6 +1036,7 @@ export class PgSessionRepo implements SessionRepo {
     // newest-first, so the first row seen for an agentId wins and superseded
     // ACP session rows drop out. The representative is by construction the
     // group's first row.
+    const selected = new Set<string>(queryAgentIds(q))
     const collapsed = page.map((rep) => {
       const rows =
         rep.channel !== null && rep.thread !== null ? (membersByKey.get(conversationKeyOf(rep)) ?? [rep]) : [rep]
@@ -1031,7 +1047,10 @@ export class PgSessionRepo implements SessionRepo {
         seen.add(row.agentId)
         perAgent.push(row)
       }
-      return { rep, rows: perAgent }
+      // `rows` are the returned ones; membership is the whole collapse. They part
+      // company only under an agent filter, which is exactly when the difference
+      // matters.
+      return { rep, rows: perAgent.filter((row) => selected.has(row.agentId)), members: perAgent }
     })
     const hydrated = await this.hydrate(collapsed.flatMap((c) => c.rows))
     const byId = new Map(hydrated.map((rec) => [rec.id, rec]))
@@ -1043,7 +1062,8 @@ export class PgSessionRepo implements SessionRepo {
           channel: c.rep.channel,
           thread: c.rep.thread
         },
-        sessions: c.rows.map((row) => byId.get(SessionId(row.id))!).filter(Boolean)
+        sessions: c.rows.map((row) => byId.get(SessionId(row.id))!).filter(Boolean),
+        memberSessionIds: c.members.map((row) => row.id)
       })),
       total: totalRows ? Number(totalRows[0]?.count ?? 0n) : null,
       hasMore
@@ -1201,7 +1221,14 @@ export class PgSessionRepo implements SessionRepo {
 
   async listExternalScopes(q: SessionFilterQuery): Promise<ExternalScopeRecord[]> {
     if (queryAgentIds(q).length === 0) return []
-    const unrestricted = { ...q }
+    // Over the MEMBERSHIP agents, not the filtered ones. The scopes resolved here
+    // become the viewer snapshot every later query is authorized against, so a
+    // scope missed here is a row the membership query cannot admit — a member
+    // dropped for having been filtered out, not for being invisible.
+    const unrestricted = {
+      ...q,
+      ...(q.memberAgentIds ? { agentIds: q.memberAgentIds, agentId: undefined } : {})
+    }
     delete unrestricted.viewer
     delete unrestricted.cursor
     const rows = await this.db.$queryRaw<ExternalScope[]>(Prisma.sql`
