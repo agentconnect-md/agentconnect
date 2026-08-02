@@ -629,28 +629,30 @@ function SessionParticipantsHover({
       <span
         id={tooltipId}
         role="tooltip"
-        className="pointer-events-none invisible absolute top-full left-0 z-40 mt-2 w-[220px] max-w-[calc(100vw-40px)] -translate-y-1 rounded-lg border border-(--border-default) bg-(--surface-card) p-2 opacity-0 shadow-(--shadow-lg) transition-[opacity,transform,visibility] group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
+        className="pointer-events-none invisible absolute top-full left-0 z-40 w-[220px] max-w-[calc(100vw-40px)] -translate-y-1 pt-2 opacity-0 transition-[opacity,transform,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
       >
-        <span className="block px-2 pt-1 font-sans text-[10.5px] font-semibold leading-normal tracking-[0.06em] text-(--text-tertiary) uppercase">
-          Participants
-        </span>
-        <span className="mt-[5px] flex flex-col gap-[2px]">
-          {participants.map((participant) => (
-            <span key={participant.id} className="flex min-w-0 items-center gap-[9px] rounded-md px-2 py-[6px]">
-              <ParticipantAvatar
-                agent={participant.agent}
-                avatarUrl={participant.avatarUrl}
-                avatarInitials={participant.avatarInitials}
-                platformMark={platformMark}
-                sp={participant.sp}
-                isCron={participant.isCron}
-                showNameTitle={false}
-              />
-              <span className="min-w-0 truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
-                {participant.sp.name}
+        <span className="block max-h-[min(360px,calc(100vh-120px))] overflow-y-auto overscroll-contain rounded-lg border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-lg)">
+          <span className="block px-2 pt-1 font-sans text-[10.5px] font-semibold leading-normal tracking-[0.06em] text-(--text-tertiary) uppercase">
+            Participants
+          </span>
+          <span className="mt-[5px] flex flex-col gap-[2px]">
+            {participants.map((participant) => (
+              <span key={participant.id} className="flex min-w-0 items-center gap-[9px] rounded-md px-2 py-[6px]">
+                <ParticipantAvatar
+                  agent={participant.agent}
+                  avatarUrl={participant.avatarUrl}
+                  avatarInitials={participant.avatarInitials}
+                  platformMark={platformMark}
+                  sp={participant.sp}
+                  isCron={participant.isCron}
+                  showNameTitle={false}
+                />
+                <span className="min-w-0 truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
+                  {participant.sp.name}
+                </span>
               </span>
-            </span>
-          ))}
+            ))}
+          </span>
         </span>
       </span>
     </span>
