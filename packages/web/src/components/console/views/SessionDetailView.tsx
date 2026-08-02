@@ -170,6 +170,10 @@ function msgStep(m: SessionMessageDto): FmtStep {
   }
 }
 
+/** Focus auto-paging budget (§5.3): how many older windows the ?focus landing
+ *  may pull looking for the focused participant's first block. */
+const MAX_FOCUS_PAGES = 10
+
 /** Whether a member-source read failure may surface in the offline notice.
  *  Only a CONFIRMED daemon-offline response counts (the CP answers 503 when
  *  the owning daemon has no connection; 502/504 are its gateway shapes).
@@ -748,13 +752,20 @@ function MobileSessionFamilyLinks({
   siblings,
   children,
   agentById,
-  orgPath
+  orgPath,
+  conversation = false,
+  childOriginById
 }: {
   parent: SessionRelationDto | null
   siblings: SessionRelationDto[]
   children: SessionRelationDto[]
   agentById: ReadonlyMap<string, Agent>
   orgPath: (path: string) => string
+  /** Conversation-level lineage (merged-conversation-view.md §9.2): relabels
+   *  the sections and groups delegations by their waking member. */
+  conversation?: boolean
+  /** Delegation target id → waking member agentId (conversation mode). */
+  childOriginById?: ReadonlyMap<string, string>
 }) {
   if (!parent && siblings.length === 0 && children.length === 0) return null
   return (
@@ -766,7 +777,7 @@ function MobileSessionFamilyLinks({
           }`}
         >
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            Parent session
+            {conversation ? 'Parent conversation' : 'Parent session'}
           </span>
           <SessionRelationLink relation={parent} agent={agentById.get(parent.agentId)} orgPath={orgPath} />
         </div>
@@ -796,18 +807,36 @@ function MobileSessionFamilyLinks({
       {children.length > 0 && (
         <div className="grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4">
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            {children.length === 1 ? 'Child session' : `Child sessions (${children.length})`}
+            {conversation
+              ? children.length === 1
+                ? 'Delegation'
+                : `Delegations (${children.length})`
+              : children.length === 1
+                ? 'Child session'
+                : `Child sessions (${children.length})`}
           </span>
           <div className="min-w-0">
-            {children.map((child, index) => (
-              <SessionRelationLink
-                key={child.id}
-                relation={child}
-                agent={agentById.get(child.agentId)}
-                orgPath={orgPath}
-                bordered={index > 0}
-              />
-            ))}
+            {children.map((child, index) => {
+              const origin = childOriginById?.get(child.id)
+              const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
+              const originAgent = origin ? agentById.get(origin) : undefined
+              const newGroup = origin !== undefined && origin !== previousOrigin
+              return (
+                <div key={child.id}>
+                  {newGroup && (
+                    <div className="pt-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
+                      via {originAgent ? agentLabel(originAgent) : origin}
+                    </div>
+                  )}
+                  <SessionRelationLink
+                    relation={child}
+                    agent={agentById.get(child.agentId)}
+                    orgPath={orgPath}
+                    bordered={index > 0 && !newGroup}
+                  />
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -862,44 +891,94 @@ export default function SessionDetailView() {
     return { tokens: fmtCountCompact(tokens), cost: fmtCost(cost || undefined, currency) }
   }, [conversationKey, conversationMembers])
   // Conversation-level lineage lift (merged-conversation-view.md §9.2): union
-  // the members' parent/child links, keep only CROSS-conversation edges (a
-  // target inside the member set is an intra-room edge — attribution, not
-  // navigation, per §9.1), and link targets as /sessions/:id — the §5.3
-  // self-redirect forwards multi-participant targets to THEIR merged page, so
-  // no per-target resolver probes are needed.
-  const { data: conversationMemberDetails } = useSWR(
-    conversationKey && activeOrg?.id && conversationMembers && conversationMembers.length > 1
-      ? (['conversation-lineage', activeOrg.id, conversationSourceKey] as const)
+  // the members' parent/child links, keep only CROSS-conversation edges, and
+  // link targets as /sessions/:id — the §5.3 self-redirect forwards
+  // multi-participant targets to THEIR merged page. Intra-room vs cross-room
+  // is decided by conversation LOCATION (the target's own conversation key),
+  // not by membership in the collapsed current-session set — an edge to a
+  // SUPERSEDED session at this location is still intra-room (§9.1). Each
+  // lifted delegation preserves its waking member so the UI groups
+  // delegations by origin.
+  const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
+  const { data: conversationLineage } = useSWR(
+    conversationMode && activeOrg?.id
+      ? (['conversation-lineage', activeOrg.id, conversationKey, conversationSourceKey] as const)
       : null,
-    ([, orgId]) =>
-      Promise.all(
+    async ([, orgId]) => {
+      const details = await Promise.all(
         (conversationMembers ?? []).map((member) => fetchSessionDetail(member.sessionId, orgId).catch(() => null))
-      ),
+      )
+      const parents = new Map<string, SessionRelationDto>()
+      const children = new Map<string, SessionRelationDto>()
+      const childOriginById = new Map<string, string>()
+      for (const detail of details) {
+        if (!detail) continue
+        const parent = detail.parentSession
+        if (parent && !parents.has(parent.id)) parents.set(parent.id, parent)
+        for (const child of detail.childSessions) {
+          if (!children.has(child.id)) {
+            children.set(child.id, child)
+            childOriginById.set(child.id, detail.agentId)
+          }
+        }
+      }
+      // Location filter: fetch each candidate target's own conversation key
+      // and drop same-location edges. A target whose detail can't be read is
+      // dropped too (fail closed — the caller couldn't open it anyway).
+      const candidateIds = [...new Set([...parents.keys(), ...children.keys()])]
+      const targetKeys = new Map<string, string | null>()
+      await Promise.all(
+        candidateIds.map(async (targetId) => {
+          try {
+            const target = await fetchSessionDetail(targetId, orgId)
+            targetKeys.set(
+              targetId,
+              encodeConversationKey({
+                platform: target.platform ?? 'slack',
+                tenantScope: target.tenantScope ?? null,
+                channel: target.channel,
+                thread: target.thread
+              })
+            )
+          } catch {
+            targetKeys.set(targetId, null)
+          }
+        })
+      )
+      const crossRoom = (targetId: string): boolean => {
+        const key = targetKeys.get(targetId)
+        return key !== null && key !== undefined && key !== conversationKey
+      }
+      const crossParents = [...parents.values()].filter((parent) => crossRoom(parent.id))
+      const crossChildren = [...children.values()]
+        .filter((child) => crossRoom(child.id))
+        // Origin-adjacent order — the family UI renders delegation groups
+        // from this plus childOriginById.
+        .sort((a, b) => {
+          const ao = childOriginById.get(a.id) ?? ''
+          const bo = childOriginById.get(b.id) ?? ''
+          return ao < bo ? -1 : ao > bo ? 1 : a.id < b.id ? -1 : 1
+        })
+      const [firstParent, ...moreParents] = crossParents
+      return {
+        family: {
+          // The family UI models ONE parent; extra cross-room delegation
+          // origins surface beside the delegations.
+          parentSession: firstParent ?? null,
+          siblingSessions: moreParents,
+          childSessions: crossChildren
+        },
+        childOriginById
+      }
+    },
     { revalidateOnFocus: false }
   )
-  const conversationFamily = useMemo(() => {
-    if (!conversationKey || !conversationMembers || conversationMembers.length <= 1) return undefined
-    const memberIds = new Set(conversationMembers.map((m) => m.sessionId))
-    const parents = new Map<string, SessionRelationDto>()
-    const children = new Map<string, SessionRelationDto>()
-    for (const detail of conversationMemberDetails ?? []) {
-      if (!detail) continue
-      const parent = detail.parentSession
-      if (parent && !memberIds.has(parent.id)) parents.set(parent.id, parent)
-      for (const child of detail.childSessions) {
-        if (!memberIds.has(child.id)) children.set(child.id, child)
-      }
-    }
-    if (parents.size === 0 && children.size === 0) return undefined
-    const [firstParent, ...moreParents] = [...parents.values()]
-    return {
-      // The family UI models ONE parent; multiple cross-room delegation
-      // origins are rare — surface the extras beside the delegations.
-      parentSession: firstParent ?? null,
-      siblingSessions: moreParents,
-      childSessions: [...children.values()]
-    }
-  }, [conversationKey, conversationMembers, conversationMemberDetails])
+  // Conversation mode NEVER falls back to the representative's raw family —
+  // an empty aggregate means "no cross-room edges", not "show the intra-room
+  // links the filter just removed".
+  const conversationFamily = conversationMode
+    ? (conversationLineage?.family ?? { parentSession: null, siblingSessions: [], childSessions: [] })
+    : undefined
   const {
     agents,
     allSessions,
@@ -1508,14 +1587,40 @@ export default function SessionDetailView() {
     return () => window.clearInterval(timer)
   }, [visibleTailReady, refreshTranscriptTail])
 
+  const focusPagesRef = useRef(0)
   useEffect(() => {
-    if (!focusAgentId || focusDoneRef.current || msgLoading || !focusRef.current) return
+    if (!focusAgentId || focusDoneRef.current || msgLoading) return
+    if (!focusRef.current) {
+      // The focused participant's block may sit outside the newest window —
+      // page older (bounded) until it appears or history is exhausted.
+      if (
+        conversationKey &&
+        conversationHasEarlier &&
+        !conversationPagingEarlier &&
+        focusPagesRef.current < MAX_FOCUS_PAGES
+      ) {
+        focusPagesRef.current += 1
+        void loadEarlierConversation()
+      } else if (!conversationHasEarlier || focusPagesRef.current >= MAX_FOCUS_PAGES) {
+        // Give up quietly — no scroll target exists in reachable history.
+        focusDoneRef.current = true
+      }
+      return
+    }
     focusDoneRef.current = true
     focusRef.current.scrollIntoView({ block: 'center' })
     setFocusFlash(true)
     const timer = window.setTimeout(() => setFocusFlash(false), 1_800)
     return () => window.clearTimeout(timer)
-  }, [focusAgentId, msgLoading, msgs])
+  }, [
+    focusAgentId,
+    msgLoading,
+    msgs,
+    conversationKey,
+    conversationHasEarlier,
+    conversationPagingEarlier,
+    loadEarlierConversation
+  ])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -2374,6 +2479,8 @@ export default function SessionDetailView() {
             children={conversationFamily.childSessions}
             agentById={agentById}
             orgPath={orgPath}
+            conversation
+            childOriginById={conversationLineage?.childOriginById}
           />
         ) : (
           currentSessionDetail?.id === session.id && (
