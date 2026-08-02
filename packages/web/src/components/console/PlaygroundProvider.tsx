@@ -37,7 +37,13 @@ import {
   type OrderedWebchatCursor,
   type OrderedWebchatResult
 } from '@/lib/webchat-stream'
-import { cursorKeyFor as cursorKeyForLanes, laneAgentId, laneKey, lanesOf as lanesOfLanes } from '@/lib/webchat-lanes'
+import {
+  admitsLane,
+  cursorKeyFor as cursorKeyForLanes,
+  laneAgentId,
+  laneKey,
+  lanesOf as lanesOfLanes
+} from '@/lib/webchat-lanes'
 
 interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own). */
@@ -57,7 +63,13 @@ interface PlaygroundData {
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.
    *  Failures surface as a ⚠️ transcript step. Refused while a turn streams. */
   pgAddAgent: (id: string, agent: Agent) => Promise<void>
-  pgSend: (id: string, agentId: string, text?: string, conversationId?: string) => void
+  pgSend: (
+    id: string,
+    agentId: string,
+    text?: string,
+    conversationId?: string,
+    participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+  ) => void
   /** Switch the session's model (in-session, sticky). */
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
   /** Switch the session's reasoning effort (in-session, sticky). */
@@ -211,6 +223,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // where the relay applied the all-participants default) create its stream
   // lane lazily instead of dropping the reply.
   const pendingTurnIds = useRef<Map<string, string>>(new Map())
+  // Lanes that already COMPLETED for the in-flight turn (done applied, cursor
+  // removed), per session id. With done-before-ack ordering the trailing ack
+  // must not re-admit an empty cursor for a finished participant — it would
+  // never receive another terminal frame and wedge the busy state. Reset on
+  // each send (one in-flight turn per session).
+  const finishedTurnLanes = useRef<Map<string, { turnId: string; agents: Set<string> }>>(new Map())
   // Participant display names per session id, mirrored in a ref: the socket's
   // message handlers are closures captured when the socket opened — often the
   // same tick openPlayground staged the session — so state-based lookups there
@@ -453,6 +471,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // ack — while the sole-lane fallback is reserved for legacy frames that omit
   // agentId.
   const lanesOf = (id: string): string[] => lanesOfLanes(streamCursors.current, id)
+  const finishedFor = (id: string, turnId: string | undefined): ReadonlySet<string> | undefined => {
+    const rec = finishedTurnLanes.current.get(id)
+    return rec && rec.turnId === turnId ? rec.agents : undefined
+  }
   const cursorKeyFor = (id: string, agentId?: string): string | undefined =>
     cursorKeyForLanes(streamCursors.current, id, agentId)
   const dropLanes = (id: string): void => {
@@ -487,6 +509,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       if (!result.done) return
       reconnectAttempts.current.delete(id)
       streamCursors.current.delete(cursorKey)
+      if (agentId && result.done.turnId) {
+        const rec = finishedTurnLanes.current.get(id)
+        if (rec && rec.turnId === result.done.turnId) rec.agents.add(agentId)
+        else finishedTurnLanes.current.set(id, { turnId: result.done.turnId, agents: new Set([agentId]) })
+      }
       if (result.done.error) {
         const name = participantName(id, agentId)
         pushStep(id, {
@@ -504,7 +531,19 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const receiveOutput = useCallback(
     (id: string, output: WebchatOutput): void => {
-      const key = cursorKeyFor(id, output.agentId)
+      let key = cursorKeyFor(id, output.agentId)
+      // A warm session's first stream frame can beat the participant's ack to
+      // the browser (the daemon emits it synchronously inside turn admission).
+      // Any tagged frame of the in-flight turn admits the lane exactly like the
+      // ack — dropping it would leave the ordered cursor holding every later
+      // frame while it waits for this one (webchat-multi-agents.md §5.3).
+      if (
+        !key &&
+        admitsLane(output.agentId, output.turnId, pendingTurnIds.current.get(id), finishedFor(id, output.turnId))
+      ) {
+        key = laneKey(id, output.agentId)
+        streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(output.turnId))
+      }
       const cursor = key ? streamCursors.current.get(key) : undefined
       if (!key || !cursor || !bindWebchatTurn(cursor, output.turnId)) return
       reconnectAttempts.current.delete(id)
@@ -515,7 +554,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const receiveDone = useCallback(
     (id: string, done: WebchatDone): void => {
-      const key = cursorKeyFor(id, done.agentId)
+      let key = cursorKeyFor(id, done.agentId)
+      // Same early-frame admission as receiveOutput: a participant's terminal
+      // frame (e.g. a coalesced turn's immediate done) may also beat its ack.
+      if (!key && admitsLane(done.agentId, done.turnId, pendingTurnIds.current.get(id), finishedFor(id, done.turnId))) {
+        key = laneKey(id, done.agentId)
+        streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(done.turnId))
+      }
       const cursor = key ? streamCursors.current.get(key) : undefined
       if (!key || !cursor) return
       applyStreamResult(id, key, acceptWebchatDone(cursor, done))
@@ -682,9 +727,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 // The relay may target participants the client did not lane (a
                 // resumed conversation without a local roster): admit the lane
                 // on its ack so the reply stream binds instead of dropping.
-                if (!key && m.ack?.agentId && m.ack.turnId === pendingTurnIds.current.get(id)) {
-                  key = laneKey(id, m.ack.agentId)
-                  streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(m.ack.turnId))
+                const ackAgentId = m.ack?.agentId
+                const ackTurnId = m.ack?.turnId
+                if (
+                  !key &&
+                  ackAgentId &&
+                  ackTurnId &&
+                  admitsLane(ackAgentId, ackTurnId, pendingTurnIds.current.get(id), finishedFor(id, ackTurnId))
+                ) {
+                  key = laneKey(id, ackAgentId)
+                  streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(ackTurnId))
                 }
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
@@ -869,7 +921,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const pgSend = useCallback(
-    (id: string, agentForId: string, textArg?: string, conversationId?: string) => {
+    (
+      id: string,
+      agentForId: string,
+      textArg?: string,
+      conversationId?: string,
+      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
+    ) => {
       const text = String(textArg ?? pgInputBy[id] ?? '').trim()
       const image = pgImageBy[id]
       if ((!text && !image) || pgBusyBy[id]) return
@@ -885,7 +943,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // roster, and also applies the same all-participants default itself, so a
       // resumed conversation with no client-side roster still reaches everyone.
       const session = pgSessions[id]
-      const roster = session?.participants ?? []
+      // An ADOPTED webchat session has no pgSessions entry — its roster comes
+      // from the fetched session detail (knownParticipants). Without it the
+      // send degrades to the relay's all-participants default: mentions can't
+      // narrow, and no lanes are pre-created (leaving delivery to the
+      // early-frame admission path).
+      const roster = session?.participants ?? knownParticipants ?? []
+      if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
+        rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
+      }
       const mentions =
         roster.length > 1
           ? roster
@@ -896,6 +962,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           : []
       const targets = roster.length > 1 ? (mentions.length ? mentions : roster.map((p) => p.agentId)) : [agentForId]
       pendingTurnIds.current.set(id, requestedTurnId)
+      finishedTurnLanes.current.delete(id)
       for (const target of targets) {
         streamCursors.current.set(laneKey(id, target), createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
       }

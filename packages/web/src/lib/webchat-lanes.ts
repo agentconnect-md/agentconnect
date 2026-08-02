@@ -37,3 +37,28 @@ export function cursorKeyFor(lanes: ReadonlyMap<string, unknown>, id: string, ag
   const all = lanesOf(lanes, id)
   return all.length === 1 ? all[0] : undefined
 }
+
+/**
+ * Whether a tagged frame for an un-laned participant may ADMIT its lane.
+ *
+ * Any frame of the in-flight send's turn is proof the relay accepted that
+ * participant — the ack is merely the usual first such frame, NOT the only
+ * one. On a warm session the daemon emits its first stream frame
+ * synchronously inside turn admission, so `output`/`done` can reach the
+ * browser BEFORE the participant's ack; dropping that first output would
+ * leave the lane's ordered cursor waiting on index 0 forever (no render, no
+ * done, busy never clears).
+ */
+export function admitsLane(
+  agentId: string | undefined,
+  turnId: string | undefined,
+  pendingTurnId: string | undefined,
+  finishedAgentIds?: ReadonlySet<string>
+): boolean {
+  if (agentId === undefined || turnId === undefined || turnId !== pendingTurnId) return false
+  // A COMPLETED lane must never be re-admitted: with done-before-ack ordering
+  // the terminal frame both creates and retires the lane, and the trailing ack
+  // would otherwise recreate an empty cursor that can never finish — wedging
+  // the turn's busy state and fencing the participant's next turn.
+  return !finishedAgentIds?.has(agentId)
+}

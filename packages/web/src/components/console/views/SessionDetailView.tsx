@@ -1205,7 +1205,16 @@ export default function SessionDetailView() {
   const onPgSend = (text?: string) => {
     if (imagePreparing) return
     setImageError(null)
-    pgSend(session.id, session.agentId ?? '', text, isWebchat ? session.channelId : undefined)
+    // Pass the fetched roster: an adopted webchat session has no provider-side
+    // state, and without it a multi-agent send can't pre-create stream lanes or
+    // narrow by @mention (the relay would apply its all-participants default).
+    pgSend(
+      session.id,
+      session.agentId ?? '',
+      text,
+      isWebchat ? session.channelId : undefined,
+      isWebchat ? session.participants : undefined
+    )
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return

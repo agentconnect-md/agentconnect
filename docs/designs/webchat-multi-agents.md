@@ -249,7 +249,10 @@ on, **every user message activates the whole roster** unless it explicitly
 The relay applies the same default itself (`targets` absent or empty ⇒ the
 whole roster), so a resumed conversation with no client-side roster — or an
 older browser build — still reaches everyone; the browser admits stream lanes
-lazily from the per-agent acks. `targets ⊄ roster` is refused with the
+lazily from ANY tagged frame carrying the in-flight turn's id — usually the
+per-agent ack, but a warm session's first output can beat its ack to the
+browser (the daemon emits it synchronously inside turn admission), and
+dropping it would strand that lane's ordering cursor. `targets ⊄ roster` is refused with the
 `not_participant` ack reason per offending target. A one-participant roster
 makes every rule above collapse to today's single-agent behavior.
 
