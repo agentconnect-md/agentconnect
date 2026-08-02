@@ -4608,18 +4608,42 @@ export class Daemon {
   }
 
   /**
+   * True iff a dream on this agent's runtime can be trusted to keep provider
+   * credentials away from the MODEL's own tools (task #36 A2). The outer OS
+   * sandbox alone cannot guarantee this: it hides the *host's* credentials, but
+   * the agent's OWN provider auth must stay readable by the runtime PARENT to
+   * authenticate, and the model's tools share that same process tree — so an
+   * injection in the mined (attacker-controlled) transcript could `env`/read the
+   * key. Only the Claude runtime adds an INNER sandbox that denies the provider
+   * credential env+files to the model's bash (`protectedCredentialRoots`), which
+   * is the boundary a dream needs. Other runtimes (e.g. Codex) have no such inner
+   * confinement yet, so we fail closed until a per-runtime credential broker
+   * exists rather than mine an attacker's transcript next to a live provider key.
+   */
+  private dreamRuntimeIsolatesCredentials(agent: LoadedAgent): boolean {
+    const runtime = this.runtimes[agent.runtime]
+    return runtime !== undefined && isClaudeRuntimeDef(runtime)
+  }
+
+  /**
    * Build + start a DEDICATED, sandbox-forced, one-off host for a single dream
-   * (task #36 A2). Fail closed if this host has no sandbox mechanism: without
-   * confinement the mined (attacker-controlled) transcript could drive the
-   * runtime's native tools against provider credentials. A sandboxed runtime is
-   * denied those credentials (HOME + runtime-state dirs are denyRead), so the
-   * dream model reads its materialized inputs (cwd) yet cannot read the secrets.
-   * The caller MUST stop() the returned host once the extraction settles.
+   * (task #36 A2). Fail closed if this host has no sandbox mechanism OR the
+   * runtime cannot isolate provider credentials from the model's own tools
+   * (see {@link dreamRuntimeIsolatesCredentials}): without both, the mined
+   * (attacker-controlled) transcript could drive the runtime's native tools
+   * against provider credentials. On an eligible confined runtime the dream
+   * model reads its materialized inputs (cwd) yet cannot read the secrets. The
+   * caller MUST stop() the returned host once the extraction settles.
    */
   private async buildDreamHost(agent: LoadedAgent, cwd: string): Promise<AcpHost> {
     if (!this.sandboxMechanism) {
       throw new DreamStateError(
         'memory dream requires a supported OS sandbox to isolate provider credentials from the mined transcript; none is available on this host'
+      )
+    }
+    if (!this.dreamRuntimeIsolatesCredentials(agent)) {
+      throw new DreamStateError(
+        `memory dream is not supported on runtime "${agent.runtime}": it does not confine provider credentials away from the model's own tools, so an injection in the mined transcript could read them`
       )
     }
     const { host } = this.buildAcpHost(agent, this.cfg, {
