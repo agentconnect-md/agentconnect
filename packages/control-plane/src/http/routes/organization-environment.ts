@@ -144,19 +144,43 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
      * the same daemon feature.
      *
      * Returns the message to refuse with, or null when every affected agent is fine.
+     *
+     * NON-DISCLOSING BY CONSTRUCTION. This runs BEFORE the repository applies
+     * `resource.edit` to a caller-supplied target, so it must never let a 409 prove
+     * something a 404 would have hidden. Two rules:
+     *
+     *  - `mode: 'requested'` — the ids came from the request body/path and are not
+     *    yet authorized. Only agents the caller may EDIT are examined; anything else
+     *    is left to the repository, which returns the not-found-shaped result. A
+     *    guessed restricted agent id therefore still yields 404, never a 409 that
+     *    names it.
+     *  - `mode: 'bound'` — the ids are already-bound agents on a rotation path, so
+     *    the gate must cover them all (the new value really does reach them), but an
+     *    agent the caller cannot VIEW is described without its name.
      */
-    const incompatibleDaemonMessage = async (orgId: OrgId, agentIds: readonly string[]): Promise<string | null> => {
+    const incompatibleDaemonMessage = async (
+      orgId: OrgId,
+      ctx: ViewCtx,
+      agentIds: readonly string[],
+      mode: 'requested' | 'bound'
+    ): Promise<string | null> => {
       if (agentIds.length === 0) return null
       const wanted = new Set(agentIds)
-      const agents = await deps.repos.agent.list(orgId)
-      const placed = agents.filter((agent) => wanted.has(agent.id) && agent.daemonId !== null)
-      for (const agent of placed) {
-        const daemon = await deps.registry.get(agent.daemonId!)
+      const agents = (await deps.repos.agent.list(orgId)).filter((agent) => wanted.has(agent.id))
+      // An unauthorized target is not this gate's business — dropping it here is
+      // what keeps the refusal indistinguishable from a missing agent.
+      const inScope = mode === 'requested' ? agents.filter((agent) => canEdit(agent, ctx)) : agents
+      for (const agent of inScope) {
+        if (agent.daemonId === null) continue
+        const daemon = await deps.registry.get(agent.daemonId)
         // An unknown/never-registered daemon cannot be proven compatible. Treat it
         // as incompatible rather than assuming: the whole point of the gate is that
         // the feature never relies on lenient behavior from an unverified daemon.
         if (!daemon?.capabilities.features.includes(AGENT_CONFIG_REVISION_FEATURE)) {
-          return `agent ${agent.name} runs on a daemon that does not yet support organization environment entries; upgrade it first`
+          // Naming is safe only for an agent the caller can already see.
+          return canView(agent, ctx)
+            ? `agent ${agent.name} runs on a daemon that does not yet support organization environment entries; upgrade it first`
+            : 'an agent this entry is assigned to runs on a daemon that does not yet support organization environment entries; upgrade it first'
         }
       }
       return null
@@ -276,7 +300,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
         // authorization inside its transaction; this only refuses early rather than
         // persisting an entry a placed daemon could not safely apply.
         const gated = req.body.audience === 'all' ? await enrollableAgentIdsOf(orgId, ctx) : (req.body.agentIds ?? [])
-        const blocked = await incompatibleDaemonMessage(orgId, gated)
+        const blocked = await incompatibleDaemonMessage(orgId, ctx, gated, 'requested')
         if (blocked) return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: blocked })
         // Seal OUTSIDE the transaction: a real cipher may make network calls, and a
         // transaction must never wait on one. Material prepared for a losing write is
@@ -322,11 +346,23 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
         // A value replacement re-reaches every currently bound agent; switching to
         // `all` reaches every agent this caller may edit. Both sets must be on a
         // compatible daemon.
-        const gated = [
-          ...(req.body.value !== undefined ? existing.agentIds : []),
-          ...(req.body.audience === 'all' ? await enrollableAgentIdsOf(orgId, ctx) : [])
-        ]
-        const blocked = await incompatibleDaemonMessage(orgId, gated)
+        // Two sets with different disclosure rules, so two calls: already-bound
+        // agents are gated in full (the rotation reaches them) but unnamed when the
+        // caller cannot see them, while newly enrolled agents are caller-editable by
+        // construction.
+        const blocked =
+          (await incompatibleDaemonMessage(
+            orgId,
+            ctx,
+            req.body.value !== undefined ? existing.agentIds : [],
+            'bound'
+          )) ??
+          (await incompatibleDaemonMessage(
+            orgId,
+            ctx,
+            req.body.audience === 'all' ? await enrollableAgentIdsOf(orgId, ctx) : [],
+            'requested'
+          ))
         if (blocked) return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: blocked })
         const sealedSecret =
           existing.kind === 'secret' && req.body.value !== undefined
@@ -390,7 +426,10 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
         if (denyNonOwner(req, reply)) return
         const orgId = orgOf(req)
         const ctx = ctxOf(req)
-        const blocked = await incompatibleDaemonMessage(orgId, [req.params.agentId])
+        // 'requested': the id is caller-supplied and not yet authorized, so a target
+        // this caller cannot edit is skipped here and answered 404 by the repository
+        // rather than 409-with-a-name.
+        const blocked = await incompatibleDaemonMessage(orgId, ctx, [req.params.agentId], 'requested')
         if (blocked) return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: blocked })
         const result = await repo.bind(orgId, req.params.entryId, AgentId(req.params.agentId), {
           actorUserId: ctx.userId,

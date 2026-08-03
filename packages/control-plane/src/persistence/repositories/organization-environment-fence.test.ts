@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import {
   checkEnvironmentAdmission,
+  encodedValueBytes,
   MAX_RESOLVED_ENVIRONMENT_BYTES,
   OrganizationEnvironmentAdmissionError,
   assertEnvironmentAdmissible,
@@ -21,6 +22,7 @@ function snapshot(input: {
   organizationEntries?: AssignedOrganizationEntry[]
   organizationValueBytes?: Record<string, number>
   agentSecretBytes?: Record<string, number>
+  otherSpecBytes?: number
 }): AgentEnvironmentSnapshot {
   return {
     agentId: input.agentId ?? 'agent-1',
@@ -28,7 +30,8 @@ function snapshot(input: {
     secretKeys: input.secretKeys ?? [],
     organizationEntries: input.organizationEntries ?? [],
     organizationValueBytes: new Map(Object.entries(input.organizationValueBytes ?? {})),
-    agentSecretBytes: new Map(Object.entries(input.agentSecretBytes ?? {}))
+    agentSecretBytes: new Map(Object.entries(input.agentSecretBytes ?? {})),
+    otherSpecBytes: input.otherSpecBytes ?? 0
   }
 }
 
@@ -103,6 +106,47 @@ describe('environment admission (design §5 step 4)', () => {
 
   it('leaves real headroom under the raw frame ceiling for the rest of the spec', () => {
     expect(MAX_RESOLVED_ENVIRONMENT_BYTES).toBeLessThan(MAX_FRAME_BYTES)
+  })
+
+  it('counts JSON ESCAPING, not the raw byte length', () => {
+    // The reviewer's case: values whose raw length fits but whose escaped encoding
+    // does not. A quote doubles; a control character expands six-fold as \uXXXX.
+    // `encodedValueBytes` is what the writer feeds in, so a raw-length counter would
+    // have admitted this and produced a frame the codec can never carry.
+    const quotes = '"'.repeat(60 * 1024)
+    expect(encodedValueBytes(quotes)).toBeGreaterThan(2 * 60 * 1024)
+    const raw = Buffer.byteLength(quotes, 'utf8')
+    expect(raw).toBe(60 * 1024)
+
+    // Three such values: 180 KiB raw fits the budget, but ~360 KiB escaped does not.
+    const keys = [1, 2, 3].map((n) => `ESCAPED_${n}`)
+    const oversized = checkEnvironmentAdmission([
+      snapshot({
+        organizationEntries: keys.map((key) => ({ key, kind: 'variable' as const })),
+        organizationValueBytes: Object.fromEntries(keys.map((key) => [key, encodedValueBytes(quotes)]))
+      })
+    ])
+    expect(oversized).toEqual({ outcome: 'too_large', agentIds: ['agent-1'] })
+
+    // Measured RAW they would have slipped under the budget — the regression this
+    // test exists to pin.
+    expect(keys.length * raw).toBeLessThan(MAX_RESOLVED_ENVIRONMENT_BYTES)
+  })
+
+  it('counts the rest of the spec, not only the two maps', () => {
+    // A large description / resolved skills payload consumes the same frame, so a
+    // small environment on top of it can still overflow.
+    expect(
+      checkEnvironmentAdmission([
+        snapshot({ variables: { SMALL: 'x' }, otherSpecBytes: MAX_RESOLVED_ENVIRONMENT_BYTES })
+      ])
+    ).toEqual({ outcome: 'too_large', agentIds: ['agent-1'] })
+  })
+
+  it('reserves enough for the envelope and the unmeasurable resolved entries', () => {
+    // The reserve has to be a real allowance, not a token one: `skills` and
+    // `managedSkills` expand from ids/refs into self-contained entries.
+    expect(MAX_FRAME_BYTES - MAX_RESOLVED_ENVIRONMENT_BYTES).toBeGreaterThanOrEqual(32 * 1024)
   })
 
   it('counts only the WINNING side of an overridden key', () => {

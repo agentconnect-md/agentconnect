@@ -120,6 +120,17 @@ persists the greatest revision it has applied and refuses an older snapshot, so
 full-map removal semantics remain safe when concurrent publishers finish in a
 different order.
 
+Because the daemon also refuses an EQUAL revision carrying different content
+(section 7), `configRevision` must cover every input the assembled spec is built
+from — not only the agent row. `AgentSpec.skills` and `AgentSpec.managedSkills`
+are resolved from the shared skill-source registry and the managed-skill bundle
+revisions, so a skill-source edit, a managed-skill archive or restore, and an
+accepted bundle revision each bump the referring agents in the same transaction
+as the change. Omitting any of them would not merely delay convergence: the
+daemon would see new content at a revision it has already applied, refuse it as
+an invariant violation, and repeat that refusal on every reconnect until an
+unrelated agent edit happened to move the revision.
+
 ### 3.4 `all` is an authorized enrollment policy
 
 Every effective assignment is represented by an explicit agent binding. An
@@ -166,6 +177,16 @@ the normal `resource.edit` policy; merely being an owner never creates the first
 binding to another member's unshared restricted agent. Point assignment requests
 for an invisible, non-editable, or foreign agent return the existing
 not-found-shaped response.
+
+Every check that runs BEFORE that authorization decision must be non-disclosing,
+including the daemon-compatibility preflight. A preflight that inspected all
+agents in the organization could answer a guessed restricted agent id with a
+conflict naming it, proving both its existence and its name where a not-found was
+intended. So a preflight over caller-supplied ids examines only agents the caller
+may edit and leaves the rest to the authorization decision, while a preflight over
+already-bound agents — where the delegation exists and the write genuinely reaches
+them — covers them all but describes an agent the caller cannot view without
+naming it.
 
 An authorized binding is the target-level grant that lets future
 `organization.manage` operations rotate or delete the bound entry without
@@ -428,6 +449,23 @@ rejected before persistence rather than producing an unreconcilable agent. This
 validation runs under the agent-row locks from section 5, not against a
 pre-transaction snapshot.
 
+That measurement is of ENCODED bytes, not raw lengths. JSON escaping is not a
+rounding error — a value of quotes doubles and control characters expand six-fold
+as `\uXXXX`, so a raw-length counter admits payloads whose encoded frame is
+multiples of the ceiling. Values held in memory are measured with the same
+serializer the frame uses; a stored value is measured Postgres-side
+(`octet_length(to_json(value)::text)`) so its size is known without returning it
+and without opening a cipher inside the transaction. The budget also reserves for
+what the fence cannot read from those rows — the envelope, the spec's scalar
+fields, and the resolved `skills`/`managedSkills` entries, which expand from the
+stored ids and refs. Under an encrypting secret provider the stored measurement is
+of ciphertext and therefore approximate; the reserve absorbs ordinary divergence,
+and opening values under the transaction is deliberately not done because a
+transaction must never wait on a cipher.
+
+A retarget that omits a replacement value still counts the STORED value, since
+that value is what the newly enrolled agents receive.
+
 ## 7. Resolution and distribution
 
 `AgentSpecAssembler` gains an injected `OrganizationEnvironmentResolver` and is
@@ -518,9 +556,13 @@ Each row shows:
 - **All agents** or **Selected agents**; and
 - edit and delete actions.
 
-The add/edit sheet collects key, kind, value, and audience. For a saved secret,
-the value field is empty and labeled **Replace value**; leaving it empty keeps
-the current value. The selected-agent picker uses the caller's
+The add/edit sheet collects key, kind, value, and audience. A saved secret shows a
+mask plus an explicit **Replace value** action rather than an empty editable field:
+an empty field cannot mean "keep the current value", because the empty string is
+itself a value the API accepts, and inferring intent from the field's content would
+make it impossible to set. Once replace is chosen, whatever the field contains —
+including the empty string — is what gets sent, and a **Keep the current value
+instead** link backs out. The selected-agent picker uses the caller's
 `resource.edit`-filtered agent list and edits bindings incrementally. Its
 standing help text says: "Only agents you can manage are shown. Existing
 assignments to other private agents are left unchanged."

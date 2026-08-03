@@ -289,14 +289,21 @@ function EntrySheet({
   const [version, setVersion] = useState(editing?.version ?? 0)
 
   const secret = kind === 'secret'
-  const replacingSavedSecret = editing !== null && secret && value !== ''
+  // Whether this save SENDS a value. A variable always does, a create always does,
+  // and a saved secret only once the owner explicitly chose to replace it — so the
+  // empty string is a settable value rather than a "leave unchanged" sentinel.
+  const [replaceMode, setReplaceMode] = useState(editing === null || editing.kind === 'variable')
+  /** A saved secret whose value the owner has not chosen to touch. */
+  const savedSecretKept = editing !== null && secret && !replaceMode
+  const replacingSavedSecret = editing !== null && secret && replaceMode
   const wideningToAll = audience === 'all' && editing?.audience !== 'all'
 
   const validation = useMemo(() => {
     const trimmed = key.trim()
     if (!ENV_KEY.test(trimmed)) return `“${trimmed || '(empty)'}” is not a valid name`
-    // A new secret must carry a value; an existing one keeps its stored value when
-    // the field is left blank.
+    // A brand-new secret must carry a value — the same guard the agent-level secret
+    // editor applies. Rotating a SAVED secret to the empty string is allowed, since
+    // "replace" is now an explicit action rather than an inference from the field.
     if (!editing && secret && value === '') return 'Enter a value for the secret'
     return null
   }, [editing, key, secret, value])
@@ -315,8 +322,10 @@ function EntrySheet({
       if (editing) {
         const updated = await updateOrganizationEnvironmentEntry(editing.id, {
           expectedVersion: version,
-          // An omitted value leaves it unchanged — how "Replace value" keeps a secret.
-          ...(secret ? (value === '' ? {} : { value }) : { value }),
+          // Omitting `value` is what leaves the stored one unchanged, and that now
+          // happens only when the owner did NOT ask to replace it — so an
+          // intentional empty string is sent through.
+          ...(replaceMode ? { value } : {}),
           ...(audience !== editing.audience ? { audience } : {})
         })
         setVersion(updated.version)
@@ -429,16 +438,42 @@ function EntrySheet({
           </div>
 
           <label className="flex flex-col gap-[6px]">
-            <span className={LABEL}>{editing && secret ? 'Replace value' : 'Value'}</span>
-            <textarea
-              className={TEXTAREA}
-              placeholder={editing && secret ? 'Leave empty to keep the current value' : 'Value'}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              spellCheck={false}
-              autoComplete="off"
-              aria-label={editing && secret ? 'Replace value' : 'Value'}
-            />
+            <span className={LABEL}>{replaceMode && editing ? 'New value' : 'Value'}</span>
+            {/* A saved secret needs an EXPLICIT replace action rather than an
+                empty-field sentinel. Treating "" as "keep the current value" makes
+                the empty string — which the API accepts — impossible to set, so
+                intent is tracked separately from the field's content. */}
+            {savedSecretKept ? (
+              <div className="flex items-center gap-3">
+                <span className="mono flex-1 text-[12px] text-(--text-tertiary)">••••••••</span>
+                <Button variant="secondary" size="xs" onClick={() => setReplaceMode(true)}>
+                  Replace value
+                </Button>
+              </div>
+            ) : (
+              <textarea
+                className={TEXTAREA}
+                placeholder="Value"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+                aria-label={replaceMode && editing ? 'New value' : 'Value'}
+                autoFocus={replaceMode && editing !== null}
+              />
+            )}
+            {replaceMode && editing && secret && (
+              <button
+                type="button"
+                className="lnk self-start text-[11.5px]"
+                onClick={() => {
+                  setReplaceMode(false)
+                  setValue('')
+                }}
+              >
+                Keep the current value instead
+              </button>
+            )}
           </label>
 
           <div className="flex flex-col gap-[6px]">

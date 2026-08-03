@@ -49,6 +49,7 @@ import {
 import {
   bumpAgentConfigRevisions,
   checkEnvironmentAdmission,
+  encodedValueBytes,
   lockAgentsForConfigWrite,
   lockOrgForConfigWrite,
   snapshotAgentEnvironments
@@ -159,9 +160,9 @@ export class PgOrganizationEnvironmentRepo implements OrganizationEnvironmentRep
           : await this.authorizeTargets(tx, orgId, input.agentIds ?? [], actor.viewer)
       if (targets === null) return { outcome: 'agent_not_found' }
 
-      const valueBytes = Buffer.byteLength(
-        input.kind === 'secret' ? (input.sealedSecret ?? '') : (input.variableValue ?? ''),
-        'utf8'
+      // JSON-encoded, not raw: escaping is what the frame actually carries.
+      const valueBytes = encodedValueBytes(
+        input.kind === 'secret' ? (input.sealedSecret ?? '') : (input.variableValue ?? '')
       )
       const candidate: AssignedOrganizationEntry = { key: input.key, kind: input.kind }
       const admission = await this.admit(tx, orgId, targets, {
@@ -227,10 +228,14 @@ export class PgOrganizationEnvironmentRepo implements OrganizationEnvironmentRep
       // value may be larger than the one it replaces.
       const replacing = input.sealedSecret !== undefined || input.variableValue !== undefined
       const kind = existing.kind as OrganizationEnvironmentKind
-      const nextValueBytes = Buffer.byteLength(
-        (kind === 'secret' ? input.sealedSecret : input.variableValue) ?? '',
-        'utf8'
-      )
+      // When the value is OMITTED (an audience-only retarget, or the Console's
+      // "Replace value" left blank), the entry still carries its stored value — so
+      // admission must count THAT, not zero. Counting zero would let a
+      // `selected`→`all` switch enroll agents whose resolved environment the
+      // existing value pushes past the frame budget.
+      const nextValueBytes = replacing
+        ? encodedValueBytes((kind === 'secret' ? input.sealedSecret : input.variableValue) ?? '')
+        : await this.currentValueBytes(tx, existing.id, kind, existing.variableValue)
       const revalidate = replacing ? bound : added
       const candidate: AssignedOrganizationEntry = { key: existing.key, kind }
       const admission = await this.admit(tx, orgId, revalidate, {
@@ -437,9 +442,11 @@ export class PgOrganizationEnvironmentRepo implements OrganizationEnvironmentRep
     kind: OrganizationEnvironmentKind,
     variableValue: string | null
   ): Promise<number> {
-    if (kind === 'variable') return Buffer.byteLength(variableValue ?? '', 'utf8')
+    if (kind === 'variable') return encodedValueBytes(variableValue ?? '')
+    // JSON-encoded length computed Postgres-side, so the stored secret is sized
+    // without ever being returned (see ENCODED_LENGTH_SQL in the fence module).
     const rows = await tx.$queryRaw<Array<{ bytes: number }>>(
-      Prisma.sql`SELECT octet_length("value")::int AS bytes FROM "organization_environment_secret" WHERE "entryId" = ${entryId}::uuid`
+      Prisma.sql`SELECT octet_length(to_json("value")::text)::int AS bytes FROM "organization_environment_secret" WHERE "entryId" = ${entryId}::uuid`
     )
     return rows[0]?.bytes ?? 0
   }

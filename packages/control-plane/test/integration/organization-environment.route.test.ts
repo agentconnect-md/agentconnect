@@ -707,3 +707,105 @@ describe('organization environment — daemon feature gate', () => {
     expect(moved.body).toContain('organization variables and secrets')
   })
 })
+
+describe('organization environment — review follow-ups', () => {
+  it('does not disclose a restricted agent through the daemon-compatibility preflight', async () => {
+    const ownerId = await makeUser(`owner-${randomUUID()}`, 'owner')
+    const otherId = await makeUser(`other-${randomUUID()}`, 'collaborator')
+    // The private agent sits on a daemon WITHOUT the revision fence, which is
+    // exactly the case that used to answer 409 and name it.
+    await seedDaemon(prisma, LEGACY_DAEMON, { capabilities: LEGACY })
+    const privateAgent = randomUUID()
+    await seedAgent(prisma, privateAgent, {
+      daemonId: LEGACY_DAEMON,
+      name: 'private-legacy-bot',
+      visibility: 'restricted',
+      ownerUserId: otherId,
+      createdByUserId: otherId
+    })
+
+    const http = app({ userId: ownerId })
+    const entry = (await createEntry(http, { key: 'NO_LEAK', kind: 'variable', value: 'v', audience: 'selected' }))
+      .entry
+
+    const bind = await http.app.inject({ method: 'PUT', url: `${ENV}/${entry.id}/agents/${privateAgent}` })
+    // 404, not 409 — and the response must not carry the agent's name.
+    expect(bind.statusCode).toBe(404)
+    expect(bind.body).not.toContain('private-legacy-bot')
+
+    // Naming an agent up-front on create behaves the same way.
+    const upfront = await createEntry(http, {
+      key: 'NO_LEAK_2',
+      kind: 'variable',
+      value: 'v',
+      audience: 'selected',
+      agentIds: [privateAgent]
+    })
+    expect(upfront.status).toBe(404)
+    expect(upfront.raw).not.toContain('private-legacy-bot')
+  })
+
+  it('counts the STORED value when a retarget omits a replacement', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, name: 'omitted-value-bot' })
+    // A local variable that leaves only a little room in the frame budget.
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { runtimeOverrides: { env: { LOCAL_BLOB: 'x'.repeat(200 * 1024) } } }
+    })
+
+    const http = app({ control: new RecordingControl() })
+    // Staged with no agents, so creating it is admissible on its own.
+    const entry = (
+      await createEntry(http, {
+        key: 'BIG_ORG_VALUE',
+        kind: 'variable',
+        // Under the 64 KiB per-value DTO cap, but enough that adding it to the
+        // agent's own 200 KiB overflows the frame budget.
+        value: 'y'.repeat(60 * 1024),
+        audience: 'selected'
+      })
+    ).entry
+
+    // Retarget to `all` WITHOUT sending a value. The stored 60 KiB still reaches
+    // the agent, so together with its local 200 KiB this must be refused — counting
+    // the omitted value as zero used to admit it.
+    const retarget = await http.app.inject({
+      method: 'PATCH',
+      url: `${ENV}/${entry.id}`,
+      payload: { expectedVersion: entry.version, audience: 'all' }
+    })
+    expect(retarget.statusCode).toBe(409)
+    expect(await prisma.organizationEnvironmentAssignment.count({ where: { entryId: entry.id } })).toBe(0)
+  })
+
+  it('advances configRevision when a referenced skill source changes', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, name: 'skill-ref-bot' })
+    const http = app({ control: new RecordingControl() })
+
+    const source = await http.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'example-org/example-kit' }
+    })
+    expect(source.statusCode).toBe(201)
+    const sourceId = (source.json() as { id: string }).id
+    await http.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { skills: ['kit/helper'] } })
+    const before = (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision
+
+    // Editing the SOURCE changes the resolved AgentSpec.skills content. Without a
+    // bump the daemon would see new content at the same revision and refuse it for
+    // good (organization-secrets-and-variables.md §7).
+    const edited = await http.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${sourceId}`,
+      payload: { ref: 'v2' }
+    })
+    expect(edited.statusCode).toBe(200)
+    const after = (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision
+    expect(after).toBeGreaterThan(before)
+  })
+})

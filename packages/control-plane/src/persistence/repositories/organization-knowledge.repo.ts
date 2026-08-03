@@ -22,6 +22,7 @@ import type { OrganizationSuggestionInfo } from '@agentconnect.md/protocol'
 import { OrgId } from '../../domain/ids.js'
 import { organizationSuggestionSnapshotToken } from '../../organization-knowledge/suggestion-snapshot.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { bumpAgentsReferencingManagedSkill } from './organization-environment-fence.js'
 
 type KnowledgeWithRevision = OrganizationKnowledge & { revisions: OrganizationKnowledgeRevision[] }
 type SkillWithRevision = ManagedSkill & { revisions: ManagedSkillRevision[] }
@@ -375,14 +376,22 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   }
 
   async setManagedSkillArchived(id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord> {
-    const row = await this.db.managedSkill.update({
-      where: { id },
-      data: archived
-        ? { archivedAt: new Date(), archivedByUserId: byUserId ?? null }
-        : { archivedAt: null, archivedByUserId: null },
-      include: currentSkillInclude
+    return withAmbientTx(this.db, async (tx) => {
+      const row = await tx.managedSkill.update({
+        where: { id },
+        data: archived
+          ? { archivedAt: new Date(), archivedByUserId: byUserId ?? null }
+          : { archivedAt: null, archivedByUserId: null },
+        include: currentSkillInclude
+      })
+      // The assembler DROPS an archived bundle from `AgentSpec.managedSkills` and
+      // puts it back on restore, so both directions change the resolved spec of
+      // every agent that enabled it. Bump them in this transaction, or the daemon
+      // refuses the new content at the unchanged revision and keeps refusing it
+      // (organization-secrets-and-variables.md §7).
+      await bumpAgentsReferencingManagedSkill(tx, row.orgId, row.id)
+      return toSkill(row)
     })
-    return toSkill(row)
   }
 
   async syncSuggestions(
@@ -693,6 +702,11 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
               reviewedByUserId: reviewedByUserId ?? null
             }
           })
+          // `AgentSpec.managedSkills` carries the exact `revision` + `digest`, so
+          // accepting a new bundle revision changes the spec of every agent that
+          // enabled this skill. Bump them here or the daemon refuses the new
+          // content at the unchanged revision (organization-secrets-and-variables.md §7).
+          await bumpAgentsReferencingManagedSkill(tx, suggestion.orgId, target.id)
           artifactId = target.id
         }
 

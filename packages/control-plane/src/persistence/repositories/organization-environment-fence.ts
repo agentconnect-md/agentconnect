@@ -52,13 +52,44 @@ import {
 type Tx = Prisma.TransactionClient
 
 /**
- * Headroom under the raw frame ceiling for the envelope, control extension, and
- * the rest of `agent/upsert` around the spec itself. The check is deliberately
- * conservative: rejecting a borderline write is recoverable, shipping an
- * unreconcilable agent is not.
+ * Allowance for what this fence cannot measure from the rows it reads: the
+ * `agent/upsert` envelope and control extension, the spec's scalar fields, and the
+ * resolved `skills` / `managedSkills` entries (which the assembler expands from
+ * other tables into more bytes than the ids and refs stored on the agent).
+ *
+ * 32 KiB rather than a token amount, because being wrong in this direction
+ * persists a configuration the daemon codec can never accept, while being wrong in
+ * the other direction only refuses a borderline write the operator can split.
  */
-const SPEC_ENVELOPE_HEADROOM = 8 * 1024
-export const MAX_RESOLVED_ENVIRONMENT_BYTES = MAX_FRAME_BYTES - SPEC_ENVELOPE_HEADROOM
+const SPEC_OVERHEAD_RESERVE = 32 * 1024
+export const MAX_RESOLVED_ENVIRONMENT_BYTES = MAX_FRAME_BYTES - SPEC_OVERHEAD_RESERVE
+
+/**
+ * Exact JSON-encoded size of one string as it will appear in the frame, INCLUDING
+ * its surrounding quotes and every escape.
+ *
+ * Escaping is the reason a raw byte length is not usable here: a value of 60 KiB
+ * quotes doubles, and control characters expand six-fold as `\uXXXX`. Measuring the
+ * raw length let four such values pass a 240 KiB counter while encoding to roughly
+ * 480 KiB — past the 256 KiB codec ceiling.
+ */
+export function encodedValueBytes(value: string): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8')
+}
+
+/**
+ * The SQL twin of {@link encodedValueBytes}, for a value the fence must size
+ * WITHOUT reading it. `to_json(text)` produces the same escaped JSON string
+ * Postgres-side, so only its length crosses the wire — no plaintext, no ciphertext.
+ *
+ * CAVEAT, deliberate: this measures the STORED representation. Under the default
+ * identity cipher that is the plaintext, so the size is exact. Under an encrypting
+ * provider it is the ciphertext's encoded size, which is an approximation — the
+ * transaction cannot open a value without waiting on a cipher that may make network
+ * calls, which is the one thing a transaction must never do. The reserve above
+ * absorbs ordinary divergence.
+ */
+const ENCODED_LENGTH_SQL = 'octet_length(to_json("value")::text)'
 
 /** Step 1. Serializes this writer with every other environment/agent-config writer. */
 export async function lockOrgForConfigWrite(tx: Tx, orgId: string): Promise<boolean> {
@@ -114,6 +145,60 @@ export async function bumpAgentConfigRevisions(tx: PrismaLike, agentIds: readonl
   })
 }
 
+/**
+ * Bump every agent whose resolved spec DERIVES from a row outside the agent
+ * table — a shared skill source, or a centrally-managed skill bundle.
+ *
+ * This is not an optimization; omitting it WEDGES the agent. `AgentSpec.skills`
+ * and `AgentSpec.managedSkills` are resolved by the assembler from those tables,
+ * so editing a skill source's `source`/`ref`/`subDir`, archiving a managed skill,
+ * or accepting a new bundle revision changes the spec CONTENT while the agent row
+ * — and therefore `configRevision` — stands still. The daemon then receives the
+ * same revision with a different digest, which it correctly refuses as an
+ * invariant violation, and every reconnect repeats that refusal until some
+ * unrelated agent edit happens to move the revision.
+ *
+ * Agents bind a skill source by NAME (`"<source>/<skill>"` / `"<source>/*"`), so
+ * the match is on the parsed ref rather than an id.
+ */
+export async function bumpAgentsReferencingSkillSource(tx: Tx, orgId: string, sourceName: string): Promise<string[]> {
+  const agents = await tx.agent.findMany({ where: { orgId }, select: { id: true, runtimeOverrides: true } })
+  const affected = agents
+    .filter((agent) => {
+      const skills = (agent.runtimeOverrides as { skills?: string[] } | null)?.skills ?? []
+      return skills.some((ref) => skillRefSource(ref) === sourceName)
+    })
+    .map((agent) => agent.id)
+  await bumpAgentConfigRevisions(tx, affected)
+  return affected
+}
+
+/** The managed-skill twin: agents hold accepted bundle ids in a scalar array. */
+export async function bumpAgentsReferencingManagedSkill(
+  tx: Tx,
+  orgId: string,
+  managedSkillId: string
+): Promise<string[]> {
+  const agents = await tx.agent.findMany({
+    where: { orgId, managedSkills: { has: managedSkillId } },
+    select: { id: true }
+  })
+  const affected = agents.map((agent) => agent.id)
+  await bumpAgentConfigRevisions(tx, affected)
+  return affected
+}
+
+/**
+ * The source half of a skill ref. Deliberately a local two-line parse rather than
+ * an import from `orchestrator/skillSource.js`: this module sits in the
+ * persistence layer, and the only thing it needs is the substring before the
+ * first `/`.
+ */
+function skillRefSource(ref: string): string {
+  const slash = ref.indexOf('/')
+  return slash === -1 ? ref : ref.slice(0, slash)
+}
+
 /** The per-agent inputs step 4 validates, read under the locks from steps 1–2. */
 export interface AgentEnvironmentSnapshot {
   agentId: string
@@ -123,11 +208,20 @@ export interface AgentEnvironmentSnapshot {
   secretKeys: string[]
   /** Organization entries assigned to this agent AFTER the candidate mutation. */
   organizationEntries: AssignedOrganizationEntry[]
-  /** Byte sizes of the organization values, so admission needs no decryption of
-   *  its own: the writer supplies the size it is about to persist. */
+  /** JSON-ENCODED sizes of the organization values (quotes and escapes included),
+   *  so admission never has to decrypt: the writer supplies the size it is about to
+   *  persist, and stored values are measured Postgres-side. */
   organizationValueBytes: Map<string, number>
-  /** Byte sizes of the agent's own secret values. */
+  /** JSON-encoded sizes of the agent's own secret values. */
   agentSecretBytes: Map<string, number>
+  /**
+   * Encoded weight of everything ELSE the agent contributes to its spec — the
+   * `runtimeOverrides` bag, description, workspace strings, and the skill-source
+   * rows its enable-list resolves through. Deliberately an over-count (the bag
+   * includes `env`, which is also counted per-key), because over-counting only
+   * refuses a borderline write while under-counting persists an undeliverable one.
+   */
+  otherSpecBytes: number
 }
 
 export type AdmissionFailure =
@@ -147,7 +241,7 @@ export function checkEnvironmentAdmission(snapshots: readonly AgentEnvironmentSn
   const oversized: string[] = []
   for (const snapshot of snapshots) {
     for (const key of crossKindConflicts(snapshot.secretKeys, snapshot.organizationEntries)) conflicts.add(key)
-    if (resolvedEnvironmentBytes(snapshot) > MAX_RESOLVED_ENVIRONMENT_BYTES) oversized.push(snapshot.agentId)
+    if (resolvedSpecBytes(snapshot) > MAX_RESOLVED_ENVIRONMENT_BYTES) oversized.push(snapshot.agentId)
   }
   if (conflicts.size > 0) return { outcome: 'cross_kind_conflict', keys: [...conflicts].sort() }
   if (oversized.length > 0) return { outcome: 'too_large', agentIds: oversized.sort() }
@@ -242,11 +336,32 @@ export async function snapshotAgentEnvironments(
 ): Promise<AgentEnvironmentSnapshot[]> {
   if (agentIds.length === 0) return []
   const ids = [...new Set(agentIds)]
-  const [agents, secretRows, assignments] = await Promise.all([
+  const [agents, secretRows, otherSpecRows, assignments] = await Promise.all([
     tx.agent.findMany({ where: { id: { in: ids } }, select: { id: true, runtimeOverrides: true } }),
-    // SIZES ONLY — this is an admission check, never a value read.
+    // SIZES ONLY — this is an admission check, never a value read. `to_json`
+    // computes the escaped JSON length Postgres-side, so escaping is measured
+    // exactly while the value itself never crosses the wire.
     tx.$queryRaw<Array<{ agentId: string; key: string; bytes: number }>>(
-      Prisma.sql`SELECT "agentId", "key", octet_length("value")::int AS bytes FROM "agent_secret" WHERE "agentId" IN (${Prisma.join(ids)})`
+      Prisma.sql`SELECT "agentId", "key", ${Prisma.raw(ENCODED_LENGTH_SQL)}::int AS bytes FROM "agent_secret" WHERE "agentId" IN (${Prisma.join(ids)})`
+    ),
+    // Everything else this agent contributes to its spec (see `otherSpecBytes`).
+    tx.$queryRaw<Array<{ id: string; bytes: number }>>(
+      Prisma.sql`
+        SELECT a."id",
+               ( coalesce(octet_length(a."runtimeOverrides"::text), 0)
+               + coalesce(octet_length(to_json(a."description")::text), 0)
+               + coalesce(octet_length(to_json(a."name")::text), 0)
+               + coalesce(octet_length(to_json(a."displayName")::text), 0)
+               + coalesce(octet_length(to_json(a."gitRepo")::text), 0)
+               + coalesce(octet_length(to_json(a."gitBranch")::text), 0)
+               + coalesce(octet_length(to_json(a."agentDir")::text), 0)
+               + coalesce(octet_length(array_to_string(a."managedSkills", ',')), 0)
+               + coalesce(octet_length(array_to_string(a."allowedCallerAgentIds", ',')), 0)
+               + coalesce(octet_length(array_to_string(a."allowedTargetAgentIds", ',')), 0)
+               + coalesce((SELECT sum(octet_length(to_json(s)::text))
+                           FROM "skill_source" s WHERE s."orgId" = a."orgId"), 0)
+               )::int AS bytes
+        FROM "agent" a WHERE a."id" IN (${Prisma.join(ids)})`
     ),
     tx.organizationEnvironmentAssignment.findMany({
       where: { orgId, agentId: { in: ids } },
@@ -277,10 +392,12 @@ export async function snapshotAgentEnvironments(
   const orgSecretBytes = new Map<string, number>()
   if (secretEntryIds.length > 0) {
     const rows = await tx.$queryRaw<Array<{ entryId: string; bytes: number }>>(
-      Prisma.sql`SELECT "entryId", octet_length("value")::int AS bytes FROM "organization_environment_secret" WHERE "entryId" IN (${Prisma.join(secretEntryIds)})`
+      Prisma.sql`SELECT "entryId", ${Prisma.raw(ENCODED_LENGTH_SQL)}::int AS bytes FROM "organization_environment_secret" WHERE "entryId" IN (${Prisma.join(secretEntryIds)})`
     )
     for (const row of rows) orgSecretBytes.set(row.entryId, row.bytes)
   }
+
+  const otherSpec = new Map(otherSpecRows.map((row) => [row.id, row.bytes]))
 
   const assignedByAgent = new Map<string, typeof assignments>()
   for (const assignment of assignments) {
@@ -305,7 +422,7 @@ export async function snapshotAgentEnvironments(
       })
       organizationValueBytes.set(
         entry.key,
-        kind === 'secret' ? (orgSecretBytes.get(entry.id) ?? 0) : Buffer.byteLength(entry.variableValue ?? '', 'utf8')
+        kind === 'secret' ? (orgSecretBytes.get(entry.id) ?? 0) : encodedValueBytes(entry.variableValue ?? '')
       )
     }
     return {
@@ -314,29 +431,34 @@ export async function snapshotAgentEnvironments(
       secretKeys: [...(secretBytes.get(agent.id)?.keys() ?? [])],
       organizationEntries,
       organizationValueBytes,
-      agentSecretBytes: secretBytes.get(agent.id) ?? new Map()
+      agentSecretBytes: secretBytes.get(agent.id) ?? new Map(),
+      otherSpecBytes: otherSpec.get(agent.id) ?? 0
     }
   })
 }
 
 /**
- * Encoded size of the two resolved wire maps. Only the winning side of each key
- * counts — an overridden agent row is retained in the database but never shipped
- * — and a tombstoned key contributes nothing at all.
+ * Encoded size of the resolved spec: the two wire maps plus everything else the
+ * agent contributes. Only the winning side of each key counts — an overridden agent
+ * row is retained in the database but never shipped — and a tombstoned key
+ * contributes nothing at all.
+ *
+ * Every value size here is already JSON-ENCODED (see {@link encodedValueBytes} and
+ * `ENCODED_LENGTH_SQL}`), so escaping is measured rather than hoped for.
  */
-function resolvedEnvironmentBytes(snapshot: AgentEnvironmentSnapshot): number {
+function resolvedSpecBytes(snapshot: AgentEnvironmentSnapshot): number {
   const plan = planEffectiveKeys(Object.keys(snapshot.variables), snapshot.secretKeys, snapshot.organizationEntries)
-  let bytes = 0
+  let bytes = snapshot.otherSpecBytes
   for (const effective of plan.keys) {
     const valueBytes =
       effective.source === 'organization'
         ? (snapshot.organizationValueBytes.get(effective.key) ?? 0)
         : effective.kind === 'secret'
           ? (snapshot.agentSecretBytes.get(effective.key) ?? 0)
-          : Buffer.byteLength(snapshot.variables[effective.key] ?? '', 'utf8')
-    // `"KEY":"VALUE",` in the JSON object the frame carries. JSON escaping can
-    // expand a value further, which the fixed headroom above absorbs.
-    bytes += Buffer.byteLength(effective.key, 'utf8') + valueBytes + 6
+          : encodedValueBytes(snapshot.variables[effective.key] ?? '')
+    // One `"KEY":VALUE,` member: the encoded key, a colon, the encoded value (its
+    // own quotes already included), and a separating comma.
+    bytes += encodedValueBytes(effective.key) + 1 + valueBytes + 1
   }
   return bytes
 }
