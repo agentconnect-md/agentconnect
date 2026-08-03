@@ -837,6 +837,9 @@ export interface SessionImage {
 export interface SessionStep {
   kind: LaneKind
   who?: string
+  /** Stable identity of the live webchat turn. Pair with `agentId` when
+   *  folding interleaved participant streams into conversation blocks. */
+  turnId?: string
   /** Authoring participant of a live multi-agent webchat step — keys the per-agent
    *  stream lane accumulation and the per-block attribution label. */
   agentId?: string
