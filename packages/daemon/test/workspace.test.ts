@@ -353,7 +353,11 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     const cwd = sessionWorktreePath(agent, 'session-a')
     mkdirSync(cwd, { recursive: true })
     writeFileSync(join(cwd, '.git'), 'gitdir: elsewhere')
-    return { agent, cwd, id: basename(cwd) }
+    // Hand back the CANONICAL path: the GC re-derives its worktree path from the
+    // realpath'd root before every destructive step, so that is the path it puts
+    // on the Git command line. The two spellings differ wherever `$TMPDIR` sits
+    // behind a symlink — on macOS it does (`/var` → `/private/var`).
+    return { agent, cwd: realpathSync(cwd), id: basename(cwd) }
   }
   const gitCalls = () => rawMock.mock.calls.map((call) => call[0] as string[])
 
