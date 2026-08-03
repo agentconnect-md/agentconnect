@@ -2,7 +2,8 @@
  * Install a daemon version into the store (cli-daemon-split.md §5.1): resolve from
  * the registry → verify integrity → engines check → extract to `versions/<v>.tmp`
  * → atomic rename to `versions/<v>`. Idempotent: an already-installed version is a
- * no-op success. Must run inside the version lock (version-lock.ts).
+ * no-op success — unless `force` re-downloads and replaces it (the recovery path
+ * for a corrupt bundle). Must run inside the version lock (version-lock.ts).
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
@@ -36,9 +37,10 @@ export async function resolveTarget(opts: { to?: string; channel: Channel }): Pr
 export async function installTarget(
   root: string,
   target: ResolvedTarget,
-  onLog: (msg: string) => void = () => {}
+  onLog: (msg: string) => void = () => {},
+  opts: { force?: boolean } = {}
 ): Promise<string> {
-  if (isInstalled(root, target.version)) {
+  if (!opts.force && isInstalled(root, target.version)) {
     onLog(`daemon ${target.version} already installed`)
     return target.version
   }
@@ -75,9 +77,15 @@ export async function installTarget(
       throw new Error(`daemon ${target.version} tarball has no dist/index.js — refusing to install`)
     }
 
-    // Atomic publish. A racing install that already produced `dest` wins; drop tmp.
+    // Atomic publish. A racing install that already produced `dest` wins; drop
+    // tmp — except a forced re-install, whose point is replacing the existing dir.
     if (existsSync(dest)) {
-      rmSync(tmp, { recursive: true, force: true })
+      if (opts.force) {
+        rmSync(dest, { recursive: true, force: true })
+        renameSync(tmp, dest)
+      } else {
+        rmSync(tmp, { recursive: true, force: true })
+      }
     } else {
       renameSync(tmp, dest)
     }

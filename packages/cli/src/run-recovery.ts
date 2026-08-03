@@ -1,0 +1,133 @@
+/**
+ * Interactive recovery for a foreground `run` whose daemon failed at startup
+ * (cli-daemon-split.md §6.1). For a foreground run the respawn shell is the
+ * supervisor and the operator is at the terminal — so when the daemon exits
+ * nonzero shortly after spawn (broken bundle, bad upgrade) the CLI offers to
+ * roll back to `previous`, force re-download the channel latest, or print the
+ * manual version commands. Service mode, non-TTY, and dev-entry runs never
+ * prompt: their exit code must propagate to the supervisor untouched.
+ */
+import { createInterface } from 'node:readline'
+import type { ChildResult } from './delegate.js'
+import { versionReinstallLatest, versionRollback } from './version-commands.js'
+import { currentVersion, isInstalled, readMeta } from './version-store.js'
+
+/**
+ * Exits later than this after spawn are runtime crashes, not startup failures —
+ * a version rollback would suggest the wrong fix, so recovery stays silent.
+ */
+export const STARTUP_FAILURE_WINDOW_MS = 60_000
+
+export interface RecoveryContext {
+  /** The service manager (or the user) asked us to stop — never prompt. */
+  stopRequested: boolean
+  /** AGENTCONNECT_SUPERVISOR=service: launchd/systemd supervises, no operator. */
+  supervised: boolean
+  /** AGENTCONNECT_DAEMON_ENTRY dev override: the version store is bypassed. */
+  devEntry: boolean
+  /** stdin AND stderr are TTYs — someone can actually answer the prompt. */
+  interactive: boolean
+  /** Milliseconds between spawn and exit. */
+  elapsedMs: number
+}
+
+/** Pure predicate: does this daemon exit warrant the recovery prompt? */
+export function shouldOfferRecovery(result: ChildResult, ctx: RecoveryContext): boolean {
+  if (ctx.stopRequested || ctx.supervised || ctx.devEntry || !ctx.interactive) return false
+  if (result.signal !== null) return false // killed, not failed
+  if (!result.code) return false // clean exit
+  return ctx.elapsedMs <= STARTUP_FAILURE_WINDOW_MS
+}
+
+export type RecoveryAction = 'rollback' | 'reinstall' | 'manual'
+
+export interface RecoveryOption {
+  key: string
+  action: RecoveryAction
+  label: string
+}
+
+/** The menu, keyed 1..n. Rollback is offered only when a usable `previous` exists. */
+export function recoveryOptions(o: { previous: string | null; channel: string }): RecoveryOption[] {
+  const options: RecoveryOption[] = []
+  const add = (action: RecoveryAction, label: string): void => {
+    options.push({ key: String(options.length + 1), action, label })
+  }
+  if (o.previous) add('rollback', `switch back to the previous version (${o.previous}) and retry`)
+  add('reinstall', `re-download the latest ${o.channel} version and retry`)
+  add('manual', 'show the commands to pick a version manually')
+  return options
+}
+
+export const MANUAL_VERSION_HELP = [
+  'Pick a daemon version manually:',
+  '  agentconnect version list               # installed versions (current / previous)',
+  '  agentconnect version install <version>  # download a specific version',
+  '  agentconnect version use <version>      # activate it',
+  '  agentconnect run                        # start again'
+].join('\n')
+
+export interface RecoveryDeps {
+  input: NodeJS.ReadableStream
+  out: NodeJS.WritableStream
+  rollback: (root: string) => Promise<string>
+  reinstall: (root: string) => Promise<string>
+}
+
+function realRecoveryDeps(): RecoveryDeps {
+  return {
+    input: process.stdin,
+    // The prompt joins the daemon's own failure output on stderr; stdout stays
+    // reserved for whatever the delegated command itself prints.
+    out: process.stderr,
+    rollback: versionRollback,
+    reinstall: versionReinstallLatest
+  }
+}
+
+/**
+ * Show the menu and act on the choice. Resolves 'respawn' when a version switch
+ * succeeded (the run shell re-resolves `current` and retries), 'exit' when the
+ * user declined or asked for the manual commands. A failed action (registry
+ * down, previous pruned) re-offers the menu so the user can pick another way out.
+ */
+export async function runRecoveryFlow(
+  root: string,
+  result: ChildResult,
+  deps: RecoveryDeps = realRecoveryDeps()
+): Promise<'respawn' | 'exit'> {
+  const meta = readMeta(root)
+  const cur = currentVersion(root)
+  const previous = meta.previous && meta.previous !== cur && isInstalled(root, meta.previous) ? meta.previous : null
+  const options = recoveryOptions({ previous, channel: meta.channel })
+
+  deps.out.write(`agentconnect: daemon${cur ? ` ${cur}` : ''} exited with code ${result.code} during startup\n`)
+  const rl = createInterface({ input: deps.input, output: deps.out })
+  rl.on('SIGINT', () => rl.close()) // Ctrl-C at the prompt = decline
+  const iter = rl[Symbol.asyncIterator]()
+  try {
+    for (;;) {
+      for (const o of options) deps.out.write(`  ${o.key}) ${o.label}\n`)
+      deps.out.write(`Choose 1-${options.length}, or press Enter to exit: `)
+      const { value, done } = await iter.next()
+      const answer = done ? '' : String(value).trim()
+      if (answer === '') return 'exit'
+      const choice = options.find((o) => o.key === answer)
+      if (!choice) continue // unknown key — offer the menu again
+      if (choice.action === 'manual') {
+        deps.out.write(MANUAL_VERSION_HELP + '\n')
+        return 'exit'
+      }
+      try {
+        const v = choice.action === 'rollback' ? await deps.rollback(root) : await deps.reinstall(root)
+        deps.out.write(`agentconnect: retrying with daemon ${v}…\n`)
+        return 'respawn'
+      } catch (err) {
+        deps.out.write(`agentconnect: ${choice.action} failed: ${(err as Error).message}\n`)
+        // fall through: the menu is offered again (e.g. registry down → roll back)
+      }
+    }
+  } finally {
+    rl.close()
+  }
+}
