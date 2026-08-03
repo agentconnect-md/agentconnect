@@ -57,7 +57,14 @@ vi.mock('@/components/marks', () => ({
   ModelMark: () => <span />,
   PlatformMark: () => <span />,
   LogoMark: () => <span />,
-  LoadingState: () => <span>loading</span>
+  LoadingState: () => <span>loading</span>,
+  Spinner: () => <span />
+}))
+// prepareWebchatImage needs createImageBitmap/canvas (not in happy-dom); the
+// pipeline itself is covered by webchat-image.test.ts.
+vi.mock('@/lib/webchat-image', () => ({
+  clipboardImageFile: () => undefined,
+  prepareWebchatImage: vi.fn(async () => ({ name: 'shot.webp', mimeType: 'image/webp', data: 'QUJD' }))
 }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: { name: 'Riley Kim', initials: 'RK' }, me: null }) }))
 vi.mock('@/components/ui', () => ({ Icon: () => <span /> }))
@@ -282,6 +289,38 @@ describe('HomeView run-selectors (catalog-aware)', () => {
       await new Promise((r) => setTimeout(r, 0))
     })
     expect(mocks.pgSetPermissionPreset).toHaveBeenCalledWith('pg_1', 'a1', 'agent:auto-review')
+  })
+})
+
+describe('HomeView attach', () => {
+  it('sends an attached image with the first turn (image-only send allowed)', async () => {
+    mocks.agents = [agent()]
+    mocks.daemons = [daemon()]
+    await render()
+    const sendBtn = host.querySelector<HTMLButtonElement>('button.sendbtn')!
+    expect(sendBtn.disabled).toBe(true) // no text, no image yet
+    const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')!
+    await act(async () => {
+      Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'shot.png', { type: 'image/png' })] })
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(host.querySelector('img')).toBeTruthy() // preview chip
+    expect(sendBtn.disabled).toBe(false) // image alone enables send
+    await act(async () => {
+      sendBtn.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    // The image rides pgSend's explicit argument (the session id is minted in the same tick).
+    expect(mocks.pgSend).toHaveBeenCalledWith(
+      'pg_1',
+      'a1',
+      '',
+      undefined,
+      undefined,
+      expect.objectContaining({ data: 'QUJD', mimeType: 'image/webp' })
+    )
+    expect(host.querySelector('img')).toBeNull() // composer cleared after send
   })
 })
 
