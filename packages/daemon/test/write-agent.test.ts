@@ -931,3 +931,101 @@ describe('cold-move archive', () => {
     expect(existsSync(join(residue, 'agent', 'agent.json'))).toBe(true)
   })
 })
+
+describe('writeIntegrationSpec §6.4 dual-shape reader', () => {
+  const AGENT = '33333333-3333-4333-8333-333333333333'
+  const INT = '66666666-6666-4666-8666-666666666666'
+  const seeded = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-dualshape-'))
+    seedAgent(dir, 'bot-a', {
+      id: AGENT,
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: 'workspace' },
+      integrations: []
+    })
+    return dir
+  }
+  const telegram = { botToken: '12345:AAA', bindRules: [], mutedChannels: [], gated: false }
+  const disk = (dir: string) =>
+    (readJson(join(dir, 'bot-a', 'agent.json')).integrations as Record<string, unknown>[])[0]
+
+  it('envelope-only and legacy-only specs fold to the SAME on-disk shape', () => {
+    const a = seeded()
+    writeIntegrationSpec(a, { integrationId: INT, agentId: AGENT, platform: 'telegram', telegram } as never, {})
+    const b = seeded()
+    writeIntegrationSpec(
+      b,
+      {
+        integrationId: INT,
+        agentId: AGENT,
+        platform: 'telegram',
+        core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+        config: telegram
+      } as never,
+      {}
+    )
+    expect(disk(b)).toEqual(disk(a))
+  })
+
+  it('core overrides the legacy routing knobs wherever present', () => {
+    const dir = seeded()
+    writeIntegrationSpec(
+      dir,
+      {
+        integrationId: INT,
+        agentId: AGENT,
+        platform: 'telegram',
+        telegram: { ...telegram, gated: false, mutedChannels: [] },
+        core: { mode: 'direct', bindRules: [], mutedChannels: ['C_OFF'], gated: true },
+        config: telegram
+      } as never,
+      {}
+    )
+    expect(disk(dir)).toMatchObject({ telegram: { gated: true, mutedChannels: ['C_OFF'] } })
+  })
+
+  it('a spec with neither payload is refused (warn + not persisted)', () => {
+    const dir = seeded()
+    const warns: string[] = []
+    const ok = writeIntegrationSpec(dir, { integrationId: INT, agentId: AGENT, platform: 'telegram' } as never, {
+      warn: (m) => warns.push(m)
+    })
+    expect(ok).toBe(false)
+    expect(warns[0]).toContain('no usable platform payload')
+    expect(readJson(join(dir, 'bot-a', 'agent.json')).integrations).toEqual([])
+  })
+})
+
+describe('writeCronDef §6.8 open target platform', () => {
+  const AGENT = '33333333-3333-4333-8333-333333333333'
+  it('persists a non-Slack target with its REAL platform (no headless degradation)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-cron-open-'))
+    seedAgent(dir, 'bot-a', {
+      id: AGENT,
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: 'workspace' },
+      integrations: []
+    })
+    writeCronDef(
+      dir,
+      {
+        cronId: '77777777-7777-4777-8777-777777777777',
+        agentId: AGENT,
+        schedule: '0 9 * * *',
+        timezone: 'UTC',
+        target: { platform: 'telegram', channel: '-100123', integrationId: '66666666-6666-4666-8666-666666666666' },
+        trigger: 'daily digest',
+        enabled: true
+      } as never,
+      {}
+    )
+    const raw = readJson(join(dir, 'bot-a', 'agent.json'))
+    expect((raw.crons as Record<string, unknown>[])[0]).toMatchObject({
+      target: { platform: 'telegram', channel: '-100123' }
+    })
+  })
+})

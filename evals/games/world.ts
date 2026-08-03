@@ -19,7 +19,8 @@ import type {
   VirtualChannelInfo,
   VirtualConnectionWorldPort,
   VirtualMember,
-  VirtualProfile
+  VirtualProfile,
+  VirtualThreadMessage
 } from '../../packages/daemon/src/evaluation/index.js'
 import {
   VirtualDiscordConnection,
@@ -41,6 +42,15 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
   private readonly agentAliasById = new Map<string, string>()
   private messageCounter = 0
   private readonly messageEpoch: number
+  /** Provider-visible room history per `<channel>\u001f<thread>` — what
+   *  `getThreadReplies` returns, i.e. what a running turn discovers at its
+   *  final refresh. Referee/relay ingress and delivered agent posts both land
+   *  here, in `ts` order, exactly as they would in a real Slack thread. */
+  private readonly history = new Map<string, VirtualThreadMessage[]>()
+  /** Fired synchronously as soon as an effect is DELIVERED, before the sending
+   *  agent's turn returns — the production timing that lets a concurrent turn
+   *  observe the post at its turn-final refresh and regenerate. */
+  private readonly deliveredHooks = new Set<(effect: RecordedOutboundEffect) => void>()
 
   constructor(readonly topology: CompiledTopology) {
     this.messageEpoch = 1_690_000_000 + (topology.seed % 9_999_999)
@@ -65,10 +75,24 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     return this.sequence
   }
 
-  /** Mint a platform-shaped message id for a world-authored room event. */
+  /** Highest Slack-shaped ts minted so far, in microseconds (monotonicity). */
+  private lastMintedMicros = 0
+
+  /** Mint a platform-shaped message id for a world-authored room event.
+   *  FIDELITY: Slack ts values are WALL-CLOCK epoch seconds — the daemon's
+   *  provider-checkpoint windows (`snapshotCutoffTs` / turn-final refresh)
+   *  compare message ts against `slackTsForWallClock(now)`, so a synthetic
+   *  past-epoch ts would silently fall outside every window and the
+   *  regeneration fence could never see the message. Strictly monotonic. */
   mintMessageId(platform: string): string {
     this.messageCounter += 1
-    if (platform === 'slack') return `${this.messageEpoch}.${String(this.messageCounter).padStart(6, '0')}`
+    if (platform === 'slack') {
+      const nowMs = Date.now()
+      let micros = Math.floor(nowMs / 1000) * 1_000_000 + (nowMs % 1000) * 1000 + (this.messageCounter % 1000)
+      if (micros <= this.lastMintedMicros) micros = this.lastMintedMicros + 1
+      this.lastMintedMicros = micros
+      return `${Math.floor(micros / 1_000_000)}.${String(micros % 1_000_000).padStart(6, '0')}`
+    }
     return String(this.messageEpoch * 1000 + this.messageCounter)
   }
 
@@ -84,6 +108,28 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
    *  it validate (§7.2 `invalid_thread`). */
   registerRoomMessage(channel: string, messageId: string): void {
     this.channelsById.get(channel)?.threads.add(messageId)
+  }
+
+  /** Register a synchronous delivered-effect observer (peer fan-out). */
+  onDelivered(hook: (effect: RecordedOutboundEffect) => void): void {
+    this.deliveredHooks.add(hook)
+  }
+
+  private historyKey(channel: string, thread: string): string {
+    return `${channel}\u001f${thread}`
+  }
+
+  /** Append a provider-visible room message (referee/relay ingress). */
+  recordThreadMessage(channel: string, thread: string, message: VirtualThreadMessage): void {
+    const key = this.historyKey(channel, thread)
+    const rows = this.history.get(key) ?? []
+    rows.push(message)
+    rows.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
+    this.history.set(key, rows)
+  }
+
+  threadHistory(channel: string, thread: string): readonly VirtualThreadMessage[] {
+    return this.history.get(this.historyKey(channel, thread)) ?? []
   }
 
   // ── VirtualConnectionWorldPort ────────────────────────────────────────────
@@ -137,6 +183,18 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
       messageId
     }
     this.effects.push(record)
+    // The post is now part of the provider-visible thread — a concurrent turn's
+    // final snapshot must see it (that is what trips the regeneration fence).
+    if (effect.thread !== undefined) {
+      this.recordThreadMessage(effect.channel, effect.thread, {
+        ts: messageId,
+        text: effect.text,
+        sender: this.botUserIdFor(effect.integrationId) ?? integration.agentId,
+        isBot: true,
+        agentAuthorId: integration.agentId,
+        ...(effect.kind === 'chrome' ? { chrome: true } : {})
+      })
+    }
     this.appendEvent({
       sequence,
       type: 'outbound.delivered',
@@ -150,7 +208,20 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
       messageId,
       text: effect.text
     })
+    // Synchronous fan-out hooks run BEFORE this promise resolves, so the peer
+    // ingress is already queued while the posting agent's turn is still open.
+    for (const hook of this.deliveredHooks) hook(record)
     return { status: 'delivered', messageId, sequence }
+  }
+
+  /** The bot user id the daemon bound for one virtual integration. */
+  botUserIdFor(integrationId: string): string | undefined {
+    return this.integrationsById.get(integrationId)?.botUserId
+  }
+
+  /** The public Slack app id of one virtual integration (`isAgentBotApp` input). */
+  botAppIdFor(integrationId: string): string | undefined {
+    return this.integrationsById.get(integrationId)?.botAppId
   }
 
   channelInfo(channel: string): VirtualChannelInfo | undefined {
@@ -222,7 +293,7 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
               spec.integrationId,
               { workspaceId: spec.tenant?.workspaceId ?? `TARENA${this.topology.seed}` },
               this,
-              { botUserId: spec.botUserId }
+              { botUserId: spec.botUserId, ...(spec.botAppId !== undefined ? { appId: spec.botAppId } : {}) }
             )
           : spec.platform === 'discord'
             ? new VirtualDiscordConnection(spec.integrationId, this)

@@ -556,6 +556,130 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('§6.8: a telegram anchored fire keys the session by that platform conversation model', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const postMessage = vi.fn(async () => '777')
+    // Re-home int-a onto the telegram connection map (makeRoutable wires the slack
+    // map, which the integration lookup checks first).
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).tgConnByIntegration.set('int-a', {
+      postMessage,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-tg:trace-1'),
+        msgId: 'cron:cron-tg:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'telegram',
+        channel: '-100123',
+        isDm: false
+      },
+      { channel: '-100123', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-tg"'
+    )
+
+    expect(postMessage).toHaveBeenCalledWith('-100123', '⏰ scheduled')
+    // threadKeyForPost: a Telegram reply chain resolves to `tg:<root>` — the anchor
+    // session must mint the SAME key or follow-up replies open a different session.
+    const key = sessionKey('telegram', '-100123', 'tg:777', 'bot-a', TRANSPORT_SCOPE)
+    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    await daemon.stop()
+  }, 15_000)
+
+  it('§6.8: a telegram DM anchored fire keys `dm` and classifies as a DM session', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const postMessage = vi.fn(async () => '888')
+    const getChannelInfo = vi.fn(async () => ({ isIm: true }))
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).tgConnByIntegration.set('int-a', {
+      postMessage,
+      getChannelInfo,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-dm:trace-1'),
+        msgId: 'cron:cron-dm:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'telegram',
+        channel: '42',
+        isDm: false
+      },
+      { channel: '42', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-dm"'
+    )
+
+    expect(getChannelInfo).toHaveBeenCalledWith('42')
+    // A Telegram DM is ONE continuous conversation keyed `dm` — the anchor must
+    // join it, not open a `tg:<messageId>` session no inbound reply resolves to.
+    const key = sessionKey('telegram', '42', 'dm', 'bot-a', TRANSPORT_SCOPE)
+    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    await daemon.stop()
+  }, 15_000)
+
+  it('§6.8: a discord DM anchored fire classifies as a private DM session', async () => {
+    // Discord thread keys are DM-insensitive (the conversation IS the channel), but
+    // `conversationKind` and the daemon-local capture gate are not: a DM fire that
+    // reports isDm:false is stored as a non-private CHANNEL session.
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const postMessage = vi.fn(async () => 'msg-1')
+    const getChannelInfo = vi.fn(async () => ({ id: 'D-1', isIm: true }))
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).dcConnByIntegration.set('int-a', {
+      postMessage,
+      getChannelInfo,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-dc:trace-1'),
+        msgId: 'cron:cron-dc:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'discord',
+        channel: 'D-1',
+        isDm: false
+      },
+      { channel: 'D-1', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-dc"'
+    )
+
+    expect(getChannelInfo).toHaveBeenCalledWith('D-1')
+    const key = sessionKey('discord', 'D-1', 'D-1', 'bot-a', TRANSPORT_SCOPE)
+    const rec = (daemon as any).store.getSession(key)
+    expect(rec?.conversationKind).toBe('dm')
+    // The private-capture gate follows the same bit.
+    expect((daemon as any).store.isCaptureExcluded(rec?.acpSessionId)).toBe(true)
+    await daemon.stop()
+  }, 15_000)
+
   it('reports a cron session before its turn finishes', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })

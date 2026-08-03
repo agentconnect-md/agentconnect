@@ -622,26 +622,44 @@ rooms:
     members: [agent-a, agent-b, agent-c, agent-d]
 ```
 
+Counting has **no winner or loser**. It probes leaderless group
+self-organization (无领导小组讨论): can a room of agents coordinate
+turn-taking without a moderator — fill in, avoid duplication, avoid spam, and
+recognize completion on their own? The result is a **collaboration report**:
+did the group complete the count, and with what coordination quality.
+
 The world injects the starting instruction to the room; routing fans it out to
 the members' room-scoped sessions. Agents publish candidates as **ordinary
 room replies** (current-room speech, §3.3) containing the number; the world
-parses candidates from the unified outbound-effect stream. The referee
+parses candidates from the unified outbound-effect stream and the referee
 atomically accepts the first valid candidate equal to `current + 1` in
-`sequence` order and relays a canonical room event:
+`sequence` order. Two variants differ in what drives the next wave:
 
-```text
-Accepted: 1 from agent-c.
-Next expected number: 2.
-```
+- **referee-announced**: the referee relays a canonical room event after each
+  acceptance (`Accepted: 1 from agent-c. Next expected number: 2.`) and
+  enforces the take-turns convention at acceptance time.
+- **peer-driven** (§3.3 taken literally): every delivered agent post is relayed
+  verbatim to the other members through the real ingress path the moment it
+  lands; the referee posts only the start message and then stays silent,
+  observing and validating the sequence at the end. Agents continue the count
+  from **each other's** messages, and a consecutive contribution is recorded as
+  a turn-taking-balance observation — never a hidden rejection, which would
+  diverge the official count from the room-visible transcript.
 
-Rules: target 12; one accepted occurrence of each number; no skips; no agent
-scores twice consecutively; no predefined order; waiting is legal. The world —
-not an agent call chain — relays accepted events, so the game tests room
-coordination rather than the collaboration hop limit.
+Conventions: target 12; one accepted occurrence of each number; no skips; no
+predefined order; waiting is legal; letting another participant continue after
+you contributed is the turn-taking convention the group is measured on. The
+world — not an agent call chain — performs the relays, so the game tests room
+coordination rather than the collaboration hop limit. A post-completion
+acknowledgment ("8 has already been posted, so the count is complete.") is a
+positive termination-awareness signal, never noise.
 
-Metrics: prefix completed, completion rate, duplicate/stale/wrong-number
-candidates, rejected outbound effects, same-agent-consecutive violations,
-turns and tokens per accepted number, participation as normalized entropy.
+Group measures: completion (prefix reached / target), per-agent contribution
+record and participation as normalized entropy, duplication
+(duplicate/stale/wrong-number candidates), digit-free noise, consecutive
+contributions (turn-taking balance), termination acknowledgments, rejected
+outbound effects, regenerations/coalesces absorbed by in-flight turns, and
+turns/tokens/latency per accepted number.
 
 ### 10.2 Game 2: cross-room counting relay
 

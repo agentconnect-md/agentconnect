@@ -21,6 +21,7 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './render.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -128,6 +129,21 @@ export function consolidate(agents: Agent[]): Map<string, ConsolidatedGroup> {
 /** Group SHARED-mode Slack integrations by xoxb (one send-only client per bot
  *  token). These have no appToken (the relay owns inbound), so they can't be keyed
  *  by appToken like {@link consolidate} — the bot token is the identity. */
+/** §7.5 opaque identity of one Slack SOCKET connection. The app token pins the
+ *  Socket Mode consumer and the bot token the send credential, so a change in
+ *  either is a different connection. Takes the shape shared by a consolidated
+ *  group and a live `SlackConnection`, so both hash identically by construction. */
+export function slackSocketKey(c: { appToken: string; botToken: string }): string {
+  return `${c.appToken}\u0000${c.botToken}`
+}
+
+/** §7.5 opaque identity of one SEND-ONLY (shared / HTTP) Slack client. A shared
+ *  bot has no app token — the relay owns its inbound — so the bot token is the
+ *  whole identity. */
+export function slackSharedKey(c: { botToken: string }): string {
+  return c.botToken
+}
+
 export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGroup> {
   const groups = new Map<string, ConsolidatedGroup>()
   for (const a of agents) {
@@ -438,7 +454,7 @@ function sendOnlyApp(botToken: string): AppLike {
   }
 }
 
-export class SlackConnection {
+export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
   // streamed edits are FIFO-ordered and rate-limited per Slack app connection.

@@ -52,6 +52,7 @@ import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/Work
 import { WorkspaceFilesMock } from '@/components/console/WorkspaceFilesMock'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
+import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
@@ -1686,9 +1687,7 @@ export default function AgentDetailView() {
                   </div>
                 </>
               ) : (
-                <div className="px-4 py-[13px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:py-3">
-                  Nothing indexed from the workspace yet.
-                </div>
+                <LocalSkillsList agentId={da.id} />
               )}
             </div>
             <div className="flex items-center gap-2 border-t border-(--border-subtle) px-4 py-[13px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">

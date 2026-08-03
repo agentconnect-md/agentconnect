@@ -3,8 +3,11 @@ import {
   decodeEnvelope,
   decodeRelayDaemonFrame,
   decodeRelayCpFrame,
+  CollabRoutesSnapshot,
+  IntegrationSpec,
   KNOWN_PLATFORMS,
-  isKnownPlatform
+  isKnownPlatform,
+  originKindOf
 } from './index.js'
 
 /**
@@ -191,6 +194,209 @@ describe('S1a tolerant platform readers — relay↔CP wire', () => {
     if (r.ok && r.frame.type === 'rc/bot-assign') {
       expect(r.frame.payload.platform).toBe(UNKNOWN)
     }
+  })
+})
+
+describe('§6.4 IntegrationSpec dual shape', () => {
+  const base = { integrationId: INTEGRATION_ID, agentId: AGENT_ID, platform: 'telegram' as const }
+  const telegram = { botToken: '12345:AAA', bindRules: [], mutedChannels: [], gated: false }
+  const core = { mode: 'direct' as const, bindRules: [], mutedChannels: [], gated: false }
+
+  it('decodes legacy-only, dual, and envelope-only variants', () => {
+    expect(IntegrationSpec.safeParse({ ...base, telegram }).success).toBe(true)
+    const dual = IntegrationSpec.safeParse({ ...base, telegram, core, config: telegram })
+    expect(dual.success).toBe(true)
+    if (dual.success && dual.data.platform === 'telegram') {
+      expect(dual.data.core?.gated).toBe(false)
+      expect(dual.data.config).toEqual(telegram)
+    }
+    // Envelope-only (post-window emission): the legacy block is absent.
+    expect(IntegrationSpec.safeParse({ ...base, core, config: telegram }).success).toBe(true)
+  })
+
+  it('keeps a payload-less variant decodable — rejection is the reader, not the schema', () => {
+    expect(IntegrationSpec.safeParse(base).success).toBe(true)
+  })
+})
+
+describe('§6.5 generic thread coordinates + adapterExt', () => {
+  const im = (payload: Record<string, unknown>) =>
+    decodeRelayDaemonFrame(
+      envelope('rd/msg', {
+        source: 'im',
+        agentId: AGENT_ID,
+        sessionKey: 'telegram:C1:-',
+        msgId: 'evt-1',
+        botId: BOT_ID,
+        integrationId: INTEGRATION_ID,
+        payload: {
+          msgId: 'evt-1',
+          traceId: 'trace-1',
+          source: 'user',
+          platform: 'telegram',
+          channel: '-100123',
+          sender: { id: 'U1', isBot: false },
+          text: 'hello',
+          mentionedBots: [],
+          isDm: false,
+          ...payload
+        }
+      })
+    )
+
+  it('decodes dual-shape (named + generic) and generic-only coordinates', () => {
+    const dual = im({ telegramTopicId: '55', topicId: '55' })
+    expectOk(dual)
+    if (dual.ok && dual.frame.type === 'rd/msg' && dual.frame.payload.source === 'im') {
+      expect(dual.frame.payload.payload.topicId).toBe('55')
+      expect(dual.frame.payload.payload.telegramTopicId).toBe('55')
+    }
+    expectOk(im({ threadRoot: '6', promoteToThread: true }))
+  })
+
+  it('round-trips the opaque adapterExt bag verbatim', () => {
+    const r = im({ adapterExt: { telegram: { customEmojiIds: ['e1'] } } })
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rd/msg' && r.frame.payload.source === 'im') {
+      expect(r.frame.payload.payload.adapterExt).toEqual({ telegram: { customEmojiIds: ['e1'] } })
+    }
+  })
+})
+
+describe('§6.6 platform_action envelope', () => {
+  const pa = (over: Record<string, unknown> = {}) =>
+    decodeRelayDaemonFrame(
+      envelope('rd/msg', {
+        source: 'platform_action',
+        platformId: 'slack',
+        agentId: AGENT_ID,
+        sessionKey: 'slack:C1:T1',
+        msgId: 'pa-1',
+        botId: BOT_ID,
+        integrationId: INTEGRATION_ID,
+        payload: { kind: 'open-config', triggerId: 'trig-1' },
+        ...over
+      })
+    )
+
+  it('decodes with a core-typed envelope and an OPAQUE payload for any platform id', () => {
+    const slack = pa()
+    expectOk(slack)
+    if (slack.ok && slack.frame.type === 'rd/msg' && slack.frame.payload.source === 'platform_action') {
+      expect(slack.frame.payload.platformId).toBe('slack')
+      expect(slack.frame.payload.payload).toEqual({ kind: 'open-config', triggerId: 'trig-1' })
+    }
+    // A platform id this build predates decodes too — refusal is the daemon's
+    // per-item verdict, never the schema's.
+    expectOk(pa({ platformId: UNKNOWN, payload: { anything: true } }))
+  })
+
+  it('rd/ack carries the generic opaque response beside the deprecated Feishu slot', () => {
+    const r = decodeRelayDaemonFrame(
+      envelope('rd/ack', {
+        msgId: 'pa-1',
+        accepted: true,
+        feishuCardAction: { toast: { type: 'info', content: 'ok' } },
+        response: { toast: { type: 'info', content: 'ok' } }
+      })
+    )
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rd/ack') {
+      expect(r.frame.payload.response).toEqual({ toast: { type: 'info', content: 'ok' } })
+    }
+  })
+})
+
+describe('§6.7 rc/bot-assign opaque secrets + ingress', () => {
+  it('decodes an opaque secret bag for a platform this build predates + the ingress bag', () => {
+    const r = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: BOT_ID,
+        platform: UNKNOWN,
+        originKind: 'chat',
+        secrets: { apiKey: 'k-1', webhookSecret: 'w-1' },
+        ingress: { appId: 'app-1', tenant: 't-1' },
+        members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+        routes: []
+      })
+    )
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rc/bot-assign') {
+      expect(r.frame.payload.secrets).toEqual({ apiKey: 'k-1', webhookSecret: 'w-1' })
+      expect(r.frame.payload.ingress).toEqual({ appId: 'app-1', tenant: 't-1' })
+    }
+  })
+
+  it('preserves EXTRA credential keys when a bag also satisfies a typed prefix', () => {
+    // zod object branches strip unknown keys by default; the typed variants carry
+    // a catchall so the platform module receives everything that was on the wire.
+    const r = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: BOT_ID,
+        platform: 'slack',
+        secrets: { botToken: 'xoxb-x', signingSecret: 'sig', clientSecret: 'extra-for-new-module' },
+        members: [],
+        routes: []
+      })
+    )
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rc/bot-assign') {
+      expect(r.frame.payload.secrets).toEqual({
+        botToken: 'xoxb-x',
+        signingSecret: 'sig',
+        clientSecret: 'extra-for-new-module'
+      })
+    }
+  })
+
+  it('keeps validating the typed Slack/Feishu secret shapes', () => {
+    const bad = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: BOT_ID,
+        platform: 'slack',
+        secrets: 'not-an-object',
+        members: [],
+        routes: []
+      })
+    )
+    expect(bad.ok).toBe(false)
+  })
+})
+
+describe('§6.1 origin-kind classification on the wire', () => {
+  it('rc/bot-assign carries an optional originKind; absent stays decodable (older CP)', () => {
+    const base = {
+      botId: BOT_ID,
+      platform: UNKNOWN,
+      secrets: { botToken: 'xoxb-test', signingSecret: 'sig' },
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      routes: []
+    }
+    const withKind = decodeRelayCpFrame(envelope('rc/bot-assign', { ...base, originKind: 'chat' }))
+    expectOk(withKind)
+    if (withKind.ok && withKind.frame.type === 'rc/bot-assign') {
+      expect(withKind.frame.payload.originKind).toBe('chat')
+    }
+    const without = decodeRelayCpFrame(envelope('rc/bot-assign', base))
+    expectOk(without)
+  })
+
+  it('collab snapshots default platformKinds to [] (pre-S1b CP) and carry entries verbatim', () => {
+    const bare = CollabRoutesSnapshot.parse({ generation: 1 })
+    expect(bare.platformKinds).toEqual([])
+    const classified = CollabRoutesSnapshot.parse({
+      generation: 2,
+      platformKinds: [{ platformId: UNKNOWN, originKind: 'chat' }]
+    })
+    expect(classified.platformKinds).toEqual([{ platformId: UNKNOWN, originKind: 'chat' }])
+  })
+
+  it('originKindOf seeds the known ids and answers undefined for unknown ones', () => {
+    expect(originKindOf('slack')).toBe('chat')
+    expect(originKindOf('hook')).toBe('hook')
+    expect(originKindOf('dream')).toBe('dream')
+    expect(originKindOf('webchat')).toBe('webchat')
+    expect(originKindOf(UNKNOWN)).toBeUndefined()
   })
 })
 

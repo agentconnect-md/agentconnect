@@ -89,6 +89,8 @@ import type {
   DreamFileReadContent,
   DreamSkillReviewReq,
   DreamSkillReadReq,
+  LocalSkillsReq,
+  LocalSkillsList,
   DreamSkillContent,
   OrganizationSuggestionReadReq,
   OrganizationSuggestionChunk,
@@ -627,6 +629,12 @@ export class ControlSender {
   async dreamSkillRead(daemonId: string, req: DreamSkillReadReq): Promise<DreamSkillContent> {
     const c = this.must(daemonId)
     return c.conn.request<DreamSkillContent>('memory/dream/skill/read', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Read-only inventory of the skills an agent's workspace can load, tagged by origin. */
+  async listLocalSkills(daemonId: string, req: LocalSkillsReq): Promise<LocalSkillsList> {
+    const c = this.must(daemonId)
+    return c.conn.request<LocalSkillsList>('skills/local', req, { epoch: c.sessionEpoch })
   }
 
   /** Accept one mined skill candidate — installs it for the agent (design §7). */

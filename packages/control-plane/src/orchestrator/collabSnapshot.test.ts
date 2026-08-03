@@ -63,6 +63,17 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(snap.channels[0]).toMatchObject({ orgId: DEFAULT_ORG_ID, platform: 'slack', channelId: 'C1' })
     expect(snap.channels[0].agents.map((a) => a.daemonId).sort()).toEqual([DAEMON_1, DAEMON_2].sort())
     expect(snap.channels[0].agents.map((a) => a.botAppId).sort()).toEqual(['A111', 'A222'])
+    // §6.1: every snapshot ships the emitter's origin-kind classification so an older
+    // peer can classify a platform id this CP introduces.
+    expect(snap.platformKinds).toEqual(
+      expect.arrayContaining([
+        { platformId: 'slack', originKind: 'chat' },
+        { platformId: 'feishu', originKind: 'chat' },
+        { platformId: 'webchat', originKind: 'webchat' },
+        { platformId: 'hook', originKind: 'hook' },
+        { platformId: 'dream', originKind: 'dream' }
+      ])
+    )
   })
 
   it('drops unplaced agents (daemonId null) — they are not routable', () => {

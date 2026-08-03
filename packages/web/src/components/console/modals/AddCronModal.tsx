@@ -73,9 +73,12 @@ function TimeField({
 interface Target {
   integrationId?: string
   channel?: string
-  platform: 'slack' | 'telegram'
+  // §6.8 open id — the anchor integration's REAL platform (the old two-value
+  // union silently coerced Discord/Feishu anchors to 'slack').
+  platform: string
 }
 
+// Headless fire: no channel; the platform is a legacy sentinel the CP defaults anyway.
 const HEADLESS: Target = { platform: 'slack' }
 
 export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null; onClose: () => void }) {
@@ -138,7 +141,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
           integrationId: i.id!,
           channelId: ch.channelId,
           channelName: ch.name,
-          platform: (i.platform === 'telegram' ? 'telegram' : 'slack') as Target['platform'],
+          platform: i.platform, // §6.8: the integration's real platform — no coercion
           sharedOwner: !!i.shareable
         }))
     )

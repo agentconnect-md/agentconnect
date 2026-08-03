@@ -313,27 +313,33 @@ The rule is **one three-way decision**, factored into a single place per package
 (`CollaborationRouter` on the relay, `CpCollabRoutes` on the daemon) that returns a tagged
 verdict rather than a bare boolean, so no call site re-derives it:
 
-| Asserted coordinate                                                                                                                                                               | Verdict                                                                                            | Why                                                                                                                                                                                                                                     |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **KNOWN** — the snapshot holds a non-empty membership at `(orgId, channelId)`                                                                                                     | caller in it ⇒ use the **asserted** coordinate unchanged; caller absent ⇒ **reject** `not_allowed` | Preserves the deliberate "land in the same thread a human sees" behavior, and keeps the assertion honest.                                                                                                                               |
-| **UNKNOWN on a persisted IM platform** — `PERSISTED_IM_PLATFORMS` = `slack` / `telegram` / `discord` / `feishu`                                                                   | **reject** `not_allowed` — FAIL CLOSED                                                             | An unrecorded IM coordinate is either a conversation the caller cannot reach or a stale/departed row whose session is still resumable. Admitting it is exactly what let a caller alias an existing platform session.                    |
-| **UNKNOWN on anything else** — a channel-free platform (`webchat`, and on the same-daemon path also `dream` and a target-less `hook` session), or a value neither side recognises | **substitute** a synthetic coordinate `a2a:<callerAgentId>`                                        | Rejecting would kill the case the org-scoped directory exists for. Instead the asserted channel never becomes the session key: the woken peer's coordinate is derived from the TRUSTED caller, which cannot alias any platform session. |
+| Asserted coordinate                                                                                                                                                          | Verdict                                                                                            | Why                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **KNOWN** — the snapshot holds a non-empty membership at `(orgId, channelId)`                                                                                                | caller in it ⇒ use the **asserted** coordinate unchanged; caller absent ⇒ **reject** `not_allowed` | Preserves the deliberate "land in the same thread a human sees" behavior, and keeps the assertion honest.                                                                                                                               |
+| **UNKNOWN on any chat-shaped platform** — every id outside the session-identity set (`isSessionIdentityPlatform`: `webchat`/`hook`/`dream`), UNKNOWN ids included (S1a §6.1) | **reject** `not_allowed` — FAIL CLOSED                                                             | An unrecorded chat coordinate is either a conversation the caller cannot reach or a stale/departed row whose session is still resumable. Admitting it is exactly what let a caller alias an existing platform session.                  |
+| **UNKNOWN and channel-free** — exactly the session-identity platforms (`webchat`, and a `hook`/`dream` session's raw platform, on the same-daemon AND the cross-daemon path) | **substitute** a synthetic coordinate `a2a:<callerAgentId>`                                        | Rejecting would kill the case the org-scoped directory exists for. Instead the asserted channel never becomes the session key: the woken peer's coordinate is derived from the TRUSTED caller, which cannot alias any platform session. |
 
 Fail-closed on the middle row is the intended direction: a brief snapshot lag can
 transiently reject a genuine wake, and the caller retries. Admitting it, by contrast, is
 unrecoverable — the aliased session has already been resumed and read back.
 
-**Which platform value each path feeds it.** The RAW trusted session platform, never
-`Daemon.narrowPlatform`'s output — that helper folds `dream` (and anything the
-`NormalizedMessage` union does not carry) into `'slack'`, which would classify a genuinely
-channel-free session as a persisted IM coordinate and fail it closed. So `localWakeDecision`
-passes `req.platform` verbatim, and `handleRelayAgentMsg` passes `msg.coords.platform`
-verbatim. **Accepted consequence** of the wire enum: `coords.platform` is
-`slack | telegram | webchat | discord | feishu`, and `messageAgent` maps a `hook` session's
-coords platform to `'slack'` before the relay hop (`narrowPlatform` does the same for
-`dream`), so a CROSS-DAEMON wake out of such a session lands on the middle row and is
-refused, while the same wake to a co-located peer takes the bottom row. Un-narrowing it needs
-a new coords platform value on the wire — a protocol change, deliberately out of scope here.
+**Which platform value each path feeds it.** The RAW trusted session platform, everywhere
+— the historical `narrowPlatform` fold (unknown → `'slack'`) is deleted (S1a §6.3), the
+wire's `coords.platform` reads as an open string (S1a §6.2), and since the S1a fleet gate
+passed the daemon emits raw values too: `localWakeDecision` passes `req.platform`
+verbatim, `handleRelayAgentMsg` passes `msg.coords.platform` verbatim, and a CROSS-DAEMON
+wake out of a target-less `hook`/`dream` session carries its real platform and takes the
+bottom row on both sides, exactly like the same-daemon path.
+
+**Lineage replies never take the bottom row's substitution.** A `SessionTarget` reply into
+a channel-free origin would otherwise be substituted into a DIFFERENT synthetic session
+(`a2a:<replier>`), stranding a `needsReply` result outside the originating turn. The reply
+therefore rides the wire as a first-class lineage reply (`rd/agentmsg.lineageReplyTo` = the
+origin's acpSessionId): the sender's daemon enforced origin-only authorization, possession
+of the high-entropy id — handed out only through wake lineage — is the cross-daemon
+capability, and the TARGET daemon terminally validates the session exists and belongs to
+the target agent, dispatches into it, and NAKs `not_found` when it is gone. SessionTarget
+never creates a session, on either path.
 
 The synthetic coordinate is collision-free by construction: real Slack / Telegram /
 Discord channel ids never contain `:`, and webchat conversation ids are UUIDs, so an
@@ -358,19 +364,16 @@ Two properties of the membership key are load-bearing:
 
 - **Platform-free _lookup_.** The coordinate platform is deliberately not part of the
   membership key — it is consulted only afterwards, to classify a coordinate the lookup
-  did not find (reject vs. substitute). The woken session's key is computed from
-  `Daemon.narrowPlatform`, which folds `feishu` — and any value it does not recognise —
-  into `'slack'`, while snapshot channel rows are keyed by the **integration** platform. A
-  platform-keyed lookup therefore searched a different key space than the session key it
-  protects, and the original admit-on-miss branch turned every such mismatch into a
-  **pass**: `coords.platform:'feishu'` over a Slack channel id sailed through and still
-  computed a bit-identical child session key, and in a Feishu org (rows keyed `feishu`,
-  honest coords already narrowed to `slack`) the gate was a complete no-op. Matching on the
-  channel id alone closes both directions and needs no `narrowPlatform` twin on the relay,
-  which has none. Now that a miss on an IM platform rejects rather than passes, the
-  platform-free lookup also stops that mismatch from _rejecting_ honest coords. It
-  over-blocks only if one org uses the same channel id on two platforms — which then
-  demands membership in one of them.
+  did not find (reject vs. substitute). Historically it COULD not be part of the key:
+  session keys were computed through the since-deleted `Daemon.narrowPlatform` fold
+  (`feishu` — and any value it did not recognise — became `'slack'`), while snapshot
+  channel rows are keyed by the **integration** platform, so a platform-keyed lookup
+  searched a different key space than the session key it protects, and the original
+  admit-on-miss branch turned every such mismatch into a **pass**. Session keys carry the
+  raw platform now (S1a §6.3), but the channel-id-only match stays: it closes the
+  relabelling dodge in both directions regardless of key regime and needs no fold twin on
+  the relay, which never had one. It over-blocks only if one org uses the same channel id
+  on two platforms — which then demands membership in one of them.
 - **Non-empty membership counts as "known".** An agent-less row is a channel nobody in the
   org can reach, so treating it as known would reject every call naming it while
   protecting nothing.

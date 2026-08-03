@@ -23,6 +23,7 @@ import {
   type DiscordComponents,
   type DiscordSelectKind
 } from './render.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 /**
  * §Discord edge unit. Mirrors slack/connection.ts + telegram/connection.ts but over
@@ -49,6 +50,11 @@ export interface ConsolidatedDiscordGroup {
 }
 
 /** §6.1 analog: group integrations by bot token (one discord.js Client per token). */
+/** §7.5 opaque identity of one Discord Gateway connection: the bot token. */
+export function discordConnKey(c: { botToken: string }): string {
+  return c.botToken
+}
+
 export function consolidateDiscord(agents: Agent[]): Map<string, ConsolidatedDiscordGroup> {
   const groups = new Map<string, ConsolidatedDiscordGroup>()
   for (const a of agents) {
@@ -148,7 +154,7 @@ type Sendable = Channel & {
   messages?: { fetch: (id: string) => Promise<Message> }
 }
 
-export class DiscordConnection {
+export class DiscordConnection implements PlatformConnection {
   private client: Client
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (discord.js handles REST rate limits, but the queue keeps a

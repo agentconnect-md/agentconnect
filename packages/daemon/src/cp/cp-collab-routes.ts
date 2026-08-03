@@ -10,7 +10,7 @@
  * assumed. Documented in the PR description.
  */
 import type { CollabRoutesSnapshot, CollabAgentPlacement, CollabOrgAgent } from '@agentconnect.md/protocol'
-import { isSessionIdentityPlatform } from '@agentconnect.md/protocol'
+import { originKindOf } from '@agentconnect.md/protocol'
 
 export interface CollabResolved extends CollabAgentPlacement {
   orgId: string
@@ -63,6 +63,11 @@ export class CpCollabRoutes {
   // channel-keyed maps above structurally cannot express that (see CollabOrgAgent).
   private readonly byAgent = new Map<string, CollabOrgAgent>()
 
+  // §6.1 wire-carried origin-kind classification (snapshot `platformKinds`): how THIS
+  // build classifies a platform id a newer CP introduces. Overlaid on the protocol
+  // seed; an id neither classifies defaults to 'chat' (fail-closed in coordsDecision).
+  private readonly platformKinds = new Map<string, string>()
+
   private key(orgId: string, platform: string, channelId: string): string {
     return orgId + '\u0000' + platform + '\u0000' + channelId
   }
@@ -70,6 +75,11 @@ export class CpCollabRoutes {
   /** Coordinate-integrity key: deliberately PLATFORM-FREE — see {@link coordsDecision}. */
   private coordsKey(orgId: string, channelId: string): string {
     return orgId + '\u0000' + channelId
+  }
+
+  /** §6.1 kind resolution: wire classification → protocol seed → 'chat' (fail-closed). */
+  private originKindFor(platform: string): string {
+    return this.platformKinds.get(platform) ?? originKindOf(platform) ?? 'chat'
   }
 
   /** FULL-REPLACE from a CP snapshot (converge-don't-diff); ignore an older generation.
@@ -83,6 +93,8 @@ export class CpCollabRoutes {
     this.botAppsByChannel.clear()
     this.names.clear()
     this.byAgent.clear()
+    this.platformKinds.clear()
+    for (const k of snap.platformKinds ?? []) this.platformKinds.set(k.platformId, k.originKind)
     for (const ch of snap.channels) {
       const byAgent = new Map<string, CollabResolved>()
       const botApps = new Set<string>()
@@ -232,14 +244,12 @@ export class CpCollabRoutes {
    * here (`handleRelayAgentMsg` terminal-verify, `localWakeDecision`, and through it
    * `wakeRejectionReason`'s preflight) go through this one method.
    *
-   * ACCEPTED CONSEQUENCE of the legacy coordinate emission: `messageAgent` still maps a
-   * target-less `hook`/`dream` session's coords platform to `'slack'` before handing them
-   * to the relay ({@link Daemon.legacyCoordPlatform}) — the wire schema is open since S1a,
-   * but a peer that has not upgraded still reads `coords.platform` as the closed five-value
-   * enum and would refuse the whole frame. A CROSS-DAEMON wake out of such a session
-   * therefore lands in branch 2 and is rejected, while the same wake to a co-located peer —
-   * which passes the RAW `req.platform` — takes branch 3. The clamp is removable once the
-   * S1a fleet gate passes (S1b).
+   * Coordinates carry the RAW session platform end-to-end (S1b, post-fleet-gate): a
+   * target-less `hook`/`dream` session's cross-daemon wake now asserts its real platform,
+   * takes branch 3 on the relay AND on this twin — exactly like the same-daemon path —
+   * and the woken child keys off the caller-derived channel. (Until the S1a fleet gate
+   * passed, the daemon clamped these to `'slack'` on emission because an un-upgraded peer
+   * read `coords.platform` as a closed enum; that clamp is deleted.)
    */
   coordsDecision(orgId: string, platform: string, channelId: string, callerAgentId: string): CoordsVerdict {
     const sharing = this.byOrgChannel.get(this.coordsKey(orgId, channelId))
@@ -250,12 +260,14 @@ export class CpCollabRoutes {
       if (members.has(callerAgentId)) return { verdict: 'asserted' }
     }
     if (known) return { verdict: 'reject' }
-    // Registry-driven fail-closed default (S1a, integration-plugin-architecture.md §6.1):
-    // only the enumerated channel-free session identities take the synthetic branch; ANY
-    // other id — the four IM platforms and every id this build does not know — is
-    // chat-shaped and an unrecorded coordinate on it is refused. The old shape enumerated
-    // the IM platforms instead and silently ADMITTED unknown ids.
-    if (!isSessionIdentityPlatform(platform)) return { verdict: 'reject' }
+    // Registry-driven fail-closed default (§6.1): the platform's ORIGIN KIND decides the
+    // branch — wire-carried classification (snapshot `platformKinds`, for ids a newer CP
+    // introduces) overlaid on the protocol seed, defaulting to 'chat' for an id neither
+    // classifies. 'chat' ⇒ an unrecorded coordinate is refused, fail-closed. Any other
+    // classified kind is channel-free ⇒ synthetic, which is safe for kinds this build
+    // has never heard of too: the substituted coordinate derives from the TRUSTED caller
+    // and can never alias a platform session.
+    if (this.originKindFor(platform) === 'chat') return { verdict: 'reject' }
     return { verdict: 'synthetic', channel: a2aCoordChannel(callerAgentId) }
   }
 

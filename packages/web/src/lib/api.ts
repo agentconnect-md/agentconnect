@@ -579,7 +579,7 @@ export interface CronDto {
   name: string | null // console display name; null for legacy/CLI rows
   schedule: string
   timezone: string
-  targetPlatform: 'slack' | 'telegram'
+  targetPlatform: string // §6.8 open id — derived from the anchor integration
   targetChannel: string | null
   targetIntegrationId: string | null // null ⇒ legacy row / integration uninstalled
   trigger: string
@@ -602,7 +602,7 @@ export interface UpsertCronInput {
   name?: string // console display name
   schedule: string
   timezone?: string // omitted on create ⇒ control-plane process timezone
-  targetPlatform: 'slack' | 'telegram'
+  targetPlatform: string // §6.8 open id — derived from the anchor integration
   targetChannel?: string // optional — absent ⇒ headless fire
   targetIntegrationId?: string // the agent integration posting the anchor (platform derives from it)
   trigger: string
@@ -2229,6 +2229,29 @@ export async function fetchWorkspaceFiles(
   return apiGet<WorkspaceListingDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/files?${q.toString()}`
   )
+}
+
+// ── local skill inventory ───────────────────────────────────────────────────
+export type LocalSkillOrigin = 'dream-accepted' | 'managed' | 'git-source' | 'repo'
+
+// One skill the agent's workspace can load (GET /agents/:id/skills/local).
+export interface LocalSkillDto {
+  name: string
+  description: string | null
+  origin: LocalSkillOrigin
+  path: string
+}
+
+// The agent's workspace skill inventory. `materialized` is false when the
+// workspace has not been prepared yet, so an empty list then means "unknown",
+// not "no skills". Proxied live from the owning daemon; 503 when offline.
+export interface LocalSkillsDto {
+  materialized: boolean
+  skills: LocalSkillDto[]
+}
+
+export async function fetchAgentLocalSkills(agentId: string): Promise<LocalSkillsDto> {
+  return apiGet<LocalSkillsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skills/local`)
 }
 
 // One slice of a workspace file (GET /agents/:id/workspace/file), proxied live

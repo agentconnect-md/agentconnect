@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { sameBotSpeaker } from './bot-turn-grouping'
+import { liveBotTurnKey, sameBotSpeaker } from './bot-turn-grouping'
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 describe('bot turn grouping', () => {
+  it('keys interleaved live blocks by both turn and participant', () => {
+    const turn = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    expect(liveBotTurnKey(turn, A)).toBe(liveBotTurnKey(turn, A))
+    expect(liveBotTurnKey(turn, A)).not.toBe(liveBotTurnKey(turn, B))
+    expect(liveBotTurnKey(turn, A)).not.toBe(liveBotTurnKey('dddddddd-dddd-4ddd-8ddd-dddddddddddd', A))
+    expect(liveBotTurnKey(undefined, A)).toBeUndefined()
+  })
+
   it('splits two participants that share a display name', () => {
     // The regression: two distinct agents labeled identically must not merge
     // into one block (whose avatar/runtime would belong to the first).

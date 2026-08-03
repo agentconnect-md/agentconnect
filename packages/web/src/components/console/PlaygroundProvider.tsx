@@ -418,11 +418,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  thinking / message chunks accumulate into a single PLAN / DONE lane so the
    *  bot turn reads as one block instead of one row per delta. */
   const applyEvent = useCallback(
-    (id: string, ev: WebchatEvent, agentId?: string): void => {
+    (id: string, ev: WebchatEvent, agentId: string | undefined, turnId: string): void => {
       const observedAtMs = Date.now()
       const who = participantName(id, agentId)
       const lane = (extra: Omit<SessionStep, 'text'> & { text: string }): SessionStep =>
-        stampStep({ ...extra, ...(agentId ? { agentId } : {}), ...(who ? { who } : {}) }, observedAtMs)
+        stampStep({ ...extra, turnId, ...(agentId ? { agentId } : {}), ...(who ? { who } : {}) }, observedAtMs)
       mutateSteps(id, (steps) => {
         // Concurrent participant streams interleave: accumulate each chunk into
         // the most recent step OF THIS LANE (same agentId), not the array tail.
@@ -434,6 +434,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             const step = steps[i]!
             if (step.kind === 'msg' && step.agentId === undefined) return -1
             if ((step.agentId ?? undefined) !== agentId) continue
+            // A stable stream turn is also a hard boundary. This covers
+            // coalesced/resumed turns that have no newly pushed user row.
+            if (step.turnId !== turnId) return -1
             // The supersession marker is a hard boundary: the replacement
             // generation starts fresh blocks instead of merging into it (or
             // into the collapsed discarded work behind it).
@@ -459,6 +462,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             const step = collapsed[i]!
             if (step.kind === 'msg' && step.agentId === undefined) break
             if ((step.agentId ?? undefined) !== agentId) continue
+            if (step.turnId !== turnId) break
             if (step.boundary) break
             if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan' }
           }
@@ -596,7 +600,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         const event = output.event
         if (event) {
           if (event.kind === 'session_info') applyTitle(id, event.title, agentId)
-          else applyEvent(id, event, agentId)
+          else applyEvent(id, event, agentId, output.turnId)
         }
       }
       if (!result.done) return
@@ -612,6 +616,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         const name = participantName(id, agentId)
         pushStep(id, {
           kind: 'done',
+          turnId: result.done.turnId,
           ...(agentId ? { agentId } : {}),
           ...(name ? { who: name } : {}),
           text: `⚠️ ${result.done.error}`
@@ -866,6 +871,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 const name = participantName(id, agentId)
                 pushStep(id, {
                   kind: 'done',
+                  ...(m.ack.turnId ? { turnId: m.ack.turnId } : {}),
                   ...(agentId ? { agentId } : {}),
                   ...(name ? { who: name } : {}),
                   text:
@@ -1034,9 +1040,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
     ): void => {
-      pushStep(id, { kind: 'msg', who: '@you', text, ...(image ? { image } : {}) })
-      setBusy(id, true)
       const requestedTurnId = crypto.randomUUID()
+      pushStep(id, { kind: 'msg', who: '@you', turnId: requestedTurnId, text, ...(image ? { image } : {}) })
+      setBusy(id, true)
       // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
       // STANDING mention — an unmentioned message goes to the WHOLE roster
       // (each agent may silently decline); explicit @mentions narrow the turn
@@ -1114,6 +1120,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           const conflict = err instanceof ApiError && err.status === 409 ? err.message : undefined
           pushStep(id, {
             kind: 'done',
+            turnId: requestedTurnId,
             text: noRelay
               ? '⚠️ Webchat relay not configured — set PUBLIC_RELAY_URL on the control plane.'
               : conflict

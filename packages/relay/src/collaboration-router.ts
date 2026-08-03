@@ -26,7 +26,7 @@
  * assumed. Documented in the PR description.
  */
 import type { CollabRoutesSnapshot, CollabAgentPlacement, CollabOrgAgent } from '@agentconnect.md/protocol'
-import { isSessionIdentityPlatform } from '@agentconnect.md/protocol'
+import { originKindOf } from '@agentconnect.md/protocol'
 
 /** The resolved placement of one agent in a channel (a snapshot value). */
 export interface CollabResolved extends CollabAgentPlacement {
@@ -93,6 +93,13 @@ export class CollaborationRouter {
   // agent belongs to exactly one org and a flat index loses no addressing precision.
   private readonly byAgent = new Map<string, CollabOrgAgent>()
 
+  // §6.1 wire-carried origin-kind classification. `snapshotKinds` full-replaces with
+  // each snapshot (the CP's authoritative list); `learnedKinds` accumulates from
+  // rc/bot-assign and survives snapshot replacement (assigns are pushed per bot, not
+  // periodically). Resolution: snapshot → learned → protocol seed → 'chat'.
+  private readonly snapshotKinds = new Map<string, string>()
+  private readonly learnedKinds = new Map<string, string>()
+
   /** FULL-REPLACE the table from a CP snapshot. Ignores an older generation (a
    *  reordered/stale re-push) so the newest snapshot wins. */
   replace(snap: CollabRoutesSnapshot): void {
@@ -101,6 +108,8 @@ export class CollaborationRouter {
     this.channels.clear()
     this.byOrgChannel.clear()
     this.byAgent.clear()
+    this.snapshotKinds.clear()
+    for (const k of snap.platformKinds ?? []) this.snapshotKinds.set(k.platformId, k.originKind)
     for (const a of snap.agents) this.byAgent.set(a.agentId, a)
     // Old-CP fallback: a CP that does not advertise `agent-directory-org-scope-v1` sends
     // no `agents[]` (it decodes to the schema default `[]`). Derive the directory from the
@@ -171,10 +180,10 @@ export class CollaborationRouter {
    *     Deliberate, and not a regression: the `hasMembers(caller, target)` check this
    *     replaced refused the identical wake.
    *
-   * (3) UNKNOWN and channel-free (exactly the session-identity platforms — until the
-   *     legacy emission clamp lifts, only `webchat` arrives on this wire; a `dream`/`hook`
-   *     session's own platform reaches the daemon's twin on its same-daemon path) —
-   *     `synthetic`. NOT a reject: this is the case the org-scoped directory exists for.
+   * (3) UNKNOWN and channel-free (exactly the session-identity platforms: `webchat`, and
+   *     — since the S1a fleet gate passed — a `hook`/`dream` session's raw platform on a
+   *     cross-daemon wake) — `synthetic`. NOT a reject: this is the case the org-scoped
+   *     directory exists for.
    *     Instead the asserted channel never becomes the session coordinate at all;
    *     {@link a2aCoordChannel} derives it from the trusted caller, which cannot alias any
    *     platform session. The relay does not apply the substitution (see below), only skips
@@ -219,13 +228,26 @@ export class CollaborationRouter {
       if (members.has(callerAgentId)) return { verdict: 'asserted' }
     }
     if (known) return { verdict: 'reject' }
-    // Registry-driven fail-closed default (S1a, integration-plugin-architecture.md §6.1):
-    // only the enumerated channel-free session identities take the synthetic branch; ANY
-    // other id — the four IM platforms and every id this build does not know — is
-    // chat-shaped and an unrecorded coordinate on it is refused. The old shape enumerated
-    // the IM platforms instead and silently ADMITTED unknown ids.
-    if (!isSessionIdentityPlatform(platform)) return { verdict: 'reject' }
+    // Registry-driven fail-closed default (§6.1): the platform's ORIGIN KIND decides the
+    // branch — wire-carried classification (snapshot `platformKinds` / rc/bot-assign)
+    // overlaid on the protocol seed, defaulting to 'chat' for an id neither classifies.
+    // 'chat' ⇒ an unrecorded coordinate is refused, fail-closed. Any other classified
+    // kind is channel-free ⇒ synthetic, safe even for kinds this build has never heard
+    // of: the substitution derives from the TRUSTED caller and cannot alias a platform
+    // session (and the relay only acts on reject anyway).
+    if (this.originKindFor(platform) === 'chat') return { verdict: 'reject' }
     return { verdict: 'synthetic', channel: a2aCoordChannel(callerAgentId) }
+  }
+
+  /** §6.1 kind resolution: snapshot → assign-learned → protocol seed → 'chat'. */
+  private originKindFor(platform: string): string {
+    return this.snapshotKinds.get(platform) ?? this.learnedKinds.get(platform) ?? originKindOf(platform) ?? 'chat'
+  }
+
+  /** §6.1: record a platform's origin kind carried on `rc/bot-assign`, so a bot on an
+   *  id this build does not know still classifies before the next full snapshot. */
+  learnPlatformKind(platformId: string, originKind: string | undefined): void {
+    if (originKind !== undefined) this.learnedKinds.set(platformId, originKind)
   }
 
   /** The org-scoped directory entry for `agentId`, or undefined if the directory has

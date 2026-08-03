@@ -14,6 +14,7 @@
  * that authorizes — not merely records — every attempted effect.
  */
 import type { SendIdentity } from '../mcp/ops.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 /** Slack post options subset the virtual transport interprets. Structurally
  *  compatible with the real connection's `SlackPostOptions`: `chrome` marks
@@ -84,6 +85,21 @@ export type OutboundEffectResult =
  * The world half of the transport seam: outbound authorization + the read model
  * (channels, members, profiles) the `MessageGateway` operations answer from.
  */
+/** One historical room message as the provider would return it — the input to
+ *  the daemon's turn-final thread snapshot (`finalThreadSnapshot` →
+ *  `getThreadReplies`), which is how a running turn discovers messages that
+ *  landed while it was working and triggers the regeneration fence. */
+export interface VirtualThreadMessage {
+  ts: string
+  text: string
+  sender: string
+  isBot: boolean
+  /** Stable AgentConnect author id for agent-authored posts (Slack metadata). */
+  agentAuthorId?: string
+  /** Daemon delivery chrome (status bars, progress cards) — never conversation. */
+  chrome?: boolean
+}
+
 export interface VirtualConnectionWorldPort {
   /** Outbound-effect sink shared by ordinary replies and MCP sends (§7.2). */
   recordOutbound(effect: OutboundEffectInput): Promise<OutboundEffectResult>
@@ -91,6 +107,11 @@ export interface VirtualConnectionWorldPort {
   members(channel: string): readonly VirtualMember[]
   channels(integrationId: string): readonly VirtualChannelInfo[]
   profile(user: string): VirtualProfile | undefined
+  /** Provider thread history in ts order, optionally windowed — backs
+   *  `getThreadReplies`. Absent ⇒ the connection reports no history adapter and
+   *  the daemon degrades to observed-only rows, exactly as on a platform
+   *  without a history API. */
+  threadHistory?(channel: string, thread: string): readonly VirtualThreadMessage[]
 }
 
 /** Surfaced to the agent when the world refuses an effect — the same shaped
@@ -133,7 +154,7 @@ function identityOf(options?: VirtualPostOptions): SendIdentity | undefined {
  * path, Slack tenant identity for session/audience classification, delivery
  * chrome (best-effort, like the real connection), and the full gateway ops.
  */
-export class VirtualSlackConnection {
+export class VirtualSlackConnection implements PlatformConnection {
   readonly botUserId: string
   readonly botId: string
   readonly appId?: string
@@ -234,8 +255,47 @@ export class VirtualSlackConnection {
     return true
   }
 
-  async getThreadReplies(): Promise<{ ts: string; text: string; sender: string; isBot: boolean }[]> {
-    return []
+  /**
+   * Provider thread history (Slack `conversations.replies`). The daemon's
+   * turn-final snapshot calls this to discover messages that landed while a
+   * turn was running — the regeneration fence depends on it, so the virtual
+   * transport answers from the world's real room history rather than an empty
+   * (and falsely authoritative) list.
+   */
+  async getThreadReplies(
+    channel: string,
+    threadTs: string,
+    maxMessages = 200,
+    window?: { oldest?: string; latest?: string; readState?: { truncated: boolean } }
+  ): Promise<
+    {
+      sender: string
+      agentAuthorId?: string
+      ts: string
+      text: string
+      isBot: boolean
+      chrome: boolean
+      attachments: never[]
+    }[]
+  > {
+    const history = this.world.threadHistory?.(channel, threadTs) ?? []
+    const windowed = history.filter(
+      (message) =>
+        (window?.oldest === undefined || message.ts > window.oldest) &&
+        (window?.latest === undefined || message.ts <= window.latest)
+    )
+    // Same bounded-page contract as the real connection: report truncation so a
+    // clipped page is never labeled an authoritative empty tail.
+    if (window?.readState && windowed.length > maxMessages) window.readState.truncated = true
+    return windowed.slice(-maxMessages).map((message) => ({
+      sender: message.sender,
+      ...(message.agentAuthorId !== undefined ? { agentAuthorId: message.agentAuthorId } : {}),
+      ts: message.ts,
+      text: message.text,
+      isBot: message.isBot,
+      chrome: message.chrome ?? false,
+      attachments: [] as never[]
+    }))
   }
 
   /** Ephemeral presence (assistant status) — not a message; not recorded. */
@@ -278,7 +338,7 @@ export class VirtualSlackConnection {
 
 /** Minimal Discord shape: the reply path + gateway ops the counting milestone
  *  consumes. Extended to the full Discord surface with the cross-room game. */
-export class VirtualDiscordConnection {
+export class VirtualDiscordConnection implements PlatformConnection {
   readonly botUserId: string
   readonly botToken = ''
 
@@ -341,7 +401,7 @@ export class VirtualDiscordConnection {
 }
 
 /** Minimal Telegram shape mirroring {@link VirtualDiscordConnection}. */
-export class VirtualTelegramConnection {
+export class VirtualTelegramConnection implements PlatformConnection {
   readonly botUserId: string
   readonly botUsername: string
   readonly botToken = ''

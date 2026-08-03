@@ -258,6 +258,21 @@ describe('canonicalizeTelegramThread', () => {
     expect(m.thread).toBe('555')
   })
 
+  it('§6.5: keys off the GENERIC coordinates alone (post-window emission)', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const topic = tg(103, { topicId: '555', mentionedBots: ['mybot'] })
+    ;(daemon as any).canonicalizeTelegramThread(topic)
+    expect(topic.thread).toBe('555')
+    const reply = tg(104, { threadRoot: '6' })
+    ;(daemon as any).canonicalizeTelegramThread(reply)
+    expect(reply.thread).toBe('tg:6')
+    // The generic field wins when both are present (dual-shape window).
+    const both = tg(105, { topicId: '7', telegramTopicId: '8' })
+    ;(daemon as any).canonicalizeTelegramThread(both)
+    expect(both.thread).toBe('7')
+  })
+
   it('collapses a DM to one continuous session (dm)', async () => {
     const daemon = new Daemon({ root: scaffold() })
     await daemon.start()
@@ -689,7 +704,9 @@ describe('continue-the-topic hint delivery', () => {
       transcriptChannel: '-100',
       statusThread: 'tg:100',
       thread: 'tg:100',
-      tgReplyTo: 100,
+      // §7.3: Telegram's per-turn state lives in the opaque slot, seeded by its
+      // output surface at dispatch (here, by hand).
+      turnState: { replyTo: 100 } as { replyTo?: number; lastBody?: { id: string; text: string } },
       approvalSurfaceSuppressed: false,
       conn
     }
@@ -709,7 +726,7 @@ describe('continue-the-topic hint delivery', () => {
     const rows = (daemon as any).store.threadTranscript('-100', 'tg:100')
     expect(rows.at(-1)).toMatchObject({ text: 'answer', ts: 'out-9' })
     expect((daemon as any).store.telegramThreadForMessage('-100', 'out-9')).toBe('tg:100')
-    expect(p).toMatchObject({ tgLastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
+    expect(p.turnState).toMatchObject({ lastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
     await daemon.stop()
   })
 
