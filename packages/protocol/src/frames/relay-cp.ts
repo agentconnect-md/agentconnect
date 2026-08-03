@@ -535,7 +535,11 @@ export const RcBotSecrets = z.union([
   z.object({
     verificationToken: z.string(),
     encryptKey: z.string().optional()
-  })
+  }),
+  // §6.7 open reader: a platform this build predates ships an opaque secret bag; the
+  // relay's platform module (S3) validates its shape. The two typed variants above
+  // stay first so today's platforms keep full validation during the window.
+  z.record(z.string(), z.unknown())
 ])
 export type RcBotSecrets = z.infer<typeof RcBotSecrets>
 
@@ -588,6 +592,11 @@ export const RcBotAssign = z.object({
   // ⇒ the CP applies revocations without the revision arm of the fence.
   credentialRevision: z.number().int().nonnegative().optional(),
   secrets: RcBotSecrets,
+  // §6.7 opaque INGRESS bag, dual-emitted beside the named demux fields above
+  // (apiAppId/teamId/botUserId). Shape validation belongs to the platform module
+  // on both ends (S3); the relay ignores it during the dual-shape window and the
+  // named fields stop being emitted once the fleet reads the bag.
+  ingress: z.unknown().optional(),
   members: z.array(z.object({ daemonId: z.string().uuid(), agentIds: z.array(z.string().uuid()) })),
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
   routes: z.array(AttributedRoute),

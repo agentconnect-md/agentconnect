@@ -37,18 +37,25 @@ import type { Logger } from './log.js'
 const RELAY_WS_PATH = '/api/v1/relays/ws'
 
 /** Map the CP's `rc/bot-assign` frame to the manager's {@link BotAssignment}
- *  (drop absent optionals so the strict-optional shape holds). */
-function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): BotAssignment {
+ *  (drop absent optionals so the strict-optional shape holds). Returns null for a
+ *  secret bag neither typed shape matches (§6.7 open reader: a platform this build
+ *  predates) — the caller logs and skips; the assign handler would refuse the
+ *  platform anyway, this just refuses it before touching credentials. */
+function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): BotAssignment | null {
+  const secrets =
+    'botToken' in a.secrets && typeof a.secrets.botToken === 'string' && typeof a.secrets.signingSecret === 'string'
+      ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
+      : 'verificationToken' in a.secrets && typeof a.secrets.verificationToken === 'string'
+        ? {
+            verificationToken: a.secrets.verificationToken,
+            ...(typeof a.secrets.encryptKey === 'string' ? { encryptKey: a.secrets.encryptKey } : {})
+          }
+        : null
+  if (!secrets) return null
   return {
     botId: a.botId,
     platform: a.platform,
-    secrets:
-      'botToken' in a.secrets
-        ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
-        : {
-            verificationToken: a.secrets.verificationToken,
-            ...(a.secrets.encryptKey ? { encryptKey: a.secrets.encryptKey } : {})
-          },
+    secrets,
     ...(a.apiAppId ? { apiAppId: a.apiAppId } : {}),
     ...(a.teamId ? { teamId: a.teamId } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
@@ -152,9 +159,14 @@ async function main(): Promise<void> {
       // §6.1: the assignment's origin-kind classification (present from an S1b CP)
       // teaches this relay how to classify a platform id its build predates.
       collab.learnPlatformKind(a.platform, a.originKind)
-      void held.relayIngress
-        ?.assign(toBotAssignment(a))
-        .catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`))
+      const assignment = toBotAssignment(a)
+      if (!assignment) {
+        // §6.7: an opaque secret bag for a platform this build predates — ids only,
+        // never the material. The S3 platform module takes this shape over.
+        log.warn(`relay: bot-assign for ${a.botId} carried a secret shape this build does not support — skipped`)
+        return
+      }
+      void held.relayIngress?.assign(assignment).catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`))
     },
     onBotUnassign: (a) =>
       void held.relayIngress

@@ -219,6 +219,84 @@ describe('§6.4 IntegrationSpec dual shape', () => {
   })
 })
 
+describe('§6.5 generic thread coordinates + adapterExt', () => {
+  const im = (payload: Record<string, unknown>) =>
+    decodeRelayDaemonFrame(
+      envelope('rd/msg', {
+        source: 'im',
+        agentId: AGENT_ID,
+        sessionKey: 'telegram:C1:-',
+        msgId: 'evt-1',
+        botId: BOT_ID,
+        integrationId: INTEGRATION_ID,
+        payload: {
+          msgId: 'evt-1',
+          traceId: 'trace-1',
+          source: 'user',
+          platform: 'telegram',
+          channel: '-100123',
+          sender: { id: 'U1', isBot: false },
+          text: 'hello',
+          mentionedBots: [],
+          isDm: false,
+          ...payload
+        }
+      })
+    )
+
+  it('decodes dual-shape (named + generic) and generic-only coordinates', () => {
+    const dual = im({ telegramTopicId: '55', topicId: '55' })
+    expectOk(dual)
+    if (dual.ok && dual.frame.type === 'rd/msg' && dual.frame.payload.source === 'im') {
+      expect(dual.frame.payload.payload.topicId).toBe('55')
+      expect(dual.frame.payload.payload.telegramTopicId).toBe('55')
+    }
+    expectOk(im({ threadRoot: '6', promoteToThread: true }))
+  })
+
+  it('round-trips the opaque adapterExt bag verbatim', () => {
+    const r = im({ adapterExt: { telegram: { customEmojiIds: ['e1'] } } })
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rd/msg' && r.frame.payload.source === 'im') {
+      expect(r.frame.payload.payload.adapterExt).toEqual({ telegram: { customEmojiIds: ['e1'] } })
+    }
+  })
+})
+
+describe('§6.7 rc/bot-assign opaque secrets + ingress', () => {
+  it('decodes an opaque secret bag for a platform this build predates + the ingress bag', () => {
+    const r = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: BOT_ID,
+        platform: UNKNOWN,
+        originKind: 'chat',
+        secrets: { apiKey: 'k-1', webhookSecret: 'w-1' },
+        ingress: { appId: 'app-1', tenant: 't-1' },
+        members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+        routes: []
+      })
+    )
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rc/bot-assign') {
+      expect(r.frame.payload.secrets).toEqual({ apiKey: 'k-1', webhookSecret: 'w-1' })
+      expect(r.frame.payload.ingress).toEqual({ appId: 'app-1', tenant: 't-1' })
+    }
+  })
+
+  it('keeps validating the typed Slack/Feishu secret shapes', () => {
+    const bad = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: BOT_ID,
+        platform: 'slack',
+        secrets: 'not-an-object',
+        members: [],
+        routes: []
+      })
+    )
+    expect(bad.ok).toBe(false)
+  })
+})
+
 describe('§6.1 origin-kind classification on the wire', () => {
   it('rc/bot-assign carries an optional originKind; absent stays decodable (older CP)', () => {
     const base = {

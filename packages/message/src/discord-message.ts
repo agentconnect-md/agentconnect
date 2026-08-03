@@ -98,6 +98,7 @@ export function normalizeDiscordMessage(
     ...(attachments.length ? { attachments } : {}),
     isDm,
     ...(message.isThread && message.parentChannelId ? { parentChannel: message.parentChannelId } : {}),
-    ...(!isDm && !message.isThread ? { discordTopLevel: true } : {})
+    // §6.5 dual-shape: the generic promote flag alongside the deprecated named one.
+    ...(!isDm && !message.isThread ? { discordTopLevel: true, promoteToThread: true } : {})
   }
 }

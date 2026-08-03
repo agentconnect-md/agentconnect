@@ -334,6 +334,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     // §6.1: a bot assignment is always a chat platform; the kind teaches an older relay
     // to classify an id a newer CP introduces.
     expect(assign.originKind).toBe('chat')
+    // §6.7 dual-shape: the opaque ingress bag mirrors the named demux fields.
+    expect(assign.ingress).toEqual({
+      ...(assign.apiAppId ? { apiAppId: assign.apiAppId } : {}),
+      ...(assign.teamId ? { teamId: assign.teamId } : {}),
+      ...(assign.botUserId ? { botUserId: assign.botUserId } : {})
+    })
 
     // members: one entry per daemon, agents grouped.
     const members = Object.fromEntries(assign.members.map((m) => [m.daemonId, m.agentIds.sort()]))

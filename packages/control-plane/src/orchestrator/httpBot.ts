@@ -881,6 +881,18 @@ export class HttpBotOrchestrator {
       // §6.1: a bot assignment is always a CHAT platform; carried so an older
       // relay can classify an id a newer CP introduces.
       originKind: 'chat',
+      // §6.7 dual-shape: the opaque ingress bag mirrors the named demux fields
+      // below; the platform module (S3) takes its validation over and the named
+      // fields stop being emitted once the fleet reads the bag.
+      ingress: {
+        ...(bot.platform === 'feishu' && secret.appToken
+          ? { apiAppId: secret.appToken }
+          : bot.slackAppId
+            ? { apiAppId: bot.slackAppId }
+            : {}),
+        ...(bot.teamId ? { teamId: bot.teamId } : {}),
+        ...(bot.botUserId ? { botUserId: bot.botUserId } : {})
+      },
       // Slack app id ("A…", == Events API api_app_id) — O(1) inbound demux. Absent on
       // a manual-paste http bot (no xapp to parse); the relay verify-scans instead.
       ...(bot.platform === 'feishu' && secret.appToken

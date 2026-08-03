@@ -398,9 +398,12 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect('botToken' in r.frame.payload.secrets).toBe(false)
   })
 
-  it('rc/bot-assign requires signingSecret (Events API verification key)', () => {
-    // The relay verifies inbound Slack POSTs by HMAC, so the signing secret is
-    // mandatory; a bot-token-only secrets bag no longer decodes.
+  it('rc/bot-assign: an incomplete typed secret bag decodes but is refused by the ASSIGNMENT reader (§6.7)', () => {
+    // Pre-§6.7 the schema itself rejected a bot-token-only bag. The open reader
+    // deliberately relinquishes per-shape schema validation (an unknown platform's
+    // opaque bag must decode), so shape enforcement moved to the relay's assignment
+    // mapper — `toBotAssignment` refuses a bag missing the signing secret before any
+    // credential is touched, and the S3 platform module takes validation over.
     const r = decodeRelayCpFrame(
       envelope('rc/bot-assign', {
         botId: DAEMON_ID,
@@ -410,7 +413,7 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
         routes: []
       })
     )
-    expect(r.ok).toBe(false)
+    expect(r.ok).toBe(true)
   })
 
   it('decodes rc/bot-unassign, rc/routes and rc/assign', () => {

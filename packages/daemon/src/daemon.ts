@@ -5373,12 +5373,16 @@ export class Daemon {
    */
   private canonicalizeTelegramThread(msg: NormalizedMessage): void {
     if (msg.platform !== 'telegram' || msg.thread !== undefined) return
-    if (msg.telegramTopicId !== undefined) {
-      msg.thread = msg.telegramTopicId
+    // §6.5 dual-shape reader: prefer the generic coordinates; the named per-platform
+    // fields stop being emitted once the fleet reads the generic ones.
+    const topicId = msg.topicId ?? msg.telegramTopicId
+    if (topicId !== undefined) {
+      msg.thread = topicId
       return
     }
-    if (msg.telegramThreadRoot !== undefined) {
-      msg.thread = `tg:${msg.telegramThreadRoot}`
+    const threadRoot = msg.threadRoot ?? msg.telegramThreadRoot
+    if (threadRoot !== undefined) {
+      msg.thread = `tg:${threadRoot}`
       return
     }
     if (msg.isDm) {
@@ -5564,7 +5568,7 @@ export class Daemon {
     // A Discord top-level channel @mention: open a thread off it first, then dispatch
     // into that thread (Slack-parity). Async (a REST call), so it runs on its own path;
     // dispatch is fire-and-forget either way.
-    if (msg.platform === 'discord' && msg.discordTopLevel) {
+    if (msg.platform === 'discord' && (msg.promoteToThread ?? msg.discordTopLevel)) {
       const topLevel = this.dispatchDiscordTopLevel(result.agentId, msg, result.integrationId)
       topLevel.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
       // The re-threaded dispatch owns its own admission; expose a coarse handle
