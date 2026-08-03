@@ -506,6 +506,80 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   })
 
+  it('continues a formal review with revision-only GitHub inspection when exact checkout preparation fails', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-review-fallback-workspace'),
+        gitRepo: 'https://github.com/acme/infra',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true
+      }
+    })
+    const daemon = new Daemon({ root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepare = vi
+      .spyOn(daemon as any, 'prepareAgentWorkspace')
+      .mockRejectedValueOnce(
+        new Error('workspace Git configuration contains a disallowed network override or executable setting')
+      )
+      .mockResolvedValueOnce('/agent/worktrees/revision-only')
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const entry = {
+      msg: { text: 'Review this pull request.' },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'review-fallback',
+        firedAt: new Date().toISOString(),
+        event: 'pull_request:synchronize',
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 461,
+          headSha,
+          baseSha,
+          reportSha: headSha
+        }
+      }
+    }
+
+    await expect(
+      (daemon as any).prepareGithubReviewWorkspace(entry, 'hook:acme/infra#461', (daemon as any).agents.get(AGENT_ID))
+    ).resolves.toEqual({
+      workspaceIsolation: 'session',
+      forceWorkspaceIsolation: true,
+      preparedWorkspaceCwd: '/agent/worktrees/revision-only'
+    })
+    expect(prepare).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: AGENT_ID }),
+      undefined,
+      expect.objectContaining({
+        sessionKey: 'hook:acme/infra#461',
+        isolation: 'session',
+        githubReviewRevisionOnly: true
+      })
+    )
+    expect(entry.msg.text).toContain('Trusted review revision')
+    expect(entry.msg.text).toContain('Do not trust local files')
+    expect(entry.msg.text).toContain('Local execution may be skipped')
+    await daemon.stop()
+  })
+
   it('preserves the stable worktree for an ordinary PR conversation', async () => {
     const root = scaffold({
       workspace: {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
+import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
 
 function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', iconUrl?: string): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-'))
@@ -114,7 +115,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
-  it('keeps agent write-only secrets out of the dream host env (#36 Phase C security)', async () => {
+  it('keeps agent tool credentials out of the dream host without re-enabling repository hooks', async () => {
     const root = scaffold()
     const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
     try {
@@ -122,6 +123,15 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       const agent = (daemon as any).agents.get('bot-a')
       agent.runtimeOverrides = { secrets: [{ name: 'API_KEY', value: 'super-secret' }] }
       const cwd = agent.workspace.path
+      agent.workspace = {
+        mode: 'git-repo',
+        path: cwd,
+        gitRepo: 'https://github.com/acme/repo',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true,
+        skills: []
+      }
       // A normal (non-dream) host still carries the agent's configured secret…
       const normal = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { runInSandbox: true, cwd }).host
       expect((normal as any).opts.env.API_KEY).toBe('super-secret')
@@ -132,7 +142,17 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         cwd,
         excludeAgentToolCredentials: true
       }).host
-      expect((dreamHost as any).opts.env.API_KEY).toBeUndefined()
+      const dreamEnv = (dreamHost as any).opts.env
+      expect(dreamEnv.API_KEY).toBeUndefined()
+      expect(dreamEnv[GITCRED_AGENT_ENV]).toBeUndefined()
+      expect(dreamEnv[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+      expect([
+        [dreamEnv.GIT_CONFIG_KEY_0, dreamEnv.GIT_CONFIG_VALUE_0],
+        [dreamEnv.GIT_CONFIG_KEY_1, dreamEnv.GIT_CONFIG_VALUE_1]
+      ]).toEqual([
+        ['core.hooksPath', process.platform === 'win32' ? 'NUL' : '/dev/null'],
+        ['core.fsmonitor', 'false']
+      ])
     } finally {
       await daemon.stop().catch(() => undefined)
       rmSync(root, { recursive: true, force: true })
