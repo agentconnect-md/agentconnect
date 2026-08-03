@@ -20,11 +20,19 @@ export function isSessionIdentityPlatform(p: ProtocolPlatform): p is 'webchat' |
   return p === 'webchat' || p === 'hook' || p === 'dream'
 }
 
+const DB_PLATFORMS: readonly DbPlatform[] = ['slack', 'telegram', 'discord', 'feishu']
+
 /** Narrow a protocol platform to a persisted (DB) platform, or throw on the
- *  session-identity-only members (`webchat`, `hook`, `dream`). */
+ *  session-identity-only members (`webchat`, `hook`, `dream`) — and, now that
+ *  platform fields read as open strings (S1a), on any id the DB enum does not
+ *  hold. Fail-closed: an unknown id reaching a persistence write is a
+ *  programming error until the Prisma enum opens to text (S1b). */
 export function toDbPlatform(p: ProtocolPlatform): DbPlatform {
   if (isSessionIdentityPlatform(p)) {
     throw new Error(`${p} is a session-identity platform and is never persisted`)
   }
-  return p
+  if (!(DB_PLATFORMS as readonly string[]).includes(p)) {
+    throw new Error(`unknown platform ${p} cannot be persisted`)
+  }
+  return p as DbPlatform
 }

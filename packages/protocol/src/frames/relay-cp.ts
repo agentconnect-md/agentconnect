@@ -3,6 +3,7 @@ import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
+import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import { GithubHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -560,7 +561,10 @@ export type RcAgentDirEntry = z.infer<typeof RcAgentDirEntry>
 // relay expects). NEVER log.
 export const RcBotAssign = z.object({
   botId: z.string().uuid(),
-  platform: z.enum(['slack', 'telegram', 'discord', 'feishu']),
+  // S1a open reader (route.ts Platform policy). The CP only emits ids the
+  // relay build supports; the relay's assign handler already refuses an
+  // unsupported platform gracefully ("not yet supported"), never the socket.
+  platform: Platform,
   botUserId: z.string().optional(), // resolved by CP; for echo suppression + mention match
   // Platform app id (Slack "A…", Feishu "cli_…") — lets the relay demux an
   // inbound POST to this bot in O(1). Slack may omit it for a legacy manual

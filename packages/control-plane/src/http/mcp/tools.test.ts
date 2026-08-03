@@ -9,7 +9,7 @@
  * annotations are well-formed tool contracts.
  */
 import { describe, it, expect } from 'vitest'
-import { Platform } from '@agentconnect.md/protocol'
+import { KNOWN_PLATFORMS } from '@agentconnect.md/protocol'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
 
 const ORG_ID = 'org-123'
@@ -195,7 +195,9 @@ describe('MCP tool registry — §6.2 invariants', () => {
 
   it('listSessions filters by every canonical platform — the /sessions route accepts the same set', () => {
     const schema = findTool('listSessions')!.schema
-    for (const platform of Platform.options) {
+    // S1a: the wire Platform schema is an open string; the MCP filter surface
+    // deliberately stays the closed KNOWN_PLATFORMS vocabulary until S1b.
+    for (const platform of KNOWN_PLATFORMS) {
       expect(schema.safeParse({ platform }).success, `platform=${platform} must be filterable`).toBe(true)
     }
     expect(schema.safeParse({ platform: 'irc' }).success).toBe(false)
