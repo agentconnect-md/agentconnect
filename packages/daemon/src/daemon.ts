@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, type Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
@@ -368,6 +368,12 @@ function formatErr(err: unknown): string {
     return `${e.name ?? 'Error'}: ${e.message ?? ''} (code=${e.code})${data}`
   }
   return e?.stack ?? String(err)
+}
+
+function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: Stats): boolean {
+  const segments = relative(agentsDir, path).split(sep)
+  if (segments.some((segment) => segment === 'node_modules' || segment.startsWith('.'))) return true
+  return stats !== undefined && !stats.isDirectory() && basename(path) !== 'agent.json'
 }
 
 /** Validate the same trusted workspace boundary that every real ACP spawn will
@@ -2829,11 +2835,12 @@ export class Daemon {
     const cronCount = agents.reduce((n, a) => n + this.scheduler.count(a.id), 0)
     if (cronCount) this.log.info(`registered ${cronCount} cron(s)`)
 
-    // file-watch: reconcile on any agents/** change (debounced 300ms)
+    // Watch the discoverable agent config tree, not runtime homes/workspaces.
     this.watcher = chokidarWatch(this.agentsDir, {
       ignoreInitial: true,
       depth: 4,
-      ignored: (p: string) => /[\\/](node_modules|\.git|\.detached|\.staged|\.removed)([\\/]|$)/.test(p)
+      followSymlinks: false,
+      ignored: (path, stats) => ignoreAgentWatchPath(this.agentsDir, path, stats)
     })
     const debounced = () => {
       clearTimeout(this.debounceTimer)
@@ -2841,7 +2848,11 @@ export class Daemon {
         void this.reconcile().catch((err) => console.error('agentconnect: reconcile failed:', err))
       }, 300)
     }
-    this.watcher.on('add', debounced).on('change', debounced).on('unlink', debounced)
+    this.watcher
+      .on('error', (err) => this.log.warn(`agent config watcher: ${formatErr(err)}`))
+      .on('add', debounced)
+      .on('change', debounced)
+      .on('unlink', debounced)
     this.log.info(`watching ${this.agentsDir} for agent changes`)
     this.replayInbox()
     this.rearmOrchestrationDeadlines()

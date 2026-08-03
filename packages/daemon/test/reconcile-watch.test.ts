@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
@@ -86,6 +86,31 @@ describe('Daemon debounce timer cleared on stop()', () => {
     // Wait longer than debounce window to confirm reconcile was never called
     await new Promise((resolve) => setTimeout(resolve, 400))
     expect(reconcileSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('Daemon agent config watcher', () => {
+  it('does not traverse a self-referential symlink in runtime temp state', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const temp = join(root, 'agents', 'bot-a', 'home', '.tmp', 'ac-admin-sockets-test')
+    mkdirSync(temp, { recursive: true })
+    const loop = join(temp, 'private-daemon-loop-do-not-leak')
+    symlinkSync(loop, loop)
+
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+
+    const watcher = (daemon as any).watcher
+    const errors: NodeJS.ErrnoException[] = []
+    watcher.on('error', (err: NodeJS.ErrnoException) => errors.push(err))
+    if (!watcher._readyEmitted) {
+      await new Promise<void>((resolve) => watcher.once('ready', resolve))
+    }
+
+    expect(errors.some((err) => err.code === 'ELOOP')).toBe(false)
+    expect(Object.keys(watcher.getWatched()).some((path) => path.endsWith(join('home', '.tmp')))).toBe(false)
+    await daemon.stop()
   })
 })
 
