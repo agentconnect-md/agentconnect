@@ -136,6 +136,13 @@ jobs:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
           PROMPTFOO_DISABLE_TELEMETRY: '1'
         run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:contracts
+      # Collaboration Arena CI gate (collaboration-arena.md §14 step 3): the
+      # deterministic same-room counting game with scripted ACP hosts, plus the
+      # virtual-transport / world-authorization / ingress contract suites.
+      - name: Collaboration Arena contracts
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/unit-test-summary.md
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm eval:collab:contracts
       - name: Merge unit test summaries
         if: ${{ !cancelled() }}
         env:

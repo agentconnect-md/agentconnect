@@ -10,6 +10,7 @@
     "dev": "pnpm -r --parallel dev",
     "eval:addons": "pnpm --filter @agentconnect.md/daemon build && node evals/run-addons.mjs",
     "eval:addons:view": "promptfoo view -n",
+    "eval:collab:contracts": "vitest run evals/test/virtual-connections.test.ts evals/test/world-authorization.test.ts evals/test/topology.test.ts evals/test/counting.test.ts evals/test/game-runner.test.ts packages/daemon/test/evaluation-game-ingress.test.ts",
     "eval:contracts": "vitest run packages/daemon/test/evaluation-events.test.ts packages/daemon/test/evaluation-atif.test.ts packages/daemon/test/evaluation-permission.test.ts packages/daemon/test/evaluation-runner.test.ts packages/daemon/test/daemon-evaluation.test.ts evals/test/outcome.test.ts evals/test/provider.test.ts evals/test/paired-summary.test.ts",
     "eval:validate": "node evals/run-validate.mjs && tsc -p evals/tsconfig.json",
     "format": "prettier --write .",

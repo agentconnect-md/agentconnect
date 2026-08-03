@@ -257,6 +257,17 @@ import {
   type EvaluationEventInput,
   type EvaluationObserver
 } from './evaluation/events.js'
+import {
+  compileEvaluationIntegration,
+  evaluationBotRoutingIdentity,
+  type DaemonEvaluationEnvironment,
+  type DeliveryAdmission,
+  type DeliveryCompletion,
+  type DeliveryHandle,
+  type DeliveryRejectionReason,
+  type EvaluationPlatformEvent,
+  type RefereeEvent
+} from './evaluation/environment.js'
 import { mergeConfigPush, type ConfigApply } from './cp/config-apply.js'
 import { SystemMetrics } from './metrics/system-metrics.js'
 import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
@@ -1356,6 +1367,10 @@ export interface DaemonEvaluationOptions {
   runId?: string
   /** Add-on treatment. Production defaults to both configured. */
   capabilityProfile?: EvaluationCapabilityProfile
+  /** Collaboration Arena environment (collaboration-arena.md §5): the effective
+   *  integration registry projected into `agent.integrations` + the connection
+   *  maps, the synthetic collaboration topology, and the peer directory. */
+  environment?: DaemonEvaluationEnvironment
   /** Evaluation health sink. It is contained with the observer and cannot fail a turn. */
   onObserverError?: (error: unknown) => void
 }
@@ -1581,6 +1596,11 @@ export class Daemon {
   // integrationId -> the FeishuConnection that owns it (for replies). Separate from
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Feishu conn.
   private fsConnByIntegration = new Map<string, FeishuConnection>()
+  /** Integration ids owned by the evaluation environment (collaboration-arena §5).
+   *  They live in `agent.integrations` and the connection maps like any other
+   *  integration, but are EXCLUDED from physical platform reconcile so the daemon
+   *  never opens (or evicts) a real connection for a virtual transport. */
+  private evaluationIntegrationIds = new Set<string>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
@@ -1857,9 +1877,195 @@ export class Daemon {
     return stableTurnId(agentId, msg)
   }
 
+  /** Agents as seen by PHYSICAL platform-connection composition: evaluation-owned
+   *  (virtual) integrations are excluded so consolidation/reconcile never opens a
+   *  real socket for them — and never evicts the installed virtual connections. */
+  private transportAgents(agents: LoadedAgent[] = [...this.agents.values()]): LoadedAgent[] {
+    if (this.evaluationIntegrationIds.size === 0) return agents
+    return agents.map((agent) =>
+      agent.integrations.some((integration) => this.evaluationIntegrationIds.has(integration.id))
+        ? { ...agent, integrations: agent.integrations.filter((i) => !this.evaluationIntegrationIds.has(i.id)) }
+        : agent
+    )
+  }
+
+  /**
+   * Install the Collaboration Arena environment (collaboration-arena.md §5): one
+   * effective-integration registry, two projections. Every existing consumer —
+   * ordinary replies (`replyConnFor`), MCP ops (`gatewayFor`), transport-scope
+   * derivation, Slack realm classification, tool advertising — resolves through
+   * the SAME maps and `agent.integrations` entries it already consults, so no
+   * daemon call site changes. The synthetic collaboration topology loads into the
+   * existing `CpCollabRoutes` table a live CP would replace.
+   */
+  private installEvaluationEnvironment(): void {
+    const environment = this.opts.evaluation?.environment
+    if (!environment) return
+    if (!this.evaluation.enabled) throw new Error('daemon evaluation environment requires an evaluation observer')
+    for (const eff of environment.integrations) {
+      const agent = this.agents.get(eff.agentId)
+      if (!agent) throw new Error(`evaluation integration ${eff.integrationId} names unknown agent "${eff.agentId}"`)
+      if (agent.integrations.some((integration) => integration.id === eff.integrationId)) {
+        throw new Error(`evaluation integration ${eff.integrationId} collides with a configured integration`)
+      }
+      agent.integrations.push(compileEvaluationIntegration(eff))
+      this.evaluationIntegrationIds.add(eff.integrationId)
+      this.botUserIds[eff.integrationId] = evaluationBotRoutingIdentity(eff)
+      switch (eff.platform) {
+        case 'slack':
+          this.connByIntegration.set(eff.integrationId, eff.connection as unknown as SlackConnection)
+          break
+        case 'telegram':
+          this.tgConnByIntegration.set(eff.integrationId, eff.connection as unknown as TelegramConnection)
+          break
+        case 'discord':
+          this.dcConnByIntegration.set(eff.integrationId, eff.connection as unknown as DiscordConnection)
+          break
+      }
+    }
+    this.cpCollab.replace(environment.collaborationRoutes)
+    this.log.info(
+      `evaluation: installed ${environment.integrations.length} virtual integration(s) from the evaluation environment`
+    )
+  }
+
+  /** Map dispatch's internal admission verdict onto the §7.1 taxonomy. */
+  private static deliveryRejectionReason(result: {
+    reason?: string
+    duplicate?: boolean
+  }): Exclude<DeliveryAdmission, { admitted: true }>['reason'] {
+    if (result.duplicate) return 'deduplicated'
+    if (result.reason === 'queue_full') return 'queue_full'
+    if (result.reason === 'durability') return 'error'
+    return 'gated'
+  }
+
+  /**
+   * Build the §7.1 DeliveryHandle around one dispatch: `admission` settles at the
+   * admission decision (synchronously for the claim/enqueue paths), `completion`
+   * when the resulting turn reaches a terminal state. Neither promise ever
+   * rejects — outcomes are typed values.
+   */
+  private evaluationDispatchHandle(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId?: string,
+    webchat?: WebchatTurnContext
+  ): { handle: DeliveryHandle; turn: Promise<string | null> } {
+    const turnId = stableTurnId(agentId, msg)
+    let settleAdmission!: (admission: DeliveryAdmission) => void
+    const admission = new Promise<DeliveryAdmission>((resolve) => (settleAdmission = resolve))
+    const turn = this.dispatch(agentId, msg, integrationId, webchat, undefined, {
+      onAdmission: (result) => {
+        if (result.accepted && !result.duplicate) {
+          const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+          settleAdmission({ admitted: true, agentId, sessionKey: key, turnId })
+        } else {
+          settleAdmission({ admitted: false, reason: Daemon.deliveryRejectionReason(result) })
+        }
+      }
+    })
+    const completion: Promise<DeliveryCompletion> = turn.then(
+      async (sessionId) => {
+        const decided = await admission
+        if (!decided.admitted || sessionId === null) return { status: 'not_admitted' }
+        return { status: 'completed', sessionId, turnId }
+      },
+      async (error: unknown) => {
+        // The dispatch itself rejected before admission could settle (e.g. a
+        // durability failure) — make sure the admission barrier still resolves.
+        settleAdmission({ admitted: false, reason: 'error' })
+        const decided = await admission
+        if (!decided.admitted) return { status: 'not_admitted' }
+        const message = error instanceof Error ? error.message : String(error)
+        const status: 'failed' | 'cancelled' | 'timeout' = /cancel/i.test(message)
+          ? 'cancelled'
+          : /time(?:d\s*)?out/i.test(message)
+            ? 'timeout'
+            : 'failed'
+        return { status, sessionId: null, turnId, error: message }
+      }
+    )
+    // The turn promise is also settled through `completion`; keep the raw
+    // rejection observed so unawaited handles never surface as unhandled.
+    turn.catch(() => {})
+    return { handle: { admission, completion }, turn }
+  }
+
+  /**
+   * §4.1: enter the SAME suppression → deduplication → thread-canonicalization →
+   * command → trigger-routing → gating → dispatch path as a live platform
+   * callback, from a platform-shaped payload on a virtual integration. No target
+   * agent is supplied; routing decides. Duplicate, reordered, and delayed
+   * injections are legitimate inputs handled by the production ingress logic.
+   */
+  injectPlatformEvent(event: EvaluationPlatformEvent): DeliveryHandle {
+    if (!this.evaluation.enabled) throw new Error('daemon evaluation observer is not enabled')
+    if (!this.evaluationIntegrationIds.has(event.integrationId)) {
+      throw new Error(`injectPlatformEvent requires an evaluation integration (got ${event.integrationId})`)
+    }
+    const integration = this.integrationConfigById(event.integrationId)
+    const conn = this.connForIntegration(event.integrationId)
+    if (!integration || !conn) throw new Error(`evaluation integration ${event.integrationId} is not installed`)
+    const payload = event.payload
+    const msg: NormalizedMessage = {
+      msgId: payload.messageId,
+      traceId: randomUUID(),
+      source: 'user',
+      platform: integration.platform,
+      channel: payload.channel,
+      ...(payload.thread !== undefined ? { thread: payload.thread } : {}),
+      sender: {
+        id: payload.sender.id,
+        isBot: payload.sender.isBot ?? false,
+        ...(payload.sender.appId !== undefined ? { appId: payload.sender.appId } : {})
+      },
+      text: payload.text,
+      mentionedBots: payload.mentions ?? [],
+      isDm: payload.isDm ?? false
+    }
+    // Same source resolution as a live connection callback: all integrations
+    // consolidated onto this physical (virtual) connection.
+    const outcome = this.onInboundOutcome(msg, this.srcIntegrationIds(conn))
+    if (outcome.kind === 'dispatched') return outcome.handle
+    const admission: DeliveryAdmission = { admitted: false, reason: outcome.reason }
+    return {
+      admission: Promise.resolve(admission),
+      completion: Promise.resolve({ status: 'not_admitted' })
+    }
+  }
+
+  /**
+   * §4.2: trusted, pre-addressed game control. Skips trigger routing (the target
+   * is authoritative) but still traverses the dispatch admission queue,
+   * per-session FIFO, SessionManager, and ACP — referee traffic cannot corrupt
+   * session-state invariants. Referee deliveries are environment machinery and
+   * are excluded from ingress-invariant scoring by their producers.
+   */
+  deliverRefereeEvent(event: RefereeEvent): DeliveryHandle {
+    if (!this.evaluation.enabled) throw new Error('daemon evaluation observer is not enabled')
+    if (!this.agents.has(event.targetAgentId)) throw new Error(`unknown evaluation agent ${event.targetAgentId}`)
+    const msg: NormalizedMessage = {
+      msgId: event.messageId,
+      traceId: randomUUID(),
+      source: 'user',
+      platform: event.platform,
+      channel: event.channel,
+      ...(event.thread !== undefined ? { thread: event.thread } : {}),
+      sender: { id: event.sender?.id ?? 'evaluation-referee', isBot: event.sender?.isBot ?? false },
+      text: event.text,
+      mentionedBots: [],
+      isDm: event.isDm,
+      ...(event.isDm ? { trigger: 'dm' as const } : {})
+    }
+    return this.evaluationDispatchHandle(event.targetAgentId, msg, event.integrationId).handle
+  }
+
   /** Drive a real daemon turn through the same SessionManager, ACP host, memory,
    * permission, MCP, serial-gate, and transcript path as relay webchat. This is the
-   * only product-specific surface the Promptfoo adapter needs. */
+   * only product-specific surface the Promptfoo adapter needs. Retained as a
+   * compatibility wrapper over the referee-delivery path (collaboration-arena §4.2)
+   * with a synthetic webchat coordinate — the add-on suite's behavior is unchanged. */
   async runEvaluationTurn(input: DaemonEvaluationTurnInput): Promise<DaemonEvaluationTurnResult> {
     if (!this.evaluation.enabled) throw new Error('daemon evaluation observer is not enabled')
     if (!this.agents.has(input.agentId)) throw new Error(`unknown evaluation agent ${input.agentId}`)
@@ -1887,12 +2093,13 @@ export class Daemon {
       isDm: true,
       trigger: 'dm'
     }
-    const sessionId = await this.dispatch(input.agentId, message, undefined, {
+    const { turn } = this.evaluationDispatchHandle(input.agentId, message, undefined, {
       conversationId: input.conversationId,
       turnId,
       sink,
       evaluation: true
     })
+    const sessionId = await turn
     // Product turns intentionally enqueue post-turn memory work. Evaluation waits
     // for this agent's chain so the returned artifact has a terminal capture event.
     await (this.memoryPostTurnChains.get(input.agentId) ?? Promise.resolve())
@@ -2305,6 +2512,13 @@ export class Daemon {
       // Peer discovery goes to the CP (the only authority for the cross-daemon
       // roster). Resolve the client lazily; fail closed when it isn't connected.
       channelAgents: async ({ currentChannel, currentThread, currentTransportScope, ...req }) => {
+        // Collaboration Arena (§5): the evaluation environment IS the peer
+        // directory — there is no CP in an evaluation daemon. Same trusted
+        // requester identity, answered locally.
+        const evaluationEnvironment = this.opts.evaluation?.environment
+        if (evaluationEnvironment) {
+          return evaluationEnvironment.listAgents({ ...req, currentChannel, currentThread, currentTransportScope })
+        }
         const client = this.cpClient
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
         // Cache each peer's directory name so the caller-framed text delivered to a messaged
@@ -2536,8 +2750,13 @@ export class Daemon {
     })
 
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
-    const groups = consolidate(agents)
+    const groups = consolidate(this.transportAgents(agents))
     this.botUserIds = {}
+    // Collaboration Arena (§5): project the evaluation environment's effective
+    // integrations into `agent.integrations` + the connection maps BEFORE any
+    // routing/dispatch can observe them, and AFTER physical Slack consolidation
+    // was computed — virtual transports never open sockets.
+    this.installEvaluationEnvironment()
     if (groups.size === 0) this.log.info('slack: no slack integrations configured')
     else this.log.info(`slack: opening ${groups.size} socket connection(s)`)
     for (const group of groups.values()) {
@@ -2909,7 +3128,10 @@ export class Daemon {
    * keeps ordinary concurrent reconcile safe for unrelated in-flight turns.
    */
   private async closeUnusedPlatformConnections(): Promise<void> {
-    const agents = [...this.agents.values()]
+    // Evaluation-owned virtual integrations are invisible to physical reference
+    // counting AND immune to eviction (see the guards below): they were never
+    // opened from credentials, so credential comparison would always evict them.
+    const agents = this.transportAgents()
     const direct = consolidate(agents)
     const shared = consolidateShared(agents)
     const telegram = consolidateTelegram(agents)
@@ -2948,11 +3170,14 @@ export class Daemon {
       this.channelSnapshots.delete(integrationId)
     }
     for (const integrationId of Object.keys(this.botUserIds))
-      if (!allDesiredIds.has(integrationId)) dropIdentity(integrationId)
+      if (!allDesiredIds.has(integrationId) && !this.evaluationIntegrationIds.has(integrationId))
+        dropIdentity(integrationId)
     for (const integrationId of [...this.channelSnapshots.keys()])
-      if (!allDesiredIds.has(integrationId)) this.channelSnapshots.delete(integrationId)
+      if (!allDesiredIds.has(integrationId) && !this.evaluationIntegrationIds.has(integrationId))
+        this.channelSnapshots.delete(integrationId)
 
     for (const [integrationId, conn] of this.connByIntegration) {
+      if (this.evaluationIntegrationIds.has(integrationId)) continue
       const expectedDirect = directByIntegration.get(integrationId)
       const expectedShared = sharedByIntegration.get(integrationId)
       const matches = expectedDirect
@@ -2966,12 +3191,14 @@ export class Daemon {
       }
     }
     for (const [integrationId, conn] of this.tgConnByIntegration) {
+      if (this.evaluationIntegrationIds.has(integrationId)) continue
       if (conn.botToken !== telegramByIntegration.get(integrationId)) {
         this.tgConnByIntegration.delete(integrationId)
         dropIdentity(integrationId)
       }
     }
     for (const [integrationId, conn] of this.dcConnByIntegration) {
+      if (this.evaluationIntegrationIds.has(integrationId)) continue
       if (conn.botToken !== discordByIntegration.get(integrationId)) {
         this.dcConnByIntegration.delete(integrationId)
         dropIdentity(integrationId)
@@ -3056,7 +3283,7 @@ export class Daemon {
    *    after checking the final roster and captured-turn connection leases.
    */
   private async reconcileSlackConnections(): Promise<void> {
-    const groups = consolidate([...this.agents.values()])
+    const groups = consolidate(this.transportAgents())
     for (const group of groups.values()) {
       const existing = this.connections.find((c) => c.appToken === group.appToken && c.botToken === group.botToken)
       if (existing) {
@@ -3137,7 +3364,7 @@ export class Daemon {
    * Socket Mode consumer.
    */
   private async openHttpSlackConnections(agents: LoadedAgent[]): Promise<void> {
-    const groups = consolidateShared(agents)
+    const groups = consolidateShared(this.transportAgents(agents))
     for (const group of groups.values()) {
       let conn = this.httpSlackConns.get(group.botToken)
       let bound = false
@@ -3188,7 +3415,7 @@ export class Daemon {
    *  - REMOVED token → closed by closeUnusedPlatformConnections before this opener.
    */
   private async reconcileTelegramConnections(): Promise<void> {
-    const groups = consolidateTelegram([...this.agents.values()])
+    const groups = consolidateTelegram(this.transportAgents())
     for (const group of groups.values()) {
       const existing = this.telegramConns.find((c) => c.botToken === group.botToken)
       if (existing) {
@@ -3256,7 +3483,7 @@ export class Daemon {
    * intact (never throws out); removed tokens are closed by the shared close phase.
    */
   private async reconcileDiscordConnections(): Promise<void> {
-    const groups = consolidateDiscord([...this.agents.values()])
+    const groups = consolidateDiscord(this.transportAgents())
     for (const group of groups.values()) {
       const existing = this.discordConns.find((c) => c.botToken === group.botToken)
       if (existing) {
@@ -3323,7 +3550,7 @@ export class Daemon {
    *  region change (or removal) that landed during its handshake and self-discard instead
    *  of publishing an old-domain mapping. */
   private desiredFeishuConfig(appId: string): { region: FeishuRegion; mode: 'direct' | 'shared' } | undefined {
-    for (const group of consolidateFeishu([...this.agents.values()]).values())
+    for (const group of consolidateFeishu(this.transportAgents()).values())
       if (group.appId === appId) return { region: group.region, mode: group.mode }
     return undefined
   }
@@ -3337,7 +3564,7 @@ export class Daemon {
    * appId is NOT torn down here (same deferred-close reasoning as Slack/Telegram/Discord).
    */
   private async reconcileFeishuConnections(): Promise<void> {
-    const groups = consolidateFeishu([...this.agents.values()])
+    const groups = consolidateFeishu(this.transportAgents())
     for (const group of groups.values()) {
       // Match on appId AND region: a region change on the same appId must NOT reuse the
       // old-domain client (the prune pass drops it; this guards a same-pass race too).
@@ -3838,7 +4065,7 @@ export class Daemon {
    */
   private startSlackRetry(appToken: string): void {
     if (this.slackRetryRuns.has(appToken)) return
-    const group = consolidate([...this.agents.values()]).get(appToken)
+    const group = consolidate(this.transportAgents()).get(appToken)
     if (!group) return
     const run = this.retrySlackConnection(appToken)
       .catch((err) => this.log.error(`slack: retry loop error: ${formatErr(err)}`))
@@ -3852,7 +4079,7 @@ export class Daemon {
     if (this.draining) return
     // Never reuse a captured integration roster: an agent may have detached (or a
     // token may have moved) during the 60s backoff. Resolve the current group now.
-    const group = consolidate([...this.agents.values()]).get(appToken)
+    const group = consolidate(this.transportAgents()).get(appToken)
     if (!group) {
       this.slackRetryTimers.delete(appToken)
       return
@@ -3890,7 +4117,7 @@ export class Daemon {
       await conn.start()
       // The roster may have changed while start() was in flight. Never publish a
       // socket or captured integration list from before a detach/token handoff.
-      const currentGroup = consolidate([...this.agents.values()]).get(appToken)
+      const currentGroup = consolidate(this.transportAgents()).get(appToken)
       if (this.draining || !currentGroup || currentGroup.botToken !== group.botToken) {
         await conn.stop().catch(() => {})
         this.slackRetryTimers.delete(appToken)
@@ -3908,7 +4135,7 @@ export class Daemon {
       // Release the half-open connection before discarding it so a failure during
       // app.start() doesn't leak a live reconnecting Bolt client each iteration.
       await conn.stop().catch(() => {})
-      if (this.draining || !consolidate([...this.agents.values()]).has(appToken)) {
+      if (this.draining || !consolidate(this.transportAgents()).has(appToken)) {
         this.slackRetryTimers.delete(appToken)
         return
       }
@@ -5115,16 +5342,30 @@ export class Daemon {
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
+    void this.onInboundOutcome(msg, srcIntegrationIds)
+  }
+
+  /**
+   * The full platform ingress ladder — suppression, per-connection dedup, thread
+   * canonicalization, command interception, trigger routing, gating — returning
+   * the admission outcome so the evaluation ingress seam (`injectPlatformEvent`,
+   * collaboration-arena §4.1) can expose a §7.1 DeliveryHandle. Live platform
+   * callbacks ignore the return value; behavior is unchanged.
+   */
+  private onInboundOutcome(
+    msg: NormalizedMessage,
+    srcIntegrationIds?: string[]
+  ): { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } {
     // Drain gate (§2.5/§5.3): once the daemon is draining (SIGTERM or a scope:daemon
     // drain) it accepts no new turns — in-flight turns finish, new arrivals are
     // dropped (the platform redelivers / the user retries against the new owner).
     if (this.draining) {
       this.log.debug(`routing: dropping inbound ${msg.msgId} (daemon draining)`)
-      return
+      return { kind: 'rejected', reason: 'gated' }
     }
     if (this.isAgentBotMessage(msg)) {
       this.log.debug(`routing: dropping AgentConnect bot message ${msg.msgId}`)
-      return
+      return { kind: 'rejected', reason: 'suppressed' }
     }
     this.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
@@ -5141,7 +5382,7 @@ export class Daemon {
     const seenMsgId = `${sourceKey}|${msg.msgId}`
     if (this.seenMsgIds.has(seenMsgId)) {
       this.log.debug(`routing: duplicate ${msg.msgId} ignored`)
-      return
+      return { kind: 'rejected', reason: 'deduplicated' }
     }
     this.seenMsgIds.add(seenMsgId)
     if (this.seenMsgIds.size > 2000) this.seenMsgIds.clear()
@@ -5169,13 +5410,13 @@ export class Daemon {
       // the same loop it caused.
       if (command.kind === 'resume' && !isTrustedHumanTurn(msg)) {
         this.log.warn(`loop guard: ignored unauthenticated resume for ${loopGuardScope(msg)}`)
-        return
+        return { kind: 'rejected', reason: 'suppressed' }
       }
       // §14.3: a command that resolved no admitted target in an Off gated
       // conversation gets the same one-time notice as an unrouted message.
       if (!this.handleCommand(command, msg, undefined, srcIntegrationIds))
         this.maybeGatedNotice(msg, srcIntegrationIds ?? [])
-      return
+      return { kind: 'rejected', reason: 'suppressed' }
     }
 
     const result = routeRules(msg, routingRules, (c, t) => this.sessions.threadOwner(c, t, msg.transportScope))
@@ -5195,7 +5436,7 @@ export class Daemon {
       this.log.debug(
         `routing: dropped message in ch=${msg.channel} (no agent matched — not a mention of a known bot, not a subscribed 'all' channel, not a thread/DM hit)`
       )
-      return
+      return { kind: 'rejected', reason: 'unrouted' }
     }
     // Observation precedes activation gates and queue admission. A clarification
     // arriving while this logical thread is busy must be visible to the running
@@ -5209,7 +5450,7 @@ export class Daemon {
     // drop new turns for it while its in-flight turns finish.
     if (this.drainingAgents.has(result.agentId)) {
       this.log.debug(`routing: dropping ${msg.msgId} for agent "${result.agentId}" (draining)`)
-      return
+      return { kind: 'rejected', reason: 'gated' }
     }
     // `!stop` thread mute: while muted, implicit routing (thread affinity / keyword /
     // auto / dm) never dispatches — only an explicit @mention does, and it clears the
@@ -5222,7 +5463,7 @@ export class Daemon {
         this.log.debug(
           `routing: dropping ${msg.msgId} for agent "${result.agentId}" (muted by !stop; awaiting @mention)`
         )
-        return
+        return { kind: 'rejected', reason: 'gated' }
       }
       this.setSessionMuted(muteKey, false)
       this.log.info(`routing: agent "${result.agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
@@ -5232,14 +5473,35 @@ export class Daemon {
     // into that thread (Slack-parity). Async (a REST call), so it runs on its own path;
     // dispatch is fire-and-forget either way.
     if (msg.platform === 'discord' && msg.discordTopLevel) {
-      void this.dispatchDiscordTopLevel(result.agentId, msg, result.integrationId).catch((err) =>
-        this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
-      )
-      return
+      const topLevel = this.dispatchDiscordTopLevel(result.agentId, msg, result.integrationId)
+      topLevel.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
+      // The re-threaded dispatch owns its own admission; expose a coarse handle
+      // (virtual ingress never produces discordTopLevel messages).
+      return {
+        kind: 'dispatched',
+        handle: {
+          admission: Promise.resolve({
+            admitted: true,
+            agentId: result.agentId,
+            sessionKey: sessionKey(
+              msg.platform,
+              msg.channel,
+              msg.thread ?? msg.msgId,
+              result.agentId,
+              msg.transportScope
+            ),
+            turnId: stableTurnId(result.agentId, msg)
+          }),
+          completion: topLevel.then(
+            () => ({ status: 'not_admitted' }),
+            () => ({ status: 'not_admitted' })
+          )
+        }
+      }
     }
-    void this.dispatch(result.agentId, msg, result.integrationId).catch((err) =>
-      this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
-    )
+    const { handle, turn } = this.evaluationDispatchHandle(result.agentId, msg, result.integrationId)
+    turn.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
+    return { kind: 'dispatched', handle }
   }
 
   /**
