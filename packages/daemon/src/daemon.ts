@@ -11097,8 +11097,6 @@ export class Daemon {
       thread: msg.thread,
       statusThread
     })
-    // First metadata snapshot: enough for the CP's DB-backed session list/detail to
-    // resolve this daemon-local session without pulling `session/list` on every view.
     if (created) {
       // Classify for session visibility BEFORE the first milestone: the CP's
       // ingest is first-wins, and the daemon's own capture gate must be closed
@@ -11106,20 +11104,26 @@ export class Daemon {
       // §4.1/§5.1). Persisted on the session row so later re-emits — including
       // after a restart, when `msg` is long gone — still carry the same facts.
       this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
-      this.emitSessionMetadataSnapshot({
-        sessionId,
-        agentId,
-        phase: 'start',
-        platform: msg.platform,
-        channel: msg.channel,
-        thread: statusThread
-      })
+    }
+    // Turn-start metadata snapshot — EVERY turn, not only `created`. The row is
+    // already `prompting` (sessions.handle), and the CP-stored state is the only
+    // active-turn signal a console watching a platform session has: the end-of-turn
+    // snapshot fires after cleanup resets the row to `idle`, so without this a warm
+    // turn never reads as in flight (the work panel could not follow it live).
+    // recordMilestone upserts, so a repeated 'start' phase is safe on the CP.
+    this.emitSessionMetadataSnapshot({
+      sessionId,
+      agentId,
+      phase: 'start',
+      platform: msg.platform,
+      channel: msg.channel,
+      thread: statusThread
+    })
+    if (created && (msg.platform === 'telegram' || msg.platform === 'discord' || msg.platform === 'feishu')) {
       // A first-seen Telegram/Discord/Feishu chat widens the observed reachable set
       // (approach-A discovery) — report it after the session row exists so the console
       // cannot miss a name lookup that completed during cold session startup.
-      if (msg.platform === 'telegram' || msg.platform === 'discord' || msg.platform === 'feishu') {
-        this.refreshObservedChannels()
-      }
+      this.refreshObservedChannels()
     }
     try {
       onSessionReady?.(sessionId)
