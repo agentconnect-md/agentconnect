@@ -21,8 +21,9 @@ authoritative.
    address an agent or human in the current thread.
 3. Keep `sendMessage` for postless agent calls, direct messages, channel-root
    posts, and parent-session replies.
-4. Make a parent-session reply session-only: it may resume the parent agent, but
-   that turn must not emit anything to an IM platform.
+4. Make a parent-session reply session-only by default: its injected input and
+   ordinary resumed output do not go to IM, while an explicit visible
+   `sendMessage` remains an intentional, separately authorized outbound action.
 5. Preserve directional agent-call policy, loop protection, transcript
    consistency, and exactly-once activation.
 
@@ -149,25 +150,46 @@ bot it begins with the shared bot mention plus the target slug, for example
 agent.
 
 The internal wake and the platform echo are two observations of one logical
-delivery. They must share an activation key:
+delivery. The visible post carries a daemon-minted `agent_call_delivery_id`, and
+both observations share an activation key:
 
 ```text
 activationKey = platform + transportScope + platformMessageId + targetAgentId
 ```
 
-Both paths claim that key before dispatch. Whichever path arrives second records
-or reconciles the shared transcript row but does not start a second model turn.
-This preserves the synchronous `delivered` / `childSessionId` result while also
-allowing ordinary agent-authored platform messages to route.
+The target daemon keeps a durable rendezvous record for the activation key. The
+internal wake is the semantic authority for a paired `toAgent + channel` call
+because it carries the complete trusted call envelope: delivery ID, caller and
+parent lineage, origin coordinates, correlation, `needsReply`, hop count,
+external-origin metadata, and privacy gates. The platform event contributes the
+provider-authenticated visible coordinates and transcript observation; its
+delivery ID is correlation, not authority.
 
-The claim must work in both arrival orders:
+The rendezvous behaves identically in both arrival orders:
 
-- internal wake first, platform event second;
-- platform event first, internal wake second.
+- **Internal wake first:** atomically store the complete envelope, admit the
+  child once, and reconcile the later platform observation into the same
+  transcript row.
+- **Platform event first:** claim the key as `pending`, record the visible
+  observation, and do not dispatch. The later internal wake attaches the
+  complete envelope and atomically changes `pending` to `admitted` before
+  dispatch.
+
+A pending platform observation that never receives its internal envelope expires
+as transcript-only and raises an operational delivery failure; it must never
+fall back to an envelope-less child. Retries reuse the delivery ID and rendezvous
+record. An ordinary agent-authored `@mention` has no
+`agent_call_delivery_id`, so it remains independently platform-routable and is
+not held for an internal wake.
+
+This preserves the synchronous `delivered` / `childSessionId` agent-call result,
+the full lineage contract, and exactly-once activation while also allowing
+ordinary agent-authored platform messages to route.
 
 For cross-daemon delivery the platform message ID already travels as
-`transcriptTs`; the target daemon owns the activation claim because both the
-forwarded wake and routed IM event converge there.
+`transcriptTs`; the target daemon owns the durable rendezvous because both the
+forwarded wake and routed IM event converge there. The relay forwards the
+verified pairing ID but never synthesizes or stores the call envelope.
 
 ## 4. Trusted agent authorship
 
@@ -175,8 +197,9 @@ The system must distinguish a verified AgentConnect author from a generic bot.
 Model-visible text is never proof of identity.
 
 Slack already stamps `author_agent_id` in AgentConnect message metadata. Extend
-the daemon-owned metadata to carry the finalized response boundary and trusted
-loop depth:
+the daemon-owned metadata to carry the finalized response boundary, recipients
+resolved from the complete logical response, trusted loop depth, and an optional
+paired-call correlation ID:
 
 ```ts
 {
@@ -184,8 +207,14 @@ loop depth:
   response_id: string
   delivery_state: 'streaming' | 'final'
   hop_count: number
+  mentioned_agent_ids: string[]
+  agent_call_delivery_id?: string
 }
 ```
+
+The daemon derives `mentioned_agent_ids` before platform splitting. Model text
+cannot directly populate it. `agent_call_delivery_id` is present only on the
+visible half of `toAgent + channel`; ordinary replies omit it.
 
 Ingress treats `author_agent_id` as a claim until it verifies that:
 
@@ -214,15 +243,39 @@ partial text and ignore later edits.
 
 For AgentConnect-authored messages:
 
-1. Outbound streaming posts and intermediate edits carry
+1. The daemon assigns one `response_id` to the complete logical response and
+   resolves every exact agent mention against the conversation-specific agent
+   directory before splitting it for platform delivery.
+2. The resulting `mentioned_agent_ids` set is immutable response metadata. The
+   final routing event carries that set even when the visible mention appeared
+   in an earlier physical message.
+3. A platform splitter treats every platform-native mention address as one
+   indivisible token. It must not cut inside a human or agent mention. For a
+   shared Slack bot, `<@U_SHARED> reviewer` is one address and the splitter must
+   not separate the bot mention from its agent slug. If one address cannot fit a
+   platform message, delivery fails instead of publishing a broken address.
+4. Outbound streaming posts and intermediate edits carry
    `delivery_state: 'streaming'` and do not enter recipient routing.
-2. Turn finalization marks exactly one response event as
+5. Turn finalization marks exactly one response event as
    `delivery_state: 'final'`.
-3. Ingress routes only the final event and deduplicates it by `response_id` plus
-   target agent.
-4. If a long response spans several platform messages, only the final response
-   message closes the response. The target reconstructs preceding text through
-   the normal thread-history catch-up path.
+6. Ingress routes only the final event. It selects targets from the verified
+   logical-response recipient set, not by reparsing only the last physical
+   message, and deduplicates by `response_id` plus target agent.
+7. If a long response spans several platform messages, only the final response
+   message closes the response. Once the carried recipient set selects a target,
+   the target reconstructs preceding text through the normal thread-history
+   catch-up path.
+
+The recipient set is still a provider metadata claim at ingress. It becomes
+trusted only together with the exact AgentConnect author and app identity, and
+every listed author-to-target edge must independently pass current policy and
+conversation gates.
+
+At finalization the platform driver tokenizes mention-address spans before
+choosing physical-message boundaries. A preferred line or paragraph boundary
+that falls inside a span moves to the start of that span; the following section
+starts with the complete address. The sections must concatenate to the exact
+logical response, including whitespace around the mention.
 
 Slack must selectively normalize the final `message_changed` event instead of
 dropping every edit wrapper. Chrome and other structural messages remain
@@ -243,10 +296,10 @@ final platform event
 |
 |- structural/chrome event -> drop
 |- verified AgentConnect author?
-|    |- no exact target mention -> transcript only
+|    |- no verified logical-response recipient -> transcript only
 |    |- target == author -> transcript only
 |    |- author -> target policy denied -> transcript only
-|    `- exact target mention -> claim activation key -> dispatch once
+|    `- target in verified recipient set -> claim activation key -> dispatch once
 |- third-party supported bot?
 |    `- exact target mention only -> existing bot-mention behavior
 `- human sender -> existing mention/thread/DM/keyword/auto ladder
@@ -270,45 +323,58 @@ The injected message is:
 { type: system, from: <child-agent> }: <message>
 ```
 
-The target parent session is resumed with `headless: true`:
+The target parent session is resumed with `headless: true`. For this delivery
+kind, headless controls the automatic reply sink and delivery chrome:
 
 - the parent agent processes the new input;
 - inbound content and resulting agent work are recorded in the session
   transcript;
-- no IM body, typing indicator, status message, status bar, footer, permission
-  card, or completion notification is emitted for that turn;
+- no ordinary IM body, typing indicator, status message, status bar, footer,
+  permission card, or completion notification is emitted for that turn;
 - correlation, hop count, orchestration report recording, memory behavior, and
   the per-session serial gate remain unchanged.
 
-This is stronger than merely avoiding a direct `postMessage` call. The current
-implementation already injects the child body rather than posting it directly,
-but the resumed parent turn still owns an IM reply connection. The new design
-removes that connection for this turn.
+An explicit visible `sendMessage` from the resumed parent remains allowed and
+uses its normal authorization and delivery semantics. It is a new intentional
+outbound action, not an IM copy of the session reply. Postless `toAgent` and
+`sessionId` targets also remain available. Consequently, `headless: true` is not
+a turn-wide egress prohibition and the system promises zero IM gateway calls
+only when the agent does not explicitly choose a visible target.
+
+The current implementation already injects the child body rather than posting
+it directly, but the resumed parent turn still owns an ordinary IM reply
+connection. The new design removes that connection for this turn; it does not
+add a separate `sendMessage` egress gate.
 
 Cross-daemon session replies carry a required-headless delivery flag. A relay
 must not forward such a reply to a daemon that has not advertised support for
-headless agent delivery; it returns an unsupported/retryable verdict instead of
-silently degrading to visible IM output.
+session-only automatic output; it returns an unsupported/retryable verdict
+instead of silently degrading the ordinary parent response to visible IM
+output.
 
 ## 8. Protocol and data changes
 
 ### 8.1 Normalized platform message
 
-Add an optional, explicitly untrusted provider authorship claim and response
-state to the normalized provider message. The relay or daemon promotes it to a
-trusted agent author only after verification.
+Add optional, explicitly untrusted provider authorship, logical-response
+recipient, response-state, and paired-delivery claims to the normalized provider
+message. The relay or daemon promotes them only after verifying the producing
+AgentConnect identity.
 
 ### 8.2 Relay IM frame
 
-Add an optional relay-minted `trustedFromAgentId` and trusted hop count to the
-pre-addressed IM frame. Keep them outside the provider payload so the target can
-distinguish relay assertions from provider fields.
+Add optional relay-minted `trustedFromAgentId`, response ID, recipient IDs,
+paired agent-call delivery ID, and trusted hop count to the pre-addressed IM
+frame. Keep them outside the provider payload so the target can distinguish
+relay assertions from provider fields.
 
 ### 8.3 Cross-daemon agent message
 
 Add a delivery kind or required-headless flag to `rd/agentmsg` and
 `rd/agentmsg/fwd`. The target stamps the resulting normalized message
-`headless: true` for postless calls and session replies.
+`headless: true` for postless calls and session replies. For session replies the
+flag suppresses automatic platform output but does not disable explicit visible
+tool sends.
 
 ### 8.4 Relay capability negotiation
 
@@ -332,6 +398,34 @@ Examples:
 This gives the model an exact token for an ordinary current-thread reply without
 exposing credentials or guessing from display names.
 
+### 8.6 Activation rendezvous
+
+The target daemon persists a bounded activation record before either observation
+can dispatch:
+
+```ts
+type ActivationRecord = {
+  activationKey: string
+  agentCallDeliveryId?: string
+  platformObservation?: {
+    platformMessageId: string
+    transcriptCoordinates: string
+  }
+  callEnvelope?: TrustedAgentCallEnvelope
+  state: 'pending' | 'admitted' | 'transcript-only'
+  childSessionId?: string
+  expiresAt: number
+}
+```
+
+Creation, envelope attachment, and `pending -> admitted` are atomic with the
+daemon's durable inbox/admission fence. An admitted record returns its stored
+`childSessionId` to retries and never dispatches again. A platform-first paired
+record cannot become `admitted` until `callEnvelope` is present. Expiry changes
+an envelope-less record to `transcript-only`; it does not synthesize missing
+lineage from platform metadata. The record and any message body remain on the
+daemon, never the Control Plane or relay.
+
 ## 9. Implementation map
 
 The main implementation surfaces are:
@@ -341,7 +435,8 @@ The main implementation surfaces are:
 - `packages/daemon/src/mcp/ops.ts`: enforce the new target union, render
   channel-root mentions, and remove visible in-thread execution.
 - `packages/daemon/src/slack/connection.ts`: retain AgentConnect-authored events,
-  stamp response state, and surface only the finalized routing event.
+  stamp response/recipient/pairing state, split only at mention-safe boundaries,
+  and surface only the finalized routing event.
 - `packages/relay/src/slack-http-ingest.ts`: stop dropping AgentConnect message
   echoes while retaining structural/chrome filtering.
 - `packages/relay/src/relay-ingress-manager.ts`: replace blanket managed-agent
@@ -349,12 +444,14 @@ The main implementation surfaces are:
 - `packages/relay/src/bot-arbitration.ts`: add the verified-agent routing branch
   and shared-bot slug precedence.
 - `packages/daemon/src/daemon.ts`: replace direct and relayed managed-agent
-  suppression with verified routing, activation claims, and headless
-  `replyToSession` dispatch.
+  suppression with verified routing, durable activation rendezvous records, and
+  headless `replyToSession` dispatch.
+- `packages/daemon/src/state-store.ts`: persist activation rendezvous state and
+  make admission/retry transitions atomic with the durable inbox fence.
 - `packages/daemon/src/router/routing-table.ts`: keep verified agent traffic out
   of implicit routing rungs.
-- `packages/protocol`: carry authorship, delivery-state, headless, capability,
-  and mention-address metadata.
+- `packages/protocol`: carry authorship, logical recipient, paired-delivery,
+  delivery-state, headless, capability, and mention-address metadata.
 - `packages/control-plane`: include public mention-address inputs in the
   collaboration/directory snapshot; message bodies remain off the Control Plane.
 
@@ -369,7 +466,9 @@ At minimum, cover:
 2. `toAgent` without `channel` is postless and headless.
 3. `toAgent + channel` posts at root, renders the exact agent mention, and
    produces one child activation.
-4. Internal-wake-first and platform-event-first races both activate once.
+4. Internal-wake-first and platform-event-first races both activate once with
+   the same complete call envelope; platform-first with `needsReply: true`
+   preserves parent lineage and reply behavior.
 5. `toUser` without `channel` is a single-user DM; an array is rejected.
 6. `toUser + channel` posts at root and mentions all listed humans.
 7. A normal current-thread agent reply mentioning another agent activates only
@@ -379,18 +478,23 @@ At minimum, cover:
 9. Self mentions and policy-denied mentions do not activate.
 10. Shared-bot slug addressing selects the named agent and never falls back to
     the default for an agent author.
-11. Streaming agent messages do not activate; the final response activates once
-    with complete thread context.
-12. Local and cross-daemon parent-session replies update the target session while
-    making zero IM gateway calls.
-13. A required-headless cross-daemon reply refuses an old target daemon instead
-    of leaking output to IM.
+11. Streaming agent messages do not activate; when a mention is in physical
+    section one and finalization is in section two or later, the final response
+    still selects that target once with complete thread context.
+12. Splitting never cuts a dedicated mention or separates a shared bot mention
+    from its agent slug; concatenating the physical sections preserves the exact
+    logical response.
+13. Local and cross-daemon parent-session replies update the target session and
+    make no implicit IM gateway calls. An explicit visible `sendMessage` remains
+    allowed and is tested as a separate intentional action.
+14. A required-headless cross-daemon reply refuses an old target daemon instead
+    of leaking the ordinary parent response to IM.
 
 ## 11. Rollout
 
 1. Ship optional protocol fields and daemon/relay capability advertisement.
-2. Ship target-side final-message verification, activation deduplication, and
-   headless delivery support.
+2. Ship target-side final-message verification, logical recipient carry,
+   activation rendezvous/deduplication, and headless automatic-output support.
 3. Ship relay/direct-ingress routing and stop applying the blanket managed-agent
    filter.
 4. Ship the reduced `sendMessage` schema and updated model guidance.
@@ -399,4 +503,4 @@ At minimum, cover:
 
 During a mixed-version rollout, older components may continue suppressing an
 agent-authored platform event, but no component may downgrade a required-headless
-session reply into visible output.
+session reply into an ordinary visible response.
