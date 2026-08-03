@@ -265,6 +265,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
   // Messages sent while a turn was still streaming, oldest first per session id.
   const [pgQueueBy, setPgQueueBy] = useState<Record<string, QueuedTurn[]>>({})
+  // Synchronous mirror of pgQueueBy — pgSend's queue-or-send decision cannot
+  // read state: when a turn ends, busyRef clears at once but the queue head is
+  // dispatched by a passive effect, and a send landing in that gap would jump
+  // ahead of messages already shown as queued. Every pgQueueBy write updates
+  // this ref in the same tick.
+  const pgQueueRef = useRef<Record<string, QueuedTurn[]>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
   // Creation-time roster per session id (primary first) — drives the
@@ -1131,23 +1137,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       if (!text && !image) return false
       setPgInput(id, '')
       setPgImage(id)
-      if (busyRef.current[id]) {
-        // A turn is streaming: queue instead of rejecting (Claude Code-style).
-        // The dispatcher effect sends it once the in-flight turn finishes.
-        setPgQueueBy((cur) => ({
-          ...cur,
-          [id]: [
-            ...(cur[id] ?? NO_QUEUE),
-            {
-              queueId: crypto.randomUUID(),
-              text,
-              ...(image ? { image } : {}),
-              agentId: agentForId,
-              ...(conversationId ? { conversationId } : {}),
-              ...(knownParticipants ? { participants: knownParticipants } : {})
-            }
-          ]
-        }))
+      // Queue while a turn streams (Claude Code-style) — and also while older
+      // queued messages are still waiting for the dispatcher, so a send landing
+      // between a turn's end and the dispatch of the queue head stays FIFO.
+      if (busyRef.current[id] || (pgQueueRef.current[id]?.length ?? 0) > 0) {
+        const queued: QueuedTurn = {
+          queueId: crypto.randomUUID(),
+          text,
+          ...(image ? { image } : {}),
+          agentId: agentForId,
+          ...(conversationId ? { conversationId } : {}),
+          ...(knownParticipants ? { participants: knownParticipants } : {})
+        }
+        pgQueueRef.current[id] = [...(pgQueueRef.current[id] ?? NO_QUEUE), queued]
+        setPgQueueBy((cur) => ({ ...cur, [id]: [...(cur[id] ?? NO_QUEUE), queued] }))
         return true
       }
       sendTurn(id, agentForId, text, image, conversationId, knownParticipants)
@@ -1164,6 +1167,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const next = queue[0]
       if (!next || busyRef.current[id] || dispatchedQueueIds.current.has(next.queueId)) continue
       dispatchedQueueIds.current.add(next.queueId)
+      pgQueueRef.current[id] = (pgQueueRef.current[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId)
       setPgQueueBy((cur) => ({ ...cur, [id]: (cur[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId) }))
       sendTurn(id, next.agentId, next.text, next.image, next.conversationId, next.participants)
     }
@@ -1171,6 +1175,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const getPgQueue = useCallback((id: string) => pgQueueBy[id] ?? NO_QUEUE, [pgQueueBy])
   const pgCancelQueued = useCallback((id: string, queueId: string): void => {
+    pgQueueRef.current[id] = (pgQueueRef.current[id] ?? NO_QUEUE).filter((q) => q.queueId !== queueId)
     setPgQueueBy((cur) => {
       const queue = cur[id]
       if (!queue?.some((q) => q.queueId === queueId)) return cur

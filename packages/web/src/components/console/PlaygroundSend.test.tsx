@@ -47,6 +47,7 @@ let pgSend: ReturnType<typeof usePlayground>['pgSend']
 let openPlayground: ReturnType<typeof usePlayground>['openPlayground']
 let getPgQueue: ReturnType<typeof usePlayground>['getPgQueue']
 let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
+let getLiveSteps: ReturnType<typeof usePlayground>['getLiveSteps']
 
 function Probe() {
   const pg = usePlayground()
@@ -54,6 +55,7 @@ function Probe() {
   openPlayground = pg.openPlayground
   getPgQueue = pg.getPgQueue
   pgCancelQueued = pg.pgCancelQueued
+  getLiveSteps = pg.getLiveSteps
   return null
 }
 
@@ -142,6 +144,35 @@ describe('pgSend acceptance', () => {
     expect(getPgQueue('s1')).toHaveLength(1)
     await act(async () => {}) // settle the send + run the dispatcher effect
     expect(getPgQueue('s1')).toEqual([])
+  })
+
+  // The FIFO gap: when a turn ends, the synchronous busy ref clears at once but
+  // the queue head is dispatched by a passive effect. A send landing in that gap
+  // must go BEHIND the pending queue, not straight to the wire ahead of it.
+  it('keeps a send arriving at the idle transition behind the pending queue', async () => {
+    act(() => {
+      expect(pgSend('s1', 'a1', 'first')).toBe(true)
+    })
+    act(() => {
+      expect(pgSend('s1', 'a1', 'second')).toBe(true) // busy → queued
+    })
+    await act(async () => {
+      // Pump microtasks so the (mocked, failing) first send settles and clears
+      // the busy ref — the dispatcher effect cannot run until this act body
+      // returns, so the next send lands exactly in the race window.
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+      expect(pgSend('s1', 'a1', 'third')).toBe(true)
+    })
+    // Drain the dispatcher: each dispatched turn fails and frees the next.
+    await act(async () => {})
+    await act(async () => {})
+    expect(getPgQueue('s1')).toEqual([])
+    // '@you' transcript steps record wire order — FIFO means 'third' stays last
+    // ('s1' is not a synthetic pg_ session, so its steps land in the live tail).
+    const wireOrder = getLiveSteps('s1')
+      .filter((s) => s.who === '@you')
+      .map((s) => s.text)
+    expect(wireOrder).toEqual(['first', 'second', 'third'])
   })
 
   // openPlayground exists on the same context; touching it here documents that the
