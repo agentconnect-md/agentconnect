@@ -88,6 +88,11 @@ interface PlaygroundData {
    *  below its fetched history. Empty until you send. Synthetic 'pg_' sessions don't use
    *  this (their whole transcript lives in the session's own `steps`). */
   getLiveSteps: (id: string) => SessionStep[]
+  /** Participants whose reply lanes are STILL OPEN for this conversation —
+   *  drives per-agent typing attribution in multi-agent conversations (a
+   *  superseded regeneration keeps its author's lane open, so the indicator
+   *  names the agent actually working, not the primary). */
+  getBusyLaneAgentIds: (id: string) => string[]
   /** Retire only optimistic turns confirmed by authoritative transcript rows. */
   reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string) => void
 }
@@ -478,8 +483,28 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }
   const cursorKeyFor = (id: string, agentId?: string): string | undefined =>
     cursorKeyForLanes(streamCursors.current, id, agentId)
+  // REACTIVE lane membership (review fix): the cursor map is a ref, and a
+  // lane's removal (a peer's non-final done) may arrive with no other state
+  // change — reading the ref at render time would keep showing a finished
+  // agent as typing until someone else emits. Every cursor add/delete calls
+  // syncBusyLanes, which mirrors the membership into state only when it
+  // actually changed.
+  const [busyLaneAgents, setBusyLaneAgents] = useState<Record<string, string[]>>({})
+  const syncBusyLanes = useCallback((id: string) => {
+    setBusyLaneAgents((current) => {
+      const next = lanesOfLanes(streamCursors.current, id)
+        .map((key) => laneAgentId(key))
+        .filter((agentId): agentId is string => agentId !== undefined)
+        .sort()
+      const previous = current[id] ?? []
+      if (previous.length === next.length && previous.every((value, i) => value === next[i])) return current
+      return { ...current, [id]: next }
+    })
+  }, [])
+  const getBusyLaneAgentIds = useCallback((id: string): string[] => busyLaneAgents[id] ?? [], [busyLaneAgents])
   const dropLanes = (id: string): void => {
     for (const key of lanesOf(id)) streamCursors.current.delete(key)
+    syncBusyLanes(id)
   }
 
   const failStream = useCallback(
@@ -510,6 +535,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       if (!result.done) return
       reconnectAttempts.current.delete(id)
       streamCursors.current.delete(cursorKey)
+      syncBusyLanes(id)
       if (agentId && result.done.turnId) {
         const rec = finishedTurnLanes.current.get(id)
         if (rec && rec.turnId === result.done.turnId) rec.agents.add(agentId)
@@ -544,6 +570,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       ) {
         key = laneKey(id, output.agentId)
         streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(output.turnId))
+        syncBusyLanes(id)
       }
       const cursor = key ? streamCursors.current.get(key) : undefined
       if (!key || !cursor || !bindWebchatTurn(cursor, output.turnId)) return
@@ -561,6 +588,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       if (!key && admitsLane(done.agentId, done.turnId, pendingTurnIds.current.get(id), finishedFor(id, done.turnId))) {
         key = laneKey(id, done.agentId)
         streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(done.turnId))
+        syncBusyLanes(id)
       }
       const cursor = key ? streamCursors.current.get(key) : undefined
       if (!key || !cursor) return
@@ -738,6 +766,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 ) {
                   key = laneKey(id, ackAgentId)
                   streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(ackTurnId))
+                  syncBusyLanes(id)
                 }
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
@@ -762,7 +791,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 // A per-participant rejection: fail only that lane — the other
                 // targets of a multi-agent turn keep streaming.
                 const key = cursorKeyFor(id, m.ack.agentId)
-                if (key) streamCursors.current.delete(key)
+                if (key) {
+                  streamCursors.current.delete(key)
+                  syncBusyLanes(id)
+                }
                 const agentId = m.ack.agentId
                 const name = participantName(id, agentId)
                 pushStep(id, {
@@ -972,6 +1004,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       for (const target of targets) {
         streamCursors.current.set(laneKey(id, target), createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
       }
+      syncBusyLanes(id)
       if (conversationId) conversationIds.current.set(id, conversationId)
       reconnectAttempts.current.delete(id)
       // First send of a fresh conversation mints a real session on the daemon. The SSE
@@ -1124,6 +1157,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgSession,
       pgSessionList,
       getLiveSteps,
+      getBusyLaneAgentIds,
       reconcileLiveSteps
     }),
     [
@@ -1143,6 +1177,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgSession,
       pgSessionList,
       getLiveSteps,
+      getBusyLaneAgentIds,
       reconcileLiveSteps
     ]
   )
