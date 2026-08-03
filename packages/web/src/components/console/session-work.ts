@@ -40,11 +40,13 @@ export function workPanelOpen(override: boolean | undefined, streaming = false):
 
 /** Record the user's toggle of turn `ti`, as the state opposite to what they see now.
  *  `currentOpen` is the EFFECTIVE state on screen — a streaming turn shows open by
- *  default, so the first click must record "closed", not the inverse of the base. */
+ *  default, so the first click must record "closed", not the inverse of the base.
+ *  Required (no default): a fallback computed here couldn't know the streaming
+ *  state and would silently invert the wrong value. */
 export function toggleWorkPanel(
   prev: ReadonlyMap<number, boolean>,
   ti: number,
-  currentOpen = workPanelOpen(prev.get(ti))
+  currentOpen: boolean
 ): Map<number, boolean> {
   const next = new Map(prev)
   next.set(ti, !currentOpen)

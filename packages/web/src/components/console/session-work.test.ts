@@ -58,13 +58,14 @@ describe('work panel visibility', () => {
   })
 
   it('opens on click and collapses again on the next one', () => {
-    const shown = toggleWorkPanel(new Map(), 0)
+    const base = new Map<number, boolean>()
+    const shown = toggleWorkPanel(base, 0, workPanelOpen(base.get(0)))
     expect(workPanelOpen(shown.get(0))).toBe(true)
-    expect(workPanelOpen(toggleWorkPanel(shown, 0).get(0))).toBe(false)
+    expect(workPanelOpen(toggleWorkPanel(shown, 0, workPanelOpen(shown.get(0))).get(0))).toBe(false)
   })
 
   it('toggles only the clicked turn', () => {
-    const shown = toggleWorkPanel(new Map(), 3)
+    const shown = toggleWorkPanel(new Map(), 3, false)
     expect(workPanelOpen(shown.get(3))).toBe(true)
     expect(workPanelOpen(shown.get(4))).toBe(false)
   })
