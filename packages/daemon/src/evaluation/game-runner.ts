@@ -34,6 +34,7 @@ import type { EvaluationCapabilityProfile } from './events.js'
 import type {
   DaemonEvaluationEnvironment,
   DeliveryAdmission,
+  DeliveryHandle,
   EvaluationPlatformEvent,
   RefereeEvent
 } from './environment.js'
@@ -86,6 +87,13 @@ export interface CollaborationGameWorld {
   /** Effects recorded since the last drain, in `sequence` order. */
   drainOutboundEffects(): readonly RecordedOutboundEffect[]
   applyEffects(effects: readonly RecordedOutboundEffect[]): void
+  /** Optional live-ingress port (§8): the runner supplies an inject function so
+   *  the world can deliver peer fan-out the MOMENT an effect lands, while other
+   *  turns are still open — production timing, which the daemon's turn-final
+   *  context refresh depends on. */
+  attachLiveIngress?(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void
+  /** Handles for live-injected deliveries since the last drain. */
+  drainLiveHandles?(): DeliveryHandle[]
   /** §8.1 decision log: the wave's composition and each admission outcome. */
   noteWave(record: GameWaveRecord): void
   terminate(reason: string): void
@@ -196,6 +204,9 @@ export class CollaborationGameRunner {
     let steps = 0
     try {
       await beforeDeadline(deadlineMs, 'daemon startup', () => harness.start())
+      // Live ingress: peer fan-out enters the daemon as soon as an effect is
+      // delivered, not at the wave barrier (see CollaborationGameWorld).
+      world.attachLiveIngress?.((event) => harness.inject(event))
       // ── the §8 wave loop ──
       while (!world.isTerminal()) {
         if (steps >= maxSteps) {
@@ -225,6 +236,19 @@ export class CollaborationGameRunner {
         )
         const effects = world.drainOutboundEffects()
         world.applyEffects(effects)
+        // Drain the live-injected cascade: a delivered post can wake peers whose
+        // own posts wake further peers. Each generation is settled and applied
+        // before the loop asks the world for the next wave.
+        let cascade = world.drainLiveHandles?.() ?? []
+        let generations = 0
+        while (cascade.length > 0 && generations < maxSteps) {
+          generations += 1
+          await beforeDeadline(deadlineMs, `wave ${steps} cascade ${generations}`, () =>
+            Promise.all(cascade.map((handle) => handle.completion))
+          )
+          world.applyEffects(world.drainOutboundEffects())
+          cascade = world.drainLiveHandles?.() ?? []
+        }
         steps += 1
       }
       await beforeDeadline(deadlineMs, 'daemon idle wait', () =>

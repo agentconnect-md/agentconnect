@@ -89,14 +89,14 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(gameResult.metrics.collisions).toBeGreaterThan(0)
   }, 120_000)
 
-  it('peer-driven variant (§3.3): agents continue the count from EACH OTHER, the referee only starts and validates', async () => {
+  it('peer-driven variant (§3.3): peer posts drive every wave and the daemon absorbs them into open turns', async () => {
     const artifactDir = join(scratch(), 'peer-run')
     const result = await runSameRoomCounting({
       seed: 11,
       target: 6,
       artifactDir,
       variant: 'peer-driven',
-      timeoutMs: 90_000
+      timeoutMs: 120_000
     })
     expect(result.error).toBeUndefined()
     expect(result.status).toBe('passed')
@@ -116,24 +116,129 @@ describe('collaboration game runner — same-room counting with scripted hosts',
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
-    // The referee speaks exactly once (the start message); every subsequent
-    // wave's ingress is a PEER message relay.
+    // The referee speaks exactly once (the start message); every later room
+    // message that drives a turn is a PEER post relayed live.
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
     const relays = worldEvents.filter((event) => event.type === 'peer.relay')
     expect(relays.length).toBeGreaterThanOrEqual(6)
-    // Every accepted number after 1 was posted in response to peer ingress:
-    // waves after the first contain only relay message ids.
-    const waves = worldEvents.filter((event) => event.type === 'wave')
-    const relayMessageIds = new Set(relays.map((event) => event.messageId))
-    for (const wave of waves.slice(1)) {
-      for (const event of wave.platformEvents as { messageId: string }[]) {
-        expect(relayMessageIds.has(event.messageId)).toBe(true)
-      }
-      for (const admission of wave.admissions as { admitted: boolean }[]) {
-        expect(admission.admitted).toBe(true)
-      }
+    // Relays carry the ORIGINAL text and the peer's own platform identity.
+    for (const relay of relays) {
+      expect(String(relay.text)).toMatch(/^-?\d+$/)
+      expect(String(relay.senderId)).toMatch(/^U-AGENT[A-D]$/)
     }
-  }, 120_000)
+    // The accepted sequence is a clean 1..6 prefix.
+    const accepted = worldEvents.filter((event) => event.type === 'count.candidate' && event.accepted)
+    expect(accepted.map((event) => event.value)).toEqual([1, 2, 3, 4, 5, 6])
+    // Production timing proof: peer posts entered the daemon while other turns
+    // were open, so the daemon's own context fences absorbed them BEFORE a
+    // stale number could be posted — either by coalescing the peer message into
+    // a turn that had not yet started, or by regenerating one that had (the
+    // dedicated test below pins the regeneration path deterministically).
+    const events = readFileSync(result.paths.events, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const absorbed = events.filter(
+      (event) =>
+        event.type === 'turn.regeneration_started' ||
+        event.type === 'turn.context_changed' ||
+        (event.type === 'turn.cancelled' && event.data?.reason === 'coalesced_into_turn')
+    )
+    expect(absorbed.length).toBeGreaterThan(0)
+    // Collisions are expected here: the scripted hosts answer instantly, so
+    // several members legitimately race the same number. What must hold is that
+    // the referee accepted a clean prefix anyway.
+    expect(result.verdict.metrics.collisions).toBeGreaterThan(0)
+  }, 180_000)
+
+  it('a slow in-flight turn REGENERATES when a peer post lands mid-turn, and posts the NEXT number', async () => {
+    // Production timing, deterministically: agent-a answers instantly, agent-b
+    // is still working when agent-a's post is relayed. agent-b had decided on
+    // the same number; the daemon's turn-final context refresh must invalidate
+    // that staged answer and re-prompt it with the peer message included.
+    const { CollaborationGameRunner } = await import('../../packages/daemon/src/evaluation/index.js')
+    const { compileTopology } = await import('../games/topology.js')
+    const { ArenaWorld } = await import('../games/world.js')
+    const { CountingGame } = await import('../games/counting.js')
+    const { countingManifest, scaffoldSubject } = await import('../games/engine.js')
+    const topology = compileTopology(countingManifest({ seed: 21, agents: ['agent-a', 'agent-b'] }))
+    const slowAgentId = topology.agents.find((agent) => agent.alias === 'agent-b')!.agentId
+    const world = new ArenaWorld(topology)
+    const game = new CountingGame({ world, roomAlias: 'counting-room', target: 2, variant: 'peer-driven' })
+    const subject = scaffoldSubject(topology)
+    const posts: { agent: string; text: string; generation: number }[] = []
+    try {
+      const runner = new CollaborationGameRunner({
+        root: subject.root,
+        world: game,
+        artifactDir: join(scratch(), 'regen'),
+        game: 'same-room-counting',
+        seed: 21,
+        mode: 'deterministic',
+        subjectKind: 'scripted',
+        hostFactory: ((agent: { id: string }, onUpdate: (sessionId: string, update: unknown) => void) => {
+          let generation = 0
+          return {
+            start: async () => {},
+            newSession: async () => `regen-${agent.id.slice(0, 8)}`,
+            hasSession: () => true,
+            modelOptions: () => ({ current: 'regen', models: ['regen'] }),
+            prompt: async (sessionId: string, blocks: { text?: string }[]) => {
+              const text = blocks.map((block) => block.text ?? '').join('\n')
+              // agent-a is slow enough that agent-b's turn is already RUNNING
+              // when its post lands; agent-b is slower still, so the peer post
+              // arrives mid-turn and must invalidate its staged answer.
+              if (agent.id !== slowAgentId && generation === 0) {
+                await new Promise((resolve) => setTimeout(resolve, 300))
+              }
+              if (agent.id === slowAgentId && generation === 0) {
+                await new Promise((resolve) => setTimeout(resolve, 900))
+              }
+              const posted: number[] = []
+              for (const line of text.matchAll(/\[(U-[A-Z0-9-]+)\]\s*(-?\d+)\s*$/gm)) posted.push(Number(line[2]))
+              const next = Math.max(0, ...posted) + 1
+              posts.push({ agent: agent.id === slowAgentId ? 'agent-b' : 'agent-a', text: String(next), generation })
+              generation += 1
+              onUpdate(sessionId, {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: String(next) }
+              })
+              return { stopReason: 'end_turn' }
+            },
+            cancel: async () => {},
+            stop: async () => {}
+          }
+        }) as never,
+        capabilityProfile: { memory: 'off', collaboration: 'configured' },
+        limits: { maxSteps: 12, timeoutMs: 120_000 },
+        agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
+      })
+      const result = await runner.run()
+      expect(result.status).toBe('passed')
+      const events = readFileSync(result.paths.events, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+      // The fence fired: the staged stale answer was discarded and re-prompted.
+      const regenerations = events.filter((event) => event.type === 'turn.regeneration_started')
+      expect(regenerations.length).toBeGreaterThan(0)
+      expect(events.some((event) => event.type === 'turn.context_changed')).toBe(true)
+      // The slow agent decided "1" on generation 0 and "2" after regenerating.
+      const slowAttempts = posts.filter((post) => post.agent === 'agent-b')
+      expect(slowAttempts[0]).toMatchObject({ text: '1', generation: 0 })
+      expect(slowAttempts.some((post) => post.generation > 0 && post.text === '2')).toBe(true)
+      // And the stale "1" never reached the room a second time.
+      const worldEvents = readFileSync(result.paths.worldEvents, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+      const delivered = worldEvents.filter((event) => event.type === 'outbound.delivered' && event.kind === 'reply')
+      expect(delivered.filter((event) => event.text === '1')).toHaveLength(1)
+      expect(result.verdict.outcome).toMatchObject({ completed: true, acceptedPrefix: 2 })
+    } finally {
+      subject.cleanup()
+    }
+  }, 180_000)
 
   it('classifies a game stalled by failing turns as infra_error, never a passed trial (§9.1)', async () => {
     // A subject whose host cannot complete any turn (e.g. an unreachable model)

@@ -10,6 +10,16 @@ function fixture(target = 3, variant: CountingVariant = 'referee-announced') {
   const topology = compileTopology(countingManifest({ seed: 9, agents: AGENTS }))
   const world = new ArenaWorld(topology)
   const game = new CountingGame({ world, roomAlias: 'counting-room', target, variant })
+  // Peer relays are injected LIVE from the §7.2 sink (production timing), so
+  // the fixture captures them through the runner's live-ingress port.
+  const injected: { integrationId: string; payload: Record<string, any> }[] = []
+  game.attachLiveIngress((event) => {
+    injected.push(event as never)
+    return {
+      admission: Promise.resolve({ admitted: false, reason: 'gated' }),
+      completion: Promise.resolve({ status: 'not_admitted' })
+    } as never
+  })
   const room = topology.rooms[0]!
   const integrationOf = (alias: string) => topology.integrations.find((i) => i.agentAlias === alias)!
   const reply = async (alias: string, text: string) => {
@@ -24,7 +34,7 @@ function fixture(target = 3, variant: CountingVariant = 'referee-announced') {
       text
     })
   }
-  return { topology, world, game, room, reply, integrationOf }
+  return { topology, world, game, room, reply, integrationOf, injected }
 }
 
 describe('same-room counting referee (§10.1)', () => {
@@ -120,44 +130,46 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     expect(start.platformEvents[0]!.payload.channel).toBe(room.channel)
   })
 
-  it('relays a delivered reply VERBATIM to the other members and never announces acceptances', async () => {
-    const { game, reply, room, integrationOf, world } = fixture(3, 'peer-driven')
+  it("relays a delivered reply LIVE, with the original text and the peer's own sender identity", async () => {
+    const { game, reply, room, integrationOf, world, injected } = fixture(3, 'peer-driven')
     game.nextDeliveries()
+    // The relay fires from the §7.2 sink itself — before any wave barrier and
+    // before applyEffects, so a concurrent turn can still observe it.
     await reply('agent-a', '1')
-    game.applyEffects(game.drainOutboundEffects())
-    const relay = game.nextDeliveries()
-    // Fan-out to the OTHER three members, same thread, one shared message id.
-    expect(relay.platformEvents).toHaveLength(3)
-    expect(new Set(relay.platformEvents.map((event) => event.payload.messageId)).size).toBe(1)
-    expect(relay.platformEvents.map((event) => event.integrationId)).not.toContain(
-      integrationOf('agent-a').integrationId
-    )
-    for (const event of relay.platformEvents) {
+    expect(injected).toHaveLength(3)
+    expect(new Set(injected.map((event) => event.payload.messageId)).size).toBe(1)
+    expect(injected.map((event) => event.integrationId)).not.toContain(integrationOf('agent-a').integrationId)
+    for (const event of injected) {
       expect(event.payload.thread).toBe(room.thread)
-      expect(event.payload.text).toBe('agent-a posted: 1')
-      // The relay persona is not the game referee and adds no judgment.
-      expect(event.payload.text).not.toContain('Accepted')
-      expect(event.payload.text).not.toContain('Next expected number')
+      // ORIGINAL text — no synthetic wrapper — from the peer's own platform user.
+      expect(event.payload.text).toBe('1')
+      expect(event.payload.sender.id).toBe('U-AGENTA')
+      expect(event.payload.sender.isBot).toBeFalsy()
     }
-    // The world log distinguishes peer relays from referee events; the only
-    // referee room event is the start message.
+    // The provider thread history carries the post under its real bot identity
+    // with the stable author id — this is what the turn-final snapshot reads.
+    const history = world.threadHistory(room.channel, room.thread)
+    const post = history.find((message) => message.text === '1')
+    expect(post).toMatchObject({ isBot: true, agentAuthorId: integrationOf('agent-a').agentId })
+    game.applyEffects(game.drainOutboundEffects())
     const events = world.events()
     expect(events.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
     expect(events.filter((event) => event.type === 'peer.relay')).toHaveLength(1)
+    // Relays never come back through the wave barrier.
+    expect(game.nextDeliveries().platformEvents).toHaveLength(0)
   })
 
   it('relays duplicates and wrong numbers (they are real room messages) but not digit-free chatter', async () => {
-    const { game, reply } = fixture(3, 'peer-driven')
+    const { game, reply, injected } = fixture(3, 'peer-driven')
     game.nextDeliveries()
     await reply('agent-a', '1')
     await reply('agent-b', '1') // duplicate race — still a real room message
     await reply('agent-c', '5') // wrong number — still a real room message
     await reply('agent-d', 'waiting.') // chatter — recorded, never relayed
-    game.applyEffects(game.drainOutboundEffects())
-    const relay = game.nextDeliveries()
     // Three digit-bearing replies × three other members each.
-    expect(relay.platformEvents).toHaveLength(9)
-    expect(relay.platformEvents.every((event) => !event.payload.text.includes('waiting.'))).toBe(true)
+    expect(injected).toHaveLength(9)
+    expect(injected.every((event) => !String(event.payload.text).includes('waiting.'))).toBe(true)
+    game.applyEffects(game.drainOutboundEffects())
     const verdict = game.verdict()
     expect(verdict.outcome).toMatchObject({ acceptedPrefix: 1, variant: 'peer-driven' })
     expect(verdict.metrics.noiseReplies).toBe(1)
@@ -168,13 +180,11 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     game.nextDeliveries()
     await reply('agent-a', '1')
     game.applyEffects(game.drainOutboundEffects())
-    game.nextDeliveries()
     // A hidden rejection would diverge the official count from what the room
     // can see — with a silent referee the consecutive score COUNTS, and the
     // fairness miss is a metric, never a secret rejection.
     await reply('agent-a', '2')
     game.applyEffects(game.drainOutboundEffects())
-    game.nextDeliveries()
     await reply('agent-c', '3')
     game.applyEffects(game.drainOutboundEffects())
     expect(game.isTerminal()).toBe(true)

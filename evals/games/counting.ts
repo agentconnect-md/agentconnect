@@ -17,15 +17,23 @@
  *   the referee goes silent after the start message — agents continue the
  *   count from EACH OTHER's messages; the referee only observes and validates.
  *
- * Product-fidelity note for the peer relay: in AgentConnect, a managed agent
- * bot's platform post is deliberately NEVER an activation path (ingress drops
- * managed-bot senders before routing — loop protection; trusted A2A wakes go
- * through `messageAgent`). Production Slack does fan the event out to the other
- * integrations, and the daemon then suppresses it. The Arena therefore relays
- * peer speech through §4.1's sanctioned "other-agent public speech relay"
- * surface — the world's relay persona carries the author attribution and the
- * verbatim message content, and the relay still traverses the full real
- * normalization → dedup → routing → gating path.
+ * Relay TIMING is production timing: the fan-out fires SYNCHRONOUSLY from the
+ * §7.2 sink the moment a post is delivered — while the other agents' turns are
+ * still open — never batched to the wave barrier. That is what lets the
+ * daemon's own `features.turnFinalContextRefresh` fence work: a concurrent
+ * turn's final refresh pulls the thread snapshot (`getThreadReplies` on the
+ * virtual connection) plus the observed rows the injected ingress recorded,
+ * sees a peer message it has not represented, and REGENERATES instead of
+ * posting a now-stale number.
+ *
+ * Product-fidelity note on the relay sender: in AgentConnect a managed agent
+ * bot's own platform post is deliberately never an activation path (ingress
+ * drops managed-bot senders before routing — loop protection; trusted A2A wakes
+ * go through `messageAgent`), so the ACTIVATION copy is delivered from each
+ * agent's distinct platform user identity rather than its bot identity. The
+ * payload is the ORIGINAL message text — no synthetic wrapper — and the
+ * provider thread history additionally carries the post under its real bot
+ * identity with `agentAuthorId`, which is what the turn-final snapshot reads.
  *
  * Rules: one accepted occurrence of each number; no skips; no agent scores
  * twice consecutively; no predefined order; waiting is legal.
@@ -33,6 +41,7 @@
 import type {
   CollaborationGameWorld,
   DaemonEvaluationEnvironment,
+  DeliveryHandle,
   EvaluationPlatformEvent,
   GameVerdict,
   GameWave,
@@ -75,6 +84,8 @@ export class CountingGame implements CollaborationGameWorld {
   private started = false
   private terminalReason: string | undefined
   private readonly pendingWaves: GameWave[] = []
+  private liveIngress?: (event: EvaluationPlatformEvent) => DeliveryHandle
+  private readonly liveHandles: DeliveryHandle[] = []
 
   private readonly variant: CountingVariant
 
@@ -95,6 +106,12 @@ export class CountingGame implements CollaborationGameWorld {
     // (scoped by transport) must admit each copy exactly once.
     const messageId = this.world.mintMessageId(this.room.platform)
     this.world.registerRoomMessage(this.room.channel, messageId)
+    this.world.recordThreadMessage(this.room.channel, this.room.thread, {
+      ts: messageId,
+      text,
+      sender: this.refereeUserId,
+      isBot: false
+    })
     const platformEvents: EvaluationPlatformEvent[] = this.room.memberIntegrationIds.map((integrationId) => ({
       integrationId,
       payload: {
@@ -118,43 +135,67 @@ export class CountingGame implements CollaborationGameWorld {
   }
 
   /**
-   * §3.3 peer relay: one delivered agent reply becomes ONE room message fanned
-   * to every OTHER member integration (production suppresses the author's own
-   * bot echo). The relay carries the author attribution and the VERBATIM
-   * message content — the referee adds no judgment and no expected number.
+   * §3.3 peer relay, fired synchronously from the §7.2 sink on delivery: one
+   * delivered agent post becomes ONE room message fanned to every OTHER member
+   * integration (production suppresses the author's own bot echo), carrying the
+   * ORIGINAL text and the posting agent's own platform user identity.
    */
-  private peerRelayWave(replies: readonly RecordedOutboundEffect[]): GameWave | undefined {
-    const platformEvents: EvaluationPlatformEvent[] = []
-    for (const effect of replies) {
-      const fromAlias = this.world.aliasOfAgent(effect.agentId!)
-      const text = `${fromAlias} posted: ${effect.text}`
-      const messageId = this.world.mintMessageId(this.room.platform)
-      this.world.registerRoomMessage(this.room.channel, messageId)
-      for (const integrationId of this.room.memberIntegrationIds) {
-        if (integrationId === effect.integrationId) continue
-        platformEvents.push({
-          integrationId,
-          payload: {
-            channel: this.room.channel,
-            thread: this.room.thread,
-            messageId,
-            text,
-            sender: { id: 'W-PEER-RELAY', isBot: false }
-          }
-        })
-      }
-      this.world.appendEvent({
-        type: 'peer.relay',
-        origin: 'agent_effect',
-        roomId: this.room.alias,
-        fromAgentId: effect.agentId,
-        fromAlias,
-        sourceSequence: effect.sequence,
-        messageId,
-        text
+  private relayPeerPost(effect: RecordedOutboundEffect): void {
+    if (this.variant !== 'peer-driven' || this.terminalReason !== undefined) return
+    if (effect.kind !== 'reply' || effect.status !== 'delivered') return
+    if (effect.channel !== this.room.channel || effect.agentId === undefined) return
+    // Digit-free chatter is a real room message but carries no count signal;
+    // relaying it would re-prompt the room without advancing anything (a
+    // waiting production agent posts nothing at all).
+    if (!/-?\d/.test(effect.text)) return
+    const fromAlias = this.world.aliasOfAgent(effect.agentId)
+    const messageId = this.world.mintMessageId(this.room.platform)
+    this.world.registerRoomMessage(this.room.channel, messageId)
+    const senderId = this.peerSenderId(fromAlias)
+    for (const integrationId of this.room.memberIntegrationIds) {
+      if (integrationId === effect.integrationId) continue
+      const handle = this.liveIngress?.({
+        integrationId,
+        payload: {
+          channel: this.room.channel,
+          thread: this.room.thread,
+          messageId,
+          text: effect.text,
+          sender: { id: senderId }
+        }
       })
+      if (handle) this.liveHandles.push(handle)
     }
-    return platformEvents.length > 0 ? { platformEvents, refereeEvents: [] } : undefined
+    this.world.appendEvent({
+      type: 'peer.relay',
+      origin: 'agent_effect',
+      roomId: this.room.alias,
+      fromAgentId: effect.agentId,
+      fromAlias,
+      senderId,
+      sourceSequence: effect.sequence,
+      messageId,
+      text: effect.text
+    })
+  }
+
+  /** Stable per-agent platform user identity for relayed peer speech. */
+  private peerSenderId(alias: string): string {
+    return `U-${alias.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()}`
+  }
+
+  /** §8: the runner supplies live ingress so relays enter the daemon the moment
+   *  a post lands, not at the wave barrier. */
+  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
+    this.liveIngress = inject
+    this.world.onDelivered((effect) => this.relayPeerPost(effect))
+  }
+
+  /** Handles for relays injected mid-wave; the runner awaits and drains them. */
+  drainLiveHandles(): DeliveryHandle[] {
+    const handles = [...this.liveHandles]
+    this.liveHandles.length = 0
+    return handles
   }
 
   isTerminal(): boolean {
@@ -249,18 +290,10 @@ export class CountingGame implements CollaborationGameWorld {
         )
       }
     }
-    // Peer-driven: delivered COUNT contributions (digit-bearing replies — valid
-    // candidates, duplicates, and wrong numbers alike) fan out to the other
-    // members like production Slack would; the next wave's admissions are
-    // driven by PEER messages and the referee never speaks again. Digit-free
-    // chatter ("waiting") stays recorded in the effect stream but is not
-    // relayed: re-prompting the room on pure chatter would ping-pong forever
-    // without advancing the count, and a waiting production agent's silence
-    // (an empty turn posts nothing) generates no fan-out either.
-    if (this.variant === 'peer-driven' && this.terminalReason === undefined) {
-      const relay = this.peerRelayWave(deliveredReplies.filter((effect) => /-?\d/.test(effect.text)))
-      if (relay) this.pendingWaves.push(relay)
-    }
+    // Peer-driven relays are NOT queued here: each was already injected
+    // synchronously on delivery (relayPeerPost) so concurrent turns could
+    // observe it at their turn-final refresh and regenerate.
+    void deliveredReplies
   }
 
   private recordCandidate(effect: RecordedOutboundEffect, value: number, accepted: boolean, reason?: string): void {
