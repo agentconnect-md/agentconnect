@@ -2231,6 +2231,29 @@ export async function fetchWorkspaceFiles(
   )
 }
 
+// ── local skill inventory ───────────────────────────────────────────────────
+export type LocalSkillOrigin = 'dream-accepted' | 'managed' | 'git-source' | 'repo'
+
+// One skill the agent's workspace can load (GET /agents/:id/skills/local).
+export interface LocalSkillDto {
+  name: string
+  description: string | null
+  origin: LocalSkillOrigin
+  path: string
+}
+
+// The agent's workspace skill inventory. `materialized` is false when the
+// workspace has not been prepared yet, so an empty list then means "unknown",
+// not "no skills". Proxied live from the owning daemon; 503 when offline.
+export interface LocalSkillsDto {
+  materialized: boolean
+  skills: LocalSkillDto[]
+}
+
+export async function fetchAgentLocalSkills(agentId: string): Promise<LocalSkillsDto> {
+  return apiGet<LocalSkillsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/skills/local`)
+}
+
 // One slice of a workspace file (GET /agents/:id/workspace/file), proxied live
 // from the owning daemon like the listing — file bytes never touch the CP store.
 // 503 when the daemon is offline / the agent is unplaced.

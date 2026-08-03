@@ -110,6 +110,7 @@ import {
   DreamSkillReadReq,
   DreamSkillContent
 } from './frames/memory.js'
+import { LocalSkillsReq, LocalSkillsList } from './frames/skill.js'
 import {
   KnowledgeSearchReq,
   KnowledgeSearchOk,
@@ -327,6 +328,8 @@ export const FRAME_SCHEMAS = {
   'memory/dream/skill/accept/ok': DreamState,
   'memory/dream/skill/dismiss': DreamSkillReviewReq,
   'memory/dream/skill/dismiss/ok': DreamState,
+  'skills/local': LocalSkillsReq,
+  'skills/local/list': LocalSkillsList,
   // ── organization knowledge + managed skills ──
   'knowledge/search': KnowledgeSearchReq,
   'knowledge/search/ok': KnowledgeSearchOk,
@@ -524,6 +527,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/dream/skill/accept/ok', FRAME_SCHEMAS['memory/dream/skill/accept/ok']),
   frame('memory/dream/skill/dismiss', FRAME_SCHEMAS['memory/dream/skill/dismiss']),
   frame('memory/dream/skill/dismiss/ok', FRAME_SCHEMAS['memory/dream/skill/dismiss/ok']),
+  frame('skills/local', FRAME_SCHEMAS['skills/local']),
+  frame('skills/local/list', FRAME_SCHEMAS['skills/local/list']),
   frame('knowledge/search', FRAME_SCHEMAS['knowledge/search']),
   frame('knowledge/search/ok', FRAME_SCHEMAS['knowledge/search/ok']),
   frame('knowledge/suggestions/sync', FRAME_SCHEMAS['knowledge/suggestions/sync']),
