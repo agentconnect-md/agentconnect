@@ -93,7 +93,10 @@ interface PlaygroundData {
     agentId: string,
     text?: string,
     conversationId?: string,
-    participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+    participants?: Array<{ agentId: string; name: string; primary?: boolean }>,
+    /** Overrides the staged composer image — for callers (Home) that mint the
+     *  session id in the same tick, before setPgImage state could land. */
+    image?: SessionImage
   ) => boolean
   /** Messages queued while a turn streams, oldest first. */
   getPgQueue: (id: string) => QueuedTurn[]
@@ -1130,10 +1133,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       agentForId: string,
       textArg?: string,
       conversationId?: string,
-      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
+      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
+      imageArg?: SessionImage
     ) => {
       const text = String(textArg ?? pgDrafts.current[id] ?? '').trim()
-      const image = pgImageBy[id]
+      const image = imageArg ?? pgImageBy[id]
       if (!text && !image) return false
       setPgInput(id, '')
       setPgImage(id)

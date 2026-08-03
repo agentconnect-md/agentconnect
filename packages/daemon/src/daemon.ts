@@ -60,7 +60,7 @@ import { recallQueryFromBlocks } from './agents/memory-recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
-import { attachmentMention } from './session/attachment-block.js'
+import { attachmentMention, transcriptImageAttachments } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import { isValidatedRemoteMcpRuntime } from './mcp/remote-mcp-runtimes.js'
@@ -5754,6 +5754,12 @@ export class Daemon {
     // SessionManager.handle dedups in place (same canonical ts, sender, text).
     if (post && this.cfg.features.turnFinalContextRefresh) {
       const observedMention = attachmentMention(msg.attachments)
+      // The bounded inline image must ride the ADMISSION write: it wins the slot,
+      // and SessionManager's later identical append dedups via INSERT OR IGNORE —
+      // an attachment-less row here would pin attachmentsJson to NULL, so the
+      // session reader could neither strip the `[attached: …]` suffix nor hand
+      // the console back the image.
+      const observedAttachments = transcriptImageAttachments(msg.attachments)
       const observedTs = this.appendWebchatTextRow(
         transcriptChannelKey(chatId, undefined),
         `webchat:${chatId}`,
@@ -5766,7 +5772,8 @@ export class Daemon {
           // same-text post from another tab would reuse this row instead of
           // bumping (§6).
           postId: post.postId,
-          text: observedMention ? `${text}\n${observedMention}`.trim() : text
+          text: observedMention ? `${text}\n${observedMention}`.trim() : text,
+          ...(observedAttachments.length ? { attachments: observedAttachments } : {})
         }
       )
       // The slot may have been collision-bumped (a self-authored row can occupy
