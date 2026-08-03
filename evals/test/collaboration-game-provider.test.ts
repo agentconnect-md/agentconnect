@@ -168,10 +168,38 @@ describe('collaboration game Promptfoo provider (§12)', () => {
     const notJson = await provider.callApi('count please')
     expect(notJson.metadata).toMatchObject({ status: 'invalid_case' })
     const badScenario = await provider.callApi(
-      JSON.stringify({ kind: 'game', id: 'x', game: 'counting', scenario: 'cross-room' })
+      JSON.stringify({ kind: 'game', id: 'x', game: 'counting', scenario: 'werewolf-room' })
     )
     expect(badScenario.metadata).toMatchObject({ status: 'invalid_case' })
     expect(badScenario.error).toContain('unsupported counting scenario')
+  })
+
+  it('dispatches cross-room cases to the cross-room engine with the fixed §10.2 topology', async () => {
+    const runCrossRoomGame = vi.fn(async (_options: { seed?: number }) => fakeResult())
+    const runGame = vi.fn(async (_options: Parameters<typeof runSameRoomCounting>[0]) => fakeResult())
+    const provider = new CollaborationGameProvider(
+      { config: { artifactRoot: scratch() } },
+      { runGame, runCrossRoomGame }
+    )
+    const response = await provider.callApi(
+      JSON.stringify({
+        kind: 'game',
+        id: 'relay',
+        game: 'counting',
+        scenario: 'cross-room',
+        seed: 9,
+        target: 12,
+        boundary: 6
+      })
+    )
+    expect(response.error).toBeUndefined()
+    expect(runGame).not.toHaveBeenCalled()
+    expect(runCrossRoomGame).toHaveBeenCalledOnce()
+    expect(runCrossRoomGame.mock.calls[0]![0]).toMatchObject({ seed: 9, target: 12, boundary: 6 })
+    const withAgents = await provider.callApi(
+      JSON.stringify({ kind: 'game', id: 'relay', game: 'counting', scenario: 'cross-room', agentIds: ['x', 'y'] })
+    )
+    expect(withAgents.error).toContain('fixed §10.2 topology')
   })
 
   it('parses defaults per the §12 case shape', () => {

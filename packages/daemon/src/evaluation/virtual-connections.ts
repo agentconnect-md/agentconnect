@@ -317,6 +317,36 @@ export class VirtualDiscordConnection {
     return result.messageId
   }
 
+  /** In-place edits are chrome (see {@link VirtualSlackConnection.updateMessage}). */
+  async updateMessage(channel: string, _id: string, text: string): Promise<void> {
+    await this.world.recordOutbound({
+      kind: 'chrome',
+      platform: 'discord',
+      integrationId: this.integrationId,
+      channel,
+      text
+    })
+  }
+
+  /** Progress/plan/status chrome — recorded as chrome, best-effort. */
+  async postChrome(channel: string, text: string, options?: { threadTs?: string }): Promise<string | undefined> {
+    const result = await this.world.recordOutbound({
+      kind: 'chrome',
+      platform: 'discord',
+      integrationId: this.integrationId,
+      channel,
+      ...(options?.threadTs !== undefined ? { thread: options.threadTs } : {}),
+      text
+    })
+    return result.status === 'delivered' ? result.messageId : undefined
+  }
+
+  async deleteMessage(_channel: string, _id: string): Promise<boolean> {
+    return true
+  }
+
+  async sendChatAction(_channel: string): Promise<void> {}
+
   async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
     const info = this.world.channelInfo(channel)
     if (!info) throw new Error('channel_not_found')

@@ -11,7 +11,7 @@
  */
 import type { ApiProvider, CallApiContextParams, CallApiOptionsParams, ProviderResponse } from 'promptfoo'
 import { resolve, sep } from 'node:path'
-import { runSameRoomCounting } from '../games/engine.js'
+import { runCrossRoomCounting, runSameRoomCounting } from '../games/engine.js'
 import type { GameSubjectSpec } from '../games/subject.js'
 import {
   environmentSecrets,
@@ -24,9 +24,13 @@ export interface GameCase {
   kind: 'game'
   id: string
   game: 'counting'
-  scenario: 'same-room'
+  scenario: 'same-room' | 'cross-room'
   seed: number
   target: number
+  /** cross-room only: last number counted in the origin room. */
+  boundary?: number
+  /** same-room only: room member aliases. The cross-room topology is fixed
+   *  per §10.2 (two rooms bridged by one identity). */
   agentIds: string[]
   timeoutMs?: number
 }
@@ -39,7 +43,8 @@ export function parseGameCase(raw: unknown): GameCase {
   if (record.kind !== 'game') throw new Error('game case requires kind: "game"')
   if (typeof record.id !== 'string' || record.id.length === 0) throw new Error('game case requires a non-empty id')
   if (record.game !== 'counting') throw new Error(`unsupported game: ${String(record.game)}`)
-  if ((record.scenario ?? 'same-room') !== 'same-room') {
+  const scenario = record.scenario ?? 'same-room'
+  if (scenario !== 'same-room' && scenario !== 'cross-room') {
     throw new Error(`unsupported counting scenario: ${String(record.scenario)}`)
   }
   const seed = record.seed ?? 42
@@ -49,7 +54,20 @@ export function parseGameCase(raw: unknown): GameCase {
   if (typeof target !== 'number' || !Number.isInteger(target) || target < 1 || target > 50) {
     throw new Error('target must be an integer in [1, 50]')
   }
+  const boundary = record.boundary
+  if (scenario === 'same-room' && boundary !== undefined) {
+    throw new Error('boundary is a cross-room field')
+  }
+  if (
+    boundary !== undefined &&
+    (typeof boundary !== 'number' || !Number.isInteger(boundary) || boundary < 1 || boundary >= target)
+  ) {
+    throw new Error('boundary must be an integer inside the target range')
+  }
   const agentIds = record.agentIds ?? ['agent-a', 'agent-b', 'agent-c', 'agent-d']
+  if (scenario === 'cross-room' && record.agentIds !== undefined) {
+    throw new Error('cross-room counting uses the fixed §10.2 topology — omit agentIds')
+  }
   if (
     !Array.isArray(agentIds) ||
     agentIds.length < 2 ||
@@ -69,9 +87,10 @@ export function parseGameCase(raw: unknown): GameCase {
     kind: 'game',
     id: record.id,
     game: 'counting',
-    scenario: 'same-room',
+    scenario,
     seed,
     target,
+    ...(boundary !== undefined ? { boundary } : {}),
     agentIds: agentIds as string[],
     ...(timeoutMs !== undefined ? { timeoutMs } : {})
   }
@@ -97,8 +116,9 @@ interface CollaborationGameProviderOptions {
 }
 
 export interface CollaborationGameProviderDependencies {
-  /** Test seam; production runs the real engine. */
+  /** Test seams; production runs the real engine. */
   runGame?: (options: Parameters<typeof runSameRoomCounting>[0]) => Promise<CollaborationGameResult>
+  runCrossRoomGame?: (options: Parameters<typeof runCrossRoomCounting>[0]) => Promise<CollaborationGameResult>
 }
 
 function parseCase(prompt: string): GameCase {
@@ -186,15 +206,24 @@ export default class CollaborationGameProvider implements ApiProvider {
       if (artifactDir !== artifactBase && !artifactDir.startsWith(`${artifactBase}${sep}`)) {
         throw new Error('collaboration game artifact directory escaped the configured artifact root')
       }
-      const run = this.dependencies.runGame ?? runSameRoomCounting
-      const result = await run({
-        seed: gameCase.seed,
-        target: gameCase.target,
-        agents: gameCase.agentIds,
-        artifactDir,
-        subject,
-        ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
-      })
+      const result =
+        gameCase.scenario === 'cross-room'
+          ? await (this.dependencies.runCrossRoomGame ?? runCrossRoomCounting)({
+              seed: gameCase.seed,
+              target: gameCase.target,
+              ...(gameCase.boundary !== undefined ? { boundary: gameCase.boundary } : {}),
+              artifactDir,
+              subject,
+              ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
+            })
+          : await (this.dependencies.runGame ?? runSameRoomCounting)({
+              seed: gameCase.seed,
+              target: gameCase.target,
+              agents: gameCase.agentIds,
+              artifactDir,
+              subject,
+              ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
+            })
       const metadata = {
         schemaVersion: 'agentconnect.promptfoo/v1',
         caseId: gameCase.id,

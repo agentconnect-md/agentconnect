@@ -25,6 +25,26 @@
       value: file://assertions/game-result.ts
       metric: game
 
+- description: Cross-room counting relay · bridge identity · real sendMessage handoff
+  metadata:
+    game: counting
+    scenario: cross-room
+  vars:
+    case: |
+      {
+        "kind": "game",
+        "id": "counting-cross-room-v1",
+        "game": "counting",
+        "scenario": "cross-room",
+        "seed": 42,
+        "target": 12,
+        "boundary": 6
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
 - description: Same-room counting · alternate seed
   metadata:
     game: counting
