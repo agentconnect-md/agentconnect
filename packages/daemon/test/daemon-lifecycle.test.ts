@@ -115,7 +115,7 @@ function makeRoutable(daemon: Daemon) {
     {
       id: 'int-a',
       platform: 'slack',
-      slack: { botToken: 'b', appToken: 'p', allowedUserIds: [], bindRules: [{ match: { kind: 'dm' } }] }
+      slack: { botToken: 'b', appToken: 'p', bindRules: [{ match: { kind: 'dm' } }] }
     }
   ]
   const conn = {

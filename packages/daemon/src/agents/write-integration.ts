@@ -30,7 +30,6 @@ function toIntegration(spec: IntegrationSpec): Integration {
       platform: 'telegram',
       telegram: {
         botToken: spec.telegram.botToken,
-        allowedUserIds: spec.telegram.allowedUserIds,
         bindRules: spec.telegram.bindRules,
         mutedChannels: spec.telegram.mutedChannels,
         gated: spec.telegram.gated
@@ -45,7 +44,6 @@ function toIntegration(spec: IntegrationSpec): Integration {
       discord: {
         botToken: spec.discord.botToken,
         ...(spec.discord.applicationId ? { applicationId: spec.discord.applicationId } : {}),
-        allowedUserIds: spec.discord.allowedUserIds,
         bindRules: spec.discord.bindRules,
         mutedChannels: spec.discord.mutedChannels,
         gated: spec.discord.gated
@@ -63,7 +61,6 @@ function toIntegration(spec: IntegrationSpec): Integration {
         appSecret: spec.feishu.appSecret,
         ...(spec.feishu.botOpenId ? { botOpenId: spec.feishu.botOpenId } : {}),
         region: spec.feishu.region,
-        allowedUserIds: spec.feishu.allowedUserIds,
         bindRules: spec.feishu.bindRules,
         mutedChannels: spec.feishu.mutedChannels,
         gated: spec.feishu.gated
@@ -84,7 +81,6 @@ function toIntegration(spec: IntegrationSpec): Integration {
       ...(spec.slack.appToken ? { appToken: spec.slack.appToken } : {}),
       ...(spec.slack.appId ? { appId: spec.slack.appId } : {}),
       ...(spec.slack.botUserId ? { botUserId: spec.slack.botUserId } : {}),
-      allowedUserIds: spec.slack.allowedUserIds,
       bindRules: spec.slack.bindRules,
       mutedChannels: spec.slack.mutedChannels,
       gated: spec.slack.gated

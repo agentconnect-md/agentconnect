@@ -816,10 +816,8 @@ no mention distinction). Public agents' DMs stay open and produce no rows.
 **Trust model — authorize places, not people.** Enabling a channel entrusts
 that channel's **entire current and future membership**. That is a deliberate
 trade-off: the unit of authorization is the conversation, and Slack-native
-membership (especially private channels) governs who is inside it. Per-user
-filtering (the daemon's dormant `allowedUserIds`, or identity mapping that
-would enforce agent visibility directly at ingress) remains a possible future
-overlay — see §14.6.
+membership (especially private channels) governs who is inside it. The daemon
+does not add a separate per-user allowlist at ingress.
 
 **Inbound only.** Gating governs **inbound activation** exclusively. Outbound
 deliveries — cron and hook targets posting into a conversation — are already
@@ -999,10 +997,6 @@ that editors demonstrably already configured.)
 
 ### 14.6 Out of scope / future overlays
 
-- **Per-user allowlists.** The daemon already enforces
-  `Integration.<platform>.allowedUserIds` end-to-end (routing filter +
-  control-command authz); the CP simply always sends `[]`. Wiring CP storage +
-  UI to it is a natural finer-grained overlay on top of conversation gating.
 - **Identity mapping.** Resolving platform senders to AgentConnect users
   (e.g. Slack `users.info` email ↔ OIDC email, with a manual link fallback)
   would let ingress enforce agent visibility itself, making "private" mean the

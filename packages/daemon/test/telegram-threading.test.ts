@@ -47,7 +47,6 @@ function makeTelegramRoutable(daemon: Daemon) {
       telegram: {
         botToken: '123:abc',
         botUsername: 'mybot',
-        allowedUserIds: [],
         bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
       }
     }
@@ -74,7 +73,6 @@ function makeTelegramGated(daemon: Daemon) {
       platform: 'telegram',
       telegram: {
         botToken: '123:abc',
-        allowedUserIds: [],
         bindRules: [],
         gated: true
       }
@@ -161,7 +159,6 @@ describe('Telegram ingress attribution', () => {
         platform: 'telegram',
         telegram: {
           botToken: 'wrong-token',
-          allowedUserIds: [],
           bindRules: [{ match: { kind: 'dm' } }]
         }
       }
@@ -176,7 +173,6 @@ describe('Telegram ingress attribution', () => {
           platform: 'telegram',
           telegram: {
             botToken: 'target-token',
-            allowedUserIds: [],
             bindRules: [{ channel: '424242', match: { kind: 'dm' } }],
             gated: true
           }
@@ -214,12 +210,12 @@ describe('Telegram ingress attribution', () => {
       {
         id: 'i-a',
         platform: 'telegram',
-        telegram: { botToken: '111:a', allowedUserIds: [], bindRules: [{ match: { kind: 'dm' } }] }
+        telegram: { botToken: '111:a', bindRules: [{ match: { kind: 'dm' } }] }
       },
       {
         id: 'i-b',
         platform: 'telegram',
-        telegram: { botToken: '222:b', allowedUserIds: [], bindRules: [{ match: { kind: 'dm' } }] }
+        telegram: { botToken: '222:b', bindRules: [{ match: { kind: 'dm' } }] }
       }
     ]
     const scopeA = (daemon as any).transportScopeForIntegrationIds(['i-a'])
@@ -482,7 +478,6 @@ function makeScopedTelegramPair(daemon: Daemon) {
       telegram: {
         botToken: '111:a',
         botUsername: 'bota',
-        allowedUserIds: [],
         bindRules: [{ match: { kind: 'mention' } }]
       }
     }
@@ -498,7 +493,6 @@ function makeScopedTelegramPair(daemon: Daemon) {
         telegram: {
           botToken: '222:b',
           botUsername: 'botb',
-          allowedUserIds: [],
           bindRules: [{ match: { kind: 'mention' } }]
         }
       }
@@ -534,18 +528,6 @@ describe('group command routing (no mention entity)', () => {
     const [ch, , opts] = conn.postChrome.mock.calls.at(-1)!
     expect(ch).toBe('-100')
     expect(opts).toMatchObject({ replyTo: 200 }) // reply threads under the command message
-  })
-
-  it('respects the integration allowedUserIds when falling back', async () => {
-    const daemon = new Daemon({ root: scaffold() })
-    await daemon.start()
-    const conn = makeTelegramRoutable(daemon)
-    ;(daemon as any).agents.get('bot-a').integrations[0].telegram.allowedUserIds = ['999']
-    seedSession(daemon, '-100', 'tg:100')
-    // Sender U1 (id 'U1') is not in the allow-list → the command is ignored.
-    ;(daemon as any).onInbound(tg(200, { text: '/status@mybot' }), ['i-tg'])
-    expect(conn.postChrome).not.toHaveBeenCalled()
-    expect(conn.postMessage).not.toHaveBeenCalled()
   })
 
   it('finds the latest eligible session on the bot that received the command', async () => {
@@ -647,23 +629,6 @@ describe('session-control cards (/models tappable buttons)', () => {
       conn
     )
     expect(lines.filter((l) => l.includes('select:model'))).toEqual([])
-  })
-
-  it('rejects a tap from a user outside allowedUserIds', async () => {
-    const daemon = new Daemon({ root: scaffold() })
-    await daemon.start()
-    const conn = makeTelegramRoutable(daemon)
-    injectHost(daemon)
-    ;(daemon as any).agents.get('bot-a').integrations[0].telegram.allowedUserIds = ['999']
-    const key = seedSession(daemon, '-100', 'tg:100')
-
-    ;(daemon as any).handleTelegramCallback(
-      { id: 'cb2', data: 'm:1', channel: '-100', messageId: 55, userId: 'U1' },
-      conn
-    )
-    expect((daemon as any).store.getModelOverride(key)).toBeUndefined()
-    expect(conn.answerCallback).toHaveBeenCalledWith('cb2', expect.stringContaining('No active session'))
-    expect(conn.editCard).not.toHaveBeenCalled()
   })
 
   it('applies a callback only to a session owned by the bot that delivered the tap', async () => {

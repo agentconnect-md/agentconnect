@@ -18,7 +18,6 @@ export interface RoutingRule {
   botUserId: string // for `mention` matching ("" when unknown)
   scope: { channel?: string; thread?: string }
   match: RoutingMatch
-  allowedUserIds?: string[]
   // Channels its integration is switched OFF in — the subtractive fence a purely
   // additive rule set cannot express. Carried per rule (rather than consulted
   // separately) so `routeRules` stays pure and every rung — mention, thread
@@ -37,7 +36,6 @@ export interface RoutingRule {
 export function integrationRouting(int: Integration): {
   staticBotUserId?: string
   bindRules: BindRuleConfig[]
-  allowedUserIds: string[]
   mutedChannels: string[]
   gated: boolean
 } {
@@ -49,7 +47,6 @@ export function integrationRouting(int: Integration): {
     return {
       staticBotUserId: int.slack.botUserId,
       bindRules: int.slack.bindRules,
-      allowedUserIds: int.slack.allowedUserIds,
       mutedChannels: int.slack.mutedChannels ?? [],
       gated: int.slack.gated
     }
@@ -57,7 +54,6 @@ export function integrationRouting(int: Integration): {
     return {
       staticBotUserId: int.discord.botUserId,
       bindRules: int.discord.bindRules,
-      allowedUserIds: int.discord.allowedUserIds,
       mutedChannels: int.discord.mutedChannels ?? [],
       gated: int.discord.gated
     }
@@ -65,14 +61,12 @@ export function integrationRouting(int: Integration): {
     return {
       staticBotUserId: int.feishu.botOpenId,
       bindRules: int.feishu.bindRules,
-      allowedUserIds: int.feishu.allowedUserIds,
       mutedChannels: int.feishu.mutedChannels ?? [],
       gated: int.feishu.gated
     }
   return {
     staticBotUserId: int.telegram.botUserId,
     bindRules: int.telegram.bindRules,
-    allowedUserIds: int.telegram.allowedUserIds,
     mutedChannels: int.telegram.mutedChannels ?? [],
     gated: int.telegram.gated
   }
@@ -143,7 +137,7 @@ export function resolveAgentIntegration(
 export function rulesFromAgent(agent: Agent, botUserIds: Record<string, string>): RoutingRule[] {
   const out: RoutingRule[] = []
   for (const int of agent.integrations) {
-    const { staticBotUserId, bindRules, allowedUserIds, mutedChannels } = integrationRouting(int)
+    const { staticBotUserId, bindRules, mutedChannels } = integrationRouting(int)
     const botUserId = botUserIds[int.id] ?? staticBotUserId ?? ''
     for (const br of bindRules) {
       out.push({
@@ -152,7 +146,6 @@ export function rulesFromAgent(agent: Agent, botUserIds: Record<string, string>)
         botUserId,
         scope: { ...(br.channel ? { channel: br.channel } : {}), ...(br.thread ? { thread: br.thread } : {}) },
         match: br.match,
-        allowedUserIds,
         mutedChannels,
         source: 'config',
         platform: int.platform

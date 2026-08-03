@@ -68,7 +68,6 @@ export const IntegrationSlackConfig = z
     // bot) decode as non-shareable.
     shareable: z.boolean().default(false),
     botUserId: z.string().optional(), // lazily resolved via auth.test; may be seeded by CP
-    allowedUserIds: z.array(z.string()).default([]),
     bindRules: z.array(IntegrationBindRule).default([]), // empty for shared (relay arbitrates)
     // Channels the operator switched OFF. bindRules can only ADD reach, so an
     // ungated integration — whose defaults are unscoped (@-mention anywhere + DMs) —
@@ -98,7 +97,6 @@ export type IntegrationSlackConfig = z.infer<typeof IntegrationSlackConfig>
  */
 export const IntegrationTelegramConfig = z.object({
   botToken: z.string(), // BotFather "123456:ABC…"  (plaintext — never log)
-  allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(IntegrationBindRule).default([]),
   mutedChannels: z.array(z.string()).default([]), // Off channels — see IntegrationSlackConfig.mutedChannels
   gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
@@ -114,7 +112,6 @@ export type IntegrationTelegramConfig = z.infer<typeof IntegrationTelegramConfig
 export const IntegrationDiscordConfig = z.object({
   botToken: z.string(), // Bot <token>  (plaintext — never log)
   applicationId: z.string().optional(), // client/application id — public, for the invite URL
-  allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(IntegrationBindRule).default([]),
   mutedChannels: z.array(z.string()).default([]), // Off channels — see IntegrationSlackConfig.mutedChannels
   gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
@@ -148,7 +145,6 @@ export const IntegrationFeishuConfig = z.object({
   appSecret: z.string(), // app secret (plaintext — never log)
   botOpenId: z.string().optional(), // bot's own open_id; lazily resolved via bot/info
   region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn vs larksuite.com
-  allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(IntegrationBindRule).default([]),
   mutedChannels: z.array(z.string()).default([]), // Off channels — see IntegrationSlackConfig.mutedChannels
   gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated

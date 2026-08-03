@@ -674,7 +674,6 @@ describe('Daemon interrupt safety gates', () => {
             botToken: 'xoxb-test',
             appToken: 'xapp-test',
             botUserId: 'UBOTA',
-            allowedUserIds: ['U1'],
             bindRules: [{ match: { kind: 'mention' } }]
           }
         }

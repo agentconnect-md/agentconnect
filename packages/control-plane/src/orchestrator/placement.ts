@@ -249,7 +249,7 @@ export function integrationToSpec(
       integrationId: i.id,
       agentId: i.agentId,
       platform: 'telegram',
-      telegram: { botToken: secret.botToken, allowedUserIds: [], bindRules, mutedChannels, gated }
+      telegram: { botToken: secret.botToken, bindRules, mutedChannels, gated }
     }
   }
   if (i.platform === 'discord') {
@@ -258,7 +258,7 @@ export function integrationToSpec(
       agentId: i.agentId,
       platform: 'discord',
       // Discord authenticates the Gateway with the single bot token (no appToken).
-      discord: { botToken: secret.botToken, allowedUserIds: [], bindRules, mutedChannels, gated }
+      discord: { botToken: secret.botToken, bindRules, mutedChannels, gated }
     }
   }
   if (i.platform === 'feishu') {
@@ -274,7 +274,6 @@ export function integrationToSpec(
         appId: secret.appToken ?? '',
         appSecret: secret.botToken,
         region: i.feishuRegion ?? 'feishu',
-        allowedUserIds: [],
         bindRules,
         mutedChannels,
         gated
@@ -295,7 +294,6 @@ export function integrationToSpec(
       shareable: false,
       botToken: secret.botToken,
       appToken: secret.appToken ?? '',
-      allowedUserIds: [],
       bindRules,
       mutedChannels,
       gated
@@ -338,7 +336,6 @@ export function httpIntegrationToSpec(
         appSecret: secret.botToken,
         ...(botUserId ? { botOpenId: botUserId } : {}),
         region: i.feishuRegion ?? 'feishu',
-        allowedUserIds: [],
         bindRules: gated ? gatedBindRules(channels) : [],
         mutedChannels: mutedChannelIds(channels, gated),
         gated
@@ -357,7 +354,6 @@ export function httpIntegrationToSpec(
       shareable,
       botToken: secret.botToken,
       ...(providerAppId ? { appId: providerAppId } : {}),
-      allowedUserIds: [],
       bindRules: gated ? gatedBindRules(channels) : [],
       mutedChannels: mutedChannelIds(channels, gated),
       gated

@@ -9,11 +9,7 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 // layer) → routeRules, mirroring the scenarios the legacy routing-table test
 // covered (subscribed-all, trigger=mention, thread affinity, explicit-@ override, DM, gates).
 
-function agent(
-  id: string,
-  bindRules: Agent['integrations'][number]['slack']['bindRules'],
-  allowedUserIds: string[] = []
-): Agent {
+function agent(id: string, bindRules: Agent['integrations'][number]['slack']['bindRules']): Agent {
   return {
     id,
     name: id,
@@ -27,7 +23,6 @@ function agent(
         slack: {
           botToken: 'x',
           appToken: 'x',
-          allowedUserIds,
           bindRules
         }
       }
@@ -117,13 +112,5 @@ describe('local-layer routing (bindRules → rulesFromAgent → routeRules)', ()
       integrationId: 'bot-a-int',
       via: 'dm'
     })
-  })
-
-  it('enforces allowedUserIds', () => {
-    const rules = rulesFromAgent(agent('bot-a', [{ channel: 'C1', match: { kind: 'auto' } }], ['U9']), {
-      'bot-a-int': 'BOTA'
-    })
-    expect(routeRules(msg({ sender: { id: 'U1', isBot: false } }), rules, noOwner)).toBeNull() // not allowed
-    expect(routeRules(msg({ sender: { id: 'U9', isBot: false } }), rules, noOwner)).not.toBeNull()
   })
 })
