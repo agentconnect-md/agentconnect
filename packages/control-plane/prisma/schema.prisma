@@ -785,12 +785,12 @@ model AgentRepoAuthorization {
 // §3.7 Assignment — the routing table (session ownership + fencing) (C3)
 // ───────────────────────────────────────────────────────────────────────────
 
-enum Platform {
-  slack
-  telegram
-  discord
-  feishu
-}
+// The persisted chat-platform id is TEXT, not an enum (integration-plugin-architecture.md
+// §11): a new platform id must be storable without a migration once the platform registry
+// lands. The closed-set guard moved to the application layer — `toDbPlatform`
+// (persistence/platform.ts) still refuses ids outside the served set, fail-closed, until
+// the registry replaces it. `session_meta.platform` was already text; these columns joined
+// it in the S1b migration.
 
 enum AssignmentState {
   active
@@ -801,7 +801,7 @@ enum AssignmentState {
 
 model Assignment {
   id          String   @id @default(cuid())
-  platform    Platform
+  platform    String
   channel     String
   thread      String?
   threadKey   String   @default(dbgenerated("(COALESCE(thread, ''::text))")) // STORED generated col, added in migration SQL (§3.13); read-only
@@ -1312,7 +1312,7 @@ enum LeaseStatus {
 model SecretLease {
   id               String      @id @db.Uuid // SecretsGrant.leaseId
   daemonId         String      @db.Uuid
-  scopePlatform    Platform
+  scopePlatform    String
   scopeWorkspaceId String      @db.Uuid // SecretsGrant.scope.workspaceId — opaque scope id; now = agentId (workspace inline)
   ref              String // Vault/KMS path/handle — NOT the secret
   ttlSec           Int
@@ -1341,7 +1341,7 @@ model CronDef {
   name                 String? // console display name ("weekly-deploy-report"); pure console metadata, never on the daemon wire. Null for legacy/CLI rows.
   schedule             String // croner expression interpreted in timezone
   timezone             String // IANA timezone resolved by the CP before persistence
-  targetPlatform       Platform           @default(slack)
+  targetPlatform       String             @default("slack")
   targetChannel        String? // CronUpsert.target.channel; null ⇒ headless fire (no platform output)
   targetIntegrationId  String?            @db.Uuid // CronUpsert.target.integrationId — the agent integration posting the anchor; null (legacy / uninstalled) ⇒ daemon falls back to the agent's first integration
   trigger              String             @db.Text // synthetic trigger text (control metadata)
@@ -1481,7 +1481,7 @@ model HookDef {
   requiredAcknowledgedByUserId       String?
   requiredAcknowledgedConfigRevision BigInt?
   // ── output anchoring (same trio as CronDef.target*; null channel ⇒ headless) ──
-  targetPlatform                     Platform          @default(slack)
+  targetPlatform                     String            @default("slack")
   targetChannel                      String?
   targetIntegrationId                String?           @db.Uuid
   lastFiredAt                        DateTime?         @db.Timestamptz(6) // advisory; bumped on rc/run-report
@@ -1707,7 +1707,7 @@ model Relay {
 model Bot {
   id                    String         @id @db.Uuid
   orgId                 String
-  platform              Platform       @default(slack)
+  platform              String         @default("slack")
   name                  String // Slack app / display name
   prebuilt              Boolean        @default(false) // provisioned by AgentConnect, not a console user
   slackAppId            String? // Slack app id (A…), parsed from the pasted xapp token — deep-links the console to api.slack.com/apps/{id}. Public metadata, NOT secret material.
@@ -1835,7 +1835,7 @@ model Integration {
   // one Integration row per agent (shared-bot-relay.md §4.1). A classic
   // (non-shareable) bot is still capped at ≤1 install by the create route.
   botId                     String            @db.Uuid
-  platform                  Platform          @default(slack)
+  platform                  String            @default("slack")
   name                      String // Slack app / display name (mirrors bot.name at install time)
   status                    IntegrationStatus @default(active)
   // Credential generation whose uninstall/token-revocation flipped this row.
