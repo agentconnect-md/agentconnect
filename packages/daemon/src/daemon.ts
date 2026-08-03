@@ -8269,7 +8269,12 @@ export class Daemon {
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
       }
     }
-    if (snapshot.reviewPolicy === 'off' || isGithubReviewCommentHook(hook)) return undefined
+    if (
+      snapshot.reviewPolicy === 'off' ||
+      isGithubReviewCommentHook(hook) ||
+      !githubOpensReviewGeneration(hook.event, trusted, snapshot.reviewPolicy)
+    )
+      return undefined
     const recoverableAttempt =
       hook.reviewAttemptId !== undefined &&
       hook.reviewRequestedEvent !== undefined &&

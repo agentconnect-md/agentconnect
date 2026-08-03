@@ -159,20 +159,14 @@ function githubReviewDecisionHint(
   if (github?.subjectKind !== 'pull_request') return ''
   if (reviewPolicy === 'off') return ''
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
-  if (githubOpensReviewGeneration(event, github, reviewPolicy)) {
-    const passingEvent = reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT'
-    const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
-    return (
-      ' This delivery opens a review generation for the current PR revision. If you finish reviewing this revision, ' +
-      `record the actual verdict through \`submitGithubReview\`: use ${passingEvent} + pass when it passes, or ` +
-      `${failingEvent} + fail when it has blocking findings. An approval or rejection from an earlier revision does ` +
-      'not complete this revision; do not merely describe the verdict in your final reply.'
-    )
-  }
+  if (!githubOpensReviewGeneration(event, github, reviewPolicy)) return ''
+  const passingEvent = reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT'
+  const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
   return (
-    ' Use `submitGithubReview` only when this turn intentionally changes or records a code-review verdict. For an ' +
-    'ordinary conversational reply that does not change the current revision verdict, return the final reply for the ' +
-    'daemon-owned fallback and do not submit COMMENT + neutral merely to answer the conversation.'
+    ' This delivery opens a review generation for the current PR revision. If you finish reviewing this revision, ' +
+    `record the actual verdict through \`submitGithubReview\`: use ${passingEvent} + pass when it passes, or ` +
+    `${failingEvent} + fail when it has blocking findings. An approval or rejection from an earlier revision does ` +
+    'not complete this revision; do not merely describe the verdict in your final reply.'
   )
 }
 
@@ -200,8 +194,15 @@ function trustedInlineReplyTarget(
   return { repo: github.repoFullName, number: github.pullNumber }
 }
 
-function githubWorkspaceCheckHint(github: GithubHookMetadata | undefined): string {
+function githubWorkspaceCheckHint(github: GithubHookMetadata | undefined, exactReviewGeneration: boolean): string {
   if (github?.subjectKind !== 'pull_request') return ''
+  if (!exactReviewGeneration) {
+    return (
+      ' This delivery preserves the conversational worktree and does not prove its files match the PR revision. For ' +
+      'PR facts, use GitHub read-only tools or revision-addressed Git object reads; do not rely on working-tree paths ' +
+      'or HEAD alone.'
+    )
+  }
   return (
     ' Before trusting local files or repository traces, verify that the local HEAD is the trusted PR head or a merge ' +
     'whose parents are exactly the trusted base and head shown above. If that cannot be proven, use GitHub read-only ' +
@@ -221,21 +222,29 @@ function githubReplyHint(
 ): string {
   const inlineTarget = trustedInlineReplyTarget(c, github)
   const where = inlineTarget ? `${inlineTarget.repo}#${inlineTarget.number}` : `${c.repo ?? 'this thread'}#${c.number}`
+  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
+  const reviewGeneration = githubOpensReviewGeneration(event, github, reviewPolicy)
   if (inlineTarget) {
     return [
       '',
-      `Return one self-contained final answer for the triggering inline review conversation. The daemon posts that final back to the existing review thread on ${where} automatically and exclusively owns the inline reply. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned inline reply.${githubWorkspaceCheckHint(github)}`
+      `Return one self-contained final answer for the triggering inline review conversation. The daemon posts that final back to the existing review thread on ${where} automatically and exclusively owns the inline reply. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned inline reply.${githubWorkspaceCheckHint(github, false)}`
     ].join('\n')
   }
   if (c.event === 'pull_request_review_comment') {
     return [
       '',
-      `Return one self-contained final answer for the triggering review conversation. This delivery does not carry trusted inline-thread metadata, so the daemon posts that final back to ${where} automatically as one ordinary GitHub comment. Formal GitHub reviews are unavailable for this review-comment event family, and the daemon exclusively owns the fallback comment. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned fallback comment.${githubWorkspaceCheckHint(github)}`
+      `Return one self-contained final answer for the triggering review conversation. This delivery does not carry trusted inline-thread metadata, so the daemon posts that final back to ${where} automatically as one ordinary GitHub comment. Formal GitHub reviews are unavailable for this review-comment event family, and the daemon exclusively owns the fallback comment. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned fallback comment.${githubWorkspaceCheckHint(github, false)}`
+    ].join('\n')
+  }
+  if (!reviewGeneration) {
+    return [
+      '',
+      `Return one self-contained final answer for this GitHub conversation. The daemon posts that final back to ${where} automatically and exclusively owns the reply. Formal GitHub review submission is unavailable for this delivery. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection, then return the final answer for the daemon-owned reply.${githubWorkspaceCheckHint(github, false)}`
     ].join('\n')
   }
   return [
     '',
-    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. If this active PR hook permits a formal review, use only the structured \`submitGithubReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.${githubWorkspaceCheckHint(github)}`
+    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. Use only the structured \`submitGithubReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.${githubWorkspaceCheckHint(github, true)}`
   ].join('\n')
 }
 

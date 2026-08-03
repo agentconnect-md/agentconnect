@@ -386,7 +386,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('retains formal-review authority for pull-request issue_comment hooks', async () => {
+  it('grants formal-review authority only when an issue_comment explicitly requests review', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost().factory })
     await daemon.start()
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
@@ -421,10 +421,21 @@ describe('Daemon rd/msg hook fires', () => {
       }
     }
 
-    const active = await (daemon as any).prepareGithubTurn({ hookContext: hook }, 'acp-issue-comment')
+    const ordinary = await (daemon as any).prepareGithubTurn({ hookContext: hook }, 'acp-issue-comment')
 
-    expect(startHook).toHaveBeenCalledOnce()
-    expect(active).toMatchObject({ hook, reviewState: 'idle', pullNumber: 42 })
+    const explicitHook = {
+      ...hook,
+      deliveryKey: 'explicit-review-comment',
+      github: { ...hook.github, explicitReviewRequest: true }
+    }
+    const explicit = await (daemon as any).prepareGithubTurn(
+      { hookContext: explicitHook },
+      'acp-explicit-review-comment'
+    )
+
+    expect(startHook).toHaveBeenCalledTimes(2)
+    expect(ordinary).toBeUndefined()
+    expect(explicit).toMatchObject({ hook: explicitHook, reviewState: 'idle', pullNumber: 42 })
     await daemon.stop()
   })
 
@@ -1872,20 +1883,18 @@ describe('buildHookMessage', () => {
 
     it('a numbered thread carries the auto-reply hint (do not self-comment); a threadless push does not', () => {
       const withThread = buildHookText(ghFire())
-      expect(withThread).toContain('posted back to acme/infra#42 automatically')
-      expect(withThread).toContain('daemon exclusively owns that fallback reply comment')
-      expect(withThread).toContain('structured `submitGithubReview` tool')
-      expect(withThread).toContain('including for APPROVE')
-      expect(withThread).toContain('only when no formal review was attempted')
-      expect(withThread).toContain('submitted, ambiguous, or otherwise unresolved formal attempt suppresses')
+      expect(withThread).toContain('posts that final back to acme/infra#42 automatically')
+      expect(withThread).toContain('exclusively owns the reply')
+      expect(withThread).toContain('Formal GitHub review submission is unavailable')
+      expect(withThread).not.toContain('submitGithubReview')
       expect(withThread).toContain('Do NOT create, update, or delete GitHub comments or formal reviews')
       expect(withThread).toContain('`gh`, another CLI, a connector, or a direct API call')
       expect(withThread).toContain('Other GitHub tools are for READ-only inspection')
-      // PR conversation comments can still initiate a formal review when the
-      // hook policy permits it, so they retain the structured-review guidance.
+      // Ordinary PR conversations preserve their worktree and cannot submit a
+      // formal verdict. A mention identified by the relay opens a review below.
       const issueComment = buildHookText(ghFire({ event: 'issue_comment', action: 'created' }))
-      expect(issueComment).toContain('structured `submitGithubReview` tool')
-      expect(issueComment).not.toContain('do not submit COMMENT + neutral merely to answer the conversation')
+      expect(issueComment).toContain('Formal GitHub review submission is unavailable')
+      expect(issueComment).not.toContain('submitGithubReview')
       const prConversation = buildHookText(
         ghFire(
           { event: 'issue_comment', action: 'created' },
@@ -1901,7 +1910,9 @@ describe('buildHookMessage', () => {
           }
         )
       )
-      expect(prConversation).toContain('do not submit COMMENT + neutral merely to answer the conversation')
+      expect(prConversation).toContain('does not prove its files match the PR revision')
+      expect(prConversation).toContain('revision-addressed Git object reads')
+      expect(prConversation).not.toContain('submitGithubReview')
       const revisionReview = buildHookText(
         ghFire(
           { event: 'pull_request', action: 'synchronize' },
@@ -1921,6 +1932,7 @@ describe('buildHookMessage', () => {
         )
       )
       expect(revisionReview).toContain('opens a review generation for the current PR revision')
+      expect(revisionReview).toContain('structured `submitGithubReview` tool')
       expect(revisionReview).toContain(`Base SHA: ${'b'.repeat(40)}`)
       expect(revisionReview).toContain(`Head SHA: ${'a'.repeat(40)}`)
       expect(revisionReview).toContain('Before trusting local files or repository traces')
@@ -2066,7 +2078,8 @@ describe('buildHookMessage', () => {
       )
       expect(text).not.toContain('opens a review generation for the current PR revision')
       expect(text).not.toContain('use APPROVE + pass when it passes')
-      expect(text).not.toContain('do not submit COMMENT + neutral merely to answer the conversation')
+      expect(text).toContain('Formal GitHub review submission is unavailable')
+      expect(text).not.toContain('submitGithubReview')
     })
 
     it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', () => {

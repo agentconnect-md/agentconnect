@@ -307,11 +307,13 @@ base and head; otherwise the exact head is used. A formal review fails closed if
 that fetch or verification fails. If the Agent workspace is another repository,
 the prompt forbids trusting local traces and requires read-only GitHub inspection
 of the trusted revision instead. Ordinary PR conversations preserve their stable
-session worktree and rely on the same HEAD-verification/read-only fallback prompt.
+session worktree, do not carry formal-review authority, and require read-only or
+revision-addressed inspection instead of trusting working-tree paths.
 
-The model-visible review instruction repeats the trusted base/head and requires
-verifying local `HEAD` before relying on file traces. This workspace fence is in
-addition to the action-time revision fence on formal review submission.
+The model-visible formal-review instruction repeats the trusted base/head and
+requires verifying local `HEAD` before relying on file traces. This workspace
+fence is in addition to the action-time revision fence on formal review
+submission.
 
 ## GitHub Output Ownership
 
