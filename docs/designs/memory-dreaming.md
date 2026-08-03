@@ -12,17 +12,28 @@
 > Keywords: dreaming, memory consolidation, distillation, staged output,
 > transcript mining, skill mining, managed provider, harness-agnostic
 
-> **Production security hold (2026-08-01):** current Dream isolation cannot
-> guarantee that provider authentication is outside every path readable by the
-> model's nominally read-only tools. Production daemons therefore reject Dream execution before lookup, snapshot,
-> corpus construction, or job persistence and register no Dream schedules.
-> Historical job metadata remains listable/gettable and in-flight jobs remain
-> cancelable, but staged memory/skill/organization content cannot be read,
-> adopted, reviewed, dismissed, discarded, or swept. Re-enable these operations
-> only after credentials are outside every model-readable path and newly staged
-> bytes are cryptographically bound to the reviewed/adopted content. Injected
-> deterministic hosts remain available to tests; they are not a production
-> admission mechanism.
+> **Production security hold — LIFTED (2026-08-03, task #36).** The 2026-08-01
+> hold rejected all production Dream execution and staged-content operations until
+> two conditions were met; both now are:
+>
+> 1. **Credentials outside model-readable paths.** Each Dream runs on a dedicated,
+>    one-off ACP host, sandboxed when the agent runs sandboxed, so a sandboxed
+>    runtime is denied the host's credentials and, on Claude, the inner sandbox
+>    denies the agent's own provider credential to the model's bash. The dream
+>    launch also excludes the agent's tool credentials entirely. Residual: on a
+>    runtime with no inner provider-credential confinement (e.g. Codex) or an
+>    unsandboxed agent, the agent's own provider auth can still be reached by the
+>    model's own tools — a tracked **P2**, to be closed by per-runtime credential
+>    brokering, not a blocker (owner decision; see docs/product-conventions.md).
+> 2. **Reviewed bytes bound to adoption.** Adopt / skill-accept take the digest of
+>    the exact staged bytes the console reviewed and refuse if the staging changed
+>    since — the same-bytes review fence (skill acceptance verifies against the
+>    publication snapshot itself, so a concurrent swap cannot slip un-reviewed
+>    bytes through).
+>
+> Production Dream is therefore enabled; each agent's own `dreaming.enabled`
+> policy still gates whether it dreams. Injected deterministic hosts remain a
+> test-only seam (`dreamOperationPolicy: 'test-only'`), never a production path.
 
 ---
 

@@ -4975,7 +4975,7 @@ export class Daemon {
     this.dreamRunnerInstance ??= new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
-      operationPolicy: this.dreamOperationsAllowed() ? 'test-only' : 'blocked',
+      operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
@@ -5005,11 +5005,17 @@ export class Daemon {
     return this.dreamRunnerInstance
   }
 
-  /** Credential-backed production Dream hosts are held closed until their
-   * provider authentication can be kept outside every model-readable path.
-   * Injected hosts are deterministic test/evaluation seams and remain enabled. */
+  /** Whether Dream execution + staged-content operations are allowed on this
+   * daemon. The production security hold is LIFTED (task #36 Phase C): A1/A2 give
+   * the dream a dedicated, credential-isolated host and B binds the reviewed
+   * bytes to adoption, so production Dream runs. An injected host factory is a
+   * deterministic test/evaluation seam that must still opt in explicitly
+   * (`dreamOperationPolicy === 'test-only'`) so unrelated tests never run dreams
+   * by accident. Per-agent dreaming stays gated by each agent's own
+   * `dreaming.enabled` policy. */
   private dreamOperationsAllowed(): boolean {
-    return this.opts.hostFactory !== undefined && this.opts.dreamOperationPolicy === 'test-only'
+    if (this.opts.hostFactory) return this.opts.dreamOperationPolicy === 'test-only'
+    return true
   }
 
   private dreamSchedulePolicyFor(agent: { memory?: Agent['memory'] }): MemoryDreamingPolicy | undefined {

@@ -98,6 +98,22 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
+  it('enables production Dream operations (security hold lifted) without a host factory (#36 Phase C)', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({ root, sandboxMechanism: null, probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      // The production security hold is lifted: a real (no host-factory) daemon
+      // now allows Dream operations and re-advertises the organization-suggestion
+      // review capability. Per-agent dreaming stays gated by each agent's policy.
+      expect((daemon as any).dreamOperationsAllowed()).toBe(true)
+      expect((daemon as any).registrationFeatures()).toContain('organization-suggestion-review-v1')
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('single-agent mode still rejects an active sibling whose writable workspace overlaps', async () => {
     const root = scaffold()
     const sibling = join(root, 'agents', 'bot-b')
