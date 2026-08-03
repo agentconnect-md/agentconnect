@@ -5,7 +5,10 @@ first that is available:
 
 1. **AgentConnect admin MCP tools** — present when this session was granted the
    admin toolset. Names match the catalog below.
-2. **REST API** — direct HTTP calls to the Control Plane with a personal API key.
+2. **REST API** — direct HTTP calls to the Control Plane, only with a credential
+   that was provisioned into the agent's environment outside the conversation.
+   Without either, admin changes go through the console — never ask the user for
+   a key in chat.
 
 Both channels hit the same routes with the same permission model (RBAC + resource
 visibility of the acting user) and the same audit trail; the MCP layer adds
@@ -77,17 +80,24 @@ gate's purpose.
   (e.g. the `agentconnect` preset cannot be renamed or deleted).
 - Empty lists may mean "not visible to this user," not "none exist."
 
-## The REST API (fallback)
+## The REST API (fallback — pre-provisioned credential only)
 
-Use when no admin MCP tools are present in the session.
+Use when no admin MCP tools are present in the session AND the agent's environment
+already carries a credential an org admin provisioned outside the conversation
+(e.g. `AGENTCONNECT_API_URL` / `AGENTCONNECT_API_KEY` set in the agent's
+configuration). **Never solicit a credential in chat** — a key pasted into the
+conversation enters model context and transcripts, and every call made with it
+executes and audits as the key's owner, not the person talking to you. With no
+configured credential, do not attempt admin operations: direct the user to the
+console surface that performs the change, or to the org's AgentConnect MCP
+endpoint (console → Help → "Connect your AI").
 
 ### Connecting
 
-- **Base URL**: the Control Plane / console origin of the org's deployment. Ask the
-  user if unknown.
-- **Auth header**: `Authorization: Bearer <personal-api-key>` — keys are created in
-  the console under the user's profile → API keys. Ask the user to mint one; never
-  invent, log, or echo key material.
+- **Base URL**: from the configured environment (the Control Plane / console origin
+  of the org's deployment). The URL is not a secret; asking the user for it is fine.
+- **Auth header**: `Authorization: Bearer <the configured key>` — never invent, log,
+  or echo key material.
 - **Versioning**: everything lives under `/api/v1`.
 - **Self-description**: `GET {base}/api/v1/openapi.json` returns the complete
   OpenAPI 3.1 document (Swagger UI at `{base}/docs`). Fetch it before assuming an
@@ -114,6 +124,7 @@ GET    /daemons                    PATCH  /daemons/{id}          # rename
 GET    /sessions?agentId&platform&channel&limit
 GET    /sessions/{id}
 GET    /crons                      GET    /crons/{id}
+GET    /crons/{id}/runs            # run history, newest first
 PUT    /crons/{id}                 # upsert (client-generated UUID to create)
 POST   /crons/{id}/run             DELETE /crons/{id}
 GET    /integrations               DELETE /integrations/{id}
@@ -127,32 +138,32 @@ GET    /usage?range=d7             # d1 | d7 | d30 | d90
 
 ```bash
 # Who am I, and which orgs can I see?
-curl -sS -H "Authorization: Bearer $AC_KEY" "$AC_URL/api/v1/me"
-curl -sS -H "Authorization: Bearer $AC_KEY" "$AC_URL/api/v1/orgs"
+curl -sS -H "Authorization: Bearer $AGENTCONNECT_API_KEY" "$AGENTCONNECT_API_URL/api/v1/me"
+curl -sS -H "Authorization: Bearer $AGENTCONNECT_API_KEY" "$AGENTCONNECT_API_URL/api/v1/orgs"
 
 # List agents, then one agent's full config
-curl -sS -H "Authorization: Bearer $AC_KEY" "$AC_URL/api/v1/orgs/$ORG/agents"
-curl -sS -H "Authorization: Bearer $AC_KEY" "$AC_URL/api/v1/orgs/$ORG/agents/$AGENT_ID"
+curl -sS -H "Authorization: Bearer $AGENTCONNECT_API_KEY" "$AGENTCONNECT_API_URL/api/v1/orgs/$ORG/agents"
+curl -sS -H "Authorization: Bearer $AGENTCONNECT_API_KEY" "$AGENTCONNECT_API_URL/api/v1/orgs/$ORG/agents/$AGENT_ID"
 
 # Create an agent (runtime must come from a daemon's reported runtimes)
-curl -sS -X POST -H "Authorization: Bearer $AC_KEY" -H 'Content-Type: application/json' \
+curl -sS -X POST -H "Authorization: Bearer $AGENTCONNECT_API_KEY" -H 'Content-Type: application/json' \
   -d '{"name":"reviewer","displayName":"Reviewer","runtime":"claude-code"}' \
-  "$AC_URL/api/v1/orgs/$ORG/agents"
+  "$AGENTCONNECT_API_URL/api/v1/orgs/$ORG/agents"
 
 # Pause an agent
-curl -sS -X PATCH -H "Authorization: Bearer $AC_KEY" -H 'Content-Type: application/json' \
-  -d '{"pause":true}' "$AC_URL/api/v1/orgs/$ORG/agents/$AGENT_ID"
+curl -sS -X PATCH -H "Authorization: Bearer $AGENTCONNECT_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"pause":true}' "$AGENTCONNECT_API_URL/api/v1/orgs/$ORG/agents/$AGENT_ID"
 
 # Weekday-morning schedule (upsert with a fresh UUID to create)
-curl -sS -X PUT -H "Authorization: Bearer $AC_KEY" -H 'Content-Type: application/json' \
+curl -sS -X PUT -H "Authorization: Bearer $AGENTCONNECT_API_KEY" -H 'Content-Type: application/json' \
   -d '{"agentId":"'$AGENT_ID'","name":"Standup digest","schedule":"0 9 * * MON-FRI",
        "timezone":"America/New_York","trigger":"Summarize yesterday'\''s merged PRs."}' \
-  "$AC_URL/api/v1/orgs/$ORG/crons/$(uuidgen)"
+  "$AGENTCONNECT_API_URL/api/v1/orgs/$ORG/crons/$(uuidgen)"
 
 # Mute a bot in one channel
-curl -sS -X PATCH -H "Authorization: Bearer $AC_KEY" -H 'Content-Type: application/json' \
+curl -sS -X PATCH -H "Authorization: Bearer $AGENTCONNECT_API_KEY" -H 'Content-Type: application/json' \
   -d '{"trigger":"off"}' \
-  "$AC_URL/api/v1/orgs/$ORG/integrations/$INTEGRATION_ID/channels/$CHANNEL_ID"
+  "$AGENTCONNECT_API_URL/api/v1/orgs/$ORG/integrations/$INTEGRATION_ID/channels/$CHANNEL_ID"
 ```
 
 The same safety rules apply as over MCP: destructive `DELETE`s only after the user's
