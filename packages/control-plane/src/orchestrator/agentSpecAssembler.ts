@@ -151,6 +151,7 @@ export function agentRecordToSpec(
     a.workspace.mode === 'github'
       ? {
           mode: 'github',
+          isolation: a.workspace.isolation ?? 'shared',
           // Defense in depth for historical/non-Prisma records: never send
           // credentials or an unsupported transport to any daemon version.
           gitRepo:
@@ -161,7 +162,7 @@ export function agentRecordToSpec(
           ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
           ...(a.workspace.installationId !== undefined ? { gitCredential: 'github-app' as const } : {})
         }
-      : { mode: 'scratch', gitCredential: 'github-app' }
+      : { mode: 'scratch', isolation: a.workspace.isolation ?? 'shared', gitCredential: 'github-app' }
   return {
     agentId: a.id,
     name: a.name,

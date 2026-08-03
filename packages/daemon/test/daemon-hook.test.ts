@@ -428,6 +428,73 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   })
 
+  it('prepares an exact isolated workspace before a formal review turn', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-review-workspace'),
+        gitRepo: 'https://github.com/acme/infra',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true
+      }
+    })
+    const daemon = new Daemon({ root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace').mockResolvedValue('/agent/worktrees/review')
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const entry = {
+      msg: { text: 'Review this pull request.' },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'exact-review',
+        firedAt: new Date().toISOString(),
+        event: 'pull_request:synchronize',
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 461,
+          headSha,
+          baseSha,
+          reportSha: headSha
+        }
+      }
+    }
+
+    await expect(
+      (daemon as any).prepareGithubReviewWorkspace(entry, 'hook:acme/infra#461', (daemon as any).agents.get(AGENT_ID))
+    ).resolves.toEqual({
+      workspaceIsolation: 'session',
+      forceWorkspaceIsolation: true,
+      preparedWorkspaceCwd: '/agent/worktrees/review'
+    })
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ id: AGENT_ID }),
+      undefined,
+      expect.objectContaining({
+        sessionKey: 'hook:acme/infra#461',
+        isolation: 'session',
+        review: { pullNumber: 461, baseSha, headSha }
+      })
+    )
+    expect(entry.msg.text).toContain('Trusted review workspace')
+    expect(entry.msg.text).toContain('verify `git rev-parse HEAD`')
+    await daemon.stop()
+  })
+
   it('disables formal-review authority by event family when a rolling relay omits inline ids', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost().factory })
     await daemon.start()
@@ -1802,6 +1869,9 @@ describe('buildHookMessage', () => {
         )
       )
       expect(revisionReview).toContain('opens a review generation for the current PR revision')
+      expect(revisionReview).toContain(`Base SHA: ${'b'.repeat(40)}`)
+      expect(revisionReview).toContain(`Head SHA: ${'a'.repeat(40)}`)
+      expect(revisionReview).toContain('Before trusting local files or repository traces')
       expect(revisionReview).toContain('use APPROVE + pass when it passes')
       expect(revisionReview).toContain(
         'An approval or rejection from an earlier revision does not complete this revision'

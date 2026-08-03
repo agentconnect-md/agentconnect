@@ -78,6 +78,7 @@ import {
   GithubRepositoryField,
   GithubRepositoryOption,
   RepositoryAccessField,
+  WorktreeField,
   WorkingSubdirectoryField,
   WorkspaceBranchField,
   WorkspaceModeField
@@ -214,6 +215,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [agentDir, setAgentDir] = useState('')
+  const [worktree, setWorktree] = useState(true)
   // GitHub App picker state (design: the picker IS the github path once the App
   // is installed — repo options only EXIST after an install; no App on this
   // deployment ⇒ everything stays the manual free-text flow — the daemon host
@@ -771,6 +773,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           ? picked
             ? {
                 mode: 'github',
+                worktree,
                 gitRepo: picked.fullName, // owner/repo — the CP normalizes to the full address
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
@@ -779,12 +782,14 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
               }
             : {
                 mode: 'github',
+                worktree,
                 gitRepo: publicRepo ?? ghRepo.trim(),
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
               }
           : {
               mode: 'github',
+              worktree,
               gitRepo: repo.trim(),
               ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
               ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
@@ -1337,6 +1342,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   />
 
                   <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                  <WorktreeField checked={worktree} onChange={setWorktree} />
                 </div>
               )}
 
@@ -1370,6 +1376,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     onChange={setBranch}
                   />
                   <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                  <WorktreeField checked={worktree} onChange={setWorktree} />
                 </>
               )}
             </div>

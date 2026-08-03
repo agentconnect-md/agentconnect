@@ -211,6 +211,7 @@ export type AgentWorkspaceDto =
   | { mode: 'scratch' }
   | {
       mode: 'github'
+      worktree?: boolean
       gitRepo: string
       gitBranch?: string
       agentDir?: string
@@ -867,6 +868,7 @@ export type SetAgentWorkspaceInput =
   | { mode: 'scratch' }
   | {
       mode: 'github'
+      worktree?: boolean
       repoFullName: string
       /** Absent lets the server use GitHub's current default branch. */
       gitBranch?: string
@@ -1565,6 +1567,7 @@ function workspaceFromDto(w: AgentWorkspaceDto, workspaceRepoId?: string | null)
   if (w.mode === 'github') {
     return {
       mode: 'github',
+      worktree: w.worktree === true,
       ...(workspaceRepoId ? { repoId: workspaceRepoId } : {}),
       repo: repoLabel(w.gitRepo),
       ...(repoWebUrl(w.gitRepo) ? { repoUrl: repoWebUrl(w.gitRepo) } : {}),

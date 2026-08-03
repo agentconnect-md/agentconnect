@@ -189,6 +189,19 @@ function organizationKnowledgeSupportedOn(daemon: DaemonView | null): boolean {
   return !!daemon?.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE)
 }
 
+function workspaceToDto(workspace: AgentWorkspace): AgentDtoT['workspace'] {
+  if (workspace.mode === 'scratch') return { mode: 'scratch' }
+  return {
+    mode: 'github',
+    worktree: workspace.isolation === 'session',
+    gitRepo: workspace.gitRepo,
+    ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
+    ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
+    ...(workspace.installationId !== undefined ? { installationId: workspace.installationId } : {}),
+    ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
+  }
+}
+
 function toDto(
   a: AgentRecord,
   ctx: ViewCtx,
@@ -229,7 +242,7 @@ function toDto(
     memory: a.memory,
     status: a.status,
     daemonId: a.daemonId,
-    workspace: a.workspace,
+    workspace: workspaceToDto(a.workspace),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
     capabilities: a.capabilities,
     createdAt: a.createdAt.toISOString(),
@@ -918,7 +931,20 @@ export function agentRoutes(deps: HttpDeps) {
         // these answer 409 — installations and their grant sets are org-level
         // infrastructure (visibility taxonomy), so a 409 is not an oracle.
         const ws = req.body.workspace
-        let workspace = ws
+        let workspace: AgentWorkspace | undefined =
+          ws?.mode === 'github'
+            ? {
+                mode: 'github',
+                isolation: ws.worktree === false ? 'shared' : 'session',
+                gitRepo: ws.gitRepo,
+                ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
+                ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
+                ...(ws.installationId !== undefined ? { installationId: ws.installationId } : {}),
+                ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
+              }
+            : ws
+              ? { mode: 'scratch', isolation: 'shared' }
+              : undefined
         let workspaceRepoId: bigint | undefined
         if (ws?.mode === 'github' && ws.installationId === undefined && ws.gitAccess === 'write') {
           return conflict('github write access requires a GitHub App installation')
@@ -945,7 +971,15 @@ export function agentRoutes(deps: HttpDeps) {
             workspaceRepoId = ref.repoId
             // The installation lookup, not the caller's clone host/path, is the
             // authority for an App-backed workspace.
-            workspace = { ...ws, gitRepo: normalizeGitUrl(ref.fullName) }
+            workspace = {
+              mode: 'github',
+              isolation: ws.worktree === false ? 'shared' : 'session',
+              gitRepo: normalizeGitUrl(ref.fullName),
+              ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
+              ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
+              installationId: ws.installationId,
+              ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
+            }
             // Per-user gate (identity assertion, open question #7) — the SECURITY check;
             // the picker's preflight is UX only. The creator must hold the
             // access level the agent will run with: gitAccess=write (the
@@ -1629,7 +1663,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
 
         try {
-          let workspace: AgentWorkspace = { mode: 'scratch' }
+          let workspace: AgentWorkspace = { mode: 'scratch', isolation: 'shared' }
           let workspaceRepoId: bigint | undefined
           if (req.body.mode === 'github') {
             if (!deps.github) return conflict('GitHub workspaces are not enabled for this deployment')
@@ -1650,8 +1684,12 @@ export function agentRoutes(deps: HttpDeps) {
                 req.body.gitAccess
               )
             }
+            const worktree =
+              req.body.worktree ??
+              (existing.workspace.mode === 'github' ? existing.workspace.isolation === 'session' : true)
             workspace = {
               mode: 'github',
+              isolation: worktree ? 'session' : 'shared',
               gitRepo: normalizeGitUrl(ref.fullName),
               gitBranch: req.body.gitBranch ?? ref.defaultBranch,
               ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),

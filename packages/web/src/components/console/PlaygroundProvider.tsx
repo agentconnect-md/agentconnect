@@ -53,12 +53,15 @@ interface PlaygroundData {
   /** One prepared image waiting in this session's composer. */
   getPgImage: (id: string) => SessionImage | undefined
   setPgImage: (id: string, image?: SessionImage) => void
+  /** Worktree choice staged for a synthetic session's first turn. */
+  getPgWorktree: (id: string) => boolean | undefined
+  pgSetWorktree: (id: string, worktree: boolean) => void
   /** Is a turn in flight for this session id? Drives its typing indicator + send-disable. */
   isPgBusy: (id: string) => boolean
   /** Create a new sandbox session and return its id. Does not navigate. `members`
    *  adds more participants — the conversation's roster is fixed at creation
    *  (webchat-multi-agents.md §3.1); the first agent is the primary. */
-  openPlayground: (agent: Agent, members?: Agent[]) => string
+  openPlayground: (agent: Agent, members?: Agent[], options?: { worktree?: boolean }) => string
   /** Add a participant to a LIVE conversation (mid-conversation join,
    *  webchat-multi-agents.md §3.1). Registers the agent with the CP, then
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.
@@ -247,6 +250,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // Standalone set_* operations cannot bind until the first daemon session exists.
   // Keep only fields the user actually touched and attach them atomically to the turn.
   const stagedRuntime = useRef<Map<string, WebchatRuntimeConfig>>(new Map())
+  const stagedWorktree = useRef<Map<string, boolean>>(new Map())
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
   const { activeOrg } = useOrgs()
@@ -254,6 +258,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const stageRuntimeChange = useCallback((id: string, patch: WebchatRuntimeConfig): void => {
     if (!id.startsWith(PG_PREFIX)) return
     stagedRuntime.current.set(id, { ...stagedRuntime.current.get(id), ...patch })
+  }, [])
+  const getPgWorktree = useCallback((id: string): boolean | undefined => stagedWorktree.current.get(id), [])
+  const pgSetWorktree = useCallback((id: string, worktree: boolean): void => {
+    if (!id.startsWith(PG_PREFIX)) return
+    stagedWorktree.current.set(id, worktree)
   }, [])
 
   const setBusy = useCallback((id: string, v: boolean): void => {
@@ -836,8 +845,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const openPlayground = useCallback(
-    (da: Agent, members?: Agent[]): string => {
+    (da: Agent, members?: Agent[], options?: { worktree?: boolean }): string => {
       const id = newPlaygroundSessionId(da.id)
+      if (da.workspace?.mode === 'github') {
+        stagedWorktree.current.set(id, options?.worktree ?? da.workspace.worktree === true)
+      }
       // The roster is fixed at creation (webchat-multi-agents.md §3.1): the
       // first pick is the primary; there is no add/remove after the first send.
       const roster = [da, ...(members ?? []).filter((m) => m.id !== da.id)]
@@ -1027,7 +1039,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               ...(image ? { attachments: [image] } : {}),
               // Runtime staging is a single-agent affordance — multi-agent
               // conversations expose no runtime controls (§9.1/§9.3).
-              ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {})
+              ...(roster.length <= 1 && stagedRuntime.current.get(id)
+                ? { runtime: stagedRuntime.current.get(id) }
+                : {}),
+              ...(roster.length <= 1 && stagedWorktree.current.has(id)
+                ? { worktree: stagedWorktree.current.get(id) }
+                : {})
             })
           )
           if (isNewConversation) setTimeout(refreshSessions, 2500)
@@ -1149,6 +1166,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgInput,
       getPgImage,
       setPgImage,
+      getPgWorktree,
+      pgSetWorktree,
       isPgBusy,
       openPlayground,
       pgAddAgent,
@@ -1169,6 +1188,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgInput,
       getPgImage,
       setPgImage,
+      getPgWorktree,
+      pgSetWorktree,
       isPgBusy,
       openPlayground,
       pgAddAgent,

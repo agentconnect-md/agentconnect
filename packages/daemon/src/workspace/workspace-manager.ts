@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -53,6 +54,19 @@ export interface PrepareWorkspaceOptions {
   skillsAgentId?: string | null
 }
 
+export interface GithubReviewWorkspaceRevision {
+  pullNumber: number
+  baseSha: string
+  headSha: string
+  mergeCommitSha?: string
+}
+
+export interface PrepareSessionWorkspaceRequest {
+  sessionKey: string
+  isolation: 'shared' | 'session'
+  review?: GithubReviewWorkspaceRevision
+}
+
 async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
   // Resolving local sources (managed cache + accepted Dream) is best-effort: a
   // failure to read/validate them means we install none of THOSE sources, not
@@ -82,7 +96,9 @@ async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOp
 }
 
 const PULL_TIMEOUT_MS = 4500
+const REVIEW_FETCH_TIMEOUT_MS = 15_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
+const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 
 // Single-flight clone lock keyed by the absolute cwd. Two concurrent sessions
 // (especially multiple agents sharing one repo checkout) must not race into the
@@ -312,6 +328,175 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
   return withSkills(agent, resolveAcpCwd(cwd, agentDir), opts)
 }
 
+/** Daemon-owned parent for logical-session worktrees. It sits beside the main
+ * checkout so both stay inside one agent's filesystem/sandbox boundary. */
+export function sessionWorktreeRoot(agent: Agent): string {
+  const agentRoot = (agent as { dir?: string }).dir ?? dirname(agent.workspace.path)
+  return join(agentRoot, 'worktrees')
+}
+
+function prepareSessionWorktreeRoot(agent: Agent): string {
+  const agentRoot = realpathSync((agent as { dir?: string }).dir ?? dirname(agent.workspace.path))
+  const root = sessionWorktreeRoot(agent)
+  if (existsSync(root) && lstatSync(root).isSymbolicLink()) {
+    throw new Error('session worktree root must not be a symlink')
+  }
+  mkdirSync(root, { recursive: true, mode: 0o700 })
+  const canonicalRoot = realpathSync(root)
+  const rel = relative(agentRoot, canonicalRoot)
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+    throw new Error('session worktree root resolves outside the agent directory')
+  }
+  return canonicalRoot
+}
+
+function clearSessionWorktrees(agent: Agent): void {
+  rmSync(sessionWorktreeRoot(agent), { recursive: true, force: true })
+}
+
+function sessionWorktreeId(sessionKey: string): string {
+  return createHash('sha256').update(sessionKey).digest('hex').slice(0, 24)
+}
+
+function exactObjectId(value: string, label: string): string {
+  if (!GIT_OBJECT_ID.test(value)) throw new Error(`github review ${label} is not a Git object id`)
+  return value.toLowerCase()
+}
+
+async function revParse(cwd: string, ref: string): Promise<string> {
+  return (
+    await gitFor(cwd)
+      .env(workspaceGitLocalEnv())
+      .raw(['rev-parse', '--verify', `${ref}^{commit}`])
+  ).trim()
+}
+
+async function fetchReviewRevision(
+  agent: Agent,
+  worktreeId: string,
+  review: GithubReviewWorkspaceRevision
+): Promise<{ base: string; head: string; checkout: string }> {
+  const base = exactObjectId(review.baseSha, 'base SHA')
+  const head = exactObjectId(review.headSha, 'head SHA')
+  if (!Number.isSafeInteger(review.pullNumber) || review.pullNumber <= 0) {
+    throw new Error('github review pull number is invalid')
+  }
+  const root = `refs/agentconnect/reviews/${worktreeId}`
+  const baseRef = `${root}/base`
+  const headRef = `${root}/head`
+  const mergeRef = `${root}/merge`
+  const repository = gitRepoOf(agent)
+  await assertSafeWorkspaceGitConfig(agent.workspace.path)
+  if (usesGithubApp(agent)) await preWarmGitCred(agent.id, 'pull')
+  const pullTarget = workspaceGitPullTarget(repository)
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
+  try {
+    const git = gitFor(agent.workspace.path, abort.signal).env({
+      ...pullTarget.env,
+      ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
+      GIT_TERMINAL_PROMPT: '0'
+    })
+    await git.raw([
+      'fetch',
+      '--force',
+      '--no-tags',
+      '--no-recurse-submodules',
+      pullTarget.remote,
+      `+${base}:${baseRef}`,
+      `+refs/pull/${review.pullNumber}/head:${headRef}`
+    ])
+    if ((await revParse(agent.workspace.path, baseRef)).toLowerCase() !== base) {
+      throw new Error('github review base ref did not resolve to the requested SHA')
+    }
+    if ((await revParse(agent.workspace.path, headRef)).toLowerCase() !== head) {
+      throw new Error('github review head ref did not resolve to the requested SHA')
+    }
+
+    // A conflicted PR has no merge ref. Head remains an exact, reviewable
+    // checkout; when GitHub does provide a merge ref, trust it only after proving
+    // both parents are the exact base/head pair carried by the hook.
+    await git.raw(['update-ref', '-d', mergeRef]).catch(() => undefined)
+    try {
+      await git.raw([
+        'fetch',
+        '--force',
+        '--no-tags',
+        '--no-recurse-submodules',
+        pullTarget.remote,
+        `+refs/pull/${review.pullNumber}/merge:${mergeRef}`
+      ])
+      const merge = (await revParse(agent.workspace.path, mergeRef)).toLowerCase()
+      const expectedMerge = review.mergeCommitSha ? exactObjectId(review.mergeCommitSha, 'merge SHA') : undefined
+      const parents = (
+        await gitFor(agent.workspace.path)
+          .env(workspaceGitLocalEnv())
+          .raw(['rev-list', '--parents', '-n', '1', mergeRef])
+      )
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+      if (
+        (!expectedMerge || merge === expectedMerge) &&
+        parents.length === 3 &&
+        parents[1] === base &&
+        parents[2] === head
+      ) {
+        return { base, head, checkout: merge }
+      }
+    } catch {
+      // Exact head/base refs above are authoritative; merge is optional.
+    }
+    return { base, head, checkout: head }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Prepare the stable cwd for one logical session. Ordinary worktrees preserve
+ * their working state between turns. Review worktrees are daemon-owned snapshots
+ * and are reset on every delivery after an exact remote fetch. */
+export async function prepareSessionWorkspace(
+  agent: Agent,
+  request: PrepareSessionWorkspaceRequest,
+  opts: PrepareWorkspaceOptions = {}
+): Promise<string> {
+  const primary = await prepareWorkspace(agent, opts)
+  if (agent.workspace.mode !== 'git-repo' || request.isolation === 'shared') return primary
+
+  const id = sessionWorktreeId(request.sessionKey)
+  const root = prepareSessionWorktreeRoot(agent)
+  const cwd = join(root, id)
+  if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) {
+    throw new Error('session worktree path must not be a symlink')
+  }
+  const review = request.review ? await fetchReviewRevision(agent, id, request.review) : undefined
+  const target = review?.checkout ?? `refs/remotes/origin/${agent.workspace.gitBranch}`
+  let attached = existsSync(join(cwd, '.git'))
+  if (attached) {
+    try {
+      await revParse(cwd, 'HEAD')
+    } catch {
+      attached = false
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  }
+  if (!attached) {
+    rmSync(cwd, { recursive: true, force: true })
+    await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
+    await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'add', '--detach', cwd, target])
+  } else if (review) {
+    const worktreeGit = gitFor(cwd).env(workspaceGitLocalEnv())
+    await worktreeGit.raw(['reset', '--hard', target])
+    await worktreeGit.raw(['clean', '-ffd'])
+  }
+  if (review && (await revParse(cwd, 'HEAD')).toLowerCase() !== review.checkout) {
+    throw new Error('github review worktree HEAD does not match the verified revision')
+  }
+  const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
+  return withSkills(agent, resolveAcpCwd(cwd, agentDir), opts)
+}
+
 /** Resolve the already-prepared ACP cwd without pulling, acquiring sources, or
  * reconciling skills. The daemon cold-host gate calls prepareWorkspace before
  * spawn; SessionManager uses this pure follow-up to consume that same result
@@ -399,6 +584,7 @@ export async function prepareWorkspaceForActivation(
 
   if (agent.workspace.mode === 'from-scratch') {
     if (replace) {
+      clearSessionWorktrees(agent)
       rmSync(cwd, { recursive: true, force: true })
       mkdirSync(cwd, { recursive: true })
     }
@@ -444,6 +630,7 @@ export async function prepareWorkspaceForActivation(
     await cloneRepoAt(agent, staged)
     resolveAcpCwd(staged, normalizeRepoSubdir(agent.workspace.agentDir))
     if (replace) {
+      clearSessionWorktrees(agent)
       rmSync(cwd, { recursive: true, force: true })
       renameSync(staged, cwd)
       try {

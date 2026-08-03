@@ -162,10 +162,17 @@ export default function HomeView() {
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
   const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | null>(null)
   const [runtime, setRuntime] = useState<{ model?: string; effort?: string; permissionPreset?: string }>({})
+  const [worktreeOverride, setWorktreeOverride] = useState<boolean>()
+  const githubWorkspace = agent?.workspace?.mode === 'github' ? agent.workspace : undefined
+  const defaultWorktree = githubWorkspace?.worktree === true
+  const worktree = worktreeOverride ?? defaultWorktree
 
   // Overrides are per-agent; drop them when the agent changes so the new agent's
   // own defaults show through.
-  useEffect(() => setRuntime({}), [agent?.id])
+  useEffect(() => {
+    setRuntime({})
+    setWorktreeOverride(undefined)
+  }, [agent?.id])
 
   // The selected agent's owning daemon supplies the model catalog + defaults.
   const owningDaemon = agent ? daemons.find((d) => d.daemonId === agent.daemon) : undefined
@@ -239,7 +246,7 @@ export default function HomeView() {
   const send = () => {
     const text = input.trim()
     if (!text || !agent || !canSend) return // offline / unsigned-in agents can't take a session
-    const id = openPlayground(agent, members) // pg_ session; pgSend awaits the socket, so no race
+    const id = openPlayground(agent, members, !multi && githubWorkspace ? { worktree } : undefined)
     // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
     // overrides — so the session runs exactly what the composer showed. stageRuntimeChange
     // is a synchronous ref write, so pgSend's payload picks it up (PlaygroundProvider).
@@ -494,6 +501,17 @@ export default function HomeView() {
                     onOpenChange={(o) => setMenu(o ? 'permission' : null)}
                     onChange={(v) => setRuntime((r) => ({ ...r, permissionPreset: v }))}
                   />
+                )}
+                {!multi && githubWorkspace && (
+                  <label className={`${CHIP} cursor-pointer`}>
+                    <input
+                      type="checkbox"
+                      checked={worktree}
+                      onChange={(event) => setWorktreeOverride(event.target.checked)}
+                      className="h-4 w-4 accent-(--brand)"
+                    />
+                    Worktree
+                  </label>
                 )}
               </>
             ) : (

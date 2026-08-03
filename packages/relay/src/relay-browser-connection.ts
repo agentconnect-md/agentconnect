@@ -126,7 +126,8 @@ export function parseBrowserFrame(msg: unknown, user: string): ParsedBrowserOp |
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
       ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
-      ...(m.runtime !== undefined ? { runtime: m.runtime } : {})
+      ...(m.runtime !== undefined ? { runtime: m.runtime } : {}),
+      ...(m.worktree !== undefined ? { worktree: m.worktree } : {})
     })
     if (!parsed.success || parsed.data.op !== 'turn') return null
     const targets = m.targets !== undefined ? uuidArray(m.targets, 16) : undefined

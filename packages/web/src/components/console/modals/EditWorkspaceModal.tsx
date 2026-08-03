@@ -33,6 +33,7 @@ import {
   GithubRepositoryField,
   GithubRepositoryOption,
   RepositoryAccessField,
+  WorktreeField,
   WorkingSubdirectoryField,
   WorkspaceBranchField,
   WorkspaceModeField
@@ -74,6 +75,7 @@ export default function EditWorkspaceModal({
   const [branchOpen, setBranchOpen] = useState(false)
   const [branchQ, setBranchQ] = useState('')
   const [agentDir, setAgentDir] = useState(currentAgentDir)
+  const [worktree, setWorktree] = useState(githubWorkspace ? githubWorkspace.worktree === true : true)
   const [write, setWrite] = useState(currentWrite ?? (authorized[0] ? authorized[0].access === 'write' : true))
   // Per-user authz preflight for the picked repo. null = unknown/loading —
   // never blocks; the server re-checks when the edit is submitted.
@@ -234,6 +236,7 @@ export default function EditWorkspaceModal({
     mode === 'github' && githubWorkspace !== null && branch.trim() !== (githubWorkspace.branch ?? '')
   const agentDirChanged =
     mode === 'github' && githubWorkspace !== null && (normalizedAgentDir ?? '') !== currentAgentDir
+  const worktreeChanged = mode === 'github' && githubWorkspace !== null && worktree !== !!githubWorkspace.worktree
   const destructiveChange = mode !== agent.workspace.mode || repoChanged || branchChanged
   const changed =
     mode !== agent.workspace.mode ||
@@ -242,6 +245,7 @@ export default function EditWorkspaceModal({
         repoChanged ||
         branchChanged ||
         agentDirChanged ||
+        worktreeChanged ||
         accessChanged ||
         installationChanged))
   const canSubmit =
@@ -274,6 +278,7 @@ export default function EditWorkspaceModal({
           ? { mode: 'scratch' }
           : {
               mode: 'github',
+              worktree,
               repoFullName: pick,
               ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
               ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
@@ -484,6 +489,7 @@ export default function EditWorkspaceModal({
                     setErr(null)
                   }}
                 />
+                <WorktreeField checked={worktree} onChange={setWorktree} />
 
                 {uncovered && (
                   <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">

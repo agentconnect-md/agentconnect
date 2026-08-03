@@ -35,6 +35,27 @@ const attribution = {
 }
 
 describe('GithubReviewClient', () => {
+  it('returns the merge revision GitHub associates with the current pull', async () => {
+    const mergeCommitSha = 'c'.repeat(40)
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      json(200, {
+        state: 'open',
+        merged: false,
+        draft: false,
+        head: { sha: target.expectedHeadSha },
+        base: { sha: target.expectedBaseSha },
+        merge_commit_sha: mergeCommitSha
+      })
+    )
+    const client = new GithubReviewClient({ fetchImpl })
+
+    await expect(client.getPull(target.token, target.repoFullName, target.pullNumber)).resolves.toMatchObject({
+      headSha: target.expectedHeadSha,
+      baseSha: target.expectedBaseSha,
+      mergeCommitSha
+    })
+  })
+
   it('validates event/verdict before any network effect', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
     const client = new GithubReviewClient({ fetchImpl })

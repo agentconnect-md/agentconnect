@@ -184,6 +184,15 @@ function trustedInlineReplyTarget(
   return { repo: github.repoFullName, number: github.pullNumber }
 }
 
+function githubWorkspaceCheckHint(github: GithubHookMetadata | undefined): string {
+  if (github?.subjectKind !== 'pull_request') return ''
+  return (
+    ' Before trusting local files or repository traces, verify that the local HEAD is the trusted PR head or a merge ' +
+    'whose parents are exactly the trusted base and head shown above. If that cannot be proven, use GitHub read-only ' +
+    'inspection for the exact revision instead; never infer a finding from another checkout.'
+  )
+}
+
 /** Trailing instruction for github fires on a NUMBERED thread (issue/PR): the
  *  daemon is the sole writer of the reply comment, so the agent must return its
  *  answer rather than mutate comments/reviews through CLI, MCP, connector, or API.
@@ -199,18 +208,18 @@ function githubReplyHint(
   if (inlineTarget) {
     return [
       '',
-      `Return one self-contained final answer for the triggering inline review conversation. The daemon posts that final back to the existing review thread on ${where} automatically and exclusively owns the inline reply. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned inline reply.`
+      `Return one self-contained final answer for the triggering inline review conversation. The daemon posts that final back to the existing review thread on ${where} automatically and exclusively owns the inline reply. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned inline reply.${githubWorkspaceCheckHint(github)}`
     ].join('\n')
   }
   if (c.event === 'pull_request_review_comment') {
     return [
       '',
-      `Return one self-contained final answer for the triggering review conversation. This delivery does not carry trusted inline-thread metadata, so the daemon posts that final back to ${where} automatically as one ordinary GitHub comment. Formal GitHub reviews are unavailable for this review-comment event family, and the daemon exclusively owns the fallback comment. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned fallback comment.`
+      `Return one self-contained final answer for the triggering review conversation. This delivery does not carry trusted inline-thread metadata, so the daemon posts that final back to ${where} automatically as one ordinary GitHub comment. Formal GitHub reviews are unavailable for this review-comment event family, and the daemon exclusively owns the fallback comment. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned fallback comment.${githubWorkspaceCheckHint(github)}`
     ].join('\n')
   }
   return [
     '',
-    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. If this active PR hook permits a formal review, use only the structured \`submitGithubReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.`
+    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. If this active PR hook permits a formal review, use only the structured \`submitGithubReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.${githubWorkspaceCheckHint(github)}`
   ].join('\n')
 }
 
@@ -228,6 +237,8 @@ function buildGithubHookText(
     `From: ${c.senderLogin ?? 'unknown'}${c.authorAssociation ? ` (${c.authorAssociation})` : ''}${
       c.labels?.length ? ` · labels: ${c.labels.join(', ')}` : ''
     }`,
+    ...(github?.baseSha ? [`Base SHA: ${github.baseSha}`] : []),
+    ...(github?.headSha ? [`Head SHA: ${github.headSha}`] : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead
