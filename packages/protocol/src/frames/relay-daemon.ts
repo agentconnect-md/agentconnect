@@ -502,10 +502,14 @@ export const RdAgentMsgFwd = z.object({
   externalOrigin: ExternalSessionAudience.optional(),
   // Forwarded verbatim from RdAgentMsg (§5.3 lineage reply): the target session's
   // acpSessionId this delivery replies into. Opaque to the relay — the TARGET
-  // daemon is the side that terminally validates it (exists + owned by
-  // `toAgentId`) and dispatches into the existing session instead of coordinate
-  // keying. The relay still applies its ordinary coordinate-integrity check to
-  // `coords`; this field never widens what the caller may assert.
+  // daemon terminally validates it with an AGENT-SCOPED lookup (ACP ids are
+  // runtime/agent-local) and dispatches into the existing session instead of
+  // coordinate keying. Both the relay and the target SKIP the wake-coordinate
+  // membership gate for lineage replies: nothing is keyed or created from
+  // `coords` on this path, so the aliasing threat that gate closes is absent,
+  // and membership would wrongly reject a replier that does not share the
+  // origin's channel. Org + directional policy and the session capability
+  // (possession of the id + ownership by `toAgentId`) still gate delivery.
   lineageReplyTo: z.string().min(1).optional(),
   // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
   // session report its outcome back into `originSessionId`. Opaque to the relay — it is the

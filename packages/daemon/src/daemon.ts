@@ -6585,29 +6585,6 @@ export class Daemon {
       )
       return record(nak('not_allowed'))
     }
-    // COORDINATE INTEGRITY (§2.5 #4), the second half of terminal-verify and the reason
-    // dropping channel from the POLICY predicate is not the same as dropping it entirely:
-    // `coords` is still the woken peer's SESSION key (see sessionChannel below), so a caller
-    // that could assert any channel could compute its way INTO an existing session of the
-    // target in a channel the caller has no access to — resuming that conversation and, with
-    // `needsReply`, reporting its content back. `coordsDecision` is the single mirrored
-    // decision the relay's ingress applies too (see CpCollabRoutes.coordsDecision for the
-    // three branches and why the LOOKUP is platform-free while the branch is not).
-    const coordsVerdict = this.cpCollab.coordsDecision(msg.orgId, platform, channel, msg.trustedFromAgentId)
-    if (coordsVerdict.verdict === 'reject') {
-      this.log.warn(
-        `relay: rd/agentmsg/fwd not_allowed — ${msg.trustedFromAgentId} may not assert coords ${platform}:${channel}`
-      )
-      return record(nak('not_allowed'))
-    }
-    // Branch 3: a channel-free coordinate is admitted but must NOT become the session key —
-    // this is where that key is minted, so it is where the substitution belongs (the relay
-    // forwards `coords` verbatim, so only one side may rewrite them or the two would disagree
-    // about the `childSessionId` this ACK reports). The replacement is derived from the
-    // RELAY-MINTED trusted caller, so it cannot alias any existing platform session, and every
-    // wake from that caller collapses onto the one pairwise session.
-    const sessionChannel = coordsVerdict.verdict === 'synthetic' ? coordsVerdict.channel : channel
-
     // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
     // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
     const callMeta: CallMeta = {
@@ -6628,18 +6605,23 @@ export class Daemon {
       // and only the CP may open it.
       ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
     }
+
     // §5.3 lineage REPLY: dispatch into the EXACT existing origin session instead of
     // coordinate keying. The sender's daemon enforced origin-only authorization (the
     // replier's turn originated from this session); terminal validation here is
     // possession + ownership — the high-entropy acpSessionId is only handed out
-    // through wake lineage, and the session must belong to the target agent. A
-    // channel-free origin's coordinate must NOT be substituted (that would mint a
-    // DIFFERENT synthetic session and strand the reply outside the originating turn);
-    // a missing/foreign session NAKs `not_found`, mirroring the local replyToSession
-    // contract — SessionTarget never creates a session.
+    // through wake lineage, and the AGENT-SCOPED lookup below IS the ownership check
+    // (ACP session ids are runtime/agent-local, so two agents may legitimately share
+    // one; a global lookup could surface the wrong agent's row). This branch runs
+    // BEFORE the wake-coordinate membership gate: a lineage reply never keys or
+    // creates a session from `coords`, so the aliasing threat that gate closes is
+    // absent — and membership would wrongly reject a replier that does not share the
+    // origin's channel (an explicitly supported org-scoped case). Org + directional
+    // policy above still apply. A missing session NAKs `not_found`, mirroring the
+    // local replyToSession contract — SessionTarget never creates a session.
     if (msg.lineageReplyTo !== undefined) {
-      const origin = this.store.getSessionByAcpId(msg.lineageReplyTo)
-      if (!origin || origin.agentId !== msg.toAgentId) return record(nak('not_found'))
+      const origin = this.store.getSessionByAcpIdForAgent(msg.toAgentId, msg.lineageReplyTo)
+      if (!origin) return record(nak('not_found'))
       // Reply transport from the SESSION's own scope (mirrors replyToSession's local branch).
       const replyIntegrationId = this.integrationIdForSessionTransport(
         origin.agentId,
@@ -6671,6 +6653,29 @@ export class Daemon {
       )
       return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: origin.key })
     }
+
+    // COORDINATE INTEGRITY (§2.5 #4), the second half of terminal-verify and the reason
+    // dropping channel from the POLICY predicate is not the same as dropping it entirely:
+    // `coords` is still the woken peer's SESSION key (see sessionChannel below), so a caller
+    // that could assert any channel could compute its way INTO an existing session of the
+    // target in a channel the caller has no access to — resuming that conversation and, with
+    // `needsReply`, reporting its content back. `coordsDecision` is the single mirrored
+    // decision the relay's ingress applies too (see CpCollabRoutes.coordsDecision for the
+    // three branches and why the LOOKUP is platform-free while the branch is not).
+    const coordsVerdict = this.cpCollab.coordsDecision(msg.orgId, platform, channel, msg.trustedFromAgentId)
+    if (coordsVerdict.verdict === 'reject') {
+      this.log.warn(
+        `relay: rd/agentmsg/fwd not_allowed — ${msg.trustedFromAgentId} may not assert coords ${platform}:${channel}`
+      )
+      return record(nak('not_allowed'))
+    }
+    // Branch 3: a channel-free coordinate is admitted but must NOT become the session key —
+    // this is where that key is minted, so it is where the substitution belongs (the relay
+    // forwards `coords` verbatim, so only one side may rewrite them or the two would disagree
+    // about the `childSessionId` this ACK reports). The replacement is derived from the
+    // RELAY-MINTED trusted caller, so it cannot alias any existing platform session, and every
+    // wake from that caller collapses onto the one pairwise session.
+    const sessionChannel = coordsVerdict.verdict === 'synthetic' ? coordsVerdict.channel : channel
 
     const resolved = this.resolveCpAgent(msg.toAgentId)
     const integrationId = msg.integrationId ?? resolved?.integrationId

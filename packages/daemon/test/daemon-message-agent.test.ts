@@ -937,6 +937,86 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     await daemon.stop()
   })
 
+  it('lineageReplyTo resolves agent-scoped: a colliding ACP id on another agent cannot shadow the origin', async () => {
+    // ACP session ids are runtime/agent-local — two agents may legitimately share one. The
+    // lookup must therefore be (toAgentId, acpSessionId); a global lookup could surface the
+    // OTHER agent's row and wrongly NAK (or worse, dispatch into it).
+    const root = scaffold([{ id: 'bot-b' }, { id: 'bot-x' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    // The colliding row is inserted FIRST so an insertion-ordered global lookup finds it.
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C9', '900.9', 'bot-x'),
+      agentId: 'bot-x',
+      platform: 'slack',
+      channel: 'C9',
+      thread: '900.9',
+      acpSessionId: 'acp-shared',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const originKey = sessionKey('dream', 'memory', 'dream-2', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: originKey,
+      agentId: 'bot-b',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'dream-2',
+      acpSessionId: 'acp-shared',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const ack = await (daemon as any).handleRelayAgentMsg(
+      fwd({ coords: { platform: 'dream', channel: 'memory' }, lineageReplyTo: 'acp-shared', deliveryId: 'd-coll' })
+    )
+    expect(ack).toMatchObject({ delivered: true, childSessionId: originKey })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.agentId).toBe('bot-b')
+    expect(calls[0]!.msg).toMatchObject({ platform: 'dream', channel: 'memory' })
+    await daemon.stop()
+  })
+
+  it('lineage replies bypass the wake-coordinate membership gate (known channel, non-member replier)', async () => {
+    // A (in C_EXECS via its origin session's channel) woke remote B, which has NO C_EXECS
+    // placement. B's reply carries A's trusted origin coords; the membership gate would refuse
+    // them as a wake, but a lineage reply never keys from coords — it must land in the exact
+    // origin session. The control asserts the gate still refuses the same coords as a WAKE.
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withExecsSnapshot(daemon, 'slack') // C_EXECS members: bot-b only; caller bot-a is not in it
+    const originKey = sessionKey('slack', 'C_EXECS', '900.1', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: originKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C_EXECS',
+      thread: '900.1',
+      acpSessionId: 'acp-execs-origin',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    // Control: the same coordinate as an ordinary WAKE stays refused.
+    const wake = await (daemon as any).handleRelayAgentMsg(
+      fwd({ coords: { platform: 'slack', channel: 'C_EXECS', thread: '900.1' }, deliveryId: 'd-wake' })
+    )
+    expect(wake).toMatchObject({ delivered: false, reason: 'not_allowed' })
+
+    const reply = await (daemon as any).handleRelayAgentMsg(
+      fwd({
+        coords: { platform: 'slack', channel: 'C_EXECS', thread: '900.1' },
+        lineageReplyTo: 'acp-execs-origin',
+        deliveryId: 'd-reply-2'
+      })
+    )
+    expect(reply).toMatchObject({ delivered: true, childSessionId: originKey })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.msg).toMatchObject({ platform: 'slack', channel: 'C_EXECS', thread: '900.1' })
+    await daemon.stop()
+  })
+
   it('lineageReplyTo NAKs not_found for a missing or foreign session — it never creates one', async () => {
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
@@ -1369,7 +1449,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
   // the child row itself is keyed with the RAW platform. The reply-transport lookup must
   // match the persisted scope across ALL integrations — a raw-platform integration filter
   // finds nothing and refuses the reply as not_found.
-  it('resolves a scoped dream child’s reply transport through the legacy coordinate platform', async () => {
+  it('resolves a scoped dream child’s reply transport by its persisted scope', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
     // The origin owner holds a real scoped Slack integration — the shape a dream wake's

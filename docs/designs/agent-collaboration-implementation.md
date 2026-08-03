@@ -364,19 +364,16 @@ Two properties of the membership key are load-bearing:
 
 - **Platform-free _lookup_.** The coordinate platform is deliberately not part of the
   membership key — it is consulted only afterwards, to classify a coordinate the lookup
-  did not find (reject vs. substitute). The woken session's key is computed from
-  `Daemon.narrowPlatform`, which folds `feishu` — and any value it does not recognise —
-  into `'slack'`, while snapshot channel rows are keyed by the **integration** platform. A
-  platform-keyed lookup therefore searched a different key space than the session key it
-  protects, and the original admit-on-miss branch turned every such mismatch into a
-  **pass**: `coords.platform:'feishu'` over a Slack channel id sailed through and still
-  computed a bit-identical child session key, and in a Feishu org (rows keyed `feishu`,
-  honest coords already narrowed to `slack`) the gate was a complete no-op. Matching on the
-  channel id alone closes both directions and needs no `narrowPlatform` twin on the relay,
-  which has none. Now that a miss on an IM platform rejects rather than passes, the
-  platform-free lookup also stops that mismatch from _rejecting_ honest coords. It
-  over-blocks only if one org uses the same channel id on two platforms — which then
-  demands membership in one of them.
+  did not find (reject vs. substitute). Historically it COULD not be part of the key:
+  session keys were computed through the since-deleted `Daemon.narrowPlatform` fold
+  (`feishu` — and any value it did not recognise — became `'slack'`), while snapshot
+  channel rows are keyed by the **integration** platform, so a platform-keyed lookup
+  searched a different key space than the session key it protects, and the original
+  admit-on-miss branch turned every such mismatch into a **pass**. Session keys carry the
+  raw platform now (S1a §6.3), but the channel-id-only match stays: it closes the
+  relabelling dodge in both directions regardless of key regime and needs no fold twin on
+  the relay, which never had one. It over-blocks only if one org uses the same channel id
+  on two platforms — which then demands membership in one of them.
 - **Non-empty membership counts as "known".** An agent-less row is a channel nobody in the
   org can reach, so treating it as known would reject every call naming it while
   protecting nothing.

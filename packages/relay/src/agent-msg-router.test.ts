@@ -431,6 +431,61 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards).toHaveLength(2)
   })
 
+  it('lineage replies are exempt from the wake-coordinate membership gate (org + policy still apply)', async () => {
+    // Origin channel C_EXECS is KNOWN and its only member is the TARGET (B). The replier (A)
+    // is not in it — a wake asserting these coords is refused, but a §5.3 lineage reply never
+    // keys or creates a session from `coords`, so the relay forwards it and leaves the exact
+    // session capability (possession + ownership) to the target daemon.
+    const s = snap()
+    s.channels.push({
+      orgId: ORG,
+      platform: 'slack',
+      channelId: 'C_EXECS',
+      agents: [
+        {
+          agentId: B,
+          daemonId: D2,
+          integrationId: INT,
+          callPolicy: 'all',
+          allowedCallerAgentIds: [],
+          outboundPolicy: 'all',
+          allowedTargetAgentIds: []
+        }
+      ]
+    })
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    // Control: the same coordinate as an ordinary WAKE is refused (A is not a member).
+    const wake = await route(
+      D1,
+      baseMsg({ deliveryId: 'd-wake', coords: { platform: 'slack', channel: 'C_EXECS', thread: '900.1' } })
+    )
+    expect(wake).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    expect(forwards).toHaveLength(0)
+
+    const reply = await route(
+      D1,
+      baseMsg({
+        deliveryId: 'd-reply',
+        coords: { platform: 'slack', channel: 'C_EXECS', thread: '900.1' },
+        lineageReplyTo: 'acp-execs-origin'
+      })
+    )
+    expect(reply.delivered).toBe(true)
+    expect(forwards).toHaveLength(1)
+    expect(forwards[0]!).toMatchObject({
+      lineageReplyTo: 'acp-execs-origin',
+      coords: { platform: 'slack', channel: 'C_EXECS', thread: '900.1' }
+    })
+  })
+
   it('coords integrity: a DM / group-DM row the caller owns is KNOWN, so DM-origin A2A still routes', async () => {
     // The over-block this fail-closed branch could have caused, and the claim it rests on: a
     // direct conversation is an ORDINARY channel row wherever one exists. `IntegrationChannel
