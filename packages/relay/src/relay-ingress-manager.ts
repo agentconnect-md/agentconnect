@@ -16,7 +16,7 @@
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
 import { createHash } from 'node:crypto'
-import { MAX_AGENT_CALL_HOPS, WireFeishuCardActionValue } from '@agentconnect.md/protocol'
+import { MAX_AGENT_CALL_HOPS, WireFeishuCardActionResponse, WireFeishuCardActionValue } from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
   RdMsgSlackAction,
@@ -29,7 +29,6 @@ import type {
   RcThreadAssign,
   RcThreadLookup
 } from '@agentconnect.md/protocol'
-import { WireFeishuCardActionResponse } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'

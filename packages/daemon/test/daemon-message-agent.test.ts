@@ -954,6 +954,40 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     await daemon.stop()
   })
 
+  it('a lineage reply marked session-reply resumes the origin HEADLESS', async () => {
+    // send-message-routing-rework.md §7/§8.3/§8.4. `replyToSession`'s cross-daemon leg
+    // sends BOTH `lineageReplyTo` and `deliveryKind: 'session-reply'`, and the lineage
+    // branch builds its own message and returns before the wake path — so it needs its own
+    // headless stamp. Missing it is invisible in a textual merge and would republish the
+    // parent's entire ordinary response into its channel: precisely the downgrade the
+    // relay's capability gate exists to make impossible.
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('dream', 'memory', 'dream-1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'dream-1',
+      acpSessionId: 'acp-dream-origin',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const ack = await (daemon as any).handleRelayAgentMsg(
+      fwd({
+        coords: { platform: 'dream', channel: 'memory', thread: 'dream-1' },
+        lineageReplyTo: 'acp-dream-origin',
+        deliveryKind: 'session-reply',
+        deliveryId: 'd-reply-headless'
+      })
+    )
+    expect(ack.delivered).toBe(true)
+    expect(calls[0]!.msg.headless).toBe(true)
+    await daemon.stop()
+  })
+
   it('lineageReplyTo resolves agent-scoped: a colliding ACP id on another agent cannot shadow the origin', async () => {
     // ACP session ids are runtime/agent-local — two agents may legitimately share one. The
     // lookup must therefore be (toAgentId, acpSessionId); a global lookup could surface the

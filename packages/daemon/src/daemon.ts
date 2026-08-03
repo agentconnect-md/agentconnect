@@ -6985,7 +6985,14 @@ export class Daemon {
         text: msg.text,
         mentionedBots:
           replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
-        isDm: false
+        isDm: false,
+        // send-message-routing-rework.md §7/§8.3: a lineage reply IS the cross-daemon
+        // parent-session reply, so it carries the same session-only contract as the local
+        // branch of `replyToSession`. This branch returns before the wake path below, so
+        // the stamp has to be here too — without it a parent that happens to live on
+        // another daemon would republish its whole ordinary response into its channel,
+        // which is the downgrade §8.4 exists to make impossible.
+        ...(msg.deliveryKind === 'session-reply' ? { headless: true } : {})
       }
       void this.dispatch(msg.toAgentId, reply, replyIntegrationId, undefined, callMeta).catch((err) =>
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
