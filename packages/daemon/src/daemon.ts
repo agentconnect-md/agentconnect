@@ -306,6 +306,7 @@ import {
   type NormalizedMessage
 } from './messages/normalized.js'
 import { ConnectionPool, type ConnectionKey } from './platforms/registry.js'
+import { TurnOutputRegistry, type TurnOutputContext } from './platforms/turn-output.js'
 import type {
   RegisterReq,
   RegisterOk,
@@ -1152,6 +1153,56 @@ function isSlackStatusBarText(text: string): boolean {
   return text.startsWith(':bar_chart:') || text.startsWith('\uD83D\uDCCA')
 }
 
+/** The union of every platform's renderer action, and of every platform's
+ *  converger. Each surface narrows to its own arm; the unions exist because the
+ *  turn record is still core-owned (they dissolve when the convergers move with
+ *  their platforms). */
+type DaemonRenderAction = SlackAction | TelegramAction | DiscordAction | FeishuAction
+type DaemonConverger = OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger
+
+/**
+ * §7.3 per-turn platform state. Each shape is owned by exactly one turn-output
+ * surface and reached only through {@link turnState} from that surface's
+ * applier — core stores the slot and never looks inside. These used to be
+ * platform-named fields on the turn record itself, which is precisely the
+ * accretion the opaque slot exists to stop.
+ */
+interface SlackTurnState {
+  /** Older reply sections whose footer-removal update failed. Retried on the next
+   *  body section and once more at finalization, so a transient Slack error cannot
+   *  leave two footers standing. */
+  staleReplyFooters?: { ts: string; text: string }[]
+}
+
+interface TelegramTurnState {
+  /** The message id every post this turn replies to (the triggering message —
+   *  "the last message in the session" at turn start), so the bot's answer threads
+   *  under it and a human reply-to-bot stitches back to this session. */
+  replyTo?: number
+}
+
+interface FeishuTurnState {
+  /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
+   *  `card-start` succeeds; `cardAttempted` prevents duplicate initial cards. */
+  card?: FeishuStreamingCard
+  cardAttempted?: boolean
+  /** Periodic cumulative CardKit element flush (separate from the transcript idle
+   *  flush core owns). */
+  streamTimer?: NodeJS.Timeout
+}
+
+/** Read a turn's opaque platform state as the owning surface's shape. Only that
+ *  surface's applier (and the platform-scoped timers it arms) calls this.
+ *
+ *  The slot materializes on first read: a turn whose surface seeded nothing — or
+ *  whose record was built directly, as isolated applier tests do — simply starts
+ *  with empty platform state, which is what "no state yet" means. Seeding is an
+ *  optimization for platforms that HAVE an initial value (Telegram's reply
+ *  anchor), never a precondition for reading. */
+function turnState<S extends object>(p: Pending): S {
+  return (p.turnState ??= {} as S) as S
+}
+
 /** Per-in-flight-turn rendering state, keyed by ACP sessionId in `this.pending`. */
 interface Pending {
   /** Admitted-turn lifecycle owner. Backstops and finalization share its cleanup
@@ -1220,11 +1271,6 @@ interface Pending {
   transcriptChannel: string
   /** thread_ts for body posts (undefined for a top-level message). */
   thread?: string
-  /** Telegram reply target: the message id every post this turn replies to (the
-   *  triggering message — "the last message in the session" at turn start), so the
-   *  bot's answer threads under it and a human reply-to-bot stitches back to this
-   *  session. Undefined off Telegram. */
-  tgReplyTo?: number
   /** thread_ts for the assistant status bar (always set; falls back to msgId). */
   statusThread: string
   /** P3 outbound: the final-answer selector + completed comment on the triggering
@@ -1233,10 +1279,10 @@ interface Pending {
    *  persisted once from the collector so transport flushes cannot split one answer. */
   github?: { poster: GithubFinalPoster; collector: GithubReplyCollector; deferredFinalTranscript: boolean }
   conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
-  /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
-   * `card-start` succeeds; `feishuCardAttempted` prevents duplicate initial cards. */
-  feishuCard?: FeishuStreamingCard
-  feishuCardAttempted?: boolean
+  /** §7.3 OPAQUE per-turn platform state, seeded by this turn's output surface and
+   *  read only by that surface (see {@link turnState}). Core carries the slot and
+   *  never inspects it — the reason platform-shaped fields stopped accreting here. */
+  turnState?: unknown
   /** True when `none` output mode removed this turn's interactive permission surface — see
    *  {@link noneSuppressedApprovalSurface}. Snapshotted at dispatch ALONGSIDE `conn`; the
    *  permission policy still queues the request for an Agent editor, but never exposes a
@@ -1283,9 +1329,6 @@ interface Pending {
   /** Current successfully-delivered agent reply message. `footerKey` records which footer
    *  it owns; progress/tool/reasoning chrome never replaces this pointer. */
   lastReply?: { ts: string; text: string; footerKey?: string }
-  /** Older reply sections whose footer-removal update failed. Retried on the next body
-   *  section and once more at finalization so a transient Slack error cannot leave two. */
-  staleReplyFooters?: { ts: string; text: string }[]
   /** ts of the session's interactive status-bar message, once known. Persisted in the
    *  session row so later turns update the first line instead of posting duplicates. */
   statusBarTs?: string
@@ -1310,8 +1353,6 @@ interface Pending {
   evaluationTurnId: string
   /** Pending idle-flush timer (§9.1). */
   idleTimer?: NodeJS.Timeout
-  /** Periodic cumulative CardKit element flush (separate from transcript idle flush). */
-  feishuStreamTimer?: NodeJS.Timeout
   /** Serializes applyAction so in-place edits don't race on progressTs/planTs/reasoningTs. */
   applyChain: Promise<void>
   /** Resolves when this turn leaves `pending` (success or failure) — drain awaits it. */
@@ -1603,6 +1644,51 @@ export class Daemon {
   private readonly telegramPool = new ConnectionPool<TelegramConnection>('telegram', telegramConnKey)
   private readonly discordPool = new ConnectionPool<DiscordConnection>('discord', discordConnKey)
   private readonly feishuPool = new ConnectionPool<FeishuConnection>('feishu', feishuConnKey)
+  /**
+   * §7.3 turn-output surfaces — the converger factory, the applier, and the
+   * opaque per-turn state slot, as ONE trio per platform. The bodies still live
+   * on this class (they reach into core turn machinery); the surface is the
+   * published shape they move against in the per-platform stages.
+   *
+   * The core entry renders Slack AND every non-platform origin (webchat / hook /
+   * dream), which is exactly what the `platform === …` ternaries this replaces
+   * did with their default arm.
+   */
+  private readonly turnSurfaces: TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage> =
+    (() => {
+      const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
+        platform: 'slack',
+        createConverger: (ctx) => new OutputConverger(ctx.mode as never),
+        initialTurnState: (): SlackTurnState => ({}),
+        apply: (p, action) => this.applySlackAction(p, action as SlackAction)
+      })
+      registry.register({
+        platform: 'telegram',
+        // The continue-the-topic hint only earns its space in a group, where the
+        // reply chain is the ONLY way back into this session; a DM already has one
+        // implicit thread. Gated on showFooter, the delivery-chrome switch.
+        createConverger: (ctx) =>
+          new TelegramConverger(ctx.mode as never, { continueHint: ctx.showFooter && !ctx.isDm }),
+        initialTurnState: (ctx): TelegramTurnState => {
+          const replyTo = this.telegramReplyTarget(ctx.message)
+          return replyTo !== undefined ? { replyTo } : {}
+        },
+        apply: (p, action) => this.applyTelegramAction(p, action as TelegramAction)
+      })
+      registry.register({
+        platform: 'discord',
+        createConverger: (ctx) => new DiscordConverger(ctx.mode as never),
+        initialTurnState: () => ({}),
+        apply: (p, action) => this.applyDiscordAction(p, action as DiscordAction)
+      })
+      registry.register({
+        platform: 'feishu',
+        createConverger: (ctx) => new FeishuConverger(ctx.mode as never),
+        initialTurnState: (): FeishuTurnState => ({}),
+        apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction)
+      })
+      return registry
+    })()
   // Slack id → display-name resolver (created with the store in start()).
   private nameResolver?: SlackNameResolver
   // agentId → its directory name, learned from `channelAgents` (the listAgents tool)
@@ -10930,17 +11016,11 @@ export class Daemon {
     const currentTranscriptChannel = () => transcriptChannelKey(msg.channel, msg.transportScope)
     // Daemon-side rendering only (not ACP); a fresh converger is built per turn, so a change
     // applies from the next turn on, not mid-turn (see `mode`, resolved above before replyConn).
-    const conv =
-      msg.platform === 'telegram'
-        ? // The continue-the-topic hint only earns its space in a group, where the reply chain
-          // is the ONLY way back into this session; a DM has one implicit thread already.
-          // Gated on showFooter, the agent-level switch for delivery chrome.
-          new TelegramConverger(mode, { continueHint: showFooter && !msg.isDm })
-        : msg.platform === 'discord'
-          ? new DiscordConverger(mode)
-          : msg.platform === 'feishu'
-            ? new FeishuConverger(mode)
-            : new OutputConverger(mode)
+    // §7.3: the platform's own production rules (chunk ceilings, parse mode, hint
+    // policy) and its opaque per-turn state both come from its output surface.
+    const turnSurface = this.turnSurfaces.for(msg.platform)
+    const turnCtx: TurnOutputContext<NormalizedMessage> = { mode, isDm: msg.isDm, showFooter, message: msg }
+    const conv = turnSurface.createConverger(turnCtx)
     const slackStatusOptions = this.slackStatusOptions(msg.platform, agentName, iconUrl)
     this.showActivity(
       replyConn,
@@ -11260,7 +11340,7 @@ export class Daemon {
       channel: msg.channel,
       transcriptChannel,
       thread: msg.thread,
-      ...(this.telegramReplyTarget(msg) !== undefined ? { tgReplyTo: this.telegramReplyTarget(msg) } : {}),
+      turnState: turnSurface.initialTurnState(turnCtx),
       statusThread,
       conn: replyConn,
       // Snapshot alongside `conn`: true only when `none` removed THIS turn's Slack permission
@@ -11940,7 +12020,7 @@ export class Daemon {
       // Success normally retries stale footer removals through the final attribution
       // action. Failure/suppression can bypass that action, so give any retained rows
       // the same terminal retry before releasing the Slack transport.
-      if (p.platform === 'slack' && p.conn && p.staleReplyFooters?.length) {
+      if (p.platform === 'slack' && p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
         await this.clearStaleSlackReplyFooters(p.conn as SlackConnection, p)
       }
       // The reply transport is no longer used after the final apply chain / failure
@@ -12320,9 +12400,9 @@ export class Daemon {
     p: Pending,
     additional: { ts: string; text: string }[] = []
   ): Promise<void> {
-    const pending = [...(p.staleReplyFooters ?? []), ...additional]
+    const pending = [...(turnState<SlackTurnState>(p).staleReplyFooters ?? []), ...additional]
     if (pending.length === 0) return
-    delete p.staleReplyFooters
+    delete turnState<SlackTurnState>(p).staleReplyFooters
     const failed: { ts: string; text: string }[] = []
     for (const reply of new Map(pending.map((item) => [item.ts, item])).values()) {
       try {
@@ -12342,7 +12422,7 @@ export class Daemon {
         this.log.debug(`slack: stale footer cleanup failed (${reply.ts}): ${formatErr(err)}`)
       }
     }
-    if (failed.length > 0) p.staleReplyFooters = failed
+    if (failed.length > 0) turnState<SlackTurnState>(p).staleReplyFooters = failed
   }
 
   /** Append a reply segment to the transcript WITHOUT sending it. Minimal mode keeps
@@ -12700,7 +12780,9 @@ export class Daemon {
         // The continue-the-topic hint is chrome: sent with the reply (so it lands on the very
         // message users are told to reply to) but kept out of the recorded text below.
         const sent = action.hint ? `${action.text}\n\n${action.hint}` : action.text
-        const id = await conn.postMessage(p.channel, sent, p.thread, { replyTo: p.tgReplyTo })
+        const id = await conn.postMessage(p.channel, sent, p.thread, {
+          replyTo: turnState<TelegramTurnState>(p).replyTo
+        })
         // Remember the newest body message so a turn-end `continue-hint` can annotate it.
         if (id) p.tgLastBody = { id, text: sent }
         this.store.appendTranscript({
@@ -12734,7 +12816,9 @@ export class Daemon {
         if (p.liveReplyTs) await conn.updateMessage(p.channel, p.liveReplyTs, action.text)
         else if (!p.liveReplyAttempted) {
           p.liveReplyAttempted = true
-          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread, { replyTo: p.tgReplyTo })
+          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread, {
+            replyTo: turnState<TelegramTurnState>(p).replyTo
+          })
         }
         return
       }
@@ -12745,7 +12829,7 @@ export class Daemon {
         await conn.postChrome(p.channel, action.text, {
           parseMode: action.parseMode,
           threadTs: p.thread,
-          replyTo: p.tgReplyTo
+          replyTo: turnState<TelegramTurnState>(p).replyTo
         })
         return
       case 'progress':
@@ -12756,7 +12840,7 @@ export class Daemon {
           p.progressTs = await conn.postChrome(p.channel, action.text, {
             parseMode: action.parseMode,
             threadTs: p.thread,
-            replyTo: p.tgReplyTo
+            replyTo: turnState<TelegramTurnState>(p).replyTo
           })
         }
         return
@@ -12767,7 +12851,7 @@ export class Daemon {
           p.planTs = await conn.postChrome(p.channel, action.text, {
             parseMode: action.parseMode,
             threadTs: p.thread,
-            replyTo: p.tgReplyTo
+            replyTo: turnState<TelegramTurnState>(p).replyTo
           })
         }
         return
@@ -12779,7 +12863,7 @@ export class Daemon {
           p.reasoningTs = await conn.postChrome(p.channel, action.text, {
             parseMode: action.parseMode,
             threadTs: p.thread,
-            replyTo: p.tgReplyTo
+            replyTo: turnState<TelegramTurnState>(p).replyTo
           })
         }
         return
@@ -12893,32 +12977,34 @@ export class Daemon {
     // connection (or a test fake) — cast, not instanceof. Headless no-ops.
     const conn = p.conn as FeishuConnection | undefined
     if (!conn) return
+    // The turn's Feishu state, read once through the opaque slot (§7.3).
+    const state = turnState<FeishuTurnState>(p)
     switch (action.kind) {
       case 'card-start':
-        if (p.feishuCardAttempted) return
-        p.feishuCardAttempted = true
-        p.feishuCard = await conn.startStreamingCard(p.channel, p.thread, {
+        if (state.cardAttempted) return
+        state.cardAttempted = true
+        state.card = await conn.startStreamingCard(p.channel, p.thread, {
           sessionKey: p.sessionKey,
           sessionUrl: this.sessionLink(p.acpSessionId, this.sessionLinkSource(p.platform, p.integrationId)),
           ...(p.integrationId ? { target: { v: 1, agentId: p.agentId, integrationId: p.integrationId } as const } : {})
         })
         return
       case 'card-stream':
-        if (p.feishuCard) await conn.updateStreamingCard(p.channel, p.feishuCard, action.text)
+        if (state.card) await conn.updateStreamingCard(p.channel, state.card, action.text)
         return
       case 'card-final': {
-        if (p.feishuCard) {
-          const delivered = await conn.finishStreamingCard(p.channel, p.feishuCard, action.text, action.attribution)
+        if (state.card) {
+          const delivered = await conn.finishStreamingCard(p.channel, state.card, action.text, action.attribution)
           if (delivered) return
           // A final CardKit update failure must not lose the answer. Remove the stale
           // partial card where possible, then fall back to ordinary text.
-          await conn.cancelStreamingCard(p.channel, p.feishuCard)
+          await conn.cancelStreamingCard(p.channel, state.card)
         }
         await conn.postMessage(p.channel, action.text, p.thread)
         return
       }
       case 'card-cancel':
-        if (p.feishuCard) await conn.cancelStreamingCard(p.channel, p.feishuCard)
+        if (state.card) await conn.cancelStreamingCard(p.channel, state.card)
         return
       case 'typing':
         await conn.sendChatAction(p.channel)
@@ -13385,15 +13471,10 @@ export class Daemon {
       // Check again at execution time: actions queued before an interrupt must not
       // publish later after a backed-up transport queue drains.
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
-      return (
-        p.platform === 'telegram'
-          ? this.applyTelegramAction(p, action as TelegramAction)
-          : p.platform === 'discord'
-            ? this.applyDiscordAction(p, action as DiscordAction)
-            : p.platform === 'feishu'
-              ? this.applyFeishuAction(p, action as FeishuAction)
-              : this.applySlackAction(p, action as SlackAction)
-      ).catch((err) => this.log.error(`apply failed: ${formatErr(err)}`))
+      return this.turnSurfaces
+        .for(p.platform)
+        .apply(p, action)
+        .catch((err) => this.log.error(`apply failed: ${formatErr(err)}`))
     })
   }
 
@@ -13414,20 +13495,21 @@ export class Daemon {
   private armFeishuStream(p: Pending): void {
     if (
       p.platform !== 'feishu' ||
-      p.feishuStreamTimer ||
+      turnState<FeishuTurnState>(p).streamTimer ||
       !(p.conv instanceof FeishuConverger) ||
       !p.conv.hasStreamingUpdate()
     )
       return
-    p.feishuStreamTimer = setTimeout(() => {
-      p.feishuStreamTimer = undefined
+    turnState<FeishuTurnState>(p).streamTimer = setTimeout(() => {
+      turnState<FeishuTurnState>(p).streamTimer = undefined
       for (const action of (p.conv as FeishuConverger).streamUpdate()) this.enqueueApply(p, action)
     }, FEISHU_STREAM_FLUSH_MS)
   }
 
   private clearFeishuStream(p: Pending): void {
-    if (p.feishuStreamTimer) clearTimeout(p.feishuStreamTimer)
-    p.feishuStreamTimer = undefined
+    const state = turnState<FeishuTurnState>(p)
+    if (state.streamTimer) clearTimeout(state.streamTimer)
+    state.streamTimer = undefined
   }
 
   private clearIdle(p: Pending): void {
