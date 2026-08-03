@@ -51,12 +51,11 @@ const pathIdentity = async (path: string): Promise<PathIdentity> => {
   return { dev: stat.dev.toString(), ino: stat.ino.toString() }
 }
 
-// Crash recovery drives the confined workspace mutator, which runs inside the OS
-// sandbox. Skip where no usable sandbox exists (e.g. a Linux CI runner without
-// bwrap/rg/socat), mirroring sandbox.test.ts; validated on macOS Seatbelt.
-const sandboxReady = process.platform === 'darwin' || detectSandbox() === 'bwrap'
+// Exercise the same live Linux SRT/bwrap boundary as sandbox.test.ts. macOS
+// sandbox coverage is deferred to the SRT platform-support follow-up.
+const hasBwrap = detectSandbox() === 'bwrap'
 
-describe.skipIf(!sandboxReady)('skill install ledger crash recovery', () => {
+describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
   let root: string
   let cwd: string
   let stateDir: string
