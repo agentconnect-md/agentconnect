@@ -76,6 +76,7 @@ import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
 import { mergeSessionMessages } from '@/lib/session-transcript'
+import { useStickToBottom } from '@/lib/stick-to-bottom'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
@@ -1707,6 +1708,11 @@ export default function SessionDetailView() {
     return () => window.clearInterval(timer)
   }, [visibleTailReady, refreshTranscriptTail])
 
+  // Everything above only APPENDS rows; nothing ever moved the viewport, so a
+  // live session's newest output landed below the fold. Follow it — but only for
+  // a reader who is already at the bottom (see lib/stick-to-bottom).
+  const stickToBottom = useStickToBottom(conversationKey ?? sid ?? null)
+
   const focusPagesRef = useRef(0)
   // The persistent layout survives key-to-key navigation: re-arm the one-shot
   // focus state whenever the (conversation, participant) target changes.
@@ -1958,13 +1964,20 @@ export default function SessionDetailView() {
     // narrow by @mention (the relay would apply its all-participants default).
     // Named, not raw: mention narrowing matches on the display name the composer
     // chips show.
-    pgSend(
+    const sent = pgSend(
       session.id,
       session.agentId ?? '',
       text,
       isWebchat ? session.channelId : undefined,
       isWebchat ? liveRoster : undefined
     )
+    // Writing ends reading: someone who scrolled up through history and then
+    // sends must not have their own message — or the reply to it — land
+    // off-screen, so re-arm the bottom-follow regardless of scroll position.
+    // Only on an ACCEPTED send, though: Enter on an empty composer, or while a
+    // turn is still streaming, sends nothing, and yanking a reader out of
+    // history for a no-op would break the very guarantee this makes.
+    if (sent) stickToBottom()
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return
