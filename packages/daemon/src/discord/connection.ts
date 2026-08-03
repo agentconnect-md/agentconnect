@@ -23,6 +23,7 @@ import {
   type DiscordComponents,
   type DiscordSelectKind
 } from './render.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 /**
  * §Discord edge unit. Mirrors slack/connection.ts + telegram/connection.ts but over
@@ -148,7 +149,7 @@ type Sendable = Channel & {
   messages?: { fetch: (id: string) => Promise<Message> }
 }
 
-export class DiscordConnection {
+export class DiscordConnection implements PlatformConnection {
   private client: Client
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (discord.js handles REST rate limits, but the queue keeps a
