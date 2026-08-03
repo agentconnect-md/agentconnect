@@ -27,7 +27,7 @@ import {
   type SessionMessageDto
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
-import { wireMentions } from '@/lib/conversation-addressing'
+import { resolveRoster, wireMentions } from '@/lib/conversation-addressing'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
 import {
@@ -981,7 +981,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // send degrades to the relay's all-participants default: mentions can't
       // narrow, and no lanes are pre-created (leaving delivery to the
       // early-frame admission path).
-      const roster = session?.participants ?? knownParticipants ?? []
+      //
+      // The staged-ref fallback (resolveRoster) covers the FIRST send of a
+      // fresh multi-agent conversation: openPlayground stages the session and
+      // HomeView sends in the same tick, so `pgSessions[id]` is still the
+      // pre-stage snapshot. Reading only state here silently dropped
+      // mentions/targets (and lane pre-creation) from every first message —
+      // the standing mention never reached the wire, so the parallel-answer
+      // race could still silence an agent on exactly the message most users
+      // test with.
+      const roster = resolveRoster(session?.participants, knownParticipants, rosterAgentIds.current.get(id), (a) =>
+        rosterNames.current.get(id)?.get(a)
+      )
       if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
         rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
       }
