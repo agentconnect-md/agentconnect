@@ -3,6 +3,7 @@
 > **Status:** Proposed.
 >
 > Related documents:
+> [integration-plugin-audit.md](integration-plugin-audit.md) (the completed S0 branch audit),
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
 > [daemon-detailed-design.md](daemon-detailed-design.md),
 > [feishu-integration.md](feishu-integration.md),
