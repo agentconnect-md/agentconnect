@@ -135,6 +135,22 @@ const GITHUB_REVISION_REVIEW_EVENTS = new Set([
   'check_run:requested_action'
 ])
 
+/** True only when this delivery opens a review generation for the current PR
+ * revision. Ordinary PR conversations may still intentionally submit a review,
+ * but must not destructively replace their stable conversational worktree. */
+export function githubOpensReviewGeneration(
+  event: string | undefined,
+  github: GithubHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): boolean {
+  return Boolean(
+    github?.subjectKind === 'pull_request' &&
+    reviewPolicy !== undefined &&
+    reviewPolicy !== 'off' &&
+    (github.explicitReviewRequest || GITHUB_REVISION_REVIEW_EVENTS.has(event ?? ''))
+  )
+}
+
 function githubReviewDecisionHint(
   c: HookContext,
   github: GithubHookMetadata | undefined,
@@ -143,7 +159,7 @@ function githubReviewDecisionHint(
   if (github?.subjectKind !== 'pull_request') return ''
   if (reviewPolicy === 'off') return ''
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
-  if (reviewPolicy !== undefined && (github.explicitReviewRequest || GITHUB_REVISION_REVIEW_EVENTS.has(event))) {
+  if (githubOpensReviewGeneration(event, github, reviewPolicy)) {
     const passingEvent = reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT'
     const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
     return (

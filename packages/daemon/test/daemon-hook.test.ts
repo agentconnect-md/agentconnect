@@ -495,6 +495,58 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   })
 
+  it('preserves the stable worktree for an ordinary PR conversation', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-conversation-workspace'),
+        gitRepo: 'https://github.com/acme/infra',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true
+      }
+    })
+    const daemon = new Daemon({ root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace')
+    const entry = {
+      msg: { text: 'Answer this pull request question.' },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'ordinary-pr-conversation',
+        firedAt: new Date().toISOString(),
+        event: 'issue_comment:created',
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 461,
+          headSha: 'a'.repeat(40),
+          baseSha: 'b'.repeat(40),
+          reportSha: 'a'.repeat(40)
+        }
+      }
+    }
+
+    await expect(
+      (daemon as any).prepareGithubReviewWorkspace(entry, 'hook:acme/infra#461', (daemon as any).agents.get(AGENT_ID))
+    ).resolves.toEqual({})
+    expect(prepare).not.toHaveBeenCalled()
+    expect(entry.msg.text).toBe('Answer this pull request question.')
+    await daemon.stop()
+  })
+
   it('disables formal-review authority by event family when a rolling relay omits inline ids', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost().factory })
     await daemon.start()

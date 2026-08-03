@@ -297,16 +297,17 @@ The trust boundary depends on runtime permissions and repository credentials:
   hook turn; and
 - formal reviews require the structured, action-time-authorized review path.
 
-Before a pull-request review turn starts, the daemon must also establish the
-trusted filesystem revision. It resolves any missing head/base metadata through
-the authenticated GitHub API. When the Agent workspace is the same repository,
-the daemon fetches the exact base and head objects into daemon-owned refs and
-checks out an isolated worktree. A GitHub merge ref may be used only after its
-object ID and ordered parents are proven to be the trusted base and head;
-otherwise the exact head is used. A formal review fails closed if that fetch or
-verification fails. If the Agent workspace is another repository, the prompt
-forbids trusting local traces and requires read-only GitHub inspection of the
-trusted revision instead.
+Before a formal pull-request review generation starts, the daemon must also
+establish the trusted filesystem revision. It resolves any missing head/base
+metadata through the authenticated GitHub API. When the Agent workspace is the
+same repository, the daemon fetches the exact base and head objects into
+daemon-owned refs and checks out an isolated worktree. A GitHub merge ref may be
+used only after its object ID and ordered parents are proven to be the trusted
+base and head; otherwise the exact head is used. A formal review fails closed if
+that fetch or verification fails. If the Agent workspace is another repository,
+the prompt forbids trusting local traces and requires read-only GitHub inspection
+of the trusted revision instead. Ordinary PR conversations preserve their stable
+session worktree and rely on the same HEAD-verification/read-only fallback prompt.
 
 The model-visible review instruction repeats the trusted base/head and requires
 verifying local `HEAD` before relying on file traces. This workspace fence is in

@@ -170,7 +170,7 @@ import { FeishuConverger, renderStatusReply as renderFeishuStatusReply, type Fei
 import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
-import { buildHookMessage, hookAnchorText } from './messages/hook-message.js'
+import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
 import {
   GithubReviewClient,
@@ -8101,6 +8101,7 @@ export class Daemon {
       snapshot.gateMode === 'informational' &&
       snapshot.reportingMode !== 'status' &&
       (!this.cfg.daemonId || snapshot.dispatchDaemonId === this.cfg.daemonId) &&
+      githubOpensReviewGeneration(hook.event, github, snapshot.reviewPolicy) &&
       !isGithubReviewCommentHook(hook)
     )
   }
@@ -8164,9 +8165,10 @@ export class Daemon {
     }
   }
 
-  /** Prepare an exact, isolated checkout before the model session starts. A
+  /** Prepare an exact, isolated checkout before a formal review generation. A
    * formal review may use GitHub read-only inspection when its configured local
-   * repo differs, but it must never silently fall back to a stale checkout. */
+   * repo differs, but it must never silently fall back to a stale checkout.
+   * Ordinary PR conversations preserve their stable session worktree. */
   private async prepareGithubReviewWorkspace(
     entry: QueueEntry,
     key: string,
@@ -8176,15 +8178,11 @@ export class Daemon {
     forceWorkspaceIsolation?: true
     preparedWorkspaceCwd?: string
   }> {
-    const formalReview = this.githubFormalReviewEnabled(entry)
-    const initialGithub = entry.hookContext?.github
-    if (initialGithub?.subjectKind !== 'pull_request' || initialGithub.pullNumber === undefined) return {}
+    if (!this.githubFormalReviewEnabled(entry)) return {}
 
-    const github = await this.ensureGithubPullRevision(entry, formalReview)
+    const github = await this.ensureGithubPullRevision(entry, true)
     if (!github?.headSha || !github.baseSha || github.pullNumber === undefined) {
-      entry.msg.text +=
-        '\n\nTrusted workspace check: the PR revision could not be resolved. Do not trust local files or repository traces; inspect the PR through GitHub read-only tools.'
-      return {}
+      throw new Error('github review blocked: authoritative PR base and head are unavailable')
     }
 
     const revisionLine = `Base SHA: ${github.baseSha}\nHead SHA: ${github.headSha}`
@@ -8212,14 +8210,7 @@ export class Daemon {
         'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.'
       return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
     } catch (err) {
-      if (formalReview) {
-        throw new Error('github review blocked: exact PR workspace preparation failed', { cause: err })
-      }
-      this.log.warn(`github review: exact workspace unavailable (${formatErr(err)})`)
-      entry.msg.text +=
-        `\n\nTrusted review revision:\n${revisionLine}\n` +
-        'The exact local checkout could not be prepared. Do not trust local files or repository traces; inspect the exact base and head through GitHub read-only tools.'
-      return {}
+      throw new Error('github review blocked: exact PR workspace preparation failed', { cause: err })
     }
   }
 
