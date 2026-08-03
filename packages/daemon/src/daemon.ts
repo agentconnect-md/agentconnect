@@ -137,6 +137,7 @@ import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/con
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { manifestFor } from './platforms/manifest.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
+import { isPlatformMemberId } from './platforms/member-id.js'
 import {
   applySlackAction as applySlackActionExternal,
   clearStaleSlackReplyFooters as clearStaleSlackReplyFootersExternal,
@@ -6933,7 +6934,7 @@ export class Daemon {
   private wakeRejectionReason(req: MessageAgentReq): string | null {
     const platform = req.platform
     if (this.evaluationProfile.collaboration === 'off') return 'capability_disabled'
-    if (platform === 'slack' && /^(?:[UW][A-Z0-9]+|<@[UW][A-Z0-9]+>)$/.test(req.toAgentId.trim())) {
+    if (isPlatformMemberId(platform, req.toAgentId)) {
       return 'invalid_target'
     }
     if (req.toAgentId === req.callerAgentId) return 'self'
@@ -6997,7 +6998,7 @@ export class Daemon {
     // here produces a visible `@U…` fallback before the relay can reject the unknown
     // target. Fail before publishing so a model that copied the human-facing Slack
     // mention cannot leave a misleading thread event.
-    if (platform === 'slack' && /^(?:[UW][A-Z0-9]+|<@[UW][A-Z0-9]+>)$/.test(req.toAgentId.trim())) {
+    if (isPlatformMemberId(platform, req.toAgentId)) {
       const fallbackThread = req.thread ?? `agentcall:${req.channel}:invalid-target`
       return observe('collaboration.delivery.rejected', {
         delivered: false,
