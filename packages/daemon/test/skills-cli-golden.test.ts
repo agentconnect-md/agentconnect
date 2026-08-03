@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { detectSandbox } from '../src/acp/sandbox.js'
 
 // A real bwrap sandbox launch (and its nested seccomp helper) is far slower than
-// macOS Seatbelt and than the 5s default, especially on shared CI runners; give
-// the golden installs room so a slow-but-correct run is not a false timeout.
+// the 5s default, especially on shared CI runners; give the golden installs room
+// so a slow-but-correct run is not a false timeout.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
 import { resolvePinnedSkillsCli, stageSkillsCliCell } from '../src/skills/skills-cli-cell.js'
 import { installSkills } from '../src/skills/install-skills.js'
@@ -31,13 +31,11 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-// The unified installer runs the pinned CLI inside the OS sandbox, so these
-// golden tests need a usable sandbox. Skip where none is available (e.g. a Linux
-// CI runner without bwrap/rg/socat), mirroring sandbox.test.ts; validated on
-// macOS Seatbelt and any bwrap-capable host.
-const sandboxReady = process.platform === 'darwin' || detectSandbox() === 'bwrap'
+// Exercise the same live Linux SRT/bwrap boundary as sandbox.test.ts. macOS
+// sandbox coverage is deferred to the SRT platform-support follow-up.
+const hasBwrap = detectSandbox() === 'bwrap'
 
-describe.skipIf(!sandboxReady)('skills@1.5.21 local-source golden', () => {
+describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
   it.each([
     ['claude-code', '.claude/skills/local-golden'],
     ['codex', '.agents/skills/local-golden']

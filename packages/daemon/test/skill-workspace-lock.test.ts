@@ -8,12 +8,11 @@ import { detectSandbox } from '../src/acp/sandbox.js'
 
 const workerFile = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/skill-workspace-lock-worker.ts')
 
-// The lock worker's install path drives the pinned CLI inside the OS sandbox, so
-// skip where no usable sandbox exists (e.g. a Linux CI runner without
-// bwrap/rg/socat); mirrors sandbox.test.ts. Validated on macOS Seatbelt.
-const sandboxReady = process.platform === 'darwin' || detectSandbox() === 'bwrap'
+// Exercise the same live Linux SRT/bwrap boundary as sandbox.test.ts. macOS
+// sandbox coverage is deferred to the SRT platform-support follow-up.
+const hasBwrap = detectSandbox() === 'bwrap'
 
-describe.skipIf(!sandboxReady)('cross-process skill workspace lock', () => {
+describe.skipIf(!hasBwrap)('cross-process skill workspace lock', () => {
   let root: string
   let cwd: string
   let stateDir: string

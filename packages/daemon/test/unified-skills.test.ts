@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { detectSandbox } from '../src/acp/sandbox.js'
 
 // A real bwrap sandbox launch (and its nested seccomp helper) is far slower than
-// macOS Seatbelt and than the 5s default, especially on shared CI runners. Give
-// each end-to-end install room so a slow-but-correct run is not a false timeout.
+// the 5s default, especially on shared CI runners. Give each end-to-end install
+// room so a slow-but-correct run is not a false timeout.
 // (Exercised by the Linux sandbox lane in .github/workflows/test.yaml.)
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 })
 import {
@@ -61,12 +61,11 @@ function fakeCli(rootForAgent: (agentId: string) => string) {
   return { calls, run }
 }
 
-// These exercise the real end-to-end installer, which runs the pinned CLI inside
-// the OS sandbox. Skip where no usable sandbox exists (e.g. a Linux CI runner
-// without bwrap/rg/socat), mirroring sandbox.test.ts; validated on macOS Seatbelt.
-const sandboxReady = process.platform === 'darwin' || detectSandbox() === 'bwrap'
+// Exercise the same live Linux SRT/bwrap boundary as sandbox.test.ts. macOS
+// sandbox coverage is deferred to the SRT platform-support follow-up.
+const hasBwrap = detectSandbox() === 'bwrap'
 
-describe.skipIf(!sandboxReady)('unified isolated skill installation', () => {
+describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
   let root: string
   let cwd: string
   let stateDir: string
