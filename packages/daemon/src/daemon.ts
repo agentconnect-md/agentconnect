@@ -4203,17 +4203,27 @@ export class Daemon {
     // The pre-strip merged env is snapshotted so the idle sweep can delete the
     // files and rematerializeConfigFiles() can re-write them before a later turn.
     if (excludeAgentToolCredentials) {
-      // A dream host needs none of these tool secrets. Do NOT materialize (it has
-      // no cleanup path), and crucially DELETE the raw `*_DATA` source vars — they
-      // were copied into the child env by agentChildEnv, and skipping the
-      // materialize block below would otherwise leak the raw values to the
-      // attacker-controlled extraction (task #36 A2). Strip every convention name
-      // (data var + legacy aliases) whether or not it would have been planned.
+      // A dream host needs NONE of the agent's tool credentials. Do NOT
+      // materialize config files (it has no cleanup path), and DELETE the raw
+      // `*_DATA` source vars (agentChildEnv copied them in). Strip every
+      // convention name (data var + legacy aliases) whether or not it was planned.
       for (const convention of CONFIG_FILE_CONVENTIONS) {
         for (const name of [convention.dataVar, ...(convention.aliases ?? [])]) {
           delete env[name]
           delete runtimeEnv[name]
         }
+      }
+      // Also drop EVERY user-configured write-only secret (runtimeOverrides.secrets
+      // — arbitrary API keys, DB passwords, etc.). agentChildEnv merges them into
+      // the child env, but a dream only reads its materialized inputs and must not
+      // expose them to the attacker-controlled extraction's own tools (task #36 —
+      // this is beyond the accepted provider-auth P2; even a sandboxed Claude dream
+      // otherwise kept these). Runtime/provider authentication rides its own
+      // protected channel (runtime.env / the provider-credential path) and is
+      // untouched, so the dream still starts.
+      for (const secret of agent.runtimeOverrides?.secrets ?? []) {
+        delete env[secret.name]
+        delete runtimeEnv[secret.name]
       }
     } else {
       const configFileSourceEnv = { ...runtimeEnv, ...env }

@@ -114,6 +114,31 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
+  it('keeps agent write-only secrets out of the dream host env (#36 Phase C security)', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      const agent = (daemon as any).agents.get('bot-a')
+      agent.runtimeOverrides = { secrets: [{ name: 'API_KEY', value: 'super-secret' }] }
+      const cwd = agent.workspace.path
+      // A normal (non-dream) host still carries the agent's configured secret…
+      const normal = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { runInSandbox: true, cwd }).host
+      expect((normal as any).opts.env.API_KEY).toBe('super-secret')
+      // …but a dream host must not — even sandboxed, the mined transcript's own
+      // tools could otherwise read the secret straight from the environment.
+      const dreamHost = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        runInSandbox: true,
+        cwd,
+        excludeAgentToolCredentials: true
+      }).host
+      expect((dreamHost as any).opts.env.API_KEY).toBeUndefined()
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('single-agent mode still rejects an active sibling whose writable workspace overlaps', async () => {
     const root = scaffold()
     const sibling = join(root, 'agents', 'bot-b')
