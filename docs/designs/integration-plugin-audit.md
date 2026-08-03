@@ -16,24 +16,27 @@
 
 ## 1. Summary
 
-799 classified rows across the six packages. Under the D2 four-way taxonomy
-(the protocol appendix additionally labels wire shapes, counted separately):
+798 classified rows across the six packages. Counting rule (the single source
+of truth is the appendix tables): one table row = one classification row, and
+a row carrying a compound class (`c/a`, `b/d`, `d + c`) counts once under its
+first-listed primary class. Under the D2 four-way taxonomy (the protocol
+appendix additionally labels wire shapes, counted separately):
 
 | host                               | (a) transport | (b) manifest capability | (c) adapter strategy | (d) core special case |   total |
 | ---------------------------------- | ------------: | ----------------------: | -------------------: | --------------------: | ------: |
 | daemon (shared files)              |            30 |                      48 |                   74 |                    46 |     198 |
-| relay                              |            69 |                      28 |                    7 |                    10 |     114 |
-| control-plane                      |            26 |                      91 |                   75 |                    47 |     239 |
-| web                                |             7 |                      41 |                   86 |                    21 |     155 |
+| relay                              |            70 |                      29 |                    7 |                    10 |     116 |
+| control-plane                      |            26 |                      92 |                   75 |                    47 |     240 |
+| web                                |             6 |                      39 |                   85 |                    21 |     151 |
 | protocol+message (shared branches) |            11 |                       5 |                    2 |                     2 |      20 |
-| **D2 subtotal**                    |       **143** |                 **213** |              **244** |               **126** | **726** |
+| **D2 subtotal**                    |       **143** |                 **213** |              **243** |               **126** | **725** |
 
 Protocol wire-shape inventory (not D2 branches): 23 `wire-enum` rows (closed
 enums/unions to open in S1b), 18 `wire-variant` rows (platform-typed frame
 variants to become opaque envelopes), 26 `wire-field` rows (named per-platform
 fields to fold into generic coords / `adapterExt`), 5 `module-file` rows
 (pure per-platform normalizers in `packages/message`), 1 platform-free shared
-helper. Grand total: **799**.
+helper. Grand total: **798**.
 
 Calibration against the design's §3 estimates: the `===`-only pattern's "69
 lines in `daemon.ts`" and "~100 with negations" both undercount once the full
@@ -186,11 +189,19 @@ Corrections to carry into S1 planning:
 - **`packages/daemon/src/agents/write-cron.ts:30`** — a non-Slack cron target
   is silently degraded to headless on the daemon side; this is the daemon
   half of §14 defect #2's blast radius and must land with the §6.8 fix.
-- **Seven web fold-to-`slack` sites** (api.ts:1763/1832,
-  SessionDetailView:973/1101/1253, data.ts:1904, AddCronModal:79/141) — the
-  web mirror of §14 defect #1; S1a's `narrowPlatform` deletion needs a web
-  sweep too, or unknown platforms will _render_ as Slack after the daemon
-  stops folding them.
+- **Web `slack` folds and defaults** (eight sites; the web mirror of §14
+  defect #1, split by severity). True unknown-id folds — an unrecognized
+  non-null platform silently becomes Slack — are **two**: `data.ts:1904`
+  (`platName()`'s `return 'Slack'` fallback) and `AddCronModal.tsx:141` (the
+  anchor ternary coerces Discord/Feishu integrations to `slack`). The other
+  six are missing-value defaults or sentinels that pass unknown non-null ids
+  through untouched: `api.ts:1763`/`:1832` and
+  `SessionDetailView:973/1101/1253` default only a null/undefined legacy
+  platform, and `AddCronModal.tsx:79` (`HEADLESS`) constructs a Slack
+  sentinel with no incoming platform at all. S1a must fix the two folds
+  alongside `narrowPlatform`, or unknown platforms will _render_ as Slack
+  after the daemon stops folding them; the defaults are legacy-NULL handling
+  to revisit with the §6.1 migration.
 - **Relay structural gaps for Feishu** — DM conversation rows land nameless
   (`relay-ingress-manager.ts:732` is a Slack-only map lookup) and Feishu bots
   silently fall out of the gated-notice path (`:769/:773`). Both are latent
@@ -227,10 +238,12 @@ include these:
    `feishuStreamTimer`, `slackRetryTimers`, `staleReplyFooters`.
 8. **String-content-only sites** — SQL literals (`platform <> 'dream'` in
    local-store.ts:2390; the CP `COALESCE(platform,'slack')` family), and one
-   file that plain grep _silently skips_:
-   `web/.../views/SessionDetailView.tsx` contains a NUL byte, so
-   `grep -rn` returns nothing for it — **use `grep -a`** (it holds 9
-   platform conditionals including all three `MessageText` call sites).
+   file grep treats as binary: `web/.../views/SessionDetailView.tsx`
+   contains a NUL byte, so a sweep never prints its matching lines —
+   depending on the implementation you get a `binary file matches` notice
+   (GNU; `-c` still reports a count) or no output at all — **use `grep -a`**
+   to see the lines (it holds 9 platform conditionals including all three
+   `MessageText` call sites).
 9. **Substring dispatch** — web `PlatformMark` / `platName` branch on
    `.includes('tele')` etc., order-sensitive.
 10. **Closed unions in type positions** — `tsc` enforces them; grep never
@@ -731,19 +744,19 @@ Scope: all 30 non-test files (7,331 LOC), read in full or grepped exhaustively. 
 
 | class                   | count   |
 | ----------------------- | ------- |
-| (a) transport           | **69**  |
-| (b) manifest capability | **28**  |
+| (a) transport           | **70**  |
+| (b) manifest capability | **29**  |
 | (c) adapter strategy    | **7**   |
 | (d) core special case   | **10**  |
-| **total**               | **114** |
+| **total**               | **116** |
 
 Per-file subtotals (a / b / c / d):
 
 | file                            | a   | b   | c   | d   | total |
 | ------------------------------- | --- | --- | --- | --- | ----- |
-| relay-ingress-manager.ts        | 24  | 12  | 1   | 0   | 37    |
+| relay-ingress-manager.ts        | 25  | 12  | 1   | 0   | 38    |
 | bot-arbitration.ts              | 1   | 6   | 2   | 0   | 9     |
-| collaboration-router.ts         | 0   | 5   | 0   | 1   | 6     |
+| collaboration-router.ts         | 0   | 6   | 0   | 1   | 7     |
 | agent-msg-router.ts             | 0   | 2   | 0   | 0   | 2     |
 | index.ts                        | 2   | 2   | 0   | 1   | 5     |
 | slack-http-ingress.ts           | 6   | 0   | 0   | 0   | 6     |
@@ -753,7 +766,7 @@ Per-file subtotals (a / b / c / d):
 | hooks/                          | 11  | 1   | 3   | 1   | 16    |
 | webchat / browser / daemon-conn | 0   | 0   | 0   | 7   | 7     |
 
-Distinct manifest fields implied by class (b), by frequency: `credentialShape` (5), `identityScope` (5), `botSenderRouting` (4), `relayOwnsEgress` (3), `persistsPlacements` (3), platform-as-key (5, no flag), `id` (2), `conversationKinds` (2, **new** — not in §5), `threading` (1), `ingress` (1), `channelIdSyntax` (1, **new**).
+Distinct manifest fields implied by the rows above, by mention count (a row may imply more than one field, and a few (a)-class rows also evidence a field, so these are field mentions, not row counts): `credentialShape` (5), `identityScope` (5), `botSenderRouting` (4), `relayOwnsEgress` (3), `persistsPlacements` (3), platform-as-key (5, no flag), `id` (2), `conversationKinds` (2, **new** — not in §5), `threading` (1), `ingress` (1), `channelIdSyntax` (1, **new**).
 Distinct strategies implied by class (c): `isThreadRoot` (2), `threadKeyForPost` (2), `decodeInteraction` (1), `sessionKeyFor(delivery)` (1), `normalizeRetryAuthority` (1).
 
 ### 3. Ambiguous
@@ -1096,10 +1109,10 @@ Scope: `packages/control-plane/src/**` minus `src/generated/` and `*.test.ts`, p
 | class                                                                               | count   |
 | ----------------------------------------------------------------------------------- | ------- |
 | (a) transport — moves into the CP platform provider                                 | **26**  |
-| (b) manifest capability — pre-dispatch / install-time declarative value             | **91**  |
+| (b) manifest capability — pre-dispatch / install-time declarative value             | **92**  |
 | (c) adapter strategy / CpPlatformProvider facet                                     | **75**  |
 | (d) core special case — webchat / hook / dream / github-webhook seam / legacy-slack | **47**  |
-| **total classified rows**                                                           | **239** |
+| **total classified rows**                                                           | **240** |
 
 Distinct implied **manifest fields** derived (not guessed) from the (b) rows:
 `credentialShape`, `identityScope` (`'tenant'` for Slack, `'app'` for Feishu), `multiAgentShareable`, `ingress`, `membershipEnumeration`, `leaveGranularity`, `regions[]` (with `apiBaseUrl`/`portalBaseUrl`), `avatar.perMessageIconUrl`, `avatar.botProfilePush` (new — Telegram/Discord/Feishu accept an avatar, Slack does not), `displayName`, `sessionAudience.privateBaseline` (new — the Feishu p2p private-baseline exception, spelled three times), registry-derived `PlatformId` set (replacing six hand-copied closed unions).
@@ -1375,13 +1388,13 @@ Three funnels, three unrelated table shapes, three different terminal-state voca
 
 | class                                                                                               | count   |
 | --------------------------------------------------------------------------------------------------- | ------- |
-| (a) transport — platform API mechanics in web helpers                                               | **7**   |
-| (b) manifest capability                                                                             | **41**  |
-| (c) web module fragment                                                                             | **86**  |
+| (a) transport — platform API mechanics in web helpers                                               | **6**   |
+| (b) manifest capability                                                                             | **39**  |
+| (c) web module fragment                                                                             | **85**  |
 | (d) core special case (webchat / hook / dream / playground / schedule / github / identity-provider) | **21**  |
-| **Total rows**                                                                                      | **155** |
+| **Total rows**                                                                                      | **151** |
 
-Rows carrying a secondary class are counted once under the primary. Derived manifest-field frequency (from the (b) rows): `id`/`displayName` 12 · `regions` 11 · `ingress` 5 · `leaveGranularity` 4 · `credentialShape` 2 · `multiAgentShareable` 1 · `membershipEnumeration` 1 · cron-targeting union (§6.8) 4 · D6 identity columns 1.
+Rows carrying a compound class (`c/a`, `b/d`, `d + c`) are counted once under the first-listed primary. Manifest-field tally of the 39 (b)-class rows, one bucket per row: `regions` 9 · `id`/`displayName` 8 · cron-targeting union (§6.8) 5 · `leaveGranularity` 4 · registry × daemon caps 3 · `ingress` 3 · fold-to-slack defaults 3 · `credentialShape` 1 · `multiAgentShareable` 1 · `membershipEnumeration` 1 · D6 identity columns 1.
 
 ### 3. Ambiguous
 
@@ -1398,9 +1411,9 @@ Rows carrying a secondary class are counted once under the primary. Derived mani
 
 ### 4. Platform-conditionals outside the listed shapes
 
-- **A file `grep -r` silently skips.** `packages/web/src/components/console/views/SessionDetailView.tsx` contains a NUL byte, so `file` reports `data` and BSD/GNU `grep -rn` returns **nothing** for it (even `grep -c "platform"` → empty). It holds 9 platform-conditionals including all three `MessageText` call sites (defect #3). Any S0/S2 sweep must use `grep -a`. It is the only such file under `packages/web/src`.
+- **A file grep treats as binary.** `packages/web/src/components/console/views/SessionDetailView.tsx` contains a NUL byte, so `file` reports `data` and grep classifies it as binary: a sweep never prints its matching source lines — GNU grep prints only a `binary file … matches` notice (`-c` still reports a count), other implementations/wrappers may print nothing at all. It holds 9 platform-conditionals including all three `MessageText` call sites (defect #3). Any S0/S2 sweep must use `grep -a` to obtain the lines. It is the only such file under `packages/web/src`.
 - **Substring dispatch, not equality** — `PlatformMark` (marks.tsx:212-259) and `platName` (data.ts:1894-1903) branch on `.includes('tele')`, `'disc'`, `'feishu'|'lark'`, `'sched'`, `'play'|'web'`. Invisible to `===`/`!==` greps, and order-sensitive (`'hook'` must precede `'web'`).
-- **Fold-to-`slack` defaults** (the web mirror of §14 defect #1) — api.ts:1763, api.ts:1832, SessionDetailView:973/1101/1253, data.ts:1904, AddCronModal:79 and :141. Seven sites where an unknown platform silently becomes Slack.
+- **`slack` folds and defaults** (eight sites; the web mirror of §14 defect #1 — split by severity). True unknown-id folds, where an unrecognized non-null platform silently becomes Slack: data.ts:1904 (`platName()`'s `return 'Slack'` fallback) and AddCronModal:141 (the anchor ternary coerces Discord/Feishu to `slack`). Missing-value defaults, where only a null/undefined legacy platform defaults and unknown non-null ids pass through: api.ts:1763, api.ts:1832, SessionDetailView:973/1101/1253. AddCronModal:79 (`HEADLESS`) is a Slack sentinel constructed with no incoming platform at all. The S1a sweep must fix the two folds; the defaults are legacy-NULL handling to revisit with the §6.1 migration.
 - **Closed unions in type positions** (no runtime predicate, but they _are_ the branch set) — api.ts:577/600 (`targetPlatform`), api.ts:640-658, api.ts:2093-2094, api.ts:3404, swr-keys.ts:25, AddCronModal.tsx:77, AddIntegrationModal.tsx:85-86, 171, 328.
 - **CSS tokens and animation classes** — `packages/web/src/app/globals.css:79-81` (`--slack`, `--telegram`, `--discord`), `:242-244` (`*-soft`), `:2909-2921` + `:3042-3066` (`slackHintBlink`, `.slack-hint-blink`, `.cfgtok-pop`, `.cfg-scroll`, `.cfg-click-a/b`), `:3022-3024` (Telegram/Discord walkthrough animations). A `WebPlatformModule` that owns its wizard Body would need these to move too — and Tailwind v4 `@source` scanning is exactly the D1 hazard.
 - **A per-platform binary asset** — `packages/web/public/brands/lark.svg`, referenced by `marks.tsx:18` (`LARK_MARK_SRC`) because Lark ships no icon-set entry. Slack/Telegram/Discord come from npm icon packages; Lark does not.
