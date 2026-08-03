@@ -225,9 +225,16 @@ describe('gitEnvBase', () => {
 
       const target = workspaceGitPullTarget(repository)
       expect(target.remote).toMatch(/^agentconnect-[0-9a-f-]+$/)
-      expect(configPairs(target.env)).toContainEqual([`remote.${target.remote}.url`, ''])
-      expect(configPairs(target.env)).toContainEqual([`remote.${target.remote}.url`, repository])
+      expect(configPairs(target.env).filter(([key]) => key === `remote.${target.remote}.url`)).toEqual([
+        [`remote.${target.remote}.url`, repository]
+      ])
       expect(configPairs(target.env)).toContainEqual([`remote.${target.remote}.proxy`, ''])
+      expect(
+        execFileSync('git', ['-C', workspace, 'config', '--get-all', `remote.${target.remote}.url`], {
+          encoding: 'utf8',
+          env: target.env
+        }).trim()
+      ).toBe(repository)
       expect(
         execFileSync('git', ['-C', workspace, 'ls-remote', '--get-url', target.remote], {
           encoding: 'utf8',
