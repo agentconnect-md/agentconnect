@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { nodeSatisfies } from '../src/node-engines.js'
 
 describe('nodeSatisfies', () => {
-  it('accepts the daemon default >=24', () => {
-    expect(nodeSatisfies('>=24', '24.14.1')).toBe(true)
-    expect(nodeSatisfies('>=24', '25.0.0')).toBe(true)
-    expect(nodeSatisfies('>=24', '23.9.0')).toBe(false)
+  it('enforces the daemon minimum >=24.12.0', () => {
+    expect(nodeSatisfies('>=24.12.0', '24.12.0')).toBe(true)
+    expect(nodeSatisfies('>=24.12.0', '25.0.0')).toBe(true)
+    expect(nodeSatisfies('>=24.12.0', '24.11.1')).toBe(false)
   })
   it('handles full-triple ranges', () => {
     expect(nodeSatisfies('>=24.0.0', '24.0.0')).toBe(true)
