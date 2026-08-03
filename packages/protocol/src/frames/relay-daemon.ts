@@ -292,6 +292,34 @@ export const RdMsgFeishuAction = z.object({
 })
 export type RdMsgFeishuAction = z.infer<typeof RdMsgFeishuAction>
 
+/**
+ * R→D REQ → rd/ack (§6.6). The ONE platform-interaction envelope replacing the
+ * per-platform `slack_action` / `feishu_action` members: the ENVELOPE is
+ * core-typed — the routing fields relay core needs plus the dedup identity —
+ * and the PAYLOAD is opaque to relay core. The relay-side platform module
+ * parsed the provider interaction and minted `msgId`; the SAME platform's
+ * daemon-side module decodes `payload` into StatusAction / PermissionChoice /
+ * Elicitation calls. Reader-first: this build ACCEPTS the member while the
+ * relay keeps emitting the legacy members; the emission flips after the next
+ * fleet cycle and the legacy members retire after that. Dedup scope is
+ * (botId, sessionKey, msgId), identical to the legacy members — the daemon
+ * replays the prior ack on retransmit, and fencing is unaffected.
+ */
+export const RdMsgPlatformAction = z.object({
+  source: z.literal('platform_action'),
+  platformId: z.string().min(1),
+  agentId: z.string().uuid(),
+  sessionKey: z.string().min(1),
+  msgId: z.string().min(1),
+  botId: z.string().uuid(),
+  integrationId: z.string().uuid(),
+  // The platform user who tapped it (attribution); optional — absent records as
+  // an unknown actor, never a fabricated one.
+  userId: z.string().min(1).optional(),
+  payload: z.unknown()
+})
+export type RdMsgPlatformAction = z.infer<typeof RdMsgPlatformAction>
+
 // R→D REQ → rd/ack. One already-adjudicated trigger delivery: the relay matched
 // the hook rule and names the target agent (explicit-agent short-circuit, same
 // as webchat — no local trigger arbitration). The daemon synthesizes a
@@ -329,6 +357,7 @@ export const RdMsg = z.discriminatedUnion('source', [
   RdMsgIm,
   RdMsgSlackAction,
   RdMsgFeishuAction,
+  RdMsgPlatformAction,
   RdMsgHook
 ])
 export type RdMsg = z.infer<typeof RdMsg>
@@ -341,7 +370,13 @@ export const RdAck = z.object({
   accepted: z.boolean(),
   turnId: z.string().uuid().optional(),
   reason: z.string().optional(),
-  feishuCardAction: WireFeishuCardActionResponse.optional()
+  /** DEPRECATED (§6.6): read `response`. The Feishu-named sync-toast slot. */
+  feishuCardAction: WireFeishuCardActionResponse.optional(),
+  /** §6.6 opaque interaction response for a `platform_action` — the payload the
+   *  relay-side platform module surfaces on the synchronous HTTP body (Feishu
+   *  toast, Slack block_suggestion options). Dual-emitted with the deprecated
+   *  slot above during the window; decoded only by the platform module. */
+  response: z.unknown().optional()
 })
 export type RdAck = z.infer<typeof RdAck>
 

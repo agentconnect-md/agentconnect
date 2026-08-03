@@ -25,11 +25,11 @@ import type {
   RcBotConversation,
   RcBotRevoked,
   WireFeishuCardActionEvent,
-  WireFeishuCardActionResponse,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadLookup
 } from '@agentconnect.md/protocol'
+import { WireFeishuCardActionResponse } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
@@ -862,7 +862,10 @@ export class RelayIngressManager {
       if (!ack.accepted) {
         this.deps.log.warn(`relay-ingress(${botId}): daemon rejected Feishu card action (${ack.reason ?? 'unknown'})`)
       }
-      return ack.feishuCardAction
+      // §6.6 dual-shape: prefer the generic opaque `response`; a pre-§6.6 daemon
+      // fills only the deprecated Feishu-named slot.
+      const generic = WireFeishuCardActionResponse.safeParse(ack.response)
+      return generic.success && ack.response !== undefined ? generic.data : ack.feishuCardAction
     } catch (err) {
       this.deps.log.warn(`relay-ingress(${botId}): Feishu card action forward failed: ${(err as Error).message}`)
       return undefined

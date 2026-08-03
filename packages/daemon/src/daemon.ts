@@ -228,6 +228,8 @@ import {
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   effectiveMemoryDreamingPolicy,
+  RdSlackAction,
+  WireFeishuCardActionEvent,
   gitRepoLabel,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl
@@ -342,6 +344,7 @@ import type {
   RdMsgIm,
   RdMsgSlackAction,
   RdMsgFeishuAction,
+  RdMsgPlatformAction,
   RdMsgHook,
   RdAck,
   RdAgentMsgFwd,
@@ -6293,7 +6296,9 @@ export class Daemon {
           ? this.handleRelaySlackAction(msg)
           : msg.source === 'feishu_action'
             ? this.handleRelayFeishuAction(msg)
-            : this.handleRelayIm(msg)
+            : msg.source === 'platform_action'
+              ? this.handleRelayPlatformAction(msg)
+              : this.handleRelayIm(msg)
     if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
     this.relayMsgAcks.set(dedupKey, ack)
     return ack
@@ -6398,6 +6403,47 @@ export class Daemon {
    *  boundary before opening or mutating anything: the agent, HTTP Slack integration,
    *  local connection, session owner, and (when retained) exact delivery binding must all
    *  still agree. Message shortcuts resolve their channel/thread coordinates here. */
+  /**
+   * §6.6 `platform_action` envelope: the payload is opaque to relay core and is
+   * decoded HERE by the platform id's own vocabulary — today by delegating to the
+   * legacy per-platform handlers (the S2 platform module takes the decode over).
+   * An unknown platform id or an undecodable payload NAKs the ITEM (the relay
+   * already acked receipt semantics via rd/ack), never the socket. The ack
+   * dual-carries the generic `response` beside the deprecated Feishu-named slot
+   * while the relay may still read either.
+   */
+  private handleRelayPlatformAction(msg: RdMsgPlatformAction): RdAck {
+    if (msg.platformId === 'slack') {
+      const payload = RdSlackAction.safeParse(msg.payload)
+      if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+      return this.handleRelaySlackAction({
+        source: 'slack_action',
+        agentId: msg.agentId,
+        sessionKey: msg.sessionKey,
+        msgId: msg.msgId,
+        botId: msg.botId,
+        integrationId: msg.integrationId,
+        ...(msg.userId !== undefined ? { userId: msg.userId } : {}),
+        payload: payload.data
+      })
+    }
+    if (msg.platformId === 'feishu') {
+      const payload = WireFeishuCardActionEvent.safeParse(msg.payload)
+      if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+      const ack = this.handleRelayFeishuAction({
+        source: 'feishu_action',
+        agentId: msg.agentId,
+        sessionKey: msg.sessionKey,
+        msgId: msg.msgId,
+        botId: msg.botId,
+        integrationId: msg.integrationId,
+        payload: payload.data
+      })
+      return ack.feishuCardAction !== undefined ? { ...ack, response: ack.feishuCardAction } : ack
+    }
+    return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+  }
+
   private handleRelaySlackAction(msg: RdMsgSlackAction): RdAck {
     const agent = this.agents.get(msg.agentId)
     if (!agent) {

@@ -1504,6 +1504,54 @@ describe('Slack interactive status bar', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('§6.6: a platform_action envelope decodes per-platform and NAKs unsupported items', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const integration = (daemon as any).agents.get('bot-a').integrations[0]
+    integration.slack.mode = 'shared'
+    delete integration.slack.appToken
+    const sharedTransportScope = `slack:${createHash('sha256').update('slack\0b').digest('hex').slice(0, 24)}`
+    const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', sharedTransportScope)
+    const openStatusModal = vi.fn(async () => {})
+    ;(daemon as any).connByIntegration.set('int-a', { openStatusModal })
+    ;(daemon as any).store.upsertSession({
+      key: KEY,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      transportScope: sharedTransportScope,
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const envelope = (over: Record<string, unknown> = {}) => ({
+      source: 'platform_action' as const,
+      platformId: 'slack',
+      agentId: 'bot-a',
+      sessionKey: KEY,
+      msgId: 'pa-1',
+      botId: 'shared-bot',
+      integrationId: 'int-a',
+      payload: { kind: 'open-config', triggerId: 'trig-1' },
+      ...over
+    })
+    // The envelope routes into the SAME per-platform decode path as the legacy member.
+    expect((daemon as any).handleRelayMsg(envelope(), () => {})).toEqual({ msgId: 'pa-1', accepted: true })
+    expect(openStatusModal).toHaveBeenCalledTimes(1)
+    // An undecodable payload NAKs the ITEM, never the socket.
+    expect(
+      (daemon as any).handleRelayMsg(envelope({ msgId: 'pa-2', payload: { kind: 'not-a-thing' } }), () => {})
+    ).toEqual({ msgId: 'pa-2', accepted: false, reason: 'unsupported_action' })
+    // A platform id this build has no decoder for NAKs the same way.
+    expect(
+      (daemon as any).handleRelayMsg(envelope({ msgId: 'pa-3', platformId: 'teams-x', payload: {} }), () => {})
+    ).toEqual({ msgId: 'pa-3', accepted: false, reason: 'unsupported_action' })
+    await daemon.stop()
+  })
+
   it('handles shared session interactions only for the exact local integration and session owner', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blockingHost().host as any })
     await daemon.start()
