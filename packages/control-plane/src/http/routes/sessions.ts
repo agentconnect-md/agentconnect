@@ -341,13 +341,19 @@ export function sessionRoutes(deps: HttpDeps) {
     }
 
     type ExternalAccessProvider = 'slack' | 'github' | 'feishu'
-    const externalAccessAvailable = (provider: ExternalAccessProvider) =>
-      deps.logtoIdentity !== undefined &&
-      (provider === 'slack'
-        ? deps.slackSessionAccess !== undefined
-        : provider === 'github'
-          ? deps.githubSessionAccess !== undefined
-          : deps.feishuSessionAccess !== undefined && Object.keys(deps.feishuPlatformApps ?? {}).length > 0)
+    const externalAccessAvailable = (provider: ExternalAccessProvider) => {
+      if (provider === 'feishu') {
+        return (
+          deps.feishuSessionAccess !== undefined &&
+          deps.logtoFederatedToken !== undefined &&
+          Object.keys(deps.feishuPlatformApps ?? {}).length > 0
+        )
+      }
+      return (
+        deps.logtoIdentity !== undefined &&
+        (provider === 'slack' ? deps.slackSessionAccess !== undefined : deps.githubSessionAccess !== undefined)
+      )
+    }
 
     const externalAccessDto = async (orgId: OrgId, provider: ExternalAccessProvider, includeDiagnostics: boolean) => {
       const [policy, hiddenSessions] = await Promise.all([

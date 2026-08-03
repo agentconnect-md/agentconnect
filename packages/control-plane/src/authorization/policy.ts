@@ -125,7 +125,9 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
       return request.resource.ownerUserId !== null && resourceIsEditable(request.resource, principal)
     case AuthorizationAction.SessionView:
       return request.resource.externalProvider
-        ? externalSessionIsVisible(request.resource, request.externalAccess)
+        ? request.resource.visibility === 'private'
+          ? identityOwnsSession(request.resource, request.identitySet)
+          : externalSessionIsVisible(request.resource, request.externalAccess)
         : request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
     // Re-classification (§4.3) is owner-only: identity match with the recorded
     // owner, roles grant nothing in either direction — an org owner pulling

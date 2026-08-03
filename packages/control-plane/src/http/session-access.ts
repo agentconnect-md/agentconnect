@@ -7,6 +7,7 @@ import type {
 } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import { makeViewerIdentitySet } from './viewer-identity.js'
+import { LOGTO_ACCOUNT_TOKEN_HEADER } from './logto-federated-token.js'
 import { ctxOf, orgOf } from './rbac.js'
 
 export interface ResolvedSessionAccess {
@@ -21,6 +22,11 @@ export interface ResolvedSessionAccess {
 export function makeSessionAccessResolver(deps: HttpDeps) {
   const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity, deps.feishuPlatformApps)
 
+  const accountTokenOf = (req: FastifyRequest): string | undefined => {
+    const value = req.headers[LOGTO_ACCOUNT_TOKEN_HEADER]
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+  }
+
   const forScopes = async (
     req: FastifyRequest,
     scopes: readonly ExternalScopeRecord[]
@@ -34,6 +40,17 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
     const slackScopes = scopes.filter((scope) => scope.provider === 'slack' && scope.orgId === orgId)
     const githubScopes = scopes.filter((scope) => scope.provider === 'github' && scope.orgId === orgId)
     const feishuScopes = scopes.filter((scope) => scope.provider === 'feishu' && scope.orgId === orgId)
+    const accountToken = accountTokenOf(req)
+    const federated =
+      req.oidcSubject && accountToken && deps.logtoFederatedToken
+        ? deps.logtoFederatedToken.forRequest(req.oidcSubject, accountToken)
+        : undefined
+    const feishuViewer = federated
+      ? {
+          subject: req.oidcSubject!,
+          accessTokenFor: (region: 'feishu' | 'lark') => federated.accessTokenFor(region)
+        }
+      : undefined
     const [slackResult, githubResult, feishuResult] = await Promise.all([
       deps.slackSessionAccess
         ? deps.slackSessionAccess.resolve(slackScopes, identitySet)
@@ -42,7 +59,7 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
         ? deps.githubSessionAccess.resolve(githubScopes, ctxOf(req).userId)
         : Promise.resolve({ allowedScopes: [], degraded: githubScopes.length > 0 }),
       deps.feishuSessionAccess
-        ? deps.feishuSessionAccess.resolve(feishuScopes, identitySet)
+        ? deps.feishuSessionAccess.resolve(feishuScopes, feishuViewer)
         : Promise.resolve({ allowedScopes: [], degraded: feishuScopes.length > 0 })
     ])
     const resolvedScopes = [...slackResult.allowedScopes, ...githubResult.allowedScopes, ...feishuResult.allowedScopes]

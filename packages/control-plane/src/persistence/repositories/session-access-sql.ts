@@ -11,14 +11,14 @@ export function sessionViewerSql(
   if (!viewer) return null
   const s = alias
   const direct = Prisma.sql`(
-    ${s}."externalProvider" IS NULL
-    AND (
-      ${s}."visibility" = 'org'::"SessionVisibility"
-      OR (
-        ${s}."visibility" = 'private'::"SessionVisibility"
-        AND ${s}."ownerIdentity" IS NOT NULL
-        AND ${s}."ownerIdentity" = ANY(${viewer.identitySet}::text[])
-      )
+    (
+      ${s}."externalProvider" IS NULL
+      AND ${s}."visibility" = 'org'::"SessionVisibility"
+    )
+    OR (
+      ${s}."visibility" = 'private'::"SessionVisibility"
+      AND ${s}."ownerIdentity" IS NOT NULL
+      AND ${s}."ownerIdentity" = ANY(${viewer.identitySet}::text[])
     )
   )`
   const snapshot = viewer.externalAccess

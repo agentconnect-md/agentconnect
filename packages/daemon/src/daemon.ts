@@ -14710,7 +14710,13 @@ export class Daemon {
         externalIntegrationId?: string
       }
     | undefined {
-    if ((msg.platform !== 'slack' && msg.platform !== 'feishu') || msg.isDm || isA2aChild) return undefined
+    if (
+      (msg.platform !== 'slack' && msg.platform !== 'feishu') ||
+      (msg.platform === 'slack' && msg.isDm) ||
+      isA2aChild
+    ) {
+      return undefined
+    }
     const integrationId = this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
     const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
     const realmKey =

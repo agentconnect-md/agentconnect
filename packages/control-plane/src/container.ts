@@ -168,6 +168,7 @@ import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 import { SlackSessionAccessService } from './http/slack-session-access.js'
 import { GithubSessionAccessService } from './http/github-session-access.js'
 import { FeishuSessionAccessService } from './http/feishu-session-access.js'
+import { LogtoFederatedTokenService, logtoAccountEndpointFromIssuer } from './http/logto-federated-token.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -706,6 +707,10 @@ export function buildContainer(
     logtoMgmtCfg && config.OIDC_ISSUER
       ? new LogtoIdentityService(logtoMgmtCfg, clock, new PgSocialIdentityMutationGate(prisma))
       : undefined
+  const logtoFederatedToken =
+    logtoMgmtCfg && config.OIDC_ISSUER
+      ? new LogtoFederatedTokenService(logtoAccountEndpointFromIssuer(config.OIDC_ISSUER))
+      : undefined
   const githubUserAuthz =
     github && logtoIdentity
       ? new GithubUserAuthzService({
@@ -731,7 +736,6 @@ export function buildContainer(
     : undefined
   const feishuSessionAccess = new FeishuSessionAccessService({
     bots: repos.bot,
-    apps: feishuPlatformApps,
     clock,
     ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {})
   })
@@ -828,6 +832,7 @@ export function buildContainer(
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
+    ...(logtoFederatedToken ? { logtoFederatedToken } : {}),
     slackSessionAccess,
     ...(githubSessionAccess ? { githubSessionAccess } : {}),
     feishuSessionAccess,

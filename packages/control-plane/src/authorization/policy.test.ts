@@ -226,6 +226,19 @@ describe('canViewSession (session-visibility.md §5)', () => {
     ).toBe(false)
   })
 
+  it('keeps a provider-bound p2p session owner-only until external sync is enabled', () => {
+    const owner = ctx(CREATOR, 'collaborator')
+    const session: SessionViewable = {
+      visibility: 'private',
+      ownerIdentity: `user:${CREATOR}`,
+      externalProvider: 'feishu',
+      externalScopeId: 'scope-1',
+      externalResolution: 'settled'
+    }
+    expect(canViewSession(session, owner, idsOf(owner))).toBe(true)
+    expect(canViewSession(session, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+  })
+
   it('fails closed for unresolved external rows and pre-fence candidates', () => {
     const principal = ctx(OTHER, 'collaborator')
     const snapshot = {

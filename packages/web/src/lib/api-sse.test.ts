@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('./auth', () => ({
+  getAccountToken: vi.fn(async () => 'account-token'),
+  getToken: vi.fn(async () => undefined),
+  getIdTokenRaw: vi.fn(async () => undefined),
+  getUser: vi.fn(async () => undefined),
+  signOutDeletedAccount: vi.fn()
+}))
+
 import { subscribeSessionEvents } from './api'
 
 describe('subscribeSessionEvents', () => {
@@ -34,6 +43,9 @@ describe('subscribeSessionEvents', () => {
       expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) })
     )
     expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>).accept).toBe('text/event-stream')
+    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>)['x-ac-logto-account-token']).toBe(
+      'account-token'
+    )
 
     const encoder = new TextEncoder()
     streamController.enqueue(encoder.encode('event: sess'))

@@ -470,7 +470,11 @@ export class PgSessionRepo implements SessionRepo {
       const base = direct ?? { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const }
       return {
         ...base,
-        visibility: policy.state === 'disabled' ? 'org' : 'external',
+        // A Feishu/Lark p2p conversation is both a private direct session and a
+        // provider-bound candidate. Keep its owner-only baseline while sync is
+        // disabled; enabling the policy atomically switches every candidate to
+        // the live external audience below.
+        visibility: policy.state === 'disabled' ? base.visibility : 'external',
         externalProvider: candidate.provider,
         externalScopeId: scopeId,
         externalResolution: resolution,
