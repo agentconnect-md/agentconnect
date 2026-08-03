@@ -4,6 +4,7 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
 import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 /**
  * §Telegram edge unit. Mirrors slack/connection.ts but over grammY long-polling
@@ -203,7 +204,7 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 /** Cap on admins enriched per listMembers call (bounds the response). */
 const MEMBER_CAP = 50
 
-export class TelegramConnection {
+export class TelegramConnection implements PlatformConnection {
   private bot: TelegramBotHandle
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // and rate-limited per bot connection (Telegram tolerates ~1 msg/s per chat).

@@ -21,6 +21,7 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './render.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -438,7 +439,7 @@ function sendOnlyApp(botToken: string): AppLike {
   }
 }
 
-export class SlackConnection {
+export class SlackConnection implements PlatformConnection {
   private app: AppLike
   // §9.1: all outbound writes (post/update/setStatus/setTitle) funnel through one queue so
   // streamed edits are FIFO-ordered and rate-limited per Slack app connection.

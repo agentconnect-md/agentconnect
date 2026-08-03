@@ -25,6 +25,7 @@ import {
   FEISHU_REPLY_CANCEL_OPTION,
   FEISHU_STREAMING_ELEMENT_ID
 } from './render.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 /**
  * §Feishu / Lark edge unit. Mirrors discord/connection.ts but over the official
@@ -494,7 +495,7 @@ function parseDownloadKey(sourceUrl: string): { messageId: string; type: 'image'
   return { messageId, type, fileKey }
 }
 
-export class FeishuConnection {
+export class FeishuConnection implements PlatformConnection {
   private handle: FeishuClientHandle
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (keeps a post-then-edit pair from racing on the same progress msg).
