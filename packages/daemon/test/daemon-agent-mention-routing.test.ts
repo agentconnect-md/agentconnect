@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { sessionKey } from '../src/store/local-store.js'
 
 /**
  * send-message-routing-rework.md §4 / §4.1 / §6 — the DIRECT-daemon ladder for a
@@ -94,13 +95,20 @@ async function boot(
     agents: placements.map((p) => ({ ...p, orgId: TEST_ORG }))
   })
   const calls: { agentId: string; msg: any; callMeta?: any }[] = []
-  // Mirrors real dispatch closely enough for the rendezvous: it settles the ADMISSION
-  // barrier. §8.6 keys the activation record off that barrier rather than off the call,
-  // so a stub that never fires it would leave every record `pending` and hide the
-  // transition under test.
+  // Mirrors the part of real dispatch these tests depend on: settling the admission
+  // barrier AND completing the activation rendezvous from `callMeta.activationKey`. §8.6
+  // puts that reconciliation inside dispatch precisely so replay performs it too, which
+  // means a stub that skips it would leave every record `pending` and hide the transition
+  // under test.
   ;(daemon as any).dispatch = vi.fn(
     async (agentId: string, msg: any, _i?: string, _w?: any, callMeta?: any, opts?: any) => {
       calls.push({ agentId, msg, callMeta })
+      if (callMeta?.activationKey) {
+        ;(daemon as any).store.admitActivation(
+          callMeta.activationKey,
+          sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+        )
+      }
       opts?.onAdmission?.({ accepted: true })
       return 'acp-1'
     }
@@ -296,6 +304,35 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     ;(daemon as any).mergedRules = () =>
       original().map((rule: any) => (rule.agentId === 'bot-b' ? { ...rule, mutedChannels: ['C1'] } : rule))
     expect(route(daemon, agentMessage()).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('completes the rendezvous from the turn itself, so a replayed turn is never re-delivered', async () => {
+    // §8.6, the crash chain a sweep-based fix cannot close: crash after the inbox row
+    // lands → restart replays the turn → the turn COMPLETES and its inbox row is removed →
+    // the activation TTL expires → an inbox-existence check now says "never persisted" and
+    // releases the claim → a retry delivers the same thing a second time.
+    //
+    // The key rides on the persisted CallMeta, so the REPLAYED dispatch completes the
+    // record itself. By the time any sweep runs the record is already terminal, and the
+    // inbox row's fate stops mattering.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    expect(route(daemon, agentMessage()).kind).toBe('dispatched')
+    const callMeta = calls[0]!.callMeta
+    expect(callMeta.activationKey).toBeTruthy()
+
+    const store = (daemon as any).store
+    expect(store.getActivation(callMeta.activationKey)?.state).toBe('admitted')
+
+    // Simulate the rest of the chain: the turn finishes and its inbox row is gone, then
+    // the TTL passes. A terminal record is not a sweep candidate, so nothing is released…
+    store.expireActivations(Date.now() + 60 * 60 * 1000)
+    expect(store.getActivation(callMeta.activationKey)?.state).toBe('admitted')
+
+    // …and a redelivery of the same logical event still finds the key taken.
+    calls.length = 0
+    expect(route(daemon, agentMessage({ msgId: 'slack:C1:1720000000.000200:final-again' })).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
     await daemon.stop()
   })

@@ -856,6 +856,17 @@ interface CallMeta {
   hopCount: number
   /** Stable id of the delivery that started this turn (== the msgId's ts segment). */
   deliveryId: string
+  /**
+   * send-message-routing-rework.md §8.6: the activation rendezvous key this delivery was
+   * claimed under, when it has one.
+   *
+   * It rides on CallMeta specifically because CallMeta is PERSISTED with the durable inbox
+   * row and restored on replay. That is what closes the crash window: a turn that crashed
+   * after its inbox row landed is re-dispatched at startup carrying this key, so the
+   * SAME central admission below completes the rendezvous — no separate replay hook, and
+   * no dependence on the inbox row still existing by the time the sweep runs.
+   */
+  activationKey?: string
   /** A self-authored channel-root post initializes its new session but is not a model turn.
    *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
   initializeOnly?: boolean
@@ -5856,7 +5867,9 @@ export class Daemon {
       // source depth, so an A → B → A chain advances by one per hop and stops at the cap
       // — across queue replay and restart, since it is persisted with the inbox row.
       hopCount: deliveryHopCount,
-      deliveryId: msg.msgId
+      deliveryId: msg.msgId,
+      // §8.6: persisted with the row, so a replayed turn completes this rendezvous itself.
+      activationKey: key
     }
     const { handle, turn } = this.evaluationDispatchHandle(targetAgentId, msg, integrationId, undefined, callMeta, {
       // `accepted` must IMPLY a replayable row: without this a failed inbox append still
@@ -5864,18 +5877,8 @@ export class Daemon {
       requireDurable: true
     })
     turn.catch((err) => this.log.error(`dispatch failed for agent "${targetAgentId}": ${formatErr(err)}`))
-    // §8.6: the key becomes TERMINAL only once the turn is durably admitted. Marking it
-    // admitted before dispatch would make exactly-once into never — a rejected turn, a
-    // persistence failure, or a crash in that window would leave a claimed key with no
-    // child, and every retry would be deduplicated against it. Releasing on failure puts
-    // the record back so the next attempt is a first attempt.
-    void handle.admission.then(
-      (admission) => {
-        if (admission.admitted) this.store.admitActivation(key, admission.sessionKey)
-        else this.store.releaseActivation(key)
-      },
-      () => this.store.releaseActivation(key)
-    )
+    // The rendezvous is settled centrally in `dispatch`, off `callMeta.activationKey` —
+    // one place for live dispatch, queued dispatch, and startup replay.
     this.log.info(
       `routing: agent-authored mention ch=${msg.channel} "${verified.authorAgentId}" → "${targetAgentId}" (hop ${deliveryHopCount})`
     )
@@ -6839,21 +6842,15 @@ export class Daemon {
     )
     if (!claimed.dispatch) return false
     normalized.trigger = 'mention'
-    const callMeta: CallMeta = { callFrom: authorAgentId, hopCount: deliveryHopCount, deliveryId: msg.msgId }
-    const childKey = sessionKey(
-      normalized.platform,
-      normalized.channel,
-      normalized.thread ?? normalized.msgId,
-      msg.agentId,
-      normalized.transportScope
-    )
+    const callMeta: CallMeta = {
+      callFrom: authorAgentId,
+      hopCount: deliveryHopCount,
+      deliveryId: msg.msgId,
+      activationKey: key
+    }
     void this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, callMeta, {
       // `accepted` must imply a replayable row — see the direct path.
-      requireDurable: true,
-      onAdmission: (result) => {
-        if (result.accepted) this.store.admitActivation(key, childKey)
-        else this.store.releaseActivation(key)
-      }
+      requireDurable: true
     }).catch((err) => {
       this.store.releaseActivation(key)
       this.log.error(`relay agent-mention dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
@@ -7375,24 +7372,16 @@ export class Daemon {
           childSessionId: claimed.record.childSessionId ?? childSessionId
         })
       }
-      // §8.6: settled on the ADMISSION barrier below, not here — see the mention path.
+      // §8.6: settled centrally in `dispatch` off `callMeta.activationKey`, which is
+      // persisted with the inbox row — so a replayed turn completes this rendezvous itself.
       pairingKey = key
+      callMeta.activationKey = key
     }
     // Fire-and-forget dispatch (P4-gate admission). delivered:true on ADMISSION — the
     // target processes the turn in its own time (§6.4). dispatch() drops the turn on a
     // pause/drain gate; a reason-typed NAK on those local gates is a follow-up.
     void this.dispatch(msg.toAgentId, normalized, integrationId, undefined, callMeta, {
-      ...(pairingKey !== undefined
-        ? {
-            requireDurable: true,
-            onAdmission: (result) => {
-              // A claimed-but-unadmitted key would deduplicate every retry against a child
-              // that was never opened, turning exactly-once into never (§8.6).
-              if (result.accepted) this.store.admitActivation(pairingKey, childSessionId)
-              else this.store.releaseActivation(pairingKey)
-            }
-          }
-        : {})
+      ...(pairingKey !== undefined ? { requireDurable: true } : {})
     }).catch((err) => {
       if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`relay agentmsg dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
@@ -7820,20 +7809,13 @@ export class Daemon {
       this.log.debug(
         `messageAgent: paired call ${req.agentCallDeliveryId ?? deliveryId} claimed the rendezvous for "${req.toAgentId}" at ${req.transcriptTs}`
       )
-      // §8.6: settled on the ADMISSION barrier, never before it — a claimed key with no
-      // child would deduplicate every retry and lose the wake permanently.
+      // §8.6: settled centrally in `dispatch` off `callMeta.activationKey`, which is
+      // persisted with the inbox row — so a replayed turn completes this rendezvous itself.
       pairingKey = key
+      callMeta.activationKey = key
     }
     void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta, {
-      ...(pairingKey !== undefined
-        ? {
-            requireDurable: true,
-            onAdmission: (result) => {
-              if (result.accepted) this.store.admitActivation(pairingKey, targetSession)
-              else this.store.releaseActivation(pairingKey)
-            }
-          }
-        : {})
+      ...(pairingKey !== undefined ? { requireDurable: true } : {})
     }).catch((err) => {
       if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`messageAgent dispatch failed for agent "${req.toAgentId}": ${formatErr(err)}`)
@@ -11063,6 +11045,25 @@ export class Daemon {
             channel: msg.channel,
             data: { source: msg.source }
           })
+        }
+        // §8.6, the ONE place every delivery path settles — live dispatch, queued
+        // dispatch, and startup replay alike. Completing the rendezvous here rather than
+        // at each call site is what makes it survive a crash: the replayed turn carries
+        // the key on its persisted CallMeta, so the record is completed by the replay
+        // itself instead of being inferred later from an inbox row that completion has
+        // by then removed.
+        const activationKey = callMeta?.activationKey
+        if (activationKey !== undefined) {
+          if (result.accepted) {
+            this.store.admitActivation(
+              activationKey,
+              sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+            )
+          } else {
+            // Never admitted ⇒ give the claim back, so a retry is a first attempt rather
+            // than being deduplicated against a child that was never opened.
+            this.store.releaseActivation(activationKey)
+          }
         }
         opts?.onAdmission?.(result)
       }
