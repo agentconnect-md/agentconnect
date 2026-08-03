@@ -1173,6 +1173,19 @@ function MobileSheets({
                 <span>{r.label}</span>
               </Link>
             ))}
+            {/* The rail (and both of its re-entry menus) is hidden at mobile widths, so
+                this is the phone/tablet way back to a skipped checklist — both auth modes. */}
+            <button
+              type="button"
+              className="msheet-row"
+              onClick={() => {
+                onClose()
+                openGettingStarted()
+              }}
+            >
+              <Icon name="rocket" size={20} color="var(--text-tertiary)" />
+              <span>Getting started</span>
+            </button>
             <button type="button" className="msheet-cancel" onClick={onClose}>
               Cancel
             </button>
