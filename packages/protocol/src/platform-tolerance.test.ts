@@ -4,6 +4,7 @@ import {
   decodeRelayDaemonFrame,
   decodeRelayCpFrame,
   CollabRoutesSnapshot,
+  IntegrationSpec,
   KNOWN_PLATFORMS,
   isKnownPlatform,
   originKindOf
@@ -193,6 +194,28 @@ describe('S1a tolerant platform readers — relay↔CP wire', () => {
     if (r.ok && r.frame.type === 'rc/bot-assign') {
       expect(r.frame.payload.platform).toBe(UNKNOWN)
     }
+  })
+})
+
+describe('§6.4 IntegrationSpec dual shape', () => {
+  const base = { integrationId: INTEGRATION_ID, agentId: AGENT_ID, platform: 'telegram' as const }
+  const telegram = { botToken: '12345:AAA', bindRules: [], mutedChannels: [], gated: false }
+  const core = { mode: 'direct' as const, bindRules: [], mutedChannels: [], gated: false }
+
+  it('decodes legacy-only, dual, and envelope-only variants', () => {
+    expect(IntegrationSpec.safeParse({ ...base, telegram }).success).toBe(true)
+    const dual = IntegrationSpec.safeParse({ ...base, telegram, core, config: telegram })
+    expect(dual.success).toBe(true)
+    if (dual.success && dual.data.platform === 'telegram') {
+      expect(dual.data.core?.gated).toBe(false)
+      expect(dual.data.config).toEqual(telegram)
+    }
+    // Envelope-only (post-window emission): the legacy block is absent.
+    expect(IntegrationSpec.safeParse({ ...base, core, config: telegram }).success).toBe(true)
+  })
+
+  it('keeps a payload-less variant decodable — rejection is the reader, not the schema', () => {
+    expect(IntegrationSpec.safeParse(base).success).toBe(true)
   })
 })
 
