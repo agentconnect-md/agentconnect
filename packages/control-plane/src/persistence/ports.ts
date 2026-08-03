@@ -39,6 +39,17 @@ import type {
   OrgId
 } from '../domain/ids.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type {
+  OrganizationEnvironmentAudience,
+  OrganizationEnvironmentKind,
+  OrganizationEnvironmentValues
+} from '../orchestrator/organizationEnvironment.js'
+
+export type {
+  OrganizationEnvironmentAudience,
+  OrganizationEnvironmentKind,
+  OrganizationEnvironmentValues
+} from '../orchestrator/organizationEnvironment.js'
 
 // ───────────────────────────────────────────────────────────────────────────
 // Shared enums (string unions mirroring the Prisma enums; kept transport-free)
@@ -657,6 +668,16 @@ export interface AgentRecord {
   runInSandbox: boolean // #642: persisted per-agent sandbox preference (default false)
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
+  /**
+   * Monotonic revision of this agent's fully resolved CP-owned configuration
+   * (organization-secrets-and-variables.md §5). ONE ordering domain per agent:
+   * every durable mutation that can change a field assembled into `AgentSpec`
+   * bumps it through {@link bumpAgentConfigRevisions}, so an organization-derived
+   * change and an ordinary agent edit cannot mint competing revisions. The daemon
+   * refuses a snapshot older than the greatest it applied, which is what makes
+   * full-map env/secret replacement safe.
+   */
+  configRevision: bigint
 }
 
 /**
@@ -4255,6 +4276,184 @@ export interface MemoryConnectionWriter {
   /** Connection-reference scan + row drop under the installation's scope (the
    *  FK is Restrict, so this converts a constraint failure into a clean 409). */
   deleteInstallation(id: string, orgId: OrgId): Promise<'deleted' | 'referenced' | 'not_found' | 'busy'>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Organization environment registry (organization-secrets-and-variables.md).
+// An organization-owned variable or secret defined once and assigned to all or
+// selected agents. The Control Plane resolves assigned entries together with each
+// agent's local entries before building `AgentSpec.env` / `AgentSpec.secrets`, so
+// nothing new appears on the wire and no registry exists on the daemon.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Human metadata for one entry: may carry `variableValue`, NEVER a secret value. */
+export interface OrganizationEnvironmentEntryRecord {
+  id: string
+  orgId: OrgId
+  key: string
+  kind: OrganizationEnvironmentKind
+  /** Non-null only for `kind: 'variable'`. */
+  variableValue: string | null
+  /** For a secret: whether its value row exists. Derived WITHOUT reading it. */
+  secretConfigured: boolean
+  audience: OrganizationEnvironmentAudience
+  /** Editor-conflict fence; PATCH sends it back as `expectedVersion`. */
+  version: number
+  /** Every explicit binding. Routes filter this to agents the caller can view. */
+  agentIds: string[]
+  createdByUserId: string | null
+  lastModifiedByUserId: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+/**
+ * The authorization seam every binding-creating write passes through, evaluated
+ * INSIDE the writer's transaction (design §3.4/§4).
+ *
+ * `all` is an automatic-enrollment policy, never an authorization bypass: the
+ * writer asks this for the agent ids the ACTOR may edit and binds exactly those.
+ * Restricted agents the actor cannot see are neither enumerated nor changed.
+ * `viewer: undefined` is reserved for internal callers and means unfiltered.
+ */
+export interface OrganizationEnvironmentActor {
+  actorUserId?: string
+  viewer?: ViewCtx
+}
+
+/** Why an organization-environment write was refused without any value leaking. */
+export type OrganizationEnvironmentWriteFailure =
+  /** `expectedVersion` did not match — a competing editor already changed it. */
+  | { outcome: 'version_conflict' }
+  /** The entry (or the org-scoped view of it) does not exist. */
+  | { outcome: 'not_found' }
+  /** An agent target is invisible, non-editable, foreign, or absent. Deliberately
+   *  indistinguishable from `not_found` at the API edge. */
+  | { outcome: 'agent_not_found' }
+  /** Would place an organization variable over an agent secret (§3.2). The keys
+   *  are safe to name: they are names, not values. */
+  | { outcome: 'cross_kind_conflict'; keys: string[] }
+  /** An affected agent's resolved AgentSpec would exceed the wire admission budget. */
+  | { outcome: 'too_large'; agentIds: string[] }
+  /** The key already exists in this organization's single keyspace. */
+  | { outcome: 'duplicate_key' }
+  /** The endpoint is only valid while the entry has `selected` audience. */
+  | { outcome: 'not_selected' }
+
+export type OrganizationEnvironmentWriteResult =
+  | {
+      outcome: 'ok'
+      entry: OrganizationEnvironmentEntryRecord
+      /** Agents whose resolved configuration changed — the fan-out set (§7). */
+      affectedAgentIds: string[]
+    }
+  | OrganizationEnvironmentWriteFailure
+
+export interface CreateOrganizationEnvironmentEntryInput {
+  key: string
+  kind: OrganizationEnvironmentKind
+  /** A variable's plain value; ignored for a secret. */
+  variableValue?: string
+  /** An ALREADY-SEALED secret value (sealing happens before the transaction). */
+  sealedSecret?: string
+  audience: OrganizationEnvironmentAudience
+  /** Initial explicit selection; `selected` audience only. */
+  agentIds?: readonly string[]
+}
+
+export interface UpdateOrganizationEnvironmentEntryInput {
+  /** Replacement plain value for a variable. Omitted ⇒ unchanged. */
+  variableValue?: string
+  /** Replacement ALREADY-SEALED secret value. Omitted ⇒ unchanged. */
+  sealedSecret?: string
+  /** Retarget. Omitted ⇒ unchanged. */
+  audience?: OrganizationEnvironmentAudience
+}
+
+/**
+ * Metadata + binding CRUD. Every writer takes the design §5 fence — the parent
+ * `Org` row `FOR UPDATE`, then the affected `Agent` rows in stable id order —
+ * re-reads local names and assigned metadata under those locks, validates the
+ * complete resolved spec, and increments each affected agent's `configRevision`
+ * in the SAME transaction. Concurrent entry, binding, and agent-local writes
+ * therefore serialize before final validation instead of each validating against
+ * an obsolete partial state.
+ */
+export interface OrganizationEnvironmentRepo {
+  /** Metadata for the Settings registry. Never joins the secret table. */
+  list(orgId: OrgId): Promise<OrganizationEnvironmentEntryRecord[]>
+  get(orgId: OrgId, entryId: string): Promise<OrganizationEnvironmentEntryRecord | null>
+  create(
+    orgId: OrgId,
+    input: CreateOrganizationEnvironmentEntryInput,
+    actor: OrganizationEnvironmentActor
+  ): Promise<OrganizationEnvironmentWriteResult>
+  /** Replace a value and/or retarget the audience under `expectedVersion`. */
+  update(
+    orgId: OrgId,
+    entryId: string,
+    expectedVersion: number,
+    input: UpdateOrganizationEnvironmentEntryInput,
+    actor: OrganizationEnvironmentActor
+  ): Promise<OrganizationEnvironmentWriteResult>
+  /** Exercise the authority each binding already delegated and remove the entry
+   *  globally. Returns the agents that were receiving it so the caller can
+   *  fan out; it does not disclose them to any human response. */
+  delete(
+    orgId: OrgId,
+    entryId: string
+  ): Promise<{ outcome: 'ok'; affectedAgentIds: string[] } | { outcome: 'not_found' }>
+  /** Idempotent per-agent binding add/remove. `selected` audience only; both
+   *  require a `resource.edit` decision for the target. */
+  bind(
+    orgId: OrgId,
+    entryId: string,
+    agentId: AgentId,
+    actor: OrganizationEnvironmentActor
+  ): Promise<OrganizationEnvironmentWriteResult>
+  unbind(
+    orgId: OrgId,
+    entryId: string,
+    agentId: AgentId,
+    actor: OrganizationEnvironmentActor
+  ): Promise<OrganizationEnvironmentWriteResult>
+}
+
+/**
+ * The ONLY value-reading seam for organization secrets — the exact discipline
+ * {@link AgentSecretStore} uses. It receives the same mandatory SecretCipher, so
+ * at-rest encryption stays a wiring change, and metadata/DTO queries never join
+ * the value table.
+ */
+export interface OrganizationEnvironmentSecretStore {
+  /** Seal one value for a create/replacement. Runs OUTSIDE any transaction — a
+   *  real cipher may make network calls and a transaction must never wait on one. */
+  seal(value: string): Promise<string>
+  /** Decrypted values for the given entry ids, keyed by entry id. Missing rows
+   *  are simply absent; the resolver turns that into a tombstone (§9). */
+  values(entryIds: readonly string[]): Promise<Map<string, string>>
+}
+
+/**
+ * Resolves the organization contribution to one agent's (or a batch of agents')
+ * effective environment. Injected into `AgentSpecAssembler`, which stays the
+ * single producer of CP→daemon specs. The batch form exists so list-agent
+ * endpoints do not become one query per agent.
+ */
+export interface OrganizationEnvironmentResolver {
+  forAgent(orgId: OrgId, agentId: AgentId): Promise<OrganizationEnvironmentValues>
+  forAgents(orgId: OrgId, agentIds: readonly AgentId[]): Promise<Map<string, OrganizationEnvironmentValues>>
+  /**
+   * Metadata-only projection for human DTOs: assigned variable values and secret
+   * KEY NAMES, with no secret decryption at all.
+   */
+  metadataForAgents(orgId: OrgId, agentIds: readonly AgentId[]): Promise<Map<string, AssignedOrganizationMetadata>>
+}
+
+/** What an agent DTO may show about the entries assigned to that agent. */
+export interface AssignedOrganizationMetadata {
+  variables: Array<{ key: string; value: string }>
+  secretKeys: string[]
 }
 
 export interface OrgInviteLinkRepo {

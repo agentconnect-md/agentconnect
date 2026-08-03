@@ -276,10 +276,18 @@ export interface Agent {
   approvalsReviewer?: ApprovalsReviewer
   /** Explicit opt-in for chat-side runtime changes and approval controls. */
   allowRuntimeChangesInChat: boolean
-  /** Extra env injected into the runtime, in display order. */
+  /** The agent's OWN variables, in display order. A row here may be inactive while
+   *  a same-key organization entry is assigned (shown "Overridden by Organization")
+   *  and becomes effective again once that assignment goes away. */
   env: { k: string; v: string }[]
   /** Names of the agent's write-only secret env vars (values are never returned). */
   secretKeys: string[]
+  /** Organization-owned variables assigned to this agent (design §8.2). Read-only
+   *  here — only Organization Settings can change them or their audience. */
+  organizationVariables: { k: string; v: string }[]
+  /** Names of organization-owned secrets assigned to this agent. Values are never
+   *  returned for these either. */
+  organizationSecretKeys: string[]
   daemon: string
   region: string
   /** Convenience mirror of the workspace for list views: github repo, else '—'. */
@@ -1072,6 +1080,8 @@ export const AGENTS: Agent[] = (
       allowRuntimeChangesInChat: false,
       env: [],
       secretKeys: [],
+      organizationVariables: [],
+      organizationSecretKeys: [],
       daemon: '—',
       region: '—',
       repo: '—',
@@ -1125,6 +1135,8 @@ export const AGENTS: Agent[] = (
         { k: 'DEPLOY_ENV', v: 'production' }
       ],
       secretKeys: ['ANTHROPIC_API_KEY', 'AWS_SECRET_ACCESS_KEY'],
+      organizationVariables: [],
+      organizationSecretKeys: [],
       daemon: 'edge-1',
       region: 'us-west',
       repo: 'acme/infra',
@@ -1216,6 +1228,8 @@ export const AGENTS: Agent[] = (
       allowRuntimeChangesInChat: false,
       env: [{ k: 'GITHUB_TOKEN', v: 'ghp_••••' }],
       secretKeys: ['OPENAI_API_KEY'],
+      organizationVariables: [],
+      organizationSecretKeys: [],
       daemon: 'edge-1',
       region: 'us-west',
       repo: 'acme/web',
@@ -1293,6 +1307,8 @@ export const AGENTS: Agent[] = (
       allowRuntimeChangesInChat: false,
       env: [{ k: 'PAGERDUTY_KEY', v: 'pd_••••' }],
       secretKeys: [],
+      organizationVariables: [],
+      organizationSecretKeys: [],
       daemon: 'edge-2',
       region: 'us-east',
       repo: '—',
@@ -1359,6 +1375,8 @@ export const AGENTS: Agent[] = (
       allowRuntimeChangesInChat: false,
       env: [{ k: 'NOTION_TOKEN', v: 'secret_••••' }],
       secretKeys: ['SLACK_SIGNING_SECRET'],
+      organizationVariables: [],
+      organizationSecretKeys: [],
       daemon: 'edge-1',
       region: 'us-west',
       repo: 'acme/docs',

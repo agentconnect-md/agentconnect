@@ -31,6 +31,7 @@ import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
+import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
 import { AgentWorkspaceIntegrationConflict, MemoryConnectionBusy, MemoryConnectionMissing } from '../errors.js'
 
 /**
@@ -257,7 +258,8 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     lastModifiedAt: a.lastModifiedAt,
     lastModifiedBy: a.lastModifiedBy
       ? { userId: a.lastModifiedBy.id, displayName: a.lastModifiedBy.displayName, email: a.lastModifiedBy.email }
-      : null
+      : null,
+    configRevision: a.configRevision
   }
 }
 
@@ -282,6 +284,18 @@ export class PgAgentRepo implements AgentRepo {
         // named sources' lifecycle still until this transaction commits.
         opts.skillSources.authorize([], visible)
       }
+      // Organization-environment fence (organization-secrets-and-variables.md §5).
+      // CREATE is the one agent-config path that must lock the ORG row rather than
+      // the agent row: the row does not exist yet, so a concurrent `all`-audience
+      // write's enrollment scan cannot see it. The org row makes the enrollment set
+      // this agent joins below stable across that race.
+      //
+      // Taken AFTER the skill-source name scopes, never before. A skill-source
+      // sharing write holds those scopes and then takes `FOR KEY SHARE` on this same
+      // org row (`lockResourceWriteMemberships`); the reverse order here would put
+      // the two writers in a cycle. Full order for every agent-config writer:
+      // skill-source name scopes → org row (create only) → agent rows.
+      await lockOrgForConfigWrite(tx, input.orgId)
       const bindId = externalConnectionIdOf(input.memory)[0]
       await fenceMemoryConnections(tx, input.orgId, externalConnectionIdOf(input.memory), bindId)
       const orgDefault =
@@ -382,6 +396,12 @@ export class PgAgentRepo implements AgentRepo {
         },
         include: withUsers
       })
+      // A brand-new agent joins every current `all`-audience entry: the actor is
+      // already authorized to edit this target, and the Console showed which
+      // organization entries would apply. The secret rows land just after this (in
+      // PgAgentConfigWriter's transaction), which re-runs the fence with the
+      // complete definition.
+      await fenceAgentLocalConfigWrite(tx, input.orgId, a.id, input.createdByUserId)
       return toRecord(a)
     })
   }
@@ -401,10 +421,30 @@ export class PgAgentRepo implements AgentRepo {
     patch: UpdateAgentInput,
     opts?: AgentUpdateOpts
   ): Promise<AgentRecord> {
-    // The skill-source fence opens BEFORE the agent row lock (its blocking name
-    // scopes are the outermost app fence, mirroring how the old per-name chains
-    // wrapped this whole transaction); the visibility set it returns feeds the
-    // authorize call below, after the committed bag read.
+    // Organization-environment fence (organization-secrets-and-variables.md §5).
+    // A PATCH affects exactly ONE agent, and the admission budget is per-agent, so
+    // the AGENT ROW — not the Org row — is the serialization point this path needs:
+    //
+    //  - two PATCHes to the same agent serialize on it (the row lock below);
+    //  - a PATCH racing an organization-environment write serializes on it too,
+    //    because every organization-environment writer locks the agent rows it
+    //    affects. Whichever commits second re-reads the other's committed state and
+    //    is refused, which is what makes the cross-kind rule enforceable from both
+    //    write directions; and
+    //  - two PATCHes to DIFFERENT agents are genuinely independent.
+    //
+    // Deliberately NOT the Org row here: taking it would serialize every agent edit
+    // in the organization behind one another for no admission benefit, and would
+    // invert lock order against the skill-source name scopes taken just below
+    // (a create holding the org row while waiting on a name scope, against a PATCH
+    // holding that name scope while waiting on the org row). `create` DOES take it,
+    // because a not-yet-inserted row is invisible to a concurrent `all` enrollment
+    // scan — see the comment there.
+    const orgId = await orgIdOfAgent(tx, agentId)
+    // The skill-source fence opens BEFORE the agent row lock (its blocking
+    // name scopes wrap the rest of this transaction, mirroring how the old
+    // per-name chains wrapped the whole write); the visibility set it returns
+    // feeds the authorize call below, after the committed bag read.
     const visibleSourceNames = opts?.skillSources ? await enterSkillSourceFence(tx, opts.skillSources) : undefined
     // model/reasoningEffort/env live in the runtimeOverrides JSON — merge key by
     // key so patching one never clobbers the others (null deletes its key).
@@ -529,10 +569,20 @@ export class PgAgentRepo implements AgentRepo {
         // A PATCH is a human edit — advance the last-modified audit. The editor is
         // stamped when known (absent under devAuth ⇒ leave the prior editor as-is).
         lastModifiedAt: new Date(),
-        ...(patch.lastModifiedByUserId ? { lastModifiedByUserId: patch.lastModifiedByUserId } : {})
+        ...(patch.lastModifiedByUserId ? { lastModifiedByUserId: patch.lastModifiedByUserId } : {}),
+        // One ordering domain per agent: a PATCH may change env, secrets (through
+        // the config writer's transaction), workspace, or any other CP-owned spec
+        // field, so it always advances the revision the daemon fences on.
+        configRevision: { increment: 1 }
       },
       include: withUsers
     })
+    // Enroll into any `all`-audience entry added since this agent last changed,
+    // then validate the COMPLETE resolved configuration under the locks held
+    // above. This is also where an agent-local secret that would sit beneath an
+    // assigned organization variable is refused — the write direction the design
+    // rejects from both sides (§3.2).
+    if (orgId) await fenceAgentLocalConfigWrite(tx, orgId, agentId, patch.lastModifiedByUserId)
     return toRecord(a)
   }
 
@@ -581,7 +631,10 @@ export class PgAgentRepo implements AgentRepo {
             workspaceRepoId: workspaceRepoId ?? null,
             gitAccess: workspace.mode === 'github' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
-            ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+            ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
+            // `workspace` rides the AgentSpec, so this edit joins the same
+            // ordering domain the daemon's revision fence compares.
+            configRevision: { increment: 1 }
           },
           include: withUsers
         })
@@ -629,7 +682,10 @@ export class PgAgentRepo implements AgentRepo {
             workspaceRepoId: workspaceRepoId ?? null,
             gitAccess: workspace.mode === 'github' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
-            ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+            ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
+            // `workspace` rides the AgentSpec, so this edit joins the same
+            // ordering domain the daemon's revision fence compares.
+            configRevision: { increment: 1 }
           },
           include: withUsers
         })
@@ -660,7 +716,12 @@ export class PgAgentRepo implements AgentRepo {
       ) {
         return false
       }
-      await tx.agent.update({ where: { id: agentId }, data: { workspaceRepoId: repoId } })
+      // The repo identity feeds workspace credential resolution, so keep it in the
+      // same ordering domain the daemon's revision fence compares.
+      await tx.agent.update({
+        where: { id: agentId },
+        data: { workspaceRepoId: repoId, configRevision: { increment: 1 } }
+      })
       await tx.agentRepoAuthorization.deleteMany({ where: { agentId, repoId } })
       return true
     })
@@ -717,7 +778,10 @@ export class PgAgentRepo implements AgentRepo {
         ...(policy.outboundPolicy !== undefined ? { outboundPolicy: policy.outboundPolicy } : {}),
         ...(policy.allowedTargetAgentIds !== undefined ? { allowedTargetAgentIds: policy.allowedTargetAgentIds } : {}),
         lastModifiedAt: new Date(),
-        ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+        ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
+        // Both call policies ride the AgentSpec (the daemon enforces them locally),
+        // so this edit joins the agent's single ordering domain.
+        configRevision: { increment: 1 }
       },
       include: withUsers
     })
@@ -730,7 +794,10 @@ export class PgAgentRepo implements AgentRepo {
       if (!current) return
       await tx.agent.update({
         where: { id: agentId },
-        data: { daemonId, status: daemonId ? 'active' : 'inactive' }
+        // A placement change makes a different daemon the spec's recipient. Bumping
+        // here means the new owner's first snapshot is never mistaken for an older
+        // revision it already applied during a previous residency.
+        data: { daemonId, status: daemonId ? 'active' : 'inactive', configRevision: { increment: 1 } }
       })
       if (daemonId) await settlePresetPlacement(tx, agentId)
       if (current.daemonId !== daemonId) {
@@ -762,7 +829,10 @@ export class PgAgentRepo implements AgentRepo {
             daemonId,
             status: daemonId ? 'active' : 'inactive',
             lastModifiedAt: new Date(),
-            ...(byUserId ? { lastModifiedByUserId: byUserId } : {})
+            ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
+            // See setPlacement: a move re-targets who receives the spec, so the
+            // revision must advance past anything the previous owner applied.
+            configRevision: { increment: 1 }
           },
           include: withUsers
         })

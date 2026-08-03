@@ -23,6 +23,7 @@ import { OrgId } from '../../domain/ids.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScope } from '../skill-source-lock.js'
 import { parseSkillRef } from '../../orchestrator/skillSource.js'
+import { bumpAgentsReferencingSkillSource } from './organization-environment-fence.js'
 
 /**
  * True while any agent in the org still enables skills under `name`. Agents
@@ -153,18 +154,33 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
   }
 
   async update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord> {
-    const s = await this.db.skillSource.update({
-      where: { id },
-      data: {
-        ...(patch.name !== undefined ? { name: patch.name } : {}),
-        ...(patch.source !== undefined ? { source: patch.source } : {}),
-        ...(patch.githubRepoId !== undefined ? { githubRepoId: patch.githubRepoId } : {}),
-        ...(patch.ref !== undefined ? { ref: patch.ref } : {}),
-        ...(patch.subDir !== undefined ? { subDir: patch.subDir } : {}),
-        ...(patch.skills !== undefined ? { skills: patch.skills } : {})
+    return withAmbientTx(this.db, async (tx) => {
+      // The name BEFORE the edit — agents bind by name, so a rename moves which
+      // agents resolve through this row and both sets change what they receive.
+      const before = await tx.skillSource.findUnique({ where: { id }, select: { name: true } })
+      const s = await tx.skillSource.update({
+        where: { id },
+        data: {
+          ...(patch.name !== undefined ? { name: patch.name } : {}),
+          ...(patch.source !== undefined ? { source: patch.source } : {}),
+          ...(patch.githubRepoId !== undefined ? { githubRepoId: patch.githubRepoId } : {}),
+          ...(patch.ref !== undefined ? { ref: patch.ref } : {}),
+          ...(patch.subDir !== undefined ? { subDir: patch.subDir } : {}),
+          ...(patch.skills !== undefined ? { skills: patch.skills } : {})
+        }
+      })
+      // `AgentSpec.skills` is RESOLVED from this row, so an edit here changes the
+      // spec content of every agent that enables it. Without this bump those
+      // agents keep their old `configRevision`, and the daemon refuses the new
+      // content as an equal-revision/different-digest invariant violation —
+      // permanently, on every reconnect (organization-secrets-and-variables.md §7).
+      // Bumped in the SAME transaction as the edit, so no reader ever observes new
+      // content at an old revision.
+      for (const name of new Set([before?.name, s.name].filter((n): n is string => n !== undefined))) {
+        await bumpAgentsReferencingSkillSource(tx, s.orgId, name)
       }
+      return toRecord(s)
     })
-    return toRecord(s)
   }
 
   /**

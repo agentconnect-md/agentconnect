@@ -1458,6 +1458,18 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           </section>
 
           <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
+            {/* A new agent is enrolled into the organization's "All agents"
+                variables and secrets as part of its creation, and those win a
+                same-name collision (organization-secrets-and-variables.md §3.4).
+                The registry itself is owner-only, so this states the behavior
+                rather than listing entries the creator may not be allowed to
+                enumerate; the agent's own cards show exactly what applied as soon
+                as it exists. */}
+            <div className="mb-[14px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+              Organization-wide variables and secrets set for all agents also apply to this one, and take precedence
+              over a value with the same name here. They appear on the agent’s Variables and Secrets cards once it is
+              created.
+            </div>
             <EnvSecretsFields
               envRows={envRows}
               setEnvRows={setEnvRows}

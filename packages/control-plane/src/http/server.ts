@@ -31,6 +31,7 @@ import { botRoutes } from './routes/bots.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
 import { organizationKnowledgeRoutes } from './routes/organization-knowledge.js'
+import { organizationEnvironmentRoutes } from './routes/organization-environment.js'
 import { connectorRoutes } from './routes/connectors.js'
 import { memoryConnectionRoutes } from './routes/memory-connections.js'
 import { githubRoutes, githubCallbackRoutes } from './routes/github.js'
@@ -236,6 +237,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(mcpProviderRoutes(deps))
           await scope.register(skillSourceRoutes(deps))
           await scope.register(organizationKnowledgeRoutes(deps))
+          await scope.register(organizationEnvironmentRoutes(deps))
           await scope.register(connectorRoutes(deps))
           await scope.register(memoryConnectionRoutes(deps))
           await scope.register(memberRoutes(deps))

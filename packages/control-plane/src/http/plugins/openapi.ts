@@ -67,6 +67,7 @@ export const Tag = {
   Mcp: 'MCP providers',
   Skills: 'Skill sources',
   Knowledge: 'Organization knowledge',
+  Environment: 'Organization variables & secrets',
   Memory: 'External memory',
   Crons: 'Crons',
   Hooks: 'Hooks',
@@ -103,6 +104,11 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   {
     name: Tag.Knowledge,
     description: 'Accepted organization knowledge, managed Agent Skills bundles, and Dream suggestions.'
+  },
+  {
+    name: Tag.Environment,
+    description:
+      'Organization-owned environment variables and secrets, defined once and assigned to all or selected agents. Owner-only. Secret values are write-only — accepted on create/replace and never returned.'
   },
   {
     name: Tag.Memory,

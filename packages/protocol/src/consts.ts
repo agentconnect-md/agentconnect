@@ -50,6 +50,29 @@ export const ORGANIZATION_SUGGESTION_REVIEW_FEATURE = 'organization-suggestion-r
 export const SLACK_SESSION_AUDIENCE_FEATURE = 'slack-session-audience-v1'
 
 /**
+ * Daemon persists `AgentSpec.configRevision` and enforces the monotonic
+ * comparison before applying a CP-owned snapshot
+ * (organization-secrets-and-variables.md §7). Organization environment entries
+ * rely on full-map replacement semantics, so a bound agent may only be placed on
+ * a daemon that advertises this: without the fence, an older full snapshot that
+ * completes late could reinstate a rotated or deleted value.
+ */
+export const AGENT_CONFIG_REVISION_FEATURE = 'agent-config-revision-v1'
+
+/**
+ * Per-value ceiling for an environment variable or secret, shared by the agent
+ * and organization surfaces so one entry can never be sized past what any
+ * resolved `AgentSpec` could carry.
+ *
+ * 64 KiB is a quarter of `MAX_FRAME_BYTES`: generous for the real payloads
+ * (a PEM block, a kubeconfig, a service-account JSON) while leaving room for the
+ * rest of the spec. It is a per-VALUE guard only — the authoritative check is the
+ * transaction-time admission budget over the whole resolved environment, which
+ * the Control Plane applies per affected agent before persisting.
+ */
+export const MAX_ENVIRONMENT_VALUE_LENGTH = 64 * 1024
+
+/**
  * Exit code a daemon uses for a PLANNED lifecycle exit (drain-then-exit on a
  * `daemon/restart` or `daemon/upgrade`, cli-daemon-split.md §6). It must be
  * non-zero: launchd's `KeepAlive.SuccessfulExit=false` only relaunches on a

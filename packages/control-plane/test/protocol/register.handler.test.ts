@@ -214,6 +214,10 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       allowRuntimeChangesInChat: false,
       env: {}, // always shipped — an absent env would read as "leave alone" on the daemon
       secrets: {}, // write-only secrets ride the same wire as env; always shipped (even {})
+      // The ordering fence full-map env/secret replacement depends on
+      // (organization-secrets-and-variables.md §7): a decimal string, so a bigint
+      // revision survives JSON. A freshly seeded agent is at revision 0.
+      configRevision: '0',
       mcpServers: [], // likewise always shipped (disabling the last server must replicate)
       skills: [], // resolved skill entries; always shipped (disabling the last skill must replicate)
       managedSkills: [], // managed organization skill bindings; likewise always shipped

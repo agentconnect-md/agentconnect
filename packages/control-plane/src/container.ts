@@ -63,6 +63,9 @@ import {
   PgMcpGrantRepo,
   PgSkillSourceRepo,
   PgOrganizationKnowledgeRepo,
+  PgOrganizationEnvironmentRepo,
+  PgOrganizationEnvironmentResolver,
+  PgOrganizationEnvironmentSecretStore,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -241,6 +244,11 @@ export function buildContainer(
   const rootPrisma = prisma
   prisma = withSharedTxRouting(prisma)
 
+  // The single value-reading seam for organization secrets. Named before the repo
+  // map because both the registry repo's resolver and the assembler share ONE
+  // instance — and therefore the one configured cipher.
+  const organizationEnvironmentSecrets = new PgOrganizationEnvironmentSecretStore(prisma, secretCipher)
+
   // ── C6 repositories (the ONLY @prisma/client importers) ───────────────────
   const repos = {
     daemon: new PgDaemonRepo(prisma),
@@ -272,6 +280,12 @@ export function buildContainer(
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
     skillSource: new PgSkillSourceRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
+    // Owns its transactions: every organization-environment write runs the design
+    // §5 fence (org row → agent rows → re-read → validate → persist + bump
+    // configRevision), so it must be the transaction owner, not a composed repo.
+    organizationEnvironment: new PgOrganizationEnvironmentRepo(prisma),
+    organizationEnvironmentSecret: organizationEnvironmentSecrets,
+    organizationEnvironmentResolver: new PgOrganizationEnvironmentResolver(prisma, organizationEnvironmentSecrets),
     memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
@@ -392,6 +406,14 @@ export function buildContainer(
           issues: invalid.issues
         },
         'omitting an invalid historical skill source from the daemon projection'
+      ),
+    repos.organizationEnvironmentResolver,
+    // Key names only — a tombstone means the key left BOTH wire maps, which also
+    // suppresses any same-key agent fallback (organization-secrets-and-variables.md §9).
+    (agentId, keys) =>
+      http.log.error(
+        { agentId, keys },
+        'organization environment keys resolved to nothing and were removed from the agent projection'
       )
   )
 
@@ -768,6 +790,9 @@ export function buildContainer(
       mcpGrant: repos.mcpGrant,
       skillSource: repos.skillSource,
       organizationKnowledge: repos.organizationKnowledge,
+      organizationEnvironment: repos.organizationEnvironment,
+      organizationEnvironmentSecret: repos.organizationEnvironmentSecret,
+      organizationEnvironmentResolver: repos.organizationEnvironmentResolver,
       memoryPluginInstallation: repos.memoryPluginInstallation,
       externalMemoryConnection: repos.externalMemoryConnection,
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,

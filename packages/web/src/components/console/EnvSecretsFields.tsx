@@ -3,9 +3,17 @@
 // with per-row inline editing — pencil to edit, trash to remove, "Add …" to
 // append. Controlled: the parent (Add- / Edit-agent modal) owns the draft rows
 // and derives the create payload / update patch from them via the helpers below.
+//
+// Organization-owned entries assigned to the agent appear ABOVE the editable rows
+// in a read-only "From organization" group with no edit, replace, or remove
+// controls (organization-secrets-and-variables.md §8.2) — only Organization
+// settings can change them. A local row with the same key is KEPT and marked
+// "Overridden by Organization" rather than removed, so unassigning the entry later
+// makes it active again without re-entering its value.
 
 import type { Dispatch, SetStateAction } from 'react'
 import { Icon } from '@/components/ui'
+import { OrganizationRowBadge } from '@/components/console/OrganizationEnvironmentRows'
 
 // Env/secret key rule — mirrors the CP's AgentEnvBody / AgentSecretsPatchBody so a
 // bad name fails inline instead of as a 400. Compact mono field chrome shared with
@@ -76,21 +84,94 @@ const ADD_LINK = 'lnk px-4 py-[10px] text-[12.5px]'
 const ROW_EDIT = 'flex flex-col gap-[6px] border-b border-(--border-subtle) px-4 pt-[9px] pb-[11px]'
 const ROW_VIEW = 'flex items-center gap-3 border-b border-(--border-subtle) px-4 py-[10px]'
 
+/** Organization-owned rows, shown above the editable ones. Read-only by
+ *  construction: this renders no pencil, trash, or input at all. */
+function FromOrganizationGroup({
+  rows,
+  masked,
+  manageHref
+}: {
+  rows: { k: string; v?: string }[]
+  masked: boolean
+  manageHref?: string
+}) {
+  if (rows.length === 0) return null
+  return (
+    <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-subtle)">
+      <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-[7px]">
+        <span className="font-sans text-[11px] font-semibold leading-normal tracking-wide text-(--text-tertiary) uppercase">
+          From organization
+        </span>
+        {/* Owners get a way to change these; other members see the group only. */}
+        {manageHref && (
+          <a className="lnk text-[11.5px]" href={manageHref}>
+            Manage
+          </a>
+        )}
+      </div>
+      {rows.map((row, i) => (
+        <div
+          key={i}
+          className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-[9px] last:border-b-0"
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-[7px]">
+            {masked && <Icon name="lock" size={11} color="var(--text-tertiary)" className="flex-none" />}
+            <span className="mono min-w-0 truncate text-[12px] text-(--text-primary)" title={row.k}>
+              {row.k}
+            </span>
+            <OrganizationRowBadge />
+          </span>
+          <span
+            className="mono min-w-0 flex-1 truncate text-right text-[12px] text-(--text-tertiary)"
+            title={masked ? 'Write-only — value can’t be viewed' : row.v}
+          >
+            {masked ? '••••••••' : row.v}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** The note on a retained-but-inactive local row. */
+function OverriddenNote() {
+  return (
+    <span
+      className="flex-none font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
+      title="An organization entry with this name applies instead. Remove that assignment to use this value again."
+    >
+      Overridden by Organization
+    </span>
+  )
+}
+
 export function EnvSecretsFields({
   envRows,
   setEnvRows,
   secretRows,
-  setSecretRows
+  setSecretRows,
+  organizationVariables = [],
+  organizationSecretKeys = [],
+  organizationSettingsHref
 }: {
   envRows: EnvVarDraft[]
   setEnvRows: Dispatch<SetStateAction<EnvVarDraft[]>>
   secretRows: SecretDraft[]
   setSecretRows: Dispatch<SetStateAction<SecretDraft[]>>
+  /** Organization variables assigned to this agent — read-only here. */
+  organizationVariables?: { k: string; v: string }[]
+  /** Names of organization secrets assigned to this agent — read-only here. */
+  organizationSecretKeys?: string[]
+  /** Link to Organization settings; owners only (absent ⇒ explanatory text only). */
+  organizationSettingsHref?: string
 }) {
   const patchEnv = (i: number, patch: Partial<EnvVarDraft>) =>
     setEnvRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const patchSec = (i: number, patch: Partial<SecretDraft>) =>
     setSecretRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  // A local row is inactive while ANY assigned entry claims its key, regardless of
+  // which kind that entry is.
+  const organizationKeys = new Set([...organizationVariables.map((e) => e.k), ...organizationSecretKeys])
 
   return (
     <div className="flex flex-col gap-[22px]">
@@ -99,6 +180,7 @@ export function EnvSecretsFields({
         <div className="mt-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           Plain configuration values, available to the agent at runtime.
         </div>
+        <FromOrganizationGroup rows={organizationVariables} masked={false} manageHref={organizationSettingsHref} />
         <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle)">
           {envRows.map((r, i) =>
             r.editing ? (
@@ -136,6 +218,9 @@ export function EnvSecretsFields({
                 <span className="mono min-w-0 flex-1 truncate text-[12px] text-(--text-primary)" title={r.k}>
                   {r.k || '—'}
                 </span>
+                {/* Retained, not removed: unassigning the organization entry makes
+                    this value active again without re-entering it. */}
+                {organizationKeys.has(r.k) && <OverriddenNote />}
                 <span
                   className="mono min-w-0 flex-1 truncate text-right text-[12px] text-(--text-tertiary)"
                   title={r.v}
@@ -177,6 +262,11 @@ export function EnvSecretsFields({
         <div className="mt-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           Write-only credentials — values can’t be viewed after saving.
         </div>
+        <FromOrganizationGroup
+          rows={organizationSecretKeys.map((k) => ({ k }))}
+          masked
+          manageHref={organizationSettingsHref}
+        />
         <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle)">
           {secretRows.map((r, i) =>
             r.editing ? (
@@ -216,6 +306,7 @@ export function EnvSecretsFields({
                   <span className="mono min-w-0 truncate text-[12px] text-(--text-primary)" title={r.k}>
                     {r.k || '—'}
                   </span>
+                  {organizationKeys.has(r.k) && <OverriddenNote />}
                 </span>
                 <span className="mono flex-none text-[12px] text-(--text-tertiary)">••••••••</span>
                 <button

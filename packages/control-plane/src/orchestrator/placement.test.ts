@@ -202,7 +202,8 @@ describe('agentRecordToSpec runtime overrides', () => {
       visibility: 'org',
       sharedWith: [],
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
-      lastModifiedBy: null
+      lastModifiedBy: null,
+      configRevision: 0n
     }
 
     expect(agentRecordToSpec(agent, {})).toHaveProperty('displayName', 'Deploy Bot')
@@ -245,7 +246,8 @@ describe('agentRecordToSpec runtime overrides', () => {
       visibility: 'org',
       sharedWith: [],
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
-      lastModifiedBy: null
+      lastModifiedBy: null,
+      configRevision: 0n
     }
 
     expect(agentRecordToSpec(agent, {})).toMatchObject({ permissionMode: 'plan' })
@@ -278,7 +280,8 @@ describe('agentRecordToSpec runtime overrides', () => {
       visibility: 'org',
       sharedWith: [],
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
-      lastModifiedBy: null
+      lastModifiedBy: null,
+      configRevision: 0n
     }
 
     expect(agentRecordToSpec(base, {})).toMatchObject({ pause: true })
@@ -318,7 +321,8 @@ describe('agentRecordToSpec runtime overrides', () => {
       visibility: 'org',
       sharedWith: [],
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
-      lastModifiedBy: null
+      lastModifiedBy: null,
+      configRevision: 0n
     }
 
     expect(agentRecordToSpec(base, {})).toMatchObject({ memory: { provider: 'native' } })
@@ -353,7 +357,8 @@ describe('agentRecordToSpec runtime overrides', () => {
       visibility: 'org',
       sharedWith: [],
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
-      lastModifiedBy: null
+      lastModifiedBy: null,
+      configRevision: 0n
     }
 
     // The bug: these were omitted when null, conflating "cleared to default" with
@@ -397,7 +402,8 @@ describe('agentRecordToSpec runtime overrides', () => {
       visibility: 'org',
       sharedWith: [],
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
-      lastModifiedBy: null
+      lastModifiedBy: null,
+      configRevision: 0n
     }
 
     expect(agentRecordToSpec(base, { API_KEY: 'sk-1' })).toMatchObject({ secrets: { API_KEY: 'sk-1' } })

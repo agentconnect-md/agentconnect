@@ -51,6 +51,7 @@ function ghHook(over: Partial<HookRecord> = {}): HookRecord {
     createdAt: new Date(0),
     lastModifiedAt: new Date(0),
     lastModifiedBy: null,
+    configRevision: 0n,
     ...over
   }
 }

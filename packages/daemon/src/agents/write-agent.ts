@@ -688,6 +688,20 @@ export function findAgentFileById(agentsDir: string, agentId: string): string | 
   return undefined
 }
 
+/**
+ * Locate the agent's `agent.json` whether it is ACTIVE or sitting in a cold-move
+ * archive. `writeAgentSpec` restores an archive before merging CP fields, so the
+ * config-revision fence (organization-secrets-and-variables.md §7) must see the
+ * archived marker too — otherwise a stale fan-out completing after a move-away
+ * would both un-archive the root and downgrade its configuration.
+ */
+export function findReplicaFileById(agentsDir: string, agentId: string): string | undefined {
+  const active = findAgentFileById(agentsDir, agentId)
+  if (active) return active
+  const archived = detachedDataDir(agentsDir, agentId)
+  return existsSync(archived) ? findAgentFileById(archived, agentId) : undefined
+}
+
 /** Persist the complete active replica before a removal obligation can clear. */
 export function syncAgentReplica(agentsDir: string, agentId: string): void {
   const file = findAgentFileById(agentsDir, agentId)

@@ -30,6 +30,7 @@ import {
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { fetchAgentDto, type AgentCallPolicyInput, type UpdateAgentInput } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
+import { useOrgs } from '@/lib/org-context'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { Spinner } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
@@ -91,6 +92,10 @@ export default function EditAgentModal({
 }) {
   const acpRegistry = useAcpRegistry()
   const { updateAgent, moveAgent, saveSharing, saveAgentCallPolicy, daemons, agents } = useConsoleData()
+  // Only owners may change organization entries, so only they get a link into
+  // Organization settings from the read-only "From organization" group (§8.2);
+  // other members see the group and its explanation alone.
+  const { myRole, orgPath } = useOrgs()
   const [loaded, setLoaded] = useState(false)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: agent.visibility, sharedWith: agent.sharedWith })
   const initialSharing = useRef<SharingValue>({ visibility: agent.visibility, sharedWith: agent.sharedWith })
@@ -962,6 +967,12 @@ export default function EditAgentModal({
                 setEnvRows={setEnvRows}
                 secretRows={secretRows}
                 setSecretRows={setSecretRows}
+                // Assigned organization entries render above the editable rows as a
+                // read-only group. Only owners get the Manage link; other members
+                // see the group and its explanation alone (design §8.2).
+                organizationVariables={agent.organizationVariables}
+                organizationSecretKeys={agent.organizationSecretKeys}
+                {...(myRole === 'owner' ? { organizationSettingsHref: orgPath('/settings') } : {})}
               />
             </section>
 

@@ -188,6 +188,10 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         runInSandbox: false,
         // Preset marker — always shipped so the daemon can gate preset-only capabilities.
         builtin: false,
+        // The monotonic ordering fence (organization-secrets-and-variables.md §7).
+        // A decimal STRING because the column is a bigint; "1" here because this
+        // PATCH is the seeded agent's first configuration write.
+        configRevision: '1',
         workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app' }
       }
     })

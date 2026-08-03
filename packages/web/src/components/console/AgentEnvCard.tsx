@@ -4,24 +4,30 @@ import { useState } from 'react'
 import { MOCK_PREFIX, type Agent } from '@/lib/data'
 import { useModal } from '@/components/console/ModalProvider'
 import { Button, Icon } from '@/components/ui'
+import { OrganizationRowBadge, effectiveVariableRows } from '@/components/console/OrganizationEnvironmentRows'
 
 // Collapse the list past this many rows behind a "Show all" toggle.
 const COLLAPSE_AT = 6
 
 /**
  * The config tab's read-only "Variables" card. Env values are plain configuration
- * injected into the runtime by the daemon. Editing is unified with every other
- * config group: the header Edit opens the Edit-agent modal's "Secrets and
- * variables" section. Long lists collapse behind "Show all". Sibling of the
- * Secrets card.
+ * injected into the runtime by the daemon. The list combines the agent's own rows
+ * with the organization-owned variables assigned to it — the latter carry an
+ * Organization badge, are read-only, and win a same-key collision (design §8.2).
+ * Editing is unified with every other config group: the header Edit opens the
+ * Edit-agent modal's "Secrets and variables" section. Long lists collapse behind
+ * "Show all". Sibling of the Secrets card.
  */
 export function AgentEnvCard({ agent }: { agent: Agent }) {
   const { openModal } = useModal()
   const editable = !agent.name.startsWith(MOCK_PREFIX)
   const [showAll, setShowAll] = useState(false)
-  const total = agent.env.length
+  // The EFFECTIVE list: an agent row shadowed by an assigned organization variable
+  // is dropped here (the card shows what actually applies) and marked in the editor.
+  const rows = effectiveVariableRows(agent)
+  const total = rows.length
   const collapsed = !showAll && total > COLLAPSE_AT
-  const visible = collapsed ? agent.env.slice(0, COLLAPSE_AT) : agent.env
+  const visible = collapsed ? rows.slice(0, COLLAPSE_AT) : rows
 
   return (
     <div className="card">
@@ -44,8 +50,11 @@ export function AgentEnvCard({ agent }: { agent: Agent }) {
       <div className="py-1">
         {visible.map((e, i) => (
           <div key={i} className="row grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] gap-3 px-4 py-[10px]">
-            <span className="mono min-w-0 truncate text-[12px] text-(--text-primary)" title={e.k}>
-              {e.k}
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="mono min-w-0 truncate text-[12px] text-(--text-primary)" title={e.k}>
+                {e.k}
+              </span>
+              {e.fromOrganization && <OrganizationRowBadge />}
             </span>
             <span className="mono min-w-0 truncate text-right text-[12px] text-(--text-tertiary)" title={e.v}>
               {e.v}

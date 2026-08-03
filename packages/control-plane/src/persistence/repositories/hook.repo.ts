@@ -967,7 +967,10 @@ export class PgHookRepo implements HookRepo {
           // Repeat the identity predicate in the write itself: a concurrent
           // cold workspace switch after findMany must not receive this URL.
           where: { ...workspaceWhere, id: { in: changedAgents.map((agent) => agent.id) } },
-          data: { gitRepo }
+          // `gitRepo` rides AgentSpec.workspace, so a rename repair joins the
+          // agent's single configuration-ordering domain
+          // (organization-secrets-and-variables.md §5).
+          data: { gitRepo, configRevision: { increment: 1 } }
         })
       }
       const hooks =
