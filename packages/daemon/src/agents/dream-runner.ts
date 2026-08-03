@@ -94,10 +94,12 @@ export const DREAM_MODEL_READABLE_CREDENTIALS_REASON =
 export const DREAM_UNBOUND_STAGED_CONTENT_REASON =
   'historical Dream staged content is blocked because its reviewed bytes are not cryptographically bound to adoption; rerun after credential-isolated Dream execution is available (unbound_staged_content)'
 
-/** One fail-closed policy covers every operation that can execute a Dream or
- * touch staged model output. Only daemon tests with an injected host factory,
- * and standalone deterministic runner tests, may opt into `test-only`. */
-export type DreamOperationPolicy = 'blocked' | 'test-only'
+/** One policy covers every operation that can execute a Dream or touch staged
+ * model output. `blocked` fails closed (the original security hold). `test-only`
+ * is the injected-host-factory / deterministic-runner test seam. `enabled` is
+ * production: the security hold is lifted now that A1/A2 isolate credentials and
+ * B binds the reviewed bytes to adoption (task #36 Phase C). */
+export type DreamOperationPolicy = 'blocked' | 'test-only' | 'enabled'
 
 export interface DreamStorePort {
   insertDream(dream: DreamInfo): void
@@ -294,7 +296,7 @@ export class DreamRunner {
   }
 
   private operationsAllowed(): boolean {
-    return this.deps.operationPolicy === 'test-only'
+    return this.deps.operationPolicy === 'test-only' || this.deps.operationPolicy === 'enabled'
   }
 
   private assertExecutionAllowed(): void {
