@@ -1958,23 +1958,26 @@ export default function SessionDetailView() {
   // a synthetic playground turn omits it (the CP mints a fresh id).
   const onPgSend = (text?: string) => {
     if (imagePreparing) return
-    // Writing ends reading: someone who scrolled up through history and then
-    // sends must not have their own message — or the reply to it — land
-    // off-screen, so re-arm the bottom-follow regardless of scroll position.
-    stickToBottom()
     setImageError(null)
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
     // narrow by @mention (the relay would apply its all-participants default).
     // Named, not raw: mention narrowing matches on the display name the composer
     // chips show.
-    pgSend(
+    const sent = pgSend(
       session.id,
       session.agentId ?? '',
       text,
       isWebchat ? session.channelId : undefined,
       isWebchat ? liveRoster : undefined
     )
+    // Writing ends reading: someone who scrolled up through history and then
+    // sends must not have their own message — or the reply to it — land
+    // off-screen, so re-arm the bottom-follow regardless of scroll position.
+    // Only on an ACCEPTED send, though: Enter on an empty composer, or while a
+    // turn is still streaming, sends nothing, and yanking a reader out of
+    // history for a no-op would break the very guarantee this makes.
+    if (sent) stickToBottom()
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return

@@ -67,13 +67,17 @@ interface PlaygroundData {
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.
    *  Failures surface as a ⚠️ transcript step. Refused while a turn streams. */
   pgAddAgent: (id: string, agent: Agent) => Promise<void>
+  /** Returns whether the send was ACCEPTED — false when there is nothing to send
+   *  or a turn is already streaming. Callers that move the viewport on send (the
+   *  session view pins the transcript to the bottom) must not act on a rejected
+   *  one, and this keeps that condition in a single place. */
   pgSend: (
     id: string,
     agentId: string,
     text?: string,
     conversationId?: string,
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
-  ) => void
+  ) => boolean
   /** Switch the session's model (in-session, sticky). */
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
   /** Switch the session's reasoning effort (in-session, sticky). */
@@ -975,7 +979,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     ) => {
       const text = String(textArg ?? pgInputBy[id] ?? '').trim()
       const image = pgImageBy[id]
-      if ((!text && !image) || pgBusyBy[id]) return
+      if ((!text && !image) || pgBusyBy[id]) return false
       pushStep(id, { kind: 'msg', who: '@you', text, ...(image ? { image } : {}) })
       setPgInput(id, '')
       setPgImage(id)
@@ -1067,6 +1071,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           dropLanes(id)
           setBusy(id, false)
         })
+      return true
     },
     [pgBusyBy, pgImageBy, pgInputBy, pgSessions, connect, pushStep, setPgImage, setPgInput, setBusy, refreshSessions]
   )
