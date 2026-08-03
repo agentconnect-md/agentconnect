@@ -997,3 +997,35 @@ describe('writeIntegrationSpec §6.4 dual-shape reader', () => {
     expect(readJson(join(dir, 'bot-a', 'agent.json')).integrations).toEqual([])
   })
 })
+
+describe('writeCronDef §6.8 open target platform', () => {
+  const AGENT = '33333333-3333-4333-8333-333333333333'
+  it('persists a non-Slack target with its REAL platform (no headless degradation)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-cron-open-'))
+    seedAgent(dir, 'bot-a', {
+      id: AGENT,
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: 'workspace' },
+      integrations: []
+    })
+    writeCronDef(
+      dir,
+      {
+        cronId: '77777777-7777-4777-8777-777777777777',
+        agentId: AGENT,
+        schedule: '0 9 * * *',
+        timezone: 'UTC',
+        target: { platform: 'telegram', channel: '-100123', integrationId: '66666666-6666-4666-8666-666666666666' },
+        trigger: 'daily digest',
+        enabled: true
+      } as never,
+      {}
+    )
+    const raw = readJson(join(dir, 'bot-a', 'agent.json'))
+    expect((raw.crons as Record<string, unknown>[])[0]).toMatchObject({
+      target: { platform: 'telegram', channel: '-100123' }
+    })
+  })
+})

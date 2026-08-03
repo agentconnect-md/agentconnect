@@ -14,6 +14,7 @@
  * that authorizes — not merely records — every attempted effect.
  */
 import type { SendIdentity } from '../mcp/ops.js'
+import type { PlatformConnection } from '../platforms/contract.js'
 
 /** Slack post options subset the virtual transport interprets. Structurally
  *  compatible with the real connection's `SlackPostOptions`: `chrome` marks
@@ -153,7 +154,7 @@ function identityOf(options?: VirtualPostOptions): SendIdentity | undefined {
  * path, Slack tenant identity for session/audience classification, delivery
  * chrome (best-effort, like the real connection), and the full gateway ops.
  */
-export class VirtualSlackConnection {
+export class VirtualSlackConnection implements PlatformConnection {
   readonly botUserId: string
   readonly botId: string
   readonly appId?: string
@@ -337,7 +338,7 @@ export class VirtualSlackConnection {
 
 /** Minimal Discord shape: the reply path + gateway ops the counting milestone
  *  consumes. Extended to the full Discord surface with the cross-room game. */
-export class VirtualDiscordConnection {
+export class VirtualDiscordConnection implements PlatformConnection {
   readonly botUserId: string
   readonly botToken = ''
 
@@ -400,7 +401,7 @@ export class VirtualDiscordConnection {
 }
 
 /** Minimal Telegram shape mirroring {@link VirtualDiscordConnection}. */
-export class VirtualTelegramConnection {
+export class VirtualTelegramConnection implements PlatformConnection {
   readonly botUserId: string
   readonly botUsername: string
   readonly botToken = ''

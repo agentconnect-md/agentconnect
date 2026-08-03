@@ -117,6 +117,8 @@ import { CpRoutingLayer } from './router/cp-routing-layer.js'
 import {
   consolidate,
   consolidateShared,
+  slackSocketKey,
+  slackSharedKey,
   SlackConnection,
   type InteractionActor,
   type SlackPostOptions,
@@ -124,14 +126,15 @@ import {
 } from './slack/connection.js'
 import {
   consolidateTelegram,
+  telegramConnKey,
   TelegramConnection,
   type TelegramCallback,
   type TelegramObservedChat,
   type InlineButton
 } from './telegram/connection.js'
-import { consolidateDiscord, DiscordConnection } from './discord/connection.js'
+import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord/connection.js'
 import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
-import { consolidateFeishu, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
+import { consolidateFeishu, feishuConnKey, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
 import {
@@ -301,7 +304,15 @@ import type {
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
+import {
+  fromPlatformMessage,
+  stableMessageId,
+  stableTurnId,
+  threadKeyForPost,
+  type NormalizedMessage
+} from './messages/normalized.js'
+import { ConnectionPool, type ConnectionKey } from './platforms/registry.js'
+import { TurnOutputRegistry, type TurnOutputContext } from './platforms/turn-output.js'
 import type {
   RegisterReq,
   RegisterOk,
@@ -381,10 +392,6 @@ import type {
  *  treated as a distinct connection for reuse-matching, mapping-eviction, and
  *  the in-flight guard (`|` can't collide — an appId `cli_…` and the region/mode
  *  literals contain none). */
-function feishuConnKey(appId: string, region: string, mode: 'direct' | 'shared'): string {
-  return `${appId}|${region}|${mode}`
-}
-
 function formatErr(err: unknown): string {
   const e = err as { name?: string; message?: string; code?: number; data?: unknown; stack?: string }
   if (e && typeof e.code === 'number') {
@@ -1192,6 +1199,56 @@ function isSlackStatusBarText(text: string): boolean {
   return text.startsWith(':bar_chart:') || text.startsWith('\uD83D\uDCCA')
 }
 
+/** The union of every platform's renderer action, and of every platform's
+ *  converger. Each surface narrows to its own arm; the unions exist because the
+ *  turn record is still core-owned (they dissolve when the convergers move with
+ *  their platforms). */
+type DaemonRenderAction = SlackAction | TelegramAction | DiscordAction | FeishuAction
+type DaemonConverger = OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger
+
+/**
+ * §7.3 per-turn platform state. Each shape is owned by exactly one turn-output
+ * surface and reached only through {@link turnState} from that surface's
+ * applier — core stores the slot and never looks inside. These used to be
+ * platform-named fields on the turn record itself, which is precisely the
+ * accretion the opaque slot exists to stop.
+ */
+interface SlackTurnState {
+  /** Older reply sections whose footer-removal update failed. Retried on the next
+   *  body section and once more at finalization, so a transient Slack error cannot
+   *  leave two footers standing. */
+  staleReplyFooters?: { ts: string; text: string }[]
+}
+
+interface TelegramTurnState {
+  /** The message id every post this turn replies to (the triggering message —
+   *  "the last message in the session" at turn start), so the bot's answer threads
+   *  under it and a human reply-to-bot stitches back to this session. */
+  replyTo?: number
+}
+
+interface FeishuTurnState {
+  /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
+   *  `card-start` succeeds; `cardAttempted` prevents duplicate initial cards. */
+  card?: FeishuStreamingCard
+  cardAttempted?: boolean
+  /** Periodic cumulative CardKit element flush (separate from the transcript idle
+   *  flush core owns). */
+  streamTimer?: NodeJS.Timeout
+}
+
+/** Read a turn's opaque platform state as the owning surface's shape. Only that
+ *  surface's applier (and the platform-scoped timers it arms) calls this.
+ *
+ *  The slot materializes on first read: a turn whose surface seeded nothing — or
+ *  whose record was built directly, as isolated applier tests do — simply starts
+ *  with empty platform state, which is what "no state yet" means. Seeding is an
+ *  optimization for platforms that HAVE an initial value (Telegram's reply
+ *  anchor), never a precondition for reading. */
+function turnState<S extends object>(p: Pending): S {
+  return (p.turnState ??= {} as S) as S
+}
+
 /** Per-in-flight-turn rendering state, keyed by ACP sessionId in `this.pending`. */
 interface Pending {
   /** Admitted-turn lifecycle owner. Backstops and finalization share its cleanup
@@ -1260,11 +1317,6 @@ interface Pending {
   transcriptChannel: string
   /** thread_ts for body posts (undefined for a top-level message). */
   thread?: string
-  /** Telegram reply target: the message id every post this turn replies to (the
-   *  triggering message — "the last message in the session" at turn start), so the
-   *  bot's answer threads under it and a human reply-to-bot stitches back to this
-   *  session. Undefined off Telegram. */
-  tgReplyTo?: number
   /** thread_ts for the assistant status bar (always set; falls back to msgId). */
   statusThread: string
   /** P3 outbound: the final-answer selector + completed comment on the triggering
@@ -1273,10 +1325,10 @@ interface Pending {
    *  persisted once from the collector so transport flushes cannot split one answer. */
   github?: { poster: GithubFinalPoster; collector: GithubReplyCollector; deferredFinalTranscript: boolean }
   conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
-  /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
-   * `card-start` succeeds; `feishuCardAttempted` prevents duplicate initial cards. */
-  feishuCard?: FeishuStreamingCard
-  feishuCardAttempted?: boolean
+  /** §7.3 OPAQUE per-turn platform state, seeded by this turn's output surface and
+   *  read only by that surface (see {@link turnState}). Core carries the slot and
+   *  never inspects it — the reason platform-shaped fields stopped accreting here. */
+  turnState?: unknown
   /** True when `none` output mode removed this turn's interactive permission surface — see
    *  {@link noneSuppressedApprovalSurface}. Snapshotted at dispatch ALONGSIDE `conn`; the
    *  permission policy still queues the request for an Agent editor, but never exposes a
@@ -1335,9 +1387,6 @@ interface Pending {
    *  Undefined when the turn posted no conversational body (chrome-only, `none` mode, or
    *  a headless turn): there is then no response event to close. */
   lastResponse?: { ts: string; text: string }
-  /** Older reply sections whose footer-removal update failed. Retried on the next body
-   *  section and once more at finalization so a transient Slack error cannot leave two. */
-  staleReplyFooters?: { ts: string; text: string }[]
   /** ts of the session's interactive status-bar message, once known. Persisted in the
    *  session row so later turns update the first line instead of posting duplicates. */
   statusBarTs?: string
@@ -1362,8 +1411,6 @@ interface Pending {
   evaluationTurnId: string
   /** Pending idle-flush timer (§9.1). */
   idleTimer?: NodeJS.Timeout
-  /** Periodic cumulative CardKit element flush (separate from transcript idle flush). */
-  feishuStreamTimer?: NodeJS.Timeout
   /** Serializes applyAction so in-place edits don't race on progressTs/planTs/reasoningTs. */
   applyChain: Promise<void>
   /** Resolves when this turn leaves `pending` (success or failure) — drain awaits it. */
@@ -1642,27 +1689,64 @@ export class Daemon {
    *  daemon drain cannot leave a timer behind. The callback re-validates everything it
    *  needs, so a lease dropped by stopHost simply makes the wake a no-op. */
   private bgWakeTimers = new Set<TimerHandle>()
-  private connections: SlackConnection[] = []
-  // Telegram long-poll connections (one per bot token). Kept parallel to `connections`
-  // (Slack) — the Slack socket layer (appToken keying, retry, refreshChannels) is
-  // untouched; Telegram gets its own map so its conns never flow through Slack-only code.
-  private telegramConns: TelegramConnection[] = []
-  // Discord Gateway connections (one per bot token). Parallel to Slack/Telegram —
-  // its own map so its conns never flow through Slack-only code (`.appToken` reads).
-  private discordConns: DiscordConnection[] = []
-  // Feishu WSClient long-connections (one per appId). Parallel to Slack/Telegram/Discord —
-  // its own map so its conns never flow through Slack-only code (`.appToken` reads).
-  private feishuConns: FeishuConnection[] = []
-  // In-flight connect guards: a token/appId is added BEFORE `await conn.start()` and
-  // removed once it resolves (and is pushed onto the *Conns list) or fails. The per-token
-  // `find()` dedup in each reconcile only sees a conn AFTER it's pushed, so without this a
-  // reconcile overlapping a still-pending connect (the initial background connects now run
-  // concurrently with CP/file-watch-driven reconciles, and the window widens to the whole
-  // outage when the platform API is unreachable) would open a *second* connection for the
-  // same bot → duplicate inbound delivery. Checked alongside `find()` to serialize opens.
-  private telegramConnecting = new Set<string>()
-  private discordConnecting = new Set<string>()
-  private feishuConnecting = new Set<string>()
+  // §7.5 connection pools — one per (platform, MODE), each keyed by the platform's
+  // own opaque identity function. The pool owns the live set AND the in-flight
+  // connect guard: a key is claimed BEFORE `await conn.start()` and released when
+  // it resolves or fails, because `find()` only sees a connection after it is
+  // added — without the claim, a reconcile overlapping a still-pending connect
+  // would open a SECOND connection for the same bot (duplicate inbound delivery).
+  // Slack runs two pools: sockets keyed by (appToken, botToken), and send-only
+  // shared clients keyed by botToken alone (a shared bot has no app token).
+  private readonly slackPool = new ConnectionPool<SlackConnection>('slack', slackSocketKey)
+  private readonly slackSharedPool = new ConnectionPool<SlackConnection>('slack/shared', slackSharedKey)
+  private readonly telegramPool = new ConnectionPool<TelegramConnection>('telegram', telegramConnKey)
+  private readonly discordPool = new ConnectionPool<DiscordConnection>('discord', discordConnKey)
+  private readonly feishuPool = new ConnectionPool<FeishuConnection>('feishu', feishuConnKey)
+  /**
+   * §7.3 turn-output surfaces — the converger factory, the applier, and the
+   * opaque per-turn state slot, as ONE trio per platform. The bodies still live
+   * on this class (they reach into core turn machinery); the surface is the
+   * published shape they move against in the per-platform stages.
+   *
+   * The core entry renders Slack AND every non-platform origin (webchat / hook /
+   * dream), which is exactly what the `platform === …` ternaries this replaces
+   * did with their default arm.
+   */
+  private readonly turnSurfaces: TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage> =
+    (() => {
+      const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
+        platform: 'slack',
+        createConverger: (ctx) => new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? []),
+        initialTurnState: (): SlackTurnState => ({}),
+        apply: (p, action) => this.applySlackAction(p, action as SlackAction)
+      })
+      registry.register({
+        platform: 'telegram',
+        // The continue-the-topic hint only earns its space in a group, where the
+        // reply chain is the ONLY way back into this session; a DM already has one
+        // implicit thread. Gated on showFooter, the delivery-chrome switch.
+        createConverger: (ctx) =>
+          new TelegramConverger(ctx.mode as never, { continueHint: ctx.showFooter && !ctx.isDm }),
+        initialTurnState: (ctx): TelegramTurnState => {
+          const replyTo = this.telegramReplyTarget(ctx.message)
+          return replyTo !== undefined ? { replyTo } : {}
+        },
+        apply: (p, action) => this.applyTelegramAction(p, action as TelegramAction)
+      })
+      registry.register({
+        platform: 'discord',
+        createConverger: (ctx) => new DiscordConverger(ctx.mode as never),
+        initialTurnState: () => ({}),
+        apply: (p, action) => this.applyDiscordAction(p, action as DiscordAction)
+      })
+      registry.register({
+        platform: 'feishu',
+        createConverger: (ctx) => new FeishuConverger(ctx.mode as never),
+        initialTurnState: (): FeishuTurnState => ({}),
+        apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction)
+      })
+      return registry
+    })()
   // Slack id → display-name resolver (created with the store in start()).
   private nameResolver?: SlackNameResolver
   // agentId → its directory name, learned from `channelAgents` (the listAgents tool)
@@ -1685,7 +1769,6 @@ export class Daemon {
   // HTTP-bot send-only Slack clients, keyed by xoxb (one per bot token; the relay
   // owns their inbound). Separate from the direct sockets so reconcile can dedup +
   // tear down a bot's old direct socket when it flips to HTTP transport.
-  private httpSlackConns = new Map<string, SlackConnection>()
   // integrationId -> the TelegramConnection that owns it (for replies). Separate from
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Telegram conn.
   private tgConnByIntegration = new Map<string, TelegramConnection>()
@@ -2919,7 +3002,7 @@ export class Daemon {
           this.botUserIds[integrationId] = conn.botUserId
           this.connByIntegration.set(integrationId, conn)
         }
-        this.connections.push(conn)
+        this.slackPool.add(conn)
         // Initial membership snapshot (fire-and-forget; cached + emitted when CP is up).
         void this.refreshChannels(conn)
       } catch (err) {
@@ -3300,8 +3383,7 @@ export class Daemon {
     // plus region and mode, so either change produces a different desired connection.
     const feishuByIntegration = new Map<string, string>()
     for (const group of feishu.values())
-      for (const { integrationId } of group.integrations)
-        feishuByIntegration.set(integrationId, feishuConnKey(group.appId, group.region, group.mode))
+      for (const { integrationId } of group.integrations) feishuByIntegration.set(integrationId, feishuConnKey(group))
 
     const allDesiredIds = new Set([
       ...directByIntegration.keys(),
@@ -3353,7 +3435,7 @@ export class Daemon {
       // Compare appId AND region: a region flip on the same appId must evict the stale
       // mapping here (not only when a replacement start succeeds), so a failed replacement
       // never leaves an integration routed at the stopped old-domain client.
-      if (feishuConnKey(conn.appId, conn.region, conn.mode) !== feishuByIntegration.get(integrationId)) {
+      if (feishuConnKey(conn) !== feishuByIntegration.get(integrationId)) {
         this.fsConnByIntegration.delete(integrationId)
         dropIdentity(integrationId)
       }
@@ -3374,40 +3456,34 @@ export class Daemon {
       .map(([, run]) => run.promise)
     if (retryRuns.length) await Promise.all(retryRuns)
 
-    for (const conn of [...this.connections]) {
-      const group = direct.get(conn.appToken)
-      if (group?.botToken === conn.botToken) continue
+    // §7.5: every pool prunes by ONE rule — a live connection survives iff its
+    // opaque identity is still among the keys consolidation asked for. This
+    // replaced five bespoke credential comparisons (appToken+botToken, botToken
+    // alone, appId+region+mode, …); a platform now states its identity once, in
+    // its key function, and the lifecycle never asks what a key is made of. The
+    // Feishu case is the one that used to need spelling out — a region or
+    // transport flip must drop the old client so the open loop initializes the
+    // correct gateway — and it is now just another key that stopped matching.
+    await this.prunePool(this.slackPool, new Set([...direct.values()].map(slackSocketKey)))
+    await this.prunePool(this.slackSharedPool, new Set([...shared.values()].map(slackSharedKey)))
+    await this.prunePool(this.telegramPool, new Set([...telegram.values()].map(telegramConnKey)))
+    await this.prunePool(this.discordPool, new Set([...discord.values()].map(discordConnKey)))
+    await this.prunePool(this.feishuPool, new Set([...feishu.values()].map(feishuConnKey)))
+  }
+
+  /** Close every connection in `pool` whose opaque identity consolidation no
+   *  longer asks for, draining in-flight uses first. Evaluation-owned virtual
+   *  connections never enter a pool (they are injected straight into the binding
+   *  maps), so they are immune here by construction. */
+  private async prunePool<C extends SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection>(
+    pool: ConnectionPool<C>,
+    desired: Set<ConnectionKey>
+  ): Promise<void> {
+    for (const conn of pool.all()) {
+      if (desired.has(pool.keyOf(conn))) continue
       await this.waitForConnectionUses(conn)
       await conn.stop()
-      this.connections = this.connections.filter((candidate) => candidate !== conn)
-    }
-    for (const [botToken, conn] of [...this.httpSlackConns]) {
-      if (shared.has(botToken)) continue
-      await this.waitForConnectionUses(conn)
-      await conn.stop()
-      this.httpSlackConns.delete(botToken)
-    }
-    for (const conn of [...this.telegramConns]) {
-      if (telegram.has(conn.botToken)) continue
-      await this.waitForConnectionUses(conn)
-      await conn.stop()
-      this.telegramConns = this.telegramConns.filter((candidate) => candidate !== conn)
-    }
-    for (const conn of [...this.discordConns]) {
-      if (discord.has(conn.botToken)) continue
-      await this.waitForConnectionUses(conn)
-      await conn.stop()
-      this.discordConns = this.discordConns.filter((candidate) => candidate !== conn)
-    }
-    for (const conn of [...this.feishuConns]) {
-      // Keep only a conn whose appId is still desired and whose region/mode are
-      // unchanged. A region or transport flip must drop the old client so the open
-      // loop initializes the correct gateway and inbound ownership.
-      const want = feishu.get(conn.appId)
-      if (want && want.region === conn.region && want.mode === conn.mode) continue
-      await this.waitForConnectionUses(conn)
-      await conn.stop()
-      this.feishuConns = this.feishuConns.filter((candidate) => candidate !== conn)
+      pool.remove(conn)
     }
   }
 
@@ -3430,7 +3506,7 @@ export class Daemon {
   private async reconcileSlackConnections(): Promise<void> {
     const groups = consolidate(this.transportAgents())
     for (const group of groups.values()) {
-      const existing = this.connections.find((c) => c.appToken === group.appToken && c.botToken === group.botToken)
+      const existing = this.slackPool.find(slackSocketKey(group))
       if (existing) {
         // Already-open appToken: bind any integrationId not yet pointing at this conn
         // (tier 1). Covers both a brand-new integrationId AND one that was re-pointed
@@ -3479,7 +3555,7 @@ export class Daemon {
           this.botUserIds[integrationId] = conn.botUserId
           this.connByIntegration.set(integrationId, conn)
         }
-        this.connections.push(conn)
+        this.slackPool.add(conn)
         void this.refreshChannels(conn)
         // This reconcile just brought the socket up; cancel any pending startup-retry
         // timer for the same appToken so it doesn't fire and open a duplicate socket.
@@ -3511,7 +3587,7 @@ export class Daemon {
   private async openHttpSlackConnections(agents: LoadedAgent[]): Promise<void> {
     const groups = consolidateShared(this.transportAgents(agents))
     for (const group of groups.values()) {
-      let conn = this.httpSlackConns.get(group.botToken)
+      let conn = this.slackSharedPool.find(slackSharedKey(group))
       let bound = false
       if (!conn) {
         conn = new SlackConnection({
@@ -3527,7 +3603,7 @@ export class Daemon {
         })
         try {
           await conn.start()
-          this.httpSlackConns.set(group.botToken, conn)
+          this.slackSharedPool.add(conn)
           this.log.info(`slack: send-only (HTTP) client ready as bot user ${conn.botUserId}`)
         } catch (err) {
           this.log.warn(`slack: HTTP send-only client failed — retry on next reconcile: ${formatErr(err)}`)
@@ -3562,7 +3638,7 @@ export class Daemon {
   private async reconcileTelegramConnections(): Promise<void> {
     const groups = consolidateTelegram(this.transportAgents())
     for (const group of groups.values()) {
-      const existing = this.telegramConns.find((c) => c.botToken === group.botToken)
+      const existing = this.telegramPool.find(telegramConnKey(group))
       if (existing) {
         for (const { integrationId } of group.integrations) {
           if (this.tgConnByIntegration.get(integrationId) !== existing) {
@@ -3576,7 +3652,7 @@ export class Daemon {
       // Another connect for this token is already in flight (not yet pushed onto
       // telegramConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
       // that connect binds this group's integrations when it resolves.
-      if (this.telegramConnecting.has(group.botToken)) continue
+      if (!this.telegramPool.beginConnect(telegramConnKey(group))) continue
       const conn: TelegramConnection = new TelegramConnection({
         group,
         newTraceId: () => randomUUID(),
@@ -3592,7 +3668,6 @@ export class Daemon {
         onCallback: (cb) => this.handleTelegramCallback(cb, conn),
         log: this.log
       })
-      this.telegramConnecting.add(group.botToken)
       try {
         this.log.info(
           `telegram: connecting (${group.integrations.length} integration(s): ${group.integrations
@@ -3606,12 +3681,12 @@ export class Daemon {
           this.botUserIds[integrationId] = conn.botUsername
           this.tgConnByIntegration.set(integrationId, conn)
         }
-        this.telegramConns.push(conn)
+        this.telegramPool.add(conn)
       } catch (err) {
         await conn.stop().catch(() => {})
         this.log.error(`telegram: failed to open long-poll for a bot token — leaving others intact: ${formatErr(err)}`)
       } finally {
-        this.telegramConnecting.delete(group.botToken)
+        this.telegramPool.endConnect(telegramConnKey(group))
       }
     }
     // Label existing sessions' chats now that connections are up (per-message resolution
@@ -3630,7 +3705,7 @@ export class Daemon {
   private async reconcileDiscordConnections(): Promise<void> {
     const groups = consolidateDiscord(this.transportAgents())
     for (const group of groups.values()) {
-      const existing = this.discordConns.find((c) => c.botToken === group.botToken)
+      const existing = this.discordPool.find(discordConnKey(group))
       if (existing) {
         for (const { integrationId } of group.integrations) {
           if (this.dcConnByIntegration.get(integrationId) !== existing) {
@@ -3644,7 +3719,7 @@ export class Daemon {
       // Another connect for this token is already in flight (not yet pushed onto
       // discordConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
       // that connect binds this group's integrations when it resolves.
-      if (this.discordConnecting.has(group.botToken)) continue
+      if (!this.discordPool.beginConnect(discordConnKey(group))) continue
       const conn: DiscordConnection = new DiscordConnection({
         group,
         newTraceId: () => randomUUID(),
@@ -3663,7 +3738,6 @@ export class Daemon {
         onSelectAction: (a) => this.handleDiscordSelect(a),
         log: this.log
       })
-      this.discordConnecting.add(group.botToken)
       try {
         this.log.info(
           `discord: connecting (${group.integrations.length} integration(s): ${group.integrations
@@ -3677,12 +3751,12 @@ export class Daemon {
           this.botUserIds[integrationId] = conn.botUserId
           this.dcConnByIntegration.set(integrationId, conn)
         }
-        this.discordConns.push(conn)
+        this.discordPool.add(conn)
       } catch (err) {
         await conn.stop().catch(() => {})
         this.log.error(`discord: failed to open Gateway for a bot token — leaving others intact: ${formatErr(err)}`)
       } finally {
-        this.discordConnecting.delete(group.botToken)
+        this.discordPool.endConnect(discordConnKey(group))
       }
     }
     // Label existing sessions' channels now that connections are up (per-message
@@ -3713,9 +3787,7 @@ export class Daemon {
     for (const group of groups.values()) {
       // Match on appId AND region: a region change on the same appId must NOT reuse the
       // old-domain client (the prune pass drops it; this guards a same-pass race too).
-      const existing = this.feishuConns.find(
-        (c) => c.appId === group.appId && c.region === group.region && c.mode === group.mode
-      )
+      const existing = this.feishuPool.find(feishuConnKey(group))
       if (existing) {
         for (const { integrationId } of group.integrations) {
           if (this.fsConnByIntegration.get(integrationId) !== existing) {
@@ -3730,8 +3802,8 @@ export class Daemon {
       // feishuConns, so `find()` above can't see it). Skip to avoid opening a duplicate;
       // that connect binds this group's integrations when it resolves. Keyed on region
       // too, so a NEW-region reconcile is NOT blocked by an in-flight OLD-region connect.
-      const connectKey = feishuConnKey(group.appId, group.region, group.mode)
-      if (this.feishuConnecting.has(connectKey)) continue
+      const connectKey = feishuConnKey(group)
+      if (!this.feishuPool.beginConnect(connectKey)) continue
       const conn: FeishuConnection = new FeishuConnection({
         group,
         newTraceId: () => randomUUID(),
@@ -3742,7 +3814,6 @@ export class Daemon {
         onStatusAction: (a) => this.handleStatusAction(a),
         log: this.log
       })
-      this.feishuConnecting.add(connectKey)
       try {
         this.log.info(
           `feishu: connecting (${group.integrations.length} integration(s): ${group.integrations
@@ -3771,12 +3842,12 @@ export class Daemon {
           this.botUserIds[integrationId] = conn.botOpenId
           this.fsConnByIntegration.set(integrationId, conn)
         }
-        this.feishuConns.push(conn)
+        this.feishuPool.add(conn)
       } catch (err) {
         await conn.stop().catch(() => {})
         this.log.error(`feishu: failed to initialize an appId — leaving others intact: ${formatErr(err)}`)
       } finally {
-        this.feishuConnecting.delete(connectKey)
+        this.feishuPool.endConnect(connectKey)
       }
     }
     // Label existing sessions' channels now that connections are up (per-message
@@ -4233,7 +4304,7 @@ export class Daemon {
     // appToken's socket while the retry timer was pending. Opening another here would
     // leave two live Socket Mode connections for one app (a wasted per-app connection
     // slot). The live socket is authoritative — drop the timer and bail.
-    if (this.connections.some((c) => c.appToken === group.appToken && c.botToken === group.botToken)) {
+    if (this.slackPool.find(slackSocketKey(group)) !== undefined) {
       this.slackRetryTimers.delete(group.appToken)
       return
     }
@@ -4274,7 +4345,7 @@ export class Daemon {
         this.botUserIds[integrationId] = conn.botUserId
         this.connByIntegration.set(integrationId, conn)
       }
-      this.connections.push(conn)
+      this.slackPool.add(conn)
       void this.refreshChannels(conn)
     } catch (err) {
       // Release the half-open connection before discarding it so a failure during
@@ -11559,17 +11630,20 @@ export class Daemon {
     const currentTranscriptChannel = () => transcriptChannelKey(msg.channel, msg.transportScope)
     // Daemon-side rendering only (not ACP); a fresh converger is built per turn, so a change
     // applies from the next turn on, not mid-turn (see `mode`, resolved above before replyConn).
-    const conv =
-      msg.platform === 'telegram'
-        ? // The continue-the-topic hint only earns its space in a group, where the reply chain
-          // is the ONLY way back into this session; a DM has one implicit thread already.
-          // Gated on showFooter, the agent-level switch for delivery chrome.
-          new TelegramConverger(mode, { continueHint: showFooter && !msg.isDm })
-        : msg.platform === 'discord'
-          ? new DiscordConverger(mode)
-          : msg.platform === 'feishu'
-            ? new FeishuConverger(mode)
-            : new OutputConverger(mode, this.compoundMentionAddresses(agentId, msg))
+    // §7.3: the platform's own production rules (chunk ceilings, parse mode, hint
+    // policy) and its opaque per-turn state both come from its output surface.
+    const turnSurface = this.turnSurfaces.for(msg.platform)
+    const turnCtx: TurnOutputContext<NormalizedMessage> = {
+      mode,
+      isDm: msg.isDm,
+      showFooter,
+      message: msg,
+      // send-message-routing-rework.md §5.3: compound shared-bot addresses this
+      // conversation can contain, so the splitter never cuts `<@U_SHARED> reviewer` in
+      // half. Only the Slack surface has such addresses; every other surface ignores it.
+      protectedAddresses: this.compoundMentionAddresses(agentId, msg)
+    }
+    const conv = turnSurface.createConverger(turnCtx)
     const slackStatusOptions = this.slackStatusOptions(msg.platform, agentName, iconUrl)
     this.showActivity(
       replyConn,
@@ -11892,7 +11966,7 @@ export class Daemon {
       channel: msg.channel,
       transcriptChannel,
       thread: msg.thread,
-      ...(this.telegramReplyTarget(msg) !== undefined ? { tgReplyTo: this.telegramReplyTarget(msg) } : {}),
+      turnState: turnSurface.initialTurnState(turnCtx),
       statusThread,
       conn: replyConn,
       // Snapshot alongside `conn`: true only when `none` removed THIS turn's Slack permission
@@ -12576,7 +12650,7 @@ export class Daemon {
       // Success normally retries stale footer removals through the final attribution
       // action. Failure/suppression can bypass that action, so give any retained rows
       // the same terminal retry before releasing the Slack transport.
-      if (p.platform === 'slack' && p.conn && p.staleReplyFooters?.length) {
+      if (p.platform === 'slack' && p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
         await this.clearStaleSlackReplyFooters(p.conn as SlackConnection, p)
       }
       // The reply transport is no longer used after the final apply chain / failure
@@ -12983,9 +13057,9 @@ export class Daemon {
     p: Pending,
     additional: { ts: string; text: string }[] = []
   ): Promise<void> {
-    const pending = [...(p.staleReplyFooters ?? []), ...additional]
+    const pending = [...(turnState<SlackTurnState>(p).staleReplyFooters ?? []), ...additional]
     if (pending.length === 0) return
-    delete p.staleReplyFooters
+    delete turnState<SlackTurnState>(p).staleReplyFooters
     const failed: { ts: string; text: string }[] = []
     for (const reply of new Map(pending.map((item) => [item.ts, item])).values()) {
       try {
@@ -13005,7 +13079,7 @@ export class Daemon {
         this.log.debug(`slack: stale footer cleanup failed (${reply.ts}): ${formatErr(err)}`)
       }
     }
-    if (failed.length > 0) p.staleReplyFooters = failed
+    if (failed.length > 0) turnState<SlackTurnState>(p).staleReplyFooters = failed
   }
 
   /** Append a reply segment to the transcript WITHOUT sending it. Minimal mode keeps
@@ -13426,7 +13500,9 @@ export class Daemon {
         // The continue-the-topic hint is chrome: sent with the reply (so it lands on the very
         // message users are told to reply to) but kept out of the recorded text below.
         const sent = action.hint ? `${action.text}\n\n${action.hint}` : action.text
-        const id = await conn.postMessage(p.channel, sent, p.thread, { replyTo: p.tgReplyTo })
+        const id = await conn.postMessage(p.channel, sent, p.thread, {
+          replyTo: turnState<TelegramTurnState>(p).replyTo
+        })
         // Remember the newest body message so a turn-end `continue-hint` can annotate it.
         if (id) p.tgLastBody = { id, text: sent }
         this.store.appendTranscript({
@@ -13460,7 +13536,9 @@ export class Daemon {
         if (p.liveReplyTs) await conn.updateMessage(p.channel, p.liveReplyTs, action.text)
         else if (!p.liveReplyAttempted) {
           p.liveReplyAttempted = true
-          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread, { replyTo: p.tgReplyTo })
+          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread, {
+            replyTo: turnState<TelegramTurnState>(p).replyTo
+          })
         }
         return
       }
@@ -13471,7 +13549,7 @@ export class Daemon {
         await conn.postChrome(p.channel, action.text, {
           parseMode: action.parseMode,
           threadTs: p.thread,
-          replyTo: p.tgReplyTo
+          replyTo: turnState<TelegramTurnState>(p).replyTo
         })
         return
       case 'progress':
@@ -13482,7 +13560,7 @@ export class Daemon {
           p.progressTs = await conn.postChrome(p.channel, action.text, {
             parseMode: action.parseMode,
             threadTs: p.thread,
-            replyTo: p.tgReplyTo
+            replyTo: turnState<TelegramTurnState>(p).replyTo
           })
         }
         return
@@ -13493,7 +13571,7 @@ export class Daemon {
           p.planTs = await conn.postChrome(p.channel, action.text, {
             parseMode: action.parseMode,
             threadTs: p.thread,
-            replyTo: p.tgReplyTo
+            replyTo: turnState<TelegramTurnState>(p).replyTo
           })
         }
         return
@@ -13505,7 +13583,7 @@ export class Daemon {
           p.reasoningTs = await conn.postChrome(p.channel, action.text, {
             parseMode: action.parseMode,
             threadTs: p.thread,
-            replyTo: p.tgReplyTo
+            replyTo: turnState<TelegramTurnState>(p).replyTo
           })
         }
         return
@@ -13619,32 +13697,34 @@ export class Daemon {
     // connection (or a test fake) — cast, not instanceof. Headless no-ops.
     const conn = p.conn as FeishuConnection | undefined
     if (!conn) return
+    // The turn's Feishu state, read once through the opaque slot (§7.3).
+    const state = turnState<FeishuTurnState>(p)
     switch (action.kind) {
       case 'card-start':
-        if (p.feishuCardAttempted) return
-        p.feishuCardAttempted = true
-        p.feishuCard = await conn.startStreamingCard(p.channel, p.thread, {
+        if (state.cardAttempted) return
+        state.cardAttempted = true
+        state.card = await conn.startStreamingCard(p.channel, p.thread, {
           sessionKey: p.sessionKey,
           sessionUrl: this.sessionLink(p.acpSessionId, this.sessionLinkSource(p.platform, p.integrationId)),
           ...(p.integrationId ? { target: { v: 1, agentId: p.agentId, integrationId: p.integrationId } as const } : {})
         })
         return
       case 'card-stream':
-        if (p.feishuCard) await conn.updateStreamingCard(p.channel, p.feishuCard, action.text)
+        if (state.card) await conn.updateStreamingCard(p.channel, state.card, action.text)
         return
       case 'card-final': {
-        if (p.feishuCard) {
-          const delivered = await conn.finishStreamingCard(p.channel, p.feishuCard, action.text, action.attribution)
+        if (state.card) {
+          const delivered = await conn.finishStreamingCard(p.channel, state.card, action.text, action.attribution)
           if (delivered) return
           // A final CardKit update failure must not lose the answer. Remove the stale
           // partial card where possible, then fall back to ordinary text.
-          await conn.cancelStreamingCard(p.channel, p.feishuCard)
+          await conn.cancelStreamingCard(p.channel, state.card)
         }
         await conn.postMessage(p.channel, action.text, p.thread)
         return
       }
       case 'card-cancel':
-        if (p.feishuCard) await conn.cancelStreamingCard(p.channel, p.feishuCard)
+        if (state.card) await conn.cancelStreamingCard(p.channel, state.card)
         return
       case 'typing':
         await conn.sendChatAction(p.channel)
@@ -14111,15 +14191,10 @@ export class Daemon {
       // Check again at execution time: actions queued before an interrupt must not
       // publish later after a backed-up transport queue drains.
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
-      return (
-        p.platform === 'telegram'
-          ? this.applyTelegramAction(p, action as TelegramAction)
-          : p.platform === 'discord'
-            ? this.applyDiscordAction(p, action as DiscordAction)
-            : p.platform === 'feishu'
-              ? this.applyFeishuAction(p, action as FeishuAction)
-              : this.applySlackAction(p, action as SlackAction)
-      ).catch((err) => this.log.error(`apply failed: ${formatErr(err)}`))
+      return this.turnSurfaces
+        .for(p.platform)
+        .apply(p, action)
+        .catch((err) => this.log.error(`apply failed: ${formatErr(err)}`))
     })
   }
 
@@ -14140,20 +14215,21 @@ export class Daemon {
   private armFeishuStream(p: Pending): void {
     if (
       p.platform !== 'feishu' ||
-      p.feishuStreamTimer ||
+      turnState<FeishuTurnState>(p).streamTimer ||
       !(p.conv instanceof FeishuConverger) ||
       !p.conv.hasStreamingUpdate()
     )
       return
-    p.feishuStreamTimer = setTimeout(() => {
-      p.feishuStreamTimer = undefined
+    turnState<FeishuTurnState>(p).streamTimer = setTimeout(() => {
+      turnState<FeishuTurnState>(p).streamTimer = undefined
       for (const action of (p.conv as FeishuConverger).streamUpdate()) this.enqueueApply(p, action)
     }, FEISHU_STREAM_FLUSH_MS)
   }
 
   private clearFeishuStream(p: Pending): void {
-    if (p.feishuStreamTimer) clearTimeout(p.feishuStreamTimer)
-    p.feishuStreamTimer = undefined
+    const state = turnState<FeishuTurnState>(p)
+    if (state.streamTimer) clearTimeout(state.streamTimer)
+    state.streamTimer = undefined
   }
 
   private clearIdle(p: Pending): void {
@@ -18308,6 +18384,23 @@ export class Daemon {
         this.log.warn(`${label}: agent "${agentId}" has no live platform connection — running without output`)
       } else {
         try {
+          // §6.8: a DIRECT-conversation target must canonicalize as a DM. Two things
+          // depend on it: the thread key (Telegram DMs key `dm`, not `tg:<id>`; Feishu
+          // DMs key the chat id) AND the session classification — `conversationKind`
+          // and the daemon-local private-capture gate both derive from `isDm`, so an
+          // anchor into a DM that reports `false` stores a channel/non-private session
+          // for a conversation whose inbound messages classify `dm`.
+          // CAPABILITY-driven, not a platform list: every connection exposes
+          // `getChannelInfo`, so the probe is uniform (a platform whose keys are
+          // DM-insensitive still needs the classification). Mirrors the root-post path
+          // in mcp/ops.ts; a failed probe falls back to the message's own value.
+          const isDmTarget =
+            (
+              await (conn as { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> })
+                .getChannelInfo?.(target.channel)
+                .catch(() => undefined)
+            )?.isIm ?? false
+          if (isDmTarget) msg = { ...msg, isDm: true }
           let ts: string | undefined
           if (msg.platform === 'slack') {
             const agent = this.agents.get(agentId)
@@ -18325,7 +18418,11 @@ export class Daemon {
           }
           // The posted anchor is both the thread root and the authoritative
           // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
-          if (ts) msg = { ...msg, thread: ts, transcriptTs: ts }
+          // §6.8: the SESSION key must follow the platform's own conversation model
+          // (threadKeyForPost — Slack threads off the ts, Telegram replies resolve
+          // to `tg:<root>`, Discord conversations ARE the channel), or the anchored
+          // session and the replies underneath it mint different keys.
+          if (ts) msg = { ...msg, thread: threadKeyForPost(msg.platform, msg.channel, ts, msg.isDm), transcriptTs: ts }
         } catch (err) {
           this.log.warn(
             `${label}: failed to post trigger to ${target.channel} (${formatErr(err)}) — running without anchor`
@@ -19215,11 +19312,8 @@ export class Daemon {
     await Promise.resolve(this.memoryConnections?.close()).catch((e) => errors.push(e))
     await Promise.resolve(this.relays?.stop()).catch((e) => errors.push(e))
     for (const run of [...this.slackRetryRuns.values()]) await Promise.resolve(run.promise).catch((e) => errors.push(e))
-    for (const c of this.connections) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
-    for (const c of this.httpSlackConns.values()) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
-    for (const c of this.telegramConns) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
-    for (const c of this.discordConns) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
-    for (const c of this.feishuConns) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
+    for (const pool of [this.slackPool, this.slackSharedPool, this.telegramPool, this.discordPool, this.feishuPool])
+      for (const c of pool.all()) await Promise.resolve(c.stop()).catch((e) => errors.push(e))
     // Capture startup promises before stopHost invalidates their cache entries. Every
     // teardown goes through the same generation fence/hostStopping path, and no async
     // starter is allowed to outlive the store/MCP boundary below.

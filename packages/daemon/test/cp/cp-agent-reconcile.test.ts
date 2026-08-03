@@ -454,7 +454,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
         slack: { mode: 'direct', appToken: 'xapp-only', botToken: 'xoxb-only' }
       }
     ]
-    ;(daemon as any).connections = [connection]
+    ;(daemon as any).slackPool.add(connection)
     ;(daemon as any).connByIntegration.set('int-only', connection)
     const releaseDispatch = (daemon as any).beginActiveDispatch('bot-a') as () => void
 

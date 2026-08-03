@@ -139,7 +139,8 @@ export const CronDefSchema = z.object({
   // absent (legacy defs) ⇒ the agent's first integration.
   target: z
     .object({
-      platform: z.enum(['slack', 'telegram', 'discord', 'feishu']),
+      // §6.8 open id; the daemon serves any platform it has a connection for.
+      platform: z.string().min(1),
       channel: z.string(),
       integrationId: z.string().optional()
     })
