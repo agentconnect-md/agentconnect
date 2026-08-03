@@ -65,7 +65,7 @@ import {
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
-import { usePlayground } from '@/components/console/PlaygroundProvider'
+import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
@@ -124,6 +124,79 @@ function FastBadge() {
     <span className="rounded-sm bg-(--brand-soft) px-[5px] py-px font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-(--brand-soft-text)">
       fast
     </span>
+  )
+}
+
+// The composer's textarea, isolated so a keystroke re-renders ONLY this node:
+// the draft lives outside the playground context (usePgDraft subscription), and
+// SessionDetailView rebuilds the whole transcript on every render — routing
+// keystrokes through it made typing lag on long sessions.
+function ComposerTextarea({
+  sessionId,
+  placeholder,
+  onSend,
+  onImageFile
+}: {
+  sessionId: string
+  placeholder: string
+  onSend: () => void
+  onImageFile: (file: File) => void
+}) {
+  const draft = usePgDraft(sessionId)
+  const { setPgInput } = usePlayground()
+  return (
+    <textarea
+      className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+      placeholder={placeholder}
+      value={draft}
+      onChange={(e) => setPgInput(sessionId, e.target.value)}
+      onPaste={(event) => {
+        const image = clipboardImageFile(event.clipboardData)
+        if (!image) return
+        event.preventDefault()
+        onImageFile(image)
+      }}
+      onKeyDown={(e) => {
+        // Enter sends — but NOT while an IME is composing (that Enter
+        // just confirms the candidate), and Shift+Enter is a newline.
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault()
+          onSend()
+        }
+      }}
+    />
+  )
+}
+
+// Send/stop toggle, isolated for the same reason as ComposerTextarea: the
+// empty↔non-empty draft flip that enables it must not re-render the whole
+// detail view (that rebuilds the transcript, so the FIRST keystroke into an
+// empty composer lagged on long sessions).
+function ComposerSendButton({
+  sessionId,
+  busy,
+  imagePreparing,
+  hasImage,
+  onSend,
+  onStop
+}: {
+  sessionId: string
+  busy: boolean
+  imagePreparing: boolean
+  hasImage: boolean
+  onSend: () => void
+  onStop: () => void
+}) {
+  const hasText = usePgDraftHasText(sessionId)
+  return (
+    <button
+      className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
+      aria-label={busy ? 'Stop response' : 'Send message'}
+      onClick={() => (busy ? onStop() : onSend())}
+      disabled={!busy && (imagePreparing || (!hasText && !hasImage))}
+    >
+      <Icon name={busy ? 'square' : 'arrow-up'} size={busy ? 10 : 14} />
+    </button>
   )
 }
 
@@ -1034,11 +1107,9 @@ export default function SessionDetailView() {
     getLiveSteps,
     getBusyLaneAgentIds,
     reconcileLiveSteps,
-    getPgInput,
     getPgImage,
     getPgWorktree,
     isPgBusy,
-    setPgInput: setPgInputById,
     setPgImage,
     pgSend,
     getPgQueue,
@@ -1930,10 +2001,8 @@ export default function SessionDetailView() {
   // Composer state is per-session in the provider — bind it to THIS session's id so a
   // different live conversation streaming in the background can't disable or clear it.
   const pgBusy = sessionBusy
-  const pgInput = getPgInput(session.id)
   const pgImage = getPgImage(session.id)
   const pgQueue = getPgQueue(session.id)
-  const setPgInput = (v: string) => setPgInputById(session.id, v)
   const agentHref = session.agentId ? `/agents/${session.agentId}` : null
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
@@ -3022,22 +3091,22 @@ export default function SessionDetailView() {
                   still streaming wait here, dispatch in order as turns finish, and can
                   be cancelled individually before they go out. */}
                 {pgQueue.length > 0 && (
-                  <div className="mb-2 flex flex-col gap-1">
+                  <div className="mb-2 flex flex-col items-end gap-1">
                     {pgQueue.map((q) => (
                       <div
                         key={q.queueId}
-                        className="flex items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
+                        className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
                       >
                         <Icon name="clock" size={13} color="var(--text-tertiary)" />
                         <span
-                          className="min-w-0 flex-1 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
+                          className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
                           title={q.text}
                         >
                           {q.text || q.image?.name || 'Image'}
                         </span>
                         <button
                           type="button"
-                          className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                          className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
                           aria-label="Cancel queued message"
                           title="Cancel queued message"
                           onClick={() => pgCancelQueued(session.id, q.queueId)}
@@ -3086,27 +3155,13 @@ export default function SessionDetailView() {
                       </button>
                     </div>
                   )}
-                  <textarea
-                    className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+                  <ComposerTextarea
+                    sessionId={session.id}
                     placeholder={
                       (session.participants?.length ?? 0) > 1 ? 'Message everyone…' : `Message ${session.agentName}…`
                     }
-                    value={pgInput}
-                    onChange={(e) => setPgInput(e.target.value)}
-                    onPaste={(event) => {
-                      const image = clipboardImageFile(event.clipboardData)
-                      if (!image) return
-                      event.preventDefault()
-                      void onImageFile(image)
-                    }}
-                    onKeyDown={(e) => {
-                      // Enter sends — but NOT while an IME is composing (that Enter
-                      // just confirms the candidate), and Shift+Enter is a newline.
-                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                        e.preventDefault()
-                        onPgSend()
-                      }
-                    }}
+                    onSend={() => onPgSend()}
+                    onImageFile={(file) => void onImageFile(file)}
                   />
                   <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
                     <div className="relative flex-none">
@@ -3349,16 +3404,14 @@ export default function SessionDetailView() {
                       )}
                     </div>
                     <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
-                    <button
-                      className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
-                      aria-label={pgBusy ? 'Stop response' : 'Send message'}
-                      onClick={() =>
-                        pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
-                      }
-                      disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
-                    >
-                      <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 10 : 14} />
-                    </button>
+                    <ComposerSendButton
+                      sessionId={session.id}
+                      busy={pgBusy}
+                      imagePreparing={imagePreparing}
+                      hasImage={!!pgImage}
+                      onSend={() => onPgSend()}
+                      onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
+                    />
                   </div>
                 </div>
               </div>

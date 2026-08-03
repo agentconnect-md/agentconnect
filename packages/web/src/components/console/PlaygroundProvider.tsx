@@ -8,7 +8,17 @@
 // structured events which we fold into the session's `steps` for the transcript
 // view.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode
+} from 'react'
 import {
   agentLabel,
   selectedPermissionPreset,
@@ -47,9 +57,14 @@ import {
 } from '@/lib/webchat-lanes'
 
 interface PlaygroundData {
-  /** Composer buffer for one session id (each live conversation has its own). */
+  /** Composer buffer for one session id (each live conversation has its own).
+   *  NOT reactive — drafts live outside React state so keystrokes don't
+   *  re-render every context consumer. Subscribe via usePgDraft()/
+   *  subscribePgDraft when the UI must follow the value. */
   getPgInput: (id: string) => string
   setPgInput: (id: string, v: string) => void
+  /** Notifies on any draft change; pair with getPgInput in useSyncExternalStore. */
+  subscribePgDraft: (listener: () => void) => () => void
   /** One prepared image waiting in this session's composer. */
   getPgImage: (id: string) => SessionImage | undefined
   setPgImage: (id: string, image?: SessionImage) => void
@@ -241,7 +256,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // Composer buffer + in-flight flag are PER session id: the provider keeps several
   // conversations live at once (each streams in the background across route changes),
   // so a single global would let one session disable/clear another's composer.
-  const [pgInputBy, setPgInputBy] = useState<Record<string, string>>({})
+  // Drafts live OUTSIDE React state on purpose: a keystroke must not invalidate
+  // the provider context (that re-renders every consumer, including the whole
+  // session transcript). Composers subscribe per-session via usePgDraft().
+  const pgDrafts = useRef<Record<string, string>>({})
+  const pgDraftListeners = useRef(new Set<() => void>())
   const [pgImageBy, setPgImageBy] = useState<Record<string, SessionImage>>({})
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
   // Messages sent while a turn was still streaming, oldest first per session id.
@@ -295,7 +314,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     setPgBusyBy((cur) => (!!cur[id] === v ? cur : { ...cur, [id]: v }))
   }, [])
   const setPgInput = useCallback((id: string, v: string): void => {
-    setPgInputBy((cur) => ({ ...cur, [id]: v }))
+    if ((pgDrafts.current[id] ?? '') === v) return
+    pgDrafts.current = { ...pgDrafts.current, [id]: v }
+    for (const notify of pgDraftListeners.current) notify()
+  }, [])
+  const subscribePgDraft = useCallback((listener: () => void): (() => void) => {
+    pgDraftListeners.current.add(listener)
+    return () => pgDraftListeners.current.delete(listener)
   }, [])
   const setPgImage = useCallback((id: string, image?: SessionImage): void => {
     setPgImageBy((cur) => {
@@ -1101,7 +1126,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
     ) => {
-      const text = String(textArg ?? pgInputBy[id] ?? '').trim()
+      const text = String(textArg ?? pgDrafts.current[id] ?? '').trim()
       const image = pgImageBy[id]
       if (!text && !image) return false
       setPgInput(id, '')
@@ -1128,7 +1153,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       sendTurn(id, agentForId, text, image, conversationId, knownParticipants)
       return true
     },
-    [pgImageBy, pgInputBy, sendTurn, setPgImage, setPgInput]
+    [pgImageBy, sendTurn, setPgImage, setPgInput]
   )
 
   // Dispatch the oldest queued message the moment its session's turn ends. The
@@ -1224,7 +1249,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string) => pgSessions[id] ?? Object.values(pgSessions).find((session) => session.realSessionId === id),
     [pgSessions]
   )
-  const getPgInput = useCallback((id: string) => pgInputBy[id] ?? '', [pgInputBy])
+  const getPgInput = useCallback((id: string) => pgDrafts.current[id] ?? '', [])
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
@@ -1246,6 +1271,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     () => ({
       getPgInput,
       setPgInput,
+      subscribePgDraft,
       getPgImage,
       setPgImage,
       getPgWorktree,
@@ -1270,6 +1296,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [
       getPgInput,
       setPgInput,
+      subscribePgDraft,
       getPgImage,
       setPgImage,
       getPgWorktree,
@@ -1300,4 +1327,26 @@ export function usePlayground(): PlaygroundData {
   const ctx = useContext(Ctx)
   if (!ctx) throw new Error('usePlayground must be used within <PlaygroundProvider>')
   return ctx
+}
+
+/** Reactive view of one session's composer draft. Only the calling component
+ *  re-renders on keystrokes — the provider context itself stays untouched. */
+export function usePgDraft(id: string): string {
+  const { getPgInput, subscribePgDraft } = usePlayground()
+  return useSyncExternalStore(
+    subscribePgDraft,
+    () => getPgInput(id),
+    () => ''
+  )
+}
+
+/** Reactive empty/non-empty flag for one session's draft — for send-button
+ *  enablement in big views: it only re-renders them when the flag flips. */
+export function usePgDraftHasText(id: string): boolean {
+  const { getPgInput, subscribePgDraft } = usePlayground()
+  return useSyncExternalStore(
+    subscribePgDraft,
+    () => getPgInput(id).trim().length > 0,
+    () => false
+  )
 }
