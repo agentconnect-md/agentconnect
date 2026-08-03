@@ -11,7 +11,7 @@ import {
   type ReactNode
 } from 'react'
 import Link from 'next/link'
-import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
+import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { focusAction } from '@/lib/conversation-focus'
 import { encodeConversationKey } from '@/lib/conversation-key'
@@ -2177,21 +2177,21 @@ export default function SessionDetailView() {
     })
     turns.push(turn)
   }
-  const conversationTurnByKey = new Map<string, Extract<Turn, { kind: 'bot' }>>()
+  const botTurnByKey = new Map<string, Extract<Turn, { kind: 'bot' }>>()
   // Another agent speaking in this session — a webchat peer participant or a
   // trusted a2a bot — renders as its own left-side agent block: the right side
   // is reserved for humans. Conversation rows retain their source-local turn;
-  // every other path groups consecutive rows like live bot steps.
-  const pushAgentTurn = (agent: Agent, step: FmtStep, sourceTurnKey?: string): void => {
+  // live rows retain their stream turn; untagged legacy rows group by adjacency.
+  const pushAgentTurn = (agent: Agent, step: FmtStep, turnKey?: string): void => {
     const name = agentLabel(agent)
     rememberAgentParticipant(agent.id, name, agent)
-    let last = sourceTurnKey ? conversationTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
+    let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
       // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
       last = { kind: 'bot', agentName: name, agentId: agent.id, model: '', time: '', steps: [] }
       turns.push(last)
-      if (sourceTurnKey) conversationTurnByKey.set(sourceTurnKey, last)
+      if (turnKey) botTurnByKey.set(turnKey, last)
     }
     last.steps.push(step)
     if (!last.time && step.time) last.time = step.time
@@ -2203,7 +2203,7 @@ export default function SessionDetailView() {
       const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
       const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
       if (m.sender === session.agentId) {
-        let last = sourceTurnKey ? conversationTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
+        let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
         const ownerName = session.agentName ?? ''
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
@@ -2215,7 +2215,7 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
-          if (sourceTurnKey) conversationTurnByKey.set(sourceTurnKey, last)
+          if (sourceTurnKey) botTurnByKey.set(sourceTurnKey, last)
         }
         const step = msgStep(m, toolSessionId)
         last.steps.push(step)
@@ -2269,7 +2269,11 @@ export default function SessionDetailView() {
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
         if (senderAgent && !self) {
-          pushAgentTurn(senderAgent, plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image))
+          pushAgentTurn(
+            senderAgent,
+            plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image),
+            liveBotTurnKey(stp.turnId, senderAgent.id)
+          )
           firstMsg = false
           return
         }
@@ -2301,7 +2305,8 @@ export default function SessionDetailView() {
         if (stp.agentId && stp.agentId !== session.agentId) {
           rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
         }
-        let last = turns[turns.length - 1]
+        const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
+        let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2312,6 +2317,7 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+          if (turnKey) botTurnByKey.set(turnKey, last)
         } else if (stp.agentId && last.agentId === undefined) {
           // A tagged step continuing an untagged block names its author retroactively.
           last.agentId = stp.agentId
@@ -2333,7 +2339,11 @@ export default function SessionDetailView() {
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
         if (senderAgent && !self) {
-          pushAgentTurn(senderAgent, plainStep(stp.text, stp.time ?? '', stp.image))
+          pushAgentTurn(
+            senderAgent,
+            plainStep(stp.text, stp.time ?? '', stp.image),
+            liveBotTurnKey(stp.turnId, senderAgent.id)
+          )
           continue
         }
         const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
@@ -2356,7 +2366,8 @@ export default function SessionDetailView() {
         if (stp.agentId && stp.agentId !== session.agentId) {
           rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
         }
-        let last = turns[turns.length - 1]
+        const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
+        let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2367,6 +2378,7 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+          if (turnKey) botTurnByKey.set(turnKey, last)
         } else if (stp.agentId && last.agentId === undefined) {
           // A tagged step continuing an untagged block names its author retroactively.
           last.agentId = stp.agentId
