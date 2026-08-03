@@ -342,7 +342,11 @@ describe('AgentMoveService', () => {
     expect(t.activations).toHaveLength(2)
     expect(t.activations[0]?.reconcileWorkspace).toBe(true)
     expect(t.activations[1]?.reconcileWorkspace).toBe(true)
-    expect(t.activations[1]?.spec.workspace).toEqual({ mode: 'scratch', gitCredential: 'github-app' })
+    expect(t.activations[1]?.spec.workspace).toEqual({
+      mode: 'scratch',
+      isolation: 'shared',
+      gitCredential: 'github-app'
+    })
   })
 
   it('continues from durable GitHub state when the persistence response is lost after commit', async () => {
