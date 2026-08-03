@@ -92,6 +92,20 @@ describe('toolsForIntegrations', () => {
     expect(names.filter((n) => n === 'getCurrentChannel')).toHaveLength(1)
   })
 
+  it('exposes NO `thread` property in any send branch, on any integration set', () => {
+    // send-message-routing-rework.md §2.2 / §10 case 1. This is the schema-level statement
+    // of "there is no visible in-thread form": speaking in the current thread is the
+    // ordinary turn reply's job (§2.1), and a second delivery path into the same thread
+    // would compete with it. Asserted across integration sets because the branch union is
+    // built per-agent — a `thread` reappearing on only the Telegram shape would be just as
+    // wrong and much easier to miss.
+    for (const ints of [[slackInt], [telegramInt], [slackInt, telegramInt]]) {
+      for (const branch of sendSchema(ints).oneOf!) {
+        expect(Object.keys(branch.properties)).not.toContain('thread')
+      }
+    }
+  })
+
   it('descriptor shape: the unified send tool requires one strict, non-overlapping target branch', () => {
     const tool = sendTool([slackInt])!
     expect(tool.name).toBe('sendMessage')
@@ -102,25 +116,16 @@ describe('toolsForIntegrations', () => {
     const agent = sendTargetBranch([slackInt], 'toAgent')
     expect(agent.required).toEqual(['toAgent', 'message'])
     expect(agent.additionalProperties).toBe(false)
-    expect(Object.keys(agent.properties)).toEqual(['toAgent', 'channel', 'thread', 'message'])
-    expect(agent.description).toContain('dm')
+    expect(Object.keys(agent.properties)).toEqual(['toAgent', 'channel', 'message'])
+    expect(agent.description).toContain('direct')
     expect(agent.description).toContain('channel root')
-    expect(agent.description).toContain('in thread')
 
     const user = sendTargetBranch([slackInt], 'toUser')
     expect(user.required).toEqual(['toUser', 'message'])
     expect(user.additionalProperties).toBe(false)
-    expect(Object.keys(user.properties)).toEqual([
-      'toUser',
-      'channel',
-      'thread',
-      'platform',
-      'integrationId',
-      'message'
-    ])
+    expect(Object.keys(user.properties)).toEqual(['toUser', 'channel', 'platform', 'integrationId', 'message'])
     expect(user.description).toContain('dm')
-    expect(user.description).toContain('channel root')
-    expect(user.description).toContain('in thread')
+    expect(user.description).toContain('channel-root')
     expect(user.properties.toUser!.oneOf).toMatchObject([
       { type: 'string', minLength: 1 },
       { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', minLength: 1 } }
@@ -129,7 +134,7 @@ describe('toolsForIntegrations', () => {
     const channel = sendTargetBranch([slackInt], 'channel')
     expect(channel.required).toEqual(['channel', 'message'])
     expect(channel.additionalProperties).toBe(false)
-    expect(Object.keys(channel.properties)).toEqual(['channel', 'thread', 'platform', 'integrationId', 'message'])
+    expect(Object.keys(channel.properties)).toEqual(['channel', 'platform', 'integrationId', 'message'])
     expect(channel.description).toContain('without waking an agent or @-mentioning a human')
 
     const session = sendTargetBranch([slackInt], 'sessionId')
@@ -155,24 +160,24 @@ describe('toolsForIntegrations', () => {
     // instead of a reply in the conversation that asked. The consequence has to be ON the
     // branch that carries it, and the tool has to say the turn's own reply already lands here.
     const description = sendTool([slackInt])!.description
-    expect(description).toContain('Your own turn reply already reaches the conversation you are in')
-    expect(description).toContain('opens a NEW session')
+    // §2.1 is now the FIRST thing the tool says: to speak where you already are — including
+    // to address a peer or a human there — write your ordinary reply and @-mention them.
+    expect(description).toContain('CONVERSATION YOU ARE ALREADY IN')
+    expect(description).toContain('ordinary turn reply')
+    expect(description).toContain('@-mention')
+    expect(description).toContain('opens a NEW conversation')
     expect(description).toContain('never by posting it at their channel root')
-
-    expect(sendTargetBranch([slackInt], 'channel').properties.thread!.description).toContain('opens a new session')
-    expect(sendTargetBranch([slackInt], 'toAgent').properties.thread!.description).toContain('opens a new session')
     expect(sendTargetBranch([slackInt], 'sessionId').description).toContain(
       'channel ROOT instead would start a new one'
     )
 
-    // The cost is ROOT-only: an explicit thread joins a conversation rather than forking one, so
-    // the guidance says "a different conversation", never "a different channel".
-    expect(description).not.toContain('DIFFERENT channel,')
+    // Every visible send is a ROOT post now (§2.2), so both the tool and the channel branch
+    // have to say so — there is no longer an in-thread form that avoids the cost.
     for (const text of [description, sendTargetBranch([slackInt], 'channel').description!])
-      expect(text).toMatch(/(at )?channel root/i)
+      expect(text).toMatch(/(at )?channel.{0,3}s? root/i)
 
-    // …and the toUser mode is not DM-only: its channel-root and in-thread forms post visible
-    // @-mentions, which is a legitimate reason to send into a conversation the agent is in.
+    // …and the toUser mode is not DM-only: its channel-root form posts visible @-mentions,
+    // which is a legitimate reason to send into a conversation the agent is not in.
     expect(description).toContain('@-mentions every listed user')
     expect(sendTargetBranch([slackInt], 'toUser').description).toContain('@-mentions every listed user')
 
@@ -181,8 +186,8 @@ describe('toolsForIntegrations', () => {
     const soloDescription = toolsForIntegrations([slackInt], { collaboration: false }).find(
       (t) => t.name === 'sendMessage'
     )!.description
-    expect(soloDescription).toContain('opens a NEW session')
-    expect(soloDescription).toContain('use this tool only for what that reply cannot do')
+    expect(soloDescription).toContain('opens a NEW conversation')
+    expect(soloDescription).toContain('ordinary turn reply')
     expect(soloDescription).toContain('{"toUser":"<Slack user id>","message":"..."}')
   })
 

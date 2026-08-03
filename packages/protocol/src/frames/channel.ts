@@ -39,7 +39,20 @@ export const ChannelAgent = z.object({
   name: z.string(), // slug
   displayName: z.string().optional(), // human-readable name, if set
   description: z.string().optional(), // what the agent does (its system-prompt seed)
-  status: z.enum(['active', 'inactive', 'paused'])
+  status: z.enum(['active', 'inactive', 'paused']),
+  /**
+   * The exact platform-native address for this agent in the LISTED conversation —
+   * `<@U_REVIEWER>` for a dedicated bot, `<@U_SHARED> reviewer` for a shared one
+   * (send-message-routing-rework.md §8.5).
+   *
+   * Present only on a CHANNEL-FILTERED listing: an org-wide listing has no single
+   * conversation-specific address, and offering a wrong token would silently address
+   * nobody. It gives the model an exact string to put in its ordinary reply (§2.1)
+   * instead of guessing from a display name, without exposing any credential.
+   *
+   * The DAEMON fills this from its local conversation directory; it is not a CP field.
+   */
+  mention: z.string().optional()
 })
 export type ChannelAgent = z.infer<typeof ChannelAgent>
 

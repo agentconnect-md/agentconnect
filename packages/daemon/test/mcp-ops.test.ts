@@ -160,17 +160,23 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(recorded).toEqual([{ channel: 'C_CURRENT', thread: 'ts-123', text: 'hi', ts: 'ts-123' }])
   })
 
-  it('posts inside a thread when one is named explicitly', async () => {
+  it('rejects `thread` on a channel post — there is no visible in-thread form', async () => {
+    // send-message-routing-rework.md §2.2: no branch accepts `thread`. Addressing the
+    // current thread is the ordinary turn reply's job (§2.1), so a `thread` here is a
+    // caller working from an old example. Reject LOUDLY: silently posting at the root what
+    // the caller meant for a thread is the outcome that would confuse them.
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
-    await executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', thread: '111.1', message: 'hi' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'hi', '111.1', authorIdentity)
+    await expect(
+      executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', thread: '111.1', message: 'hi' }, d)
+    ).rejects.toThrow(/thread/)
+    expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
-  it('honors an explicit channel and an empty thread (post to channel root)', async () => {
+  it('posts a cross-channel send at that channel’s root', async () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
-    await executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', thread: '', message: 'yo' }, d)
+    await executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', message: 'yo' }, d)
     expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined, authorIdentity)
   })
 
@@ -232,20 +238,8 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(wakes[0]).toMatchObject({ thread: 'tg:172', transcriptTs: '172' })
     })
 
-    it('leaves an explicit thread and non-Telegram platforms untouched', async () => {
-      // An explicit numeric thread is a forum TOPIC id and drives message_thread_id at post
-      // time — canonicalizing it would silently move the post to another conversation.
-      const topic = tgDeps()
-      await executeTool(
-        tgCtx,
-        'sendMessage',
-        { platform: 'telegram', channel: '-100123', thread: '172', message: 'hi' },
-        topic.d
-      )
-      expect(topic.recorded[0]).toMatchObject({ thread: '172' })
-      expect(topic.spawns).toHaveLength(0)
-
-      // Slack's ts already IS the thread segment.
+    it('keys a non-Telegram root post by the platform’s own conversation model', async () => {
+      // Slack's ts already IS the thread segment, so the post opens a session on itself.
       const slack = tgDeps({ gatewayFor: () => fakeGateway() })
       await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'hi' }, slack.d)
       expect(slack.spawns[0]).toMatchObject({ thread: 'ts-123', postTs: 'ts-123' })
@@ -294,18 +288,11 @@ describe('executeTool: sendMessage (channel post)', () => {
     })
 
     it('does not interrogate the platform where the answer cannot change the key', async () => {
-      // Slack and Discord key the same way for DMs and channels, and an explicit thread settles
-      // it outright — so no send pays for a lookup it does not need.
+      // Slack and Discord key the same way for DMs and channels, so no send pays for a
+      // lookup it does not need.
       const getChannelInfo = vi.fn(async (id: string) => ({ id, isIm: true }))
       const slack = tgDeps({}, { getChannelInfo })
       await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'hi' }, slack.d)
-      const threaded = tgDeps({}, { getChannelInfo })
-      await executeTool(
-        tgCtx,
-        'sendMessage',
-        { platform: 'telegram', channel: '555', thread: '9', message: 'hi' },
-        threaded.d
-      )
       expect(getChannelInfo).not.toHaveBeenCalled()
     })
 
@@ -373,14 +360,9 @@ describe('executeTool: sendMessage (channel post)', () => {
       })
     })
 
-    it('stays quiet for an unrelated destination, and for a threaded post', async () => {
+    it('stays quiet for an unrelated destination', async () => {
       const unrelated = rootPostDeps({ rootPostRelation: () => undefined })
       expect((await send(unrelated, { channel: 'C_OTHER' })).notice).toBeUndefined()
-      // Threaded: it joins a conversation instead of forking, so nothing is spawned or asked.
-      const threaded = rootPostDeps({ rootPostRelation: () => parentRelation })
-      expect(
-        (await send(threaded, { platform: 'telegram', channel: '-100123', thread: '9' }, dualCtx)).notice
-      ).toBeUndefined()
     })
 
     it('says nothing when no session was actually seeded', async () => {
@@ -884,12 +866,43 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: 'ts-123', transcriptTs: 'ts-123' })
   })
 
-  it('channel + toAgent + thread posts INTO that thread and reuses it for the peer', async () => {
+  it('rejects `thread` on an agent target — the in-thread form is gone', async () => {
+    // §2.2: `toAgent + channel + thread` is invalid. To reach a peer in the thread you are
+    // already in, @-mention it in your ordinary reply (§2.1).
     const { deps: d, calls, gw } = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', thread: '222.2', message: 'ping' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'ping', '222.2', authorIdentity)
-    // Thread reused; transcriptTs = the post's real ts (dedups against the recorded post row).
-    expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: '222.2', transcriptTs: 'ts-123' })
+    await expect(
+      executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', thread: '222.2', message: 'ping' }, d)
+    ).rejects.toThrow(/thread/)
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('renders the target’s exact mention into the channel-root post', async () => {
+    // §3.2: the visible half of a paired call names its recipient, so a human reading the
+    // channel sees who it is for and the peer is addressed in the body — not only in
+    // metadata. The address comes from the daemon's directory, never from model text.
+    const {
+      deps: d,
+      calls,
+      gw
+    } = wakeDeps({
+      mentionAddressFor: ({ agentId, channel }) =>
+        agentId === 'peer-1' && channel === 'C_X' ? '<@U01PEER>' : undefined
+    })
+    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', message: 'ping' }, d)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_X', '<@U01PEER> ping', undefined, authorIdentity)
+    // The wake anchors to the post's own ts, and carries it so the two collapse onto one
+    // transcript row rather than duplicating the hand-off.
+    expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: 'ts-123', transcriptTs: 'ts-123' })
+  })
+
+  it('still posts and wakes when the target has no address in that conversation', async () => {
+    // A peer with no platform presence there (or a shared bot with no slug) simply gets an
+    // unmentioned post plus its internal wake — the delivery happens, it is only less legible.
+    const { deps: d, calls, gw } = wakeDeps({ mentionAddressFor: () => undefined })
+    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', message: 'ping' }, d)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'ping', undefined, authorIdentity)
+    expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', transcriptTs: 'ts-123' })
   })
 
   it('a wake that preflight rejects leaves NO visible post (but still runs the wake)', async () => {
@@ -923,10 +936,15 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('honors an explicit empty thread (channel root) on a wake', async () => {
-    const { deps: d, calls } = wakeDeps()
-    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', thread: '', message: 'x' }, d)
-    expect(calls[0]!.thread).toBeUndefined()
+  it('anchors a POSTLESS wake to the caller’s own session coordinates', async () => {
+    // §3.1: with no `channel`, the call is postless and its child session is headless. The
+    // coordinates come from the TRUSTED caller session — a channel the model named is not
+    // evidence the caller may reach it, so it never becomes the child's key.
+    const { deps: d, calls, gw } = wakeDeps()
+    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'x' }, d)
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: ctx.channel, thread: ctx.thread })
+    expect(calls[0]!.transcriptTs).toBeUndefined()
   })
 
   it.each([
@@ -965,20 +983,12 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(res.post).toMatchObject({ channel: 'C1', thread: null })
   })
 
-  it('toUser array plus channel and thread mentions everyone inside that thread', async () => {
+  it('rejects `thread` on a toUser target — there is no visible in-thread form', async () => {
     const { deps: d, gw } = wakeDeps()
-    await executeTool(
-      ctx,
-      'sendMessage',
-      {
-        toUser: ['U1', 'U2'],
-        channel: 'C1',
-        thread: '222.2',
-        message: 'please review'
-      },
-      d
-    )
-    expect(gw.postMessage).toHaveBeenCalledWith('C1', '<@U1> <@U2> please review', '222.2', authorIdentity)
+    await expect(
+      executeTool(ctx, 'sendMessage', { toUser: ['U1', 'U2'], channel: 'C1', thread: '222.2', message: 'please' }, d)
+    ).rejects.toThrow(/thread/)
+    expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
   it('rejects a toUser array without channel instead of treating it as a group DM', async () => {
@@ -1000,10 +1010,10 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
-  it('rejects `thread` on a toUser DM — a DM has no thread to post into', async () => {
+  it('rejects `thread` on a toUser DM', async () => {
     const { deps: d } = wakeDeps()
     await expect(executeTool(ctx, 'sendMessage', { toUser: 'U1', thread: '222.2', message: 'x' }, d)).rejects.toThrow(
-      /`thread` needs a `channel`/
+      /thread/
     )
   })
 

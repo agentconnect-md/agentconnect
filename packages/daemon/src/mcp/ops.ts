@@ -334,6 +334,18 @@ export interface OpsDeps {
    *  channel. Rejects (throws) when the control plane isn't connected — discovery
    *  fails closed rather than returning a partial/empty roster. */
   channelAgents: (req: ChannelAgentsRequest) => Promise<ChannelAgentsOk>
+  /**
+   * The exact platform-native `@mention` addressing `agentId` in one conversation
+   * (send-message-routing-rework.md §8.5), or undefined when it has none there.
+   *
+   * Two callers, one source of truth: `listAgents` exposes it so the model can address a
+   * peer in its ordinary reply without guessing from a display name, and a
+   * `toAgent + channel` send renders it into the visible post. Resolved from the daemon's
+   * conversation directory — never from model text — so it can only ever name an agent the
+   * caller could already reach, and it stays consistent with what INGRESS will resolve the
+   * same token back to. Undefined on a daemon with no collaboration snapshot.
+   */
+  mentionAddressFor?: (req: { agentId: string; platform: string; channel: string }) => string | undefined
   /** Owner-approved organization knowledge search; requester identity is bound
    * from the trusted session context. */
   findKnowledge?: (req: {
@@ -710,10 +722,27 @@ export async function executeTool(
       ...(ctx.transportScope !== undefined ? { currentTransportScope: ctx.transportScope } : {}),
       requesterAgentId: ctx.agentId
     })
+    // §8.5: a CHANNEL-FILTERED listing carries each peer's exact `mention` token, so the
+    // model can address it in its ordinary reply (§2.1) instead of guessing an address
+    // from a display name. An ORG-WIDE listing deliberately omits it — there is no single
+    // conversation-specific address for an agent that may appear in many channels behind
+    // different bots, and a wrong token would silently address nobody.
+    const scopedChannel = res.channel
+    const agents =
+      scopedChannel !== undefined && deps.mentionAddressFor
+        ? res.agents.map((agent) => {
+            const mention = deps.mentionAddressFor?.({
+              agentId: agent.agentId,
+              platform: res.platform,
+              channel: scopedChannel
+            })
+            return mention ? { ...agent, mention } : agent
+          })
+        : res.agents
     return {
       platform: res.platform,
       ...(res.channel !== undefined ? { channel: res.channel } : {}),
-      agents: res.agents
+      agents
     }
   }
 
@@ -785,17 +814,21 @@ export async function executeTool(
         `sendMessage: \`toAgent\` and \`toUser\` are mutually exclusive — pick one mode. ${SEND_MESSAGE_TARGET_HELP}`
       )
     }
-    if (toAgent !== undefined) assertOnlyKeys(args, ['toAgent', 'channel', 'thread', 'message'], 'agent target')
+    // send-message-routing-rework.md §2.2: NO branch accepts `thread`. A visible send is
+    // either a direct message or a channel-ROOT post; addressing the CURRENT thread is the
+    // ordinary turn reply's job (§2.1), which already owns the right coordinates,
+    // streaming lifecycle, and sender identity. `assertOnlyKeys` is what rejects a `thread`
+    // a caller supplies anyway — a stale client, or a model working from an old example —
+    // and it rejects LOUDLY rather than ignoring it, because silently posting at the root
+    // what the caller meant for a thread is the confusing outcome.
+    if (toAgent !== undefined) assertOnlyKeys(args, ['toAgent', 'channel', 'message'], 'agent target')
     else if (toUsers !== undefined) {
-      assertOnlyKeys(args, ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'message'], 'user target')
+      assertOnlyKeys(args, ['toUser', 'channel', 'platform', 'integrationId', 'message'], 'user target')
     } else {
-      assertOnlyKeys(args, ['channel', 'thread', 'platform', 'integrationId', 'message'], 'channel target')
+      assertOnlyKeys(args, ['channel', 'platform', 'integrationId', 'message'], 'channel target')
     }
     if (toUsers !== undefined && channel === undefined && Array.isArray(args.toUser)) {
       throw new Error('sendMessage: a `toUser` array requires `channel` — direct messages accept exactly one user id')
-    }
-    if (toUsers !== undefined && channel === undefined && optionalString(args, 'thread') !== undefined) {
-      throw new Error('sendMessage: `thread` needs a `channel` — a DM has no thread to post into')
     }
 
     // The trusted wake request (built once) — also fed to the preflight below. `thread` and
@@ -825,46 +858,62 @@ export async function executeTool(
     // owning daemon); such a rare reject can still leave a post — an accepted residual.
     const wakeRejection = baseWakeReq !== undefined ? (deps.preflightWake?.(baseWakeReq) ?? null) : null
 
-    // (A) Post a visible IM to a platform channel or Slack user. The destination is the
-    // `channel` for the channel-root / in-thread forms; the `toUser` DM form (no channel) first
-    // resolves the Slack member id to the app's real D… conversation. Routing is by `platform`
-    // (+ optional `integrationId`) to ANY platform the agent is connected to; identity is
-    // stamped from the trusted session. THREAD DEFAULT: a
-    // deliberate `sendMessage` posts to the channel ROOT — "reply here" is the agent's normal
-    // turn output, so an explicit send is a top-level post unless it names a `thread`.
-    // `thread:"<id>"` targets that thread; absent or "" ⇒ root. We post BEFORE any peer wake
-    // (B) so the wake can land in the SAME thread a human sees — for a root post that thread is
-    // the post's own `ts`, which only exists after the send.
+    // (A) Post a visible IM at a platform channel's ROOT, or to a Slack user's DM. The
+    // destination is the `channel` for the channel-root form; the `toUser` DM form (no
+    // channel) first resolves the Slack member id to the app's real D… conversation.
+    // Routing is by `platform` (+ optional `integrationId`) to ANY platform the agent is
+    // connected to; identity is stamped from the trusted session.
+    //
+    // ALWAYS THE ROOT (send-message-routing-rework.md §2.2): there is no in-thread form at
+    // all. Speaking in the current thread is the ordinary turn reply's job (§2.1), and a
+    // second visible delivery path into the same thread would compete with it. We post
+    // BEFORE any peer wake (B) so the wake can anchor to the post a human sees — that
+    // thread is the post's own `ts`, which only exists after the send.
     let post:
       { platform: string; integrationId: string; channel: string; thread: string | null; ts: string } | undefined
     // Set when the root post just forked a conversation this agent is already part of — see the
     // notice built below. Surfaced in the tool RESULT, where the agent reads it inside the same
     // turn it made the call, and can still answer the right way.
     let notice: string | undefined
-    // The thread the peer wake / new session should anchor to when we posted: an explicit
-    // `thread` reuses it; a root post anchors to the post's `ts` (undefined if no real ts came
-    // back — the peer then falls back to messageAgent's default thread).
+    // The thread the peer wake / new session anchors to: the root post's own `ts`
+    // (undefined if no real ts came back — the peer then falls back to messageAgent's
+    // default thread).
     let postedThread: string | undefined
-    // Destination: an explicit `channel` (channel-root / in-thread forms), else the `toUser`
-    // DM form starts from the user id and resolves it below.
+    // Destination: an explicit `channel` (channel-root form), else the `toUser` DM form
+    // starts from the user id and resolves it below.
     const requestedChannel = channel ?? toUsers?.[0]
     if (requestedChannel !== undefined && wakeRejection === null) {
       const directMessage = toUsers !== undefined && channel === undefined
       const wantPlatform = optionalString(args, 'platform') ?? (directMessage ? 'slack' : ctx.platform)
       const wantIntegrationId = optionalString(args, 'integrationId')
       const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
-      const thread = optionalString(args, 'thread') || undefined
       let body = message
       if (toUsers !== undefined) {
         if (wantPlatform !== 'slack') {
           throw new Error(`sendMessage: toUser is only supported on Slack (not ${wantPlatform}) yet`)
         }
-        // dm form: the one user id IS the destination and the body is unchanged; the channel-root /
-        // in-thread forms @-mention every named user inside the one visible post.
+        // dm form: the one user id IS the destination and the body is unchanged; the
+        // channel-root form @-mentions every named user inside the one visible post.
         if (channel !== undefined) {
           const mentions = toUsers.map((user) => (/^<@[^>]+>$/.test(user) ? user : `<@${user}>`))
           body = `${mentions.join(' ')} ${message}`
         }
+      }
+      // §3.2: a `toAgent + channel` post RENDERS the target's platform-native mention into
+      // the visible body. Without it the post says nothing about who it is for — a human
+      // reading the channel sees an unaddressed message, and the peer's own activation
+      // would rest entirely on invisible metadata. The address comes from the daemon's
+      // conversation directory, never from model text, so it cannot name an agent the
+      // caller could not otherwise reach. A target with no address in this conversation
+      // (no platform presence there) simply gets an unmentioned post plus its internal
+      // wake — the delivery still happens, it is only less legible.
+      if (toAgent !== undefined && channel !== undefined) {
+        const address = deps.mentionAddressFor?.({
+          agentId: toAgent,
+          platform: wantPlatform,
+          channel: requestedChannel
+        })
+        if (address) body = `${address} ${message}`
       }
       const postChannel = directMessage ? await openDirectMessage(gw, requestedChannel) : requestedChannel
       const identity: SendIdentity = {
@@ -872,29 +921,28 @@ export async function executeTool(
         ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
         agentAuthorId: ctx.agentId
       }
-      const ts = (await gw.postMessage(postChannel, body, thread, identity)) ?? `local-${deps.now()}`
+      const ts = (await gw.postMessage(postChannel, body, undefined, identity)) ?? `local-${deps.now()}`
       // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
       // continuous conversation, and no id carries that — ask the platform, once, and only where
       // the answer can change the key. A failed lookup falls back to the non-DM conversation
       // rather than failing the send that already happened.
       const isDmTarget =
-        thread === undefined && (wantPlatform === 'telegram' || wantPlatform === 'feishu')
+        wantPlatform === 'telegram' || wantPlatform === 'feishu'
           ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
           : false
-      postedThread =
-        thread ?? (ts.startsWith('local-') ? undefined : threadKeyForPost(wantPlatform, postChannel, ts, isDmTarget))
+      postedThread = ts.startsWith('local-') ? undefined : threadKeyForPost(wantPlatform, postChannel, ts, isDmTarget)
       // Record the post in the thread it BELONGS to — the one it just created for a root post,
       // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
       // row to coords that match no session at all). It is also what resolves a later reply to
       // this post back onto this thread, so it must be the same canonical key the session uses.
       deps.recordOutbound(ctx, postChannel, postedThread, body, ts, targetId)
-      post = { platform: wantPlatform, integrationId: targetId, channel: postChannel, thread: thread ?? null, ts }
-      // session-concept case 2a: a ROOT post (no thread) with NO peer wake seeds a NEW session
-      // owned by this agent, keyed by the post's own thread, origin = the current session. When
-      // there IS a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the
+      post = { platform: wantPlatform, integrationId: targetId, channel: postChannel, thread: null, ts }
+      // session-concept case 2a: a root post with NO peer wake seeds a NEW session owned by
+      // this agent, keyed by the post's own thread, origin = the current session. When there
+      // IS a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the
       // caller-owned spawn. Also skip when the platform returned no real ts (synthesized
       // `local-*`), which leaves `postedThread` undefined and nothing to key a session on.
-      if (toAgent === undefined && thread === undefined && postedThread !== undefined && deps.spawnChannelRootSession) {
+      if (toAgent === undefined && postedThread !== undefined && deps.spawnChannelRootSession) {
         const seeded = deps.spawnChannelRootSession({
           agentId: ctx.agentId,
           platform: wantPlatform,
@@ -949,26 +997,26 @@ export async function executeTool(
       }
     }
 
-    // (B) Wake a peer agent (A2A, §4). Delivery is DIRECT — the peer is woken with a caller-framed
-    // message. WHERE the woken session lands depends on whether a `channel` was given:
-    //   • no `channel` ⇒ pure A2A, POSTLESS (#854): nothing is left in any channel; `thread`
-    //     semantics mirror the old messageAgent (absent ⇒ current thread, explicit "" ⇒ root).
-    //   • with `channel` ⇒ the wake lands in the VISIBLE post's thread from (A): a root post
-    //     anchors the peer to the post's `ts`; an explicit `thread` is reused. The collaboration
-    //     is thus visible AND threaded (both the human-facing post and the peer reply share it).
-    //     `transcriptTs` carries the post's real ts so the wake's transcript row collapses onto
-    //     the recorded post's (channel, thread, ts) PK (no duplicate hand-off) and the woken
-    //     session's cursor stays a canonical platform ts. This holds cross-daemon too: the ts is
-    //     forwarded through the relay frames and stamped on the remote target's turn, so a target
-    //     that snapshots the shared thread (conversations.replies) dedups the same way.
+    // (B) Wake a peer agent (A2A, §4). Delivery is DIRECT — the peer is woken with a
+    // caller-framed message. WHERE the woken session lands depends on whether a `channel`
+    // was given:
+    //   • no `channel` ⇒ POSTLESS (#854, send-message-routing-rework.md §3.1): nothing is
+    //     left in any channel, and the child session is HEADLESS. Its coordinates are
+    //     derived from the trusted caller session rather than from any channel the model
+    //     named — availability is not authorization, and a model-supplied channel is not
+    //     evidence the caller may reach it.
+    //   • with `channel` ⇒ the wake anchors to the VISIBLE root post from (A) (§3.2), so
+    //     the collaboration is visible AND threaded: the human-facing post and the peer's
+    //     reply share one thread. `transcriptTs` carries the post's real ts so the wake's
+    //     transcript row collapses onto the recorded post's (channel, thread, ts) PK — no
+    //     duplicate hand-off — and the woken session's cursor stays a canonical platform
+    //     ts. This holds cross-daemon too: the ts is forwarded through the relay frames and
+    //     stamped on the remote target's turn, so a target that snapshots the shared thread
+    //     (conversations.replies) dedups the same way. It is also the pairing key for the
+    //     activation rendezvous that admits this delivery exactly once (§8.6).
     let wake: MessageAgentResult | undefined
     if (baseWakeReq !== undefined) {
-      const threadForWake =
-        channel !== undefined
-          ? postedThread
-          : 'thread' in args
-            ? optionalString(args, 'thread') || undefined
-            : ctx.thread
+      const threadForWake = channel !== undefined ? postedThread : ctx.thread
       wake = await deps.messageAgent({
         ...baseWakeReq,
         ...(threadForWake !== undefined ? { thread: threadForWake } : {}),

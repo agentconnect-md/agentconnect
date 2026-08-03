@@ -1,17 +1,29 @@
 # `sendMessage` Routing Rework
 
-**Status:** Proposed design
+**Status:** Implemented
 
-This document defines the next `sendMessage` contract and the corresponding
-agent-authored message-routing behavior. It replaces the current visible
-in-thread `sendMessage` forms and the rule that AgentConnect-authored platform
-messages can never activate another AgentConnect agent.
+This document defines the `sendMessage` contract and the corresponding
+agent-authored message-routing behavior. It replaced the visible in-thread
+`sendMessage` forms and the rule that AgentConnect-authored platform messages can
+never activate another AgentConnect agent.
 
-Until the implementation lands, the current behavior in
-[`session-concept.md`](session-concept.md),
+It is authoritative for routing; [`session-concept.md`](session-concept.md),
 [`agent-collaboration-implementation.md`](agent-collaboration-implementation.md),
-and [`../product-conventions.md`](../product-conventions.md) remains
-authoritative.
+and [`../product-conventions.md`](../product-conventions.md) have been updated to
+match and defer here for the verification, hop-transition, and activation
+rendezvous rules.
+
+Two implementation notes, recorded where they will be looked for:
+
+- **Slack is the only platform with agent-authored routing.** §5 makes this a
+  transport capability rather than a product rule: a driver qualifies only once it
+  can prove an exact author and deliver one finalized logical message. Slack does
+  both through message metadata plus a selectively-admitted `message_changed`
+  event. Telegram, Discord, and Feishu keep the postless `toAgent` path.
+- **Response metadata rides in Slack message metadata**, so the visible text stays
+  exactly what the agent wrote. That requires the receiving app to be delivered
+  message metadata on `message` events; a deployment where it is not will see
+  agent mentions recorded but never routed — the fail-closed direction.
 
 ## 1. Goals
 

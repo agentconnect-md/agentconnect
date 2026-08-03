@@ -2658,6 +2658,15 @@ export class Daemon {
         // 'hook', and the roster is the same either way.
         return cacheNames({ ...ok, platform: req.platform })
       },
+      // send-message-routing-rework.md §8.5. Resolved from the collaboration snapshot the
+      // CP pushes to every daemon, so it is available without a CP round-trip and stays
+      // consistent with what INGRESS resolves the same token back to — the two directions
+      // share `slack-mention-address`. Undefined for an agent with no address in this
+      // conversation (no platform presence there, or a shared bot with no slug).
+      mentionAddressFor: ({ agentId, platform, channel }) => {
+        const orgId = this.cpCollab.orgForAgent(agentId)
+        return orgId ? this.cpCollab.mentionAddress(orgId, this.narrowPlatform(platform), channel, agentId) : undefined
+      },
       findKnowledge: async (req) => {
         const client = this.cpClient
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })

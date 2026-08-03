@@ -96,38 +96,72 @@ A third-party Slack app or bot may wake an AgentConnect agent only by explicitly
 mentioning that agent's bot. It must not enter through DM, thread-affinity, keyword, or
 auto ("every message") routing.
 
-A message authored by any AgentConnect-managed agent bot never wakes another
-AgentConnect agent through Slack, even when it explicitly mentions that agent or the
-channel uses auto routing. Agent-to-agent activation uses the trusted internal
-`messageAgent` path exclusively — never a re-entry through a visible mention. That path
-delivers the message directly to the target agent and wakes it; it is never a second
-platform delivery path.
+### Addressing someone in the conversation you are already in
 
-Whether the hand-off is _visible_ is the caller's choice, set by the `sendMessage`
-target it uses. The tool has two addressing modes — `toAgent` (wake a peer) and
-`toUser` (reach one or more humans) — each with three delivery forms: dm / channel root /
-in thread; plus a bare `channel` post with no recipient:
+An agent that wants to reach an agent or a human **in its current thread** writes an
+ordinary turn reply containing that recipient's platform-native `@mention`. It does not
+call `sendMessage`. The ordinary reply already has the right channel, thread, transport
+scope, streaming lifecycle, and sender identity; a second sending tool would only create
+a competing delivery path into the same conversation. `listAgents`, when scoped to a
+channel, returns each peer's exact `mention` token so the agent never has to guess an
+address from a display name.
 
-- `toAgent` **dm form** (`{"toAgent":"<agent id>","message":"..."}`, no `channel`) —
-  a postless wake: nothing is posted to the channel/thread and nothing is recorded
-  in the shared transcript, so this coordination never appears as channel history.
-- `toAgent` **channel-root / in-thread forms** (`channel`, optionally `thread`) —
-  the daemon posts one visible message to that channel (root by default, or an
-  explicit `thread`) and lands the woken agent's session in that post's thread, so
-  the collaboration is intentionally visible and threaded. The woken agent is still
-  activated through `messageAgent`, not by the visible post — the post's timestamp
-  is carried into the wake (across the relay for a cross-daemon target) so the
-  visible message and the direct delivery collapse to a single transcript row
-  (never a duplicate hand-off).
+A finalized platform message authored by an AgentConnect agent is therefore **eligible
+for ordinary recipient routing**, but it is never implicitly activating:
+
+- an explicit mention of agent B may activate B;
+- an unmentioned agent message never activates through thread affinity, DM, keyword,
+  channel `auto`, or default-agent fallback;
+- a mention of a human does not activate an agent;
+- an author cannot activate itself;
+- agent-authored text cannot issue control commands (`!stop`, `!resume`, configuration
+  actions);
+- a third-party bot is unchanged: where supported, it may activate an agent only through
+  an explicit mention.
+
+Only the **final** message of a logical response routes. Replies are streamed, so an
+earlier physical message may hold a prefix of the answer; the daemon marks exactly one
+event final at turn end and carries the recipients resolved from the complete response,
+so a mention in the answer's first section still selects its target exactly once.
+
+Activation requires a **verified** author: an authentic provider event, a sending app
+that belongs to AgentConnect in this organization and conversation, a claimed author that
+app actually backs there, a usable trusted hop depth, and an author-to-target edge that
+passes current policy. Anything short of that is recorded in the transcript and routed to
+nobody — in particular a shared bot that cannot prove an exact agent author fails closed,
+because its platform identity stands for more than one agent.
+
+Every agent-to-agent delivery — internal call or platform mention, same daemon or across
+a relay — spends exactly one hop from the same shared budget, so a mention chain cannot
+outlive the limit an internal call chain gets.
+
+### What `sendMessage` is for
+
+`sendMessage` covers what the ordinary reply cannot do: a different conversation, a
+direct message, a postless agent call, or a reply into the parent session. It has **no
+visible in-thread form** — every visible send lands at the channel **root**:
+
+- `toAgent` **direct form** (`{"toAgent":"<agent id>","message":"..."}`, no `channel`) —
+  a postless wake: nothing is posted to any channel and nothing is recorded in a shared
+  transcript, so this coordination never appears as channel history. The child session is
+  headless, and its coordinates are derived from the trusted caller session rather than
+  from a channel the model named.
+- `toAgent` **channel-root form** (`toAgent` + `channel`) — the daemon authorizes the
+  target, renders its platform-native mention into the body, posts one visible message at
+  the channel root, and anchors the woken agent's session to that post. The internal wake
+  and the visible post are two observations of one delivery: they meet at a durable
+  rendezvous keyed by the post, so the target is admitted exactly once in either arrival
+  order, and the visible message and the direct delivery collapse to a single transcript
+  row. A pairing whose internal call envelope never arrives is recorded as a delivery
+  failure — never turned into a lineage-less child session.
 - `toUser` — reach humans (Slack only for now): dm (`{"toUser":"<id>","message":"..."}`
-  without `channel`, a direct message to exactly one person), channel root (`toUser` +
-  `channel`, one visible post that @-mentions every listed person), or in thread
-  (`toUser` + `channel` + `thread`). The channel forms accept either one id or a
-  non-empty array of unique ids such as `"toUser":["U1","U2"]`; an array never
-  means group DM.
+  without `channel`, a direct message to exactly one person) or channel root (`toUser` +
+  `channel`, one visible post at the root that @-mentions every listed person). The
+  channel form accepts either one id or a non-empty array of unique ids such as
+  `"toUser":["U1","U2"]`; an array never means group DM.
 - `channel` **bare post** (`{"channel":"<channel id>","message":"..."}`, optionally
-  `thread`/`platform`) — publishes a visible message without waking an agent or
-  addressing a human, as in case 2a / case 3.
+  `platform`) — publishes a visible message at the channel root without waking an agent
+  or addressing a human, as in case 2a / case 3.
 
 The visible post is suppressed when the wake would be refused for a locally-decidable
 reason (capability disabled, invalid target id, self, hop limit, or a local target that
@@ -148,6 +182,24 @@ The session starts idle, retains its parent-session lineage, and records the roo
 transcript display. The first real reply in that thread receives the root as preceding
 context before the new message. Session initialization itself produces no agent output,
 tool calls, memory recall or capture, turn evaluation, or token usage.
+
+## Parent-session replies are session-only
+
+`sendMessage({"sessionId":"<parent>", …})` injects an answer into the session that woke
+the caller. That delivery is **session-only by default**: the parent agent processes the
+input and its work is recorded in the session transcript, but the resumed turn emits no
+ordinary IM body, typing indicator, status message, status bar, footer, permission card,
+or completion notification. Relaying an answer upward is a hand-off, not a broadcast —
+publishing it into the parent's channel would usually duplicate what the child already
+delivered.
+
+The parent may still choose to speak: an explicit visible `sendMessage` from the resumed
+turn is a new, separately authorized outbound action and behaves normally. So the promise
+is "no automatic IM output", not "no IM output at all".
+
+A reply whose parent lives on another daemon carries the same requirement. If that daemon
+is too old to run the turn silently, the reply **fails** rather than being downgraded —
+the alternative would leak the parent's entire ordinary response into its channel.
 
 ## Per-channel trigger
 

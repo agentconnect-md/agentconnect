@@ -84,9 +84,13 @@ export const SESSION_TOOLS: ToolDescriptor[] = [
  * enum is narrowed at build time to the platforms this agent actually has (absent when the
  * agent has no platform integration — pure A2A / reply still work).
  *
- * The protocol has TWO addressing modes, each with THREE delivery forms (dm / channel root /
- * in thread), selected by the coordinates: no `channel` ⇒ dm; `channel` without `thread` ⇒
- * channel root; `channel` + `thread` ⇒ in thread. `sessionId` stays a separate reply branch.
+ * There is NO visible in-thread form (send-message-routing-rework.md §2.1/§2.2). To address
+ * an agent or a human in the CURRENT thread, the agent writes an ordinary turn reply
+ * containing the platform-native mention — that reply already has the right channel,
+ * thread, transport scope, streaming lifecycle, and sender identity, so a second sending
+ * tool would only create a competing delivery path. This tool is therefore for what the
+ * ordinary reply cannot do: a postless agent call, a direct message, a channel-root post,
+ * or a parent-session reply. A visible send is always at the channel ROOT.
  */
 function buildSendMessageTool(platforms: string[], collaboration = true): ToolDescriptor {
   const platform = {
@@ -110,25 +114,22 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     type: 'string',
     minLength: 1,
     description:
-      'Channel root / in-thread forms: the target channel / chat id (Slack `C0123ABC`, Telegram/Discord/Feishu chat id).'
-  }
-  const thread = {
-    type: 'string',
-    description:
-      'In-thread form: post into this thread. Omit (or use "") with `channel` to post at channel root — which opens ' +
-      'a new session on that post; pass an existing id to post into that thread instead.'
+      'Channel-root form: the target channel / chat id (Slack `C0123ABC`, Telegram/Discord/Feishu chat id). The post ' +
+      'always lands at the channel ROOT, which opens a new conversation there — to speak in the thread you are ' +
+      'already in, just write your ordinary reply.'
   }
 
-  // Mode 1 — toAgent: wake one AgentConnect peer. Forms: dm (no channel, postless), channel
-  // root (channel, no thread), in thread (channel + thread).
+  // Mode 1 — toAgent: wake one AgentConnect peer. Two forms: postless (no channel) and
+  // channel root (channel). There is no in-thread form — an ordinary reply that mentions
+  // the peer is how you address it in the current thread (§2.1).
   const agentTarget = {
     title: 'toAgent — send to an agent',
     description:
-      'Wake exactly one AgentConnect peer, with three forms: dm (`{"toAgent":"<id>","message":"..."}`) delivers ' +
-      'directly to that agent with nothing posted anywhere; channel root ' +
-      '(`{"toAgent":"<id>","channel":"<C>","message":"..."}`) also posts one visible message at the channel root and ' +
-      'anchors the peer to it; in thread (`{"toAgent":"<id>","channel":"<C>","thread":"<T>","message":"..."}`) posts ' +
-      'into that thread and reuses it for the peer.',
+      'Wake exactly one AgentConnect peer, with two forms: direct (`{"toAgent":"<id>","message":"..."}`) delivers ' +
+      'to that agent with nothing posted anywhere; channel root ' +
+      '(`{"toAgent":"<id>","channel":"<C>","message":"..."}`) also posts one visible message at the channel root, ' +
+      '@-mentions the peer in it, and anchors the peer to that post. To reach an agent in the thread you are ' +
+      'ALREADY in, do not use this tool — @-mention it in your ordinary reply instead.',
     ...obj(
       {
         toAgent: {
@@ -171,7 +172,6 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
           ]
         },
         channel,
-        thread,
         message
       },
       ['toAgent', 'message']
@@ -179,20 +179,21 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
   }
 
   // Mode 2 — toUser: reach one or more human platform members. DM stays singular (one string,
-  // no channel); channel-root / in-thread sends accept either one id or an array and @-mention
+  // no channel); the channel-root send accepts either one id or an array and @-mentions
   // every named user in the one visible post.
   const userTarget = {
     title: 'toUser — send to platform users',
     description:
       'Reach human platform members (Slack only for now). The dm form takes exactly one id ' +
-      '(`{"toUser":"<id>","message":"..."}`). The channel root and in thread forms accept either one id or a ' +
-      'non-empty id array; `{"toUser":["<id-1>","<id-2>"],"channel":"<C>","message":"..."}` posts one ' +
-      'message that @-mentions every listed user. Add `thread` to post those mentions inside that thread.',
+      '(`{"toUser":"<id>","message":"..."}`). The channel-root form accepts either one id or a non-empty id ' +
+      'array; `{"toUser":["<id-1>","<id-2>"],"channel":"<C>","message":"..."}` posts one message at the channel ' +
+      'root that @-mentions every listed user. To reach someone in the thread you are already in, @-mention them ' +
+      'in your ordinary reply instead.',
     ...obj(
       {
         toUser: {
           description:
-            'One platform member id, or a non-empty array of unique ids for a channel-root / in-thread post. ' +
+            'One platform member id, or a non-empty array of unique ids for a channel-root post. ' +
             'An array is not a group DM: it requires `channel` and @-mentions all listed users in one message.',
           oneOf: [
             {
@@ -214,7 +215,6 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
           ]
         },
         channel,
-        thread,
         platform,
         integrationId,
         message
@@ -227,13 +227,11 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
   const channelTarget = {
     title: 'Channel post (no recipient)',
     description:
-      'Publish one visible message to a platform channel without waking an agent or @-mentioning a human. A post at ' +
-      'channel root opens a NEW session of your own on that post; only an explicit `thread` continues an existing ' +
-      'conversation.',
+      'Publish one visible message at a platform channel’s ROOT without waking an agent or @-mentioning a human. ' +
+      'This opens a NEW conversation of your own on that post — it never continues an existing thread.',
     ...obj(
       {
         channel,
-        thread,
         platform,
         integrationId,
         message
@@ -271,36 +269,36 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     name: 'sendMessage',
     description: collaboration
       ? 'Send one message using exactly one target mode: a peer agent (`toAgent`), human users (`toUser`), a channel ' +
-        'with no recipient, or the parent-session reply. The two recipient modes each have three forms: dm / channel root / ' +
-        'in thread. Your own turn reply already reaches the conversation you are in, so use this tool only for what ' +
-        'that reply cannot do: a different conversation, a human, a peer agent, or a parent-session reply.\n' +
+        'with no recipient, or the parent-session reply.\n' +
+        'TO SPEAK IN THE CONVERSATION YOU ARE ALREADY IN — including to address a peer agent or a human there — do ' +
+        'NOT use this tool. Write your ordinary turn reply and @-mention them in it (use `listAgents` to get an ' +
+        'agent’s exact `mention` token). That reply already goes to the right thread as you. This tool is only for ' +
+        'what it cannot do: reaching a DIFFERENT conversation, a direct message, a postless agent call, or a reply ' +
+        'into the parent session.\n' +
         '- toAgent — wake exactly one peer agent (id from listAgents; never a platform member id):\n' +
-        '  • dm: `{"toAgent":"<agent id>","message":"..."}` — direct, postless wake: nothing is posted anywhere.\n' +
+        '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless wake: nothing is posted anywhere.\n' +
         '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
-        'visible message at the channel root and anchors the peer to it.\n' +
-        '  • in thread: `{"toAgent":"<agent id>","channel":"<channel id>","thread":"<thread id>","message":"..."}` — ' +
-        'posts into that thread and reuses it for the peer.\n' +
+        'visible message at that channel’s ROOT, @-mentions the peer in it, and anchors the peer to that post.\n' +
         '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` to have the peer report back ' +
         'when it finishes or fails; pass the returned `childSessionId` to `viewSessionStatus` to check on it.\n' +
         '- toUser — reach human users (Slack only for now):\n' +
         '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
         '  • channel root: `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}` — ' +
         'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
-        '  • in thread: add `"thread":"<thread id>"` to that channel form to post all mentions inside the thread.\n' +
-        '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts to the channel ' +
-        'without waking anyone or @-mentioning anyone; add `platform`, `thread`, or `integrationId` only when needed.\n' +
+        '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts at the channel ' +
+        'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
         '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
         'asked this way, never by posting it at their channel root.\n' +
-        'A channel-root post (no `thread`) opens a NEW session of your own on that post; an explicit `thread` ' +
-        'continues the existing conversation. Write `message` as CommonMark/GFM. The daemon supplies your identity; ' +
-        'you cannot impersonate anyone or wake yourself.'
-      : 'Post one visible message to exactly one channel or a set of human recipients. Your own turn reply already reaches the ' +
-        'conversation you are in, so use this tool only for what that reply cannot do: a different conversation or a ' +
-        'human. Use `{"channel":"<channel id>","message":"..."}` for a bare channel post, ' +
+        'Every visible send lands at the channel ROOT and opens a NEW conversation of your own there. Write ' +
+        '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone or wake ' +
+        'yourself.'
+      : 'Post one visible message at exactly one channel’s root, or to a set of human recipients. To speak in the ' +
+        'conversation you are already in — including to address a human there — do NOT use this tool: write your ' +
+        'ordinary turn reply and @-mention them in it. Use this only for a DIFFERENT conversation or a direct ' +
+        'message. `{"channel":"<channel id>","message":"..."}` for a bare channel-root post, ' +
         '`{"toUser":"<Slack user id>","message":"..."}` for a DM, or `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel ' +
-        'id>","message":"..."}` for a channel-root post that @-mentions every listed user; a single id also works, ' +
-        'and adding `"thread":"<thread id>"` posts into that thread instead. A channel-root post opens a NEW session ' +
-        'of your own on that post. Peer-agent ' +
+        'id>","message":"..."}` for a channel-root post that @-mentions every listed user; a single id also works. ' +
+        'A channel-root post opens a NEW conversation of your own on that post. Peer-agent ' +
         'and parent-session delivery are disabled for this run. Write `message` as CommonMark/GFM. The daemon ' +
         'supplies your identity; you cannot impersonate anyone.',
     inputSchema: unionOf(
