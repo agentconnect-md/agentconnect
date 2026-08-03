@@ -1,14 +1,31 @@
 /**
  * Game 1 — same-room coordinated counting
- * (docs/designs/collaboration-arena.md §10.1).
+ * (docs/designs/collaboration-arena.md §10.1 / §3.3).
  *
  * The world injects the starting instruction to the room; routing fans it out
  * to the members' room-scoped sessions. Agents publish candidates as ORDINARY
  * room replies (current-room speech, §3.3); the referee parses candidates from
- * the unified outbound-effect stream, atomically accepts the first valid
- * candidate equal to `current + 1` in `sequence` order, and relays a canonical
- * room event through the real-path ingress (§4.1) — the world, not an agent
- * call chain, relays accepted events.
+ * the unified outbound-effect stream and atomically accepts the first valid
+ * candidate equal to `current + 1` in `sequence` order.
+ *
+ * Two variants of what drives the next wave:
+ *
+ * - `referee-announced` (§10.1's canonical form): the referee relays a
+ *   synthesized acceptance event ("Accepted: 1 … Next expected number: 2").
+ * - `peer-driven` (§3.3 taken literally): every DELIVERED agent reply is
+ *   relayed verbatim to the OTHER members through the real ingress path, and
+ *   the referee goes silent after the start message — agents continue the
+ *   count from EACH OTHER's messages; the referee only observes and validates.
+ *
+ * Product-fidelity note for the peer relay: in AgentConnect, a managed agent
+ * bot's platform post is deliberately NEVER an activation path (ingress drops
+ * managed-bot senders before routing — loop protection; trusted A2A wakes go
+ * through `messageAgent`). Production Slack does fan the event out to the other
+ * integrations, and the daemon then suppresses it. The Arena therefore relays
+ * peer speech through §4.1's sanctioned "other-agent public speech relay"
+ * surface — the world's relay persona carries the author attribution and the
+ * verbatim message content, and the relay still traverses the full real
+ * normalization → dedup → routing → gating path.
  *
  * Rules: one accepted occurrence of each number; no skips; no agent scores
  * twice consecutively; no predefined order; waiting is legal.
@@ -25,11 +42,15 @@ import type {
 import type { ArenaWorld } from './world.js'
 import type { CompiledRoom } from './types.js'
 
+export type CountingVariant = 'referee-announced' | 'peer-driven'
+
 export interface CountingGameOptions {
   world: ArenaWorld
   /** Alias of the counting room in the compiled topology. */
   roomAlias: string
   target?: number
+  /** What drives the next wave (default: the §10.1 referee announcements). */
+  variant?: CountingVariant
   /** Human persona the referee speaks through on the real ingress path. */
   refereeUserId?: string
 }
@@ -47,7 +68,7 @@ export class CountingGame implements CollaborationGameWorld {
   private readonly target: number
   private readonly refereeUserId: string
   private readonly accepted: AcceptedCandidate[] = []
-  private readonly candidateStats = { total: 0, rejected: 0, noise: 0, consecutiveRejections: 0 }
+  private readonly candidateStats = { total: 0, rejected: 0, noise: 0, consecutiveRejections: 0, consecutiveScores: 0 }
   private readonly acceptedByAgent = new Map<string, number>()
   private lastScorer: string | undefined
   private expected = 1
@@ -55,12 +76,15 @@ export class CountingGame implements CollaborationGameWorld {
   private terminalReason: string | undefined
   private readonly pendingWaves: GameWave[] = []
 
+  private readonly variant: CountingVariant
+
   constructor(options: CountingGameOptions) {
     this.world = options.world
     const room = options.world.topology.rooms.find((candidate) => candidate.alias === options.roomAlias)
     if (!room) throw new Error(`counting room "${options.roomAlias}" is not in the compiled topology`)
     this.room = room
     this.target = options.target ?? 12
+    this.variant = options.variant ?? 'referee-announced'
     this.refereeUserId = options.refereeUserId ?? 'W-ARENA-REFEREE'
     this.environment = options.world.buildEnvironment()
   }
@@ -93,6 +117,46 @@ export class CountingGame implements CollaborationGameWorld {
     return { platformEvents, refereeEvents: [] }
   }
 
+  /**
+   * §3.3 peer relay: one delivered agent reply becomes ONE room message fanned
+   * to every OTHER member integration (production suppresses the author's own
+   * bot echo). The relay carries the author attribution and the VERBATIM
+   * message content — the referee adds no judgment and no expected number.
+   */
+  private peerRelayWave(replies: readonly RecordedOutboundEffect[]): GameWave | undefined {
+    const platformEvents: EvaluationPlatformEvent[] = []
+    for (const effect of replies) {
+      const fromAlias = this.world.aliasOfAgent(effect.agentId!)
+      const text = `${fromAlias} posted: ${effect.text}`
+      const messageId = this.world.mintMessageId(this.room.platform)
+      this.world.registerRoomMessage(this.room.channel, messageId)
+      for (const integrationId of this.room.memberIntegrationIds) {
+        if (integrationId === effect.integrationId) continue
+        platformEvents.push({
+          integrationId,
+          payload: {
+            channel: this.room.channel,
+            thread: this.room.thread,
+            messageId,
+            text,
+            sender: { id: 'W-PEER-RELAY', isBot: false }
+          }
+        })
+      }
+      this.world.appendEvent({
+        type: 'peer.relay',
+        origin: 'agent_effect',
+        roomId: this.room.alias,
+        fromAgentId: effect.agentId,
+        fromAlias,
+        sourceSequence: effect.sequence,
+        messageId,
+        text
+      })
+    }
+    return platformEvents.length > 0 ? { platformEvents, refereeEvents: [] } : undefined
+  }
+
   isTerminal(): boolean {
     return this.terminalReason !== undefined || this.expected > this.target
   }
@@ -100,6 +164,16 @@ export class CountingGame implements CollaborationGameWorld {
   nextDeliveries(): GameWave {
     if (!this.started) {
       this.started = true
+      if (this.variant === 'peer-driven') {
+        return this.roomBroadcast(
+          `Let's play the counting game. Together, count from 1 to ${this.target} in this thread by continuing ` +
+            `each other's messages. When you see a number posted in this thread, reply with ONLY the next number — ` +
+            `nothing else. Do not repeat a number that was already posted. If you posted the most recent number, ` +
+            `prefer letting another participant continue, but keep the count moving. Stop once ${this.target} has ` +
+            `been posted. No number has been posted yet, so the first reply should be 1. The referee stays silent ` +
+            `from now on and only checks the sequence at the end.`
+        )
+      }
       return this.roomBroadcast(
         `Let's play the counting game. Together, count from 1 to ${this.target} in this thread. ` +
           `Reply with ONLY the next number — nothing else. One number per message; the referee accepts the ` +
@@ -115,11 +189,13 @@ export class CountingGame implements CollaborationGameWorld {
   }
 
   applyEffects(effects: readonly RecordedOutboundEffect[]): void {
+    const deliveredReplies: RecordedOutboundEffect[] = []
     for (const effect of effects) {
       if (effect.kind !== 'reply' || effect.status !== 'delivered') continue
       if (effect.channel !== this.room.channel) continue
       const agentId = effect.agentId
       if (agentId === undefined) continue
+      deliveredReplies.push(effect)
       const match = /-?\d+/.exec(effect.text)
       if (!match) {
         this.candidateStats.noise += 1
@@ -136,9 +212,19 @@ export class CountingGame implements CollaborationGameWorld {
         continue
       }
       if (this.lastScorer === agentId) {
-        this.candidateStats.consecutiveRejections += 1
-        this.recordCandidate(effect, value, false, 'consecutive_scorer')
-        continue
+        // Referee-announced mode enforces no-consecutive-scorer as a hard
+        // acceptance rule — the referee announces every acceptance, so the
+        // official count stays visible. With a SILENT referee, a hidden
+        // rejection would diverge the official count from the room-visible
+        // transcript (peers cannot know a posted number "didn't count"), so
+        // peer-driven mode accepts it and tracks the fairness miss as a
+        // metric instead.
+        if (this.variant === 'referee-announced') {
+          this.candidateStats.consecutiveRejections += 1
+          this.recordCandidate(effect, value, false, 'consecutive_scorer')
+          continue
+        }
+        this.candidateStats.consecutiveScores += 1
       }
       // Atomic acceptance: first valid candidate in `sequence` order wins.
       this.accepted.push({ value, agentId, sequence: effect.sequence })
@@ -146,13 +232,7 @@ export class CountingGame implements CollaborationGameWorld {
       this.lastScorer = agentId
       this.expected += 1
       this.recordCandidate(effect, value, true)
-      if (this.expected <= this.target) {
-        this.pendingWaves.push(
-          this.roomBroadcast(
-            `Accepted: ${value} from ${this.world.aliasOfAgent(agentId)}. Next expected number: ${this.expected}.`
-          )
-        )
-      } else {
+      if (this.expected > this.target) {
         this.terminalReason = 'completed'
         this.world.appendEvent({
           type: 'game.completed',
@@ -161,7 +241,25 @@ export class CountingGame implements CollaborationGameWorld {
           acceptedPrefix: this.accepted.length,
           target: this.target
         })
+      } else if (this.variant === 'referee-announced') {
+        this.pendingWaves.push(
+          this.roomBroadcast(
+            `Accepted: ${value} from ${this.world.aliasOfAgent(agentId)}. Next expected number: ${this.expected}.`
+          )
+        )
       }
+    }
+    // Peer-driven: delivered COUNT contributions (digit-bearing replies — valid
+    // candidates, duplicates, and wrong numbers alike) fan out to the other
+    // members like production Slack would; the next wave's admissions are
+    // driven by PEER messages and the referee never speaks again. Digit-free
+    // chatter ("waiting") stays recorded in the effect stream but is not
+    // relayed: re-prompting the room on pure chatter would ping-pong forever
+    // without advancing the count, and a waiting production agent's silence
+    // (an empty turn posts nothing) generates no fan-out either.
+    if (this.variant === 'peer-driven' && this.terminalReason === undefined) {
+      const relay = this.peerRelayWave(deliveredReplies.filter((effect) => /-?\d/.test(effect.text)))
+      if (relay) this.pendingWaves.push(relay)
     }
   }
 
@@ -209,7 +307,11 @@ export class CountingGame implements CollaborationGameWorld {
     let refereeConsistent = true
     for (const [index, entry] of this.accepted.entries()) {
       if (entry.value !== index + 1) refereeConsistent = false
-      if (index > 0 && this.accepted[index - 1]!.agentId === entry.agentId) refereeConsistent = false
+      // No-consecutive-scorer is an ACCEPTANCE rule only where the referee
+      // announces; peer-driven acceptance follows the visible transcript.
+      if (this.variant === 'referee-announced' && index > 0 && this.accepted[index - 1]!.agentId === entry.agentId) {
+        refereeConsistent = false
+      }
       if (index > 0 && this.accepted[index - 1]!.sequence >= entry.sequence) refereeConsistent = false
     }
     // Participation balance as normalized entropy over accepted counts.
@@ -234,6 +336,7 @@ export class CountingGame implements CollaborationGameWorld {
       },
       outcome: {
         completed,
+        variant: this.variant,
         acceptedPrefix: this.accepted.length,
         target: this.target,
         acceptedBy: this.accepted.map((entry) => this.world.aliasOfAgent(entry.agentId))
@@ -243,6 +346,7 @@ export class CountingGame implements CollaborationGameWorld {
         collisions: this.candidateStats.rejected,
         noiseReplies: this.candidateStats.noise,
         consecutiveScorerRejections: this.candidateStats.consecutiveRejections,
+        consecutiveScores: this.candidateStats.consecutiveScores,
         participationEntropy: Number(entropy.toFixed(4))
       }
     }

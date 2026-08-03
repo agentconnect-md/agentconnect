@@ -12,7 +12,7 @@
  * every admission and `sequence`-stamped effect so any run is explainable.
  */
 import { CollaborationGameRunner, type CollaborationGameResult } from '../../packages/daemon/src/evaluation/index.js'
-import { CountingGame } from './counting.js'
+import { CountingGame, type CountingVariant } from './counting.js'
 import { prepareGameSubject, prepareScriptedSubject, type GameSubjectSpec } from './subject.js'
 import { compileTopology } from './topology.js'
 import type { GameTopologyManifest } from './types.js'
@@ -28,6 +28,9 @@ export interface CountingGameRunOptions {
   artifactDir: string
   maxSteps?: number
   timeoutMs?: number
+  /** What drives the waves: §10.1 referee announcements (default) or §3.3
+   *  peer-message relays with a silent referee. */
+  variant?: CountingVariant
   /** Who plays (§8.1): scripted hosts (default; the reproducible engine gate)
    *  or a real-runtime subject template — the identical game either way. */
   subject?: GameSubjectSpec
@@ -41,6 +44,61 @@ export function countingManifest(options: { seed: number; agents: string[] }): G
     seed: options.seed,
     agents: options.agents.map((alias) => ({ id: alias })),
     rooms: [{ id: 'counting-room', platform: 'slack', members: options.agents }]
+  }
+}
+
+/**
+ * Scripted PEER-DRIVEN counting policy (§3.3): no referee announcements exist,
+ * so each host tracks the numbers it has seen — from the start instruction and
+ * from `"<alias> posted: N"` peer relays — per session, replies with the next
+ * number, honors the no-two-in-a-row rule from its own last post, and goes
+ * quiet (digit-free) once the target has been posted.
+ */
+export function scriptedPeerCountingHostFactory(): (
+  agent: { id: string },
+  onUpdate: (sessionId: string, update: unknown) => void
+) => unknown {
+  return (agent, onUpdate) => {
+    let sessions = 0
+    const sessionState = new Map<string, { peersPosted: Set<number>; target?: number; lastMine?: number }>()
+    return {
+      start: async () => {},
+      newSession: async () => {
+        const sessionId = `scripted-${agent.id.slice(0, 8)}-${(sessions += 1)}`
+        sessionState.set(sessionId, { peersPosted: new Set() })
+        return sessionId
+      },
+      hasSession: () => true,
+      modelOptions: () => ({ current: 'scripted-peer-counting', models: ['scripted-peer-counting'] }),
+      prompt: async (sessionId: string, blocks: { text?: string }[]) => {
+        const state = sessionState.get(sessionId) ?? { peersPosted: new Set<number>() }
+        sessionState.set(sessionId, state)
+        const text = blocks.map((block) => block.text ?? '').join('\n')
+        const targetMatch = /count from 1 to (\d+)/i.exec(text)
+        if (targetMatch) state.target = Number(targetMatch[1])
+        // Peer relays are the ONLY count signal — there is no referee announcer.
+        for (const posted of text.matchAll(/posted:\s*(-?\d+)/g)) state.peersPosted.add(Number(posted[1]))
+        const maxSeen = Math.max(0, ...state.peersPosted, state.lastMine ?? 0)
+        const reply = (value: string) =>
+          onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: value } })
+        if (state.target !== undefined && maxSeen >= state.target) {
+          reply('the count is complete.')
+          return { stopReason: 'end_turn' }
+        }
+        // Never two in a row MYSELF — but when a peer raced me to the same
+        // value, the earlier post scored and I am free to continue.
+        if (state.lastMine !== undefined && state.lastMine === maxSeen && !state.peersPosted.has(maxSeen)) {
+          reply('waiting.')
+          return { stopReason: 'end_turn' }
+        }
+        const next = maxSeen + 1
+        state.lastMine = next
+        reply(String(next))
+        return { stopReason: 'end_turn' }
+      },
+      cancel: async () => {},
+      stop: async () => {}
+    }
   }
 }
 
@@ -83,9 +141,11 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
   const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
   const topology = compileTopology(countingManifest({ seed, agents }))
   const world = new ArenaWorld(topology)
+  const variant: CountingVariant = options.variant ?? 'referee-announced'
   const game = new CountingGame({
     world,
     roomAlias: 'counting-room',
+    variant,
     ...(options.target !== undefined ? { target: options.target } : {})
   })
   const subject = prepareGameSubject(topology, subjectSpec)
@@ -100,7 +160,13 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
       subjectKind: subjectSpec.kind,
       // Real subjects launch their template's actual ACP runtimes — no host
       // seam. Repeated trials and pass^k aggregation are Promptfoo's job (§12).
-      ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedCountingHostFactory() as never } : {}),
+      ...(subjectSpec.kind === 'scripted'
+        ? {
+            hostFactory: (variant === 'peer-driven'
+              ? scriptedPeerCountingHostFactory()
+              : scriptedCountingHostFactory()) as never
+          }
+        : {}),
       capabilityProfile: { memory: 'off', collaboration: 'configured' },
       limits: {
         maxSteps: options.maxSteps ?? (options.target ?? 12) * 3 + 4,

@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { CountingGame } from '../games/counting.js'
+import { CountingGame, type CountingVariant } from '../games/counting.js'
 import { countingManifest } from '../games/engine.js'
 import { compileTopology } from '../games/topology.js'
 import { ArenaWorld } from '../games/world.js'
 
 const AGENTS = ['agent-a', 'agent-b', 'agent-c', 'agent-d']
 
-function fixture(target = 3) {
+function fixture(target = 3, variant: CountingVariant = 'referee-announced') {
   const topology = compileTopology(countingManifest({ seed: 9, agents: AGENTS }))
   const world = new ArenaWorld(topology)
-  const game = new CountingGame({ world, roomAlias: 'counting-room', target })
+  const game = new CountingGame({ world, roomAlias: 'counting-room', target, variant })
   const room = topology.rooms[0]!
   const integrationOf = (alias: string) => topology.integrations.find((i) => i.agentAlias === alias)!
   const reply = async (alias: string, text: string) => {
@@ -105,5 +105,90 @@ describe('same-room counting referee (§10.1)', () => {
     expect(game.isTerminal()).toBe(true)
     expect(game.verdict().terminalReason).toBe('step_limit')
     expect(game.verdict().outcome).toMatchObject({ completed: false, acceptedPrefix: 0 })
+  })
+})
+
+describe('peer-driven counting (§3.3) — agents continue the count from EACH OTHER', () => {
+  it('opens with peer rules and a silent-referee contract', () => {
+    const { game, room } = fixture(3, 'peer-driven')
+    const start = game.nextDeliveries()
+    expect(start.platformEvents).toHaveLength(4)
+    const text = start.platformEvents[0]!.payload.text
+    expect(text).toContain('by continuing each other')
+    expect(text).toContain('referee stays silent')
+    expect(text).not.toContain('Next expected number')
+    expect(start.platformEvents[0]!.payload.channel).toBe(room.channel)
+  })
+
+  it('relays a delivered reply VERBATIM to the other members and never announces acceptances', async () => {
+    const { game, reply, room, integrationOf, world } = fixture(3, 'peer-driven')
+    game.nextDeliveries()
+    await reply('agent-a', '1')
+    game.applyEffects(game.drainOutboundEffects())
+    const relay = game.nextDeliveries()
+    // Fan-out to the OTHER three members, same thread, one shared message id.
+    expect(relay.platformEvents).toHaveLength(3)
+    expect(new Set(relay.platformEvents.map((event) => event.payload.messageId)).size).toBe(1)
+    expect(relay.platformEvents.map((event) => event.integrationId)).not.toContain(
+      integrationOf('agent-a').integrationId
+    )
+    for (const event of relay.platformEvents) {
+      expect(event.payload.thread).toBe(room.thread)
+      expect(event.payload.text).toBe('agent-a posted: 1')
+      // The relay persona is not the game referee and adds no judgment.
+      expect(event.payload.text).not.toContain('Accepted')
+      expect(event.payload.text).not.toContain('Next expected number')
+    }
+    // The world log distinguishes peer relays from referee events; the only
+    // referee room event is the start message.
+    const events = world.events()
+    expect(events.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
+    expect(events.filter((event) => event.type === 'peer.relay')).toHaveLength(1)
+  })
+
+  it('relays duplicates and wrong numbers (they are real room messages) but not digit-free chatter', async () => {
+    const { game, reply } = fixture(3, 'peer-driven')
+    game.nextDeliveries()
+    await reply('agent-a', '1')
+    await reply('agent-b', '1') // duplicate race — still a real room message
+    await reply('agent-c', '5') // wrong number — still a real room message
+    await reply('agent-d', 'waiting.') // chatter — recorded, never relayed
+    game.applyEffects(game.drainOutboundEffects())
+    const relay = game.nextDeliveries()
+    // Three digit-bearing replies × three other members each.
+    expect(relay.platformEvents).toHaveLength(9)
+    expect(relay.platformEvents.every((event) => !event.payload.text.includes('waiting.'))).toBe(true)
+    const verdict = game.verdict()
+    expect(verdict.outcome).toMatchObject({ acceptedPrefix: 1, variant: 'peer-driven' })
+    expect(verdict.metrics.noiseReplies).toBe(1)
+  })
+
+  it('accepts a consecutive scorer (visible transcript is ground truth) and tracks it as a fairness metric', async () => {
+    const { game, reply } = fixture(3, 'peer-driven')
+    game.nextDeliveries()
+    await reply('agent-a', '1')
+    game.applyEffects(game.drainOutboundEffects())
+    game.nextDeliveries()
+    // A hidden rejection would diverge the official count from what the room
+    // can see — with a silent referee the consecutive score COUNTS, and the
+    // fairness miss is a metric, never a secret rejection.
+    await reply('agent-a', '2')
+    game.applyEffects(game.drainOutboundEffects())
+    game.nextDeliveries()
+    await reply('agent-c', '3')
+    game.applyEffects(game.drainOutboundEffects())
+    expect(game.isTerminal()).toBe(true)
+    const verdict = game.verdict()
+    expect(verdict.terminalReason).toBe('completed')
+    expect(verdict.refereeConsistent).toBe(true)
+    expect(verdict.outcome).toMatchObject({
+      completed: true,
+      acceptedPrefix: 3,
+      acceptedBy: ['agent-a', 'agent-a', 'agent-c']
+    })
+    expect(verdict.metrics.consecutiveScores).toBe(1)
+    expect(verdict.metrics.consecutiveScorerRejections).toBe(0)
+    // Terminal: the final number is not relayed and the loop halts.
+    expect(game.nextDeliveries().platformEvents).toHaveLength(0)
   })
 })

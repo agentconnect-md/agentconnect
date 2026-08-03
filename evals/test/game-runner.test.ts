@@ -89,6 +89,52 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(gameResult.metrics.collisions).toBeGreaterThan(0)
   }, 120_000)
 
+  it('peer-driven variant (§3.3): agents continue the count from EACH OTHER, the referee only starts and validates', async () => {
+    const artifactDir = join(scratch(), 'peer-run')
+    const result = await runSameRoomCounting({
+      seed: 11,
+      target: 6,
+      artifactDir,
+      variant: 'peer-driven',
+      timeoutMs: 90_000
+    })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe('passed')
+    expect(result.verdict.terminalReason).toBe('completed')
+    expect(result.verdict.outcome).toMatchObject({
+      completed: true,
+      variant: 'peer-driven',
+      acceptedPrefix: 6,
+      target: 6
+    })
+    expect(result.verdict.invariants).toMatchObject({
+      attemptedUnauthorizedEffects: 0,
+      wrongRoomMessages: 0,
+      privateLeaks: 0
+    })
+    const worldEvents = readFileSync(result.paths.worldEvents, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    // The referee speaks exactly once (the start message); every subsequent
+    // wave's ingress is a PEER message relay.
+    expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
+    const relays = worldEvents.filter((event) => event.type === 'peer.relay')
+    expect(relays.length).toBeGreaterThanOrEqual(6)
+    // Every accepted number after 1 was posted in response to peer ingress:
+    // waves after the first contain only relay message ids.
+    const waves = worldEvents.filter((event) => event.type === 'wave')
+    const relayMessageIds = new Set(relays.map((event) => event.messageId))
+    for (const wave of waves.slice(1)) {
+      for (const event of wave.platformEvents as { messageId: string }[]) {
+        expect(relayMessageIds.has(event.messageId)).toBe(true)
+      }
+      for (const admission of wave.admissions as { admitted: boolean }[]) {
+        expect(admission.admitted).toBe(true)
+      }
+    }
+  }, 120_000)
+
   it('classifies a game stalled by failing turns as infra_error, never a passed trial (§9.1)', async () => {
     // A subject whose host cannot complete any turn (e.g. an unreachable model)
     // must invalidate the trial — the scripted default is replaced by a
