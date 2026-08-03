@@ -127,7 +127,7 @@ import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channe
 import { consolidateFeishu, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
-import { resolveSlackMentionedAgents } from '@agentconnect.md/message'
+import { resolveSlackMentionedAgents, SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX } from '@agentconnect.md/message'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
@@ -744,8 +744,49 @@ function sdkLeaseKey(agentId: string, acpSessionId: string): string {
 }
 
 /** Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` that
- *  would push the outgoing hopCount past this, so an A↔B wake loop can't run away. */
+ *  would push the outgoing hopCount past this, so an A↔B wake loop can't run away.
+ *  send-message-routing-rework.md §4.1 puts a platform `@mention` delivery on this SAME
+ *  budget: one transition per agent-to-agent edge, whichever transport carried it, so a
+ *  mention chain cannot be used to escape the internal-call limit. */
 const MAX_AGENT_CALL_HOPS = 8
+
+/**
+ * How long a paired `toAgent + channel` rendezvous waits for its other half
+ * (send-message-routing-rework.md §3.2/§8.6).
+ *
+ * It bounds the window in which a platform observation and its internal wake are treated
+ * as one delivery. Generous, because the two halves may cross a relay, a slow platform
+ * fan-out, or a target-daemon restart; on expiry the pairing becomes transcript-only and
+ * raises a delivery failure rather than dispatching an envelope-less child.
+ */
+const ACTIVATION_PAIRING_TTL_MS = 10 * 60 * 1000
+
+/**
+ * The key that makes one logical delivery admissible exactly once
+ * (send-message-routing-rework.md §3.2).
+ *
+ * Scoped by transport as well as platform because two bot connections can receive the
+ * SAME `channel:ts`, and by TARGET because one visible post may address several agents —
+ * each of which must be admitted once, independently of the others.
+ */
+function activationKey(
+  platform: string,
+  transportScope: string | undefined,
+  platformMessageId: string,
+  targetAgentId: string
+): string {
+  return [platform, transportScope ?? '', platformMessageId, targetAgentId].join('\u0000')
+}
+
+/** The platform `ts` inside a Slack `msgId` (`slack:<channel>:<ts>`, optionally suffixed
+ *  for a response finalization). The ts — not the msgId — is the visible message's
+ *  identity, which is what the activation key and the paired wake both name. */
+function slackTsFromMsgId(msgId: string): string {
+  const base = msgId.endsWith(SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX)
+    ? msgId.slice(0, -SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX.length)
+    : msgId
+  return base.split(':')[2] ?? base
+}
 
 /** Poll interval for the deferred background-task wake (background-task-aware-reclaim.md
  *  §5.1). Claude re-enters a `running` cycle of its own to drain a settled task; the wake
@@ -1987,12 +2028,16 @@ export class Daemon {
     agentId: string,
     msg: NormalizedMessage,
     integrationId?: string,
-    webchat?: WebchatTurnContext
+    webchat?: WebchatTurnContext,
+    /** Trusted call metadata for a delivery that IS an agent call — today, a verified
+     *  agent-authored platform mention, whose already-computed hop depth must reach the
+     *  admitted turn (§4.1). Absent for ordinary human ingress. */
+    callMeta?: CallMeta
   ): { handle: DeliveryHandle; turn: Promise<string | null> } {
     const turnId = stableTurnId(agentId, msg)
     let settleAdmission!: (admission: DeliveryAdmission) => void
     const admission = new Promise<DeliveryAdmission>((resolve) => (settleAdmission = resolve))
-    const turn = this.dispatch(agentId, msg, integrationId, webchat, undefined, {
+    const turn = this.dispatch(agentId, msg, integrationId, webchat, callMeta, {
       onAdmission: (result) => {
         if (result.accepted && !result.duplicate) {
           const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
@@ -5406,10 +5451,11 @@ export class Daemon {
   // route an inbound Slack message
   private seenMsgIds = new Set<string>()
 
-  /** Platform messages from AgentConnect-managed Slack apps may remain visible in
-   *  conversation history, but are never an activation path. Same-daemon bots use their
-   *  resolved Slack identities; cross-daemon bots use the CP collaboration snapshot's
-   *  public Slack app ids. Internal `messageAgent` delivery bypasses platform ingress. */
+  /** Platform messages from AgentConnect-managed Slack apps carry an AgentConnect
+   *  identity. Same-daemon bots use their resolved Slack identities; cross-daemon bots
+   *  use the CP collaboration snapshot's public Slack app ids. This says the SENDING APP
+   *  belongs to AgentConnect — it does not identify WHICH agent authored the message,
+   *  which is why {@link verifyAgentAuthor} needs the metadata claim as well. */
   private isManagedSlackBotIdentity(channel: string, senderId: string, appId?: string): boolean {
     const localIdentity = [...this.connByIntegration.values()].some(
       (conn) => (!!conn.botUserId && senderId === conn.botUserId) || (!!conn.botId && senderId === conn.botId)
@@ -5420,6 +5466,203 @@ export class Daemon {
   private isAgentBotMessage(msg: NormalizedMessage): boolean {
     if (msg.source !== 'user' || msg.platform !== 'slack') return false
     return this.isManagedSlackBotIdentity(msg.channel, msg.sender.id, msg.sender.appId)
+  }
+
+  /**
+   * Promote an inbound message's UNTRUSTED authorship claim to a verified author, or
+   * return null (send-message-routing-rework.md §4).
+   *
+   * The claim by itself proves nothing: any app in the workspace can stamp the same
+   * metadata. All four conditions of §4 must hold together —
+   *   1. the provider event is authentic (the transport verified it: Socket Mode's
+   *      authenticated socket, or the relay's HMAC before it forwarded);
+   *   2. the sending app/bot identity belongs to AgentConnect in this org and
+   *      conversation ({@link isManagedSlackBotIdentity});
+   *   3. the claimed author is one of the agents THAT identity represents — checked
+   *      against the collaboration snapshot's placement for this exact channel, so an
+   *      AgentConnect app cannot claim authorship for an agent it does not back; and
+   *   4. the source depth is a usable integer (§4.1 rule 1: a missing, non-integer, or
+   *      negative depth is transcript-only and must never coerce to zero).
+   *
+   * Per-edge policy is NOT decided here — it is per-target, and §6 evaluates it while
+   * walking the recipient set.
+   *
+   * Only `final` events verify. A `streaming` post may hold a prefix of the answer, and
+   * routing it would prompt the target with half a message (§5.4).
+   */
+  private verifyAgentAuthor(msg: NormalizedMessage): {
+    authorAgentId: string
+    orgId: string
+    sourceHopCount: number
+    responseId: string
+    recipients: string[]
+    agentCallDeliveryId?: string
+  } | null {
+    if (msg.platform !== 'slack') return null
+    const claim = msg.agentAuthorship
+    if (!claim || claim.deliveryState !== 'final') return null
+    if (!this.isManagedSlackBotIdentity(msg.channel, msg.sender.id, msg.sender.appId)) return null
+    const orgId = this.cpCollab.orgForAgent(claim.authorAgentId)
+    if (!orgId) return null
+    // Condition 3. A SHARED app backs several agents, so "this app is ours" is not
+    // enough — the author must be placed in THIS conversation under an app identity that
+    // matches the sender. Without the placement check, one agent behind a shared bot
+    // could author messages as any of its co-tenants.
+    const placement = this.cpCollab.resolve(orgId, 'slack', msg.channel, claim.authorAgentId)
+    if (!placement) return null
+    if (msg.sender.appId !== undefined && placement.botAppId !== undefined && placement.botAppId !== msg.sender.appId) {
+      return null
+    }
+    if (!Number.isInteger(claim.hopCount) || claim.hopCount < 0) return null
+    return {
+      authorAgentId: claim.authorAgentId,
+      orgId,
+      sourceHopCount: claim.hopCount,
+      responseId: claim.responseId,
+      recipients: claim.mentionedAgentIds,
+      ...(claim.agentCallDeliveryId ? { agentCallDeliveryId: claim.agentCallDeliveryId } : {})
+    }
+  }
+
+  /**
+   * The §6 routing ladder for a message this daemon has verified as agent-authored.
+   *
+   * Deliberately a SEPARATE ladder, not a rung of the human one. §2.3 says an agent
+   * message is mention-routable but never implicitly activating: it must not reach
+   * thread affinity, DM, keyword, channel `auto`, or default-agent fallback, and it can
+   * never issue control commands. Selecting exclusively from the verified recipient set
+   * is what makes that structural rather than a series of negative checks.
+   *
+   * Every outcome that is not a dispatch records the message and returns — "transcript
+   * only" in the design's terms. The conversation still SEES what the agent said; it
+   * simply does not wake anyone.
+   */
+  private routeVerifiedAgentMessage(
+    msg: NormalizedMessage,
+    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>
+  ): { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } {
+    const transcriptOnly = (why: string): { kind: 'rejected'; reason: DeliveryRejectionReason } => {
+      this.recordUnrouted(msg)
+      this.log.debug(`routing: agent-authored ${msg.msgId} is transcript-only (${why})`)
+      return { kind: 'rejected', reason: 'unrouted' }
+    }
+    // §4.1: ONE transition per agent-to-agent delivery, against the SAME cap as an
+    // internal call. Computed once here and installed on the admitted turn, so a mention
+    // chain and a `messageAgent` chain consume the same budget at the same rate.
+    const deliveryHopCount = verified.sourceHopCount + 1
+    if (deliveryHopCount > MAX_AGENT_CALL_HOPS) {
+      return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
+    }
+    // The author cannot activate itself (§2.3), and an empty set is the ordinary case:
+    // most agent messages address nobody.
+    const targets = verified.recipients.filter((id) => id !== verified.authorAgentId)
+    if (targets.length === 0) return transcriptOnly('no verified recipient')
+
+    for (const targetAgentId of targets) {
+      // Directional call policy, org equality, and the conversation gate are re-checked
+      // HERE rather than inherited from the author's daemon: the sender's snapshot may be
+      // stale or the sender's daemon compromised, and this is the daemon that owns the
+      // target (agent-collaboration §2.5 #4, terminal verification).
+      if (!this.agents.has(targetAgentId)) continue
+      if (!this.cpCollab.admits(verified.authorAgentId, targetAgentId)) {
+        this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" denied by call policy`)
+        continue
+      }
+      if (!this.cpCollab.resolve(verified.orgId, 'slack', msg.channel, targetAgentId)) {
+        this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" is not in this conversation`)
+        continue
+      }
+      const outcome = this.activateVerifiedAgentTarget(msg, verified, targetAgentId, deliveryHopCount)
+      if (outcome) return outcome
+    }
+    return transcriptOnly('no admissible local target in the verified recipient set')
+  }
+
+  /**
+   * Admit ONE target of a verified agent-authored message, through the durable
+   * activation rendezvous (§3.2/§8.6). Returns undefined when this target produced no
+   * dispatch, so the caller can try the next recipient.
+   *
+   * Two shapes converge here:
+   *  - An ORDINARY `@mention` reply. It carries no `agent_call_delivery_id`, so the
+   *    platform event is itself the authority: its envelope is recorded and dispatched
+   *    immediately. The rendezvous still runs, because exactly-once must survive a
+   *    redelivered event, a second bot connection seeing the same channel, and restart.
+   *  - The VISIBLE half of a paired `toAgent + channel` send. It only ever CLAIMS the
+   *    key: the trusted envelope (lineage, correlation, needsReply, external origin,
+   *    privacy) travels on the internal wake, and building a child from platform
+   *    metadata would fabricate exactly what the pairing exists to preserve. If the wake
+   *    never arrives the record expires transcript-only and is reported as a delivery
+   *    failure — never downgraded into an envelope-less child.
+   */
+  private activateVerifiedAgentTarget(
+    msg: NormalizedMessage,
+    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
+    targetAgentId: string,
+    deliveryHopCount: number
+  ):
+    { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } | undefined {
+    const platformMessageId = slackTsFromMsgId(msg.msgId)
+    const key = activationKey(msg.platform, msg.transportScope, platformMessageId, targetAgentId)
+    const expiresAt = this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+    if (verified.agentCallDeliveryId) {
+      const record = this.store.claimActivationObservation(
+        key,
+        {
+          agentCallDeliveryId: verified.agentCallDeliveryId,
+          platformMessageId,
+          transcriptCoordinates: `${transcriptChannelKey(msg.channel, msg.transportScope)} ${msg.thread ?? ''}`
+        },
+        expiresAt
+      )
+      this.recordUnrouted(msg)
+      this.log.debug(
+        `routing: paired agent-call ${verified.agentCallDeliveryId} observed for "${targetAgentId}" (state ${record.state}) — awaiting the internal wake`
+      )
+      return { kind: 'rejected', reason: 'unrouted' }
+    }
+    const envelope = JSON.stringify({
+      kind: 'platform-mention',
+      responseId: verified.responseId,
+      callFrom: verified.authorAgentId,
+      hopCount: deliveryHopCount
+    })
+    const claimed = this.store.attachActivationEnvelope(key, envelope, expiresAt)
+    if (!claimed.dispatch) {
+      this.recordUnrouted(msg)
+      this.log.debug(
+        `routing: agent-authored ${msg.msgId} → "${targetAgentId}" already admitted (${claimed.record.state})`
+      )
+      return { kind: 'rejected', reason: 'deduplicated' }
+    }
+    // An explicit mention is the one EXPLICIT address in this ladder, so it clears a
+    // `!stop` mute exactly like a human's would — the mute means "stop reacting to this
+    // conversation implicitly", not "ignore anyone who names me".
+    msg.trigger = 'mention'
+    const targetSessionKey = sessionKey(
+      msg.platform,
+      msg.channel,
+      msg.thread ?? msg.msgId,
+      targetAgentId,
+      msg.transportScope
+    )
+    this.store.admitActivation(key, targetSessionKey)
+    const integrationId = this.resolveCpAgent(targetAgentId, 'slack')?.integrationId
+    const callMeta: CallMeta = {
+      callFrom: verified.authorAgentId,
+      // §4.1 step 3/5: install the computed depth as trusted active-turn metadata. Every
+      // ordinary platform response this target produces stamps it as the NEXT event's
+      // source depth, so an A → B → A chain advances by one per hop and stops at the cap
+      // — across queue replay and restart, since it is persisted with the inbox row.
+      hopCount: deliveryHopCount,
+      deliveryId: msg.msgId
+    }
+    const { handle, turn } = this.evaluationDispatchHandle(targetAgentId, msg, integrationId, undefined, callMeta)
+    turn.catch((err) => this.log.error(`dispatch failed for agent "${targetAgentId}": ${formatErr(err)}`))
+    this.log.info(
+      `routing: agent-authored mention ch=${msg.channel} "${verified.authorAgentId}" → "${targetAgentId}" (hop ${deliveryHopCount})`
+    )
+    return { kind: 'dispatched', handle }
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -5444,10 +5687,7 @@ export class Daemon {
       this.log.debug(`routing: dropping inbound ${msg.msgId} (daemon draining)`)
       return { kind: 'rejected', reason: 'gated' }
     }
-    if (this.isAgentBotMessage(msg)) {
-      this.log.debug(`routing: dropping AgentConnect bot message ${msg.msgId}`)
-      return { kind: 'rejected', reason: 'suppressed' }
-    }
+    const agentAuthored = this.isAgentBotMessage(msg)
     this.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
     if (msg.sender.avatarUrl && msg.transportScope)
@@ -5473,6 +5713,25 @@ export class Daemon {
     // @mention opens a fresh session; a reply to any message already in a session
     // continues it). No-op on other platforms.
     this.canonicalizeTelegramThread(msg)
+
+    // send-message-routing-rework.md §2.3/§6: an AgentConnect-authored platform message
+    // takes its OWN ladder and never continues into the human one. That placement is the
+    // enforcement: everything below — control commands, gated-conversation discovery,
+    // thread affinity, DM, keyword, channel `auto`, default-agent fallback — is
+    // structurally unreachable for agent traffic, so activation can only ever come from
+    // an explicit, verified recipient.
+    if (agentAuthored) {
+      const verified = this.verifyAgentAuthor(msg)
+      if (!verified) {
+        // Ours by app identity, but not provably authored by a specific agent (a
+        // streaming post, an old daemon's metadata-less reply, chrome, or a shared bot
+        // with no exact claim). §4 fails closed: recorded, never routed.
+        this.recordUnrouted(msg)
+        this.log.debug(`routing: unverified AgentConnect message ${msg.msgId} is transcript-only`)
+        return { kind: 'rejected', reason: 'suppressed' }
+      }
+      return this.routeVerifiedAgentMessage(msg, verified)
+    }
 
     // §14.3: gated-conversation discovery must precede command interception AND
     // routing. An Off DM whose first inbound is a command still needs its row; an
@@ -6663,6 +6922,27 @@ export class Daemon {
       ...(msg.transcriptTs !== undefined ? { transcriptTs: msg.transcriptTs } : {})
     }
 
+    // send-message-routing-rework.md §3.2: the target daemon owns the rendezvous for a
+    // cross-daemon paired call too — BOTH the forwarded wake and the routed IM event
+    // converge here, so this is the only place that can see both halves. The relay
+    // forwards the pairing id but never synthesizes or stores the envelope.
+    if (msg.transcriptTs !== undefined) {
+      const key = activationKey(narrowed, childTransportScope, msg.transcriptTs, msg.toAgentId)
+      const claimed = this.store.attachActivationEnvelope(
+        key,
+        JSON.stringify(callMeta),
+        this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+      )
+      if (!claimed.dispatch) {
+        this.log.info(`relay: paired delivery ${msg.deliveryId} already admitted — reusing the existing child`)
+        return record({
+          deliveryId: msg.deliveryId,
+          delivered: true,
+          childSessionId: claimed.record.childSessionId ?? childSessionId
+        })
+      }
+      this.store.admitActivation(key, childSessionId)
+    }
     // Fire-and-forget dispatch (P4-gate admission). delivered:true on ADMISSION — the
     // target processes the turn in its own time (§6.4). dispatch() drops the turn on a
     // pause/drain gate; a reason-typed NAK on those local gates is a follow-up.
@@ -7060,6 +7340,27 @@ export class Daemon {
         // so a re-wake of a finished child can't be reported with its previous turn's outcome.
         rowUpdatedAtAtAdmission: this.store.getSession(targetSession)?.updatedAt ?? null
       })
+    }
+    // send-message-routing-rework.md §3.2/§8.6 — the "internal wake first" arrival order
+    // of a PAIRED `toAgent + channel` call. The wake is the SEMANTIC AUTHORITY (it alone
+    // carries lineage, correlation, needsReply, external origin, and the privacy gate),
+    // so it attaches the envelope and admits. The platform echo of the same post then
+    // reconciles onto this record instead of opening a second child — whenever it
+    // arrives, including after a restart, which is why the record is durable.
+    if (req.transcriptTs !== undefined) {
+      const key = activationKey(platform, targetTransportScope, req.transcriptTs, req.toAgentId)
+      const claimed = this.store.attachActivationEnvelope(
+        key,
+        JSON.stringify(callMeta),
+        this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+      )
+      if (!claimed.dispatch) {
+        // Already admitted (a retry reusing this delivery id, or a replay). Hand back the
+        // SAME child rather than dispatching again — exactly-once is the contract.
+        this.log.info(`messageAgent: paired delivery ${deliveryId} already admitted — reusing the existing child`)
+        return record({ delivered: true, targetSession: claimed.record.childSessionId ?? targetSession })
+      }
+      this.store.admitActivation(key, targetSession)
     }
     void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta).catch((err) =>
       this.log.error(`messageAgent dispatch failed for agent "${req.toAgentId}": ${formatErr(err)}`)
@@ -12367,6 +12668,10 @@ export class Daemon {
     const body = p.lastResponse
     const conn = p.conn as SlackConnection | undefined
     if (!body || !conn) return
+    // Duck-typed adaptor/test connections implement only the subset they need. Closing
+    // the response is additive metadata, not delivery — a connection that cannot do it
+    // must not fail the turn whose answer was already delivered.
+    if (typeof conn.finalizeResponse !== 'function') return
     const orgId = this.cpCollab.orgForAgent(p.agentId)
     const mentionedAgentIds = orgId
       ? resolveSlackMentionedAgents(p.replyText, this.cpCollab.mentionDirectory(orgId, 'slack', p.channel)).filter(
@@ -12377,12 +12682,19 @@ export class Daemon {
     // the footer belongs to this message only while `lastReply` still points at it.
     const ownsFooter = p.lastReply?.ts === body.ts && p.lastReply.footerKey !== undefined
     const blocks = [{ type: 'markdown', text: body.text }, ...(ownsFooter && p.attribution ? p.attribution.blocks : [])]
-    await conn.finalizeResponse(p.channel, body.ts, blocks, body.text, p.agentId, {
-      responseId: p.responseId,
-      deliveryState: 'final',
-      hopCount: p.callMeta?.hopCount ?? 0,
-      mentionedAgentIds
-    })
+    try {
+      await conn.finalizeResponse(p.channel, body.ts, blocks, body.text, p.agentId, {
+        responseId: p.responseId,
+        deliveryState: 'final',
+        hopCount: p.callMeta?.hopCount ?? 0,
+        mentionedAgentIds
+      })
+    } catch (err) {
+      // The real connection normalizes API failures to `false`; this guard covers a
+      // throwing adaptor. Leaving the message `streaming` means unrouted, never
+      // mis-routed, so a failure here degrades in the safe direction.
+      this.log.debug(`slack: response finalization failed (${formatErr(err)})`)
+    }
   }
 
   private async applySlackAction(p: Pending, action: SlackAction): Promise<void> {
@@ -15971,6 +16283,16 @@ export class Daemon {
     if (now - this.lastProbeRootSweepAt >= PROBE_ROOT_SWEEP_INTERVAL_MS) {
       this.lastProbeRootSweepAt = now
       sweepStaleProbeRoots({ log: this.log })
+    }
+    // send-message-routing-rework.md §3.2/§8.6: a paired delivery whose internal wake
+    // never arrived expires TRANSCRIPT-ONLY and is reported as an operational delivery
+    // failure. It must never fall back to an envelope-less child, so this sweep only ever
+    // closes the record — it never dispatches anything.
+    for (const expired of this.store.expireActivations(now)) {
+      this.log.warn(
+        `activation: paired delivery ${expired.agentCallDeliveryId ?? expired.activationKey} expired without its ` +
+          `internal call envelope — recorded as transcript-only, no child session was opened`
+      )
     }
     // #485 session-retention GC: delete long-inactive sessions and their worktrees.
     if (now - this.lastSessionRetentionSweepAt >= SESSION_RETENTION_SWEEP_INTERVAL_MS) {

@@ -452,6 +452,32 @@ export class BotArbitrationRouter {
     return tgt
   }
 
+  /**
+   * Resolve a NAMED agent to its route on this bot, bypassing the arbitration ladder
+   * entirely (send-message-routing-rework.md §6).
+   *
+   * This is the verified-agent-author path: the target came from a recipient set the
+   * author's daemon resolved and the relay verified, so there is nothing to arbitrate.
+   * Bypassing the ladder is the point, not a shortcut — it is what keeps an agent
+   * message off thread affinity, keyword matching, and the `defaultAgentId` fallback,
+   * so a bare shared-bot mention (which resolves to no agent, §8.5) can never be turned
+   * into "the channel's default agent" here.
+   *
+   * Still membership-checked: the agent must be a current member of this bot on a live
+   * daemon, exactly as every other resolution path requires. Null otherwise.
+   */
+  agentTarget(botId: string, agentId: string): RouteTarget | null {
+    const a = this.bots.get(botId)
+    if (!a) return null
+    const member = a.members.find((m) => m.agentIds.includes(agentId))
+    const route = a.routes.find((r) => r.agentId === agentId)
+    const daemonId = member?.daemonId ?? route?.daemonId ?? a.agents.find((x) => x.agentId === agentId)?.daemonId
+    if (!daemonId) return null
+    const integrationId = route?.integrationId ?? a.agents.find((x) => x.agentId === agentId)?.integrationId
+    if (!integrationId) return null
+    return { agentId, daemonId, integrationId }
+  }
+
   /** Every currently-assigned bot (ingest lifecycle reconciliation). */
   all(): BotAssignment[] {
     return [...this.bots.values()]

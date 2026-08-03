@@ -318,6 +318,53 @@ export interface InboxRow {
   enqueuedAt: string
 }
 
+/** How long a terminal (admitted / transcript-only) rendezvous record is retained past
+ *  its expiry before being swept. Long enough that a late retry still reads back its
+ *  `childSessionId` instead of opening a second session, short enough that a busy
+ *  channel's table stays bounded. */
+const ACTIVATION_RETENTION_MS = 24 * 60 * 60 * 1000
+
+/**
+ * One activation rendezvous record (send-message-routing-rework.md §8.6).
+ *
+ * A paired `toAgent + channel` send produces TWO observations of ONE logical delivery:
+ * an internal wake carrying the complete trusted call envelope, and the visible platform
+ * post the peer's daemon also receives. They can arrive in either order and, cross-daemon,
+ * over different transports. This record is what makes them one admission instead of two
+ * — or, worse, an admission built from whichever arrived first.
+ *
+ * The asymmetry between the two halves is deliberate. The internal wake is the semantic
+ * AUTHORITY: only it carries lineage, correlation, `needsReply`, hop depth, external
+ * origin, and privacy gates. The platform event contributes provider-authenticated
+ * coordinates and the transcript observation — correlation, never authority. Hence a
+ * platform-first record can be claimed `pending` but can NEVER reach `admitted` without
+ * `callEnvelope`: dispatching an envelope-less child would silently invent a lineage-less
+ * session in place of the call the caller actually made.
+ */
+export interface ActivationRecord {
+  /** `platform + transportScope + platformMessageId + targetAgentId` — one logical
+   *  delivery to one target. Including the target is what lets a single visible post
+   *  addressing several agents admit each of them exactly once. */
+  activationKey: string
+  /** Daemon-minted pairing id from the visible half of a `toAgent + channel` send. */
+  agentCallDeliveryId?: string | null
+  /** The provider-authenticated visible observation, once seen. */
+  platformMessageId?: string | null
+  /** Transcript coordinates the visible observation was recorded at, so the later half
+   *  reconciles onto the SAME row instead of duplicating the hand-off. */
+  transcriptCoordinates?: string | null
+  /** JSON.stringify of the trusted call envelope (the internal wake's payload). Absent
+   *  until the authoritative half arrives; its presence is the admission precondition. */
+  callEnvelope?: string | null
+  /** `pending` — claimed, not dispatched. `admitted` — dispatched exactly once; retries
+   *  read back `childSessionId` rather than dispatching again. `transcript-only` — the
+   *  terminal state of a pairing whose envelope never arrived (§3.2): recorded and
+   *  reported as a delivery failure, never downgraded into an envelope-less child. */
+  state: 'pending' | 'admitted' | 'transcript-only'
+  childSessionId?: string | null
+  expiresAt: number
+}
+
 /** Durable conversation-wide loop guard. A non-null `trippedAt` is a latched
  *  circuit: daemon restart must not silently re-open it. The two counters let the
  *  daemon use a lower threshold for turns that did not originate from a verified
@@ -694,6 +741,23 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS webchat_mcp_grant_ledger_due
         ON webchat_mcp_grant_ledger (state, nextAttemptAt);
+      -- send-message-routing-rework.md §8.6: the durable rendezvous that collapses the
+      -- internal wake and the visible platform echo of ONE paired agent-call delivery
+      -- into one admission. Durable rather than in-memory because the two halves may be
+      -- separated by a restart, and because an already-admitted key must keep answering
+      -- retries with the SAME childSessionId instead of opening a second session.
+      CREATE TABLE IF NOT EXISTS activation_rendezvous (
+        activationKey TEXT PRIMARY KEY,
+        agentCallDeliveryId TEXT,
+        platformMessageId TEXT,
+        transcriptCoordinates TEXT,
+        callEnvelope TEXT,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'admitted', 'transcript-only')),
+        childSessionId TEXT,
+        expiresAt INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS activation_rendezvous_expiry
+        ON activation_rendezvous (state, expiresAt);
       -- Conversation-wide spam/feedback-loop circuit. Unlike the in-memory dedup
       -- caches, this latch survives a daemon restart, so durable inbox replay cannot
       -- re-ignite a conversation that was already stopped by loop protection.
@@ -3693,6 +3757,152 @@ export class LocalStore {
    *  future fresh message start a new window. Returns whether a guard existed. */
   resetLoopGuard(scopeKey: string): boolean {
     return this.db.prepare('DELETE FROM loop_guard WHERE scopeKey = ?').run(scopeKey).changes > 0
+  }
+
+  // ── send-message-routing-rework.md §8.6: activation rendezvous ──
+
+  getActivation(activationKey: string): ActivationRecord | undefined {
+    return this.db.prepare('SELECT * FROM activation_rendezvous WHERE activationKey = ?').get(activationKey) as
+      ActivationRecord | undefined
+  }
+
+  /**
+   * Record the VISIBLE half of a paired delivery and claim the key `pending`
+   * (§3.2 "platform event first"): the observation is stored, and nothing is dispatched.
+   *
+   * Deliberately never advances state on its own. The visible post is provider-
+   * authenticated, but it carries none of the trusted call envelope — so treating its
+   * arrival as an admission would fabricate the very lineage the rendezvous exists to
+   * preserve. It waits for {@link attachActivationEnvelope}.
+   *
+   * Idempotent: a redelivered platform event re-runs this and changes nothing about an
+   * existing record's state or envelope.
+   */
+  claimActivationObservation(
+    activationKey: string,
+    observation: { agentCallDeliveryId?: string; platformMessageId: string; transcriptCoordinates: string },
+    expiresAt: number
+  ): ActivationRecord {
+    this.db.exec('BEGIN')
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO activation_rendezvous
+             (activationKey, agentCallDeliveryId, platformMessageId, transcriptCoordinates, state, expiresAt)
+           VALUES (?, ?, ?, ?, 'pending', ?)
+           ON CONFLICT(activationKey) DO UPDATE SET
+             agentCallDeliveryId = COALESCE(excluded.agentCallDeliveryId, activation_rendezvous.agentCallDeliveryId),
+             platformMessageId = excluded.platformMessageId,
+             transcriptCoordinates = excluded.transcriptCoordinates`
+        )
+        .run(
+          activationKey,
+          observation.agentCallDeliveryId ?? null,
+          observation.platformMessageId,
+          observation.transcriptCoordinates,
+          expiresAt
+        )
+      const row = this.getActivation(activationKey)!
+      this.db.exec('COMMIT')
+      return row
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /**
+   * Attach the AUTHORITATIVE call envelope and atomically decide whether THIS caller
+   * owns the dispatch (§8.6).
+   *
+   * Returns `dispatch: true` exactly once per key. A second arrival — a retry, a
+   * redelivered wake, a replay after restart — reads back the stored `childSessionId`
+   * with `dispatch: false`, which is what keeps "the internal wake and the platform echo
+   * are two observations of ONE delivery" true across every arrival order and failure.
+   *
+   * A record already in `transcript-only` (its envelope expired) stays there: reviving it
+   * would dispatch a child for a delivery already reported failed.
+   */
+  attachActivationEnvelope(
+    activationKey: string,
+    callEnvelope: string,
+    expiresAt: number
+  ): { dispatch: boolean; record: ActivationRecord } {
+    this.db.exec('BEGIN')
+    try {
+      const existing = this.getActivation(activationKey)
+      if (existing?.state === 'admitted' || existing?.state === 'transcript-only') {
+        this.db.exec('COMMIT')
+        return { dispatch: false, record: existing }
+      }
+      this.db
+        .prepare(
+          `INSERT INTO activation_rendezvous (activationKey, callEnvelope, state, expiresAt)
+           VALUES (?, ?, 'pending', ?)
+           ON CONFLICT(activationKey) DO UPDATE SET callEnvelope = excluded.callEnvelope`
+        )
+        .run(activationKey, callEnvelope, expiresAt)
+      const record = this.getActivation(activationKey)!
+      this.db.exec('COMMIT')
+      return { dispatch: true, record }
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /**
+   * Commit a dispatched activation: `pending -> admitted`, storing the child session the
+   * delivery opened so every later retry is answered from the record rather than by
+   * opening a second session. Only a `pending` record with an envelope may transition —
+   * the CHECK the design states as "a platform-first paired record cannot become
+   * `admitted` until `callEnvelope` is present".
+   */
+  admitActivation(activationKey: string, childSessionId: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE activation_rendezvous SET state = 'admitted', childSessionId = ?
+           WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NOT NULL`
+        )
+        .run(childSessionId, activationKey).changes === 1
+    )
+  }
+
+  /**
+   * Expire pending pairings whose authoritative half never arrived: they become
+   * `transcript-only` (§3.2/§8.6) — the visible observation stands, the delivery is a
+   * failure, and no envelope-less child is ever synthesized from platform metadata.
+   * Returns the expired records so the caller can raise the operational failure.
+   */
+  expireActivations(now: number): ActivationRecord[] {
+    this.db.exec('BEGIN')
+    try {
+      const expired = this.db
+        .prepare(
+          `SELECT * FROM activation_rendezvous
+           WHERE state = 'pending' AND callEnvelope IS NULL AND expiresAt <= ?`
+        )
+        .all(now) as unknown as ActivationRecord[]
+      if (expired.length > 0) {
+        this.db
+          .prepare(
+            `UPDATE activation_rendezvous SET state = 'transcript-only'
+             WHERE state = 'pending' AND callEnvelope IS NULL AND expiresAt <= ?`
+          )
+          .run(now)
+      }
+      // Terminal records are pure history once they are well past expiry; drop them so
+      // the table stays bounded in a busy channel.
+      this.db
+        .prepare(`DELETE FROM activation_rendezvous WHERE state != 'pending' AND expiresAt <= ?`)
+        .run(now - ACTIVATION_RETENTION_MS)
+      this.db.exec('COMMIT')
+      return expired
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
   }
 
   // ── §3.4/§6.8 main-agent orchestration ──

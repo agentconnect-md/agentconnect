@@ -1328,3 +1328,101 @@ describe('LocalStore webchat MCP grant ledger', () => {
     expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
   })
 })
+
+describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2/§8.6)', () => {
+  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join(' ')
+  const ENVELOPE = JSON.stringify({ callFrom: 'agent-author', hopCount: 3 })
+
+  it('admits an internal-wake-first pairing exactly once and replays the same child', () => {
+    const s = store()
+    const first = s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(first.dispatch).toBe(true)
+    expect(s.admitActivation(KEY, 'child-1')).toBe(true)
+
+    // A retry of the same delivery — a redelivered wake, or replay after restart — must
+    // read back the SAME child rather than opening a second session.
+    const retry = s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(retry.dispatch).toBe(false)
+    expect(retry.record.state).toBe('admitted')
+    expect(retry.record.childSessionId).toBe('child-1')
+    s.close()
+  })
+
+  it('holds a platform-first observation pending until the envelope arrives', () => {
+    const s = store()
+    const claimed = s.claimActivationObservation(
+      KEY,
+      { agentCallDeliveryId: 'd-1', platformMessageId: '1720000000.000100', transcriptCoordinates: 'C1 T1' },
+      1000
+    )
+    expect(claimed.state).toBe('pending')
+    expect(claimed.callEnvelope).toBeFalsy()
+    // The precondition the design states outright: a platform-first record cannot become
+    // `admitted` until `callEnvelope` is present — the visible post carries none of the
+    // lineage, so admitting on it would fabricate the call it is supposed to accompany.
+    expect(s.admitActivation(KEY, 'child-1')).toBe(false)
+
+    const attached = s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(attached.dispatch).toBe(true)
+    expect(s.admitActivation(KEY, 'child-1')).toBe(true)
+    expect(s.getActivation(KEY)?.state).toBe('admitted')
+    // The visible observation survives the transition, so the later half reconciles onto
+    // the same transcript row instead of duplicating the hand-off.
+    expect(s.getActivation(KEY)?.platformMessageId).toBe('1720000000.000100')
+    s.close()
+  })
+
+  it('is idempotent for a redelivered platform event', () => {
+    const s = store()
+    const obs = { agentCallDeliveryId: 'd-1', platformMessageId: 'ts-1', transcriptCoordinates: 'C1 T1' }
+    s.claimActivationObservation(KEY, obs, 1000)
+    s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    s.admitActivation(KEY, 'child-1')
+    // Slack redelivers; the observation must not reset an admitted record.
+    s.claimActivationObservation(KEY, obs, 1000)
+    expect(s.getActivation(KEY)?.state).toBe('admitted')
+    expect(s.getActivation(KEY)?.childSessionId).toBe('child-1')
+    s.close()
+  })
+
+  it('expires an envelope-less pairing to transcript-only, and never revives it', () => {
+    const s = store()
+    s.claimActivationObservation(
+      KEY,
+      { agentCallDeliveryId: 'd-1', platformMessageId: 'ts-1', transcriptCoordinates: 'C1 T1' },
+      1000
+    )
+    expect(s.expireActivations(999)).toEqual([])
+    const expired = s.expireActivations(1000)
+    expect(expired.map((r) => r.agentCallDeliveryId)).toEqual(['d-1'])
+    expect(s.getActivation(KEY)?.state).toBe('transcript-only')
+
+    // A very late wake must not resurrect a delivery already reported failed — otherwise
+    // the operator sees a failure AND the target runs a turn for it anyway.
+    const late = s.attachActivationEnvelope(KEY, ENVELOPE, 5000)
+    expect(late.dispatch).toBe(false)
+    expect(s.getActivation(KEY)?.state).toBe('transcript-only')
+    s.close()
+  })
+
+  it('never expires a record that already has its envelope', () => {
+    const s = store()
+    s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(s.expireActivations(9999)).toEqual([])
+    expect(s.getActivation(KEY)?.state).toBe('pending')
+    s.close()
+  })
+
+  it('keys separate targets of one visible post independently', () => {
+    // §3.2: one channel-root post can address several agents; each must be admitted once,
+    // and one target's admission must not consume another's.
+    const s = store()
+    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join(' ')
+    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join(' ')
+    expect(s.attachActivationEnvelope(a, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.attachActivationEnvelope(b, ENVELOPE, 1000).dispatch).toBe(true)
+    s.admitActivation(a, 'child-a')
+    expect(s.getActivation(b)?.state).toBe('pending')
+    s.close()
+  })
+})

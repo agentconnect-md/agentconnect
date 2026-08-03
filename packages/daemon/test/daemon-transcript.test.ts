@@ -140,6 +140,16 @@ function classicFooter(botName = 'bot-a', runtime = 'claude', model = 'default')
   }
 }
 
+/**
+ * send-message-routing-rework.md §5.4 — every agent-authored body post carries its turn's
+ * STREAMING response block, so a peer can later tell a finished answer from a prefix. The
+ * response id is minted per turn, so assert its shape rather than a fixed value; the
+ * recipient set is empty until finalization resolves it from the complete response.
+ */
+function streamingResponse(hopCount = 0) {
+  return { responseId: expect.any(String), deliveryState: 'streaming', hopCount, mentionedAgentIds: [] }
+}
+
 describe('Daemon transcript records the agent reply', () => {
   it('medium mode: the buffered reply (flushed at onFinal) lands as a bot-a row', async () => {
     const { factory } = replyingHost('here is my answer')
@@ -330,6 +340,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
       username: 'Repo Bot',
       agentAuthorId: 'bot-a',
+      response: streamingResponse(),
       trailingBlocks: [classicFooter('bot-a', 'Claude Code', 'claude-sonnet-4-5')]
     })
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
@@ -358,6 +369,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the answer', 'T1', {
       username: 'bot-a',
       agentAuthorId: 'bot-a',
+      response: streamingResponse(),
       trailingBlocks: [classicFooter('bot-a', 'claude', 'model-after-prompt')]
     })
     await daemon.stop()
@@ -397,6 +409,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'early answer', 'T1', {
       username: 'bot-a',
       agentAuthorId: 'bot-a',
+      response: streamingResponse(),
       trailingBlocks: [classicFooter('bot-a', 'claude', 'model-before-prompt')]
     })
     const linkedReplyUpdates = conn.updateBlocks.mock.calls.filter(
@@ -418,6 +431,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'here is my answer', 'T1', {
       username: 'bot-a',
       agentAuthorId: 'bot-a',
+      response: streamingResponse(),
       trailingBlocks: [classicFooter()]
     })
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
@@ -473,6 +487,7 @@ describe('Daemon transcript records the agent reply', () => {
           expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('first part'), 'T1', {
             username: 'bot-a',
             agentAuthorId: 'bot-a',
+            response: streamingResponse(),
             trailingBlocks: [classicFooter()]
           })
         )
@@ -488,6 +503,7 @@ describe('Daemon transcript records the agent reply', () => {
           expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('second part'), 'T1', {
             username: 'bot-a',
             agentAuthorId: 'bot-a',
+            response: streamingResponse(),
             trailingBlocks: [classicFooter()]
           })
         )
