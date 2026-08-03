@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { EMPTY_RAIL_AGENT_FILTER, railAgentFilterQuery, seedRailAgentFilter } from './session-rail-filter'
+import {
+  EMPTY_RAIL_AGENT_FILTER,
+  railAgentFilterQuery,
+  railSeedAgentIds,
+  seedRailAgentFilter
+} from './session-rail-filter'
+
+describe('railSeedAgentIds', () => {
+  it('prefers the resolved conversation roster', () => {
+    expect(railSeedAgentIds([{ agentId: 'agent-a' }, { agentId: 'agent-b' }], ['agent-c'], 'agent-a')).toEqual([
+      'agent-a',
+      'agent-b'
+    ])
+  })
+
+  it('falls back to the live roster for a conversation no resolver can answer for', () => {
+    // A live playground conversation is client-side until its first turn
+    // persists; seeding its owner alone filtered the rail to one participant of
+    // a conversation with several.
+    expect(railSeedAgentIds(null, ['agent-a', 'agent-b'], 'agent-a')).toEqual(['agent-a', 'agent-b'])
+    expect(railSeedAgentIds([], ['agent-a', 'agent-b'], 'agent-a')).toEqual(['agent-a', 'agent-b'])
+  })
+
+  it('falls back to the owning agent for an ordinary session', () => {
+    expect(railSeedAgentIds(undefined, [], 'agent-a')).toEqual(['agent-a'])
+  })
+
+  it('seeds nothing when nothing is known yet', () => {
+    expect(railSeedAgentIds(undefined, [], undefined)).toEqual([])
+  })
+})
 
 describe('seedRailAgentFilter', () => {
   it('defaults to the open conversation’s agents', () => {

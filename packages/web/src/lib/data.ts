@@ -977,6 +977,23 @@ export function isMergedConversationRow(session: Pick<Session, 'conversationKey'
   return (session.memberSessionIds?.length ?? 0) > 1 && Boolean(session.conversationKey)
 }
 
+/**
+ * A roster entry's display name. The wire roster carries ids, not names — a
+ * grouped list row names its members from rows that have not been enriched yet,
+ * and conversation mode synthesizes the roster from member ids alone — so the
+ * org agent list is the real name source and `participant.name` is only what
+ * survived of it. A name that is still the id (or its short-id fallback) is not
+ * a name, and rendering it would put a uuid where an agent belongs.
+ */
+export function rosterParticipantName(
+  participant: { agentId: string; name?: string },
+  agent?: Pick<Agent, 'name' | 'displayName'>
+): string {
+  if (agent) return agentLabel(agent)
+  const name = participant.name?.trim() ?? ''
+  return name && name !== participant.agentId && name !== participant.agentId.slice(0, 8) ? name : 'Agent'
+}
+
 export function mergeCanonicalSessions(sessions: readonly Session[]): Session[] {
   const byId = new Map<string, Session>()
   for (const session of sessions) {

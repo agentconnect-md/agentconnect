@@ -13,6 +13,7 @@ import {
   lifecycleStatus,
   conversationRowKey,
   mergeCanonicalSessions,
+  rosterParticipantName,
   modelCapability,
   modelLabel,
   permissionModeChoicesFor,
@@ -141,6 +142,29 @@ describe('mergeCanonicalSessions', () => {
       expect(conversationRowKey(persisted)).toBe('session-real')
       expect(conversationRowKey({ ...persisted, id: 'pg_x', realSessionId: 'session-real' })).toBe('session-real')
     })
+  })
+})
+
+describe('rosterParticipantName', () => {
+  const participant = { agentId: 'b7e0f2c1-4a5d-4e6f-8a9b-0c1d2e3f4a5b', name: 'reviewer' }
+
+  it('prefers the org agent list over whatever name the roster carried', () => {
+    // The list row's roster is built before the rows are enriched, so its `name`
+    // can lag a rename the agent list already has.
+    expect(rosterParticipantName(participant, { name: 'reviewer', displayName: 'Reviewer' })).toBe('Reviewer')
+  })
+
+  it('keeps a real roster name when the agent is not in the viewer’s list', () => {
+    expect(rosterParticipantName(participant)).toBe('reviewer')
+  })
+
+  it('refuses to render an id as a name', () => {
+    // Conversation mode synthesizes the roster from member ids alone, and an
+    // adopted session's detail roster falls back to the short id.
+    expect(rosterParticipantName({ agentId: participant.agentId, name: participant.agentId })).toBe('Agent')
+    expect(rosterParticipantName({ agentId: participant.agentId, name: participant.agentId.slice(0, 8) })).toBe('Agent')
+    expect(rosterParticipantName({ agentId: participant.agentId, name: '  ' })).toBe('Agent')
+    expect(rosterParticipantName({ agentId: participant.agentId })).toBe('Agent')
   })
 })
 
