@@ -6598,7 +6598,6 @@ export class Daemon {
       // and only the CP may open it.
       ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
     }
-    const narrowed = this.narrowPlatform(platform)
     const resolved = this.resolveCpAgent(msg.toAgentId)
     const integrationId = msg.integrationId ?? resolved?.integrationId
     // §5.4: the CANONICAL child session key, computed with the same inputs `dispatch` will use —
@@ -6615,7 +6614,7 @@ export class Daemon {
     // it exactly as asserted; only the channel-free branch 3 substitutes).
     const childMsgId = `agentcall:${sessionChannel}:${msg.deliveryId}`
     const childSessionId = sessionKey(
-      narrowed,
+      platform,
       sessionChannel,
       thread ?? childMsgId,
       msg.toAgentId,
@@ -6633,7 +6632,7 @@ export class Daemon {
       msgId: childMsgId,
       traceId: msg.deliveryId,
       source: 'agent',
-      platform: narrowed,
+      platform,
       channel: sessionChannel,
       ...(thread !== undefined ? { thread } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
@@ -6764,12 +6763,12 @@ export class Daemon {
     // request; `admits` above already proved the entry exists, so undefined is unreachable
     // and fails closed anyway.
     //
-    // The platform is the RAW trusted session platform, deliberately NOT `narrowPlatform`'s
-    // output: that helper folds `dream` (and any value the NormalizedMessage union does not
-    // carry) into 'slack', which would classify a genuinely channel-free session as a
-    // persisted IM coordinate and fail it closed. Only the branch-2/branch-3 split reads the
-    // platform at all — the row lookup itself stays platform-free — so passing the raw value
-    // cannot re-open the platform-relabelling dodge.
+    // The platform is the RAW trusted session platform — the same value session keys now
+    // use everywhere (the old `narrowPlatform` fold that turned `dream` and unknown values
+    // into 'slack' is deleted, §6.3). A fold here would classify a genuinely channel-free
+    // session as a persisted IM coordinate and fail it closed. Only the branch-2/branch-3
+    // split reads the platform at all — the row lookup itself stays platform-free — so
+    // passing the raw value cannot re-open the platform-relabelling dodge.
     const callerOrg = this.cpCollab.orgForAgent(req.callerAgentId)
     if (callerOrg === undefined) return { rejection: 'not_allowed' }
     const coords = this.cpCollab.coordsDecision(callerOrg, req.platform, req.channel, req.callerAgentId)
@@ -6786,7 +6785,7 @@ export class Daemon {
   }
 
   private wakeRejectionReason(req: MessageAgentReq): string | null {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     if (this.evaluationProfile.collaboration === 'off') return 'capability_disabled'
     if (platform === 'slack' && /^(?:[UW][A-Z0-9]+|<@[UW][A-Z0-9]+>)$/.test(req.toAgentId.trim())) {
       return 'invalid_target'
@@ -6805,7 +6804,7 @@ export class Daemon {
   }
 
   private async messageAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -6880,7 +6879,7 @@ export class Daemon {
     // already minted); originCoords are its landing coords for cross-daemon reply routing.
     const originSessionId = this.store.getSession(callerKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, originSessionId)
-    const originCoordPlatform = platform === 'hook' ? 'slack' : platform
+    const originCoordPlatform = this.legacyCoordPlatform(platform)
     const originCoords: CallMeta['originCoords'] = {
       platform: originCoordPlatform,
       channel: req.callerChannel,
@@ -6899,7 +6898,7 @@ export class Daemon {
       req.correlationId !== undefined ? req.correlationId : isReply ? inbound.correlationId : undefined
 
     const target = this.agents.get(req.toAgentId)
-    const resolved = target ? this.resolveCpAgent(req.toAgentId, platform === 'hook' ? 'slack' : platform) : null
+    const resolved = target ? this.resolveCpAgent(req.toAgentId, this.legacyCoordPlatform(platform)) : null
     const integrationId = resolved?.integrationId
     const targetTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
@@ -6941,7 +6940,7 @@ export class Daemon {
     // Local presence: if absent, route the delivery over the relay. The relay
     // decides whether the target is allowed to be woken by this caller.
     if (!target) {
-      const coordPlatform = platform === 'hook' ? 'slack' : platform
+      const coordPlatform = this.legacyCoordPlatform(platform)
       const remote = await this.routeAgentMsgCrossDaemon(
         { ...req, text: event.text, thread: event.thread },
         {
@@ -7068,7 +7067,7 @@ export class Daemon {
    * refused — an agent can never inject into an arbitrary session.
    */
   private async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -7101,7 +7100,7 @@ export class Daemon {
     const deliveryId = randomUUID()
     // Hand the origin owner a turn whose origin points back at the REPLIER's session, so the
     // origin could reply again (symmetric lineage). callFrom = the replier.
-    const replyCoordPlatform = platform === 'hook' ? 'slack' : platform
+    const replyCoordPlatform = this.legacyCoordPlatform(platform)
     const replierSessionId = callerRec?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, replierSessionId)
     const replyOriginCoords: CallMeta['originCoords'] = {
@@ -7131,22 +7130,22 @@ export class Daemon {
     const local = this.store.getSessionByAcpId(req.sessionId)
     if (local) {
       const originOwner = local.agentId
-      const narrowedLocal = this.narrowPlatform(local.platform)
+      const originPlatform = local.platform
       // Resolve the reply's output transport by the ORIGIN session's platform, not the
       // agent's default integration. A multi-platform agent (e.g. Slack + Telegram) would
       // otherwise post the reply through integrations[0]'s client, and a Telegram chat id
       // sent via the Slack client fails with channel_not_found (the reply turn runs but its
       // answer never reaches the origin channel).
-      const integrationId = this.integrationIdForTransportScope(originOwner, narrowedLocal, local.transportScope)
+      const integrationId = this.integrationIdForTransportScope(originOwner, originPlatform, local.transportScope)
       if (local.transportScope && !integrationId) {
         return { delivered: false, targetSession: local.key, reason: 'not_found' }
       }
-      const resolved = this.resolveCpAgent(originOwner, narrowedLocal)
+      const resolved = this.resolveCpAgent(originOwner, originPlatform)
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
         source: 'agent',
-        platform: narrowedLocal,
+        platform: originPlatform,
         channel: local.channel,
         ...(local.thread ? { thread: local.thread } : {}),
         ...(local.transportScope ? { transportScope: local.transportScope } : {}),
@@ -7230,7 +7229,7 @@ export class Daemon {
    * back" — that is what `needsReply` is for.
    */
   private async viewSessionStatus(req: SessionStatusReq): Promise<SessionStatusResult | null> {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -7477,11 +7476,11 @@ export class Daemon {
     originChannel: string
     originThread: string
   }): boolean {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     // The origin session may live on a DIFFERENT platform than this post (e.g. a Telegram
     // turn posting to Slack). Key the origin lookup by the ORIGIN's platform, not the target's,
     // or the caller session is never found and the new session loses its parent lineage.
-    const originPlatform = this.narrowPlatform(req.originPlatform ?? req.platform)
+    const originPlatform = req.originPlatform ?? req.platform
     const originKey = sessionKey(
       originPlatform,
       req.originChannel,
@@ -7498,7 +7497,7 @@ export class Daemon {
     }
     const originSessionId = this.store.getSession(originKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.agentId, originSessionId)
-    const originCoordPlatform = originPlatform === 'hook' ? 'slack' : originPlatform
+    const originCoordPlatform = this.legacyCoordPlatform(originPlatform)
     const deliveryId = randomUUID()
     const callMeta: CallMeta = {
       callFrom: req.agentId,
@@ -7617,15 +7616,15 @@ export class Daemon {
     }
   }
 
-  /** Narrow the trusted session-context platform string to the NormalizedMessage union;
-   *  falls back to 'slack' for an unrecognized value (coords still resolve — the union is
-   *  a routing/key detail, not the trust basis). */
-  private narrowPlatform(p: string): NormalizedMessage['platform'] {
-    // Every caller turns a platform string off a session/orchestration row back into the union, to
-    // key a session or synthesize a message. `feishu` was missing from the list long after the
-    // platform shipped, so all of them silently produced a `slack:` key for a session ingress
-    // records under `feishu:` — a session nothing could then continue.
-    return p === 'telegram' || p === 'webchat' || p === 'discord' || p === 'feishu' || p === 'hook' ? p : 'slack'
+  /** Legacy COORDINATE-EMISSION clamp (S1a, integration-plugin-architecture.md §6.2/§6.3).
+   *  Session KEYS always use the raw session platform — the old `narrowPlatform` fold
+   *  (unknown → 'slack') minted keys nothing could continue and is deleted. But coords
+   *  handed to the relay wire or resolved against CP integration rows keep today's values:
+   *  peers may still read platform fields as closed enums until the fleet gate passes, and
+   *  the channel-free origin kinds (`hook`, `dream`) have no integration row to resolve.
+   *  Remove after the S1a fleet gate (S1b opens the emitted set). */
+  private legacyCoordPlatform(p: string): string {
+    return p === 'hook' || p === 'dream' ? 'slack' : p
   }
 
   // ══════════════════════════ §3.4/§6.8 main-agent orchestration ══════════════════════════
@@ -7643,7 +7642,7 @@ export class Daemon {
    */
   private async startOrchestration(req: StartOrchestrationReq): Promise<StartOrchestrationResult> {
     const orchestrationId = randomUUID()
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     // The main's session key is the exact coords its tool call ran under, so a deadline
     // fire and a worker report both key to the SAME session as the caller.
     const mainSessionKey = sessionKey(platform, req.channel, req.thread, req.mainAgentId, req.transportScope)
@@ -7800,7 +7799,7 @@ export class Daemon {
    *  to the exact stored coords (so it lands in the same session that started it). Headless
    *  is NOT set — the main needs its reply transport to post the summary. */
   private wakeOrchestrationMain(orch: OrchestrationRow, text: string): void {
-    const platform = this.narrowPlatform(orch.platform)
+    const platform = orch.platform
     const msgId = `orchestration:${orch.orchestrationId}:${monotonicTs()}`
     const msg: NormalizedMessage = {
       msgId,
@@ -7927,13 +7926,7 @@ export class Daemon {
   private ownedOrchestration(req: OrchestrationOwnerReq): OrchestrationRow | undefined {
     const orch = this.store.getOrchestration(req.orchestrationId)
     if (!orch) return undefined
-    const requesterKey = sessionKey(
-      this.narrowPlatform(req.platform),
-      req.channel,
-      req.thread,
-      req.mainAgentId,
-      req.transportScope
-    )
+    const requesterKey = sessionKey(req.platform, req.channel, req.thread, req.mainAgentId, req.transportScope)
     if (orch.mainSessionKey !== requesterKey || orch.mainAgentId !== req.mainAgentId) return undefined
     return orch
   }
@@ -15685,7 +15678,7 @@ export class Daemon {
     }
     if (rec.state !== 'idle') return skip(`session is ${rec.state}`)
 
-    const platform = this.narrowPlatform(rec.platform)
+    const platform = rec.platform
     // Reply transport resolved from the SESSION's scope, not the agent's default integration —
     // a multi-platform agent would otherwise answer through integrations[0]'s client (mirrors
     // replyToSession). A scoped session whose integration is gone has nowhere to answer.

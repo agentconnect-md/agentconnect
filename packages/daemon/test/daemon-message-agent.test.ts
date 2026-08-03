@@ -456,18 +456,18 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
-  // A `dream` turn's platform is folded to 'slack' by `narrowPlatform` when the session key is
-  // computed, so the coordinate decision must read the RAW session platform — otherwise a
-  // genuinely channel-free session would be classified as a persisted IM coordinate and fail
-  // closed. (`hook` is the same shape: a target-less hook session's channel is the hook id.)
-  it('treats a raw session-identity platform as channel-free even though the session key narrows it', async () => {
+  // A `dream` turn is genuinely channel-free: the coordinate decision reads the RAW session
+  // platform and admits it as branch 3, and — since the `narrowPlatform` fold was deleted
+  // (S1a §6.3) — the woken session key now carries `dream` itself instead of a folded
+  // `slack` prefix nothing could continue. (`hook` is the same shape: a target-less hook
+  // session's channel is the hook id.)
+  it('treats a raw session-identity platform as channel-free and keys the child with it', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
     const dream = baseReq({ platform: 'dream', callerChannel: 'memory', channel: 'memory', thread: 'dream-1' })
     expect((daemon as any).wakeRejectionReason(dream)).toBeNull()
-    // narrowPlatform('dream') === 'slack', hence the slack prefix — but the CHANNEL is the
-    // caller-derived one, not 'memory'.
-    expect(await call(dream)).toMatchObject({ delivered: true, targetSession: 'slack:a2a:bot-a:dream-1:bot-b' })
+    // Raw platform prefix — and the CHANNEL is the caller-derived one, not 'memory'.
+    expect(await call(dream)).toMatchObject({ delivered: true, targetSession: 'dream:a2a:bot-a:dream-1:bot-b' })
 
     const hook = baseReq({ platform: 'hook', callerChannel: 'hook-1', channel: 'hook-1', thread: 'delivery-1' })
     expect((daemon as any).wakeRejectionReason(hook)).toBeNull()
@@ -993,10 +993,11 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
   })
 
   // The bypass an earlier revision of the coordinate gate had: it looked the coordinate up
-  // under the RAW wire platform, while the session key is computed from `narrowPlatform`,
-  // which folds `feishu` (and anything unrecognised) into 'slack'. The two key spaces
-  // differed and "unknown coordinate passes" hid it, so the SAME attack went through with a
-  // legal `coords.platform:'feishu'` and still produced a bit-identical childSessionId.
+  // under the RAW wire platform, while session keys were computed through the since-deleted
+  // `narrowPlatform` fold (`feishu` and anything unrecognised became 'slack'). The two key
+  // spaces differed and "unknown coordinate passes" hid it, so the SAME attack went through
+  // with a legal `coords.platform:'feishu'` and still produced a bit-identical
+  // childSessionId. Session keys are raw now; the channel-only lookup stays the guard.
   it('rejects the attack when the coordinate PLATFORM is switched to dodge the lookup', async () => {
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
@@ -1421,12 +1422,12 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     await daemon.stop()
   })
 
-  it('keys a Feishu spawn as feishu, not the narrowPlatform fallback', async () => {
+  it('keys a Feishu spawn as feishu, not a folded fallback', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
-    // `narrowPlatform` predated Feishu and folded it onto `slack`, so this dispatched a `slack:`
-    // message for a channel Feishu ingress records under `feishu:` — a session nothing could
-    // continue. Every other caller of that helper had the same hole.
+    // The since-deleted `narrowPlatform` helper predated Feishu and folded it onto `slack`, so
+    // this dispatched a `slack:` message for a channel Feishu ingress records under `feishu:` —
+    // a session nothing could continue. Every caller of that helper had the same hole.
     // A Feishu DM root post, the shape where the key and the raw ts differ most: ops resolves the
     // thread key to the CHAT id (what Feishu ingress keys a p2p conversation under) while the
     // post's own message id stays the transcript ts.
@@ -1586,11 +1587,12 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     await daemon.stop()
   })
 
-  it('resolves a Feishu caller, whose platform string is not one narrowPlatform keeps', async () => {
+  it('resolves a Feishu caller by its raw platform string', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    // narrowPlatform folds `feishu` onto `slack`; keying the lookup through it looked up a row
-    // that never existed, so a Feishu session could never resolve its parent.
+    // The since-deleted `narrowPlatform` fold turned `feishu` into `slack`; keying the lookup
+    // through it looked up a row that never existed, so a Feishu session could never resolve
+    // its parent.
     seed(daemon, {
       key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a'),
       agentId: 'bot-a',

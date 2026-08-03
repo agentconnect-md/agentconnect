@@ -188,21 +188,22 @@ export class CollaborationRouter {
    * hatch: relabelling a real channel's coordinate as `webchat` still hits branch 1 and
    * still demands membership.
    *
-   * PLATFORM-FREE KEY, platform-keyed BRANCH. The lookup key must NOT include the
-   * coordinate platform: the woken session's key is computed from a NARROWED platform (the
-   * daemon's `narrowPlatform` folds `feishu` — and any value it does not recognise — into
-   * `'slack'`), while snapshot rows are keyed by the INTEGRATION platform. Keying the
-   * LOOKUP on the raw wire platform searched a different key space than the session key it
-   * protects, and the old "unknown coordinate passes" branch silently swallowed the
-   * mismatch: `coords.platform:'feishu'` over a Slack channel id (or, in a Feishu org, an
-   * honest narrowed `'slack'` over a `feishu` row) missed the row, passed, and still
-   * computed a bit-identical child session key. Matching on the channel id alone closes
-   * both directions and needs no `narrowPlatform` twin on the relay side; it over-blocks
-   * only if one org uses the same channel id on two platforms, which then requires
-   * membership in one of them, not a bypass. The platform is consulted ONLY to pick between
-   * branch 2 and branch 3, and only for a coordinate branch 1 already found nothing for —
-   * where the collapse cannot help an attacker, because branch 3 hands back a
-   * caller-derived channel rather than the asserted one.
+   * PLATFORM-FREE KEY, platform-keyed BRANCH. The lookup key does NOT include the
+   * coordinate platform. Historically it COULD not: the daemon computed session keys
+   * through its (now deleted) `narrowPlatform` helper, which folded `feishu` — and any
+   * value it did not recognise — into `'slack'`, while snapshot rows are keyed by the
+   * INTEGRATION platform, so a platform-keyed lookup searched a different key space than
+   * the session key it protects and the old "unknown coordinate passes" branch silently
+   * swallowed the mismatch (`coords.platform:'feishu'` over a Slack channel id; an honest
+   * narrowed `'slack'` over a `feishu` row). Daemon session keys now carry the raw platform
+   * (S1a §6.3), but the channel-id-only match stays: it closes the relabelling dodge in
+   * both directions regardless of key regime and keeps this and the daemon's copy
+   * expressing literally the same rule; it over-blocks only if one org uses the same
+   * channel id on two platforms, which then requires membership in one of them, not a
+   * bypass. The platform is consulted ONLY to pick between branch 2 and branch 3, and only
+   * for a coordinate branch 1 already found nothing for — where the collapse cannot help an
+   * attacker, because branch 3 hands back a caller-derived channel rather than the asserted
+   * one.
    *
    * A NON-EMPTY member map is what counts as "known": an agent-less row is not a channel
    * anyone in this org can reach, so gating on it would reject every call naming it while

@@ -1919,7 +1919,10 @@ export function platName(p: string): string {
   if (x.includes('tele')) return 'Telegram'
   if (x.includes('disc')) return 'Discord'
   if (x.includes('feishu') || x.includes('lark')) return 'Lark'
-  return 'Slack'
+  if (x.includes('slack') || x === '') return 'Slack'
+  // Unknown platform ids render as themselves — falling back to 'Slack' was the
+  // web mirror of the daemon's deleted narrowPlatform fold (S1a §6.3).
+  return p.charAt(0).toUpperCase() + p.slice(1)
 }
 
 /** A session's display integration. GitHub is a hook source rather than a

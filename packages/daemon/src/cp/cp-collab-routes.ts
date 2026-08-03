@@ -211,19 +211,22 @@ export class CpCollabRoutes {
    * relabelling a real channel's coordinate as `webchat` still hits branch 1 and still
    * demands membership.
    *
-   * PLATFORM-FREE KEY, platform-keyed BRANCH. The lookup key must NOT include the coordinate
-   * platform: the woken session's key is computed from {@link Daemon.narrowPlatform}, which
-   * folds `feishu` — and any value it does not recognise — into `'slack'`, while snapshot
-   * rows are keyed by the INTEGRATION platform. Keying the LOOKUP on it searched a different
-   * key space than the session key it protects, and the old "unknown coordinate passes"
-   * branch silently swallowed the mismatch in BOTH directions: `coords.platform:'feishu'`
-   * over a Slack channel id, and (in a Feishu org) an honest narrowed `'slack'` over a
-   * `feishu` row. Either missed the row, passed, and still computed a bit-identical child
-   * session key. Matching on the channel id alone closes both and keeps this and the relay's
-   * copy — which has no `narrowPlatform` — expressing literally the same rule. The platform
-   * is consulted ONLY to pick between branch 2 and branch 3, and only for a coordinate
-   * branch 1 already found nothing for, where the collapse cannot help an attacker because
-   * branch 3 hands back a caller-derived channel rather than the asserted one.
+   * PLATFORM-FREE KEY, platform-keyed BRANCH. The lookup key does NOT include the coordinate
+   * platform. Historically it COULD not: session keys were computed through the deleted
+   * `narrowPlatform` helper, which folded `feishu` — and any value it did not recognise —
+   * into `'slack'`, while snapshot rows are keyed by the INTEGRATION platform, so a
+   * platform-keyed lookup searched a different key space than the session key it protects
+   * and the old "unknown coordinate passes" branch silently swallowed the mismatch in BOTH
+   * directions (`coords.platform:'feishu'` over a Slack channel id; an honest narrowed
+   * `'slack'` over a `feishu` row). Session keys now carry the raw platform (S1a §6.3), but
+   * the channel-id-only match stays: it is what closes the relabelling dodge in both
+   * directions regardless of key regime, and it keeps this and the relay's copy — which
+   * never had a fold — expressing literally the same rule. Re-keying the lookup by platform
+   * is a separate decision for the registry-driven rewrite, not a consequence of the fold's
+   * removal. The platform is consulted ONLY to pick between branch 2 and branch 3, and only
+   * for a coordinate branch 1 already found nothing for, where the collapse cannot help an
+   * attacker because branch 3 hands back a caller-derived channel rather than the asserted
+   * one.
    *
    * A NON-EMPTY member map is what counts as "known": an agent-less row is not a channel
    * anyone in this org can reach, so gating on it would reject every call naming it while
@@ -233,13 +236,14 @@ export class CpCollabRoutes {
    * here (`handleRelayAgentMsg` terminal-verify, `localWakeDecision`, and through it
    * `wakeRejectionReason`'s preflight) go through this one method.
    *
-   * ACCEPTED CONSEQUENCE of the wire's platform narrowing: `RdAgentMsg.coords.platform` is
-   * `slack | telegram | webchat | discord | feishu`, so `messageAgent` maps a target-less
-   * `hook` session's coords platform to `'slack'` before handing them to the relay (and
-   * {@link Daemon.narrowPlatform} does the same for `dream`). A CROSS-DAEMON wake out of such
-   * a session therefore lands in branch 2 and is rejected, while the same wake to a
-   * co-located peer — which passes the RAW `req.platform` — takes branch 3. Un-narrowing it
-   * needs a new coords platform value on the wire: a protocol change, out of scope here.
+   * ACCEPTED CONSEQUENCE of the legacy coordinate emission: `messageAgent` still maps a
+   * target-less `hook`/`dream` session's coords platform to `'slack'` before handing them
+   * to the relay ({@link Daemon.legacyCoordPlatform}) — the wire schema is open since S1a,
+   * but a peer that has not upgraded still reads `coords.platform` as the closed five-value
+   * enum and would refuse the whole frame. A CROSS-DAEMON wake out of such a session
+   * therefore lands in branch 2 and is rejected, while the same wake to a co-located peer —
+   * which passes the RAW `req.platform` — takes branch 3. The clamp is removable once the
+   * S1a fleet gate passes (S1b).
    */
   coordsDecision(orgId: string, platform: string, channelId: string, callerAgentId: string): CoordsVerdict {
     const sharing = this.byOrgChannel.get(this.coordsKey(orgId, channelId))
