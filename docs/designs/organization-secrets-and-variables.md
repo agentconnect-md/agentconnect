@@ -457,11 +457,22 @@ serializer the frame uses; a stored value is measured Postgres-side
 (`octet_length(to_json(value)::text)`) so its size is known without returning it
 and without opening a cipher inside the transaction. The budget also reserves for
 what the fence cannot read from those rows — the envelope, the spec's scalar
-fields, and the resolved `skills`/`managedSkills` entries, which expand from the
-stored ids and refs. Under an encrypting secret provider the stored measurement is
-of ciphertext and therefore approximate; the reserve absorbs ordinary divergence,
-and opening values under the transaction is deliberately not done because a
-transaction must never wait on a cipher.
+fields, and the resolved `managedSkills` entries, which expand from the stored
+ids. Under an encrypting secret provider the stored measurement is of ciphertext
+and therefore approximate; the reserve absorbs ordinary divergence, and opening
+values under the transaction is deliberately not done because a transaction must
+never wait on a cipher.
+
+Being conservative is the safe direction, but it must not become systematic
+over-counting: a fence that refuses configurations the wire carries comfortably is
+its own defect. Two specific traps, both of which reject valid writes:
+
+- the agent's `runtimeOverrides` bag CONTAINS `env`, so measuring the whole bag
+  while also counting each effective variable charges every local variable twice;
+  the bag is measured with `env` removed; and
+- an agent must be charged only for the skill sources its own enable-list resolves
+  through, never the organization's whole registry — otherwise unrelated source
+  metadata accumulates until no agent or environment write can pass at all.
 
 A retarget that omits a replacement value still counts the STORED value, since
 that value is what the newly enrolled agents receive.
@@ -562,7 +573,10 @@ an empty field cannot mean "keep the current value", because the empty string is
 itself a value the API accepts, and inferring intent from the field's content would
 make it impossible to set. Once replace is chosen, whatever the field contains —
 including the empty string — is what gets sent, and a **Keep the current value
-instead** link backs out. The selected-agent picker uses the caller's
+instead** link backs out. For the same reason the sheet validates only the KEY:
+the Console must not make an API-valid entry unreachable, so an empty value is
+accepted on create as well as on rotation. The selected-agent picker uses the
+caller's
 `resource.edit`-filtered agent list and edits bindings incrementally. Its
 standing help text says: "Only agents you can manage are shown. Existing
 assignments to other private agents are left unchanged."

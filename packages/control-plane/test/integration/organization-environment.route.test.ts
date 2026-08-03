@@ -809,3 +809,52 @@ describe('organization environment — review follow-ups', () => {
     expect(after).toBeGreaterThan(before)
   })
 })
+
+describe('organization environment — admission sizing is per-agent', () => {
+  it('does not charge an agent for skill sources it does not enable', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, name: 'no-skills-bot' })
+    const http = app({ control: new RecordingControl() })
+
+    // A registry with substantial unrelated metadata, written straight to the table
+    // so it can be large enough to matter (the HTTP DTO caps each field). Charging
+    // every agent for the whole organization registry would let this block all
+    // later writes.
+    await prisma.skillSource.createMany({
+      data: Array.from({ length: 60 }, (_, i) => ({
+        orgId: DEFAULT_ORG_ID,
+        name: `bulky-${i}`,
+        source: 'example-org/example-kit',
+        subDir: 'y'.repeat(3000)
+      }))
+    })
+
+    // This agent enables none of them, so a sizeable entry must still be admitted.
+    const created = await createEntry(http, {
+      key: 'UNRELATED_REGISTRY',
+      kind: 'variable',
+      value: 'z'.repeat(60 * 1024),
+      audience: 'all'
+    })
+    expect(created.status).toBe(201)
+    expect(created.entry.visibleAgentIds).toContain(agentId)
+  })
+
+  it('admits two legal local variables that the overrides bag used to double-count', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, name: 'two-blobs-bot' })
+    // ~120 KiB of local env: comfortably deliverable, but ~240 KiB if `env` is
+    // counted both inside the overrides bag and per effective key.
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { runtimeOverrides: { env: { A: 'x'.repeat(60 * 1024), B: 'y'.repeat(60 * 1024) } } }
+    })
+
+    const http = app({ control: new RecordingControl() })
+    const created = await createEntry(http, { key: 'SMALL', kind: 'variable', value: 'ok', audience: 'all' })
+    expect(created.status).toBe(201)
+    expect(created.entry.visibleAgentIds).toContain(agentId)
+  })
+})

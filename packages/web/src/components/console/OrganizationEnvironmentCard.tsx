@@ -301,12 +301,12 @@ function EntrySheet({
   const validation = useMemo(() => {
     const trimmed = key.trim()
     if (!ENV_KEY.test(trimmed)) return `“${trimmed || '(empty)'}” is not a valid name`
-    // A brand-new secret must carry a value — the same guard the agent-level secret
-    // editor applies. Rotating a SAVED secret to the empty string is allowed, since
-    // "replace" is now an explicit action rather than an inference from the field.
-    if (!editing && secret && value === '') return 'Enter a value for the secret'
+    // Only the NAME is validated here. The empty string is a value the API accepts
+    // for both kinds, so the Console must not make an API-valid entry unreachable —
+    // on create or on rotation. "Replace" being an explicit action is what removed
+    // the need to read intent out of the field's content at all.
     return null
-  }, [editing, key, secret, value])
+  }, [key])
 
   const save = async () => {
     if (busy || validation) return

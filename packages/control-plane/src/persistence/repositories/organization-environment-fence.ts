@@ -199,6 +199,21 @@ function skillRefSource(ref: string): string {
   return slash === -1 ? ref : ref.slice(0, slash)
 }
 
+/**
+ * Encoded weight of the skill sources THIS agent enables — the rows its resolved
+ * `AgentSpec.skills` entries are built from.
+ *
+ * Scoped to the agent's own enable-list on purpose. Charging every agent for the
+ * whole organization registry would let unrelated source metadata accumulate until
+ * no agent or environment write could pass admission at all.
+ */
+function enabledSkillSourceBytes(runtimeOverrides: unknown, sizesByName: Map<string, number>): number {
+  const refs = (runtimeOverrides as { skills?: string[] } | null)?.skills ?? []
+  let bytes = 0
+  for (const name of new Set(refs.map(skillRefSource))) bytes += sizesByName.get(name) ?? 0
+  return bytes
+}
+
 /** The per-agent inputs step 4 validates, read under the locks from steps 1–2. */
 export interface AgentEnvironmentSnapshot {
   agentId: string
@@ -336,7 +351,7 @@ export async function snapshotAgentEnvironments(
 ): Promise<AgentEnvironmentSnapshot[]> {
   if (agentIds.length === 0) return []
   const ids = [...new Set(agentIds)]
-  const [agents, secretRows, otherSpecRows, assignments] = await Promise.all([
+  const [agents, secretRows, otherSpecRows, skillSourceRows, assignments] = await Promise.all([
     tx.agent.findMany({ where: { id: { in: ids } }, select: { id: true, runtimeOverrides: true } }),
     // SIZES ONLY — this is an admission check, never a value read. `to_json`
     // computes the escaped JSON length Postgres-side, so escaping is measured
@@ -344,11 +359,15 @@ export async function snapshotAgentEnvironments(
     tx.$queryRaw<Array<{ agentId: string; key: string; bytes: number }>>(
       Prisma.sql`SELECT "agentId", "key", ${Prisma.raw(ENCODED_LENGTH_SQL)}::int AS bytes FROM "agent_secret" WHERE "agentId" IN (${Prisma.join(ids)})`
     ),
-    // Everything else this agent contributes to its spec (see `otherSpecBytes`).
+    // The NON-ENVIRONMENT projection of the agent row (see `otherSpecBytes`).
+    // `- 'env'` is essential: the effective env members are counted individually by
+    // `resolvedSpecBytes`, so leaving `env` in the bag here would count every local
+    // variable TWICE and reject configurations the wire carries comfortably.
+    // Secrets are separate rows and were never in the bag.
     tx.$queryRaw<Array<{ id: string; bytes: number }>>(
       Prisma.sql`
         SELECT a."id",
-               ( coalesce(octet_length(a."runtimeOverrides"::text), 0)
+               ( coalesce(octet_length((a."runtimeOverrides" - 'env')::text), 0)
                + coalesce(octet_length(to_json(a."description")::text), 0)
                + coalesce(octet_length(to_json(a."name")::text), 0)
                + coalesce(octet_length(to_json(a."displayName")::text), 0)
@@ -358,10 +377,15 @@ export async function snapshotAgentEnvironments(
                + coalesce(octet_length(array_to_string(a."managedSkills", ',')), 0)
                + coalesce(octet_length(array_to_string(a."allowedCallerAgentIds", ',')), 0)
                + coalesce(octet_length(array_to_string(a."allowedTargetAgentIds", ',')), 0)
-               + coalesce((SELECT sum(octet_length(to_json(s)::text))
-                           FROM "skill_source" s WHERE s."orgId" = a."orgId"), 0)
                )::int AS bytes
         FROM "agent" a WHERE a."id" IN (${Prisma.join(ids)})`
+    ),
+    // Skill-source rows, sized per NAME so each agent is charged only for the
+    // sources its own enable-list resolves through. Summing the whole organization
+    // registry would let unrelated metadata growth block every agent and
+    // environment write.
+    tx.$queryRaw<Array<{ name: string; bytes: number }>>(
+      Prisma.sql`SELECT "name", octet_length(to_json(s)::text)::int AS bytes FROM "skill_source" s WHERE "orgId" = ${orgId}`
     ),
     tx.organizationEnvironmentAssignment.findMany({
       where: { orgId, agentId: { in: ids } },
@@ -398,6 +422,7 @@ export async function snapshotAgentEnvironments(
   }
 
   const otherSpec = new Map(otherSpecRows.map((row) => [row.id, row.bytes]))
+  const skillSourceSizes = new Map(skillSourceRows.map((row) => [row.name, row.bytes]))
 
   const assignedByAgent = new Map<string, typeof assignments>()
   for (const assignment of assignments) {
@@ -432,7 +457,9 @@ export async function snapshotAgentEnvironments(
       organizationEntries,
       organizationValueBytes,
       agentSecretBytes: secretBytes.get(agent.id) ?? new Map(),
-      otherSpecBytes: otherSpec.get(agent.id) ?? 0
+      // The row's non-env projection, plus only the skill sources THIS agent
+      // enables — the resolved `AgentSpec.skills` entries are built from them.
+      otherSpecBytes: (otherSpec.get(agent.id) ?? 0) + enabledSkillSourceBytes(agent.runtimeOverrides, skillSourceSizes)
     }
   })
 }

@@ -133,6 +133,22 @@ describe('environment admission (design §5 step 4)', () => {
     expect(keys.length * raw).toBeLessThan(MAX_RESOLVED_ENVIRONMENT_BYTES)
   })
 
+  it('does not double-count a local variable through the overrides bag', () => {
+    // `otherSpecBytes` must exclude `env`, because every effective member is counted
+    // individually below it. Two legal 60 KiB local variables occupy ~120 KiB on the
+    // wire; counting the bag WITH env made that ~240 KiB and refused a valid write.
+    const local = 'x'.repeat(60 * 1024)
+    expect(
+      checkEnvironmentAdmission([
+        snapshot({
+          variables: { LOCAL_A: local, LOCAL_B: local },
+          // What the non-env projection of a plain agent actually weighs.
+          otherSpecBytes: 512
+        })
+      ])
+    ).toBeNull()
+  })
+
   it('counts the rest of the spec, not only the two maps', () => {
     // A large description / resolved skills payload consumes the same frame, so a
     // small environment on top of it can still overflow.
