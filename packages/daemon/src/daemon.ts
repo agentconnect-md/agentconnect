@@ -295,7 +295,13 @@ import type {
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
+import {
+  fromPlatformMessage,
+  stableMessageId,
+  stableTurnId,
+  threadKeyForPost,
+  type NormalizedMessage
+} from './messages/normalized.js'
 import type {
   RegisterReq,
   RegisterOk,
@@ -17580,6 +17586,23 @@ export class Daemon {
         this.log.warn(`${label}: agent "${agentId}" has no live platform connection — running without output`)
       } else {
         try {
+          // §6.8: a DIRECT-conversation target must canonicalize as a DM. Two things
+          // depend on it: the thread key (Telegram DMs key `dm`, not `tg:<id>`; Feishu
+          // DMs key the chat id) AND the session classification — `conversationKind`
+          // and the daemon-local private-capture gate both derive from `isDm`, so an
+          // anchor into a DM that reports `false` stores a channel/non-private session
+          // for a conversation whose inbound messages classify `dm`.
+          // CAPABILITY-driven, not a platform list: every connection exposes
+          // `getChannelInfo`, so the probe is uniform (a platform whose keys are
+          // DM-insensitive still needs the classification). Mirrors the root-post path
+          // in mcp/ops.ts; a failed probe falls back to the message's own value.
+          const isDmTarget =
+            (
+              await (conn as { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> })
+                .getChannelInfo?.(target.channel)
+                .catch(() => undefined)
+            )?.isIm ?? false
+          if (isDmTarget) msg = { ...msg, isDm: true }
           let ts: string | undefined
           if (msg.platform === 'slack') {
             const agent = this.agents.get(agentId)
@@ -17597,7 +17620,11 @@ export class Daemon {
           }
           // The posted anchor is both the thread root and the authoritative
           // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
-          if (ts) msg = { ...msg, thread: ts, transcriptTs: ts }
+          // §6.8: the SESSION key must follow the platform's own conversation model
+          // (threadKeyForPost — Slack threads off the ts, Telegram replies resolve
+          // to `tg:<root>`, Discord conversations ARE the channel), or the anchored
+          // session and the replies underneath it mint different keys.
+          if (ts) msg = { ...msg, thread: threadKeyForPost(msg.platform, msg.channel, ts, msg.isDm), transcriptTs: ts }
         } catch (err) {
           this.log.warn(
             `${label}: failed to post trigger to ${target.channel} (${formatErr(err)}) — running without anchor`

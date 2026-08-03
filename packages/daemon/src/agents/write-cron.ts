@@ -25,12 +25,13 @@ function toCronDef(cron: CronUpsert): CronDef {
     id: cron.cronId,
     schedule: cron.schedule,
     timezone: cron.timezone,
-    // Only Slack targets are servable today; a non-slack target degrades to a
-    // headless fire rather than failing the whole def.
-    ...(cron.target && cron.target.platform === 'slack'
+    // §6.8: the target persists with its REAL platform — the anchor path posts
+    // through the target integration's own connection (anchorTrigger is
+    // platform-generic), so the old degrade-non-slack-to-headless fold is gone.
+    ...(cron.target
       ? {
           target: {
-            platform: 'slack' as const,
+            platform: cron.target.platform,
             channel: cron.target.channel,
             ...(cron.target.integrationId ? { integrationId: cron.target.integrationId } : {})
           }
