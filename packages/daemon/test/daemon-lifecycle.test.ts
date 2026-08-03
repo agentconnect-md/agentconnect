@@ -556,6 +556,46 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('§6.8: a telegram anchored fire keys the session by that platform conversation model', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const postMessage = vi.fn(async () => '777')
+    // Re-home int-a onto the telegram connection map (makeRoutable wires the slack
+    // map, which the integration lookup checks first).
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).tgConnByIntegration.set('int-a', {
+      postMessage,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-tg:trace-1'),
+        msgId: 'cron:cron-tg:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'telegram',
+        channel: '-100123',
+        isDm: false
+      },
+      { channel: '-100123', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-tg"'
+    )
+
+    expect(postMessage).toHaveBeenCalledWith('-100123', '⏰ scheduled')
+    // threadKeyForPost: a Telegram reply chain resolves to `tg:<root>` — the anchor
+    // session must mint the SAME key or follow-up replies open a different session.
+    const key = sessionKey('telegram', '-100123', 'tg:777', 'bot-a', TRANSPORT_SCOPE)
+    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    await daemon.stop()
+  }, 15_000)
+
   it('reports a cron session before its turn finishes', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })

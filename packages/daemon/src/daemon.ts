@@ -293,7 +293,13 @@ import type {
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
+import {
+  fromPlatformMessage,
+  stableMessageId,
+  stableTurnId,
+  threadKeyForPost,
+  type NormalizedMessage
+} from './messages/normalized.js'
 import type {
   RegisterReq,
   RegisterOk,
@@ -17551,7 +17557,11 @@ export class Daemon {
           }
           // The posted anchor is both the thread root and the authoritative
           // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
-          if (ts) msg = { ...msg, thread: ts, transcriptTs: ts }
+          // §6.8: the SESSION key must follow the platform's own conversation model
+          // (threadKeyForPost — Slack threads off the ts, Telegram replies resolve
+          // to `tg:<root>`, Discord conversations ARE the channel), or the anchored
+          // session and the replies underneath it mint different keys.
+          if (ts) msg = { ...msg, thread: threadKeyForPost(msg.platform, msg.channel, ts), transcriptTs: ts }
         } catch (err) {
           this.log.warn(
             `${label}: failed to post trigger to ${target.channel} (${formatErr(err)}) — running without anchor`

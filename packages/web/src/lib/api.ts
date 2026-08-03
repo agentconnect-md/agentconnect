@@ -579,7 +579,7 @@ export interface CronDto {
   name: string | null // console display name; null for legacy/CLI rows
   schedule: string
   timezone: string
-  targetPlatform: 'slack' | 'telegram'
+  targetPlatform: string // §6.8 open id — derived from the anchor integration
   targetChannel: string | null
   targetIntegrationId: string | null // null ⇒ legacy row / integration uninstalled
   trigger: string
@@ -602,7 +602,7 @@ export interface UpsertCronInput {
   name?: string // console display name
   schedule: string
   timezone?: string // omitted on create ⇒ control-plane process timezone
-  targetPlatform: 'slack' | 'telegram'
+  targetPlatform: string // §6.8 open id — derived from the anchor integration
   targetChannel?: string // optional — absent ⇒ headless fire
   targetIntegrationId?: string // the agent integration posting the anchor (platform derives from it)
   trigger: string
