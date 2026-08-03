@@ -463,11 +463,15 @@ describe('messageAgent: same-daemon delivery', () => {
   // session's channel is the hook id.)
   it('treats a raw session-identity platform as channel-free and keys the child with it', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
-    const { daemon, call } = await bootWithDispatchSpy(root)
+    const { daemon, call, calls } = await bootWithDispatchSpy(root)
     const dream = baseReq({ platform: 'dream', callerChannel: 'memory', channel: 'memory', thread: 'dream-1' })
     expect((daemon as any).wakeRejectionReason(dream)).toBeNull()
     // Raw platform prefix — and the CHANNEL is the caller-derived one, not 'memory'.
     expect(await call(dream)).toMatchObject({ delivered: true, targetSession: 'dream:a2a:bot-a:dream-1:bot-b' })
+    // Post-fleet-gate: the origin coordinate carries the RAW platform too (no 'slack'
+    // emission clamp), so a cross-daemon reply into this origin takes the channel-free
+    // branch on the relay instead of the fail-closed IM branch.
+    expect(calls.at(-1)!.callMeta.originCoords).toEqual({ platform: 'dream', channel: 'memory', thread: '100.1' })
 
     const hook = baseReq({ platform: 'hook', callerChannel: 'hook-1', channel: 'hook-1', thread: 'delivery-1' })
     expect((daemon as any).wakeRejectionReason(hook)).toBeNull()

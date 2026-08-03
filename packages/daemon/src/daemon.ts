@@ -6909,7 +6909,7 @@ export class Daemon {
     // already minted); originCoords are its landing coords for cross-daemon reply routing.
     const originSessionId = this.store.getSession(callerKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, originSessionId)
-    const originCoordPlatform = this.legacyCoordPlatform(platform)
+    const originCoordPlatform = platform
     const originCoords: CallMeta['originCoords'] = {
       platform: originCoordPlatform,
       channel: req.callerChannel,
@@ -6928,7 +6928,7 @@ export class Daemon {
       req.correlationId !== undefined ? req.correlationId : isReply ? inbound.correlationId : undefined
 
     const target = this.agents.get(req.toAgentId)
-    const resolved = target ? this.resolveCpAgent(req.toAgentId, this.legacyCoordPlatform(platform)) : null
+    const resolved = target ? this.resolveCpAgent(req.toAgentId, platform) : null
     const integrationId = resolved?.integrationId
     const targetTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
@@ -6970,7 +6970,7 @@ export class Daemon {
     // Local presence: if absent, route the delivery over the relay. The relay
     // decides whether the target is allowed to be woken by this caller.
     if (!target) {
-      const coordPlatform = this.legacyCoordPlatform(platform)
+      const coordPlatform = platform
       const remote = await this.routeAgentMsgCrossDaemon(
         { ...req, text: event.text, thread: event.thread },
         {
@@ -7130,7 +7130,7 @@ export class Daemon {
     const deliveryId = randomUUID()
     // Hand the origin owner a turn whose origin points back at the REPLIER's session, so the
     // origin could reply again (symmetric lineage). callFrom = the replier.
-    const replyCoordPlatform = this.legacyCoordPlatform(platform)
+    const replyCoordPlatform = platform
     const replierSessionId = callerRec?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, replierSessionId)
     const replyOriginCoords: CallMeta['originCoords'] = {
@@ -7174,7 +7174,7 @@ export class Daemon {
       if (local.transportScope && !integrationId) {
         return { delivered: false, targetSession: local.key, reason: 'not_found' }
       }
-      const resolved = this.resolveCpAgent(originOwner, this.legacyCoordPlatform(originPlatform))
+      const resolved = this.resolveCpAgent(originOwner, originPlatform)
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
@@ -7531,7 +7531,7 @@ export class Daemon {
     }
     const originSessionId = this.store.getSession(originKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.agentId, originSessionId)
-    const originCoordPlatform = this.legacyCoordPlatform(originPlatform)
+    const originCoordPlatform = originPlatform
     const deliveryId = randomUUID()
     const callMeta: CallMeta = {
       callFrom: req.agentId,
@@ -7648,17 +7648,6 @@ export class Daemon {
       this.log.warn(`messageAgent: cross-daemon route failed for ${req.toAgentId}: ${formatErr(err)}`)
       return { delivered: false, targetSession: ctx.targetSession, reason: 'offline' }
     }
-  }
-
-  /** Legacy COORDINATE-EMISSION clamp (S1a, integration-plugin-architecture.md §6.2/§6.3).
-   *  Session KEYS always use the raw session platform — the old `narrowPlatform` fold
-   *  (unknown → 'slack') minted keys nothing could continue and is deleted. But coords
-   *  handed to the relay wire or resolved against CP integration rows keep today's values:
-   *  peers may still read platform fields as closed enums until the fleet gate passes, and
-   *  the channel-free origin kinds (`hook`, `dream`) have no integration row to resolve.
-   *  Remove after the S1a fleet gate (S1b opens the emitted set). */
-  private legacyCoordPlatform(p: string): string {
-    return p === 'hook' || p === 'dream' ? 'slack' : p
   }
 
   // ══════════════════════════ §3.4/§6.8 main-agent orchestration ══════════════════════════

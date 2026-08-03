@@ -400,12 +400,23 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // directory entry, which here has none.
     expect(forwards[0].integrationId).toBeUndefined()
 
+    // Post-fleet-gate (S1b): a `dream`/`hook` session's cross-daemon wake carries its RAW
+    // platform — same channel-free admission as webchat, forwarded verbatim. (The daemon
+    // used to clamp these to 'slack' on emission, which landed them in the fail-closed IM
+    // branch and rejected the wake.)
+    const dream = await route(
+      D1,
+      baseMsg({ deliveryId: 'd-dream', coords: { platform: 'dream', channel: 'memory', thread: 'dream-1' } })
+    )
+    expect(dream.delivered).toBe(true)
+    expect(forwards[1]!.coords).toEqual({ platform: 'dream', channel: 'memory', thread: 'dream-1' })
+
     const unknownChannel = await route(
       D1,
       baseMsg({ deliveryId: 'd-2', coords: { platform: 'slack', channel: 'C_NOT_IN_SNAPSHOT' } })
     )
     expect(unknownChannel).toMatchObject({ delivered: false, reason: 'not_allowed' })
-    expect(forwards).toHaveLength(1) // nothing forwarded for the IM coordinate
+    expect(forwards).toHaveLength(2) // nothing forwarded for the IM coordinate
 
     // …on every chat-shaped platform: the persisted IM four, and (S1a §6.1) any id this
     // build does not know — unknown ids are chat-shaped until the registry says otherwise,
@@ -417,7 +428,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
       )
       expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
     }
-    expect(forwards).toHaveLength(1)
+    expect(forwards).toHaveLength(2)
   })
 
   it('coords integrity: a DM / group-DM row the caller owns is KNOWN, so DM-origin A2A still routes', async () => {

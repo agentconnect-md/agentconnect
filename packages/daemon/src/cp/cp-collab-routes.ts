@@ -232,14 +232,12 @@ export class CpCollabRoutes {
    * here (`handleRelayAgentMsg` terminal-verify, `localWakeDecision`, and through it
    * `wakeRejectionReason`'s preflight) go through this one method.
    *
-   * ACCEPTED CONSEQUENCE of the legacy coordinate emission: `messageAgent` still maps a
-   * target-less `hook`/`dream` session's coords platform to `'slack'` before handing them
-   * to the relay ({@link Daemon.legacyCoordPlatform}) — the wire schema is open since S1a,
-   * but a peer that has not upgraded still reads `coords.platform` as the closed five-value
-   * enum and would refuse the whole frame. A CROSS-DAEMON wake out of such a session
-   * therefore lands in branch 2 and is rejected, while the same wake to a co-located peer —
-   * which passes the RAW `req.platform` — takes branch 3. The clamp is removable once the
-   * S1a fleet gate passes (S1b).
+   * Coordinates carry the RAW session platform end-to-end (S1b, post-fleet-gate): a
+   * target-less `hook`/`dream` session's cross-daemon wake now asserts its real platform,
+   * takes branch 3 on the relay AND on this twin — exactly like the same-daemon path —
+   * and the woken child keys off the caller-derived channel. (Until the S1a fleet gate
+   * passed, the daemon clamped these to `'slack'` on emission because an un-upgraded peer
+   * read `coords.platform` as a closed enum; that clamp is deleted.)
    */
   coordsDecision(orgId: string, platform: string, channelId: string, callerAgentId: string): CoordsVerdict {
     const sharing = this.byOrgChannel.get(this.coordsKey(orgId, channelId))
