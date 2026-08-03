@@ -53,6 +53,18 @@ describe('duplicateIdentity', () => {
 })
 
 describe('mergeConversation', () => {
+  it('keeps each rendered tool row tied to its source session', () => {
+    const merged = mergeConversation([
+      src(A, 'slack', [row({ sender: A, kind: 'tool', toolCallId: 'tool-a', body: '{"toolCallId":"tool-a"}' })]),
+      src(B, 'slack', [row({ sender: B, kind: 'tool', toolCallId: 'tool-b', body: '{"toolCallId":"tool-b"}' })])
+    ])
+
+    expect(merged.map(({ row, sourceSessionId }) => ({ toolCallId: row.toolCallId, sourceSessionId }))).toEqual([
+      { toolCallId: 'tool-a', sourceSessionId: 'sess-aaaa' },
+      { toolCallId: 'tool-b', sourceSessionId: 'sess-bbbb' }
+    ])
+  })
+
   it('dedupes Discord copies on the snowflake and orders them by its embedded time', () => {
     // Snowflake for ~2024: time bits decode via (id >> 22) + Discord epoch.
     const SNOWFLAKE = '1101111111111111111'

@@ -202,7 +202,7 @@ function ComposerSendButton({
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
 // transcript kind (text | tool | reasoning) onto the existing lane styling.
-function msgStep(m: SessionMessageDto): FmtStep {
+function msgStep(m: SessionMessageDto, toolSessionId?: string): FmtStep {
   const k = (m.kind || 'text').toLowerCase()
   if (k === 'tool') {
     return {
@@ -218,7 +218,7 @@ function msgStep(m: SessionMessageDto): FmtStep {
       time: formatTranscriptRowTime(m),
       // Carry the raw message so the row can render the captured tool body (input /
       // output / content / diff / locations) below the title, on demand.
-      ...(m.body ? { msg: m } : {})
+      ...(m.body ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
     }
   }
   if (k === 'reasoning') {
@@ -264,17 +264,22 @@ function countsAsOfflineSource(error: unknown): boolean {
 }
 
 /** Render input for conversation mode: mergeConversation over the CURRENT
- *  per-member row map (merged-conversation-view.md §6). */
+ *  per-member row map (merged-conversation-view.md §6). Preserve each row's
+ *  object identity while indexing its source out-of-band: ToolBodyDetail uses
+ *  exact-row identity to fence a previously fetched full body. */
 function mergeConversationRows(
   sources: { sessionId: string; agentId: string; platform: string }[],
-  rows: Map<string, SessionMessageDto[]>
+  rows: Map<string, SessionMessageDto[]>,
+  sourceSessionByMessage: WeakMap<SessionMessageDto, string>
 ): SessionMessageDto[] {
-  const merged = mergeConversation(
+  return mergeConversation(
     sources
       .filter((source) => rows.has(source.sessionId))
       .map((source) => ({ ...source, rows: rows.get(source.sessionId)! }) satisfies MergeSource)
-  )
-  return merged.map((m) => m.row)
+  ).map(({ row, sourceSessionId }) => {
+    sourceSessionByMessage.set(row, sourceSessionId)
+    return row
+  })
 }
 
 interface FmtStep {
@@ -292,6 +297,9 @@ interface FmtStep {
   image?: SessionImage
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
+  // Conversation rows keep their owning session out-of-band so full-body reads
+  // do not accidentally target the representative member.
+  toolSessionId?: string
 }
 
 // A bare text step (no lane chrome) — how a peer participant's message renders
@@ -315,6 +323,7 @@ function plainStep(text: string, time?: string, image?: SessionImage): FmtStep {
 // A step's non-text extras (code block, file chips, captured tool body) — rendered
 // identically in a turn's plain answer and in its collapsed "work" rows.
 function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) {
+  const toolSessionId = step.toolSessionId ?? sessionId
   return (
     <>
       {step.code && (
@@ -331,7 +340,7 @@ function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) 
           ))}
         </div>
       )}
-      {step.msg && sessionId && <ToolBodyDetail msg={step.msg} sessionId={sessionId} />}
+      {step.msg && toolSessionId && <ToolBodyDetail msg={step.msg} sessionId={toolSessionId} />}
     </>
   )
 }
@@ -1141,6 +1150,7 @@ export default function SessionDetailView() {
     cursors: Map<string, string | null>
     older: Map<string, string | null>
   }>({ rows: new Map(), cursors: new Map(), older: new Map() })
+  const conversationSourceSessionByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
   const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
   const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
   // Which conversation key the CURRENT fan-out state belongs to — the focus
@@ -1584,7 +1594,7 @@ export default function SessionDetailView() {
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
-        setMsgs(mergeConversationRows(sources, rowsBySession))
+        setMsgs(mergeConversationRows(sources, rowsBySession, conversationSourceSessionByMessageRef.current))
         setMsgLoading(false)
         setMsgPaging(false)
         liveCursorRef.current = cursors.get(sid) ?? null
@@ -1690,7 +1700,7 @@ export default function SessionDetailView() {
         }
         if (tailSessionRef.current !== sid) return
         setConversationOffline(failed)
-        setMsgs(mergeConversationRows(sources, state.rows))
+        setMsgs(mergeConversationRows(sources, state.rows, conversationSourceSessionByMessageRef.current))
         if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
           reconcileLiveSteps(sid, repRows, aid)
       })()
@@ -1762,7 +1772,7 @@ export default function SessionDetailView() {
           }
         })
       )
-      setMsgs(mergeConversationRows(sources, state.rows))
+      setMsgs(mergeConversationRows(sources, state.rows, conversationSourceSessionByMessageRef.current))
       setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
     } finally {
       setConversationPagingEarlier(false)
@@ -2163,6 +2173,7 @@ export default function SessionDetailView() {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
     for (const m of visibleMsgs ?? []) {
+      const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
       if (m.sender === session.agentId) {
         let last = turns[turns.length - 1]
         const ownerName = session.agentName ?? ''
@@ -2177,7 +2188,7 @@ export default function SessionDetailView() {
           }
           turns.push(last)
         }
-        const step = msgStep(m)
+        const step = msgStep(m, toolSessionId)
         last.steps.push(step)
         if (!last.time && step.time) last.time = step.time
       } else {
@@ -2188,7 +2199,10 @@ export default function SessionDetailView() {
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
         const self = isSelf(m.sender)
         if (senderAgent && !self) {
-          pushAgentTurn(senderAgent, { ...msgStep(m), ...(m.attachments?.[0] ? { image: m.attachments[0] } : {}) })
+          pushAgentTurn(senderAgent, {
+            ...msgStep(m, toolSessionId),
+            ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
+          })
           continue
         }
         const participant = self
