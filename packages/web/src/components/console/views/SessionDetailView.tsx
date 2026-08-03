@@ -1024,6 +1024,7 @@ export default function SessionDetailView() {
   const {
     getPgSession,
     getLiveSteps,
+    getBusyLaneAgentIds,
     reconcileLiveSteps,
     getPgInput,
     getPgImage,
@@ -2877,18 +2878,36 @@ export default function SessionDetailView() {
                   conversationId={webchatConversationId}
                 />
               )}
-              {pgBusy && (
-                <div className="flex items-center gap-[10px] desktop:mt-[14px] desktop:gap-[11px]">
-                  <span className="av h-[30px] w-[30px] flex-none rounded-md">
-                    <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={30} />
-                  </span>
-                  <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
-                    <span className="tdot" />
-                    <span className="tdot [animation-delay:.18s]" />
-                    <span className="tdot [animation-delay:.36s]" />
-                  </div>
-                </div>
-              )}
+              {pgBusy &&
+                (() => {
+                  // Multi-agent conversations attribute the typing indicator to
+                  // the participants whose reply lanes are STILL OPEN — after a
+                  // supersession it is the REGENERATING agent working, not the
+                  // primary. Single-agent (and lane-less adopted) sessions keep
+                  // the owner row.
+                  const busyAgents =
+                    (session.participants?.length ?? 0) > 1
+                      ? getBusyLaneAgentIds(session.id)
+                          .map((agentId) => agentById.get(agentId))
+                          .filter((agent): agent is Agent => agent !== undefined)
+                      : []
+                  const rows = busyAgents.length > 0 ? busyAgents : [owner]
+                  return rows.map((agent, i) => (
+                    <div
+                      key={agent?.id ?? i}
+                      className="flex items-center gap-[10px] desktop:mt-[14px] desktop:gap-[11px]"
+                    >
+                      <span className="av h-[30px] w-[30px] flex-none rounded-md">
+                        <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={30} />
+                      </span>
+                      <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
+                        <span className="tdot" />
+                        <span className="tdot [animation-delay:.18s]" />
+                        <span className="tdot [animation-delay:.36s]" />
+                      </div>
+                    </div>
+                  ))
+                })()}
               {pgEmpty && (
                 <div className="desktop:mt-[6px]">
                   <div className="mb-2 font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">

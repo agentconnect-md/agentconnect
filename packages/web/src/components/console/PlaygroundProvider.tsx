@@ -87,6 +87,11 @@ interface PlaygroundData {
    *  below its fetched history. Empty until you send. Synthetic 'pg_' sessions don't use
    *  this (their whole transcript lives in the session's own `steps`). */
   getLiveSteps: (id: string) => SessionStep[]
+  /** Participants whose reply lanes are STILL OPEN for this conversation —
+   *  drives per-agent typing attribution in multi-agent conversations (a
+   *  superseded regeneration keeps its author's lane open, so the indicator
+   *  names the agent actually working, not the primary). */
+  getBusyLaneAgentIds: (id: string) => string[]
   /** Retire only optimistic turns confirmed by authoritative transcript rows. */
   reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string) => void
 }
@@ -1086,6 +1091,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
+  const getBusyLaneAgentIds = useCallback(
+    (id: string): string[] =>
+      lanesOfLanes(streamCursors.current, id)
+        .map((key) => laneAgentId(key))
+        .filter((agentId): agentId is string => agentId !== undefined),
+    []
+  )
   const reconcileLiveSteps = useCallback((id: string, persisted: SessionMessageDto[], agentId: string): void => {
     setWcSteps((cur) => {
       const live = cur[id]
@@ -1118,6 +1130,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgSession,
       pgSessionList,
       getLiveSteps,
+      getBusyLaneAgentIds,
       reconcileLiveSteps
     }),
     [
@@ -1137,6 +1150,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgSession,
       pgSessionList,
       getLiveSteps,
+      getBusyLaneAgentIds,
       reconcileLiveSteps
     ]
   )
