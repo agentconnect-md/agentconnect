@@ -5,8 +5,10 @@ import {
   RdAck,
   RdChat,
   RdAgentMsg,
+  RdAgentMsgAck,
   RdAgentMsgFwd,
   RdSlackAction,
+  RD_HEADLESS_AGENT_DELIVERY_V1,
   RelayWebchatOp,
   WEBCHAT_IMAGE_MAX_BYTES,
   RELAY_DAEMON_FRAME_TYPES,
@@ -272,6 +274,134 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     if (r.frame.payload.source !== 'im') throw new Error('narrow source')
     expect(r.frame.payload.payload.text).toBe('@bot deploy please')
     expect(r.frame.payload.integrationId).toBe(CONV_ID)
+  })
+
+  it('separates the untrusted provider authorship claim from the relay-minted trusted mint', () => {
+    // send-message-routing-rework.md §8.1/§8.2: the provider's own claim rides INSIDE
+    // `payload` (any workspace app could have written that metadata); what the relay
+    // VERIFIED rides outside it. A target that conflated the two would treat a forged
+    // metadata block as a policy identity, so the wire keeps them structurally apart.
+    const im = {
+      source: 'im' as const,
+      agentId: AGENT_ID,
+      sessionKey: 'C123/1720000000.000100',
+      msgId: 'Ev0PV52K21',
+      botId: DAEMON_ID,
+      integrationId: CONV_ID,
+      chatId: 'C123',
+      payload: {
+        msgId: 'Ev0PV52K21',
+        traceId: 't-1',
+        source: 'user',
+        platform: 'slack',
+        channel: 'C123',
+        thread: '1720000000.000100',
+        sender: { id: 'UBOT', isBot: true, appId: 'A123' },
+        text: '<@U_REVIEWER> please verify the rollout',
+        mentionedBots: ['U_REVIEWER'],
+        isDm: false,
+        agentAuthorship: {
+          authorAgentId: AGENT_ID,
+          responseId: 'r-1',
+          deliveryState: 'final',
+          hopCount: 7,
+          mentionedAgentIds: [AUTHORITY_ID]
+        }
+      },
+      trustedFromAgentId: AGENT_ID,
+      trustedResponseId: 'r-1',
+      trustedRecipientAgentIds: [AUTHORITY_ID],
+      trustedDeliveryHopCount: 8
+    }
+    const r = decodeRelayDaemonFrame(envelope('rd/msg', im))
+    if (!r.ok) throw new Error('expected ok')
+    if (r.frame.type !== 'rd/msg') throw new Error('narrow')
+    if (r.frame.payload.source !== 'im') throw new Error('narrow source')
+    const frame = r.frame.payload
+    // The claim states the SOURCE turn's depth; the relay's mint is that depth already
+    // advanced by one and cap-checked. The target installs the mint WITHOUT adding again.
+    expect(frame.payload.agentAuthorship?.hopCount).toBe(7)
+    expect(frame.trustedDeliveryHopCount).toBe(8)
+    expect(frame.trustedFromAgentId).toBe(AGENT_ID)
+
+    // An unverified message carries the provider claim alone — parsing must accept that,
+    // because "claimed but not promoted" is the ordinary outcome for a foreign bot.
+    const claimOnly = { ...im, payload: { ...im.payload } } as Record<string, unknown>
+    delete claimOnly.trustedFromAgentId
+    delete claimOnly.trustedResponseId
+    delete claimOnly.trustedRecipientAgentIds
+    delete claimOnly.trustedDeliveryHopCount
+    expect(RdMsg.safeParse(claimOnly).success).toBe(true)
+
+    // A negative source depth is not "depth 0" — it is unverifiable, and §4.1 makes such
+    // an edge transcript-only. Reject it at the wire so no consumer can coerce it.
+    expect(
+      RdMsg.safeParse({
+        ...im,
+        payload: { ...im.payload, agentAuthorship: { ...im.payload.agentAuthorship, hopCount: -1 } }
+      }).success
+    ).toBe(false)
+    // `streaming` and `final` are the only lifecycle positions; only `final` routes.
+    expect(
+      RdMsg.safeParse({
+        ...im,
+        payload: { ...im.payload, agentAuthorship: { ...im.payload.agentAuthorship, deliveryState: 'partial' } }
+      }).success
+    ).toBe(false)
+  })
+
+  it('rd/hello advertises optional daemon capabilities, and an older daemon advertises none', () => {
+    // §8.4: the relay must be able to tell "supports headless session replies" from
+    // "never said", because the second one has to REFUSE a required-headless delivery
+    // rather than degrade it into visible IM output.
+    const withCaps = buildRelayDaemonFrame('rd/hello', {
+      apiKey: 'k'.repeat(49),
+      daemonId: DAEMON_ID,
+      capabilities: [RD_HEADLESS_AGENT_DELIVERY_V1]
+    })
+    const r = decodeRelayDaemonFrame(JSON.stringify(withCaps))
+    if (!r.ok) throw new Error('expected ok')
+    if (r.frame.type !== 'rd/hello') throw new Error('narrow')
+    expect(r.frame.payload.capabilities).toEqual([RD_HEADLESS_AGENT_DELIVERY_V1])
+
+    const older = decodeRelayDaemonFrame(envelope('rd/hello', { apiKey: 'k'.repeat(49), daemonId: DAEMON_ID }))
+    if (!older.ok) throw new Error('expected ok')
+    if (older.frame.type !== 'rd/hello') throw new Error('narrow')
+    expect(older.frame.payload.capabilities).toBeUndefined()
+  })
+
+  it('carries the required-headless delivery kind across both A2A wire legs', () => {
+    // §8.3: a parent-session reply is a distinct delivery KIND, not a flavor of wake —
+    // the target must suppress the resumed parent's automatic IM output for that turn.
+    const base = {
+      claimedFromAgentId: AGENT_ID,
+      toAgentId: AUTHORITY_ID,
+      text: 'subtask finished',
+      coords: { platform: 'slack' as const, channel: 'C123' },
+      hopCount: 1,
+      deliveryId: 'd-1'
+    }
+    const sent = RdAgentMsg.safeParse({ ...base, deliveryKind: 'session-reply' })
+    expect(sent.success && sent.data.deliveryKind).toBe('session-reply')
+    const fwd = RdAgentMsgFwd.safeParse({
+      trustedFromAgentId: AGENT_ID,
+      orgId: ORG_ID,
+      toAgentId: AUTHORITY_ID,
+      text: 'subtask finished',
+      coords: { platform: 'slack' as const, channel: 'C123' },
+      hopCount: 2,
+      deliveryId: 'd-1',
+      deliveryKind: 'session-reply'
+    })
+    expect(fwd.success && fwd.data.deliveryKind).toBe('session-reply')
+
+    // Absent ⇒ `wake`, which is exactly what every older daemon means by omitting it.
+    expect(RdAgentMsg.safeParse(base).success).toBe(true)
+    expect(RdAgentMsg.safeParse({ ...base, deliveryKind: 'reply' }).success).toBe(false)
+
+    // The §8.4 refusal is its own verdict: the target is reachable but too old, which a
+    // caller must be able to distinguish from `offline`.
+    expect(RdAgentMsgAck.safeParse({ deliveryId: 'd-1', delivered: false, reason: 'unsupported' }).success).toBe(true)
   })
 
   it('decodes every shared Slack session action inside rd/msg and rejects malformed controls', () => {

@@ -14,6 +14,7 @@
 import {
   buildRelayDaemonFrame,
   decodeRelayDaemonFrame,
+  RD_HEADLESS_AGENT_DELIVERY_V1,
   type RelayDaemonFrame,
   type RdHelloOk,
   type RdMsg,
@@ -30,6 +31,14 @@ import type { Logger } from '../log.js'
 const ACK_TIMEOUT_MS = 5000
 /** rd/hello definitively rejected (bad/revoked key, daemonId mismatch) → stop dialing THIS relay. */
 const CLOSE_AUTH_FAILED = 4401
+
+/**
+ * Optional `rd/*` behaviors THIS daemon build supports, advertised on every
+ * `rd/hello` (send-message-routing-rework.md §8.4). A relay refuses a delivery that
+ * needs a capability the daemon did not list, rather than degrading it — so a
+ * capability belongs here only once the corresponding behavior actually ships.
+ */
+const DAEMON_RD_CAPABILITIES: readonly string[] = [RD_HEADLESS_AGENT_DELIVERY_V1]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'
 
@@ -160,7 +169,13 @@ export class RelayClient {
 
   private async handshake(daemonId: string): Promise<void> {
     this.state = 'HELLO'
-    const rep = await this.sendRequest(buildRelayDaemonFrame('rd/hello', { apiKey: this.deps.apiKey(), daemonId }))
+    const rep = await this.sendRequest(
+      buildRelayDaemonFrame('rd/hello', {
+        apiKey: this.deps.apiKey(),
+        daemonId,
+        capabilities: [...DAEMON_RD_CAPABILITIES]
+      })
+    )
     if (rep.type !== 'rd/hello/ok') {
       throw new WireError('INTERNAL', `expected rd/hello/ok, got ${rep.type}`, false)
     }

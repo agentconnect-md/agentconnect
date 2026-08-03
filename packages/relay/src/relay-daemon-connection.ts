@@ -69,6 +69,13 @@ export class RelayDaemonConnection {
   state: State = 'AUTHENTICATING'
   daemonId = ''
 
+  /** Optional behaviors this daemon advertised at hello (§8.4). Populated only after a
+   *  successful handshake, so a caller that reads it on a non-READY socket correctly
+   *  sees nothing. An older daemon sends no `capabilities` at all, which is why the
+   *  default is EMPTY rather than "assume supported" — {@link supports} then fails
+   *  closed and the relay refuses the delivery instead of degrading it. */
+  private capabilities: ReadonlySet<string> = new Set()
+
   private readonly correlator: ReqRep<RelayDaemonFrame>
 
   constructor(
@@ -81,6 +88,13 @@ export class RelayDaemonConnection {
   start(): void {
     this.transport.onMessage((t) => void this.onText(t))
     this.transport.onClose(() => this.onClose())
+  }
+
+  /** Did this daemon advertise `capability` at hello? Fails closed for an older daemon
+   *  that advertised nothing — the caller must then refuse a delivery that needs it
+   *  (§8.4), never forward it and hope. */
+  supports(capability: string): boolean {
+    return this.capabilities.has(capability)
   }
 
   /**
@@ -216,6 +230,7 @@ export class RelayDaemonConnection {
     }
 
     this.daemonId = result.daemonId
+    this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
     this.reply(frame, 'rd/hello/ok', { relayId })
     this.deps.onReady(this.daemonId, this)

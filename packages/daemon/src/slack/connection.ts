@@ -54,6 +54,39 @@ export interface SlackPostOptions {
    *  Multiple agents can share one Slack app identity, so bot_id/app_id alone cannot
    *  safely decide which agent may adopt and edit an existing chrome row. */
   chromeOwnerAgentId?: string
+  /** The finalized-response routing block for an agent-authored conversational message
+   *  (send-message-routing-rework.md §4). Ignored on chrome, which is never routable.
+   *  Requires `agentAuthorId` — a response block without an exact author proves nothing
+   *  and would be discarded at ingress anyway. */
+  response?: SlackResponseMetadata
+}
+
+/**
+ * Daemon-owned response metadata carried in Slack message metadata so a peer's ingress
+ * can route an agent-authored message (send-message-routing-rework.md §4).
+ *
+ * The daemon derives every field; model text can never populate one. It rides in
+ * provider metadata rather than the body precisely so the visible text stays exactly
+ * what the agent wrote.
+ */
+export interface SlackResponseMetadata {
+  /** One id for the COMPLETE logical response. Every physical message of a long answer
+   *  shares it, so a target dedups on (responseId, target agent) and activates once. */
+  responseId: string
+  /** `streaming` while the answer is still being written (including intermediate edits);
+   *  `final` on the ONE event that closes the response. Only `final` enters routing —
+   *  routing a prefix would prompt the peer with a half-written message (§5). */
+  deliveryState: 'streaming' | 'final'
+  /** The author's own trusted turn depth BEFORE this delivery — a human/root turn is 0.
+   *  Each routing edge adds one and caps; the model cannot set or reset it (§4.1). */
+  hopCount: number
+  /** Agents addressed by the COMPLETE logical response, resolved against the
+   *  conversation's agent directory before splitting. The final event carries the whole
+   *  set even when the visible mention landed in an earlier physical message (§5.2). */
+  mentionedAgentIds: string[]
+  /** Only on the visible half of a paired `toAgent + channel` send (§3.2); it correlates
+   *  this post with the internal wake that carries the authoritative call envelope. */
+  agentCallDeliveryId?: string
 }
 
 /** Optional per-status identity overrides supported by assistant.threads.setStatus.
@@ -68,7 +101,9 @@ export interface SlackStatusOptions {
  *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
 export const SLACK_CHROME_EVENT_TYPE = 'agentconnect_chrome'
 
-function slackMessageMetadata(options?: Pick<SlackPostOptions, 'agentAuthorId' | 'chrome' | 'chromeOwnerAgentId'>) {
+function slackMessageMetadata(
+  options?: Pick<SlackPostOptions, 'agentAuthorId' | 'chrome' | 'chromeOwnerAgentId' | 'response'>
+) {
   if (options?.chrome) {
     const ownerAgentId = options.chromeOwnerAgentId?.trim()
     return {
@@ -80,10 +115,24 @@ function slackMessageMetadata(options?: Pick<SlackPostOptions, 'agentAuthorId' |
   }
   const agentAuthorId = options?.agentAuthorId?.trim()
   if (agentAuthorId) {
+    // The response block is gated on an exact author for the same reason ingress is: a
+    // recipient set with no provable author is not a weaker claim, it is no claim at all.
+    const response = options?.response
     return {
       metadata: {
         event_type: 'agentconnect_thread_event',
-        event_payload: { author_agent_id: agentAuthorId }
+        event_payload: {
+          author_agent_id: agentAuthorId,
+          ...(response
+            ? {
+                response_id: response.responseId,
+                delivery_state: response.deliveryState,
+                hop_count: response.hopCount,
+                mentioned_agent_ids: response.mentionedAgentIds,
+                ...(response.agentCallDeliveryId ? { agent_call_delivery_id: response.agentCallDeliveryId } : {})
+              }
+            : {})
+        }
       }
     }
   }

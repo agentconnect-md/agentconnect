@@ -216,13 +216,24 @@ export interface ReplyToSessionReq {
 }
 
 /** The result of a SessionTarget reply. `delivered:false` carries a typed reason
- *  ('not_authorized' when the sessionId isn't the caller's origin; the rest mirror the
- *  cross-daemon agent-msg verdicts for a reply that had to route over the relay). */
+ *  ('not_authorized' when the sessionId isn't the caller's origin; 'unsupported' when a
+ *  cross-daemon reply reached a target too old to run the parent turn headlessly, which
+ *  is REFUSED rather than downgraded to visible IM output — send-message-routing-rework.md
+ *  §7/§8.4; the rest mirror the cross-daemon agent-msg verdicts for a reply that had to
+ *  route over the relay). */
 export interface ReplyToSessionResult {
   delivered: boolean
   targetSession?: string
   reason?:
-    'not_authorized' | 'not_found' | 'hop_limit' | 'offline' | 'not_local' | 'busy' | 'queue_full' | 'not_allowed'
+    | 'not_authorized'
+    | 'not_found'
+    | 'hop_limit'
+    | 'offline'
+    | 'not_local'
+    | 'busy'
+    | 'queue_full'
+    | 'not_allowed'
+    | 'unsupported'
 }
 
 /** One subtask of a {@link StartOrchestrationReq}: an instruction for one worker. */
