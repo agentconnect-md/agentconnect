@@ -49,6 +49,7 @@ function build(
     ack?: RdAck
     remoteMcp?: WebchatRemoteMcpEntitlement
     log?: Logger
+    participants?: Array<{ agentId: string; daemonId?: string; primary?: boolean }>
   } = {}
 ) {
   const sent: RdMsgWebchat[] = []
@@ -63,7 +64,7 @@ function build(
   const conn = new RelayBrowserConnection(transport, {
     chatId: CHAT,
     agentId: AGENT,
-    participants: [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
+    participants: over.participants ?? [{ agentId: AGENT, daemonId: DAEMON, primary: true }],
     user: USER,
     ...(over.remoteMcp ? { remoteMcp: over.remoteMcp } : {}),
     daemonConnFor: () => daemon,
@@ -140,6 +141,16 @@ describe('parseBrowserFrame', () => {
     })
     expect(parseBrowserFrame({ type: 'cancel' }, USER)).toEqual({ op: { op: 'cancel' } })
   })
+  it('preserves structured mentions on the turn op and surfaces targets separately', () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    expect(parseBrowserFrame({ text: 'hi', mentions: [AGENT, PEER], targets: [AGENT, PEER] }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER, mentions: [AGENT, PEER] },
+      targets: [AGENT, PEER]
+    })
+    expect(parseBrowserFrame({ text: 'hi', mentions: ['not-a-uuid'] }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER }
+    })
+  })
   it('rejects malformed / unknown envelopes', () => {
     expect(parseBrowserFrame({ type: 'set_model' }, USER)).toBeNull() // no model
     expect(parseBrowserFrame({ type: 'set_fast', fastMode: 'yes' }, USER)).toBeNull() // wrong type
@@ -163,6 +174,23 @@ describe('RelayBrowserConnection', () => {
       agentId: AGENT,
       participants: [{ agentId: AGENT, primary: true }]
     })
+  })
+
+  it('forwards structured mentions inside every per-target rd/msg(turn) payload', async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true },
+        { agentId: PEER, daemonId: DAEMON }
+      ]
+    })
+    transport.feed({ text: 'hi', mentions: [AGENT, PEER], targets: [AGENT, PEER] })
+    await tick()
+    expect(sent).toHaveLength(2)
+    expect(sent.map((frame) => frame.agentId).sort()).toEqual([AGENT, PEER].sort())
+    for (const frame of sent) {
+      expect(frame.payload).toMatchObject({ op: 'turn', text: 'hi', mentions: [AGENT, PEER] })
+    }
   })
 
   it('bridges a {text} turn to an rd/msg(turn) and forwards the daemon ack', async () => {

@@ -246,6 +246,19 @@ on, **every user message activates the whole roster** unless it explicitly
    (section 5.4) keeps the concurrent answers coherent — a slower participant
    sees the faster ones' replies before committing.
 
+Current composers **materialize** the standing mention instead of leaving it
+implicit: a bare send carries the whole roster in the structured `mentions`
+array (`wireMentions`, `packages/web/src/lib/conversation-addressing.ts`), so
+it is wire-identical to an explicit @-everyone message and every participant
+activates with `trigger:'mention'`. The addressed-signal matters at the commit
+fence: a turn-final regeneration (section 5.4) re-runs the response-choice
+rule, and without it a slower participant whose candidate was invalidated by a
+peer's parallel reply tends to decline even a complementary answer — the
+parallel-answer race must never silence an addressed agent. The implicit
+no-mention form in point 2 remains the compatibility default (older browser
+builds, roster-less resumed sends), with `trigger:'dm'` and the declining
+behavior described there.
+
 The relay applies the same default itself (`targets` absent or empty ⇒ the
 whole roster), so a resumed conversation with no client-side roster — or an
 older browser build — still reaches everyone; the browser admits stream lanes
