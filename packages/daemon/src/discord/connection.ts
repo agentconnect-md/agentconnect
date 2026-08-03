@@ -50,6 +50,11 @@ export interface ConsolidatedDiscordGroup {
 }
 
 /** §6.1 analog: group integrations by bot token (one discord.js Client per token). */
+/** §7.5 opaque identity of one Discord Gateway connection: the bot token. */
+export function discordConnKey(c: { botToken: string }): string {
+  return c.botToken
+}
+
 export function consolidateDiscord(agents: Agent[]): Map<string, ConsolidatedDiscordGroup> {
   const groups = new Map<string, ConsolidatedDiscordGroup>()
   for (const a of agents) {

@@ -59,6 +59,14 @@ export interface ConsolidatedFeishuGroup {
 }
 
 /** §6.1 analog: group Feishu integrations by appId (one provider client per app). */
+/** §7.5 opaque identity of one Feishu provider client. Feishu needed a composite
+ *  key long before the registry existed (the daemon carried a private
+ *  `feishuConnKey` for it): an app is region-scoped, and direct vs shared decide
+ *  whether a long connection is opened at all, so all three fields identify it. */
+export function feishuConnKey(c: { appId: string; region: string; mode: 'direct' | 'shared' }): string {
+  return `${c.appId}\u0000${c.region}\u0000${c.mode}`
+}
+
 export function consolidateFeishu(agents: Agent[]): Map<string, ConsolidatedFeishuGroup> {
   const groups = new Map<string, ConsolidatedFeishuGroup>()
   for (const a of agents) {
