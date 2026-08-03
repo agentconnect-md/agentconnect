@@ -4,11 +4,13 @@ Two channels exist for inspecting and changing platform state. Always prefer the
 first that is available:
 
 1. **AgentConnect admin MCP tools** — present when this session was granted the
-   admin toolset. Names match the catalog below.
-2. **REST API** — direct HTTP calls to the Control Plane, only with a credential
-   that was provisioned into the agent's environment outside the conversation.
-   Without either, admin changes go through the console — never ask the user for
-   a key in chat.
+   admin toolset. Names match the catalog below. This is the ONLY channel through
+   which you execute admin calls yourself.
+2. **The user's own client** — without admin MCP tools you never execute admin
+   calls: point the user at the console, or use the REST reference below to help
+   them run the API from their own credentialed environment. Never ask for, hold,
+   or use an API key yourself — a static key would make every call execute and
+   audit as the key's owner rather than the person talking to you.
 
 Both channels hit the same routes with the same permission model (RBAC + resource
 visibility of the acting user) and the same audit trail; the MCP layer adds
@@ -80,28 +82,28 @@ gate's purpose.
   (e.g. the `agentconnect` preset cannot be renamed or deleted).
 - Empty lists may mean "not visible to this user," not "none exist."
 
-## The REST API (fallback — pre-provisioned credential only)
+## The REST API (reference for the user's own client)
 
-Use when no admin MCP tools are present in the session AND the agent's environment
-already carries a credential an org admin provisioned outside the conversation
-(e.g. `AGENTCONNECT_API_URL` / `AGENTCONNECT_API_KEY` set in the agent's
-configuration). **Never solicit a credential in chat** — a key pasted into the
-conversation enters model context and transcripts, and every call made with it
-executes and audits as the key's owner, not the person talking to you. With no
-configured credential, do not attempt admin operations: direct the user to the
-console surface that performs the change, or to the org's AgentConnect MCP
-endpoint (console → Help → "Connect your AI").
+This section exists so you can EXPLAIN the API and DRAFT commands — not run them.
+You never call these routes yourself: doing so would require an API key, and any
+key available to you (in chat, in the environment, in a file) is a static
+credential whose calls execute and audit as the key's owner rather than the
+initiating user — a model the platform design explicitly rejects. The user runs
+these requests from their own machine: they mint a personal key in the console
+(profile → API keys), export it in their own shell, and paste your drafted
+commands. The key never enters the conversation.
 
-### Connecting
+### Connecting (what the user sets up in their own shell)
 
-- **Base URL**: from the configured environment (the Control Plane / console origin
-  of the org's deployment). The URL is not a secret; asking the user for it is fine.
-- **Auth header**: `Authorization: Bearer <the configured key>` — never invent, log,
-  or echo key material.
+- **Base URL**: the Control Plane / console origin of the org's deployment. The
+  URL is not a secret; discussing it in chat is fine.
+- **Auth header**: `Authorization: Bearer <personal API key>` — minted in the
+  console, exported by the user as e.g. `$AGENTCONNECT_API_KEY`, never shared
+  with you.
 - **Versioning**: everything lives under `/api/v1`.
 - **Self-description**: `GET {base}/api/v1/openapi.json` returns the complete
-  OpenAPI 3.1 document (Swagger UI at `{base}/docs`). Fetch it before assuming an
-  endpoint or payload shape — the surface below is a map, not the full contract.
+  OpenAPI 3.1 document (Swagger UI at `{base}/docs`) — point the user there when
+  they need payload shapes beyond the map below.
 
 ### Route map
 
@@ -134,7 +136,11 @@ GET    /members
 GET    /usage?range=d7             # d1 | d7 | d30 | d90
 ```
 
-### Examples
+### Example commands to draft for the user
+
+These assume the user exported `$AGENTCONNECT_API_URL` and `$AGENTCONNECT_API_KEY`
+in their own shell; fill in the non-secret placeholders (`$ORG`, ids) from what
+you learned in conversation and let the user run them.
 
 ```bash
 # Who am I, and which orgs can I see?
@@ -166,9 +172,10 @@ curl -sS -X PATCH -H "Authorization: Bearer $AGENTCONNECT_API_KEY" -H 'Content-T
   "$AGENTCONNECT_API_URL/api/v1/orgs/$ORG/integrations/$INTEGRATION_ID/channels/$CHANNEL_ID"
 ```
 
-The same safety rules apply as over MCP: destructive `DELETE`s only after the user's
-explicit approval, and the `agentconnect` preset agent rejects rename/delete by
-design.
+When drafting destructive `DELETE`s, spell out the blast radius next to the
+command so the user decides with full context; note the raw REST routes carry no
+`confirm` re-type gate (that is MCP-layer protection), and the `agentconnect`
+preset agent rejects rename/delete by design.
 
 ## Common diagnostic flows
 

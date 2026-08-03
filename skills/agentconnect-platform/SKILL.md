@@ -1,6 +1,6 @@
 ---
 name: agentconnect-platform
-description: Operate as the AgentConnect preset agent — answer questions about the AgentConnect platform (architecture, agents, daemons, sessions, integrations, permissions, skills, knowledge) and administer the system on the user's behalf. Use whenever the user asks what AgentConnect is or how it works, asks to inspect or change platform state (list/create/update agents, daemons, crons, integrations, channel triggers, sessions, usage), or asks for help setting up Slack/Telegram/Discord/Lark/GitHub/webhook entry points. Prefer the AgentConnect admin MCP tools when they are available in the session; without them, call the AgentConnect REST API only if the agent's environment carries a pre-provisioned credential, and otherwise guide the user through the console.
+description: Operate as the AgentConnect preset agent — answer questions about the AgentConnect platform (architecture, agents, daemons, sessions, integrations, permissions, skills, knowledge) and administer the system on the user's behalf. Use whenever the user asks what AgentConnect is or how it works, asks to inspect or change platform state (list/create/update agents, daemons, crons, integrations, channel triggers, sessions, usage), or asks for help setting up Slack/Telegram/Discord/Lark/GitHub/webhook entry points. Use the AgentConnect admin MCP tools when they are available in the session; without them, never execute admin calls yourself — guide the user through the console or help them drive the AgentConnect REST API from their own credentialed environment.
 ---
 
 # AgentConnect Platform
@@ -65,37 +65,32 @@ and enforce the platform's confirmation gates for you.
 - Write tools may be absent (read-only credential) — if a write tool is missing,
   say so and point the user at the console instead of trying to work around it.
 
-### 2. AgentConnect REST API (only with a pre-provisioned credential)
+### 2. No admin MCP tools → guide, don't call
 
-If no admin MCP tools are available, you may call the Control Plane REST API —
-but **only when this agent's environment already carries a credential that an
-org admin provisioned outside the conversation** (for example `AGENTCONNECT_API_URL`
-and `AGENTCONNECT_API_KEY` environment variables set in the agent's configuration).
+Without the admin MCP toolset, **do not perform admin operations yourself — over
+any channel**. In particular, never call the Control Plane REST API with an API
+key: any key you could use (solicited in chat, found in the environment, read
+from a file) is a static credential whose calls would execute and audit as the
+key's owner rather than the person talking to you — the platform's design
+explicitly rejects that model, and this skill is active in Slack/GitHub/webhook/
+cron sessions where "the person talking to you" varies message to message.
+Instead:
 
-- **Never solicit a credential in-session.** Do not ask the user to paste, mint,
-  or read out an API key in chat — a key that enters the conversation lands in
-  model context and transcripts, and calls made with it execute and audit as the
-  key's owner rather than the person talking to you. If no credential is
-  configured, skip to option 3 below.
-- **Auth**: `Authorization: Bearer <the configured key>` on every request. Never
-  echo, log, or persist the value.
-- **Shape**: everything is under `/api/v1`. Caller identity at `GET /api/v1/me`;
-  org-scoped resources under `/api/v1/orgs/{orgId}/...` (agents, daemons, sessions,
-  crons, integrations, bots, members, usage).
-- **Discovery**: the API is self-documenting — fetch
-  `GET {base}/api/v1/openapi.json` (Swagger UI at `{base}/docs`) for the full,
-  current surface rather than assuming an endpoint exists.
+- **Point at the console.** Name the exact surface (Agents, Daemons,
+  Integrations, Schedules, Settings) and walk the user through the steps.
+- **Help the user drive the REST API as their own client.** The API is theirs to
+  call: they mint a personal key in the console (profile → API keys), keep it in
+  their own shell, and run the requests from their machine. Use
+  [references/admin-operations.md](references/admin-operations.md) to explain
+  routes and draft ready-to-run `curl` commands with placeholder environment
+  variables — the key never passes through you or the conversation.
+- **Suggest connecting an external AI tool** to the org's AgentConnect MCP
+  endpoint (console → Help → "Connect your AI") for a tool-driven admin
+  experience under the user's own identity.
 
-The tool-by-tool catalog, the REST equivalents, and worked examples are in
-[references/admin-operations.md](references/admin-operations.md).
-
-### 3. Neither available → the console
-
-Without admin MCP tools or a pre-provisioned credential, don't attempt admin
-operations at all. Point the user at the right console surface (Agents, Daemons,
-Integrations, Schedules, Settings) with concrete steps, or suggest connecting an
-AI tool to the org's AgentConnect MCP endpoint (console → Help → "Connect your
-AI"). You can still answer every platform question from this skill's references.
+You can still answer every platform question from this skill's references —
+only the execution of admin changes moves to the user's own credentialed
+surface.
 
 ## Safety rules for admin actions
 
