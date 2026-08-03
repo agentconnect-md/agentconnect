@@ -28,6 +28,16 @@ export function workCounts(steps: { lane: string; files: { path: string }[] }[])
   return { thinkCount: steps.length - toolCount - editStepCount, toolCount, editCount: editPaths.size + bareEdits }
 }
 
+/** Is a turn in flight for this session? `rawState` is the session's RAW daemon
+ *  state (`Session.statusLabel`: starting/idle/prompting/cancelling/resuming/closed),
+ *  NEVER the bucketed `Session.status` key — `toStatusKey()` maps a finished
+ *  idle/completed session to 'online' and an active prompting turn to 'paused',
+ *  which is exactly backwards as an active-turn signal. `busy` covers the live
+ *  playground/webchat path (a turn this browser is streaming). */
+export function sessionTurnInFlight(busy: boolean, rawState: string | undefined): boolean {
+  return busy || rawState === 'prompting' || rawState === 'cancelling'
+}
+
 /** Is a turn's work panel open? A finished turn starts collapsed — so the transcript
  *  never expands a panel the reader didn't ask for — but the turn STILL STREAMING
  *  defaults open: its work (skill/command/tool calls) is exactly what the user is

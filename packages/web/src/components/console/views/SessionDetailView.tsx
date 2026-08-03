@@ -82,7 +82,14 @@ import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
-import { WORK_LANES, toggleWorkPanel, workCounts, workPanelOpen, workSummary } from '@/components/console/session-work'
+import {
+  WORK_LANES,
+  sessionTurnInFlight,
+  toggleWorkPanel,
+  workCounts,
+  workPanelOpen,
+  workSummary
+} from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { useCrumbSlot } from '@/components/console/Shell'
@@ -2948,13 +2955,9 @@ export default function SessionDetailView() {
                     // The trailing turn of a running session is the one streaming: its
                     // work panel defaults open so skill/command/tool calls are visible
                     // AS THEY RUN, and collapses on its own once the turn completes.
-                    // Platform runs are matched on the RAW session state (statusLabel):
-                    // the bucketed `status` key maps idle/completed to 'online' and an
-                    // active prompting turn to 'paused', which is exactly backwards for
-                    // an "is a turn in flight" signal.
-                    const turnInFlight =
-                      pgBusy || session.statusLabel === 'prompting' || session.statusLabel === 'cancelling'
-                    const streaming = ti === turns.length - 1 && turnInFlight
+                    // statusLabel carries the RAW session state — the active-turn
+                    // predicate lives (and is tested) in session-work.ts.
+                    const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
                     const openWork = workPanelOpen(workOverride.get(ti), streaming)
                     return (
                       <div

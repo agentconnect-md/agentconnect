@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toggleWorkPanel, workCounts, workPanelOpen, workSummary } from './session-work'
+import { sessionTurnInFlight, toggleWorkPanel, workCounts, workPanelOpen, workSummary } from './session-work'
 
 const step = (lane: string, files: string[] = []) => ({ lane, files: files.map((path) => ({ path })) })
 
@@ -73,6 +73,22 @@ describe('work panel visibility', () => {
   it('defaults OPEN while the turn is streaming, and collapses on its own when it ends', () => {
     expect(workPanelOpen(undefined, true)).toBe(true) // live: work visible as it runs
     expect(workPanelOpen(undefined, false)).toBe(false) // turn done: back to collapsed
+  })
+
+  it('follows the raw platform state through the active → idle transition', () => {
+    // Active turn: RAW daemon state is 'prompting' (toStatusKey buckets this as
+    // 'paused' — matching on the bucketed key would keep the panel closed here).
+    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'prompting'))).toBe(true)
+    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'cancelling'))).toBe(true)
+    // Turn done: raw state flips to idle/completed (bucketed as 'online' — matching
+    // on the bucket would OPEN the panel only after completion, exactly backwards).
+    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'idle'))).toBe(false)
+    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'completed'))).toBe(false)
+    // Live playground/webchat turns ride the provider's busy flag instead.
+    expect(sessionTurnInFlight(true, 'idle')).toBe(true)
+    // Rows with no state (mock/placeholder label) never auto-open.
+    expect(sessionTurnInFlight(false, undefined)).toBe(false)
+    expect(sessionTurnInFlight(false, '—')).toBe(false)
   })
 
   it('a user toggle beats the streaming default in both directions', () => {
