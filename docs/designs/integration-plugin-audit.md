@@ -44,10 +44,10 @@ shape list is applied — `daemon.ts` alone yields **149** classified rows, and
 the shared-daemon total is 198. The extra rows come from the branch shapes
 grep cannot see (§6), which is precisely why S0 mandated a wider sweep.
 
-`narrowPlatform` (§6.3): 1 definition (`daemon.ts:7597`) + 13 call sites
-across `daemon.ts` (+ `cp/cp-collab-routes.ts` doc references) — 17 textual
-sites total, matching the design's "~12 call sites" estimate once comments are
-excluded.
+`narrowPlatform` (§6.3): 1 definition (`daemon.ts:7597`) + 12 call sites in
+`daemon.ts`, plus 1 explanatory comment in `daemon.ts` and 3 doc references
+in `cp/cp-collab-routes.ts` — 17 textual sites total, matching the design's
+"~12 call sites" estimate exactly once comments are excluded.
 
 ## 2. Derived manifest field list (checks design §5)
 
@@ -535,7 +535,7 @@ Paths relative to `packages/daemon/src/`.
 
 daemon.ts alone: 149 (a 22 / b 32 / c 61 / d 34). Other shared files: 49.
 
-`narrowPlatform`: 1 definition (daemon.ts:7597) + 13 call sites (6575, 6763, 6782, 7045, 7108, 7207, 7454, 7458, 7620, 7777, 7905, 15662 — 12 distinct statements, 7458 being a second call in the same function as 7454) plus 3 doc-comment references in cp/cp-collab-routes.ts (215, 223, 239) and 2 explanatory comments in daemon.ts (6741, 7595). Total textual sites: 17 in the two files, matching the design's estimate.
+`narrowPlatform`: 1 definition (daemon.ts:7597) + 12 call sites (6575, 6763, 6782, 7045, 7108, 7207, 7454, 7458, 7620, 7777, 7905, 15662 — 7458 being a second call in the same function as 7454) plus 1 explanatory comment in daemon.ts (6741) and 3 doc-comment references in cp/cp-collab-routes.ts (215, 223, 239). Total textual sites: 17 in the two files, matching the design's estimate.
 
 ### 3. Ambiguous
 
