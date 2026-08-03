@@ -138,6 +138,11 @@ export async function listLocalSkills(cwd: string, stateDir: string): Promise<Lo
   }
 
   const entries: LocalSkillEntry[] = []
+  // A skill can exist under more than one root (e.g. installed into one and
+  // mirrored/committed in another). The harness resolves a skill by name, so
+  // surface each name once; a ledger-known origin wins over an incidental repo
+  // copy of the same name.
+  const byName = new Map<string, number>()
   let totalBytes = 0
   let scanned = 0
   for (const root of SKILL_ROOTS) {
@@ -166,11 +171,20 @@ export async function listLocalSkills(cwd: string, stateDir: string): Promise<Lo
           origin: ownedOrigin.get(relPath) ?? 'repo',
           path: relPath
         }
+        const existing = byName.get(entry.name)
+        if (existing !== undefined) {
+          // Same name under a second root: keep one, preferring a ledger-known
+          // origin over an incidental `repo` copy. Not a new entry, so the count
+          // and byte budget are unaffected.
+          if (entries[existing]!.origin === 'repo' && entry.origin !== 'repo') entries[existing] = entry
+          continue
+        }
         // Keep the whole response under the control-frame limit; stop cleanly
         // rather than return an oversized payload the receiver would reject.
         const size = Buffer.byteLength(JSON.stringify(entry)) + 1
         if (totalBytes + size > MAX_TOTAL_BYTES) return finalize(entries)
         totalBytes += size
+        byName.set(entry.name, entries.length)
         entries.push(entry)
       }
     } finally {
