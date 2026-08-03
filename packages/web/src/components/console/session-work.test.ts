@@ -68,4 +68,21 @@ describe('work panel visibility', () => {
     expect(workPanelOpen(shown.get(3))).toBe(true)
     expect(workPanelOpen(shown.get(4))).toBe(false)
   })
+
+  it('defaults OPEN while the turn is streaming, and collapses on its own when it ends', () => {
+    expect(workPanelOpen(undefined, true)).toBe(true) // live: work visible as it runs
+    expect(workPanelOpen(undefined, false)).toBe(false) // turn done: back to collapsed
+  })
+
+  it('a user toggle beats the streaming default in both directions', () => {
+    // Streaming panel shows open; the first click must CLOSE it (record the
+    // opposite of the effective state, not of the collapsed base default).
+    const closed = toggleWorkPanel(new Map(), 0, workPanelOpen(undefined, true))
+    expect(workPanelOpen(closed.get(0), true)).toBe(false)
+    // …and the override keeps holding after the turn completes.
+    expect(workPanelOpen(closed.get(0), false)).toBe(false)
+    // An explicit open during streaming survives the turn's end, too.
+    const reopened = toggleWorkPanel(closed, 0, false)
+    expect(workPanelOpen(reopened.get(0), false)).toBe(true)
+  })
 })

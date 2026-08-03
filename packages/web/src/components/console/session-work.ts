@@ -28,17 +28,26 @@ export function workCounts(steps: { lane: string; files: { path: string }[] }[])
   return { thinkCount: steps.length - toolCount - editStepCount, toolCount, editCount: editPaths.size + bareEdits }
 }
 
-/** Is a turn's work panel open? Every turn starts collapsed — including a work-only
- *  one still waiting on its answer text — so the transcript never expands a panel the
- *  reader didn't ask for. `override` is the visibility the user last chose for it. */
-export function workPanelOpen(override: boolean | undefined): boolean {
-  return override ?? false
+/** Is a turn's work panel open? A finished turn starts collapsed — so the transcript
+ *  never expands a panel the reader didn't ask for — but the turn STILL STREAMING
+ *  defaults open: its work (skill/command/tool calls) is exactly what the user is
+ *  waiting on, and a collapsed one-line counter reads as "nothing is happening".
+ *  It collapses on its own when the turn completes (`streaming` flips false).
+ *  `override` is the visibility the user last chose for it and wins either way. */
+export function workPanelOpen(override: boolean | undefined, streaming = false): boolean {
+  return override ?? streaming
 }
 
-/** Record the user's toggle of turn `ti`, as the state opposite to what they see now. */
-export function toggleWorkPanel(prev: ReadonlyMap<number, boolean>, ti: number): Map<number, boolean> {
+/** Record the user's toggle of turn `ti`, as the state opposite to what they see now.
+ *  `currentOpen` is the EFFECTIVE state on screen — a streaming turn shows open by
+ *  default, so the first click must record "closed", not the inverse of the base. */
+export function toggleWorkPanel(
+  prev: ReadonlyMap<number, boolean>,
+  ti: number,
+  currentOpen = workPanelOpen(prev.get(ti))
+): Map<number, boolean> {
   const next = new Map(prev)
-  next.set(ti, !workPanelOpen(prev.get(ti)))
+  next.set(ti, !currentOpen)
   return next
 }
 

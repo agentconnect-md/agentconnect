@@ -941,8 +941,7 @@ function MobileSessionFamilyLinks({
  */
 function SessionDetailFrame({ children, withRail = true }: { children: ReactNode; withRail?: boolean }) {
   return (
-    <div className="wrap flex min-h-full items-stretch gap-[26px]">
-      {withRail ? <SessionRailSlot /> : null}
+    <div className="flex min-h-full items-stretch gap-[26px]">
       <div
         className={
           withRail
@@ -952,6 +951,7 @@ function SessionDetailFrame({ children, withRail = true }: { children: ReactNode
       >
         {children}
       </div>
+      {withRail ? <SessionRailSlot /> : null}
     </div>
   )
 }
@@ -1202,9 +1202,12 @@ export default function SessionDetailView() {
   const [transcriptSessionId, setTranscriptSessionId] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
-  // by turn index). Every panel starts collapsed — see workPanelOpen().
+  // by turn index). A finished panel starts collapsed; the streaming turn's defaults
+  // open — see workPanelOpen(). The toggle records the opposite of the EFFECTIVE
+  // on-screen state, so closing an auto-opened streaming panel works.
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
-  const toggleWork = (ti: number) => setWorkOverride((prev) => toggleWorkPanel(prev, ti))
+  const toggleWork = (ti: number, currentOpen: boolean) =>
+    setWorkOverride((prev) => toggleWorkPanel(prev, ti, currentOpen))
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -2570,31 +2573,13 @@ export default function SessionDetailView() {
   // cards → transcript. Breakpoint differences are CSS-gated (desktop: /
   // max-desktop:), never JS-forked.
   return (
-    // `.wrap` (1180px) is the outer track so the sibling-session rail can sit beside
-    // the 880px body. The rail always occupies its column above the breakpoint, even
-    // with no rows to show, so this is the one position the body ever takes. Keep the
-    // row in step with SessionDetailFrame, which draws the same two columns for every
-    // state that precedes or replaces a session.
-    <div className="wrap flex min-h-full items-stretch gap-[26px]">
-      <SessionRail
-        sessions={railSessions}
-        // The open row has to name its conversation and its members, because that
-        // is how the rail collapses it against the grouped list and how a pin
-        // finds it — matching on the session id alone would double the row (or
-        // lose its pin) whenever the two disagree on which member is newest.
-        // `selfKey` is the same §5.1 key computed for the redirect probe, so a
-        // single-participant thread is deduplicated on exactly the same terms, and
-        // the roster resolver is not agent-filtered, so its members are complete.
-        current={railCurrent ?? session}
-        total={railSessionTotal}
-        agentIds={railFilter.agentIds}
-        filterTouched={railFilter.touched}
-        onAgentIdsChange={setRailAgentIds}
-        family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
-        conversation={conversationMode}
-        childOriginById={conversationLineage?.childOriginById}
-        onSelect={setRouteSession}
-      />
+    // Three-column track ([nav · body · rail]): the full-width row lets the
+    // sibling-session rail sit flush against the page's right edge while the 880px
+    // body centres in what remains. The rail always occupies its column above the
+    // `wide` breakpoint, even with no rows to show, so this is the one position the
+    // body ever takes. Keep the row in step with SessionDetailFrame, which draws
+    // the same two columns for every state that precedes or replaces a session.
+    <div className="flex min-h-full items-stretch gap-[26px]">
       <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
         {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
           in the top-bar crumb; with the crumb gone the page has to name itself. The
@@ -2942,7 +2927,11 @@ export default function SessionDetailView() {
                     // EDIT rows, since one EDIT row can touch several files).
                     const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                     const summary = workSummary(thinkCount, toolCount, editCount)
-                    const openWork = workPanelOpen(workOverride.get(ti))
+                    // The trailing turn of a running session is the one streaming: its
+                    // work panel defaults open so skill/command/tool calls are visible
+                    // AS THEY RUN, and collapses on its own once the turn completes.
+                    const streaming = ti === turns.length - 1 && (pgBusy || session.status === 'online')
+                    const openWork = workPanelOpen(workOverride.get(ti), streaming)
                     return (
                       <div
                         key={`${session.id}:${ti}`}
@@ -2991,7 +2980,7 @@ export default function SessionDetailView() {
                             <>
                               <button
                                 type="button"
-                                onClick={() => toggleWork(ti)}
+                                onClick={() => toggleWork(ti, openWork)}
                                 className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
                                 title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
                               >
@@ -3466,6 +3455,25 @@ export default function SessionDetailView() {
           )}
         </div>
       </div>
+      <SessionRail
+        sessions={railSessions}
+        // The open row has to name its conversation and its members, because that
+        // is how the rail collapses it against the grouped list and how a pin
+        // finds it — matching on the session id alone would double the row (or
+        // lose its pin) whenever the two disagree on which member is newest.
+        // `selfKey` is the same §5.1 key computed for the redirect probe, so a
+        // single-participant thread is deduplicated on exactly the same terms, and
+        // the roster resolver is not agent-filtered, so its members are complete.
+        current={railCurrent ?? session}
+        total={railSessionTotal}
+        agentIds={railFilter.agentIds}
+        filterTouched={railFilter.touched}
+        onAgentIdsChange={setRailAgentIds}
+        family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
+        conversation={conversationMode}
+        childOriginById={conversationLineage?.childOriginById}
+        onSelect={setRouteSession}
+      />
     </div>
   )
 }
