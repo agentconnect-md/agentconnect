@@ -33,6 +33,17 @@ export const PG_UNIQUE_VIOLATION = '23505'
  * addBotMembership` takes, so a concurrent admission and a disable serialize:
  * whichever commits second observes the first (no stale-snapshot bypass).
  */
+/** A Bot with this external app identity already exists on this platform (the D6
+ *  `(platform, externalAppId, externalTenantId)` fence, the generic successor of
+ *  `workspace_taken`). Mapped to 409 at the route. */
+export class BotExternalIdentityTaken extends Error {
+  readonly code = 'BOT_EXTERNAL_IDENTITY_TAKEN' as const
+  constructor(readonly platform: string) {
+    super(`a bot for this ${platform} app identity already exists`)
+    this.name = 'BotExternalIdentityTaken'
+  }
+}
+
 export class BotStillShared extends Error {
   readonly code = 'BOT_STILL_SHARED' as const
   constructor(readonly activeInstalls: number) {

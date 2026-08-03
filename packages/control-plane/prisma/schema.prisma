@@ -1740,6 +1740,19 @@ model Bot {
   // it would kill (the case where the relay already holds the newer assignment).
   credentialRevision    Int            @default(1)
   credentialInstalledAt DateTime?      @db.Timestamptz(6)
+  // ── generic bot demux identity (integration-plugin-architecture.md D6/§11) ──
+  // Generalizes (slackAppId, teamId): the platform's app-scoped id plus its tenant
+  // scope. NULL is reserved for LEGACY rows (pre-capture Slack installs keep
+  // today's NULLs-distinct semantics; backfilled tenantless rows keep NULL too); a
+  // NEW row on a tenantless platform writes the '-' sentinel so the composite
+  // unique below enforces (platform, externalAppId) uniqueness declaratively.
+  // Dual-write window: reads still ride the legacy per-platform columns; these are
+  // written alongside them until the legacy columns fold away.
+  externalAppId         String?
+  externalTenantId      String?
+  // Display-only per-platform bag (discordAppId / feishuAppId / feishuRegion fold
+  // here when reads switch). Never demux identity, never secret material.
+  platformConfig        Json?
   discordAppId          String? // Discord application (client) id, decoded from the bot token's first segment — lets the console offer a ready-made "Add to Discord" invite URL. Public metadata (it IS the bot's user id), NOT secret material.
   feishuAppId           String? // Feishu/Lark app id (cli_…), copied from the create request so Settings can deep-link to this app without reading bot_secret. Public metadata, NOT secret material.
   feishuRegion          String? // Feishu/Lark open-platform gateway for this app: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu'. DURABLE home (survives uninstall) so a freed Lark bot reinstalls against the right gateway. Public config, NOT secret.
@@ -1771,6 +1784,12 @@ model Bot {
   // NULL teamIds (legacy bots) are distinct under Postgres semantics, so existing
   // rows are unaffected. Cross-org global: a workspace binds to exactly one org.
   @@unique([slackAppId, teamId])
+  // The generic successor of the fence above (D6): one Bot per external app
+  // identity per platform. Legacy rows carry NULLs (distinct, unaffected); new
+  // tenantless rows carry the '-' sentinel, which makes this enforce
+  // (platform, externalAppId) uniqueness. Coexists with the Slack fence during
+  // the dual-write window.
+  @@unique([platform, externalAppId, externalTenantId])
   @@index([orgId])
   @@map("bot")
 }
