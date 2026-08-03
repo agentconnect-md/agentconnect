@@ -9,7 +9,7 @@
 // yet: they render the design's demo values only in mock mode, otherwise empty / '—'.
 
 import { useEffect, useState, type ReactNode } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
 import ApiKeysCard from '@/components/console/ApiKeysCard'
@@ -48,16 +48,23 @@ export default function ProfileView() {
   const [socialNotice, setSocialNotice] = useState<AccountNotice>()
   const [autoLinkGithub, setAutoLinkGithub] = useState(false)
 
-  // The GitHub Setup URL only sends a verified installation here. Consume the
-  // marker before starting the provider round trip so cancel/reload cannot loop.
+  // Two entrances auto-start the GitHub link flow: the GitHub Setup URL's verified
+  // installation marker (`github=installed`) and the getting-started checklist's
+  // "Link GitHub profile" step (`link=github`). Consume the marker before starting
+  // the provider round trip so cancel/reload cannot loop. Keyed on searchParams,
+  // not just mount: the checklist CTA can fire while ALREADY on this page (the
+  // drawer floats over every route), where the push changes only the query.
+  const searchParams = useSearchParams()
   useEffect(() => {
     if (!authOn) return
     const url = new URL(window.location.href)
-    if (url.searchParams.get('github') !== 'installed') return
+    const marked = url.searchParams.get('github') === 'installed' || url.searchParams.get('link') === 'github'
+    if (!marked) return
     url.searchParams.delete('github')
+    url.searchParams.delete('link')
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
     setAutoLinkGithub(true)
-  }, [authOn])
+  }, [authOn, searchParams])
   // The signed-in user's membership — the same row the Settings page lists.
   // Matched by userId when the CP profile is known (exact), by email otherwise.
   // With no match (mock mode / CP down) the fields fall back to the design's

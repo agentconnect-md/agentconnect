@@ -20,6 +20,8 @@ export const DASH_ROW_H = 63
 export const CARD_CHROME_H = 47
 /** The gutter between the right column's two cards (the grid's `gap-4`). */
 export const CARD_GAP_H = 16
+/** Row counts BEFORE the viewport is measured (and the growth baseline after) —
+ *  a measured, taller viewport lifts them toward the real content, see below. */
 export const MAX_AGENT_ROWS = 4
 export const MAX_CRON_ROWS = 3
 /** Mobile stacks the cards, so there is nothing to align — a plain content cap. */
@@ -83,6 +85,20 @@ export function dashboardRowBudget({
     while (a + c + 1 > budget && c > floor) c--
     while (a + c + 1 > budget && a > floor) a--
   }
-  const sessionRows = a + c + 1
-  return { sessionRows, agentRows: a, cronRows: c, aligned: reach >= sessionRows }
+  // A MEASURED, extra-tall viewport (portrait monitor) spends its leftover height on
+  // real content instead of a dead strip under the grid: first lift the right column's
+  // baseline caps toward what actually exists (agents keep the same precedence the trim
+  // gives them), then let Recent run additional sessions down the page. Growth stays
+  // inside `budget`, so alignment holds as long as the session list can meet it; once
+  // the right column is content-exhausted the left card simply ends lower, reported as
+  // `aligned: false` like every other unreachable line-up. Gated on a real measurement —
+  // the pre-measure paint must not draw every row an org has.
+  if (availableHeight !== null) {
+    while (a + c + 1 < budget && (a < agents || c < crons)) {
+      if (a < agents && (c >= crons || a - MAX_AGENT_ROWS <= c - MAX_CRON_ROWS)) a++
+      else c++
+    }
+  }
+  const sessionRows = availableHeight === null ? a + c + 1 : Math.max(a + c + 1, Math.min(capacity, reach))
+  return { sessionRows, agentRows: a, cronRows: c, aligned: sessionRows === a + c + 1 && reach >= sessionRows }
 }

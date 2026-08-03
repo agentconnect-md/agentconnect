@@ -10,7 +10,13 @@ import { isAuthConfigured } from '@/lib/auth'
 import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding } from '@/lib/onboarding'
 import { daemonCommands } from '@/lib/daemon-commands'
 import { computeGettingStarted } from '@/lib/getting-started'
-import { AddToSlackRow, GsRows, MeetYourAgents, useGsActions } from '@/components/console/GettingStartedChecklist'
+import {
+  AddToSlackRow,
+  GsRows,
+  MeetYourAgents,
+  useGithubProfileLinked,
+  useGsActions
+} from '@/components/console/GettingStartedChecklist'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import {
   FALLBACK_RUNTIME_IDS,
@@ -60,6 +66,7 @@ export default function OnboardingView() {
   } = useConsoleData()
   const { orgPath } = useOrgs()
   const { runAction } = useGsActions()
+  const githubLinked = useGithubProfileLinked()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
   const authOn = isAuthConfigured()
 
@@ -233,7 +240,8 @@ export default function OnboardingView() {
             sessions: allSessions,
             members,
             authOn,
-            orgHasSessions
+            orgHasSessions,
+            githubLinked
           })}
           runAction={runAction}
           onFinish={goConsole}

@@ -22,7 +22,7 @@ const FULL = { sessions: 20, agents: MAX_AGENT_ROWS, crons: MAX_CRON_ROWS }
 describe('dashboardRowBudget', () => {
   it('lands both columns on the same line whenever the data can reach it', () => {
     // Every viewport from "right column at its floor" up to the content ceiling.
-    for (let rows = MIN_RIGHT_COLUMN_ROWS; rows <= 12; rows++) {
+    for (let rows = MIN_RIGHT_COLUMN_ROWS; rows <= 8; rows++) {
       const b = dashboardRowBudget({ availableHeight: heightFor(rows), ...FULL })
 
       expect(b.aligned).toBe(true)
@@ -32,10 +32,23 @@ describe('dashboardRowBudget', () => {
     }
   })
 
-  it('spends a roomy viewport on the full content, not on stretch', () => {
+  it('spends a taller viewport on extra Recent rows once the right column is content-exhausted', () => {
+    // FULL's right column has nothing beyond the baseline caps, so a portrait
+    // window pours the rest of its height into sessions instead of a dead strip.
     const b = dashboardRowBudget({ availableHeight: heightFor(30), ...FULL })
 
-    expect(b).toMatchObject({ sessionRows: 8, agentRows: 4, cronRows: 3, aligned: true })
+    expect(b).toMatchObject({ sessionRows: 20, agentRows: 4, cronRows: 3, aligned: false })
+  })
+
+  it('lifts the right-column caps toward real content on a taller viewport, keeping alignment', () => {
+    const b = dashboardRowBudget({ availableHeight: heightFor(12), sessions: 20, agents: 10, crons: 8 })
+
+    expect(b.aligned).toBe(true)
+    expect(b.sessionRows).toBe(12)
+    expect(b.agentRows + b.cronRows).toBe(11)
+    expect(b.agentRows).toBeGreaterThan(MAX_AGENT_ROWS)
+    expect(b.cronRows).toBeGreaterThan(MAX_CRON_ROWS)
+    expect(leftHeight(b.sessionRows)).toBe(rightHeight(b.agentRows, b.cronRows))
   })
 
   it('thins both right-hand cards as the window tightens, schedules first', () => {
@@ -76,12 +89,15 @@ describe('dashboardRowBudget', () => {
     }
   })
 
-  it('refuses to shrink the right column below the floor for a session list it cannot meet', () => {
+  it('refuses to shrink the right column for a session list it cannot meet — and still grows it', () => {
     // Two sessions can never reach the right column's two-card floor, so trimming
-    // would cost this org two of its four agents and still not line up.
+    // would cost this org two of its four agents and still not line up. The tall
+    // window instead spends its height on the agents/schedules that DO exist.
     const b = dashboardRowBudget({ availableHeight: heightFor(10), sessions: 2, agents: 6, crons: 5 })
 
-    expect(b).toMatchObject({ agentRows: MAX_AGENT_ROWS, cronRows: MAX_CRON_ROWS, aligned: false })
+    expect(b).toMatchObject({ agentRows: 5, cronRows: 4, aligned: false })
+    expect(b.agentRows).toBeGreaterThanOrEqual(MAX_AGENT_ROWS)
+    expect(b.cronRows).toBeGreaterThanOrEqual(MAX_CRON_ROWS)
   })
 
   describe('sparse orgs — fewer sessions than the right column can go', () => {
@@ -108,11 +124,12 @@ describe('dashboardRowBudget', () => {
       expect(leftHeight(b.sessionRows)).toBe(rightHeight(b.agentRows, b.cronRows))
     })
 
-    it('counts an empty agent or schedule list as its placeholder row', () => {
+    it('counts an empty agent or schedule list as its placeholder row, spending the rest on Recent', () => {
       const b = dashboardRowBudget({ availableHeight: heightFor(8), sessions: 20, agents: 0, crons: 0 })
 
-      expect(b).toMatchObject({ sessionRows: 3, agentRows: 1, cronRows: 1, aligned: true })
-      expect(leftHeight(b.sessionRows)).toBe(rightHeight(b.agentRows, b.cronRows))
+      // Nothing to grow on the right (two placeholder rows), so the height goes
+      // to the sessions that DO exist rather than a dead strip.
+      expect(b).toMatchObject({ sessionRows: 8, agentRows: 1, cronRows: 1, aligned: false })
     })
   })
 
