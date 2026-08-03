@@ -23,6 +23,10 @@ export interface MergedRow {
   row: SessionMessageDto
   sourceSessionId: string
   sourceAgentId: string
+  /** Maximal owner-authored run in the source transcript. Conversation rendering
+   *  uses this to preserve the same bot blocks a single-session page would build,
+   *  even after another participant's private work interleaves by event time. */
+  sourceTurnKey?: string
   /** True when this copy came from its author's own transcript (full
    *  fidelity); the merge prefers it over recipient copies. */
   authorCopy: boolean
@@ -133,12 +137,18 @@ export function mergeConversation(sources: MergeSource[]): MergedRow[] {
   const byIdentity = new Map<string, { at: number; entry: Decorated }>()
   let order = 0
   for (const source of sources) {
+    let sourceTurn = 0
+    let previousWasAuthor = false
     for (const row of source.rows) {
+      const authorCopy = row.sender === source.agentId
+      if (authorCopy && !previousWasAuthor) sourceTurn += 1
+      previousWasAuthor = authorCopy
       const candidate: Decorated = {
         row,
         sourceSessionId: source.sessionId,
         sourceAgentId: source.agentId,
-        authorCopy: row.sender === source.agentId,
+        ...(authorCopy ? { sourceTurnKey: `${source.sessionId}\u0000${sourceTurn}` } : {}),
+        authorCopy,
         // Prefer the daemon's stored axis (provider-authoritative for
         // Telegram/Feishu, whose ids carry no time); a missing/zero value
         // falls back to deriving from `ts` (which handles snowflakes).
@@ -173,10 +183,11 @@ export function mergeConversation(sources: MergeSource[]): MergedRow[] {
     if (a.sourceSessionId !== b.sourceSessionId) return a.sourceSessionId < b.sourceSessionId ? -1 : 1
     return a.order - b.order
   })
-  return kept.map(({ row, sourceSessionId, sourceAgentId, authorCopy }) => ({
+  return kept.map(({ row, sourceSessionId, sourceAgentId, sourceTurnKey, authorCopy }) => ({
     row,
     sourceSessionId,
     sourceAgentId,
+    ...(sourceTurnKey ? { sourceTurnKey } : {}),
     authorCopy
   }))
 }
