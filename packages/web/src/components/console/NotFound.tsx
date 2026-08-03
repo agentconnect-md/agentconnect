@@ -45,7 +45,7 @@ export function NotFound({
   /** Resolved href for the primary action (caller applies `orgPath`). */
   actionHref: string
   /** Optional recovery action shown beside/below the primary action. */
-  secondaryAction?: { label: string; href: string; icon?: string }
+  secondaryAction?: { label: string; href: string; icon?: ReactNode }
   /** Mobile secondary button label (e.g. "Search agents"); desktop reads "Search". */
   searchLabel?: string
   /** Show the Search affordance. Off for the bare root 404, which renders outside
@@ -86,7 +86,11 @@ export function NotFound({
         </Button>
         {secondaryAction ? (
           <Button variant="secondary" size="sm" onClick={() => router.push(secondaryAction.href)}>
-            {secondaryAction.icon ? <Icon name={secondaryAction.icon} size={14} /> : null}
+            {secondaryAction.icon ? (
+              <span className="flex h-[15px] w-[15px] flex-none items-center justify-center">
+                {secondaryAction.icon}
+              </span>
+            ) : null}
             {secondaryAction.label}
           </Button>
         ) : null}
@@ -115,7 +119,11 @@ export function NotFound({
             className="h-11 w-full text-[14px]"
             onClick={() => router.push(secondaryAction.href)}
           >
-            {secondaryAction.icon ? <Icon name={secondaryAction.icon} size={15} /> : null}
+            {secondaryAction.icon ? (
+              <span className="flex h-[15px] w-[15px] flex-none items-center justify-center">
+                {secondaryAction.icon}
+              </span>
+            ) : null}
             {secondaryAction.label}
           </Button>
         ) : null}
