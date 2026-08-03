@@ -59,6 +59,7 @@ vi.mock('@/lib/onboarding', async (importOriginal) => {
 vi.mock('@/lib/daemon-commands', () => ({ daemonCommands: (command: string) => ({ run: command, login: command }) }))
 vi.mock('@/components/console/GettingStartedChecklist', () => ({
   useGsActions: () => ({ runAction: vi.fn(), firstAgent: mocks.agents[0] }),
+  useGithubProfileLinked: () => undefined,
   GsRows: () => <div>rows</div>
 }))
 vi.mock('@/components/marks', () => ({

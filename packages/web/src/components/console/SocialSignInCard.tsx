@@ -357,7 +357,14 @@ export default function SocialSignInCard({
   }
 
   useEffect(() => {
-    if (!autoLinkTarget || !currentAccount || handledAutoLink.current === autoLinkTarget) return
+    // The marker is one-shot: once the parent clears it, forget it was handled so a
+    // REPEAT trigger (checklist CTA clicked again after cancelling the dialog, while
+    // already on this page) starts the flow again instead of being swallowed.
+    if (!autoLinkTarget) {
+      handledAutoLink.current = undefined
+      return
+    }
+    if (!currentAccount || handledAutoLink.current === autoLinkTarget) return
     const provider = socialLoginProviders().find((candidate) => candidate.target === autoLinkTarget)
     handledAutoLink.current = autoLinkTarget
     onAutoLinkHandled?.()

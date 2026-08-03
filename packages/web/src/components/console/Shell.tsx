@@ -23,7 +23,7 @@ import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import ConnectAiModal from './ConnectAiModal'
-import GettingStarted from './GettingStarted'
+import GettingStarted, { openGettingStarted } from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
@@ -332,6 +332,18 @@ function RailAccount({
               </button>
             )}
             <div className="dmsep" />
+            {/* Brings back the getting-started checklist after "Skip for now" — the only
+                way back, since the pill has no other re-entry point. */}
+            <button
+              className="dmi"
+              onClick={() => {
+                setOpen(false)
+                openGettingStarted()
+              }}
+            >
+              <Icon name="rocket" size={15} color="var(--text-tertiary)" />
+              Getting started
+            </button>
             <Link href={orgPath('/profile')} className="dmi no-underline" onClick={() => setOpen(false)}>
               <Icon name="circle-user-round" size={15} color="var(--text-tertiary)" />
               Profile
@@ -739,6 +751,20 @@ function ShellChrome({ children }: { children: ReactNode }) {
                   <>
                     <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
                     <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                      {/* No-auth mode has no account block, so this is its only way back to a
+                          skipped checklist. Auth mode gets the entry in the account menu. */}
+                      {!authOn && (
+                        <button
+                          className="dmi"
+                          onClick={() => {
+                            setHelpMenu(false)
+                            openGettingStarted()
+                          }}
+                        >
+                          <Icon name="rocket" size={15} color="var(--text-tertiary)" />
+                          Getting started
+                        </button>
+                      )}
                       <button
                         className="dmi"
                         onClick={() => {
