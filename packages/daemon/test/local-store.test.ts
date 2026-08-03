@@ -1038,6 +1038,36 @@ describe('LocalStore session retention GC (#485)', () => {
     s.close()
   })
 
+  it('deleteSession keeps a capture gate another agent still references through the same ACP id', () => {
+    const s = store()
+    // ACP session ids are runtime-local: bot-a and bot-b can both hold `acp-shared`.
+    const put = (key: string, agentId: string) =>
+      s.upsertSession({
+        key,
+        agentId,
+        platform: 'slack',
+        channel: 'C1',
+        thread: key,
+        acpSessionId: 'acp-shared',
+        state: 'closed',
+        lastDeliveredTs: null,
+        updatedAt: 100
+      })
+    put('a', 'bot-a')
+    put('b', 'bot-b')
+    s.setLocalCaptureGate('acp-shared', false) // capture open (not excluded)
+    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+
+    // bot-a's session expires first: bot-b still references the id — gate survives.
+    expect(s.deleteSession('a')).toBe(true)
+    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+
+    // The last referencing session goes: the gate is finally collected too.
+    expect(s.deleteSession('b')).toBe(true)
+    expect(s.isCaptureExcluded('acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    s.close()
+  })
+
   it('deleteSession leaves unrelated sessions and their dependents alone', () => {
     const s = store()
     seed(s, 'gone', 'closed', 100)

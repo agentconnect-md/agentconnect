@@ -2249,8 +2249,9 @@ export class LocalStore {
    *  - unacknowledged terminal hook reports (`terminalReport IS NOT NULL`) — an
    *    outbox the CP has not converged yet, preserved exactly like
    *    removeInboxByAgentId does.
-   *  permission_requests is scoped by agentId as well: ACP session ids are
-   *  runtime-local, so two agents can both hold an `acp-1`.
+   *  permission_requests is scoped by agentId, and the capture gate is dropped
+   *  only when no surviving session still references the ACP id: ACP session ids
+   *  are runtime-local, so two agents can both hold an `acp-1`.
    *  Returns false when the row is already gone (idempotent). */
   deleteSession(key: string): boolean {
     const rec = this.getSession(key)
@@ -2261,7 +2262,16 @@ export class LocalStore {
       this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       this.db.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
-        this.db.prepare('DELETE FROM session_gates WHERE acpSessionId = ?').run(rec.acpSessionId)
+        // session_gates is keyed by the ACP id ALONE, and ACP ids are runtime-local
+        // — another agent's still-live `acp-1` may share the key. Drop the gate only
+        // once no surviving session references it (the sessions row above is already
+        // deleted inside this transaction, so a self-reference cannot pin it).
+        const stillReferenced = this.db
+          .prepare('SELECT 1 AS present FROM sessions WHERE acpSessionId = ? LIMIT 1')
+          .get(rec.acpSessionId)
+        if (!stillReferenced) {
+          this.db.prepare('DELETE FROM session_gates WHERE acpSessionId = ?').run(rec.acpSessionId)
+        }
         this.db
           .prepare('DELETE FROM permission_requests WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)

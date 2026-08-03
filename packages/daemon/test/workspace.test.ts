@@ -434,13 +434,40 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     void id
   })
 
-  it('deletes an orphaned directory that git no longer tracks as a worktree', async () => {
+  it('deletes an EMPTY orphaned directory that git no longer tracks as a worktree', async () => {
     const { agent, cwd } = fixture()
     rmSync(join(cwd, '.git'))
 
     expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
     expect(existsSync(cwd)).toBe(false)
     expect(gitCalls()).toContainEqual(['worktree', 'prune'])
+  })
+
+  it('retains a NONEMPTY gitless directory — its files may be untracked user work', async () => {
+    const { agent, cwd } = fixture()
+    rmSync(join(cwd, '.git'))
+    writeFileSync(join(cwd, 'notes.md'), 'work in progress')
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'dirty' })
+    expect(readFileSync(join(cwd, 'notes.md'), 'utf8')).toBe('work in progress')
+  })
+
+  it('refuses a symlinked worktrees ROOT without touching the link target', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-wt-gc-'))
+    const path = join(root, 'workspace')
+    mkdirSync(join(path, '.git'), { recursive: true })
+    const agent = gitRepoAgent(path)
+    // An attacker-replaced root: `worktrees` is a symlink to a directory outside
+    // the agent dir, holding a victim tree at the derived worktree id.
+    const outside = mkdtempSync(join(tmpdir(), 'ac-wt-victim-'))
+    const victim = join(outside, basename(sessionWorktreePath(agent, 'session-a')))
+    mkdirSync(victim, { recursive: true })
+    writeFileSync(join(victim, 'precious.txt'), 'do not delete')
+    symlinkSync(outside, sessionWorktreeRoot(agent))
+
+    const res = await removeSessionWorktree(agent, 'session-a')
+    expect(res.outcome).toBe('failed')
+    expect(readFileSync(join(victim, 'precious.txt'), 'utf8')).toBe('do not delete')
   })
 
   it('refuses a symlinked worktree path', async () => {
