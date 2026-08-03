@@ -305,7 +305,7 @@ drop the only recovery message. The current order is:
 platform event
   → L0 shape filter / own-bot filter / dedup
   → parse control command (!stop / !resume / ...)
-  → resolve concrete integration + allowedUserIds
+  → resolve concrete integration + conversation admission
   → if not a command: check OPEN
   → poison fast path
   → serial-gate capacity / branch preflight
@@ -355,18 +355,18 @@ The actor resuming the scope must satisfy all three conditions:
 
 1. Be a trusted human.
 2. Resolve to a concrete integration.
-3. Pass that integration's final `allowedUserIds` check.
+3. Be in a conversation admitted by that integration.
 
 The ninth message in a top-level Slack incident is rejected before admission,
 so the warning thread may have no session owner. An ownerless `!resume` therefore
 uses a dedicated recovery-resolution path: only when the corresponding top-level
 latch is already OPEN, select a target from current agents' Slack integrations
-that actually permits the user, preferring an explicit mention and then stable
+that admit the conversation, preferring an explicit mention and then stable
 ordering. The same concrete-integration authorization check still runs.
 
 Relay-managed `rd/msg(im)` likewise parses commands before dispatch and uses the
-target resolved by the relay for the final `allowedUserIds` check. A bot or
-unknown sender cannot resume the scope.
+target resolved by the relay for the final conversation-admission check. A bot
+or unknown sender cannot resume the scope.
 
 ---
 
@@ -723,7 +723,7 @@ Key regressions are covered by:
   cancellation/backstop, shutdown, cross-agent scope, and fresh top-level Slack
   roots.
 - [`daemon-commands.test.ts`](../../packages/daemon/test/daemon-commands.test.ts):
-  trusted `!resume`, `allowedUserIds`, and ownerless warning threads.
+  trusted `!resume` and ownerless warning threads.
 - [`connection.test.ts`](../../packages/daemon/test/connection.test.ts):
   Slack wrapper/subtype ingress.
 - [`daemon-message-agent.test.ts`](../../packages/daemon/test/daemon-message-agent.test.ts)

@@ -5,13 +5,13 @@ import type { Integration } from '../src/agents/agent-schema.js'
 const slackInt: Integration = {
   id: 'int-1',
   platform: 'slack',
-  slack: { botToken: 'xoxb', appToken: 'xapp', allowedUserIds: [], bindRules: [] }
+  slack: { botToken: 'xoxb', appToken: 'xapp', bindRules: [] }
 }
 
 const telegramInt: Integration = {
   id: 'int-2',
   platform: 'telegram',
-  telegram: { botToken: '123456:ABC', allowedUserIds: [], bindRules: [] }
+  telegram: { botToken: '123456:ABC', bindRules: [] }
 }
 
 describe('toolsForIntegrations', () => {

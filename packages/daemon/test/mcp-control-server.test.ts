@@ -32,7 +32,7 @@ function gateway(): SlackGateway {
 }
 
 const tools = toolsForIntegrations([
-  { id: 'int-1', platform: 'slack', slack: { botToken: 'x', appToken: 'y', allowedUserIds: [], bindRules: [] } }
+  { id: 'int-1', platform: 'slack', slack: { botToken: 'x', appToken: 'y', bindRules: [] } }
 ])
 
 const ctx = (over: Partial<SessionContext> = {}): SessionContext => ({

@@ -202,7 +202,6 @@ describe('Daemon CP agent → disk + reconcile', () => {
         mode: 'direct',
         botToken: 'must-not-return',
         appToken: 'xapp-stale',
-        allowedUserIds: [],
         bindRules: []
       }
     }
@@ -1296,7 +1295,6 @@ describe('Daemon CP agent → disk + reconcile', () => {
           mode: 'direct',
           botToken: 'must-not-revive',
           appToken: 'xapp-stale',
-          allowedUserIds: [],
           bindRules: []
         }
       }

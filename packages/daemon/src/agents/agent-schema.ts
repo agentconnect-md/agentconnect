@@ -36,7 +36,6 @@ export const SlackConfigSchema = z.object({
   appId: z.string().optional(), // public A… app id used for Slack permission-update links
   signingSecret: z.string().optional(),
   botUserId: z.string().optional(), // filled at connect via auth.test if absent; provided by CP for shared
-  allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
   // Channels the operator switched OFF. bindRules only ADD reach, so an ungated
   // integration — which reaches every conversation through unscoped defaults — needs
@@ -55,7 +54,6 @@ export const TelegramConfigSchema = z.object({
   botToken: z.string(), // BotFather "123456:ABC…" (single token; no app token / signing secret)
   botUserId: z.string().optional(), // numeric bot id, filled at connect via getMe if absent
   botUsername: z.string().optional(), // @username without the '@', for mention detection; filled via getMe
-  allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
   mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
   // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
@@ -69,7 +67,6 @@ export const DiscordConfigSchema = z.object({
   botToken: z.string(), // Discord Gateway bot token (single token; no app token / signing secret)
   applicationId: z.string().optional(), // public client id for the invite URL (not used to connect)
   botUserId: z.string().optional(), // numeric bot user id, filled at connect via the ready event if absent
-  allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
   mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
   // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
@@ -87,7 +84,6 @@ export const FeishuConfigSchema = z.object({
   appSecret: z.string(), // app secret (single secret; no app token / signing secret)
   botOpenId: z.string().optional(), // bot's own open_id for mention detection; filled at connect via bot/info if absent
   region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn (default) vs larksuite.com
-  allowedUserIds: z.array(z.string()).default([]),
   bindRules: z.array(BindRuleConfigSchema).default([]),
   mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
   // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP

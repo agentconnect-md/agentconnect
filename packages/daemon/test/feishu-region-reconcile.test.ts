@@ -66,7 +66,7 @@ function seedAgent(daemon: Daemon, agentId: string, integrationId: string, appId
       {
         id: integrationId,
         platform: 'feishu',
-        feishu: { mode: 'direct', appId, appSecret: 's', region, allowedUserIds: [], bindRules: [] }
+        feishu: { mode: 'direct', appId, appSecret: 's', region, bindRules: [] }
       }
     ]
   })

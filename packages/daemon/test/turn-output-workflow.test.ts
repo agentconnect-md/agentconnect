@@ -55,7 +55,7 @@ function connect(daemon: Daemon, overrides: Record<string, unknown> = {}) {
     {
       id: 'int-a',
       platform: 'slack',
-      slack: { botToken: 'b', appToken: 'p', allowedUserIds: [], bindRules: [{ match: { kind: 'dm' } }] }
+      slack: { botToken: 'b', appToken: 'p', bindRules: [{ match: { kind: 'dm' } }] }
     }
   ]
   let post = 0

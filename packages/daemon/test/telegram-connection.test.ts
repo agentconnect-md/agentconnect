@@ -99,15 +99,13 @@ describe('consolidateTelegram', () => {
       {
         id: 'a1',
         integrations: [
-          { id: 'i1', platform: 'telegram', telegram: { botToken: 'T1', allowedUserIds: [], bindRules: [] } },
-          { id: 'i2', platform: 'slack', slack: { botToken: 'x', appToken: 'y', allowedUserIds: [], bindRules: [] } }
+          { id: 'i1', platform: 'telegram', telegram: { botToken: 'T1', bindRules: [] } },
+          { id: 'i2', platform: 'slack', slack: { botToken: 'x', appToken: 'y', bindRules: [] } }
         ]
       } as unknown as Agent,
       {
         id: 'a2',
-        integrations: [
-          { id: 'i3', platform: 'telegram', telegram: { botToken: 'T1', allowedUserIds: [], bindRules: [] } }
-        ]
+        integrations: [{ id: 'i3', platform: 'telegram', telegram: { botToken: 'T1', bindRules: [] } }]
       } as unknown as Agent
     ]
     const groups = consolidateTelegram(agents)

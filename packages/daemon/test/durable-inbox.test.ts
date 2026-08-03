@@ -886,7 +886,6 @@ describe('daemon durable inbox', () => {
           botToken: 'b',
           appToken: 'a',
           botUserId: 'UBOT',
-          allowedUserIds: [],
           bindRules: [{ match: { kind: 'dm' } }]
         }
       }
@@ -927,7 +926,6 @@ describe('daemon durable inbox', () => {
             mode: 'direct',
             botToken: 'b',
             appToken: 'p',
-            allowedUserIds: ['U1'],
             bindRules: []
           }
         }

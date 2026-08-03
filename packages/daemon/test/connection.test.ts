@@ -17,7 +17,6 @@ const mk = (id: string, appToken: string, botToken: string): Agent =>
         slack: {
           botToken,
           appToken,
-          allowedUserIds: [],
           bindRules: []
         }
       }

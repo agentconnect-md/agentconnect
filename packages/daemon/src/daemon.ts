@@ -6335,9 +6335,7 @@ export class Daemon {
     const payload = msg.payload
     if (payload.kind === 'open-config-for-thread') {
       const routing = integrationRouting(integration)
-      const unauthorized =
-        (routing.allowedUserIds.length > 0 && (!msg.userId || !routing.allowedUserIds.includes(msg.userId))) ||
-        !conversationAdmitted(routing, payload.channelId)
+      const unauthorized = !conversationAdmitted(routing, payload.channelId)
       const transportScope = this.transportScopeForIntegrationIds([integration.id])
       const rec = unauthorized
         ? undefined
@@ -8900,9 +8898,9 @@ export class Daemon {
    * Resolve a command's target from the channel's latest session when the routing ladder
    * couldn't (no mention entity / thread / dm rule matched — e.g. a group `/status@bot`).
    * Picks the agent that owns the most-recent session in the channel and its integration
-   * for this platform, enforcing that integration's `allowedUserIds` so a command can't
-   * bypass the authz the routing rules would have applied. Null when there's no session,
-   * no matching integration, or the sender isn't allowed.
+   * for this platform while preserving the conversation gate that routing would have
+   * applied. Null when there's no session, no matching integration, or the conversation
+   * is not admitted.
    */
   private resolveCommandTargetFromLatest(
     msg: NormalizedMessage,
@@ -8920,7 +8918,6 @@ export class Daemon {
         if (
           integration.platform !== msg.platform ||
           !this.integrationBelongsToSource(integration.id, srcIntegrationIds) ||
-          !this.gatedAdmission(integration.id, msg) ||
           !this.commandSenderAllowed(agentId, integration.id, msg)
         )
           continue
@@ -8940,7 +8937,7 @@ export class Daemon {
 
   /** Validate the relay-arbitrated command target against the local agent spec. Shared
    *  bot IMs bypass routeRules' arbitration, but must retain its bot rejection and
-   *  per-integration allowedUserIds authorization before executing a control command. */
+   *  conversation admission before executing a control command. */
   private resolveExplicitCommandTarget(
     agentId: string,
     integrationId: string,
@@ -8953,7 +8950,7 @@ export class Daemon {
   /** Recovery path for a channel-wide Slack top-level loop latch. The triggering
    *  message itself was rejected, so its warning thread may have no thread owner or
    *  latest session to route a bare `!resume` through. Select only an integration
-   *  that independently authorizes this human, preferring an explicitly mentioned bot. */
+   *  that admits this conversation, preferring an explicitly mentioned bot. */
   private resolveTopLevelResumeTarget(
     msg: NormalizedMessage,
     srcIntegrationIds?: readonly string[]
@@ -8994,8 +8991,8 @@ export class Daemon {
     return candidates[0] ?? null
   }
 
-  /** Final command authorization at the concrete integration. CP routing rules do not
-   *  carry allowedUserIds themselves, so routing success alone is not an auth verdict. */
+  /** Final command admission at the concrete integration. Commands that resolve their
+   *  target outside the routing ladder still repeat bot rejection and conversation gating. */
   private commandSenderAllowed(agentId: string, integrationId: string, msg: NormalizedMessage): boolean {
     if (msg.sender.isBot) return false
     const integration = this.agents
@@ -9006,15 +9003,13 @@ export class Daemon {
     // Control commands resolve their target OUTSIDE routeRules' scope filter (latest-
     // session fallbacks), so they must repeat the admission check — a channel switched
     // Off, or an Off conversation of a gated integration, takes no commands either.
-    if (!conversationAdmitted(routing, msg.channel, msg.parentChannel)) return false
-    const allowed = routing.allowedUserIds
-    return allowed.length === 0 || allowed.includes(msg.sender.id)
+    return conversationAdmitted(routing, msg.channel, msg.parentChannel)
   }
 
   /**
    * Handle an in-conversation control command. Resolves the target agent via the
-   * same routing ladder as a normal message (so thread-affinity + per-integration
-   * `allowedUserIds` authz apply), then acts on that agent's session in this
+   * same routing ladder as a normal message (so thread affinity and conversation
+   * admission apply), then acts on that agent's session in this
    * (channel, thread).
    */
   private handleCommand(
@@ -9032,7 +9027,7 @@ export class Daemon {
       // Routing found no agent — the common group case: a bare `/status@bot` carries no
       // mention entity, no reply, and its fresh thread has no session. Resolve the agent
       // from the channel's latest session so the command still lands on it (subject to
-      // that agent's per-integration allowedUserIds authz).
+      // that agent's conversation admission).
       target = this.resolveCommandTargetFromLatest(msg, srcIntegrationIds)
     }
     if (!target && command.kind === 'resume') target = this.resolveTopLevelResumeTarget(msg, srcIntegrationIds)
@@ -9420,8 +9415,8 @@ export class Daemon {
 
   /**
    * Handle a tapped session-control card button (Telegram inline keyboard). Decodes
-   * `<kindCode>:<optionIndex>`, resolves the channel's latest session (with the same
-   * allowedUserIds authz as a command), applies the picked value, acks the tap, and
+   * `<kindCode>:<optionIndex>`, resolves the channel's latest admitted session, applies
+   * the picked value, acks the tap, and
    * re-renders the card with the new current marked. Best-effort throughout — a tap
    * must never throw out of the update pump.
    */
@@ -9436,7 +9431,6 @@ export class Daemon {
     const srcIntegrationIds = this.srcIntegrationIds(conn)
     const session = this.commandSessionForLatest(
       cb.channel,
-      cb.userId,
       srcIntegrationIds,
       this.transportScopeForIntegrationIds(srcIntegrationIds)
     )
@@ -9464,24 +9458,16 @@ export class Daemon {
     void conn.editCard(cb.channel, cb.messageId, text, buttons)
   }
 
-  /** The channel's latest session for a Telegram command/callback, gated by the agent's
-   *  telegram integration allowedUserIds. Null when there's no session, no telegram
-   *  integration, or the user isn't allowed. */
+  /** The channel's latest admitted session for a Telegram command/callback. */
   private commandSessionForLatest(
     channel: string,
-    userId: string,
     srcIntegrationIds: readonly string[],
     transportScope?: string
   ): { agentId: string; key: string; acpSessionId?: string } | null {
     const candidates: SessionRecord[] = []
     for (const [agentId, agent] of this.agents) {
       for (const integration of agent.integrations) {
-        if (
-          integration.platform !== 'telegram' ||
-          !srcIntegrationIds.includes(integration.id) ||
-          (integration.telegram.allowedUserIds.length > 0 && !integration.telegram.allowedUserIds.includes(userId))
-        )
-          continue
+        if (integration.platform !== 'telegram' || !srcIntegrationIds.includes(integration.id)) continue
         const routing = integrationRouting(integration)
         if (!conversationAdmitted(routing, channel)) continue
         const session = this.store.latestSessionForTransport(agentId, channel, transportScope)
@@ -9494,9 +9480,9 @@ export class Daemon {
   }
 
   /** Resolve a direct Slack message shortcut to the newest addressable session in
-   *  that exact bot-scoped conversation, retaining routing gates and user allowlists. */
+   *  that exact bot-scoped conversation, retaining conversation routing gates. */
   private slackShortcutSession(
-    shortcut: { channel: string; thread: string; userId: string },
+    shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
   ): string | undefined {
     const transportScope = this.transportScopeForIntegrationIds(srcIntegrationIds)
@@ -9505,7 +9491,6 @@ export class Daemon {
       for (const integration of agent.integrations) {
         if (integration.platform !== 'slack' || !srcIntegrationIds.includes(integration.id)) continue
         const routing = integrationRouting(integration)
-        if (routing.allowedUserIds.length > 0 && !routing.allowedUserIds.includes(shortcut.userId)) continue
         if (!conversationAdmitted(routing, shortcut.channel)) continue
         const session = this.store.latestSessionForTransport(agentId, shortcut.channel, transportScope, shortcut.thread)
         if (session) candidates.push(session)
