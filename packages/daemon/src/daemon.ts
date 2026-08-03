@@ -81,7 +81,13 @@ import { GitCredentialCache } from './cp/git-credential.js'
 import { CONFIG_FILE_CONVENTIONS, cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
-import { gitCredentialEnv, initGitInjection, probeGitVersion, sessionGitEnv } from './workspace/git-injection.js'
+import {
+  gitCredentialEnv,
+  initGitInjection,
+  probeGitVersion,
+  sessionGitEnv,
+  sessionGitPolicyEnv
+} from './workspace/git-injection.js'
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
@@ -375,6 +381,18 @@ function formatErr(err: unknown): string {
     return `${e.name ?? 'Error'}: ${e.message ?? ''} (code=${e.code})${data}`
   }
   return e?.stack ?? String(err)
+}
+
+function formatErrWithCauses(err: unknown): string {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = err
+  while (current !== undefined && current !== null && parts.length < 6 && !seen.has(current)) {
+    seen.add(current)
+    parts.push(formatErr(current))
+    current = typeof current === 'object' ? (current as { cause?: unknown }).cause : undefined
+  }
+  return parts.join('\nCaused by: ')
 }
 
 function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: Stats): boolean {
@@ -4444,9 +4462,10 @@ export class Daemon {
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
     const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
-    // sessionGitEnv LAST: the github-app credential-helper env must win over
-    // runtimeOverrides env (a user-supplied GIT_CONFIG_* would reopen
-    // the machine-credential leak the injection exists to close).
+    // The Git session policy runs for every configured repository, not only
+    // GitHub review: repository hooks/fsmonitor stay disabled without rewriting
+    // checkout config. sessionGitEnv additionally supplies GitHub App identity.
+    // Keep this channel LAST so runtimeOverrides cannot replace either policy.
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     const runInSandbox = opts.runInSandbox
     if (agent.runInSandbox && !runInSandbox && opts.warnOnSandboxDowngrade) {
@@ -4464,7 +4483,11 @@ export class Daemon {
       // MemoryProviderUnavailableError for an unbuildable provider (external, or
       // native on an unregistered runtime) — surfaced here at spawn.
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission()).runtimeEnv(),
-      ...(githubAppCredentials ? sessionGitEnv(agent.id, this.gitCommitIdentity) : {})
+      ...(agent.workspace.mode === 'git-repo'
+        ? githubAppCredentials
+          ? sessionGitEnv(agent.id, this.gitCommitIdentity)
+          : sessionGitPolicyEnv()
+        : {})
     }
     // Config-file secrets (agents/config-file-env.ts): materialize `*_DATA`
     // contents under the agent dir and point the tool-native env vars
@@ -8195,7 +8218,7 @@ export class Daemon {
     key: string,
     agent: Agent
   ): Promise<{
-    workspaceIsolation?: 'session'
+    workspaceIsolation?: 'shared' | 'session'
     forceWorkspaceIsolation?: true
     preparedWorkspaceCwd?: string
   }> {
@@ -8207,15 +8230,34 @@ export class Daemon {
     }
 
     const revisionLine = `Base SHA: ${github.baseSha}\nHead SHA: ${github.headSha}`
-    if (!this.githubWorkspaceMatches(agent, github)) {
+    const warmHost = this.readyHosts.has(agent.id) ? this.hosts.get(agent.id) : undefined
+    const useRevisionOnlyWorkspace = async () => {
       entry.msg.text +=
         `\n\nTrusted review revision:\n${revisionLine}\n` +
-        "This Agent's local workspace is not the pull request repository. Do not trust local files or repository traces for this review; inspect the exact base and head through GitHub read-only tools."
-      return {}
+        'No trusted local pull-request checkout is available for this review. Do not trust local files or repository traces; inspect the exact base and head through GitHub read-only tools. Local execution may be skipped.'
+      try {
+        const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
+          sessionKey: key,
+          isolation: 'session',
+          githubReviewRevisionOnly: true
+        })
+        return { workspaceIsolation: 'session' as const, forceWorkspaceIsolation: true as const, preparedWorkspaceCwd }
+      } catch (fallbackErr) {
+        // A filesystem-level failure can still leave the ordinary workspace as
+        // the runtime cwd. The prompt above explicitly removes its evidentiary
+        // authority, so the review remains revision-addressed instead of dying
+        // solely because a clean local directory could not be materialized.
+        this.log.warn(
+          `github review: revision-only workspace unavailable; using the ordinary cwd as untrusted context (${formatErrWithCauses(fallbackErr)})`
+        )
+        return { workspaceIsolation: 'shared' as const, forceWorkspaceIsolation: true as const }
+      }
+    }
+    if (!this.githubWorkspaceMatches(agent, github)) {
+      return useRevisionOnlyWorkspace()
     }
 
     try {
-      const warmHost = this.readyHosts.has(agent.id) ? this.hosts.get(agent.id) : undefined
       const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
         sessionKey: key,
         isolation: 'session',
@@ -8231,7 +8273,10 @@ export class Daemon {
         'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.'
       return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
     } catch (err) {
-      throw new Error('github review blocked: exact PR workspace preparation failed', { cause: err })
+      this.log.warn(
+        `github review: exact checkout unavailable; continuing with trusted revision only (${formatErrWithCauses(err)})`
+      )
+      return useRevisionOnlyWorkspace()
     }
   }
 

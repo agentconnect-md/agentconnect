@@ -142,7 +142,7 @@ const EMPTY_GIT_CONFIG = process.platform === 'win32' ? 'NUL' : '/dev/null'
 const WORKSPACE_SSH_COMMAND =
   'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
 const UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG =
-  /^(?:url\..*\.insteadof|include(?:if\..*)?\.path|http(?:\..*)?\.(?:proxy|curloptresolve)|remote\..*\.(?:proxy|uploadpack|receivepack|vcs)|core\.(?:sshcommand|hookspath|fsmonitor|worktree|alternaterefscommand|askpass|pager)|pager\..*|filter\..*\.(?:clean|smudge|process)|diff\.(?:external|.*\.(?:command|textconv))|merge\..*\.driver|submodule\..*\.update|fetch\.bundleuri)$/i
+  /^(?:url\..*\.insteadof|includeif\..*\.path|extensions\.worktreeconfig|http(?:\..*)?\.(?:proxy|curloptresolve)|remote\..*\.(?:proxy|uploadpack|receivepack|vcs)|core\.(?:sshcommand|worktree|alternaterefscommand|askpass|pager)|pager\..*|filter\..*\.(?:clean|smudge|process)|diff\.(?:external|.*\.(?:command|textconv))|merge\..*\.driver|submodule\..*\.update|fetch\.bundleuri)$/i
 const WORKSPACE_GIT_CONTROLLED_ENV = new Set([
   'GIT_ALLOW_PROTOCOL',
   'GIT_CONFIG_NOSYSTEM',
@@ -162,6 +162,10 @@ function workspaceGitProcessEnv(): Record<string, string> {
   // separately before an existing workspace performs network I/O.
   env.GIT_CONFIG_NOSYSTEM = '1'
   env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG
+  // Repository-owned replacement refs can make a trusted object id materialize
+  // another tree, while legacy grafts can rewrite verified commit parents.
+  env.GIT_NO_REPLACE_OBJECTS = '1'
+  env.GIT_GRAFT_FILE = EMPTY_GIT_CONFIG
   env.GIT_LFS_SKIP_SMUDGE = '1'
   env.GIT_NO_LAZY_FETCH = '1'
   return env
@@ -169,11 +173,13 @@ function workspaceGitProcessEnv(): Record<string, string> {
 
 function workspaceGitConfigPairs(repository?: string): ReadonlyArray<readonly [string, string]> {
   const pairs: Array<readonly [string, string]> = [
-    // Disable both default/custom hooks and fsmonitor commands for every
-    // daemon-owned operation. Clear checkout-owned credential helpers before
-    // an optional daemon helper is appended below.
+    // Disable both default/custom hooks, fsmonitor commands, and partial-tree
+    // materialization for every daemon-owned operation. Clear checkout-owned
+    // credential helpers before an optional daemon helper is appended below.
     ['core.hooksPath', EMPTY_GIT_CONFIG],
     ['core.fsmonitor', 'false'],
+    ['core.sparseCheckout', 'false'],
+    ['core.sparseCheckoutCone', 'false'],
     ['credential.helper', ''],
     ['http.followRedirects', 'false'],
     // Disable checkout- or server-selected secondary download locations.
@@ -255,18 +261,34 @@ export function workspaceGitLocalEnv(): Record<string, string> {
 }
 
 /**
- * Reject checkout-owned routing includes and URL rewrites before a daemon-run
- * pull. Git has no switch that disables only repository config, so inspect the
- * local/worktree keys with includes disabled, while global/system config is
- * already excluded by the environment above.
+ * Reject checkout-owned routing and executable settings that remain effective
+ * before daemon-run network or checkout operations. Unconditional includes are
+ * expanded and their actual keys are audited instead of rejecting include.path
+ * itself: a repository may legitimately include a shared hooksPath, and daemon
+ * Git pins hooksPath/fsmonitor at command scope so neither can run. Conditional
+ * includes remain disallowed because their activation can change between the
+ * primary checkout used for this audit and a later linked worktree. The
+ * separate worktree config scope is also disallowed because `--local` cannot
+ * audit `.git/config.worktree`, while later daemon Git operations still read it.
  */
 export async function assertSafeWorkspaceGitConfig(cwd: string): Promise<void> {
   const names = await gitFor(cwd)
     .env(workspaceGitLocalEnv())
-    .raw(['config', '--local', '--no-includes', '--name-only', '-z', '--list'])
+    .raw(['config', '--local', '--includes', '--name-only', '-z', '--list'])
   if (names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))) {
     throw new Error('workspace Git configuration contains a disallowed network override or executable setting')
   }
+}
+
+/** Ambient Git policy inherited by every configured repository session. The
+ * command-scope config outranks repo-local and included hooksPath/fsmonitor
+ * values without rewriting the checkout's own config. A tool may still opt in
+ * explicitly with a later `git -c` override when running a hook is the task. */
+export function sessionGitPolicyEnv(): Record<string, string> {
+  return gitConfigEnv([
+    ['core.hooksPath', EMPTY_GIT_CONFIG],
+    ['core.fsmonitor', 'false']
+  ])
 }
 
 /**
@@ -364,6 +386,7 @@ export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentit
   writeFileSync(file, lines.join('\n'), { mode: 0o644 })
   return {
     ...gitCredentialEnv(agentId),
+    ...sessionGitPolicyEnv(),
     GIT_CONFIG_GLOBAL: file,
     GIT_TERMINAL_PROMPT: '0',
     ...(commitIdentity

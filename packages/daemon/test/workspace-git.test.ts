@@ -307,6 +307,24 @@ describe('createWorkspaceGit.pull', () => {
     expect(pullImpl).not.toHaveBeenCalled()
   })
 
+  it('pulls normally when local includes only configure repository hooks', async () => {
+    const dir = ws(true)
+    rawImpl = vi
+      .fn()
+      .mockImplementation(async (args: string[]) =>
+        args[0] === 'remote' ? 'https://github.com/acme/repo.git\n' : 'include.path\0core.hookspath\0'
+      )
+    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
+    const git = createWorkspaceGit(
+      () => dir,
+      () => ({}),
+      githubTarget
+    )
+
+    await expect(git.pull('a')).resolves.toMatchObject({ isRepo: true, ok: true })
+    expect(pullImpl).toHaveBeenCalledOnce()
+  })
+
   it('ignores a checkout-controlled upstream and pulls the configured target explicitly', async () => {
     const dir = ws(true)
     rawImpl = vi

@@ -65,6 +65,9 @@ export interface PrepareSessionWorkspaceRequest {
   sessionKey: string
   isolation: 'shared' | 'session'
   review?: GithubReviewWorkspaceRevision
+  /** Use an empty daemon-owned cwd when an exact local review checkout is
+   * unavailable. The model must inspect the trusted revision through GitHub. */
+  githubReviewRevisionOnly?: true
 }
 
 async function withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
@@ -555,6 +558,27 @@ async function fetchReviewRevision(
   }
 }
 
+/** Replace any earlier checkout with an empty stable cwd. This lets a formal
+ * review continue through revision-addressed GitHub tools without exposing a
+ * stale or checkout-controlled local repository as evidence. */
+function prepareGithubRevisionOnlyWorkspace(agent: Agent, id: string): string {
+  const root = prepareSessionWorktreeRoot(agent)
+  const cwd = join(root, id)
+  if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) {
+    throw new Error('github review workspace path must not be a symlink')
+  }
+  const staged = `${cwd}.review-${randomUUID()}`
+  mkdirSync(staged, { recursive: true, mode: 0o700 })
+  try {
+    rmSync(cwd, { recursive: true, force: true })
+    renameSync(staged, cwd)
+  } catch (err) {
+    rmSync(staged, { recursive: true, force: true })
+    throw err
+  }
+  return realpathSync(cwd)
+}
+
 /** Prepare the stable cwd for one logical session. Ordinary worktrees preserve
  * their working state between turns. Review worktrees are daemon-owned snapshots
  * and are reset on every delivery after an exact remote fetch. */
@@ -563,6 +587,12 @@ export async function prepareSessionWorkspace(
   request: PrepareSessionWorkspaceRequest,
   opts: PrepareWorkspaceOptions = {}
 ): Promise<string> {
+  if (request.githubReviewRevisionOnly) {
+    if (agent.workspace.mode !== 'git-repo' || request.isolation !== 'session' || request.review) {
+      throw new Error('github revision-only workspace requires an isolated git-repo review session')
+    }
+    return prepareGithubRevisionOnlyWorkspace(agent, sessionWorktreeId(request.sessionKey))
+  }
   const primary = await prepareWorkspace(agent, opts)
   if (agent.workspace.mode !== 'git-repo' || request.isolation === 'shared') return primary
 
@@ -586,11 +616,18 @@ export async function prepareSessionWorkspace(
   if (!attached) {
     rmSync(cwd, { recursive: true, force: true })
     await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
+    // prepareWorkspace's pull is best-effort (and may be disabled), but this
+    // checkout runs in the daemon process. Unsafe executable config must gate
+    // the worktree operation itself instead of being swallowed as a pull error.
+    await assertSafeWorkspaceGitConfig(agent.workspace.path)
     await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'add', '--detach', cwd, target])
   } else if (review) {
+    // Re-audit at the checkout boundary rather than relying on the earlier
+    // network fetch audit; repository config may have changed while fetching.
+    await assertSafeWorkspaceGitConfig(agent.workspace.path)
     const worktreeGit = gitFor(cwd).env(workspaceGitLocalEnv())
     await worktreeGit.raw(['reset', '--hard', target])
-    await worktreeGit.raw(['clean', '-ffd'])
+    await worktreeGit.raw(['clean', '-ffdx'])
   }
   if (review && (await revParse(cwd, 'HEAD')).toLowerCase() !== review.checkout) {
     throw new Error('github review worktree HEAD does not match the verified revision')

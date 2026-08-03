@@ -303,11 +303,39 @@ metadata through the authenticated GitHub API. When the Agent workspace is the
 same repository, the daemon fetches the exact base and head objects into
 daemon-owned refs and checks out an isolated worktree. A GitHub merge ref may be
 used only after its object ID and ordered parents are proven to be the trusted
-base and head; otherwise the exact head is used. A formal review fails closed if
-that fetch or verification fails. If the Agent workspace is another repository,
-the prompt forbids trusting local traces and requires read-only GitHub inspection
-of the trusted revision instead. Ordinary PR conversations preserve their stable
-session worktree, do not carry formal-review authority, and require read-only or
+base and head; otherwise the exact head is used.
+Reused formal-review worktrees are hard-reset and cleaned including ignored
+untracked content before they are presented as exact snapshots. Ordinary session
+worktrees continue to preserve their working state between turns.
+
+Repository hooks are not a reason to reject a workspace. Every daemon-managed
+Git command disables hooks and fsmonitor at command scope, and every configured
+Git workspace gives its Agent runtime the same default policy without rewriting
+the repository config. Unconditional local includes are expanded so their
+effective settings can be audited; an include that only selects a hooks path
+remains usable. Conditional includes are refused because their activation can
+change between the primary checkout and a linked worktree, and the separate
+worktree config scope is refused because a local-scope audit cannot inspect it.
+Network routing or other executable overrides that the daemon cannot neutralize
+are also refused for the affected daemon-managed operation. The daemon repeats
+that audit immediately before linked-worktree materialization or reset, and an
+unsafe result is never degraded into a best-effort pull failure. Daemon Git also
+disables replacement-object processing and ignores repository graft files, so
+verified object IDs, parents, and checked-out trees retain the same meaning. It
+also disables sparse checkout at daemon command scope so an exact checkout is a
+complete tree even when the primary repository uses sparse-checkout settings.
+This policy applies to every task in a configured Git repository, not only GitHub
+reviews.
+
+Failure to obtain the authoritative base/head remains fail-closed. Once those
+identities are known, however, a revision fetch, verification, or local checkout
+failure degrades to revision-only review instead of failing the Agent turn. The
+daemon replaces any earlier review checkout with an empty isolated cwd when it
+can, and the prompt forbids trusting local traces, permits skipping local
+execution, and requires inspection of the exact revision through GitHub read-only
+tools. The same revision-only path applies when the Agent workspace belongs to
+another repository. Ordinary PR conversations preserve their stable session
+worktree, do not carry formal-review authority, and require read-only or
 revision-addressed inspection instead of trusting working-tree paths.
 
 The model-visible formal-review instruction repeats the trusted base/head and
