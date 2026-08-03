@@ -168,7 +168,7 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './slack/render.js'
-import { TelegramConverger, renderStatusReply, TELEGRAM_MESSAGE_LIMIT, type TelegramAction } from './telegram/render.js'
+import { TelegramConverger, renderStatusReply, type TelegramAction } from './telegram/render.js'
 import {
   DiscordConverger,
   renderStatusText,
@@ -306,6 +306,15 @@ import {
   type NormalizedMessage
 } from './messages/normalized.js'
 import { ConnectionPool, type ConnectionKey } from './platforms/registry.js'
+import {
+  applyTelegramAction as applyTelegramActionExternal,
+  type TelegramTurnState
+} from './platforms/telegram/turn-output.js'
+import {
+  canonicalizeTelegramThread as canonicalizeTelegramThreadExternal,
+  telegramMessageId as telegramMessageIdExternal,
+  telegramReplyTarget as telegramReplyTargetExternal
+} from './platforms/telegram/threading.js'
 import { TurnOutputRegistry, type TurnOutputContext } from './platforms/turn-output.js'
 import type {
   RegisterReq,
@@ -1174,13 +1183,6 @@ interface SlackTurnState {
   staleReplyFooters?: { ts: string; text: string }[]
 }
 
-interface TelegramTurnState {
-  /** The message id every post this turn replies to (the triggering message —
-   *  "the last message in the session" at turn start), so the bot's answer threads
-   *  under it and a human reply-to-bot stitches back to this session. */
-  replyTo?: number
-}
-
 interface FeishuTurnState {
   /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
    *  `card-start` succeeds; `cardAttempted` prevents duplicate initial cards. */
@@ -1310,7 +1312,6 @@ interface Pending {
   /** Telegram: the id and exact sent text of the LAST body message posted this turn, so a
    *  turn-end `continue-hint` action can append the continue-the-topic line to it in place
    *  (the body may have been flushed long before the turn ended). */
-  tgLastBody?: { id: string; text: string }
   /** ts of the single in-place agent reply message (minimal mode's `live-reply`), once posted. */
   liveReplyTs?: string
   /** Whether the live-reply's first post was attempted (see progressAttempted). */
@@ -5423,73 +5424,23 @@ export class Daemon {
   /** The bare Telegram message id from a normalized `telegram:<chatId>:<messageId>`
    *  msgId (the last segment; chat ids may be negative, so split, don't parse). */
   private telegramMessageId(msg: NormalizedMessage): string {
-    const parts = msg.msgId.split(':')
-    return parts[parts.length - 1] ?? ''
+    return telegramMessageIdExternal(msg)
   }
 
-  /**
-   * Resolve the session thread for a Telegram message and set it on `msg.thread` in
-   * place (normalize leaves it unset for Telegram). Ladder:
-   *   - forum topic       → the topic id (a real native thread; numeric, so it also
-   *                          drives the post's `message_thread_id`)
-   *   - native reply-root → `tg:<root>` from Telegram's own `message_thread_id` in a
-   *                          plain supergroup (Telegram auto-threads replies to the root)
-   *   - DM                → one continuous session per chat (`dm`)
-   *   - reply that maps   → the session the replied-to message belongs to, resolved from
-   *                          the transcript (basic groups carry no `message_thread_id`)
-   *   - otherwise         → a fresh session rooted at this message (`tg:<msgId>`) — a new
-   *                          @mention, or a reply we can't place
-   * A fresh @mention (message N, no thread root) keys `tg:N`; every later reply in that
-   * thread carries `message_thread_id = N`, so it keys `tg:N` too — the two meet with no
-   * lookup. The non-topic keys are deliberately NON-numeric so posting never mistakes
-   * them for a forum `message_thread_id` (see TelegramConnection.postMessage). No-op for
-   * other platforms or when the thread is already set.
-   */
+  /** Telegram thread canonicalization — the platform's own conversation model
+   *  ({@link canonicalizeTelegramThreadExternal}); core only supplies the
+   *  transcript lookup a reply needs to be placed. */
   private canonicalizeTelegramThread(msg: NormalizedMessage): void {
-    if (msg.platform !== 'telegram' || msg.thread !== undefined) return
-    // §6.5 dual-shape reader: prefer the generic coordinates; the named per-platform
-    // fields stop being emitted once the fleet reads the generic ones.
-    const topicId = msg.topicId ?? msg.telegramTopicId
-    if (topicId !== undefined) {
-      msg.thread = topicId
-      return
-    }
-    const threadRoot = msg.threadRoot ?? msg.telegramThreadRoot
-    if (threadRoot !== undefined) {
-      msg.thread = `tg:${threadRoot}`
-      return
-    }
-    if (msg.isDm) {
-      msg.thread = 'dm'
-      return
-    }
-    if (msg.replyTo) {
-      const owner = this.store.telegramThreadForMessage(
-        transcriptChannelKey(msg.channel, msg.transportScope),
-        msg.replyTo
-      )
-      msg.thread = owner ?? `tg:${msg.replyTo}`
-      return
-    }
-    msg.thread = `tg:${this.telegramMessageId(msg)}`
+    canonicalizeTelegramThreadExternal(
+      { threadForMessage: (channel, id) => this.store.telegramThreadForMessage(channel, id) },
+      msg,
+      transcriptChannelKey(msg.channel, msg.transportScope)
+    )
   }
 
-  /** Telegram reply target for a turn/command triggered by `msg`: the triggering
-   *  message's own id, so the bot's posts reply to it (req: reply to the last message
-   *  in the session, and keep the reply chain resolvable). An agent-call turn
-   *  (`replyToSession` / a peer wake) synthesizes its msgId (`agentcall:<channel>:<uuid>`)
-   *  so no platform id can be recovered — without a fallback its answer posts to the
-   *  chat root, visually outside the reply chain the session lives in. Those turns
-   *  anchor to the session's thread root instead (`tg:<root>`, see
-   *  {@link canonicalizeTelegramThread}); `dm` and numeric forum-topic threads carry no
-   *  reply anchor. Undefined off Telegram or when neither id resolves. */
+  /** Telegram's reply anchor for a turn ({@link telegramReplyTargetExternal}). */
   private telegramReplyTarget(msg: NormalizedMessage): number | undefined {
-    if (msg.platform !== 'telegram') return undefined
-    const n = Number(this.telegramMessageId(msg))
-    if (Number.isInteger(n) && n > 0) return n
-    const root = msg.thread !== undefined ? /^tg:(\d+)$/.exec(msg.thread) : null
-    const r = root ? Number(root[1]) : NaN
-    return Number.isInteger(r) && r > 0 ? r : undefined
+    return telegramReplyTargetExternal(msg)
   }
 
   // route an inbound Slack message
@@ -12761,113 +12712,18 @@ export class Daemon {
    *  - typing      → a transient chat-action ("typing…").
    *  - progress / plan / reasoning → the single in-place message of that kind.
    */
+  /** Telegram's turn output lives in its platform module (§7.3); core supplies the
+   *  two host capabilities it needs and the opaque state slot it owns. */
   private async applyTelegramAction(p: Pending, action: TelegramAction): Promise<void> {
-    // minimal mode records each reply segment WITHOUT sending it — the chat shows only the
-    // single `live-reply` (see applySlackAction / recordReplySegment).
-    if (action.kind === 'post' && action.recordOnly) {
-      this.recordReplySegment(p, action.text)
-      return
-    }
-    // Routed here only for the telegram platform (see enqueueApply), so p.conn is a
-    // Telegram connection (or a test fake) — cast, not instanceof. Headless no-ops.
-    const conn = p.conn as TelegramConnection | undefined
-    if (!conn) return
-    switch (action.kind) {
-      case 'typing':
-        await conn.sendChatAction(p.channel)
-        return
-      case 'post': {
-        // The continue-the-topic hint is chrome: sent with the reply (so it lands on the very
-        // message users are told to reply to) but kept out of the recorded text below.
-        const sent = action.hint ? `${action.text}\n\n${action.hint}` : action.text
-        const id = await conn.postMessage(p.channel, sent, p.thread, {
-          replyTo: turnState<TelegramTurnState>(p).replyTo
-        })
-        // Remember the newest body message so a turn-end `continue-hint` can annotate it.
-        if (id) p.tgLastBody = { id, text: sent }
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: id ?? `local-${Date.now()}`,
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-        return
-      }
-      case 'continue-hint': {
-        // The turn's last body went out earlier (idle flush / tool boundary), so the hint
-        // lands by editing that message. Skipped when its id is unknown (a failed send) or
-        // when the suffix would not fit — the converger reserves room for it in the body
-        // budget, so this guard only fires for text that predates the reservation.
-        const last = p.tgLastBody
-        if (!last || last.text.endsWith(action.hint)) return
-        const sent = `${last.text}\n\n${action.hint}`
-        if (sent.length > TELEGRAM_MESSAGE_LIMIT) return
-        p.tgLastBody = { id: last.id, text: sent }
-        await conn.updateMessage(p.channel, last.id, sent)
-        return
-      }
-      case 'live-reply': {
-        // minimal mode's single agent reply: send once (plain text) then edit in place as the
-        // turn streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
-        if (p.liveReplyText === action.text) return
-        p.liveReplyText = action.text
-        if (p.liveReplyTs) await conn.updateMessage(p.channel, p.liveReplyTs, action.text)
-        else if (!p.liveReplyAttempted) {
-          p.liveReplyAttempted = true
-          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread, {
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-      }
-      case 'notice':
-      case 'tool-output':
-        // Posted to the chat but NOT recorded — the done footer is chrome, and tool
-        // output is captured independently by the recorder.
-        await conn.postChrome(p.channel, action.text, {
-          parseMode: action.parseMode,
-          threadTs: p.thread,
-          replyTo: turnState<TelegramTurnState>(p).replyTo
-        })
-        return
-      case 'progress':
-        if (p.progressTs)
-          await conn.updateMessage(p.channel, p.progressTs, action.text, { parseMode: action.parseMode })
-        else if (!p.progressAttempted) {
-          p.progressAttempted = true
-          p.progressTs = await conn.postChrome(p.channel, action.text, {
-            parseMode: action.parseMode,
-            threadTs: p.thread,
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-      case 'plan':
-        if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text, { parseMode: action.parseMode })
-        else if (!p.planAttempted) {
-          p.planAttempted = true
-          p.planTs = await conn.postChrome(p.channel, action.text, {
-            parseMode: action.parseMode,
-            threadTs: p.thread,
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-      case 'reasoning':
-        if (p.reasoningTs)
-          await conn.updateMessage(p.channel, p.reasoningTs, action.text, { parseMode: action.parseMode })
-        else if (!p.reasoningAttempted) {
-          p.reasoningAttempted = true
-          p.reasoningTs = await conn.postChrome(p.channel, action.text, {
-            parseMode: action.parseMode,
-            threadTs: p.thread,
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-    }
+    await applyTelegramActionExternal(
+      {
+        recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
+        appendTranscript: (row) => this.store.appendTranscript(row)
+      },
+      p,
+      turnState<TelegramTurnState>(p),
+      action
+    )
   }
 
   /**
