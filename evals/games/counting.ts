@@ -167,7 +167,19 @@ export class CountingGame implements CollaborationGameWorld {
     const fromAlias = this.world.aliasOfAgent(effect.agentId)
     const messageId = this.world.mintMessageId(this.room.platform)
     this.world.registerRoomMessage(this.room.channel, messageId)
-    const senderId = this.peerSenderId(fromAlias)
+    // FIDELITY: the fan-out carries the posting agent's REAL managed bot
+    // identity -- the same botUserId the virtual connection exposes and
+    // getThreadReplies reports. Production Slack fans the event out to every
+    // other integration and the daemon's first ingress gate then drops
+    // managed-bot senders (isAgentBotMessage -- anti bot-loop), so these
+    // deliveries are EXPECTED to come back rejected 'suppressed': one agent's
+    // post never wakes another agent. The suppressed outcome is recorded below
+    // so the trace explains why a peer-driven room stalls without a human or
+    // referee cadence. Peers still SEE the post -- through their in-flight
+    // turns' provider thread snapshot (turn-final refresh), never as a wake.
+    const botUserId = this.world.botUserIdFor(effect.integrationId) ?? effect.agentId
+    const botAppId = this.world.botAppIdFor(effect.integrationId)
+    const outcomes: { integrationId: string; admission: Promise<{ admitted: boolean; reason?: string }> }[] = []
     for (const integrationId of this.room.memberIntegrationIds) {
       if (integrationId === effect.integrationId) continue
       const handle = this.liveIngress?.({
@@ -177,10 +189,18 @@ export class CountingGame implements CollaborationGameWorld {
           thread: this.room.thread,
           messageId,
           text: effect.text,
-          sender: { id: senderId }
+          sender: { id: botUserId, isBot: true, ...(botAppId !== undefined ? { appId: botAppId } : {}) }
         }
       })
-      if (handle) this.liveHandles.push(handle)
+      if (handle) {
+        this.liveHandles.push(handle)
+        outcomes.push({
+          integrationId,
+          admission: handle.admission.then((admission) =>
+            admission.admitted ? { admitted: true } : { admitted: false, reason: admission.reason }
+          )
+        })
+      }
     }
     this.world.appendEvent({
       type: 'peer.relay',
@@ -188,16 +208,26 @@ export class CountingGame implements CollaborationGameWorld {
       roomId: this.room.alias,
       fromAgentId: effect.agentId,
       fromAlias,
-      senderId,
+      botUserId,
       sourceSequence: effect.sequence,
       messageId,
       text: effect.text
     })
-  }
-
-  /** Stable per-agent platform user identity for relayed peer speech. */
-  private peerSenderId(alias: string): string {
-    return `U-${alias.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()}`
+    // Per-target admission outcomes (suppression is decided synchronously in
+    // the daemon's ingress, so these settle before the wave barrier).
+    void Promise.all(
+      outcomes.map(async (entry) => ({ integrationId: entry.integrationId, ...(await entry.admission) }))
+    )
+      .then((resolved) => {
+        this.world.appendEvent({
+          type: 'peer.relay.outcome',
+          origin: 'agent_effect',
+          roomId: this.room.alias,
+          messageId,
+          outcomes: resolved
+        })
+      })
+      .catch(() => {})
   }
 
   /** §8: the runner supplies live ingress so relays enter the daemon the moment

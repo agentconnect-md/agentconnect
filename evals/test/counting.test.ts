@@ -130,7 +130,7 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     expect(start.platformEvents[0]!.payload.channel).toBe(room.channel)
   })
 
-  it("relays a delivered reply LIVE, with the original text and the peer's own sender identity", async () => {
+  it("relays a delivered reply LIVE under the poster's REAL managed bot identity", async () => {
     const { game, reply, room, integrationOf, world, injected } = fixture(3, 'peer-driven')
     game.nextDeliveries()
     // The relay fires from the §7.2 sink itself — before any wave barrier and
@@ -141,10 +141,12 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     expect(injected.map((event) => event.integrationId)).not.toContain(integrationOf('agent-a').integrationId)
     for (const event of injected) {
       expect(event.payload.thread).toBe(room.thread)
-      // ORIGINAL text — no synthetic wrapper — from the peer's own platform user.
+      // ORIGINAL text — no synthetic wrapper — and the SAME managed bot
+      // identity production Slack would deliver (the anti-bot-loop ingress
+      // gate must see exactly what it sees in production and suppress it).
       expect(event.payload.text).toBe('1')
-      expect(event.payload.sender.id).toBe('U-AGENTA')
-      expect(event.payload.sender.isBot).toBeFalsy()
+      expect(event.payload.sender.id).toBe(integrationOf('agent-a').botUserId)
+      expect(event.payload.sender.isBot).toBe(true)
     }
     // The provider thread history carries the post under its real bot identity
     // with the stable author id — this is what the turn-final snapshot reads.

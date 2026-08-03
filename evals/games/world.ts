@@ -75,10 +75,24 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     return this.sequence
   }
 
-  /** Mint a platform-shaped message id for a world-authored room event. */
+  /** Highest Slack-shaped ts minted so far, in microseconds (monotonicity). */
+  private lastMintedMicros = 0
+
+  /** Mint a platform-shaped message id for a world-authored room event.
+   *  FIDELITY: Slack ts values are WALL-CLOCK epoch seconds — the daemon's
+   *  provider-checkpoint windows (`snapshotCutoffTs` / turn-final refresh)
+   *  compare message ts against `slackTsForWallClock(now)`, so a synthetic
+   *  past-epoch ts would silently fall outside every window and the
+   *  regeneration fence could never see the message. Strictly monotonic. */
   mintMessageId(platform: string): string {
     this.messageCounter += 1
-    if (platform === 'slack') return `${this.messageEpoch}.${String(this.messageCounter).padStart(6, '0')}`
+    if (platform === 'slack') {
+      const nowMs = Date.now()
+      let micros = Math.floor(nowMs / 1000) * 1_000_000 + (nowMs % 1000) * 1000 + (this.messageCounter % 1000)
+      if (micros <= this.lastMintedMicros) micros = this.lastMintedMicros + 1
+      this.lastMintedMicros = micros
+      return `${Math.floor(micros / 1_000_000)}.${String(micros % 1_000_000).padStart(6, '0')}`
+    }
     return String(this.messageEpoch * 1000 + this.messageCounter)
   }
 
@@ -205,6 +219,11 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     return this.integrationsById.get(integrationId)?.botUserId
   }
 
+  /** The public Slack app id of one virtual integration (`isAgentBotApp` input). */
+  botAppIdFor(integrationId: string): string | undefined {
+    return this.integrationsById.get(integrationId)?.botAppId
+  }
+
   channelInfo(channel: string): VirtualChannelInfo | undefined {
     return this.channelsById.get(channel)?.info
   }
@@ -274,7 +293,7 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
               spec.integrationId,
               { workspaceId: spec.tenant?.workspaceId ?? `TARENA${this.topology.seed}` },
               this,
-              { botUserId: spec.botUserId }
+              { botUserId: spec.botUserId, ...(spec.botAppId !== undefined ? { appId: spec.botAppId } : {}) }
             )
           : spec.platform === 'discord'
             ? new VirtualDiscordConnection(spec.integrationId, this)

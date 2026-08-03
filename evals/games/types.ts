@@ -57,6 +57,8 @@ export interface CompiledIntegrationSpec {
   transportScope: string
   tenant?: { workspaceId?: string }
   botUserId: string
+  /** Public Slack app id (`A…`) — the identity `cpCollab.isAgentBotApp` checks. */
+  botAppId?: string
   /** Channels this integration is routed for (compiled from room membership). */
   bindChannels: string[]
   /** Channels visible without membership (compiled from `observers`). */

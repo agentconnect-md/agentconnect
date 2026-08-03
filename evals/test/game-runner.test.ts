@@ -89,7 +89,7 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(gameResult.metrics.collisions).toBeGreaterThan(0)
   }, 120_000)
 
-  it('peer-driven variant (§3.3): peer posts drive every wave and the daemon absorbs them into open turns', async () => {
+  it('peer-driven variant: bot-authored relays are SUPPRESSED like production Slack, and the room stalls', async () => {
     const artifactDir = join(scratch(), 'peer-run')
     const result = await runSameRoomCounting({
       seed: 11,
@@ -99,14 +99,17 @@ describe('collaboration game runner — same-room counting with scripted hosts',
       timeoutMs: 120_000
     })
     expect(result.error).toBeUndefined()
+    // A stalled room is a VALID observed outcome: in production Slack an
+    // agent's post never wakes another agent (managed-bot ingress suppression,
+    // anti bot-loop), so without a human or referee cadence the count only
+    // advances as far as the INITIAL broadcast wave carries it — turns that
+    // were already in flight absorb earlier posts via the turn-final refresh.
     expect(result.status).toBe('passed')
-    expect(result.verdict.terminalReason).toBe('completed')
-    expect(result.verdict.outcome).toMatchObject({
-      completed: true,
-      variant: 'peer-driven',
-      acceptedPrefix: 6,
-      target: 6
-    })
+    expect(result.verdict.terminalReason).toBe('stalled')
+    const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
+    expect(acceptedPrefix).toBeGreaterThanOrEqual(1)
+    expect(acceptedPrefix).toBeLessThan(6)
+    expect(result.verdict.outcome).toMatchObject({ completed: false, variant: 'peer-driven' })
     expect(result.verdict.invariants).toMatchObject({
       attemptedUnauthorizedEffects: 0,
       wrongRoomMessages: 0,
@@ -116,39 +119,32 @@ describe('collaboration game runner — same-room counting with scripted hosts',
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
-    // The referee speaks exactly once (the start message); every later room
-    // message that drives a turn is a PEER post relayed live.
+    // The referee spoke exactly once, and there was exactly ONE ingress wave.
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
+    expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
+    // Relays went out under the REAL managed bot identities...
     const relays = worldEvents.filter((event) => event.type === 'peer.relay')
-    expect(relays.length).toBeGreaterThanOrEqual(6)
-    // Relays carry the ORIGINAL text and the peer's own platform identity.
+    expect(relays.length).toBeGreaterThanOrEqual(1)
     for (const relay of relays) {
       expect(String(relay.text)).toMatch(/^-?\d+$/)
-      expect(String(relay.senderId)).toMatch(/^U-AGENT[A-D]$/)
+      expect(String(relay.botUserId)).toMatch(/^UB[0-9A-F]+$/)
     }
-    // The accepted sequence is a clean 1..6 prefix.
+    // ...and every single delivery came back rejected 'suppressed' — the
+    // trace explains WHY the game stalls (§4.1: a managed agent bot's post is
+    // never an activation path).
+    const outcomes = worldEvents.filter((event) => event.type === 'peer.relay.outcome')
+    expect(outcomes.length).toBe(relays.length)
+    for (const outcome of outcomes) {
+      const entries = outcome.outcomes as { admitted: boolean; reason?: string }[]
+      expect(entries.length).toBeGreaterThan(0)
+      for (const entry of entries) expect(entry).toMatchObject({ admitted: false, reason: 'suppressed' })
+    }
+    // The accepted values are a clean 1..n prefix (whatever the initial wave
+    // absorbed), never a duplicated or skipped slot.
     const accepted = worldEvents.filter((event) => event.type === 'count.candidate' && event.accepted)
-    expect(accepted.map((event) => event.value)).toEqual([1, 2, 3, 4, 5, 6])
-    // Production timing proof: peer posts entered the daemon while other turns
-    // were open, so the daemon's own context fences absorbed them BEFORE a
-    // stale number could be posted — either by coalescing the peer message into
-    // a turn that had not yet started, or by regenerating one that had (the
-    // dedicated test below pins the regeneration path deterministically).
-    const events = readFileSync(result.paths.events, 'utf8')
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const absorbed = events.filter(
-      (event) =>
-        event.type === 'turn.regeneration_started' ||
-        event.type === 'turn.context_changed' ||
-        (event.type === 'turn.cancelled' && event.data?.reason === 'coalesced_into_turn')
+    expect(accepted.map((event) => event.value)).toEqual(
+      Array.from({ length: acceptedPrefix }, (_, index) => index + 1)
     )
-    expect(absorbed.length).toBeGreaterThan(0)
-    // Collisions are expected here: the scripted hosts answer instantly, so
-    // several members legitimately race the same number. What must hold is that
-    // the referee accepted a clean prefix anyway.
-    expect(result.verdict.metrics.collisions).toBeGreaterThan(0)
   }, 180_000)
 
   it('a slow in-flight turn REGENERATES when a peer post lands mid-turn, and posts the NEXT number', async () => {
@@ -195,7 +191,7 @@ describe('collaboration game runner — same-room counting with scripted hosts',
                 await new Promise((resolve) => setTimeout(resolve, 900))
               }
               const posted: number[] = []
-              for (const line of text.matchAll(/\[(U-[A-Z0-9-]+)\]\s*(-?\d+)\s*$/gm)) posted.push(Number(line[2]))
+              for (const line of text.matchAll(/\[[^\]\n]+\]\s*(-?\d+)\s*$/gm)) posted.push(Number(line[1]))
               const next = Math.max(0, ...posted) + 1
               posts.push({ agent: agent.id === slowAgentId ? 'agent-b' : 'agent-a', text: String(next), generation })
               generation += 1

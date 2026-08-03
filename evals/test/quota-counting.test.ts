@@ -2,8 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { CollaborationGameRunner } from '../../packages/daemon/src/evaluation/index.js'
-import { countingManifest, runQuotaCounting, scaffoldSubject } from '../games/engine.js'
+import { countingManifest, runQuotaCounting } from '../games/engine.js'
 import { QuotaCountingGame } from '../games/quota-counting.js'
 import { compileTopology } from '../games/topology.js'
 import { ArenaWorld } from '../games/world.js'
@@ -156,102 +155,45 @@ describe('quota counting referee — leaderless turn-taking with a real endgame 
 })
 
 describe('quota counting end to end — scripted hosts over the real daemon', () => {
-  it('a cooperative group completes with exact quotas and clean turn-taking', async () => {
+  it('bot-authored relays are SUPPRESSED like production Slack: the room stalls and the report says why', async () => {
     const result = await runQuotaCounting({
       seed: 5,
       agents: ['agent-a', 'agent-b', 'agent-c', 'agent-d'],
       quotaPerAgent: 2,
-      artifactDir: join(scratch(), 'complete'),
+      artifactDir: join(scratch(), 'suppressed'),
       timeoutMs: 120_000
     })
     expect(result.error).toBeUndefined()
+    // In production Slack a managed agent bot's post never wakes another agent
+    // (anti bot-loop ingress suppression), so without a human or referee
+    // cadence the count only advances as far as the INITIAL broadcast wave
+    // carries it via in-flight turn refreshes — then the room stalls. That is
+    // a VALID observed outcome with the remaining quota on record.
     expect(result.status).toBe('passed')
-    expect(result.verdict.terminalReason).toBe('completed')
-    expect(result.verdict.outcome).toMatchObject({
-      completed: true,
-      endgame: 'completed-clean',
-      acceptedPrefix: 8,
-      target: 8,
-      contributions: { 'agent-a': 2, 'agent-b': 2, 'agent-c': 2, 'agent-d': 2 }
-    })
-    expect(result.verdict.metrics).toMatchObject({ consecutivePostViolations: 0, overQuotaContributions: 0 })
-    expect(result.verdict.metrics.participationEntropy).toBe(1)
+    expect(result.verdict.terminalReason).toBe('stalled')
+    const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
+    expect(acceptedPrefix).toBeGreaterThanOrEqual(1)
+    expect(acceptedPrefix).toBeLessThan(8)
+    expect(result.verdict.outcome).toMatchObject({ completed: false, endgame: 'stalled', deadlocked: false })
+    const remaining = Object.values(result.verdict.outcome.remainingQuota as Record<string, number>)
+    expect(remaining.reduce((sum, value) => sum + value, 0)).toBe(8 - acceptedPrefix)
     const worldEvents = readFileSync(result.paths.worldEvents, 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
-    // Leaderless: the referee spoke exactly once; peer relays drove the rest.
+    // One referee message, one ingress wave; every relay delivery came back
+    // rejected 'suppressed' under the poster's REAL managed bot identity.
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
-    expect(worldEvents.filter((event) => event.type === 'peer.relay').length).toBeGreaterThanOrEqual(8)
-  }, 150_000)
-
-  it('a group with a hoarder deadlocks and is reported as such, with remaining quota', async () => {
-    const topology = compileTopology(countingManifest({ seed: 6, agents: ['agent-a', 'agent-b', 'agent-c'] }))
-    const hoarderId = topology.agents.find((agent) => agent.alias === 'agent-c')!.agentId
-    const world = new ArenaWorld(topology)
-    const game = new QuotaCountingGame({ world, roomAlias: 'counting-room', quotaPerAgent: 2 })
-    const subject = scaffoldSubject(topology)
-    try {
-      const runner = new CollaborationGameRunner({
-        root: subject.root,
-        world: game,
-        artifactDir: join(scratch(), 'deadlock'),
-        game: 'quota-counting',
-        seed: 6,
-        mode: 'deterministic',
-        subjectKind: 'scripted',
-        hostFactory: ((agent: { id: string }, onUpdate: (sessionId: string, update: unknown) => void) => {
-          // Deterministic choreography: agent-a claims the odd numbers,
-          // agent-b the even ones, agent-c hoards (never posts). a and b
-          // exhaust their quotas on 1..4, then no one can interleave c's two
-          // remaining posts — the variant's endgame hazard, on purpose.
-          const aliasOf = new Map(topology.agents.map((entry) => [entry.agentId, entry.alias]))
-          const alias = aliasOf.get(agent.id)!
-          const state = { mine: 0, myLast: 0 }
-          return {
-            start: async () => {},
-            newSession: async () => `deadlock-${agent.id.slice(0, 8)}`,
-            hasSession: () => true,
-            modelOptions: () => ({ current: 'scripted', models: ['scripted'] }),
-            prompt: async (sessionId: string, blocks: { text?: string }[]) => {
-              const text = blocks.map((block) => block.text ?? '').join('\n')
-              const reply = (value: string) =>
-                onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: value } })
-              const posted: number[] = []
-              for (const line of text.matchAll(/\[(U-[A-Z0-9-]+)\]\s*(-?\d+)\s*$/gm)) posted.push(Number(line[2]))
-              const maxSeen = Math.max(0, ...posted, state.myLast)
-              const next = maxSeen + 1
-              const wantsParity = alias === 'agent-a' ? 1 : alias === 'agent-b' ? 0 : -1
-              if (wantsParity === -1 || state.mine >= 2 || next % 2 !== wantsParity) {
-                reply('waiting.')
-                return { stopReason: 'end_turn' }
-              }
-              state.mine += 1
-              state.myLast = next
-              reply(String(next))
-              return { stopReason: 'end_turn' }
-            },
-            cancel: async () => {},
-            stop: async () => {}
-          }
-        }) as never,
-        capabilityProfile: { memory: 'off', collaboration: 'configured' },
-        limits: { maxSteps: 20, timeoutMs: 90_000 },
-        agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
-      })
-      const result = await runner.run()
-      // The trial is VALID — the group deadlocking is a legitimate observed
-      // outcome, not an infrastructure failure.
-      expect(result.status).toBe('passed')
-      expect(result.verdict.terminalReason).toBe('deadlocked')
-      expect(result.verdict.outcome).toMatchObject({
-        completed: false,
-        endgame: 'deadlocked',
-        deadlocked: true,
-        remainingQuota: { 'agent-a': 0, 'agent-b': 0, 'agent-c': 2 }
-      })
-    } finally {
-      subject.cleanup()
+    expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
+    const relays = worldEvents.filter((event) => event.type === 'peer.relay')
+    expect(relays.length).toBeGreaterThanOrEqual(1)
+    for (const relay of relays) expect(String(relay.botUserId)).toMatch(/^UB[0-9A-F]+$/)
+    const outcomes = worldEvents.filter((event) => event.type === 'peer.relay.outcome')
+    expect(outcomes.length).toBe(relays.length)
+    for (const outcome of outcomes) {
+      for (const entry of outcome.outcomes as { admitted: boolean; reason?: string }[]) {
+        expect(entry).toMatchObject({ admitted: false, reason: 'suppressed' })
+      }
     }
   }, 150_000)
 })
