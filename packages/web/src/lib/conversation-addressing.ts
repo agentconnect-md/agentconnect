@@ -44,3 +44,50 @@ export function resolveRoster(
     ...(index === 0 ? { primary: true } : {})
   }))
 }
+
+/** What still counts as the SAME name one character later. Unicode-aware on
+ *  purpose: display names are free-form (`min(1).max(120)`, no charset), so a
+ *  name can end in a CJK character, an emoji, or punctuation, and JavaScript's
+ *  `\b` — ASCII-word based — reports no boundary after any of them. Matching on
+ *  `\b` therefore dropped "@研究助理 have a look" on the floor, and a dropped
+ *  mention is not a no-op: it degrades the send to the standing mention and
+ *  wakes the whole roster. */
+const NAME_CHAR = '[\\p{L}\\p{N}_]'
+const NAME_CHAR_RE = new RegExp(NAME_CHAR, 'u')
+
+/** Resolve the @mentions typed into one composer send to roster agentIds
+ *  (webchat-multi-agents.md §4.2 — mentions narrow the turn; the empty result
+ *  means "no narrowing", not "nobody").
+ *
+ *  Text matching is the stopgap: §4.1 wants the composer to emit ID-backed
+ *  chips, so that the wire carries a structural fact rather than a guess. Until
+ *  it does, the guess should at least not wake an agent nobody addressed, so a
+ *  name matches only where it is the LONGEST roster name at that `@` and is not
+ *  glued to a neighbouring word on either side — "@agent-2" belongs to
+ *  `agent-2` alone even with an `agent` in the room, and "ping foo@test.dev"
+ *  addresses no one.
+ */
+export function typedMentionIds(
+  roster: ReadonlyArray<{ agentId: string; name?: string | null }>,
+  text: string
+): string[] {
+  if (roster.length <= 1) return []
+  // offset of an `@` → the longest name matched there, and who answers to it
+  const claims = new Map<number, { len: number; ids: string[] }>()
+  for (const p of roster) {
+    const name = p.name?.trim()
+    if (!name) continue
+    const at = new RegExp(`@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!${NAME_CHAR})`, 'giu')
+    for (const m of text.matchAll(at)) {
+      const start = m.index ?? 0
+      // Left edge: an `@` welded to a preceding word is an address, not a mention.
+      if (start > 0 && NAME_CHAR_RE.test(text[start - 1]!)) continue
+      const claim = claims.get(start)
+      if (!claim || m[0].length > claim.len) claims.set(start, { len: m[0].length, ids: [p.agentId] })
+      // Two participants sharing a display name are genuinely ambiguous — wake both.
+      else if (m[0].length === claim.len && !claim.ids.includes(p.agentId)) claim.ids.push(p.agentId)
+    }
+  }
+  const mentioned = new Set([...claims.values()].flatMap((c) => c.ids))
+  return roster.filter((p) => mentioned.has(p.agentId)).map((p) => p.agentId)
+}

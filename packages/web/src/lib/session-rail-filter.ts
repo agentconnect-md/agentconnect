@@ -25,6 +25,30 @@ export interface RailAgentFilter {
 
 export const EMPTY_RAIL_AGENT_FILTER: RailAgentFilter = { agentIds: [], touched: false }
 
+/**
+ * The agents the open route seeds the filter with, most authoritative source
+ * first:
+ *
+ * 1. the conversation's members, as the CP's resolver reported them;
+ * 2. the CLIENT-side roster, for the one conversation no resolver can answer
+ *    for — a live playground conversation exists only in this browser until its
+ *    first turn persists, and seeding its owner alone filtered the rail to one
+ *    participant of a conversation the reader is watching several agents work in;
+ * 3. the owning agent, for an ordinary single-agent session.
+ *
+ * Empty means "nothing to seed yet", which {@link seedRailAgentFilter} leaves
+ * unseeded rather than treating as a cleared filter.
+ */
+export function railSeedAgentIds(
+  conversationRoster: readonly { agentId?: string | null }[] | null | undefined,
+  liveRosterAgentIds: readonly string[],
+  ownerAgentId?: string | null
+): string[] {
+  if (conversationRoster && conversationRoster.length > 0) return conversationRoster.map((m) => m.agentId ?? '')
+  if (liveRosterAgentIds.length > 0) return [...liveRosterAgentIds]
+  return ownerAgentId ? [ownerAgentId] : []
+}
+
 function sameIds(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index])
 }

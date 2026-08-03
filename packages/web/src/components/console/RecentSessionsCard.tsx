@@ -11,7 +11,17 @@ import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
-import { isMergedConversationRow, sessionChannelDisplay, type Session } from '@/lib/data'
+import {
+  isMergedConversationRow,
+  rosterParticipantName,
+  sessionChannelDisplay,
+  type Agent,
+  type Session
+} from '@/lib/data'
+
+/** Stacked faces past this many stop earning their width; the names line still
+ *  carries every participant. */
+const ROSTER_FACES = 4
 
 export function Card({
   title,
@@ -135,26 +145,30 @@ export function RecentSessionsCard({
                   <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
                     {s.title}
                   </span>
+                  {/* Agents left, integration right. The two used to run together as
+                    one left-packed strip, which left a multi-agent row nowhere to put
+                    its extra faces without shoving the channel around; anchoring the
+                    integration to the row's right edge gives the roster the whole
+                    middle and lines the channels up down the card. With the agents
+                    hidden (agent detail, already scoped to one) there is nothing to
+                    split from, so the channel stays where it was. */}
                   <span className="mt-[3px] flex items-center gap-[6px] text-(--text-tertiary)">
                     {showAgent && (
-                      <>
-                        <span className="av h-[15px] w-[15px] rounded-xs">
-                          <AgentIconView
-                            icon={owner?.icon}
-                            runtime={owner?.runtime ?? s.runtime ?? 'claude'}
-                            size={15}
-                          />
-                        </span>
-                        <span className="truncate font-sans text-[11.5px] leading-normal">{s.agentName || '—'}</span>
-                      </>
+                      <span className="flex min-w-0 items-center gap-[6px]">
+                        <AgentFaces session={s} owner={owner} />
+                      </span>
                     )}
                     {s.channel && (
-                      <>
-                        <span className="imark h-4 w-4 rounded-xs">
+                      // Shrinkable on purpose (no `flex-none`): a long #channel or
+                      // schedule name has to give way and ellipsize inside the row
+                      // rather than run past it. `ml-auto` only spends space the row
+                      // actually has, so the right anchor costs the label nothing.
+                      <span className={`flex min-w-0 items-center gap-[6px] ${showAgent ? 'ml-auto pl-1' : ''}`}>
+                        <span className="imark h-4 w-4 flex-none rounded-xs">
                           <PlatformMark platform={ch.platform} fillPct={90} />
                         </span>
                         <span className="mono truncate text-[11px]">{ch.label}</span>
-                      </>
+                      </span>
                     )}
                   </span>
                 </span>
@@ -165,5 +179,48 @@ export function RecentSessionsCard({
         )}
       </>
     </Card>
+  )
+}
+
+/**
+ * The row's agent face(s). These rows are CONVERSATIONS, and a multi-participant
+ * one carries its whole roster (merged-conversation-view.md §5.2) — the single
+ * face + single name it used to draw could only ever name the representative,
+ * which is whichever member happened to speak last. Stacked icons plus the full
+ * name list say who is actually in the room; the names truncate rather than
+ * dropping anyone, and the roster's own `name` is only a fallback (the wire
+ * carries ids — see rosterParticipantName).
+ */
+function AgentFaces({ session, owner }: { session: Session; owner?: Agent }) {
+  const { getAgent } = useConsoleData()
+  const roster = session.participants ?? []
+  if (roster.length <= 1) {
+    return (
+      <>
+        <span className="av h-[15px] w-[15px] flex-none rounded-xs">
+          <AgentIconView icon={owner?.icon} runtime={owner?.runtime ?? session.runtime ?? 'claude'} size={15} />
+        </span>
+        <span className="truncate font-sans text-[11.5px] leading-normal">{session.agentName || '—'}</span>
+      </>
+    )
+  }
+  const members = roster.map((p) => {
+    const agent = getAgent(p.agentId)
+    return { id: p.agentId, name: rosterParticipantName(p, agent), agent }
+  })
+  const names = members.map((m) => m.name).join(', ')
+  return (
+    <>
+      <span className="flex flex-none items-center -space-x-[5px]">
+        {members.slice(0, ROSTER_FACES).map((m) => (
+          <span key={m.id} className="av h-[15px] w-[15px] flex-none rounded-xs" title={m.name}>
+            <AgentIconView icon={m.agent?.icon} runtime={m.agent?.runtime ?? ''} size={15} />
+          </span>
+        ))}
+      </span>
+      <span title={names} className="truncate font-sans text-[11.5px] leading-normal">
+        {names}
+      </span>
+    </>
   )
 }

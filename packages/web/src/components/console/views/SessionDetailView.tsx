@@ -34,6 +34,7 @@ import {
   pgPrompts,
   platName,
   preferredModelFor,
+  rosterParticipantName,
   runtimeLabel,
   sessionChannelDisplay,
   sessionPlatform,
@@ -88,6 +89,7 @@ import { SessionRail, SessionRailSlot } from '@/components/console/SessionRail'
 import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
+  railSeedAgentIds,
   seedRailAgentFilter,
   type RailAgentFilter
 } from '@/lib/session-rail-filter'
@@ -1286,13 +1288,21 @@ export default function SessionDetailView() {
   // The seed is the whole conversation roster: in conversation mode the resolver's
   // members, in session mode the same resolver's probe (already fetched above for
   // the §5.3 redirect), falling back to the lone owning agent.
-  const railSeedAgentIds = useMemo(() => {
-    const roster = conversationKey ? conversationMembers : (selfConversation?.sessions ?? null)
-    if (roster && roster.length > 0) return roster.map((member) => member.agentId ?? '')
-    return session?.agentId ? [session.agentId] : []
-  }, [conversationKey, conversationMembers, selfConversation, session?.agentId])
+  // (The ladder itself — resolver, then this browser's own live roster, then the
+  // owning agent — is railSeedAgentIds. Joined into a string so the roster's fresh
+  // array identity per render, rebuilt from the detail snapshot, cannot churn the memo.)
+  const liveSeedAgentIds = (session?.participants ?? []).map((p) => p.agentId).join(',')
+  const seedAgentIds = useMemo(
+    () =>
+      railSeedAgentIds(
+        conversationKey ? conversationMembers : selfConversation?.sessions,
+        liveSeedAgentIds ? liveSeedAgentIds.split(',') : [],
+        session?.agentId
+      ),
+    [conversationKey, conversationMembers, selfConversation, liveSeedAgentIds, session?.agentId]
+  )
   const [chosenRailFilter, setChosenRailFilter] = useState<RailAgentFilter>(EMPTY_RAIL_AGENT_FILTER)
-  const railFilter = seedRailAgentFilter(chosenRailFilter, railSeedAgentIds)
+  const railFilter = seedRailAgentFilter(chosenRailFilter, seedAgentIds)
   const setRailAgentIds = useCallback((agentIds: string[]) => setChosenRailFilter({ agentIds, touched: true }), [])
 
   // With agents selected this reads a FILTERED page, not the org-wide `allSessions`
@@ -1908,6 +1918,26 @@ export default function SessionDetailView() {
   const agentHref = session.agentId ? `/agents/${session.agentId}` : null
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
+  // The conversation roster, for EVERY live surface — the synthetic playground and
+  // a resumed (or merged) webchat conversation alike. Scoping it to the playground
+  // left resume showing the primary agent's single-agent composer over a
+  // multi-agent conversation, which contradicts both §9.3 ("no in-conversation
+  // runtime controls in a multi-agent conversation" — each participant runs its own
+  // configured defaults, so those pills cannot speak for the turn) and §9.4
+  // ("resume reopens the merged conversation view with the roster in the header").
+  //
+  // Names resolve HERE, from the org agent list: a conversation-mode roster is
+  // synthesized from member ids alone and an adopted session's detail roster can
+  // only carry a short-id fallback, so the raw `name` would render — and
+  // @mention-match — as a uuid.
+  const liveRoster = isLive
+    ? (
+        session.participants ??
+        (session.agentId ? [{ agentId: session.agentId, name: session.agentName ?? '', primary: true }] : [])
+      ).map((p) => ({ ...p, name: rosterParticipantName(p, agentById.get(p.agentId)) }))
+    : []
+  const multiLive = liveRoster.length > 1
+
   // Resume the webchat conversation by its id (session.channelId == the conversationId);
   // a synthetic playground turn omits it (the CP mints a fresh id).
   const onPgSend = (text?: string) => {
@@ -1916,12 +1946,14 @@ export default function SessionDetailView() {
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
     // narrow by @mention (the relay would apply its all-participants default).
+    // Named, not raw: mention narrowing matches on the display name the composer
+    // chips show.
     pgSend(
       session.id,
       session.agentId ?? '',
       text,
       isWebchat ? session.channelId : undefined,
-      isWebchat ? session.participants : undefined
+      isWebchat ? liveRoster : undefined
     )
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
@@ -1946,13 +1978,10 @@ export default function SessionDetailView() {
   }
   const webchatConversationId = isLive ? session.channelId : undefined
   // Mid-conversation join (webchat-multi-agents.md §3.1): a live playground
-  // conversation may GROW its roster; removal stays unsupported. Multi-agent
-  // conversations show participant chips instead of runtime pills (§9.1/§9.3).
-  const liveRoster = isPg
-    ? (session.participants ??
-      (session.agentId ? [{ agentId: session.agentId, name: session.agentName ?? '', primary: true }] : []))
-    : []
-  const multiLive = liveRoster.length > 1
+  // conversation may GROW its roster; removal stays unsupported. The join is
+  // still playground-only — `pgAddAgent` mutates provider-side session state that
+  // an adopted webchat session never had — so a resumed conversation shows its
+  // roster (above) without the `+`.
   const addAgentOptions = isPg
     ? agents
         .filter((a) => !liveRoster.some((p) => p.agentId === a.id))
@@ -2198,6 +2227,23 @@ export default function SessionDetailView() {
         last.steps.push(step)
         if (!last.time && step.time) last.time = step.time
       }
+    }
+  }
+
+  // A multi-participant conversation names its WHOLE roster in the header, spoken
+  // or not. Deriving the chip from the transcript alone made it read "You" on a
+  // conversation two agents were visibly typing in — and it would stay wrong even
+  // afterwards, because the owning agent's own turns are the SESSION's and are
+  // never recorded as a speaker (they are what the agent chip stands for).
+  // Appended, so the people who actually spoke keep their order and their avatars.
+  // Single-agent sessions are untouched: there, "participants" still means the
+  // other people in the room.
+  const headerRoster = session.participants ?? []
+  if (headerRoster.length > 1) {
+    for (const p of headerRoster) {
+      if (speakers.has(p.agentId)) continue
+      const rosterAgent = agentById.get(p.agentId) ?? null
+      rememberAgentParticipant(p.agentId, rosterParticipantName(p, rosterAgent ?? undefined), rosterAgent)
     }
   }
 

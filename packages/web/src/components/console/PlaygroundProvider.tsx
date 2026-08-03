@@ -27,7 +27,7 @@ import {
   type SessionMessageDto
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
-import { resolveRoster, wireMentions } from '@/lib/conversation-addressing'
+import { resolveRoster, typedMentionIds, wireMentions } from '@/lib/conversation-addressing'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
 import {
@@ -996,14 +996,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
         rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
       }
-      const mentions =
-        roster.length > 1
-          ? roster
-              .filter(
-                (p) => p.name && new RegExp(`@${p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)
-              )
-              .map((p) => p.agentId)
-          : []
+      const mentions = typedMentionIds(roster, text)
       const targets = roster.length > 1 ? (mentions.length ? mentions : roster.map((p) => p.agentId)) : [agentForId]
       // Membership is a standing mention — a bare multi-agent send materializes it as
       // the whole roster in structured `mentions` (see wireMentions), the same wire
