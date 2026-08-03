@@ -79,6 +79,7 @@ function feishuAppSettingsUrl(appId: string | null | undefined, region: 'feishu'
 const SESSION_ACCESS_COPY: Record<
   SessionAccessProvider,
   {
+    name: string
     title: string
     details: string
     unavailable: string
@@ -89,6 +90,7 @@ const SESSION_ACCESS_COPY: Record<
   }
 > = {
   slack: {
+    name: 'Slack',
     title: 'Follow Slack access',
     details: [
       'Public channels follow Slack workspace access; private channels, group DMs, guests and Slack Connect users need current membership.',
@@ -103,6 +105,7 @@ const SESSION_ACCESS_COPY: Record<
     degraded: 'Slack scopes stopped resolving — new sessions are being hidden.'
   },
   github: {
+    name: 'GitHub',
     title: 'Follow GitHub access',
     details: [
       'Public-repository sessions stay visible to members who can view the agent; private-repository sessions need a linked GitHub profile with current access.',
@@ -117,6 +120,7 @@ const SESSION_ACCESS_COPY: Record<
     degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
   },
   feishu: {
+    name: 'Feishu / Lark',
     title: 'Follow Feishu / Lark access',
     details: [
       'Group sessions created through the matching AgentConnect app follow current chat membership.',
@@ -214,7 +218,7 @@ function SessionAccessRow({
         )}
         {(currentActionError || loadError) && (
           <div role="alert" className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
-            {currentActionError ?? `Could not load ${provider === 'slack' ? 'Slack' : 'GitHub'} session access.`}
+            {currentActionError ?? `Could not load ${copy.name} session access.`}
           </div>
         )}
       </div>
