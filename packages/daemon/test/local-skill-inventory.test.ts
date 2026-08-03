@@ -57,6 +57,26 @@ describe('local skill inventory', () => {
     expect(skills[0]).toMatchObject({ name: 'bare', description: null, origin: 'repo' })
   })
 
+  it('drops skills that escape the workspace via a symlinked root or a symlinked SKILL.md', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'ac-localskills-'))
+    const stateDir = await mkdtemp(join(tmpdir(), 'ac-skillstate-'))
+    // A same-UID workspace elsewhere the hostile checkout tries to reach into.
+    const other = await mkdtemp(join(tmpdir(), 'ac-otherws-'))
+    await writeSkill(other, 'skills', 'stolen', 'name: stolen\ndescription: secret')
+
+    // `.agents/skills` is a symlink to the other workspace's skills dir.
+    await mkdir(join(cwd, '.agents'), { recursive: true })
+    await symlink(join(other, 'skills'), join(cwd, '.agents/skills'))
+    // A real skill dir whose SKILL.md is a symlink pointing outside.
+    await mkdir(join(cwd, '.claude/skills', 'linkmd'), { recursive: true })
+    await symlink(join(other, 'skills', 'stolen', 'SKILL.md'), join(cwd, '.claude/skills', 'linkmd', 'SKILL.md'))
+    // A legitimate in-workspace skill that must still be listed.
+    await writeSkill(cwd, '.claude/skills', 'ok', 'name: ok\ndescription: fine')
+
+    const skills = await listLocalSkills(cwd, stateDir)
+    expect(skills.map((s) => s.name)).toEqual(['ok']) // no 'stolen' (symlinked root), no 'linkmd' (symlinked SKILL.md)
+  })
+
   it('returns [] for an unmaterialized workspace with no skill roots', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'ac-localskills-'))
     const stateDir = await mkdtemp(join(tmpdir(), 'ac-skillstate-'))
