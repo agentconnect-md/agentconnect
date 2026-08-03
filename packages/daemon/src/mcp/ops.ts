@@ -28,6 +28,23 @@ export interface SendIdentity {
   icon_url?: string
   /** Stable AgentConnect author id persisted in Slack message metadata. */
   agentAuthorId?: string
+  /**
+   * The finalized-response block for the VISIBLE half of a paired `toAgent + channel`
+   * send (send-message-routing-rework.md §3.2/§4).
+   *
+   * Unlike a streamed turn reply, this post is complete the moment it is made — there is
+   * no later finalization edit to close it — so it is stamped `final` here, carrying the
+   * pairing id the target's activation rendezvous keys on. Without it the platform half
+   * of a paired call arrives at ingress indistinguishable from an ordinary agent reply,
+   * and the platform-first arrival order can never be recognized as one.
+   */
+  response?: {
+    responseId: string
+    deliveryState: 'streaming' | 'final'
+    hopCount: number
+    mentionedAgentIds: string[]
+    agentCallDeliveryId?: string
+  }
 }
 
 export interface MessageGateway {
@@ -143,6 +160,13 @@ export interface MessageAgentReq {
    *  has failed (`toAgent.needsReply`). The daemon turns this into a standing directive on the
    *  child's session — it is NOT part of the delivered message text. */
   needsReply?: boolean
+  /**
+   * send-message-routing-rework.md §3.2: the daemon-minted id shared by this wake and the
+   * visible post that accompanied it. Present only on the paired `toAgent + channel` form;
+   * it is what lets the target's activation rendezvous recognize the internal wake and the
+   * platform echo as ONE delivery in either arrival order.
+   */
+  agentCallDeliveryId?: string
   /**
    * send-message-routing-rework.md §3.1: this is the POSTLESS `toAgent` form (no
    * `channel`), so the woken child runs HEADLESS — it emits no platform output of its own.
@@ -361,6 +385,17 @@ export interface OpsDeps {
    * same token back to. Undefined on a daemon with no collaboration snapshot.
    */
   mentionAddressFor?: (req: { agentId: string; platform: string; channel: string }) => string | undefined
+  /**
+   * TRUSTED depth of the caller's CURRENT turn — 0 for a human/root turn
+   * (send-message-routing-rework.md §4.1).
+   *
+   * A DEP rather than a `SessionContext` field because depth is per-TURN while the MCP
+   * session context is registered once per ACP session: a snapshotted value would be
+   * correct on the first turn and silently stale on every one after it, which for a loop
+   * guard is the worst kind of wrong. The daemon resolves it from active-turn call
+   * metadata at call time; the model can neither read nor set it.
+   */
+  currentHopCount?: (ctx: SessionContext) => number
   /** Owner-approved organization knowledge search; requester identity is bound
    * from the trusted session context. */
   findKnowledge?: (req: {
@@ -896,6 +931,11 @@ export async function executeTool(
     // (undefined if no real ts came back — the peer then falls back to messageAgent's
     // default thread).
     let postedThread: string | undefined
+    // §3.2: the daemon-minted id that makes the visible post and the internal wake ONE
+    // logical delivery. Minted before the post so both halves carry it, and only for the
+    // paired form — an ordinary channel post has no wake to pair with, and stamping one
+    // would make ingress hold it for an envelope that is never coming.
+    const agentCallDeliveryId = toAgent !== undefined && channel !== undefined ? randomUUID() : undefined
     // Destination: an explicit `channel` (channel-root form), else the `toUser` DM form
     // starts from the user id and resolves it below.
     const requestedChannel = channel ?? toUsers?.[0]
@@ -936,7 +976,23 @@ export async function executeTool(
       const identity: SendIdentity = {
         ...(ctx.agentName ? { username: ctx.agentName } : {}),
         ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
-        agentAuthorId: ctx.agentId
+        agentAuthorId: ctx.agentId,
+        // §3.2/§4: the visible half of a paired call is COMPLETE when posted — no later
+        // finalization edit closes it — so it is stamped `final` with the pairing id here.
+        // The recipient set is empty on purpose: the target is being woken by the internal
+        // wake's authoritative envelope, not by this post's recipient list, and listing it
+        // would invite a second, envelope-less activation of the same peer.
+        ...(agentCallDeliveryId !== undefined
+          ? {
+              response: {
+                responseId: agentCallDeliveryId,
+                deliveryState: 'final' as const,
+                hopCount: deps.currentHopCount?.(ctx) ?? 0,
+                mentionedAgentIds: [],
+                agentCallDeliveryId
+              }
+            }
+          : {})
       }
       const ts = (await gw.postMessage(postChannel, body, undefined, identity)) ?? `local-${deps.now()}`
       // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
@@ -1037,7 +1093,10 @@ export async function executeTool(
       wake = await deps.messageAgent({
         ...baseWakeReq,
         ...(threadForWake !== undefined ? { thread: threadForWake } : {}),
-        ...(channel !== undefined && post !== undefined ? { transcriptTs: post.ts } : {})
+        ...(channel !== undefined && post !== undefined ? { transcriptTs: post.ts } : {}),
+        // §3.2: the SAME id the visible post carries, so the target's rendezvous can
+        // recognize the two as one delivery whichever arrives first.
+        ...(agentCallDeliveryId !== undefined && post !== undefined ? { agentCallDeliveryId } : {})
       })
     }
 

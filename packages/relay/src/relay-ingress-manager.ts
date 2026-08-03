@@ -660,7 +660,7 @@ export class RelayIngressManager {
       // Every listed author→target edge is checked independently and against the RELAY's
       // own snapshot — the recipient set is a provider claim until each edge passes
       // current policy and the conversation gate (§5, closing paragraph).
-      const route = this.router.agentTarget(botId, targetAgentId)
+      const route = this.router.agentTarget(botId, targetAgentId, msg.channel)
       if (!route) {
         drop(`target ${targetAgentId} is not a member of this bot`)
         continue

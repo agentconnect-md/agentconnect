@@ -468,13 +468,25 @@ export class BotArbitrationRouter {
    * Still membership-checked: the agent must be a current member of this bot on a live
    * daemon, exactly as every other resolution path requires. Null otherwise.
    */
-  agentTarget(botId: string, agentId: string): RouteTarget | null {
+  agentTarget(botId: string, agentId: string, channelId: string): RouteTarget | null {
     const a = this.bots.get(botId)
     if (!a) return null
+    // A channel switched Off resolves to no target at all — the same fence `arbitrate`
+    // applies ahead of every rung. Bypassing the ladder must not mean bypassing this:
+    // Off means the agent does not respond there, explicitly including an @-mention, so
+    // an agent mention must not become the one way into a silenced channel.
+    if (a.mutedChannels?.includes(channelId)) return null
     const member = a.members.find((m) => m.agentIds.includes(agentId))
     const route = a.routes.find((r) => r.agentId === agentId)
     const daemonId = member?.daemonId ?? route?.daemonId ?? a.agents.find((x) => x.agentId === agentId)?.daemonId
     if (!daemonId) return null
+    // A conversation-GATED agent (§14) is reachable only while it still holds a
+    // channel-scoped route here — a binding made before the gate was applied must not keep
+    // routing a private agent into a now-Off conversation.
+    if (a.gatedAgentIds?.includes(agentId)) {
+      const scoped = a.routes.some((r) => r.agentId === agentId && r.scope?.channel === channelId)
+      if (!scoped) return null
+    }
     const integrationId = route?.integrationId ?? a.agents.find((x) => x.agentId === agentId)?.integrationId
     if (!integrationId) return null
     return { agentId, daemonId, integrationId }

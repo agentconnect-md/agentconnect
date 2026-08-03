@@ -555,6 +555,19 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sendMsg).not.toHaveBeenCalled()
     })
 
+    it('does not route into a channel the operator switched Off', async () => {
+      // product-conventions "Per-channel trigger": Off means the agent does not respond
+      // there at all — "not to an @-mention". The verified-agent path bypasses the
+      // arbitration ladder that normally enforces this, so it must apply the fence itself
+      // or an agent mention becomes the one way into a silenced channel.
+      const { internals, sendMsg } = managerWith()
+      const muted = channelAutoOwned()
+      muted.mutedChannels = ['C123']
+      internals.router.upsert(muted)
+      await internals.forward(BOT_ID, agentFinal())
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
     it('re-checks call policy per edge', async () => {
       const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
       await internals.forward(BOT_ID, agentFinal())

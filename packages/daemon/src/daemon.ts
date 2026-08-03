@@ -2684,6 +2684,12 @@ export class Daemon {
       // consistent with what INGRESS resolves the same token back to — the two directions
       // share `slack-mention-address`. Undefined for an agent with no address in this
       // conversation (no platform presence there, or a shared bot with no slug).
+      // §4.1: the caller's own turn depth, read live from active-turn call metadata (the
+      // same source `messageAgent` uses) rather than snapshotted onto the session — a
+      // session outlives the turn whose depth this is.
+      currentHopCount: (ctx) =>
+        this.activeTurnCallMeta.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
+          ?.hopCount ?? 0,
       mentionAddressFor: ({ agentId, platform, channel }) => {
         const orgId = this.cpCollab.orgForAgent(agentId)
         // The RAW platform (S1a removed the narrowing fold): snapshot channel rows are
@@ -5601,6 +5607,13 @@ export class Daemon {
     const targets = verified.recipients.filter((id) => id !== verified.authorAgentId)
     if (targets.length === 0) return transcriptOnly('no verified recipient')
 
+    // EVERY admissible recipient is activated. One finalized response can address several
+    // agents ("<@A> <@B> please both look"), and stopping at the first would silently drop
+    // the rest — the sender saw one message go out and has no way to learn that only one
+    // reader woke. The returned handle names the first dispatch because the caller's
+    // contract is one outcome per inbound event; the others still ran.
+    let first: { kind: 'dispatched'; handle: DeliveryHandle } | undefined
+    let dispatched = 0
     for (const targetAgentId of targets) {
       // Directional call policy, org equality, and the conversation gate are re-checked
       // HERE rather than inherited from the author's daemon: the sender's snapshot may be
@@ -5611,14 +5624,54 @@ export class Daemon {
         this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" denied by call policy`)
         continue
       }
-      if (!this.cpCollab.resolve(verified.orgId, 'slack', msg.channel, targetAgentId)) {
+      if (!this.cpCollab.resolve(verified.orgId, msg.platform, msg.channel, targetAgentId)) {
         this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" is not in this conversation`)
         continue
       }
+      // The per-conversation trigger (product-conventions "Per-channel trigger"): Off means
+      // the agent does not respond there AT ALL — explicitly including an @-mention. The
+      // human ladder enforces this through its scope filter (`mutedChannels`) and the
+      // relay's last-hop `gatedAdmission`; this ladder bypasses both, so it must apply the
+      // rule itself or an agent mention would become the one way into a silenced channel.
+      if (!this.agentConversationAdmits(targetAgentId, msg)) {
+        this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" is off in this conversation`)
+        continue
+      }
       const outcome = this.activateVerifiedAgentTarget(msg, verified, targetAgentId, deliveryHopCount)
-      if (outcome) return outcome
+      if (outcome?.kind === 'dispatched') {
+        dispatched += 1
+        first ??= outcome
+      }
+    }
+    if (first) {
+      if (dispatched > 1) {
+        this.log.info(`routing: agent-authored ${msg.msgId} activated ${dispatched} recipients`)
+      }
+      return first
     }
     return transcriptOnly('no admissible local target in the verified recipient set')
+  }
+
+  /**
+   * Does this conversation admit an activation for `agentId` at all?
+   *
+   * The per-channel trigger is an operator fence, not a routing preference: "Off means the
+   * agent does not respond in that channel at all. Not to an @-mention, not to a follow-up
+   * in a thread it had already joined, not to a control command" (product-conventions).
+   * The human ladder gets this from `routeRules`' scope filter, which the verified-agent
+   * ladder deliberately bypasses — so the fence is re-applied here rather than inherited.
+   *
+   * Implemented as "some rule for this agent covers this conversation and none mutes it",
+   * which is the same data `routeRules` consults, minus the kind/trigger matching that
+   * would be wrong here (an agent mention is explicit by construction).
+   */
+  private agentConversationAdmits(agentId: string, msg: NormalizedMessage): boolean {
+    const rules = this.mergedRules().filter((rule) => rule.agentId === agentId)
+    if (rules.length === 0) return false
+    const covers = (scopeChannel: string | undefined): boolean =>
+      scopeChannel === undefined || scopeChannel === msg.channel || scopeChannel === msg.parentChannel
+    if (rules.some((rule) => rule.mutedChannels?.some((muted) => covers(muted)))) return false
+    return rules.some((rule) => covers(rule.scope.channel))
   }
 
   /**
@@ -5690,14 +5743,6 @@ export class Daemon {
     // `!stop` mute exactly like a human's would — the mute means "stop reacting to this
     // conversation implicitly", not "ignore anyone who names me".
     msg.trigger = 'mention'
-    const targetSessionKey = sessionKey(
-      msg.platform,
-      msg.channel,
-      msg.thread ?? msg.msgId,
-      targetAgentId,
-      msg.transportScope
-    )
-    this.store.admitActivation(key, targetSessionKey)
     const callMeta: CallMeta = {
       callFrom: verified.authorAgentId,
       // §4.1 step 3/5: install the computed depth as trusted active-turn metadata. Every
@@ -5709,6 +5754,18 @@ export class Daemon {
     }
     const { handle, turn } = this.evaluationDispatchHandle(targetAgentId, msg, integrationId, undefined, callMeta)
     turn.catch((err) => this.log.error(`dispatch failed for agent "${targetAgentId}": ${formatErr(err)}`))
+    // §8.6: the key becomes TERMINAL only once the turn is durably admitted. Marking it
+    // admitted before dispatch would make exactly-once into never — a rejected turn, a
+    // persistence failure, or a crash in that window would leave a claimed key with no
+    // child, and every retry would be deduplicated against it. Releasing on failure puts
+    // the record back so the next attempt is a first attempt.
+    void handle.admission.then(
+      (admission) => {
+        if (admission.admitted) this.store.admitActivation(key, admission.sessionKey)
+        else this.store.releaseActivation(key)
+      },
+      () => this.store.releaseActivation(key)
+    )
     this.log.info(
       `routing: agent-authored mention ch=${msg.channel} "${verified.authorAgentId}" → "${targetAgentId}" (hop ${deliveryHopCount})`
     )
@@ -6602,6 +6659,98 @@ export class Daemon {
    * (`replyConnFor`), NOT `rd/chat` (that is webchat-only). The `rd/ack` is a plain
    * receipt; the turn runs async.
    */
+  /**
+   * The verified-agent ladder for a RELAY-forwarded platform mention
+   * (send-message-routing-rework.md §4/§4.1 step 4/§6). Returns whether it dispatched.
+   *
+   * The relay has already verified the author, checked policy against its own snapshot,
+   * and computed the delivery depth. This daemon TERMINAL-VERIFIES all of it against its
+   * own state (agent-collaboration §2.5 #4) — a relay is trusted to route, not to be the
+   * only thing standing between a stale snapshot and an activation.
+   *
+   * Two things differ from the direct path, both because the relay already did the work:
+   *  - the depth is INSTALLED, not incremented. §4.1 step 4 gives the relay the one `+1`;
+   *    adding a second here would halve the effective hop budget for relayed chains.
+   *  - the target is the frame's pre-addressed `agentId`, not a set resolved from
+   *    metadata. The relay fans one frame per recipient, so this path admits one.
+   *
+   * Fails closed on anything missing: an older relay that forwards an agent message with
+   * no minted claim gets the previous behavior (consumed, nobody woken).
+   */
+  private activateRelayAgentMention(msg: RdMsgIm, normalized: NormalizedMessage): boolean {
+    const authorAgentId = msg.trustedFromAgentId
+    const deliveryHopCount = msg.trustedDeliveryHopCount
+    if (!authorAgentId || deliveryHopCount === undefined) return false
+    // The relay minted this claim, so the target must be one the relay actually named —
+    // never a recipient inferred from the (untrusted) provider metadata riding along.
+    if (msg.trustedRecipientAgentIds !== undefined && !msg.trustedRecipientAgentIds.includes(msg.agentId)) return false
+    if (authorAgentId === msg.agentId) return false
+    // §4.1 step 4: TERMINAL-VERIFY the forwarded depth's range without re-incrementing.
+    // A relay that forwarded an out-of-range or malformed depth is a bug or a compromise;
+    // either way this daemon does not activate on it.
+    if (!Number.isInteger(deliveryHopCount) || deliveryHopCount < 1 || deliveryHopCount > MAX_AGENT_CALL_HOPS) {
+      this.log.warn(`relay: refusing agent mention ${msg.msgId} — delivery depth ${deliveryHopCount} out of range`)
+      return false
+    }
+    const orgId = this.cpCollab.orgForAgent(msg.agentId)
+    if (!orgId || this.cpCollab.orgForAgent(authorAgentId) !== orgId) return false
+    if (!this.cpCollab.admits(authorAgentId, msg.agentId)) {
+      this.log.info(`relay: agent mention ${msg.msgId} denied by call policy (${authorAgentId} → ${msg.agentId})`)
+      return false
+    }
+    // The same conversation fence the human path applies at its last hop (`gatedAdmission`
+    // below): Off means no activation, explicitly including an @-mention.
+    if (!this.gatedAdmission(msg.integrationId, normalized)) {
+      this.log.debug(`relay: agent mention ${msg.msgId} is off in this conversation`)
+      return false
+    }
+    const platformMessageId = slackTsFromMsgId(normalized.msgId)
+    const key = activationKey(normalized.platform, normalized.transportScope, platformMessageId, msg.agentId)
+    // The visible half of a PAIRED call only ever claims — its authoritative envelope
+    // travels on the internal `rd/agentmsg` wake, which converges on this same daemon (§3.2).
+    if (msg.trustedAgentCallDeliveryId) {
+      this.store.claimActivationObservation(
+        key,
+        {
+          agentCallDeliveryId: msg.trustedAgentCallDeliveryId,
+          platformMessageId,
+          transcriptCoordinates: `${transcriptChannelKey(normalized.channel, normalized.transportScope)}\u0000${normalized.thread ?? ''}`
+        },
+        this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+      )
+      this.log.debug(`relay: paired agent-call ${msg.trustedAgentCallDeliveryId} observed — awaiting the internal wake`)
+      return false
+    }
+    const claimed = this.store.attachActivationEnvelope(
+      key,
+      JSON.stringify({ kind: 'relay-platform-mention', responseId: msg.trustedResponseId, callFrom: authorAgentId }),
+      this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+    )
+    if (!claimed.dispatch) return false
+    normalized.trigger = 'mention'
+    const callMeta: CallMeta = { callFrom: authorAgentId, hopCount: deliveryHopCount, deliveryId: msg.msgId }
+    const childKey = sessionKey(
+      normalized.platform,
+      normalized.channel,
+      normalized.thread ?? normalized.msgId,
+      msg.agentId,
+      normalized.transportScope
+    )
+    void this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, callMeta, {
+      onAdmission: (result) => {
+        if (result.accepted) this.store.admitActivation(key, childKey)
+        else this.store.releaseActivation(key)
+      }
+    }).catch((err) => {
+      this.store.releaseActivation(key)
+      this.log.error(`relay agent-mention dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
+    })
+    this.log.info(
+      `relay: agent-authored mention ${authorAgentId} → ${msg.agentId} ch=${normalized.channel} (hop ${deliveryHopCount})`
+    )
+    return true
+  }
+
   private handleRelayIm(msg: RdMsgIm): RdAck {
     if (!this.agents.get(msg.agentId)) {
       this.log.warn(`relay: rd/msg(im) for unknown agent ${msg.agentId} — dropping`)
@@ -6626,10 +6775,18 @@ export class Daemon {
     }
     const feishuConn = this.fsConnByIntegration.get(msg.integrationId)
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
-    // HTTP-bot ingress is pre-addressed and bypasses onInbound(), so repeat the
-    // terminal agent-bot suppression here before commands or model admission.
+    // HTTP-bot ingress is pre-addressed and bypasses onInbound(), so the verified-agent
+    // ladder has to be repeated here — this path never reaches `onInboundOutcome`.
+    //
+    // send-message-routing-rework.md §4/§6: an AgentConnect-authored message is routable
+    // ONLY through the relay's minted claim. Without this branch the whole relayed
+    // mention path dead-ends: the relay verifies the author, caps the hop, and forwards a
+    // trusted envelope, and the daemon would ack it and wake nobody.
     if (this.isAgentBotMessage(normalized)) {
-      this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
+      const admitted = this.activateRelayAgentMention(msg, normalized)
+      if (!admitted) {
+        this.log.debug(`relay: consumed AgentConnect bot message ${msg.msgId} without waking ${msg.agentId}`)
+      }
       return { msgId: msg.msgId, accepted: true }
     }
     // Relay arbitration normally forwards only enabled routes. A receive-only
@@ -7086,6 +7243,7 @@ export class Daemon {
     // cross-daemon paired call too — BOTH the forwarded wake and the routed IM event
     // converge here, so this is the only place that can see both halves. The relay
     // forwards the pairing id but never synthesizes or stores the envelope.
+    let pairingKey: string | undefined
     if (msg.transcriptTs !== undefined) {
       // The RAW platform, matching the session key computed just above (S1a removed the
       // narrowing fold) — both halves of the pairing must agree on every key component.
@@ -7103,14 +7261,27 @@ export class Daemon {
           childSessionId: claimed.record.childSessionId ?? childSessionId
         })
       }
-      this.store.admitActivation(key, childSessionId)
+      // §8.6: settled on the ADMISSION barrier below, not here — see the mention path.
+      pairingKey = key
     }
     // Fire-and-forget dispatch (P4-gate admission). delivered:true on ADMISSION — the
     // target processes the turn in its own time (§6.4). dispatch() drops the turn on a
     // pause/drain gate; a reason-typed NAK on those local gates is a follow-up.
-    void this.dispatch(msg.toAgentId, normalized, integrationId, undefined, callMeta).catch((err) =>
+    void this.dispatch(msg.toAgentId, normalized, integrationId, undefined, callMeta, {
+      ...(pairingKey !== undefined
+        ? {
+            onAdmission: (result) => {
+              // A claimed-but-unadmitted key would deduplicate every retry against a child
+              // that was never opened, turning exactly-once into never (§8.6).
+              if (result.accepted) this.store.admitActivation(pairingKey, childSessionId)
+              else this.store.releaseActivation(pairingKey)
+            }
+          }
+        : {})
+    }).catch((err) => {
+      if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`relay agentmsg dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
-    )
+    })
     this.log.info(`relay: rd/agentmsg/fwd ${msg.trustedFromAgentId} → ${msg.toAgentId} delivery=${msg.deliveryId}`)
     return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId })
   }
@@ -7514,6 +7685,7 @@ export class Daemon {
     // so it attaches the envelope and admits. The platform echo of the same post then
     // reconciles onto this record instead of opening a second child — whenever it
     // arrives, including after a restart, which is why the record is durable.
+    let pairingKey: string | undefined
     if (req.transcriptTs !== undefined) {
       const key = activationKey(platform, targetTransportScope, req.transcriptTs, req.toAgentId)
       const claimed = this.store.attachActivationEnvelope(
@@ -7524,14 +7696,31 @@ export class Daemon {
       if (!claimed.dispatch) {
         // Already admitted (a retry reusing this delivery id, or a replay). Hand back the
         // SAME child rather than dispatching again — exactly-once is the contract.
-        this.log.info(`messageAgent: paired delivery ${deliveryId} already admitted — reusing the existing child`)
+        this.log.info(
+          `messageAgent: paired delivery ${req.agentCallDeliveryId ?? deliveryId} already claimed — reusing the existing child`
+        )
         return record({ delivered: true, targetSession: claimed.record.childSessionId ?? targetSession })
       }
-      this.store.admitActivation(key, targetSession)
+      this.log.debug(
+        `messageAgent: paired call ${req.agentCallDeliveryId ?? deliveryId} claimed the rendezvous for "${req.toAgentId}" at ${req.transcriptTs}`
+      )
+      // §8.6: settled on the ADMISSION barrier, never before it — a claimed key with no
+      // child would deduplicate every retry and lose the wake permanently.
+      pairingKey = key
     }
-    void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta).catch((err) =>
+    void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta, {
+      ...(pairingKey !== undefined
+        ? {
+            onAdmission: (result) => {
+              if (result.accepted) this.store.admitActivation(pairingKey, targetSession)
+              else this.store.releaseActivation(pairingKey)
+            }
+          }
+        : {})
+    }).catch((err) => {
+      if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`messageAgent dispatch failed for agent "${req.toAgentId}": ${formatErr(err)}`)
-    )
+    })
     this.log.info(`messageAgent: ${req.callerAgentId} → ${req.toAgentId} (${targetSession}) delivery=${deliveryId}`)
     return record({ delivered: true, targetSession })
   }

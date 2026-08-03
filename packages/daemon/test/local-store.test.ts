@@ -1413,6 +1413,35 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     s.close()
   })
 
+  it('grants the dispatch claim once, even before admission settles', () => {
+    // Admission settles asynchronously, so "not yet admitted" is NOT "nobody is handling
+    // it". A second arrival inside that window must not also be told to dispatch, or one
+    // logical delivery wakes the target twice.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(false)
+    expect(s.getActivation(KEY)?.state).toBe('pending')
+    s.close()
+  })
+
+  it('releases a claim whose dispatch never admitted, so a retry is a first attempt', () => {
+    // The other half of exactly-once: a rejected turn, a persistence failure, or a crash
+    // between claim and admission would otherwise leave a claimed key with no child, and
+    // every retry would be deduplicated against it — exactly-once becoming never.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.releaseActivation(KEY)).toBe(true)
+    expect(s.getActivation(KEY)).toBeUndefined()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+
+    // …but releasing never reopens a settled decision: an admitted record has a real
+    // child, and a transcript-only one was already reported as a delivery failure.
+    s.admitActivation(KEY, 'child-1')
+    expect(s.releaseActivation(KEY)).toBe(false)
+    expect(s.getActivation(KEY)).toMatchObject({ state: 'admitted', childSessionId: 'child-1' })
+    s.close()
+  })
+
   it('keys separate targets of one visible post independently', () => {
     // §3.2: one channel-root post can address several agents; each must be admitted once,
     // and one target's admission must not consume another's.

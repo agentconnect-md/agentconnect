@@ -3835,6 +3835,16 @@ export class LocalStore {
         this.db.exec('COMMIT')
         return { dispatch: false, record: existing }
       }
+      // The ENVELOPE is the claim, and it is granted once. A record that already has one
+      // has a dispatch in flight — admission settles asynchronously, so "not yet admitted"
+      // is not the same as "nobody is handling it". Without this, two arrivals inside the
+      // dispatch window would both be told to dispatch and the delivery would double.
+      // A dispatch that fails releases the record (deleting it), so a genuine retry
+      // re-enters here as a first claim.
+      if (existing?.callEnvelope) {
+        this.db.exec('COMMIT')
+        return { dispatch: false, record: existing }
+      }
       this.db
         .prepare(
           `INSERT INTO activation_rendezvous (activationKey, callEnvelope, state, expiresAt)
@@ -3866,6 +3876,28 @@ export class LocalStore {
            WHERE activationKey = ? AND state = 'pending' AND callEnvelope IS NOT NULL`
         )
         .run(childSessionId, activationKey).changes === 1
+    )
+  }
+
+  /**
+   * Give the claim back when the dispatch it was claimed for never reached durable
+   * admission (§8.6 — exactly-once must not become never).
+   *
+   * `attachActivationEnvelope` hands out `dispatch: true` exactly once, so a delivery
+   * that then fails to admit — a rejected turn, a persistence error, a crash in the
+   * window — would leave the key claimed forever and every retry would be deduplicated
+   * against a child that does not exist. Releasing restores the pre-claim state so the
+   * next attempt is a first attempt.
+   *
+   * Deliberately narrow: only a `pending` record is released. An `admitted` one has a
+   * real child, and a `transcript-only` one was already reported as a delivery failure —
+   * reopening either would undo a decision something downstream has acted on.
+   */
+  releaseActivation(activationKey: string): boolean {
+    return (
+      this.db
+        .prepare(`DELETE FROM activation_rendezvous WHERE activationKey = ? AND state = 'pending'`)
+        .run(activationKey).changes === 1
     )
   }
 

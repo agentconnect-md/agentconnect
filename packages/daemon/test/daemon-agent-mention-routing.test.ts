@@ -94,10 +94,17 @@ async function boot(
     agents: placements.map((p) => ({ ...p, orgId: TEST_ORG }))
   })
   const calls: { agentId: string; msg: any; callMeta?: any }[] = []
-  ;(daemon as any).dispatch = vi.fn(async (agentId: string, msg: any, _i?: string, _w?: any, callMeta?: any) => {
-    calls.push({ agentId, msg, callMeta })
-    return 'acp-1'
-  })
+  // Mirrors real dispatch closely enough for the rendezvous: it settles the ADMISSION
+  // barrier. §8.6 keys the activation record off that barrier rather than off the call,
+  // so a stub that never fires it would leave every record `pending` and hide the
+  // transition under test.
+  ;(daemon as any).dispatch = vi.fn(
+    async (agentId: string, msg: any, _i?: string, _w?: any, callMeta?: any, opts?: any) => {
+      calls.push({ agentId, msg, callMeta })
+      opts?.onAdmission?.({ accepted: true })
+      return 'acp-1'
+    }
+  )
   return { daemon, calls }
 }
 
@@ -280,6 +287,83 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       platformMessageId: '1720000000.000200'
     })
     await daemon.stop()
+  })
+
+  // §4 / §4.1 step 4 / §6 — the RELAY-forwarded half of the same ladder. This path never
+  // reaches `onInboundOutcome`, so without its own branch the entire relayed mention flow
+  // dead-ends: the relay verifies, caps, and forwards a trusted envelope, and the daemon
+  // acks it and wakes nobody.
+  describe('relay-forwarded agent mentions (rd/msg im)', () => {
+    const imFrame = (over: Record<string, unknown> = {}) => ({
+      source: 'im' as const,
+      agentId: 'bot-b',
+      sessionKey: 'C1/1720000000.000100',
+      msgId: 'slack:C1:1720000000.000200:final#bot-b',
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-bot-b',
+      chatId: 'C1',
+      payload: agentMessage(),
+      trustedFromAgentId: 'bot-a',
+      trustedResponseId: 'r-1',
+      trustedRecipientAgentIds: ['bot-b'],
+      trustedDeliveryHopCount: 3,
+      ...over
+    })
+
+    it('activates the pre-addressed target and INSTALLS the relay depth without re-incrementing', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const ack = (daemon as any).handleRelayIm(imFrame())
+      expect(ack.accepted).toBe(true)
+      expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+      // §4.1 step 4: the relay already spent the one `+1`. Adding another here would halve
+      // the effective hop budget for every relayed chain.
+      expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 3 })
+      await daemon.stop()
+    })
+
+    it('fails closed without a minted claim, so an older relay keeps the old behavior', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const bare = imFrame()
+      delete (bare as Record<string, unknown>).trustedFromAgentId
+      delete (bare as Record<string, unknown>).trustedDeliveryHopCount
+      expect((daemon as any).handleRelayIm(bare).accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
+
+    it('refuses a target the relay did not name, a self-mention, and an out-of-range depth', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      // The relay fans one frame per recipient; a target absent from its own minted list
+      // means the frame and the claim disagree, which is never something to act on.
+      expect((daemon as any).handleRelayIm(imFrame({ trustedRecipientAgentIds: ['someone-else'] })).accepted).toBe(true)
+      expect((daemon as any).handleRelayIm(imFrame({ trustedFromAgentId: 'bot-b' })).accepted).toBe(true)
+      // Already-incremented depth past the cap, and a depth below 1 (which would mean the
+      // relay never applied its transition).
+      expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 9 })).accepted).toBe(true)
+      expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 0 })).accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
+
+    it('re-checks call policy against its OWN snapshot, not the relay’s', async () => {
+      // Defense in depth: the relay's snapshot may be stale, and it is not the only thing
+      // standing between a revoked policy and an activation.
+      const { daemon, calls } = await boot([
+        { id: 'bot-a' },
+        { id: 'bot-b', callPolicy: 'selected', allowedCallerAgentIds: ['somebody-else'] }
+      ])
+      expect((daemon as any).handleRelayIm(imFrame()).accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
+
+    it('holds a paired relay delivery for its internal wake', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const ack = (daemon as any).handleRelayIm(imFrame({ trustedAgentCallDeliveryId: 'd-1' }))
+      expect(ack.accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
   })
 
   // §10 case 4 — the two halves of a paired `toAgent + channel` delivery may arrive in

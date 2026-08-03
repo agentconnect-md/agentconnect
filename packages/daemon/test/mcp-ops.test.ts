@@ -25,6 +25,27 @@ const ctx: SessionContext = {
 }
 const authorIdentity = { agentAuthorId: 'bot-a' }
 
+/**
+ * The identity stamped on the VISIBLE half of a paired `toAgent + channel` send
+ * (send-message-routing-rework.md §3.2/§4). Unlike a streamed turn reply this post is
+ * complete when made — no finalization edit closes it — so it is `final` on arrival and
+ * carries the pairing id the target's rendezvous keys on. The id is minted per call, so
+ * match its shape; `responseId` and `agentCallDeliveryId` are the same value because the
+ * post IS the whole response.
+ */
+const pairedAuthorIdentity = {
+  agentAuthorId: 'bot-a',
+  response: {
+    responseId: expect.any(String),
+    deliveryState: 'final',
+    hopCount: 0,
+    // Empty on purpose: the peer is woken by the internal wake's authoritative envelope,
+    // and listing it here would invite a second, envelope-less activation of the same peer.
+    mentionedAgentIds: [],
+    agentCallDeliveryId: expect.any(String)
+  }
+}
+
 function fakeGateway(over: Partial<MessageGateway> = {}): MessageGateway {
   return {
     openDirectMessage: vi.fn(async (user) => `D-${user}`),
@@ -861,13 +882,35 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     }
     expect(res.ok).toBe(true)
     expect(res.wake).toBeDefined()
-    // Visible root post through the gateway, stamped with the calling agent's stable id.
-    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'over to you', undefined, authorIdentity)
+    // Visible root post through the gateway, stamped with the calling agent's stable id
+    // and the finalized pairing metadata the target's rendezvous keys on.
+    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'over to you', undefined, pairedAuthorIdentity)
     expect(res.post).toEqual({ platform: 'slack', integrationId: 'int-1', channel: 'C_X', thread: null, ts: 'ts-123' })
     expect(recorded).toEqual([{ channel: 'C_X', thread: 'ts-123', text: 'over to you', ts: 'ts-123' }])
     // The peer is woken INTO the post's ts, and the post ts is carried through as the wake's
     // transcriptTs so the wake row collapses onto the recorded post's PK (no duplicate hand-off).
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: 'ts-123', transcriptTs: 'ts-123' })
+    // §3.2: BOTH halves carry the SAME minted id — that identity is the entire basis for
+    // the target recognizing them as one delivery, so assert they actually match rather
+    // than that each is merely present.
+    const postedId = (gw.postMessage as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![3] as {
+      response?: { agentCallDeliveryId?: string }
+    }
+    expect(postedId.response?.agentCallDeliveryId).toBeTruthy()
+    expect(calls[0]!.agentCallDeliveryId).toBe(postedId.response?.agentCallDeliveryId)
+  })
+
+  it('mints NO pairing id for a postless wake or a bare channel post', async () => {
+    // §3.2: the id means "a visible post accompanies this wake". Stamping it on a bare
+    // channel post would make ingress hold that post for an internal envelope that is
+    // never coming, and it would expire as a spurious delivery failure.
+    const postless = wakeDeps()
+    await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'quietly' }, postless.deps)
+    expect(postless.calls[0]!.agentCallDeliveryId).toBeUndefined()
+
+    const bare = wakeDeps()
+    await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'fyi' }, bare.deps)
+    expect(bare.gw.postMessage).toHaveBeenCalledWith('C_X', 'fyi', undefined, authorIdentity)
   })
 
   it('rejects `thread` on an agent target — the in-thread form is gone', async () => {
@@ -894,7 +937,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
         agentId === 'peer-1' && channel === 'C_X' ? '<@U01PEER>' : undefined
     })
     await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', message: 'ping' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_X', '<@U01PEER> ping', undefined, authorIdentity)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_X', '<@U01PEER> ping', undefined, pairedAuthorIdentity)
     // The wake anchors to the post's own ts, and carries it so the two collapse onto one
     // transcript row rather than duplicating the hand-off.
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', channel: 'C_X', thread: 'ts-123', transcriptTs: 'ts-123' })
@@ -905,7 +948,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     // unmentioned post plus its internal wake — the delivery happens, it is only less legible.
     const { deps: d, calls, gw } = wakeDeps({ mentionAddressFor: () => undefined })
     await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_X', message: 'ping' }, d)
-    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'ping', undefined, authorIdentity)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_X', 'ping', undefined, pairedAuthorIdentity)
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', transcriptTs: 'ts-123' })
   })
 
