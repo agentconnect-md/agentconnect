@@ -260,8 +260,22 @@ function RailAccount({
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <span className="pfav">
+        <span className="pfav relative">
           <Avatar src={display.picture} initials={display.initials} size={26} fontSize={10} />
+          {/* The active org rides the avatar as a corner badge — its own uploaded icon
+          when it has one, else its color + initial. Ringed in the rail's plum so it
+          reads as a badge stamped on the avatar rather than a second avatar beside it,
+          and it is the only org cue left once the rail collapses and the name goes. */}
+          {activeOrg && (
+            <OrgIconView
+              icon={activeOrg.icon}
+              iconUrl={activeOrg.iconUrl}
+              label={orgName}
+              fallbackColor={orgColor(activeOrg.id)}
+              size={14}
+              className="absolute -right-[3px] -bottom-[3px] rounded-[4px] text-[8px] ring-2 ring-(--surface-inverse)"
+            />
+          )}
         </span>
         <span className="pfname min-w-0 flex-1 overflow-hidden">
           <span className="block truncate font-sans text-[12.5px] font-semibold leading-normal text-white">
@@ -271,6 +285,9 @@ function RailAccount({
             <span className="mono block truncate text-[10.5px] font-medium text-(--text-inverse-dim)">{orgName}</span>
           )}
         </span>
+        {/* Collapsed the rail has no room for it, and the badge above already says
+        which org — so the switch affordance rides with the name, not the avatar. */}
+        {!collapsed && <Icon name="chevrons-up-down" size={14} color="var(--text-inverse-dim)" className="flex-none" />}
       </button>
       {open && (
         <>
@@ -630,7 +647,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={toggleRail}
-                className="railtoggle"
+                className="railiconbtn railtoggle"
                 // No `title`: the icon already reads as the collapse/expand affordance,
                 // and a tooltip on the collapsed rail's own toggle is noise. Screen
                 // readers still get the state from aria-label.
@@ -642,7 +659,13 @@ function ShellChrome({ children }: { children: ReactNode }) {
               top bar it is the console's only search affordance, so unlike the
               collapse toggle beside it, it never hides. Collapsed, CSS swaps it for
               the `.railsrnav` row below. */}
-              <button type="button" onClick={openSearch} className="railsrbtn" title="Search" aria-label="Search">
+              <button
+                type="button"
+                onClick={openSearch}
+                className="railiconbtn railsrbtn"
+                title="Search"
+                aria-label="Search"
+              >
                 <Icon name="search" size={16} />
               </button>
             </div>
@@ -693,22 +716,24 @@ function ShellChrome({ children }: { children: ReactNode }) {
                 <button
                   type="button"
                   onClick={toggleTheme}
-                  className="navitem m-0 w-auto flex-none justify-center rounded-[6px] px-2 py-[9px]"
+                  className="railiconbtn"
                   title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
                   aria-label="Toggle theme"
                 >
-                  <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />
+                  <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
                 </button>
               )}
-              <div className="railhelp relative flex-none">
+              {/* Same 22px box as the brand row's search button, and the same 2px
+              inset from the rail's edge — the two sit on one vertical centre line. */}
+              <div className="railhelp relative mr-[2px] flex-none">
                 <button
                   type="button"
                   onClick={() => setHelpMenu((v) => !v)}
-                  className="navitem m-0 w-auto flex-none justify-center rounded-[6px] px-2 py-[9px]"
+                  className="railiconbtn"
                   title="Help & resources"
                   aria-label="Help & resources"
                 >
-                  <Icon name="circle-question-mark" size={18} color={helpMenu ? 'var(--brand)' : undefined} />
+                  <Icon name="circle-question-mark" size={16} color={helpMenu ? 'var(--brand)' : undefined} />
                 </button>
                 {helpMenu && (
                   <>

@@ -336,7 +336,7 @@
      they have to arrive together or the console feels like several UIs. Listing
      the selectors here (rather than repeating `transition:` per class) is what
      keeps them in step; hover/press VALUES still live with each class below. */
-  .railtoggle,
+  .railiconbtn,
   .railbrand-logo,
   .navitem,
   .sritem,
@@ -406,18 +406,16 @@
     min-width: 0;
     text-decoration: none;
   }
-  /* The brand row's two icon buttons. They read as one pair pushed to the rail's
-     right edge: search is permanent (it is the only way into the search dialog now
-     that the top bar is gone), collapse fades in on rail hover to its left. Both are
-     22px boxes around 16px glyphs, and the negative margin cancels `.railbrand`'s
-     10px flex gap so the glyphs sit ~8px apart without the boxes overlapping. */
-  .railtoggle {
+  /* The rail's chrome icon buttons — the brand row's collapse + search pair and the
+     footer's help (in no-auth mode, the theme toggle too). All are 22px boxes around
+     16px glyphs held 2px off the rail's right edge, which is what puts the brand
+     row's search and the footer's help on ONE centre line down the outer edge. */
+  .railiconbtn {
     display: flex;
     align-items: center;
     justify-content: center;
     width: 22px;
     height: 22px;
-    margin-left: auto;
     flex: none;
     padding: 0;
     border: 0;
@@ -425,6 +423,18 @@
     background: none;
     color: rgba(255, 255, 255, 0.55);
     cursor: pointer;
+  }
+  .railiconbtn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+  }
+  /* The brand pair reads as one unit pushed to the rail's right edge: search is
+     permanent (it is the only way into the search dialog now that the top bar is
+     gone), collapse fades in on rail hover to its left. The negative margin cancels
+     `.railbrand`'s 10px flex gap so the glyphs sit ~8px apart without the boxes
+     overlapping. */
+  .railtoggle {
+    margin-left: auto;
     opacity: 0;
   }
   .rail:hover .railtoggle,
@@ -432,27 +442,10 @@
     opacity: 1;
   }
   .railsrbtn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
     margin-right: 2px;
-    flex: none;
-    padding: 0;
-    border: 0;
-    border-radius: 5px;
-    background: none;
-    color: rgba(255, 255, 255, 0.55);
-    cursor: pointer;
   }
   .railtoggle + .railsrbtn {
     margin-left: -9px;
-  }
-  .railtoggle:hover,
-  .railsrbtn:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #fff;
   }
   /* Inset pill nav (design v2, ChatGPT-style): no full-bleed tile, no 3px brand
      edge — a rounded pill with symmetric 10px gutters. The active glyph keeps the
@@ -593,6 +586,12 @@
   }
   .rail.collapsed .pfname {
     display: none;
+  }
+  /* Collapsed the footer stacks, so its fixed-width chrome buttons (no-auth's theme
+     toggle) need centring on the 64px rail's glyph line — the stretched column can't
+     do it for them. */
+  .rail.collapsed .railfoot .railiconbtn {
+    margin-inline: auto;
   }
   /* The help popover needs room the 64px rail hasn't got, and its contents are all
      reachable from the docs anyway — collapsed, it steps aside for the account block. */
