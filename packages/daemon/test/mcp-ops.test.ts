@@ -837,7 +837,11 @@ describe('executeTool: sendMessage (wake / reply)', () => {
       toAgentId: 'peer-1',
       text: 'help',
       channel: 'C_CURRENT',
-      thread: '111.1'
+      thread: '111.1',
+      // §3.1: the postless form's child runs HEADLESS. Otherwise "postless" would only
+      // describe the wake — nothing announces the call, but the child's own answer would
+      // still land in the caller's channel, which is the interruption this form avoids.
+      postless: true
     })
   })
 

@@ -1330,7 +1330,7 @@ describe('LocalStore webchat MCP grant ledger', () => {
 })
 
 describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2/§8.6)', () => {
-  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join(' ')
+  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join('\u0000')
   const ENVELOPE = JSON.stringify({ callFrom: 'agent-author', hopCount: 3 })
 
   it('admits an internal-wake-first pairing exactly once and replays the same child', () => {
@@ -1417,8 +1417,8 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     // §3.2: one channel-root post can address several agents; each must be admitted once,
     // and one target's admission must not consume another's.
     const s = store()
-    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join(' ')
-    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join(' ')
+    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join('\u0000')
+    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join('\u0000')
     expect(s.attachActivationEnvelope(a, ENVELOPE, 1000).dispatch).toBe(true)
     expect(s.attachActivationEnvelope(b, ENVELOPE, 1000).dispatch).toBe(true)
     s.admitActivation(a, 'child-a')

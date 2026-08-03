@@ -5621,7 +5621,7 @@ export class Daemon {
         {
           agentCallDeliveryId: verified.agentCallDeliveryId,
           platformMessageId,
-          transcriptCoordinates: `${transcriptChannelKey(msg.channel, msg.transportScope)} ${msg.thread ?? ''}`
+          transcriptCoordinates: `${transcriptChannelKey(msg.channel, msg.transportScope)}\u0000${msg.thread ?? ''}`
         },
         expiresAt
       )
@@ -7336,7 +7336,12 @@ export class Daemon {
       ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
       // Self-introduce-on-join (#536): a fan-out from an intro turn wakes each peer
       // HEADLESS so it records the newcomer silently, never posting to the channel.
-      ...(inbound?.deliverHeadless ? { headless: true } : {})
+      // send-message-routing-rework.md §3.1 adds the second case: the POSTLESS `toAgent`
+      // form. Nothing is posted to announce the call, so letting the child's own answer
+      // surface in the caller's channel would reintroduce exactly the interruption that
+      // form exists to avoid. The child stays fully followable (lineage, correlation,
+      // `needsReply`, `viewSessionStatus`) and reports back through the session reply.
+      ...(inbound?.deliverHeadless || req.postless ? { headless: true } : {})
     }
 
     // Fire-and-forget dispatch — mirror handleRelayIm. The wake is async: the tool returns

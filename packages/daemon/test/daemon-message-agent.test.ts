@@ -623,6 +623,23 @@ describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin + repl
     await daemon.stop()
   })
 
+  it('runs the POSTLESS toAgent form’s child headless, and a channel-root call visibly', async () => {
+    // send-message-routing-rework.md §3.1 / §10 case 2. Without the headless stamp
+    // "postless" would describe only the wake: nothing announces the call, yet the child's
+    // own answer would still surface in the caller's channel — the exact interruption this
+    // form exists to avoid.
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    expect((await call({ ...baseReq(), postless: true })).delivered).toBe(true)
+    expect(calls[0]!.msg.headless).toBe(true)
+
+    // A channel-root call deliberately made itself visible, so its child is not headless.
+    calls.length = 0
+    expect((await call({ ...baseReq(), transcriptTs: '1720000000.000100' })).delivered).toBe(true)
+    expect(calls[0]!.msg.headless).toBeUndefined()
+    await daemon.stop()
+  })
+
   it('hop cap is enforced across an inherited chain', async () => {
     const root = scaffold([{ id: 'main' }, { id: 'worker' }, { id: 'third' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)

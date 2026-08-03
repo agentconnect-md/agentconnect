@@ -143,6 +143,21 @@ export interface MessageAgentReq {
    *  has failed (`toAgent.needsReply`). The daemon turns this into a standing directive on the
    *  child's session — it is NOT part of the delivered message text. */
   needsReply?: boolean
+  /**
+   * send-message-routing-rework.md §3.1: this is the POSTLESS `toAgent` form (no
+   * `channel`), so the woken child runs HEADLESS — it emits no platform output of its own.
+   *
+   * Without it, "postless" would only describe the wake and not the delegation: nothing is
+   * posted to announce the call, but the child's own answer would still appear in the
+   * caller's channel, which is exactly the interruption the postless form exists to avoid.
+   * The child keeps everything that makes it followable — origin lineage, hop count,
+   * correlation, `needsReply`, and `viewSessionStatus` — and reports back through the
+   * (equally session-only) parent-session reply.
+   *
+   * Set only by `sendMessage`'s agent target. Other internal callers (orchestration, the
+   * intro fan-out) keep their existing visibility, which they express themselves.
+   */
+  postless?: boolean
 }
 
 /** The result of an agent→agent delivery. `delivered:false` carries a typed `reason`
@@ -846,7 +861,9 @@ export async function executeTool(
             toAgentId: toAgent,
             text: message,
             channel: channel ?? ctx.channel,
-            ...(needsReply ? { needsReply: true } : {})
+            ...(needsReply ? { needsReply: true } : {}),
+            // §3.1: no `channel` ⇒ the postless form, whose child is headless.
+            ...(channel === undefined ? { postless: true } : {})
           }
         : undefined
     // PREFLIGHT (side-effect-free): would messageAgent refuse this wake for a locally-decidable
