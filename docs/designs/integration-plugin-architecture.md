@@ -528,10 +528,15 @@ interface CpPlatformProvider {
   // rows plus decrypted secret material into the opaque payloads of D4 and
   // §6.7. These are today's integrationToSpec / httpIntegrationToSpec /
   // HttpBotService.buildAssign branches, relocated behind the provider.
-  // Secret material reaches the projector at assembly time from the secret
-  // store; it is never persisted inside platformConfig JSON.
-  projectIntegrationConfig(integration, bot, secrets): unknown // -> IntegrationSpec.config (§6.4)
-  projectBotAssign(bot, secrets): { secrets: unknown; ingress: unknown } // -> rc/bot-assign (§6.7)
+  // Both projectors are ASYNC, and the provider owns loading from any
+  // additional secret stores it maintains: `secrets` carries the bot-level
+  // material core already holds, but e.g. the Linear design keeps rotating
+  // integration-scoped tokens in its own encrypted table — the provider
+  // loads those itself inside the projector, and core always awaits,
+  // never growing a per-platform preload branch. Secret material is never
+  // persisted inside platformConfig JSON.
+  projectIntegrationConfig(integration, bot, secrets): Promise<unknown> // -> IntegrationSpec.config (§6.4)
+  projectBotAssign(bot, secrets): Promise<{ secrets: unknown; ingress: unknown }> // -> rc/bot-assign (§6.7)
 }
 ```
 
@@ -546,7 +551,7 @@ Consequences the slot must own:
   still assembles the wire payloads (it holds the rows and the decrypted
   secrets), but through `projectIntegrationConfig` / `projectBotAssign`, so
   `placement.ts` / `httpBot.ts` stop branching per platform and merely
-  forward provider output; shape validation of the opaque payload lives in
+  await and forward provider output; shape validation of the opaque payload lives in
   the same platform's daemon/relay module. The Slack bot-identity
   reconciler and similar background loops register via the provider.
 - **The common create skeleton stays core:** visibility gates, placement
