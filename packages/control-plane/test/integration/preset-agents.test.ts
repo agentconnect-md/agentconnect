@@ -10,7 +10,13 @@ import { buildHttpApp } from '../fakes/build-http.js'
 import type { IconStore } from '../../src/icons/icon-store.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { GENERAL_PRESET, PresetAgentBackfill, provisionPresetAgents } from '../../src/persistence/index.js'
+import {
+  GENERAL_PRESET,
+  PRESET_AGENT_SKILLS,
+  PRESET_SKILL_SOURCE,
+  PresetAgentBackfill,
+  provisionPresetAgents
+} from '../../src/persistence/index.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { ensurePersonalOrg } from '../../src/persistence/repositories/user.repo.js'
 import { ensureDefaultTenant } from '../../src/persistence/ensure-default-tenant.js'
@@ -53,9 +59,48 @@ describe('org-creation seam (POST /orgs)', () => {
         where: { orgId_preset: { orgId, preset: 'general' } }
       })
       expect(row).toMatchObject({ agentId: preset.id, status: 'created', placementSettledAt: null })
+
+      // Default skill (§3.1): the org-level source row plus the preset's enable-list,
+      // written in the same transaction as the org itself.
+      const source = await prisma.skillSource.findUnique({
+        where: { orgId_name: { orgId, name: PRESET_SKILL_SOURCE.name } }
+      })
+      expect(source).toMatchObject({
+        source: PRESET_SKILL_SOURCE.source,
+        githubRepoId: PRESET_SKILL_SOURCE.githubRepoId,
+        ref: PRESET_SKILL_SOURCE.ref,
+        subDir: PRESET_SKILL_SOURCE.subDir,
+        skills: [...PRESET_SKILL_SOURCE.skills],
+        visibility: 'org',
+        createdByUserId: null // system write, like the agent row
+      })
+      const agentRow = await prisma.agent.findUniqueOrThrow({ where: { id: preset.id } })
+      expect((agentRow.runtimeOverrides as { skills?: string[] }).skills).toEqual([...PRESET_AGENT_SKILLS])
     } finally {
       await close()
     }
+  })
+
+  it('an org already owning the skill-source name gets the preset without default skills', async () => {
+    const org = await prisma.org.create({ data: { slug: `src-collide-${randomUUID().slice(0, 8)}` } })
+    await prisma.skillSource.create({
+      data: { orgId: org.id, name: PRESET_SKILL_SOURCE.name, source: 'someone/else' }
+    })
+
+    await provisionPresetAgents(prisma, { orgId: org.id })
+
+    // The user's source is untouched — never captured, never rewritten.
+    const source = await prisma.skillSource.findUnique({
+      where: { orgId_name: { orgId: org.id, name: PRESET_SKILL_SOURCE.name } }
+    })
+    expect(source?.source).toBe('someone/else')
+
+    // The preset still provisions — binding it to a source we did not write would
+    // install someone else's content, so the enable-list simply stays empty.
+    const agent = await prisma.agent.findUniqueOrThrow({
+      where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }
+    })
+    expect(((agent.runtimeOverrides ?? {}) as { skills?: string[] }).skills ?? []).toEqual([])
   })
 
   it('DELETE refuses the built-in preset (403) but still deletes ordinary agents', async () => {
