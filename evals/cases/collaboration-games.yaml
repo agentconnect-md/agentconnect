@@ -1,0 +1,46 @@
+# Collaboration Arena game cases (collaboration-arena.md §12).
+# One provider invocation is one complete game; Promptfoo owns repeats and
+# aggregation. Real-agent trials report observed reliability over repeats
+# (§8.1) — run them with AGENTCONNECT_EVAL_SUBJECT_ROOT and
+# AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS set, e.g.
+#   node evals/run-collaboration.mjs -- --repeat 5
+
+- description: Same-room counting · 4 agents · deterministic seed
+  metadata:
+    game: counting
+    scenario: same-room
+  vars:
+    case: |
+      {
+        "kind": "game",
+        "id": "counting-same-room-v1",
+        "game": "counting",
+        "scenario": "same-room",
+        "seed": 42,
+        "target": 12,
+        "agentIds": ["agent-a", "agent-b", "agent-c", "agent-d"]
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Same-room counting · alternate seed
+  metadata:
+    game: counting
+    scenario: same-room
+  vars:
+    case: |
+      {
+        "kind": "game",
+        "id": "counting-same-room-v1-seed7",
+        "game": "counting",
+        "scenario": "same-room",
+        "seed": 7,
+        "target": 12,
+        "agentIds": ["agent-a", "agent-b", "agent-c", "agent-d"]
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game

@@ -1,0 +1,32 @@
+description: AgentConnect Collaboration Arena — multi-agent game benchmark
+
+prompts:
+  - '{{case}}'
+
+providers:
+  # The reproducible engine gate: scripted ACP hosts, no credentials (§8.1).
+  - id: file://providers/collaboration-game.ts
+    label: scripted-hosts
+    config:
+      subject: scripted
+      name: scripted-hosts
+
+  # Real-agent trials (§14 step 4): the IDENTICAL game against the operator's
+  # subject template. Requires AGENTCONNECT_EVAL_SUBJECT_ROOT and
+  # AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS; run-collaboration.mjs filters this
+  # provider out when they are absent, so the scripted gate stays credential-free.
+  - id: file://providers/collaboration-game.ts
+    label: real-agents
+    config:
+      subject: real
+      name: real-agents
+
+tests: file://cases/collaboration-games.yaml
+
+evaluateOptions:
+  cache: false
+  maxConcurrency: 1
+
+outputPath:
+  - .artifacts/evaluation/collab/results.json
+  - .artifacts/evaluation/collab/results.junit.xml
