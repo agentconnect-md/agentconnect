@@ -17540,19 +17540,22 @@ export class Daemon {
         this.log.warn(`${label}: agent "${agentId}" has no live platform connection — running without output`)
       } else {
         try {
-          // §6.8: DIRECT-conversation targets must canonicalize as DMs — a Telegram DM
-          // keys `dm` (not `tg:<id>`), Feishu DMs key the chat id, and the fire must be
-          // classified as a DM session. Probe the target connection where DM-ness
-          // changes the key (mirrors the root-post path in mcp/ops.ts); other
-          // platforms' keys are DM-insensitive.
+          // §6.8: a DIRECT-conversation target must canonicalize as a DM. Two things
+          // depend on it: the thread key (Telegram DMs key `dm`, not `tg:<id>`; Feishu
+          // DMs key the chat id) AND the session classification — `conversationKind`
+          // and the daemon-local private-capture gate both derive from `isDm`, so an
+          // anchor into a DM that reports `false` stores a channel/non-private session
+          // for a conversation whose inbound messages classify `dm`.
+          // CAPABILITY-driven, not a platform list: every connection exposes
+          // `getChannelInfo`, so the probe is uniform (a platform whose keys are
+          // DM-insensitive still needs the classification). Mirrors the root-post path
+          // in mcp/ops.ts; a failed probe falls back to the message's own value.
           const isDmTarget =
-            msg.platform === 'telegram' || msg.platform === 'feishu'
-              ? ((
-                  await (conn as { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> })
-                    .getChannelInfo?.(target.channel)
-                    .catch(() => undefined)
-                )?.isIm ?? false)
-              : false
+            (
+              await (conn as { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> })
+                .getChannelInfo?.(target.channel)
+                .catch(() => undefined)
+            )?.isIm ?? false
           if (isDmTarget) msg = { ...msg, isDm: true }
           let ts: string | undefined
           if (msg.platform === 'slack') {

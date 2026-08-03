@@ -636,6 +636,50 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('§6.8: a discord DM anchored fire classifies as a private DM session', async () => {
+    // Discord thread keys are DM-insensitive (the conversation IS the channel), but
+    // `conversationKind` and the daemon-local capture gate are not: a DM fire that
+    // reports isDm:false is stored as a non-private CHANNEL session.
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const postMessage = vi.fn(async () => 'msg-1')
+    const getChannelInfo = vi.fn(async () => ({ id: 'D-1', isIm: true }))
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).dcConnByIntegration.set('int-a', {
+      postMessage,
+      getChannelInfo,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-dc:trace-1'),
+        msgId: 'cron:cron-dc:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'discord',
+        channel: 'D-1',
+        isDm: false
+      },
+      { channel: 'D-1', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-dc"'
+    )
+
+    expect(getChannelInfo).toHaveBeenCalledWith('D-1')
+    const key = sessionKey('discord', 'D-1', 'D-1', 'bot-a', TRANSPORT_SCOPE)
+    const rec = (daemon as any).store.getSession(key)
+    expect(rec?.conversationKind).toBe('dm')
+    // The private-capture gate follows the same bit.
+    expect((daemon as any).store.isCaptureExcluded(rec?.acpSessionId)).toBe(true)
+    await daemon.stop()
+  }, 15_000)
+
   it('reports a cron session before its turn finishes', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
