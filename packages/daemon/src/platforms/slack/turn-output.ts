@@ -1,0 +1,519 @@
+/**
+ * Slack's **turn-output surface** (integration-plugin-architecture.md §7.3,
+ * stage S2).
+ *
+ * Slack is the hard one, and for a reason worth stating plainly: it was the
+ * FIRST platform, so its output code never had to justify itself as
+ * platform-specific. It simply was "how the daemon posts". The other three
+ * extractions found a self-contained applier and lifted it; here the applier had
+ * grown seven private helpers in `daemon.ts` that read like core utilities but
+ * are Slack API shapes end to end — `chat.postMessage` option bags, block-edit
+ * retries, a `chat.delete` for the status bar.
+ *
+ * WHAT MOVED, AND WHY IT MOVED WITH THE APPLIER. The helpers come along rather
+ * than becoming host capabilities. Had they stayed, this platform's host port
+ * would be eight functions wide against Telegram's two — and every one of those
+ * eight would take or return a Slack type, which is a port in name only. Two
+ * groups:
+ *
+ *  - Applier-private: `postSlackReply` (the born-with-its-footer post boundary),
+ *    `updateSlackLiveReply`, `findExistingSlackStatusBarTs`.
+ *  - Shared with core call sites: the four option builders and
+ *    `clearStaleSlackReplyFooters`. These are PURE functions of the turn record,
+ *    so they move as exported functions and core imports them back — the
+ *    dependency points core → platform, which is the direction the design wants.
+ *
+ * WHAT DID NOT MOVE. `liveReplyTs` / `progressTs` / `statusBarTs` / `lastReply` /
+ * `attribution` and their `*Attempted` flags stay on the core turn record.
+ * They LOOK like Slack state, and eventually most of them belong in the opaque
+ * slot beside `staleReplyFooters` — but core reads them today from suppression,
+ * re-anchoring, and human-input paths (`attribution` alone has 30+ readers). The
+ * structural `SlackTurn` view below names that surface exactly, which is what
+ * makes the follow-up a mechanical field migration instead of an archaeology
+ * project. Moving them here in the same change would be the §16 failure mode:
+ * relocating a body while silently redefining what it may reach.
+ *
+ * WEBCHAT / HOOK / DREAM still render through this applier — it is the registry's
+ * CORE surface, not merely Slack's (§12). The `platform !== 'slack'` guards in the
+ * option builders are what make that safe: a non-Slack origin gets `undefined`
+ * options and posts without Slack identity decoration.
+ */
+import type { SlackConnection, SlackPostOptions, SlackStatusOptions } from '../../slack/connection.js'
+import { splitIntoSections } from '../../slack/formatter.js'
+import type { SlackAction } from '../../slack/render.js'
+
+/** Slack's opaque per-turn state (§7.3) — the footer edits still owed. */
+export interface SlackTurnState {
+  /** Older reply sections whose footer-removal update failed. Retried on the next
+   *  body section and once more at finalization, so a transient Slack error cannot
+   *  leave two footers standing. */
+  staleReplyFooters?: { ts: string; text: string }[]
+}
+
+/** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.
+ *
+ *  Wider than the other three surfaces because Slack's output anchors (live reply,
+ *  progress/plan/reasoning rows, status bar, attribution footer) are still core
+ *  fields — see the module header. Read this list as the inventory for that
+ *  follow-up, not as the port Slack wants. */
+export interface SlackTurn {
+  conn?: unknown
+  channel: string
+  thread?: string
+  statusThread: string
+  transcriptChannel: string
+  agentId: string
+  agentName: string
+  iconUrl?: string
+  sessionKey: string
+  platform: string
+  isDm: boolean
+  /** The turn's finalized attribution footer, and a key identifying its content so
+   *  a re-post can tell "same footer" from "footer changed". */
+  attribution?: { blocks: unknown[]; key: string }
+  /** The message currently owning the footer. */
+  lastReply?: { ts: string; text: string; footerKey?: string }
+  liveReplyTs?: string
+  liveReplyText?: string
+  liveReplyAttempted?: boolean
+  liveReplyReanchor?: boolean
+  progressTs?: string
+  progressAttempted?: boolean
+  planTs?: string
+  planAttempted?: boolean
+  reasoningTs?: string
+  reasoningAttempted?: boolean
+  statusBarTs?: string
+  statusBarAttempted?: boolean
+}
+
+/** The host capabilities this applier needs.
+ *
+ *  Three groups, each a genuine core resource rather than a Slack shape: the two
+ *  every surface needs (reply recording, transcript append), the SESSION-SCOPED
+ *  status-bar anchor (Slack owns the post-once/edit-in-place/drop-dead-ts policy;
+ *  core owns the store the anchor survives in), and the logger. */
+export interface SlackTurnHost<TTurn> {
+  recordReplySegment(turn: TTurn, text: string): void
+  appendTranscript(row: {
+    channel: string
+    thread: string
+    ts: string
+    sender: string
+    kind: 'text'
+    text: string
+  }): void
+  /** Persisted anchor for the session's one interactive status line. Survives the
+   *  turn, so it cannot live in the per-turn state slot. */
+  getStatusBarTs(sessionKey: string): string | undefined
+  setStatusBarTs(sessionKey: string, ts: string): void
+  clearStatusBarTs(sessionKey: string): void
+  /** Monotonic transcript timestamp — core owns ordering across surfaces. */
+  monotonicTs(): string
+  debug(message: string): void
+}
+
+/** Conversational authorship for Slack rows: the agent's name and icon, applied
+ *  only in channels. A DM is already a one-to-one surface, so overriding the
+ *  author there would replace the bot's own identity for no gain. */
+export function slackPostOptions(
+  p: Pick<SlackTurn, 'platform' | 'isDm' | 'agentName' | 'iconUrl'>
+): SlackPostOptions | undefined {
+  if (p.platform !== 'slack' || p.isDm) return undefined
+  return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
+}
+
+/** Visual identity for Slack rows owned by the selected agent. Kept separate from
+ *  conversational authorship because status/chrome rows must retain their chrome
+ *  metadata marker instead of masquerading as transcript messages. */
+export function slackAgentIdentityOptions(
+  p: Pick<SlackTurn, 'platform' | 'agentName' | 'iconUrl'>
+): SlackPostOptions | undefined {
+  if (p.platform !== 'slack') return undefined
+  return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
+}
+
+/** Agent-authored conversation messages add a stable author id to Slack metadata.
+ *  Peer daemons use it during thread backfill, so shared/custom bot ids never replace
+ *  the Agent's name and icon in the Console transcript. */
+export function slackAgentPostOptions(
+  p: Pick<SlackTurn, 'platform' | 'agentId' | 'agentName' | 'iconUrl'>
+): SlackPostOptions | undefined {
+  const identity = slackAgentIdentityOptions(p)
+  return identity ? { ...identity, agentAuthorId: p.agentId } : undefined
+}
+
+/** Keep Slack's transient loading state visually owned by the same agent as its reply. */
+export function slackStatusOptions(
+  platform: string,
+  agentName: string,
+  iconUrl?: string
+): SlackStatusOptions | undefined {
+  if (platform !== 'slack') return undefined
+  return { username: agentName, ...(iconUrl ? { icon_url: iconUrl } : {}) }
+}
+
+/** Remove attribution blocks from older body sections. Slack edits are best-effort,
+ *  so retain failed rows for the next body post and the finalization retry. Test fakes
+ *  historically return void; only an explicit `false` means the update failed. */
+export async function clearStaleSlackReplyFooters<TTurn extends SlackTurn>(
+  host: Pick<SlackTurnHost<TTurn>, 'debug'>,
+  conn: SlackConnection,
+  p: TTurn,
+  state: SlackTurnState,
+  additional: { ts: string; text: string }[] = []
+): Promise<void> {
+  const pending = [...(state.staleReplyFooters ?? []), ...additional]
+  if (pending.length === 0) return
+  delete state.staleReplyFooters
+  const failed: { ts: string; text: string }[] = []
+  for (const reply of new Map(pending.map((item) => [item.ts, item])).values()) {
+    try {
+      const updated = await conn.updateBlocks(
+        p.channel,
+        reply.ts,
+        [{ type: 'markdown', text: reply.text }],
+        undefined,
+        false,
+        p.agentId
+      )
+      if (updated === false) failed.push(reply)
+    } catch (err) {
+      // Real SlackConnection normalizes API/queue failures to false. Keep this guard
+      // for duck-typed test/adaptor connections so turn cleanup can never be stranded.
+      failed.push(reply)
+      host.debug(
+        `slack: stale footer cleanup failed (${reply.ts}): ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+  if (failed.length > 0) state.staleReplyFooters = failed
+}
+
+/** Does this row's text look like a rendered status bar? A Slack-shaped test: the
+ *  bar's leading chart glyph, in either the `:shortcode:` or the literal-emoji form
+ *  Slack may echo back. Also consulted by thread backfill, which must not replay a
+ *  peer's status bar as conversation. */
+export function isSlackStatusBarText(text: string): boolean {
+  return text.startsWith(':bar_chart:') || text.startsWith('📊')
+}
+
+/** Best-effort adoption path for sessions that already have an older status bar in
+ *  the thread but no persisted ts — re-anchor onto our own bar rather than posting a
+ *  second one. Provenance-filtered: only a row this bot authored, marked as chrome,
+ *  and owned by this agent qualifies. */
+async function findExistingSlackStatusBarTs(conn: SlackConnection, p: SlackTurn): Promise<string | undefined> {
+  const getThreadReplies = (conn as { getThreadReplies?: SlackConnection['getThreadReplies'] }).getThreadReplies
+  if (!getThreadReplies) return undefined
+  const own = new Set([conn.botId, conn.botUserId].filter(Boolean))
+  if (own.size === 0) return undefined
+  const replies = await getThreadReplies.call(conn, p.channel, p.statusThread)
+  return replies.find(
+    (m) =>
+      m.isBot && own.has(m.sender) && m.chrome && m.chromeOwnerAgentId === p.agentId && isSlackStatusBarText(m.text)
+  )?.ts
+}
+
+/** Shared reply-message boundary for every output mode. The new message is born with
+ *  the current footer; only after that post succeeds do we strip the footer from the
+ *  previous reply owner and move the pointer. */
+async function postSlackReply<TTurn extends SlackTurn>(
+  host: SlackTurnHost<TTurn>,
+  conn: SlackConnection,
+  p: TTurn,
+  state: SlackTurnState,
+  text: string,
+  trackReply = true
+): Promise<string | undefined> {
+  const previous = trackReply ? p.lastReply : undefined
+  const attribution = trackReply ? p.attribution : undefined
+  const agentPostOptions = slackAgentPostOptions(p)
+  const options = attribution ? { ...agentPostOptions, trailingBlocks: attribution.blocks } : agentPostOptions
+  const ts = await conn.postMessage(p.channel, text, p.thread, options as SlackPostOptions | undefined)
+  if (ts && trackReply) {
+    if (attribution)
+      await clearStaleSlackReplyFooters(
+        host,
+        conn,
+        p,
+        state,
+        previous?.footerKey ? [{ ts: previous.ts, text: previous.text }] : []
+      )
+    p.lastReply = {
+      ts,
+      text,
+      ...(attribution ? { footerKey: attribution.key } : {})
+    }
+  }
+  return ts
+}
+
+/** Update minimal mode's live body without dropping its born-in footer. Only record a
+ *  footer-key transition after Slack accepts the edit so finalization can retry a failed
+ *  metadata refresh. */
+async function updateSlackLiveReply(conn: SlackConnection, p: SlackTurn, text: string): Promise<void> {
+  if (!p.liveReplyTs) return
+  const attribution = p.attribution
+  if (!attribution) {
+    await conn.updateMessage(p.channel, p.liveReplyTs, text, false, p.agentId)
+    if (p.lastReply?.ts === p.liveReplyTs) {
+      p.lastReply.text = text
+      delete p.lastReply.footerKey
+    }
+    return
+  }
+  const updated = await conn.updateBlocks(
+    p.channel,
+    p.liveReplyTs,
+    [{ type: 'markdown', text }, ...attribution.blocks],
+    text,
+    false,
+    p.agentId
+  )
+  if (updated !== false && p.lastReply?.ts === p.liveReplyTs) {
+    p.lastReply.text = text
+    p.lastReply.footerKey = attribution.key
+  }
+}
+
+/** Apply one converger action against the turn's Slack connection.
+ *
+ *  Also the CORE surface: webchat / hook / dream turns arrive here with no
+ *  connection (headless) or with Slack-shaped fakes, which is why the no-`conn`
+ *  path still records the reply into the transcript. */
+export async function applySlackAction<TTurn extends SlackTurn>(
+  host: SlackTurnHost<TTurn>,
+  p: TTurn,
+  state: SlackTurnState,
+  action: SlackAction
+): Promise<void> {
+  if (action.kind === 'post' && action.recordOnly) {
+    host.recordReplySegment(p, action.text)
+    return
+  }
+  // enqueueApply routes here only for non-telegram platforms, so p.conn is a Slack
+  // connection (or a test fake with the same shape) — cast rather than instanceof so
+  // duck-typed fakes work. Headless (no conn) no-ops.
+  const conn = p.conn as SlackConnection | undefined
+  if (!conn) {
+    // Headless fires have no platform-send boundary, but their agent reply should
+    // still be readable in the session transcript.
+    if (action.kind === 'post') {
+      host.appendTranscript({
+        channel: p.transcriptChannel,
+        thread: p.statusThread,
+        ts: host.monotonicTs(),
+        sender: p.agentId,
+        kind: 'text',
+        text: action.text
+      })
+    }
+    return
+  }
+  const postOptions = slackPostOptions(p)
+  const statusBarPostOptions = slackAgentIdentityOptions(p)
+  // Chrome variant of the post options: marks status/progress/plan/reasoning/notice/card
+  // messages so a peer daemon's thread backfill skips them (they are not conversation).
+  const chromeOptions: SlackPostOptions = { ...(postOptions ?? {}), chrome: true }
+  switch (action.kind) {
+    case 'set-status':
+      if (p.statusThread)
+        await conn.setStatus(
+          p.channel,
+          p.statusThread,
+          action.text,
+          action.loadingMessages,
+          slackStatusOptions(p.platform, p.agentName, p.iconUrl)
+        )
+      return
+    case 'set-title':
+      if (p.statusThread) await conn.setTitle(p.channel, p.statusThread, action.text)
+      return
+    case 'post': {
+      const trackReply = action.attributed !== false
+      // The latest reply is born with its linked context footer, so unfurls are
+      // disabled at the supported chat.postMessage boundary. Once that succeeds,
+      // strip the footer from this turn's previous section and move the pointer.
+      const ts = await postSlackReply(host, conn, p, state, action.text, trackReply)
+      host.appendTranscript({
+        channel: p.transcriptChannel,
+        thread: p.statusThread,
+        ts: ts ?? `local-${Date.now()}`,
+        sender: p.agentId,
+        kind: 'text',
+        text: action.text
+      })
+      return
+    }
+    case 'notice':
+    case 'tool-output':
+      // Both post to the thread but are NOT recorded into the transcript — notices are
+      // system chrome, and tool output is captured independently by the recorder.
+      await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
+      return
+    case 'attribution':
+      // Final metadata normally matches the footer already included in the initial post.
+      // Minimal mode also keeps that footer through its live updates, so finalization is
+      // a no-op unless the runtime published different session metadata during prompt.
+      p.attribution = { blocks: action.blocks, key: JSON.stringify(action.blocks) }
+      if (action.standalone) {
+        if (
+          p.liveReplyTs &&
+          p.liveReplyText !== undefined &&
+          p.lastReply?.ts === p.liveReplyTs &&
+          p.lastReply.footerKey !== p.attribution.key
+        ) {
+          const updated = await conn.updateBlocks(
+            p.channel,
+            p.liveReplyTs,
+            [{ type: 'markdown', text: p.liveReplyText }, ...action.blocks],
+            p.liveReplyText,
+            false,
+            p.agentId
+          )
+          if (updated !== false) {
+            p.lastReply.text = p.liveReplyText
+            p.lastReply.footerKey = p.attribution.key
+          }
+        }
+      } else {
+        await clearStaleSlackReplyFooters(host, conn, p, state)
+      }
+      return
+    case 'progress':
+      // Post the single progress message exactly once; thereafter edit it in
+      // place. If the first post rejects or returns no ts, we mark it attempted
+      // and skip subsequent edits rather than posting a duplicate message.
+      if (p.progressTs) await conn.updateMessage(p.channel, p.progressTs, action.text, true)
+      else if (!p.progressAttempted) {
+        p.progressAttempted = true
+        p.progressTs = await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
+      }
+      return
+    case 'plan':
+      if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text, true)
+      else if (!p.planAttempted) {
+        p.planAttempted = true
+        p.planTs = await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
+      }
+      return
+    case 'reasoning':
+      // The single in-place reasoning block (high mode): post once, then edit — same
+      // post-once/edit-thereafter contract as `progress`. Not recorded into the
+      // transcript; the TranscriptRecorder captures reasoning rows independently.
+      if (p.reasoningTs) await conn.updateMessage(p.channel, p.reasoningTs, action.text, true)
+      else if (!p.reasoningAttempted) {
+        p.reasoningAttempted = true
+        p.reasoningTs = await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
+      }
+      return
+    case 'live-reply': {
+      // minimal mode's single agent reply: post once with its attribution footer, then
+      // update body + footer together as the turn streams. Skip an update when the text
+      // is unchanged; the paired `recordOnly` posts carry the transcript content.
+      if (p.liveReplyReanchor) {
+        // A human-input card was posted above this reply; start a FRESH reply below it so
+        // the post-answer stream reads after the question (the old reply stays frozen above).
+        p.liveReplyReanchor = false
+        p.liveReplyTs = undefined
+        p.liveReplyAttempted = false
+        p.liveReplyText = undefined
+      }
+      if (p.liveReplyText === action.text) return
+      p.liveReplyText = action.text
+      if (p.liveReplyTs) await updateSlackLiveReply(conn, p, action.text)
+      else if (!p.liveReplyAttempted) {
+        p.liveReplyAttempted = true
+        p.liveReplyTs = await postSlackReply(host, conn, p, state, action.text)
+      }
+      return
+    }
+    case 'final-live-reply': {
+      // Slack caps one markdown block at 12k characters. Settle the existing live reply
+      // with the first section, then post every overflow section as a continuation so
+      // minimal mode never drops the tail of a long final answer. Every successful next
+      // section is born with the footer before the prior section loses it, keeping the
+      // footer anchored to the last delivered response throughout the handoff.
+      const sections = splitIntoSections(action.text)
+      const [first, ...rest] = sections
+      if (!first) return
+      if (p.liveReplyReanchor) {
+        p.liveReplyReanchor = false
+        p.liveReplyTs = undefined
+        p.liveReplyAttempted = false
+        p.liveReplyText = undefined
+      }
+      if (p.liveReplyText !== first) {
+        p.liveReplyText = first
+        if (p.liveReplyTs) await updateSlackLiveReply(conn, p, first)
+        else if (!p.liveReplyAttempted) {
+          p.liveReplyAttempted = true
+          p.liveReplyTs = await postSlackReply(host, conn, p, state, first)
+        }
+      }
+      for (const section of rest) {
+        const ts = await postSlackReply(host, conn, p, state, section)
+        if (ts) {
+          p.liveReplyTs = ts
+          p.liveReplyText = section
+        }
+      }
+      return
+    }
+    case 'clear-status-bar': {
+      const ts = p.statusBarTs ?? host.getStatusBarTs(p.sessionKey)
+      if (!ts) return
+      p.statusBarTs = ts
+      const deleted = await conn.deleteMessage(p.channel, ts)
+      // Duck-typed test connections historically return void; only an explicit false
+      // means Slack rejected the cleanup and the persisted ts should be retried later.
+      if (deleted !== false) {
+        p.statusBarTs = undefined
+        host.clearStatusBarTs(p.sessionKey)
+      }
+      return
+    }
+    case 'status-bar': {
+      // Session-scoped interactive status line: the first post's ts is stored on the
+      // session, and every later turn updates that topmost line in place. Serialized by
+      // applyChain; not recorded into the transcript (live chrome).
+      let ts = p.statusBarTs ?? host.getStatusBarTs(p.sessionKey)
+      if (!ts && !p.statusBarAttempted) {
+        ts = await findExistingSlackStatusBarTs(conn, p)
+        if (ts) {
+          p.statusBarTs = ts
+          host.setStatusBarTs(p.sessionKey, ts)
+        }
+      }
+      if (ts) {
+        p.statusBarTs = ts
+        const updated = await conn.updateBlocks(p.channel, ts, action.blocks, action.text, true, undefined, p.agentId)
+        // Duck-typed test connections historically return void; only an explicit
+        // false means Slack rejected the edit — typically cant_update_message on a
+        // bar another Slack app authored (a foreign ts persisted by the
+        // pre-provenance adoption path). Drop the dead ts so the next status emit
+        // re-resolves — provenance-filtered adoption or a fresh own post — instead
+        // of hammering an uneditable message on every usage tick. A transient
+        // failure costs at most one duplicate bar; a foreign ts never heals.
+        if (updated === false) {
+          p.statusBarTs = undefined
+          host.clearStatusBarTs(p.sessionKey)
+        }
+      } else if (!p.statusBarAttempted) {
+        p.statusBarAttempted = true
+        // The session status line represents the selected agent, so keep its author
+        // identity aligned with the native loading state and the eventual reply.
+        const posted = await conn.postBlocks(p.channel, action.blocks, action.text, p.thread, {
+          ...(statusBarPostOptions ?? {}),
+          chrome: true,
+          chromeOwnerAgentId: p.agentId
+        })
+        if (posted) {
+          p.statusBarTs = posted
+          host.setStatusBarTs(p.sessionKey, posted)
+        }
+      }
+      return
+    }
+  }
+}
