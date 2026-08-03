@@ -1295,6 +1295,56 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     await daemon.stop()
   })
 
+  // The regression the raw-platform migration exposed: a channel-free (dream/hook) child's
+  // transportScope is derived from an integration resolved under `legacyCoordPlatform` at
+  // spawn (there is no 'dream' integration to resolve), while the child row itself is keyed
+  // with the RAW platform. The reply-transport lookup must apply the same legacy mapping — a
+  // raw-platform integration filter finds nothing and refuses the reply as not_found.
+  it('resolves a scoped dream child’s reply transport through the legacy coordinate platform', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    // The origin owner holds a real scoped Slack integration — the shape a dream wake's
+    // child inherits its transportScope from. Injected post-start so no socket connects.
+    const slackInteg = {
+      id: 'int-slack-1',
+      platform: 'slack',
+      slack: { mode: 'direct', shareable: false, botToken: 'xoxb-scope-test' }
+    }
+    ;(daemon as any).agents.get('bot-a').integrations.push(slackInteg)
+    const scope = (daemon as any).transportScopeForIntegration(slackInteg)
+    const dreamKey = sessionKey('dream', 'a2a:bot-x', 'dream-1', 'bot-a', scope)
+    ;(daemon as any).store.upsertSession({
+      key: dreamKey,
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'a2a:bot-x',
+      thread: 'dream-1',
+      transportScope: scope,
+      acpSessionId: 'acp-parent-dream',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-dream',
+      originCoords: { platform: 'dream', channel: 'a2a:bot-x', thread: 'dream-1' }
+    })
+    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-parent-dream' }))
+    expect(res.delivered).toBe(true)
+    expect(res.targetSession).toBe(dreamKey)
+    expect(calls).toHaveLength(1)
+    const { msg } = calls[0]!
+    // The synthesized message keeps the RAW session platform; only transport resolution
+    // went through the legacy mapping.
+    expect(msg.platform).toBe('dream')
+    expect(msg.transportScope).toBe(scope)
+    await daemon.stop()
+  })
+
   it('authorizes via the caller session’s PERSISTED origin on a human turn with no active CallMeta', async () => {
     // The regression that "replies once then stops": a spawned session's later, human-triggered
     // turns carry no per-turn CallMeta, so auth must fall back to the DURABLE origin on the row.

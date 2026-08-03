@@ -7136,11 +7136,16 @@ export class Daemon {
       // otherwise post the reply through integrations[0]'s client, and a Telegram chat id
       // sent via the Slack client fails with channel_not_found (the reply turn runs but its
       // answer never reaches the origin channel).
-      const integrationId = this.integrationIdForTransportScope(originOwner, originPlatform, local.transportScope)
+      // Integration resolution goes through the LEGACY coordinate platform: a channel-free
+      // hook/dream child's stored transportScope was derived from an integration resolved
+      // under `legacyCoordPlatform` at spawn, so a raw-platform filter would find nothing
+      // and refuse the reply. Only the session KEY and the synthesized message are raw.
+      const originCoordPlatform = this.legacyCoordPlatform(originPlatform)
+      const integrationId = this.integrationIdForTransportScope(originOwner, originCoordPlatform, local.transportScope)
       if (local.transportScope && !integrationId) {
         return { delivered: false, targetSession: local.key, reason: 'not_found' }
       }
-      const resolved = this.resolveCpAgent(originOwner, originPlatform)
+      const resolved = this.resolveCpAgent(originOwner, originCoordPlatform)
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
@@ -15682,7 +15687,14 @@ export class Daemon {
     // Reply transport resolved from the SESSION's scope, not the agent's default integration —
     // a multi-platform agent would otherwise answer through integrations[0]'s client (mirrors
     // replyToSession). A scoped session whose integration is gone has nowhere to answer.
-    const integrationId = this.integrationIdForTransportScope(agentId, platform, rec.transportScope)
+    // Lookup under the LEGACY coordinate platform (mirrors replyToSession): a hook/dream
+    // session's scope was derived from a `legacyCoordPlatform`-resolved integration, so a
+    // raw-platform filter would silently skip the wake. The message itself stays raw.
+    const integrationId = this.integrationIdForTransportScope(
+      agentId,
+      this.legacyCoordPlatform(platform),
+      rec.transportScope
+    )
     if (rec.transportScope && !integrationId) return skip('integration for the session scope is gone')
 
     // No CallMeta: this is not an agent call, it carries no hop chain, and it must not look
