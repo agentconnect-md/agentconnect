@@ -33,6 +33,18 @@ export type KnownPlatform = (typeof KNOWN_PLATFORMS)[number]
 export function isKnownPlatform(p: string): p is KnownPlatform {
   return (KNOWN_PLATFORMS as readonly string[]).includes(p)
 }
+// The origin-kind classification seed (integration-plugin-architecture.md §6.1): the
+// session-identity platforms are channel-free — no integration row, no persisted
+// conversation, no placement snapshot entry. Everything OUTSIDE this list is
+// chat-shaped and must be treated fail-closed where a placement matters
+// (`coordsDecision` refuses an unrecorded coordinate on any chat-shaped id,
+// including ids this build does not know). S1b replaces this constant with
+// wire-carried per-id classification riding collab snapshots / rc/bot-assign.
+export const SESSION_IDENTITY_PLATFORMS = ['webchat', 'hook', 'dream'] as const
+export type SessionIdentityPlatform = (typeof SESSION_IDENTITY_PLATFORMS)[number]
+export function isSessionIdentityPlatform(p: string): p is SessionIdentityPlatform {
+  return (SESSION_IDENTITY_PLATFORMS as readonly string[]).includes(p)
+}
 export const Platform = z.string().min(1)
 export type Platform = z.infer<typeof Platform>
 

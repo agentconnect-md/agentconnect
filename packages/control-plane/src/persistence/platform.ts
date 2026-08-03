@@ -11,14 +11,15 @@
  * `webchat` value reaching a persistence write is a programming error, not data.
  */
 import type { Platform as ProtocolPlatform } from '@agentconnect.md/protocol'
+import { isSessionIdentityPlatform } from '@agentconnect.md/protocol'
 import type { Platform as DbPlatform } from '../generated/prisma/enums.js'
 
 /** True for the session-identity-only platforms, which have no persisted row. Lets a
  *  caller decide BEFORE reaching persistence — a read whose answer is "nothing is
- *  persisted for this platform" should return the empty answer, not raise. */
-export function isSessionIdentityPlatform(p: ProtocolPlatform): p is 'webchat' | 'hook' | 'dream' {
-  return p === 'webchat' || p === 'hook' || p === 'dream'
-}
+ *  persisted for this platform" should return the empty answer, not raise. The
+ *  classification itself lives in the protocol package (the S1a registry seed shared
+ *  with the daemon's and relay's `coordsDecision`). */
+export { isSessionIdentityPlatform }
 
 const DB_PLATFORMS: readonly DbPlatform[] = ['slack', 'telegram', 'discord', 'feishu']
 
