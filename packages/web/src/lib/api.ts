@@ -1230,6 +1230,12 @@ export interface SessionEventHandlers {
   onActivity: (activity: SessionActivityDto) => void
 }
 
+// Logto's no-resource Account API token is opaque, so the browser cannot read
+// its expiry. Reopen the stream well inside the normal token lifetime; each
+// cycle asks the SDK for a current token without forcing a refresh when the
+// cached one is still valid.
+const SESSION_STREAM_REAUTH_MS = 5 * 60_000
+
 function waitBeforeReconnect(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const finish = () => {
@@ -1247,53 +1253,71 @@ async function readSessionEventStream(
   orgId: string,
   signal: AbortSignal,
   handlers: SessionEventHandlers
-): Promise<void> {
+): Promise<'ended' | 'reauth'> {
+  const request = new AbortController()
+  let reauth = false
+  const abort = () => request.abort(signal.reason)
+  if (signal.aborted) abort()
+  else signal.addEventListener('abort', abort, { once: true })
+  const reauthTimer = setTimeout(() => {
+    reauth = true
+    request.abort()
+  }, SESSION_STREAM_REAUTH_MS)
   const path = `/orgs/${encodeURIComponent(orgId)}/stream`
-  const res = await fetch(`${cpBase()}${path}`, {
-    headers: await authHeaders({ accept: 'text/event-stream' }, { accountToken: true }),
-    cache: 'no-store',
-    signal
-  })
-  if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
-  if (!res.body) throw new Error('session event stream is not readable')
-
-  // The sink has no replay/event ids, so every successful (re)connect invalidates
-  // the list once. This closes both a disconnect gap and the initial GET→subscribe
-  // race without requiring a polling cache layer.
-  handlers.onConnect()
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  const parser = createSseParser((event) => {
-    if (event.event === 'session') {
-      handlers.onSession()
-      return
-    }
-    if (event.event !== 'session-activity') return
-    try {
-      const activity = (JSON.parse(event.data) as { activity?: SessionActivityDto }).activity
-      if (
-        activity &&
-        typeof activity.sessionId === 'string' &&
-        typeof activity.agentId === 'string' &&
-        /^\d+$/.test(activity.revision) &&
-        typeof activity.ts === 'string'
-      )
-        handlers.onActivity(activity)
-    } catch {
-      // A malformed optional invalidation is ignored; reconnect/fallback polling heals it.
-    }
-  })
-
   try {
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      parser.push(decoder.decode(value, { stream: true }))
+    const res = await fetch(`${cpBase()}${path}`, {
+      headers: await authHeaders({ accept: 'text/event-stream' }, { accountToken: true }),
+      cache: 'no-store',
+      signal: request.signal
+    })
+    if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
+    if (!res.body) throw new Error('session event stream is not readable')
+
+    // The sink has no replay/event ids, so every successful (re)connect invalidates
+    // the list once. This closes both a disconnect gap and the initial GET→subscribe
+    // race without requiring a polling cache layer.
+    handlers.onConnect()
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    const parser = createSseParser((event) => {
+      if (event.event === 'session') {
+        handlers.onSession()
+        return
+      }
+      if (event.event !== 'session-activity') return
+      try {
+        const activity = (JSON.parse(event.data) as { activity?: SessionActivityDto }).activity
+        if (
+          activity &&
+          typeof activity.sessionId === 'string' &&
+          typeof activity.agentId === 'string' &&
+          /^\d+$/.test(activity.revision) &&
+          typeof activity.ts === 'string'
+        )
+          handlers.onActivity(activity)
+      } catch {
+        // A malformed optional invalidation is ignored; reconnect/fallback polling heals it.
+      }
+    })
+
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        parser.push(decoder.decode(value, { stream: true }))
+      }
+      parser.push(decoder.decode())
+    } finally {
+      reader.releaseLock()
     }
-    parser.push(decoder.decode())
+    return 'ended'
+  } catch (error) {
+    if (reauth && !signal.aborted) return 'reauth'
+    throw error
   } finally {
-    reader.releaseLock()
+    clearTimeout(reauthTimer)
+    signal.removeEventListener('abort', abort)
   }
 }
 
@@ -1313,8 +1337,9 @@ export function subscribeSessionEvents(
   void (async () => {
     while (!ctrl.signal.aborted) {
       try {
-        await readSessionEventStream(orgId, ctrl.signal, handlers)
+        const ended = await readSessionEventStream(orgId, ctrl.signal, handlers)
         retryMs = 1000
+        if (ended === 'reauth') continue
       } catch (error) {
         if (ctrl.signal.aborted) return
         onError?.(error)

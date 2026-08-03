@@ -44,7 +44,13 @@ export function sessionViewerSql(
   }
   for (const allowed of snapshot.allowedScopes) {
     externalArms.push(Prisma.sql`(
-      ${s}."visibility" = 'external'::"SessionVisibility"
+      (
+        ${s}."visibility" = 'external'::"SessionVisibility"
+        OR (
+          ${s}."visibility" = 'private'::"SessionVisibility"
+          AND ${s}."externalProvider" = 'feishu'
+        )
+      )
       AND ${s}."externalResolution" = 'settled'::"ExternalResolution"
       AND ${s}."externalScopeId" = ${allowed.id}::uuid
       AND EXISTS (

@@ -207,6 +207,7 @@ describe('session visibility — external conversation audiences', () => {
       }
     })
     expect(recorded.session).toMatchObject({ visibility: 'private', externalProvider: 'feishu' })
+    const [scope] = await repo.getExternalScopes([recorded.session!.externalScopeId!])
 
     const baseline = {
       role: 'collaborator' as const,
@@ -232,11 +233,27 @@ describe('session visibility — external conversation audiences', () => {
         })
       ).sessions
     ).toHaveLength(0)
+    expect(
+      (
+        await repo.listPage({
+          agentIds: [agentId],
+          limit: 10,
+          includeTotal: false,
+          viewer: {
+            ...baseline,
+            identitySet: [],
+            externalAccess: {
+              ...baseline.externalAccess,
+              allowedScopes: [{ id: scope!.id, aclRevision: scope!.aclRevision }]
+            }
+          }
+        })
+      ).sessions.map((session) => session.id)
+    ).toEqual([sessionId])
 
     const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'feishu', true)
     const external = await repo.get(SessionId(sessionId))
     expect(external).toMatchObject({ visibility: 'external', externalProvider: 'feishu' })
-    const [scope] = await repo.getExternalScopes([external!.externalScopeId!])
     expect(
       (
         await repo.listPage({

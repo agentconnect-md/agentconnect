@@ -226,17 +226,24 @@ describe('canViewSession (session-visibility.md §5)', () => {
     ).toBe(false)
   })
 
-  it('keeps a provider-bound p2p session owner-only until external sync is enabled', () => {
+  it('keeps a provider-bound p2p session owner-only through exact identity or live chat proof', () => {
     const owner = ctx(CREATOR, 'collaborator')
     const session: SessionViewable = {
       visibility: 'private',
-      ownerIdentity: `user:${CREATOR}`,
+      ownerIdentity: 'feishu:lark:cli_custom:ou_owner',
       externalProvider: 'feishu',
       externalScopeId: 'scope-1',
       externalResolution: 'settled'
     }
-    expect(canViewSession(session, owner, idsOf(owner))).toBe(true)
+    expect(canViewSession(session, owner, new Set([...idsOf(owner), session.ownerIdentity!]))).toBe(true)
     expect(canViewSession(session, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+    expect(
+      canViewSession(session, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')), {
+        policies: [{ provider: 'feishu', readFenceRev: null }],
+        allowedScopes: [{ id: 'scope-1', aclRevision: 1n }],
+        decisionAt: new Date()
+      })
+    ).toBe(true)
   })
 
   it('fails closed for unresolved external rows and pre-fence candidates', () => {

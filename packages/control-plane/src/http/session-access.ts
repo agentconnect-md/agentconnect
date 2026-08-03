@@ -109,12 +109,16 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
     },
     async forSessions(
       req: FastifyRequest,
-      sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalScopeId'>[]
+      sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
     ): Promise<ResolvedSessionAccess> {
       const ids = [
         ...new Set(
           sessions
-            .filter((session) => session.visibility === 'external')
+            .filter(
+              (session) =>
+                session.visibility === 'external' ||
+                (session.visibility === 'private' && session.externalProvider === 'feishu')
+            )
             .map((session) => session.externalScopeId)
             .filter((id): id is string => id !== null)
         )

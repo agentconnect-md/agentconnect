@@ -94,7 +94,14 @@ function externalSessionIsVisible(
     return false
   }
   if (resource.visibility === 'org') return true
-  if (resource.visibility !== 'external' || resource.externalResolution !== 'settled' || !resource.externalScopeId) {
+  // A custom-Bot p2p owner cannot be matched through the login app's app-scoped
+  // open_id. Its private baseline therefore accepts the same live chat proof as
+  // the enabled external policy; a Bot p2p has exactly one human member, so the
+  // proof remains owner-only. Other providers/private rows keep exact identity
+  // matching and cannot borrow an external audience decision.
+  const liveScopeVisibility =
+    resource.visibility === 'external' || (resource.visibility === 'private' && provider === 'feishu')
+  if (!liveScopeVisibility || resource.externalResolution !== 'settled' || !resource.externalScopeId) {
     return false
   }
   return snapshot.allowedScopes.some((scope) => scope.id === resource.externalScopeId)
@@ -126,7 +133,8 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     case AuthorizationAction.SessionView:
       return request.resource.externalProvider
         ? request.resource.visibility === 'private'
-          ? identityOwnsSession(request.resource, request.identitySet)
+          ? identityOwnsSession(request.resource, request.identitySet) ||
+            externalSessionIsVisible(request.resource, request.externalAccess)
           : externalSessionIsVisible(request.resource, request.externalAccess)
         : request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
     // Re-classification (§4.3) is owner-only: identity match with the recorded
