@@ -2216,6 +2216,52 @@ export class LocalStore {
     return rows
   }
 
+  /** Retention-GC candidates (#485): sessions whose last activity (`updatedAt`)
+   *  is older than `cutoff` and that are not mid-turn. Unlike listSessions this
+   *  includes rows with no ACP id — a session that never bound one can still own
+   *  a worktree directory. Oldest first, so a bounded pass drains the backlog in
+   *  eviction order. `resuming`/`prompting`/`cancelling` rows are live by
+   *  definition and never candidates. */
+  listExpiredSessions(cutoff: number): SessionRecord[] {
+    return this.db
+      .prepare("SELECT * FROM sessions WHERE state IN ('idle', 'closed') AND updatedAt < ? ORDER BY updatedAt ASC")
+      .all(cutoff) as unknown as SessionRecord[]
+  }
+
+  /** True when the session key still has durable inbox rows (admitted work that
+   *  has not reached a terminal state, or an unacknowledged hook receipt). The
+   *  retention sweep treats such a session as active and skips it. */
+  sessionHasInboxRows(key: string): boolean {
+    const row = this.db.prepare('SELECT 1 AS present FROM inbox WHERE sessionKey = ? LIMIT 1').get(key) as
+      { present: number } | undefined
+    return row !== undefined
+  }
+
+  /** Retention-GC delete (#485): remove one session row and its dependent rows —
+   *  mute, memory-capture gate, durable inbox, permission-request history.
+   *  Transcript rows are deliberately untouched: they are (channel, thread)-scoped
+   *  and shared across agents, so the thread's history survives the session.
+   *  Returns false when the row is already gone (idempotent). */
+  deleteSession(key: string): boolean {
+    const rec = this.getSession(key)
+    if (!rec) return false
+    this.db.exec('BEGIN')
+    try {
+      this.db.prepare('DELETE FROM sessions WHERE key = ?').run(key)
+      this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
+      this.db.prepare('DELETE FROM inbox WHERE sessionKey = ?').run(key)
+      if (rec.acpSessionId) {
+        this.db.prepare('DELETE FROM session_gates WHERE acpSessionId = ?').run(rec.acpSessionId)
+        this.db.prepare('DELETE FROM permission_requests WHERE sessionId = ?').run(rec.acpSessionId)
+      }
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+    return true
+  }
+
   // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──
 
   private dreamToRow(dream: DreamInfo): SqlParams {

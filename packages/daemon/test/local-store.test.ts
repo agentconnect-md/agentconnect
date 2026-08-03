@@ -928,6 +928,87 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
   })
 })
 
+describe('LocalStore session retention GC (#485)', () => {
+  const seed = (
+    s: LocalStore,
+    key: string,
+    state: 'idle' | 'prompting' | 'cancelling' | 'resuming' | 'closed',
+    updatedAt: number,
+    acpSessionId: string | null = 'acp-' + key
+  ) =>
+    s.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: key,
+      acpSessionId,
+      state,
+      lastDeliveredTs: null,
+      updatedAt
+    })
+
+  it('listExpiredSessions returns idle/closed rows past the cutoff oldest-first, including unbound ones', () => {
+    const s = store()
+    seed(s, 'old-closed', 'closed', 200)
+    seed(s, 'older-idle', 'idle', 100)
+    seed(s, 'never-bound', 'closed', 150, null) // no ACP id, still a candidate (may own a worktree)
+    seed(s, 'fresh-closed', 'closed', 900)
+    seed(s, 'old-prompting', 'prompting', 100) // live turn — never a candidate
+    seed(s, 'old-resuming', 'resuming', 100) // re-attaching — never a candidate
+    expect(s.listExpiredSessions(500).map((r) => r.key)).toEqual(['older-idle', 'never-bound', 'old-closed'])
+    s.close()
+  })
+
+  it('deleteSession removes the row and its mute/inbox/gate/permission cascades, keeping transcripts', () => {
+    const s = store()
+    seed(s, 'gone', 'closed', 100)
+    s.setSessionMuted('gone', true)
+    s.setLocalCaptureGate('acp-gone', true)
+    s.appendInbox({ id: 'm1', sessionKey: 'gone', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000001' })
+    s.createPermissionRequest({
+      id: 'p1',
+      agentId: 'bot-a',
+      sessionId: 'acp-gone',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: null,
+      command: 'rm -rf /tmp/x',
+      status: 'pending',
+      resolvedAt: null
+    })
+    // Thread history is (channel, thread)-scoped and shared — it must survive.
+    s.appendTranscript({ channel: 'C1', thread: 'gone', ts: '1.1', sender: 'u1', kind: 'text', text: 'hello' })
+    expect(s.sessionHasInboxRows('gone')).toBe(true)
+
+    expect(s.deleteSession('gone')).toBe(true)
+
+    expect(s.getSession('gone')).toBeUndefined()
+    expect(s.isSessionMuted('gone')).toBe(false)
+    expect(s.sessionHasInboxRows('gone')).toBe(false)
+    expect(s.listInboxBySessionKeyFifo()).toEqual([])
+    expect(s.listPermissionRequests('bot-a')).toEqual([])
+    // The gate row is gone: an unknown session falls back to excluded-by-default.
+    expect(s.transcriptSince('C1', 'gone', null).map((r) => r.text)).toEqual(['hello'])
+    // Idempotent: a second delete (or an unknown key) reports false, not an error.
+    expect(s.deleteSession('gone')).toBe(false)
+    s.close()
+  })
+
+  it('deleteSession leaves unrelated sessions and their dependents alone', () => {
+    const s = store()
+    seed(s, 'gone', 'closed', 100)
+    seed(s, 'kept', 'closed', 100)
+    s.setSessionMuted('kept', true)
+    s.appendInbox({ id: 'm2', sessionKey: 'kept', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000002' })
+    s.deleteSession('gone')
+    expect(s.getSession('kept')).toBeDefined()
+    expect(s.isSessionMuted('kept')).toBe(true)
+    expect(s.sessionHasInboxRows('kept')).toBe(true)
+    s.close()
+  })
+})
+
 describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)', () => {
   const meta = (runtimeId: string, fingerprint: string, observedAt = 100) => ({
     runtimeId,

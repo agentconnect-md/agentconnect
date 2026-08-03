@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config/load-config.js'
-import { McpServerDefSchema, RuntimeDefSchema } from '../src/config/config-schema.js'
+import { McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
 
 function tmpRoot(config: unknown): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-cfg-'))
@@ -27,6 +27,21 @@ describe('loadConfig', () => {
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
+    expect(cfg.sessions.retention).toBe('7d') // #485 session retention defaults on
+  })
+
+  it('session retention accepts the full keyword set and maps to sweep windows', () => {
+    expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: 'never' } }) }).sessions.retention).toBe(
+      'never'
+    )
+    expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '1month' } }) }).sessions.retention).toBe(
+      '1month'
+    )
+    expect(() => loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '3d' } }) })).toThrow()
+    expect(sessionRetentionMs('never')).toBeNull()
+    expect(sessionRetentionMs('7d')).toBe(7 * 24 * 3_600_000)
+    expect(sessionRetentionMs('2weeks')).toBe(14 * 24 * 3_600_000)
+    expect(sessionRetentionMs('1month')).toBe(30 * 24 * 3_600_000)
   })
 
   it.skipIf(process.platform === 'win32')('repairs an existing config file to owner-only permissions', () => {

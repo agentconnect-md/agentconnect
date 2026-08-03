@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   writeFileSync
 } from 'node:fs'
@@ -45,6 +46,8 @@ const {
   prepareWorkspaceForActivation,
   prefetchWorkspace,
   recordWorkspaceMaterialization,
+  removeSessionWorktree,
+  sessionWorktreePath,
   sessionWorktreeRoot
 } = await import('../src/workspace/workspace-manager.js')
 const { initGitInjection } = await import('../src/workspace/git-injection.js')
@@ -336,6 +339,119 @@ describe('prepareSessionWorkspace', () => {
     expect(second).not.toBe(first)
     expect(dirname(first)).toBe(realpathSync(sessionWorktreeRoot(agent)))
     expect(dirname(second)).toBe(realpathSync(sessionWorktreeRoot(agent)))
+  })
+})
+
+describe('removeSessionWorktree (#485 retention GC)', () => {
+  /** A git-repo agent plus one on-disk session worktree (a dir with a `.git` file,
+   *  exactly what `worktree add` leaves behind). */
+  function fixture() {
+    const root = mkdtempSync(join(tmpdir(), 'ac-wt-gc-'))
+    const path = join(root, 'workspace')
+    mkdirSync(join(path, '.git'), { recursive: true })
+    const agent = gitRepoAgent(path)
+    const cwd = sessionWorktreePath(agent, 'session-a')
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, '.git'), 'gitdir: elsewhere')
+    return { agent, cwd, id: basename(cwd) }
+  }
+  const gitCalls = () => rawMock.mock.calls.map((call) => call[0] as string[])
+
+  it('removes a clean fully-pushed worktree: remove → prune → review-ref deletion', async () => {
+    const { agent, cwd, id } = fixture()
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'rev-list') return '0\n'
+      return ''
+    })
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+
+    const calls = gitCalls()
+    const removeAt = calls.findIndex((args) => args[0] === 'worktree' && args[1] === 'remove' && args[2] === cwd)
+    const pruneAt = calls.findIndex((args) => args[0] === 'worktree' && args[1] === 'prune')
+    expect(removeAt).toBeGreaterThanOrEqual(0)
+    expect(pruneAt).toBeGreaterThan(removeAt) // prune runs AFTER remove
+    for (const name of ['base', 'head', 'merge']) {
+      expect(calls).toContainEqual(['update-ref', '-d', `refs/agentconnect/reviews/${id}/${name}`])
+    }
+    // The unique-commit probe must see every remote ref and this worktree's review refs.
+    expect(calls).toContainEqual([
+      'rev-list',
+      '--count',
+      'HEAD',
+      '--not',
+      '--remotes',
+      `--glob=refs/agentconnect/reviews/${id}`
+    ])
+  })
+
+  it('retains a worktree with dirty/untracked files and never calls worktree remove', async () => {
+    const { agent } = fixture()
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'status') return ' M src/app.ts\n?? notes.md\n'
+      return '0\n'
+    })
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'retained', reason: 'dirty' })
+    expect(gitCalls().some((args) => args[0] === 'worktree')).toBe(false)
+  })
+
+  it('retains a worktree whose HEAD has commits unreachable from every remote ref', async () => {
+    const { agent } = fixture()
+    rawMock.mockImplementation(async (args: string[]) => (args[0] === 'rev-list' ? '2\n' : ''))
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({
+      outcome: 'retained',
+      reason: 'unique-commits'
+    })
+    expect(gitCalls().some((args) => args[0] === 'worktree' && args[1] === 'remove')).toBe(false)
+  })
+
+  it('reports failed (keeping the session) when git refuses the removal', async () => {
+    const { agent } = fixture()
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'rev-list') return '0\n'
+      if (args[0] === 'worktree' && args[1] === 'remove') throw new Error('worktree is locked')
+      return ''
+    })
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'failed', error: 'worktree is locked' })
+  })
+
+  it('an absent worktree still prunes stale registrations and review refs', async () => {
+    const { agent, id } = fixture()
+    const other = sessionWorktreePath(agent, 'session-b')
+    expect(other).not.toBe(sessionWorktreePath(agent, 'session-a'))
+
+    expect(await removeSessionWorktree(agent, 'session-b')).toEqual({ outcome: 'absent' })
+
+    const calls = gitCalls()
+    expect(calls).toContainEqual(['worktree', 'prune'])
+    expect(calls).toContainEqual(['update-ref', '-d', `refs/agentconnect/reviews/${basename(other)}/base`])
+    expect(calls.some((args) => args[0] === 'status' || args[0] === 'rev-list')).toBe(false)
+    // fixture()'s own worktree for session-a is untouched
+    expect(existsSync(sessionWorktreePath(agent, 'session-a'))).toBe(true)
+    void id
+  })
+
+  it('deletes an orphaned directory that git no longer tracks as a worktree', async () => {
+    const { agent, cwd } = fixture()
+    rmSync(join(cwd, '.git'))
+
+    expect(await removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+    expect(existsSync(cwd)).toBe(false)
+    expect(gitCalls()).toContainEqual(['worktree', 'prune'])
+  })
+
+  it('refuses a symlinked worktree path', async () => {
+    const { agent, cwd } = fixture()
+    rmSync(cwd, { recursive: true, force: true })
+    const outside = mkdtempSync(join(tmpdir(), 'ac-wt-outside-'))
+    symlinkSync(outside, cwd)
+
+    const res = await removeSessionWorktree(agent, 'session-a')
+    expect(res.outcome).toBe('failed')
+    expect(existsSync(outside)).toBe(true) // the link target was never touched
   })
 })
 

@@ -172,6 +172,17 @@ export const ConfigSchema = z.object({
       turnFinalContextRefresh: z.boolean().default(true)
     })
     .default({ turnFinalContextRefresh: true }),
+  sessions: z
+    .object({
+      // Local-DB retention for FINISHED sessions (issue #485): a session untouched
+      // (sessions.updatedAt) for longer than this window is deleted from the local
+      // store, together with its per-session Git worktree. A worktree holding
+      // dirty/untracked files or commits unreachable from any remote ref is never
+      // auto-deleted — the sweep reports it and keeps the session instead.
+      // 'never' disables the sweep entirely.
+      retention: z.enum(['never', '7d', '2weeks', '1month']).default('7d')
+    })
+    .default({ retention: '7d' }),
   limits: z
     .object({
       maxAgents: z.number().int().default(32),
@@ -239,3 +250,20 @@ export const ConfigSchema = z.object({
     })
 })
 export type Config = z.infer<typeof ConfigSchema>
+
+export type SessionRetention = Config['sessions']['retention']
+
+/** Retention keyword → sweep window in ms ('1month' = 30 days); null ⇒ retention
+ * is disabled and the sweep never deletes anything. */
+export function sessionRetentionMs(retention: SessionRetention): number | null {
+  switch (retention) {
+    case 'never':
+      return null
+    case '7d':
+      return 7 * 24 * 3_600_000
+    case '2weeks':
+      return 14 * 24 * 3_600_000
+    case '1month':
+      return 30 * 24 * 3_600_000
+  }
+}
