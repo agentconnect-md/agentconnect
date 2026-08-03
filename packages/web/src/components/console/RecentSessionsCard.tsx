@@ -159,9 +159,11 @@ export function RecentSessionsCard({
                       </span>
                     )}
                     {s.channel && (
-                      <span
-                        className={`flex min-w-0 flex-none items-center gap-[6px] ${showAgent ? 'ml-auto pl-1' : ''}`}
-                      >
+                      // Shrinkable on purpose (no `flex-none`): a long #channel or
+                      // schedule name has to give way and ellipsize inside the row
+                      // rather than run past it. `ml-auto` only spends space the row
+                      // actually has, so the right anchor costs the label nothing.
+                      <span className={`flex min-w-0 items-center gap-[6px] ${showAgent ? 'ml-auto pl-1' : ''}`}>
                         <span className="imark h-4 w-4 flex-none rounded-xs">
                           <PlatformMark platform={ch.platform} fillPct={90} />
                         </span>
