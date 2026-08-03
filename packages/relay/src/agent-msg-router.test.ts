@@ -407,8 +407,10 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(unknownChannel).toMatchObject({ delivered: false, reason: 'not_allowed' })
     expect(forwards).toHaveLength(1) // nothing forwarded for the IM coordinate
 
-    // …on every persisted IM platform, not just Slack.
-    for (const [i, platform] of ['telegram', 'discord', 'feishu'].entries()) {
+    // …on every chat-shaped platform: the persisted IM four, and (S1a §6.1) any id this
+    // build does not know — unknown ids are chat-shaped until the registry says otherwise,
+    // so they fail closed instead of slipping into the channel-free synthetic branch.
+    for (const [i, platform] of ['telegram', 'discord', 'feishu', 'teams-x'].entries()) {
       const ack = await route(
         D1,
         baseMsg({ deliveryId: `d-im-${i}`, coords: { platform: platform as 'telegram', channel: 'NOT_A_ROW' } })

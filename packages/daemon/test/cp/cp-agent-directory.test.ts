@@ -139,7 +139,11 @@ describe('CpCollabRoutes: org-scoped directory', () => {
       channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: [agent('a')] }],
       agents: [agent('a'), agent('b')]
     } as never)
-    for (const platform of ['slack', 'telegram', 'discord', 'feishu']) {
+    // S1a §6.1: unknown ids are chat-shaped until the registry says otherwise, so the
+    // fail-closed branch covers every id outside the session-identity set — including
+    // platforms this build has never heard of. The old enumerate-the-IM-platforms shape
+    // silently ADMITTED an unknown id into the synthetic branch.
+    for (const platform of ['slack', 'telegram', 'discord', 'feishu', 'teams-x', 'mattermost']) {
       expect(r.coordsDecision(ORG, platform, 'C_NEVER_SEEN', 'a')).toEqual({ verdict: 'reject' })
       expect(r.coordsDecision(ORG, platform, 'D0PPELGANGER', 'a')).toEqual({ verdict: 'reject' })
     }

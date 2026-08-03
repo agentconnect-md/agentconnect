@@ -10,6 +10,7 @@
  * assumed. Documented in the PR description.
  */
 import type { CollabRoutesSnapshot, CollabAgentPlacement, CollabOrgAgent } from '@agentconnect.md/protocol'
+import { isSessionIdentityPlatform } from '@agentconnect.md/protocol'
 
 export interface CollabResolved extends CollabAgentPlacement {
   orgId: string
@@ -29,16 +30,6 @@ export interface CollabResolved extends CollabAgentPlacement {
  * only rejects. Change one, change both.
  */
 export type CoordsVerdict = { verdict: 'reject' } | { verdict: 'asserted' } | { verdict: 'synthetic'; channel: string }
-
-/**
- * The platforms whose conversations are PERSISTED as `integration_channel` rows and
- * therefore appear in this snapshot — i.e. the protocol `Platform` enum minus the
- * session-identity members (`webchat`/`hook`/`dream`, which have no persisted row; see the
- * CP's `isSessionIdentityPlatform`). An UNKNOWN coordinate on one of these is evidence of a
- * problem, not of a channel-free session, so it fails closed ({@link
- * CpCollabRoutes.coordsDecision}).
- */
-const PERSISTED_IM_PLATFORMS: ReadonlySet<string> = new Set(['slack', 'telegram', 'discord', 'feishu'])
 
 /**
  * The coordinate a channel-free wake lands on: derived from the TRUSTED caller, never from
@@ -186,11 +177,15 @@ export class CpCollabRoutes {
    *     `im`/`mpim` row is an ordinary KNOWN coordinate with its owning integration's agent
    *     as a member.
    *
-   * (2) UNKNOWN on a PERSISTED IM platform ({@link PERSISTED_IM_PLATFORMS}) — `reject`,
-   *     FAIL CLOSED. An unrecorded IM coordinate is either a conversation the caller cannot
-   *     reach or a stale/departed row; admitting it is exactly what let a caller alias an
-   *     existing platform session. A brief snapshot lag can therefore transiently reject a
-   *     genuine wake — the correct direction for a security boundary, and the caller retries.
+   * (2) UNKNOWN on any CHAT-SHAPED platform — every id outside the enumerated
+   *     session-identity set (`isSessionIdentityPlatform`), including ids this build does
+   *     not know — `reject`, FAIL CLOSED. An unrecorded chat coordinate is either a
+   *     conversation the caller cannot reach or a stale/departed row; admitting it is
+   *     exactly what let a caller alias an existing platform session, and admitting an
+   *     UNKNOWN id would reopen that hole for every future platform (S1a §6.1 replaced the
+   *     old enumerate-the-IM-platforms shape, which silently admitted unknown ids). A brief
+   *     snapshot lag can therefore transiently reject a genuine wake — the correct
+   *     direction for a security boundary, and the caller retries.
    *     ACCEPTED RECALL LOSS (agent-collaboration §2.5 "what the fail-closed branch actually
    *     covers", §2.7 item 5): a direct-conversation row is only WRITTEN where something
    *     observed it — Slack's authoritative membership snapshot enumerates
@@ -201,11 +196,12 @@ export class CpCollabRoutes {
    *     wake asserting it is refused here. Deliberate, and not a regression: the
    *     `hasMembers(caller, target)` check this replaced refused the identical wake.
    *
-   * (3) UNKNOWN and channel-free (anything else: `webchat`, `dream`, a target-less `hook`
-   *     session's own platform, or an unrecognised value) — `synthetic`. NOT a reject: this
-   *     is the case the org-scoped directory exists for. Instead the asserted channel never
-   *     becomes the session coordinate at all; {@link a2aCoordChannel} derives it from the
-   *     trusted caller, which cannot alias any platform session.
+   * (3) UNKNOWN and channel-free (exactly the session-identity platforms: `webchat`,
+   *     `dream`, a target-less `hook` session's own platform) — `synthetic`. NOT a reject:
+   *     this is the case the org-scoped directory exists for. Instead the asserted channel
+   *     never becomes the session coordinate at all; {@link a2aCoordChannel} derives it
+   *     from the trusted caller, which cannot alias any platform session. An unrecognised
+   *     id does NOT land here — it is chat-shaped until the registry says otherwise (2).
    *
    * Branch (1) running FIRST and platform-free is what keeps (3) from being an escape hatch:
    * relabelling a real channel's coordinate as `webchat` still hits branch 1 and still
@@ -254,7 +250,12 @@ export class CpCollabRoutes {
       if (members.has(callerAgentId)) return { verdict: 'asserted' }
     }
     if (known) return { verdict: 'reject' }
-    if (PERSISTED_IM_PLATFORMS.has(platform)) return { verdict: 'reject' }
+    // Registry-driven fail-closed default (S1a, integration-plugin-architecture.md §6.1):
+    // only the enumerated channel-free session identities take the synthetic branch; ANY
+    // other id — the four IM platforms and every id this build does not know — is
+    // chat-shaped and an unrecorded coordinate on it is refused. The old shape enumerated
+    // the IM platforms instead and silently ADMITTED unknown ids.
+    if (!isSessionIdentityPlatform(platform)) return { verdict: 'reject' }
     return { verdict: 'synthetic', channel: a2aCoordChannel(callerAgentId) }
   }
 
