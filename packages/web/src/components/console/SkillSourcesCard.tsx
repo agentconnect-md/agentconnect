@@ -6,9 +6,10 @@
 // sources install via `npx skills`; managed bundles use the daemon's pinned
 // digest cache. Per-agent enablement for both lives on the agent detail view.
 //
-// A Git source is registered two ways: "Import from GitHub" takes a repository
-// you already know, and "Install from skills.sh" searches the public registry by
-// skill name (InstallRegistrySkillModal). Both end at the same POST — the second
+// A Git source is registered two ways, both behind the header's "Add" menu (same
+// shape as the MCP servers card): "Import from GitHub" takes a repository you
+// already know, and "Search skills.sh" searches the public registry by skill
+// name (InstallRegistrySkillModal). Both end at the same POST — the second
 // just fills the source string and skill filter from the hit you picked.
 //
 // A source records only WHERE skills come from (source string + optional ref /
@@ -32,7 +33,7 @@ import { ManagedSkillTile } from '@/components/console/ManagedSkillTile'
 import { InstallRegistrySkillModal } from '@/components/console/InstallRegistrySkillModal'
 import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { SkillMark, SkillSourceLine, ToolTile, ToolTileGrid } from '@/components/console/ToolTile'
-import { LoadingState } from '@/components/marks'
+import { GithubMark, LoadingState } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 
 /** Split a comma/whitespace-separated skill filter into a clean string[]. */
@@ -47,6 +48,7 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
   const { skillSources, skillSourcesLoading } = useConsoleData()
   const { activeOrg } = useOrgs()
   const { mutate: mutateSWR } = useSWRConfig()
+  const [menuOpen, setMenuOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const [editing, setEditing] = useState<SkillSourceDto | null>(null)
@@ -88,16 +90,58 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
             <Toggle checked={includeArchived} onChange={setIncludeArchived} />
           </label>
           {canWrite && (
-            <>
-              <Button variant="secondary" size="xs" onClick={() => setBrowsing(true)}>
-                <Icon name="search" size={14} />
-                Install from skills.sh
-              </Button>
-              <Button variant="secondary" size="xs" onClick={() => setCreating(true)}>
+            <span className="relative">
+              <Button variant="secondary" size="xs" onClick={() => setMenuOpen((v) => !v)}>
                 <Icon name="plus" size={14} />
-                Import from GitHub
+                Add
+                <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
               </Button>
-            </>
+              {menuOpen && (
+                <>
+                  <span className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 top-[calc(100%+5px)] z-40 min-w-[280px] rounded-lg border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                    <button
+                      onClick={() => {
+                        setMenuOpen(false)
+                        setBrowsing(true)
+                      }}
+                      className="flex w-full cursor-pointer items-start gap-[9px] rounded-[6px] border-0 bg-transparent p-[10px] text-left hover:bg-(--surface-hover)"
+                    >
+                      <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+                        <Icon name="search" size={16} color="var(--brand)" />
+                      </span>
+                      <span className="flex min-w-0 flex-col">
+                        <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                          Search skills.sh
+                        </span>
+                        <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
+                          Find a skill in the public registry by name
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setMenuOpen(false)
+                        setCreating(true)
+                      }}
+                      className="flex w-full cursor-pointer items-start gap-[9px] rounded-[6px] border-0 bg-transparent p-[10px] text-left hover:bg-(--surface-hover)"
+                    >
+                      <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+                        <GithubMark color="var(--brand)" />
+                      </span>
+                      <span className="flex min-w-0 flex-col">
+                        <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                          Import from GitHub
+                        </span>
+                        <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
+                          Register a repository you already know
+                        </span>
+                      </span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </span>
           )}
         </span>
       </div>
