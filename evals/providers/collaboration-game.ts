@@ -12,6 +12,7 @@
 import type { ApiProvider, CallApiContextParams, CallApiOptionsParams, ProviderResponse } from 'promptfoo'
 import { resolve, sep } from 'node:path'
 import { runSameRoomCounting } from '../games/engine.js'
+import type { CountingVariant } from '../games/counting.js'
 import type { GameSubjectSpec } from '../games/subject.js'
 import {
   environmentSecrets,
@@ -25,6 +26,9 @@ export interface GameCase {
   id: string
   game: 'counting'
   scenario: 'same-room'
+  /** What drives the waves: §10.1 referee announcements (default) or §3.3
+   *  peer-message relays with a silent referee. */
+  variant: CountingVariant
   seed: number
   target: number
   agentIds: string[]
@@ -41,6 +45,10 @@ export function parseGameCase(raw: unknown): GameCase {
   if (record.game !== 'counting') throw new Error(`unsupported game: ${String(record.game)}`)
   if ((record.scenario ?? 'same-room') !== 'same-room') {
     throw new Error(`unsupported counting scenario: ${String(record.scenario)}`)
+  }
+  const variant = record.variant ?? 'referee-announced'
+  if (variant !== 'referee-announced' && variant !== 'peer-driven') {
+    throw new Error(`unsupported counting variant: ${String(record.variant)}`)
   }
   const seed = record.seed ?? 42
   if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0)
@@ -70,6 +78,7 @@ export function parseGameCase(raw: unknown): GameCase {
     id: record.id,
     game: 'counting',
     scenario: 'same-room',
+    variant: variant as CountingVariant,
     seed,
     target,
     agentIds: agentIds as string[],
@@ -191,6 +200,7 @@ export default class CollaborationGameProvider implements ApiProvider {
         seed: gameCase.seed,
         target: gameCase.target,
         agents: gameCase.agentIds,
+        variant: gameCase.variant,
         artifactDir,
         subject,
         ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
@@ -200,6 +210,7 @@ export default class CollaborationGameProvider implements ApiProvider {
         caseId: gameCase.id,
         game: 'counting',
         scenario: gameCase.scenario,
+        variant: gameCase.variant,
         subjectKind: subject.kind,
         runId: result.runId,
         status: result.status,

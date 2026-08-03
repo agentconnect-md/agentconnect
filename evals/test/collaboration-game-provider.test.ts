@@ -174,12 +174,33 @@ describe('collaboration game Promptfoo provider (§12)', () => {
     expect(badScenario.error).toContain('unsupported counting scenario')
   })
 
+  it('passes the counting variant through to the engine and rejects unknown variants', async () => {
+    const runGame = vi.fn(async (_options: Parameters<typeof runSameRoomCounting>[0]) => fakeResult())
+    const provider = new CollaborationGameProvider({ config: { artifactRoot: scratch() } }, { runGame })
+    const peer = await provider.callApi(
+      JSON.stringify({ kind: 'game', id: 'peer', game: 'counting', variant: 'peer-driven', target: 5 })
+    )
+    expect(peer.error).toBeUndefined()
+    expect(runGame.mock.calls[0]![0]).toMatchObject({ variant: 'peer-driven', target: 5 })
+    expect(peer.metadata).toMatchObject({ variant: 'peer-driven' })
+    runGame.mockClear()
+    const fallback = await provider.callApi(JSON.stringify({ kind: 'game', id: 'default', game: 'counting' }))
+    expect(fallback.error).toBeUndefined()
+    expect(runGame.mock.calls[0]![0]).toMatchObject({ variant: 'referee-announced' })
+    const bad = await provider.callApi(
+      JSON.stringify({ kind: 'game', id: 'bad', game: 'counting', variant: 'referee-silent' })
+    )
+    expect(bad.metadata).toMatchObject({ status: 'invalid_case' })
+    expect(bad.error).toContain('unsupported counting variant')
+  })
+
   it('parses defaults per the §12 case shape', () => {
     expect(parseGameCase({ kind: 'game', id: 'defaults', game: 'counting' })).toEqual({
       kind: 'game',
       id: 'defaults',
       game: 'counting',
       scenario: 'same-room',
+      variant: 'referee-announced',
       seed: 42,
       target: 12,
       agentIds: ['agent-a', 'agent-b', 'agent-c', 'agent-d']
