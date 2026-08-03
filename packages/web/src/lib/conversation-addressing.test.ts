@@ -5,24 +5,14 @@ const roster = [{ agentId: 'a-primary', primary: true }, { agentId: 'b-peer' }]
 
 describe('wireMentions', () => {
   it('passes typed mentions through untouched', () => {
-    expect(wireMentions(roster, ['b-peer'], 'a-primary')).toEqual(['b-peer'])
+    expect(wireMentions(roster, ['b-peer'])).toEqual(['b-peer'])
   })
 
-  it('carries the primary participant on a bare multi-agent send', () => {
-    expect(wireMentions(roster, [], 'b-peer')).toEqual(['a-primary'])
-  })
-
-  it('falls back to the composer agent when no participant is flagged primary', () => {
-    const unflagged = [{ agentId: 'a' }, { agentId: 'b' }]
-    expect(wireMentions(unflagged, [], 'b')).toEqual(['b'])
-  })
-
-  it('sends no auto-mention when the fallback is not a participant', () => {
-    const unflagged = [{ agentId: 'a' }, { agentId: 'b' }]
-    expect(wireMentions(unflagged, [], 'stranger')).toEqual([])
+  it('materializes the standing mention as the whole roster on a bare multi-agent send', () => {
+    expect(wireMentions(roster, [])).toEqual(['a-primary', 'b-peer'])
   })
 
   it('stays empty for single-agent conversations', () => {
-    expect(wireMentions([{ agentId: 'solo', primary: true }], [], 'solo')).toEqual([])
+    expect(wireMentions([{ agentId: 'solo' }], [])).toEqual([])
   })
 })

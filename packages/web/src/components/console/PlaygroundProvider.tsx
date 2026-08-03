@@ -962,10 +962,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               .map((p) => p.agentId)
           : []
       const targets = roster.length > 1 ? (mentions.length ? mentions : roster.map((p) => p.agentId)) : [agentForId]
-      // A bare multi-agent send still carries the PRIMARY participant as a structured
-      // mention (the standing addressee — see wireMentions); `targets` is deliberately
-      // NOT narrowed, so the rest of the roster activates exactly as before.
-      const sentMentions = wireMentions(roster, mentions, agentForId)
+      // Membership is a standing mention — a bare multi-agent send materializes it as
+      // the whole roster in structured `mentions` (see wireMentions), the same wire
+      // shape an explicit @-everyone message produces. Delivery is unchanged: targets
+      // already covered the roster.
+      const sentMentions = wireMentions(roster, mentions)
       pendingTurnIds.current.set(id, requestedTurnId)
       finishedTurnLanes.current.delete(id)
       for (const target of targets) {
