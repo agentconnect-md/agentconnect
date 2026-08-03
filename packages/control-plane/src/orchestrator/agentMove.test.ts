@@ -323,6 +323,20 @@ describe('AgentMoveService', () => {
     expect(t.activations[0]?.reconcileWorkspace).toBe(true)
   })
 
+  it('persists a worktree-only workspace edit', async () => {
+    const shared = { ...GITHUB_WORKSPACE, isolation: 'shared' as const }
+    const session = { ...GITHUB_WORKSPACE, isolation: 'session' as const }
+    const t = make({ workspace: shared })
+
+    const edited = await t.service.setWorkspace(t.current(), session, WORKSPACE_REPO_ID)
+
+    expect(edited.workspace).toEqual(session)
+    expect(t.detaches).toHaveLength(1)
+    expect(t.activations).toHaveLength(1)
+    expect(t.activations[0]?.spec.workspace).toMatchObject({ isolation: 'session' })
+    expect(t.activations[0]?.reconcileWorkspace).toBe(true)
+  })
+
   it('allows a GitHub workspace to switch back to scratch', async () => {
     const t = make({ workspace: GITHUB_WORKSPACE })
 
