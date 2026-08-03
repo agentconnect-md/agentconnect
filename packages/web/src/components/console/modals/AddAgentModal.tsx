@@ -1320,29 +1320,31 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     }}
                   />
 
-                  <WorkspaceBranchField
-                    repositorySelected={!!ghRepo}
-                    value={branch}
-                    branches={ghBranches}
-                    defaultBranch={picked?.defaultBranch}
-                    open={ghBranchOpen}
-                    query={ghQ}
-                    onToggle={() => {
-                      setGhQ('')
-                      setGhRepoOpen(false)
-                      setGhAccessOpen(false)
-                      setGhBranchOpen((value) => !value)
-                    }}
-                    onClose={() => setGhBranchOpen(false)}
-                    onQueryChange={setGhQ}
-                    onChange={(value) => {
-                      setBranch(value)
-                      if (ghBranchOpen) setGhBranchOpen(false)
-                    }}
-                  />
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                    <WorkspaceBranchField
+                      repositorySelected={!!ghRepo}
+                      value={branch}
+                      branches={ghBranches}
+                      defaultBranch={picked?.defaultBranch}
+                      open={ghBranchOpen}
+                      query={ghQ}
+                      onToggle={() => {
+                        setGhQ('')
+                        setGhRepoOpen(false)
+                        setGhAccessOpen(false)
+                        setGhBranchOpen((value) => !value)
+                      }}
+                      onClose={() => setGhBranchOpen(false)}
+                      onQueryChange={setGhQ}
+                      onChange={(value) => {
+                        setBranch(value)
+                        if (ghBranchOpen) setGhBranchOpen(false)
+                      }}
+                    />
 
-                  <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                  <WorktreeField checked={worktree} onChange={setWorktree} />
+                    <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                  </div>
                 </div>
               )}
 
@@ -1364,19 +1366,21 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       </span>
                     </div>
                   </div>
-                  <WorkspaceBranchField
-                    repositorySelected
-                    value={branch}
-                    branches={null}
-                    open={false}
-                    query=""
-                    onToggle={() => undefined}
-                    onClose={() => undefined}
-                    onQueryChange={() => undefined}
-                    onChange={setBranch}
-                  />
-                  <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                  <WorktreeField checked={worktree} onChange={setWorktree} />
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                    <WorkspaceBranchField
+                      repositorySelected
+                      value={branch}
+                      branches={null}
+                      open={false}
+                      query=""
+                      onToggle={() => undefined}
+                      onClose={() => undefined}
+                      onQueryChange={() => undefined}
+                      onChange={setBranch}
+                    />
+                    <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                  </div>
                 </>
               )}
             </div>

@@ -459,37 +459,39 @@ export default function EditWorkspaceModal({
                   }}
                 />
 
-                <WorkspaceBranchField
-                  repositorySelected={!!pick}
-                  value={branch}
-                  branches={branches}
-                  defaultBranch={picked?.defaultBranch}
-                  open={branchOpen}
-                  query={branchQ}
-                  onToggle={() => {
-                    setBranchQ('')
-                    setPickOpen(false)
-                    setAccessOpen(false)
-                    setBranchOpen((value) => !value)
-                  }}
-                  onClose={() => setBranchOpen(false)}
-                  onQueryChange={setBranchQ}
-                  onChange={(value) => {
-                    setBranch(value)
-                    if (branchOpen) setBranchOpen(false)
-                    setErr(null)
-                  }}
-                />
+                <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                  <WorkspaceBranchField
+                    repositorySelected={!!pick}
+                    value={branch}
+                    branches={branches}
+                    defaultBranch={picked?.defaultBranch}
+                    open={branchOpen}
+                    query={branchQ}
+                    onToggle={() => {
+                      setBranchQ('')
+                      setPickOpen(false)
+                      setAccessOpen(false)
+                      setBranchOpen((value) => !value)
+                    }}
+                    onClose={() => setBranchOpen(false)}
+                    onQueryChange={setBranchQ}
+                    onChange={(value) => {
+                      setBranch(value)
+                      if (branchOpen) setBranchOpen(false)
+                      setErr(null)
+                    }}
+                  />
 
-                <WorkingSubdirectoryField
-                  value={agentDir}
-                  error={agentDirError}
-                  onChange={(value) => {
-                    setAgentDir(value)
-                    setErr(null)
-                  }}
-                />
-                <WorktreeField checked={worktree} onChange={setWorktree} />
+                  <WorkingSubdirectoryField
+                    value={agentDir}
+                    error={agentDirError}
+                    onChange={(value) => {
+                      setAgentDir(value)
+                      setErr(null)
+                    }}
+                  />
+                  <WorktreeField checked={worktree} onChange={setWorktree} />
+                </div>
 
                 {uncovered && (
                   <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
