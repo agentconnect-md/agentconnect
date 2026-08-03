@@ -16,10 +16,11 @@
 // pathological entry count cannot be fully materialized, and the result is
 // bounded well under the control-frame size limit.
 
-import { constants, promises as fsp } from 'node:fs'
+import { promises as fsp, type Stats } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { readSkillLedger, skillLedgerLocation } from './skill-install-ledger.js'
+import { readBoundedFile } from './skill-source-snapshot.js'
 
 export type LocalSkillOrigin = 'dream-accepted' | 'managed' | 'git-source' | 'repo'
 
@@ -44,6 +45,10 @@ const MAX_MANIFEST_BYTES = 64 * 1024
 const MAX_DESCRIPTION_CHARS = 256
 const MAX_SKILLS = 256
 const MAX_TOTAL_BYTES = 200 * 1024
+// Cap the entries INSPECTED (not just accepted): a hostile checkout can fill a
+// skill root with decoy files/dirs that never yield a skill, so the loop must
+// stop scanning even when it never reaches MAX_SKILLS.
+const MAX_SCANNED_ENTRIES = 4096
 
 export function originForSourceKey(sourceKey: string): LocalSkillOrigin {
   if (sourceKey.startsWith('dream:')) return 'dream-accepted'
@@ -56,22 +61,33 @@ function isWithin(root: string, child: string): boolean {
   return child === root || child.startsWith(root + sep)
 }
 
-/** Read at most `MAX_MANIFEST_BYTES` of a SKILL.md WITHOUT following a final
- *  symlink (O_NOFOLLOW): a repo-controlled `SKILL.md → /etc/...` link must not
- *  be read. Undefined when it cannot be read (missing/symlink ⇒ not a skill). */
-async function readManifestHead(file: string): Promise<string | undefined> {
-  let handle
+/**
+ * Read a skill directory's SKILL.md metadata head from an untrusted, possibly
+ * racing workspace. Returns undefined when the directory is not a skill or is
+ * unsafe to read. Defends against:
+ *  - a symlinked skill dir escaping to another (same-UID) workspace — the dir is
+ *    realpath-confined to `cwdReal`;
+ *  - a symlinked / hard-linked / swapped SKILL.md — `readBoundedFile` opens
+ *    O_NOFOLLOW and validates the file's identity before/opened/after the read;
+ *  - a parent-directory swap between the containment check and the file open —
+ *    the skill dir's inode is captured before and re-checked after, discarding
+ *    the read if it changed.
+ */
+async function readSkillManifest(cwdReal: string, skillDir: string): Promise<string | undefined> {
+  let dirBefore: Stats
   try {
-    handle = await fsp.open(file, constants.O_RDONLY | constants.O_NOFOLLOW)
+    dirBefore = await fsp.lstat(skillDir)
+    if (!dirBefore.isDirectory()) return undefined // symlinked/other entry
+    if (!isWithin(cwdReal, await fsp.realpath(skillDir))) return undefined // escapes the workspace
+    const manifestPath = join(skillDir, 'SKILL.md')
+    const fileBefore = await fsp.lstat(manifestPath)
+    const body = await readBoundedFile(manifestPath, fileBefore, MAX_MANIFEST_BYTES)
+    const dirAfter = await fsp.lstat(skillDir)
+    // Reject a directory swapped underneath us during the read.
+    if (dirBefore.dev !== dirAfter.dev || dirBefore.ino !== dirAfter.ino) return undefined
+    return body.toString('utf8')
   } catch {
-    return undefined
-  }
-  try {
-    const buffer = Buffer.alloc(MAX_MANIFEST_BYTES)
-    const { bytesRead } = await handle.read(buffer, 0, MAX_MANIFEST_BYTES, 0)
-    return buffer.subarray(0, bytesRead).toString('utf8')
-  } finally {
-    await handle.close().catch(() => undefined)
+    return undefined // missing SKILL.md, unsafe link, or a detected race
   }
 }
 
@@ -123,33 +139,25 @@ export async function listLocalSkills(cwd: string, stateDir: string): Promise<Lo
 
   const entries: LocalSkillEntry[] = []
   let totalBytes = 0
+  let scanned = 0
   for (const root of SKILL_ROOTS) {
     let dir
     try {
       // Stream the directory (opendir) rather than readdir: a root with a huge
-      // number of entries must not be fully materialized before the cap applies.
+      // number of entries must not be fully materialized before the caps apply.
       dir = await fsp.opendir(join(cwdReal, root))
     } catch {
       continue // root absent (unmaterialized workspace or runtime doesn't use it)
     }
     try {
       for await (const dirent of dir) {
-        if (entries.length >= MAX_SKILLS) return finalize(entries)
+        if (entries.length >= MAX_SKILLS || scanned >= MAX_SCANNED_ENTRIES) return finalize(entries)
+        scanned += 1
         // A symlink entry has isDirectory()===false here (dirent reflects the
         // link, not its target), so this also drops symlinked skill dirs.
         if (!dirent.isDirectory()) continue
-        const skillDir = join(cwdReal, root, dirent.name)
-        // Confine to the workspace: a symlinked root/dir escaping to another
-        // (same-UID) workspace resolves outside cwd and is dropped.
-        let real: string
-        try {
-          real = await fsp.realpath(skillDir)
-        } catch {
-          continue
-        }
-        if (!isWithin(cwdReal, real)) continue
-        const text = await readManifestHead(join(skillDir, 'SKILL.md'))
-        if (text === undefined) continue // no readable SKILL.md ⇒ not a skill directory
+        const text = await readSkillManifest(cwdReal, join(cwdReal, root, dirent.name))
+        if (text === undefined) continue // no readable SKILL.md / unsafe ⇒ not a skill
         const manifest = parseManifest(text)
         const relPath = `${root}/${dirent.name}`
         const entry: LocalSkillEntry = {
