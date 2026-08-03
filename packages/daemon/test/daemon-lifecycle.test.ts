@@ -596,6 +596,46 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('§6.8: a telegram DM anchored fire keys `dm` and classifies as a DM session', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const postMessage = vi.fn(async () => '888')
+    const getChannelInfo = vi.fn(async () => ({ isIm: true }))
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).tgConnByIntegration.set('int-a', {
+      postMessage,
+      getChannelInfo,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-dm:trace-1'),
+        msgId: 'cron:cron-dm:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'telegram',
+        channel: '42',
+        isDm: false
+      },
+      { channel: '42', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-dm"'
+    )
+
+    expect(getChannelInfo).toHaveBeenCalledWith('42')
+    // A Telegram DM is ONE continuous conversation keyed `dm` — the anchor must
+    // join it, not open a `tg:<messageId>` session no inbound reply resolves to.
+    const key = sessionKey('telegram', '42', 'dm', 'bot-a', TRANSPORT_SCOPE)
+    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    await daemon.stop()
+  }, 15_000)
+
   it('reports a cron session before its turn finishes', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })

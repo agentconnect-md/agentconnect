@@ -17540,6 +17540,20 @@ export class Daemon {
         this.log.warn(`${label}: agent "${agentId}" has no live platform connection — running without output`)
       } else {
         try {
+          // §6.8: DIRECT-conversation targets must canonicalize as DMs — a Telegram DM
+          // keys `dm` (not `tg:<id>`), Feishu DMs key the chat id, and the fire must be
+          // classified as a DM session. Probe the target connection where DM-ness
+          // changes the key (mirrors the root-post path in mcp/ops.ts); other
+          // platforms' keys are DM-insensitive.
+          const isDmTarget =
+            msg.platform === 'telegram' || msg.platform === 'feishu'
+              ? ((
+                  await (conn as { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> })
+                    .getChannelInfo?.(target.channel)
+                    .catch(() => undefined)
+                )?.isIm ?? false)
+              : false
+          if (isDmTarget) msg = { ...msg, isDm: true }
           let ts: string | undefined
           if (msg.platform === 'slack') {
             const agent = this.agents.get(agentId)
@@ -17561,7 +17575,7 @@ export class Daemon {
           // (threadKeyForPost — Slack threads off the ts, Telegram replies resolve
           // to `tg:<root>`, Discord conversations ARE the channel), or the anchored
           // session and the replies underneath it mint different keys.
-          if (ts) msg = { ...msg, thread: threadKeyForPost(msg.platform, msg.channel, ts), transcriptTs: ts }
+          if (ts) msg = { ...msg, thread: threadKeyForPost(msg.platform, msg.channel, ts, msg.isDm), transcriptTs: ts }
         } catch (err) {
           this.log.warn(
             `${label}: failed to post trigger to ${target.channel} (${formatErr(err)}) — running without anchor`
