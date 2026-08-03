@@ -1041,6 +1041,8 @@ export default function SessionDetailView() {
     setPgInput: setPgInputById,
     setPgImage,
     pgSend,
+    getPgQueue,
+    pgCancelQueued,
     pgAddAgent,
     pgSetModel,
     pgSetEffort,
@@ -1930,6 +1932,7 @@ export default function SessionDetailView() {
   const pgBusy = sessionBusy
   const pgInput = getPgInput(session.id)
   const pgImage = getPgImage(session.id)
+  const pgQueue = getPgQueue(session.id)
   const setPgInput = (v: string) => setPgInputById(session.id, v)
   const agentHref = session.agentId ? `/agents/${session.agentId}` : null
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
@@ -3015,6 +3018,36 @@ export default function SessionDetailView() {
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
                 />
+                {/* Queued messages (Claude Code-style): sends accepted while a turn was
+                  still streaming wait here, dispatch in order as turns finish, and can
+                  be cancelled individually before they go out. */}
+                {pgQueue.length > 0 && (
+                  <div className="mb-2 flex flex-col gap-1">
+                    {pgQueue.map((q) => (
+                      <div
+                        key={q.queueId}
+                        className="flex items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
+                      >
+                        <Icon name="clock" size={13} color="var(--text-tertiary)" />
+                        <span
+                          className="min-w-0 flex-1 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
+                          title={q.text}
+                        >
+                          {q.text || q.image?.name || 'Image'}
+                        </span>
+                        <button
+                          type="button"
+                          className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                          aria-label="Cancel queued message"
+                          title="Cancel queued message"
+                          onClick={() => pgCancelQueued(session.id, q.queueId)}
+                        >
+                          <Icon name="x" size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {/* Composer card (design "achero"): textarea on top, a toolbar row below
                   the divider — attach · model pill (fast toggle in its menu) · effort ·
                   permission · context ring · send. Tokens/cost live in the header's

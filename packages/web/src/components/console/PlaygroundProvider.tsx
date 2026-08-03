@@ -67,10 +67,12 @@ interface PlaygroundData {
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.
    *  Failures surface as a ⚠️ transcript step. Refused while a turn streams. */
   pgAddAgent: (id: string, agent: Agent) => Promise<void>
-  /** Returns whether the send was ACCEPTED — false when there is nothing to send
-   *  or a turn is already streaming. Callers that move the viewport on send (the
-   *  session view pins the transcript to the bottom) must not act on a rejected
-   *  one, and this keeps that condition in a single place. */
+  /** Returns whether the send was ACCEPTED — false only when there is nothing to
+   *  send. A send while a turn is still streaming is accepted too: it QUEUES
+   *  (Claude Code-style) and dispatches in order as turns finish. Callers that
+   *  move the viewport on send (the session view pins the transcript to the
+   *  bottom) must not act on a rejected one, and this keeps that condition in a
+   *  single place. */
   pgSend: (
     id: string,
     agentId: string,
@@ -78,6 +80,10 @@ interface PlaygroundData {
     conversationId?: string,
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   ) => boolean
+  /** Messages queued while a turn streams, oldest first. */
+  getPgQueue: (id: string) => QueuedTurn[]
+  /** Remove one queued message before it is sent. */
+  pgCancelQueued: (id: string, queueId: string) => void
   /** Switch the session's model (in-session, sticky). */
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
   /** Switch the session's reasoning effort (in-session, sticky). */
@@ -104,10 +110,22 @@ interface PlaygroundData {
   reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string) => void
 }
 
+/** One message waiting behind the in-flight turn. Send args are captured at
+ *  enqueue time so the auto-dispatch needs nothing from the view. */
+export interface QueuedTurn {
+  queueId: string
+  text: string
+  image?: SessionImage
+  agentId: string
+  conversationId?: string
+  participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+}
+
 // Synthetic playground session ids start with `pg_`; real CP session ids do not.
 // The prefix lets the provider tell the two apart without extra bookkeeping.
 const PG_PREFIX = 'pg_'
 const NO_STEPS: SessionStep[] = []
+const NO_QUEUE: QueuedTurn[] = []
 const WEBCHAT_RECONNECT_BASE_MS = 500
 const WEBCHAT_RECONNECT_MAX_MS = 4_000
 const WEBCHAT_RECONNECT_MAX_ATTEMPTS = 6
@@ -226,6 +244,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const [pgInputBy, setPgInputBy] = useState<Record<string, string>>({})
   const [pgImageBy, setPgImageBy] = useState<Record<string, SessionImage>>({})
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
+  // Messages sent while a turn was still streaming, oldest first per session id.
+  const [pgQueueBy, setPgQueueBy] = useState<Record<string, QueuedTurn[]>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
   // Creation-time roster per session id (primary first) — drives the
@@ -969,20 +989,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [activeOrg, pgSessions, connect, pushStep]
   )
 
-  const pgSend = useCallback(
+  /** Put one turn on the wire NOW. The composer read / busy check / queueing live
+   *  in pgSend; the queue dispatcher calls this directly with the captured args. */
+  const sendTurn = useCallback(
     (
       id: string,
       agentForId: string,
-      textArg?: string,
+      text: string,
+      image: SessionImage | undefined,
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
-    ) => {
-      const text = String(textArg ?? pgInputBy[id] ?? '').trim()
-      const image = pgImageBy[id]
-      if ((!text && !image) || pgBusyBy[id]) return false
+    ): void => {
       pushStep(id, { kind: 'msg', who: '@you', text, ...(image ? { image } : {}) })
-      setPgInput(id, '')
-      setPgImage(id)
       setBusy(id, true)
       const requestedTurnId = crypto.randomUUID()
       // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
@@ -1071,10 +1089,69 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           dropLanes(id)
           setBusy(id, false)
         })
+    },
+    [pgSessions, connect, pushStep, setBusy, refreshSessions]
+  )
+
+  const pgSend = useCallback(
+    (
+      id: string,
+      agentForId: string,
+      textArg?: string,
+      conversationId?: string,
+      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
+    ) => {
+      const text = String(textArg ?? pgInputBy[id] ?? '').trim()
+      const image = pgImageBy[id]
+      if (!text && !image) return false
+      setPgInput(id, '')
+      setPgImage(id)
+      if (busyRef.current[id]) {
+        // A turn is streaming: queue instead of rejecting (Claude Code-style).
+        // The dispatcher effect sends it once the in-flight turn finishes.
+        setPgQueueBy((cur) => ({
+          ...cur,
+          [id]: [
+            ...(cur[id] ?? NO_QUEUE),
+            {
+              queueId: crypto.randomUUID(),
+              text,
+              ...(image ? { image } : {}),
+              agentId: agentForId,
+              ...(conversationId ? { conversationId } : {}),
+              ...(knownParticipants ? { participants: knownParticipants } : {})
+            }
+          ]
+        }))
+        return true
+      }
+      sendTurn(id, agentForId, text, image, conversationId, knownParticipants)
       return true
     },
-    [pgBusyBy, pgImageBy, pgInputBy, pgSessions, connect, pushStep, setPgImage, setPgInput, setBusy, refreshSessions]
+    [pgImageBy, pgInputBy, sendTurn, setPgImage, setPgInput]
   )
+
+  // Dispatch the oldest queued message the moment its session's turn ends. The
+  // dispatched-set makes the effect idempotent (StrictMode runs effects twice).
+  const dispatchedQueueIds = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const [id, queue] of Object.entries(pgQueueBy)) {
+      const next = queue[0]
+      if (!next || busyRef.current[id] || dispatchedQueueIds.current.has(next.queueId)) continue
+      dispatchedQueueIds.current.add(next.queueId)
+      setPgQueueBy((cur) => ({ ...cur, [id]: (cur[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId) }))
+      sendTurn(id, next.agentId, next.text, next.image, next.conversationId, next.participants)
+    }
+  }, [pgQueueBy, pgBusyBy, sendTurn])
+
+  const getPgQueue = useCallback((id: string) => pgQueueBy[id] ?? NO_QUEUE, [pgQueueBy])
+  const pgCancelQueued = useCallback((id: string, queueId: string): void => {
+    setPgQueueBy((cur) => {
+      const queue = cur[id]
+      if (!queue?.some((q) => q.queueId === queueId)) return cur
+      return { ...cur, [id]: queue.filter((q) => q.queueId !== queueId) }
+    })
+  }, [])
 
   /** Switch the session's model (fire-and-forget over the conversation socket). Updates
    *  the local model optimistically so the dropdown reflects the choice at once; the
@@ -1177,6 +1254,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      getPgQueue,
+      pgCancelQueued,
       pgSetModel,
       pgSetEffort,
       pgSetPermissionPreset,
@@ -1199,6 +1278,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      getPgQueue,
+      pgCancelQueued,
       pgSetModel,
       pgSetEffort,
       pgSetPermissionPreset,
