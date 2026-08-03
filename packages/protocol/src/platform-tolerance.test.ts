@@ -283,6 +283,28 @@ describe('§6.7 rc/bot-assign opaque secrets + ingress', () => {
     }
   })
 
+  it('preserves EXTRA credential keys when a bag also satisfies a typed prefix', () => {
+    // zod object branches strip unknown keys by default; the typed variants carry
+    // a catchall so the platform module receives everything that was on the wire.
+    const r = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: BOT_ID,
+        platform: 'slack',
+        secrets: { botToken: 'xoxb-x', signingSecret: 'sig', clientSecret: 'extra-for-new-module' },
+        members: [],
+        routes: []
+      })
+    )
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rc/bot-assign') {
+      expect(r.frame.payload.secrets).toEqual({
+        botToken: 'xoxb-x',
+        signingSecret: 'sig',
+        clientSecret: 'extra-for-new-module'
+      })
+    }
+  })
+
   it('keeps validating the typed Slack/Feishu secret shapes', () => {
     const bad = decodeRelayCpFrame(
       envelope('rc/bot-assign', {

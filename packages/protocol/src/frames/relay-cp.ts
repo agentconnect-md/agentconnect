@@ -528,17 +528,25 @@ export type AttributedRoute = z.infer<typeof AttributedRoute>
 // sends only callback verification material: its app secret and all provider API
 // egress stay on the daemon. Secret — NEVER log this frame.
 export const RcBotSecrets = z.union([
-  z.object({
-    botToken: z.string(),
-    signingSecret: z.string()
-  }),
-  z.object({
-    verificationToken: z.string(),
-    encryptKey: z.string().optional()
-  }),
-  // §6.7 open reader: a platform this build predates ships an opaque secret bag; the
-  // relay's platform module (S3) validates its shape. The two typed variants above
-  // stay first so today's platforms keep full validation during the window.
+  // The typed variants keep full validation for today's platforms AND pass unknown
+  // keys through (`catchall`): a bag that satisfies a typed prefix may still carry
+  // additional credential fields a newer platform module needs — stripping them
+  // here would hand the §6.7 platform-module boundary less than what was on the
+  // wire. Ordered first so validation still applies during the window.
+  z
+    .object({
+      botToken: z.string(),
+      signingSecret: z.string()
+    })
+    .catchall(z.unknown()),
+  z
+    .object({
+      verificationToken: z.string(),
+      encryptKey: z.string().optional()
+    })
+    .catchall(z.unknown()),
+  // §6.7 open reader: a platform this build predates ships an opaque secret bag;
+  // the relay's platform module (S3) validates its shape.
   z.record(z.string(), z.unknown())
 ])
 export type RcBotSecrets = z.infer<typeof RcBotSecrets>

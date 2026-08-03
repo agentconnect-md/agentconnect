@@ -14,7 +14,7 @@
  * Pure data + a pure `arbitrate()` — no I/O, no Slack, no sockets — so it unit
  * tests without a live ingest.
  */
-import type { AttributedRoute, RcAgentDirEntry, WireNormalizedMessage } from '@agentconnect.md/protocol'
+import type { AttributedRoute, RcAgentDirEntry, RcBotAssign, WireNormalizedMessage } from '@agentconnect.md/protocol'
 
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
 export interface BotAssignment {
@@ -457,5 +457,42 @@ export class BotArbitrationRouter {
   /** Every currently-assigned bot (ingest lifecycle reconciliation). */
   all(): BotAssignment[] {
     return [...this.bots.values()]
+  }
+}
+
+/** Map the CP's `rc/bot-assign` frame to the manager's {@link BotAssignment}
+ *  (drop absent optionals so the strict-optional shape holds). Returns null for a
+ *  secret bag neither typed shape matches (§6.7 open reader: a platform this build
+ *  predates) — the caller logs and skips; the assign handler would refuse the
+ *  platform anyway, this just refuses it before touching credentials. */
+export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
+  const secrets =
+    'botToken' in a.secrets && typeof a.secrets.botToken === 'string' && typeof a.secrets.signingSecret === 'string'
+      ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
+      : 'verificationToken' in a.secrets && typeof a.secrets.verificationToken === 'string'
+        ? {
+            verificationToken: a.secrets.verificationToken,
+            ...(typeof a.secrets.encryptKey === 'string' ? { encryptKey: a.secrets.encryptKey } : {})
+          }
+        : null
+  if (!secrets) return null
+  return {
+    botId: a.botId,
+    platform: a.platform,
+    secrets,
+    ...(a.apiAppId ? { apiAppId: a.apiAppId } : {}),
+    ...(a.teamId ? { teamId: a.teamId } : {}),
+    ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
+    ...(a.botUserId ? { botUserId: a.botUserId } : {}),
+    members: a.members,
+    agents: mapAgentDirectory(a.agents),
+    routes: a.routes,
+    ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
+    ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
+    gatedAgentIds: a.gatedAgentIds,
+    mutedChannels: a.mutedChannels,
+    gatedOffChannels: a.gatedOffChannels,
+    noticedDmConversations: a.noticedDmConversations,
+    ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})
   }
 }
