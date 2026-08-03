@@ -528,14 +528,26 @@ export type AttributedRoute = z.infer<typeof AttributedRoute>
 // sends only callback verification material: its app secret and all provider API
 // egress stay on the daemon. Secret — NEVER log this frame.
 export const RcBotSecrets = z.union([
-  z.object({
-    botToken: z.string(),
-    signingSecret: z.string()
-  }),
-  z.object({
-    verificationToken: z.string(),
-    encryptKey: z.string().optional()
-  })
+  // The typed variants keep full validation for today's platforms AND pass unknown
+  // keys through (`catchall`): a bag that satisfies a typed prefix may still carry
+  // additional credential fields a newer platform module needs — stripping them
+  // here would hand the §6.7 platform-module boundary less than what was on the
+  // wire. Ordered first so validation still applies during the window.
+  z
+    .object({
+      botToken: z.string(),
+      signingSecret: z.string()
+    })
+    .catchall(z.unknown()),
+  z
+    .object({
+      verificationToken: z.string(),
+      encryptKey: z.string().optional()
+    })
+    .catchall(z.unknown()),
+  // §6.7 open reader: a platform this build predates ships an opaque secret bag;
+  // the relay's platform module (S3) validates its shape.
+  z.record(z.string(), z.unknown())
 ])
 export type RcBotSecrets = z.infer<typeof RcBotSecrets>
 
@@ -588,6 +600,11 @@ export const RcBotAssign = z.object({
   // ⇒ the CP applies revocations without the revision arm of the fence.
   credentialRevision: z.number().int().nonnegative().optional(),
   secrets: RcBotSecrets,
+  // §6.7 opaque INGRESS bag, dual-emitted beside the named demux fields above
+  // (apiAppId/teamId/botUserId). Shape validation belongs to the platform module
+  // on both ends (S3); the relay ignores it during the dual-shape window and the
+  // named fields stop being emitted once the fleet reads the bag.
+  ingress: z.unknown().optional(),
   members: z.array(z.object({ daemonId: z.string().uuid(), agentIds: z.array(z.string().uuid()) })),
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
   routes: z.array(AttributedRoute),

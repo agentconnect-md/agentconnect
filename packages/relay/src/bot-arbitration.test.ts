@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { BotArbitrationRouter, arbitrate, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
+import {
+  BotArbitrationRouter,
+  arbitrate,
+  type BotAssignment,
+  type RouteTarget,
+  toBotAssignment
+} from './bot-arbitration.js'
 import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 
 const D1 = 'd1'
@@ -285,5 +291,41 @@ describe('BotArbitrationRouter — table + live affinity', () => {
     stale.members = stale.members.filter((member) => member.daemonId !== D1)
     r.upsert(stale)
     expect(r.targetForAgent('bot-1', ALICE, 'iA')).toBeUndefined()
+  })
+})
+
+describe('toBotAssignment (§6.7 open secrets reader)', () => {
+  const base = {
+    botId: '00000000-0000-0000-0000-0000000000b1',
+    platform: 'slack',
+    members: [],
+    agents: [],
+    routes: [],
+    gatedAgentIds: [],
+    mutedChannels: [],
+    gatedOffChannels: [],
+    noticedDmConversations: []
+  }
+
+  it('maps the typed shapes and PRESERVES extra credential keys for the platform module', () => {
+    // catchall on the typed variants: a bag satisfying the Slack prefix may still
+    // carry fields a newer platform module needs; the mapper keeps the typed pair
+    // and the assignment handler forwards the full wire frame when S3 lands.
+    const a = toBotAssignment({
+      ...base,
+      secrets: { botToken: 'xoxb-x', signingSecret: 'sig' }
+    } as never)
+    expect(a?.secrets).toEqual({ botToken: 'xoxb-x', signingSecret: 'sig' })
+    const f = toBotAssignment({
+      ...base,
+      platform: 'feishu',
+      secrets: { verificationToken: 'v', encryptKey: 'k' }
+    } as never)
+    expect(f?.secrets).toEqual({ verificationToken: 'v', encryptKey: 'k' })
+  })
+
+  it('refuses (null) a secret bag neither typed shape matches — log-and-skip, never a throw', () => {
+    expect(toBotAssignment({ ...base, secrets: { apiKey: 'k-1' } } as never)).toBeNull()
+    expect(toBotAssignment({ ...base, secrets: { botToken: 'xoxb-only' } } as never)).toBeNull()
   })
 })

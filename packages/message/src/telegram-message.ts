@@ -193,8 +193,9 @@ export function normalizeTelegramMessage(
     source: 'user',
     platform: 'telegram',
     channel: String(message.chat.id),
-    ...(isForumTopic && threadId !== undefined ? { telegramTopicId: threadId } : {}),
-    ...(!isForumTopic && threadId !== undefined ? { telegramThreadRoot: threadId } : {}),
+    // §6.5 dual-shape: generic coordinates alongside the deprecated named fields.
+    ...(isForumTopic && threadId !== undefined ? { telegramTopicId: threadId, topicId: threadId } : {}),
+    ...(!isForumTopic && threadId !== undefined ? { telegramThreadRoot: threadId, threadRoot: threadId } : {}),
     ...(replyTo !== undefined ? { replyTo } : {}),
     ...(quoted !== undefined ? { quoted } : {}),
     sender: {

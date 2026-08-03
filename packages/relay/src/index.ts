@@ -24,7 +24,7 @@ import { registerSlackHttpIngress } from './slack-http-ingress.js'
 import { registerFeishuHttpIngress } from './feishu-http-ingress.js'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
-import { mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
+import { mapAgentDirectory, toBotAssignment } from './bot-arbitration.js'
 import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
@@ -35,36 +35,6 @@ import { MemoryConnectionBindingTable } from './memory/binding-table.js'
 import type { Logger } from './log.js'
 
 const RELAY_WS_PATH = '/api/v1/relays/ws'
-
-/** Map the CP's `rc/bot-assign` frame to the manager's {@link BotAssignment}
- *  (drop absent optionals so the strict-optional shape holds). */
-function toBotAssignment(a: import('@agentconnect.md/protocol').RcBotAssign): BotAssignment {
-  return {
-    botId: a.botId,
-    platform: a.platform,
-    secrets:
-      'botToken' in a.secrets
-        ? { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret }
-        : {
-            verificationToken: a.secrets.verificationToken,
-            ...(a.secrets.encryptKey ? { encryptKey: a.secrets.encryptKey } : {})
-          },
-    ...(a.apiAppId ? { apiAppId: a.apiAppId } : {}),
-    ...(a.teamId ? { teamId: a.teamId } : {}),
-    ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
-    ...(a.botUserId ? { botUserId: a.botUserId } : {}),
-    members: a.members,
-    agents: mapAgentDirectory(a.agents),
-    routes: a.routes,
-    ...(a.defaultAgentId ? { defaultAgentId: a.defaultAgentId } : {}),
-    ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
-    gatedAgentIds: a.gatedAgentIds,
-    mutedChannels: a.mutedChannels,
-    gatedOffChannels: a.gatedOffChannels,
-    noticedDmConversations: a.noticedDmConversations,
-    ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})
-  }
-}
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -152,9 +122,14 @@ async function main(): Promise<void> {
       // §6.1: the assignment's origin-kind classification (present from an S1b CP)
       // teaches this relay how to classify a platform id its build predates.
       collab.learnPlatformKind(a.platform, a.originKind)
-      void held.relayIngress
-        ?.assign(toBotAssignment(a))
-        .catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`))
+      const assignment = toBotAssignment(a)
+      if (!assignment) {
+        // §6.7: an opaque secret bag for a platform this build predates — ids only,
+        // never the material. The S3 platform module takes this shape over.
+        log.warn(`relay: bot-assign for ${a.botId} carried a secret shape this build does not support — skipped`)
+        return
+      }
+      void held.relayIngress?.assign(assignment).catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`))
     },
     onBotUnassign: (a) =>
       void held.relayIngress
