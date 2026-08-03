@@ -76,6 +76,38 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
 }
 
 /**
+ * **The second shape of Layer 2** — a turn-FINAL surface (§7.6).
+ *
+ * `TurnOutputSurface` above was derived from four STREAMING platforms: text
+ * arrives in chunks, each chunk becomes an action, each action becomes an API
+ * call. Not every Layer 2 implementer emits that way. §7.6 lists the GitHub
+ * poster as `Layer 1: no, Layer 2: yes`, and GitHub publishes exactly ONE
+ * comment at the very end of a turn, containing one logical final answer. It has
+ * no converger (its production rule is "select the final answer", not "chunk the
+ * stream"), and no `apply` — the core streaming path is deliberately BYPASSED for
+ * such a turn, precisely so no intermediate output escapes before the single
+ * public post.
+ *
+ * Forcing that into `apply` would mean inventing actions nobody emits, so the
+ * contract publishes both shapes instead. A platform implements whichever matches
+ * how it actually emits. The two are independent: a turn may carry a chat surface
+ * AND a final surface (a GitHub-reply hook has both), so their state slots are
+ * separate and neither reads the other's.
+ *
+ * @typeParam TState The implementer's opaque per-turn state.
+ */
+export interface TurnFinalSurface<TTurn, TState, TUpdate> {
+  /** Diagnostic label; never parsed. */
+  readonly platform: string
+  /** Consume one runtime update. No action is produced — nothing publishes until
+   *  the turn ends. */
+  onUpdate(state: TState, update: TUpdate): void
+  /** Publish the turn's one artifact. Core has already decided the turn is over
+   *  and supplied its suppression verdict. */
+  finalize(turn: TTurn, state: TState, opts: { suppressed: boolean; atEnd: boolean }): Promise<void>
+}
+
+/**
  * The daemon's registry of turn-output surfaces — one entry per chat platform,
  * plus the core surface every non-platform origin (webchat / hook / dream) and
  * Slack itself render through.
