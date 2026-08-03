@@ -284,8 +284,12 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
   }
 
   /** Build the §5 environment: ONE registry, projected by the daemon into both
-   *  `agent.integrations` and the connection maps. */
-  buildEnvironment(): DaemonEvaluationEnvironment {
+   *  `agent.integrations` and the connection maps. `bindMatch` selects the room
+   *  routing convention: `auto` (game rooms — every member is fanned into) or
+   *  `mention` (production-like shared channels — activation needs an explicit
+   *  mention or thread affinity). */
+  buildEnvironment(options: { bindMatch?: 'auto' | 'mention' } = {}): DaemonEvaluationEnvironment {
+    const bindMatch = options.bindMatch ?? 'auto'
     const integrations: EffectiveIntegration[] = this.topology.integrations.map((spec) => {
       const connection =
         spec.platform === 'slack'
@@ -304,7 +308,7 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
         platform: spec.platform,
         transportScope: spec.transportScope,
         ...(spec.tenant ? { tenant: spec.tenant } : {}),
-        bindRules: spec.bindChannels.map((channel) => ({ channel, match: { kind: 'auto' as const } })),
+        bindRules: spec.bindChannels.map((channel) => ({ channel, match: { kind: bindMatch } })),
         connection
       }
     })
