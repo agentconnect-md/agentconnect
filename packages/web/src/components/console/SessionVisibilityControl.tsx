@@ -33,6 +33,7 @@ export function SessionVisibilityControl({
   canChange,
   externalProvider,
   externalResolution,
+  feishuRegion,
   nativeMemory = false,
   onChanged
 }: {
@@ -44,6 +45,7 @@ export function SessionVisibilityControl({
   canChange: boolean
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
+  feishuRegion?: 'feishu' | 'lark' | null
   /** The owning agent persists memory inside its runtime (provider `native`),
    *  which has no per-session gate — so the copy must NOT promise that going
    *  private stops what the agent learns. See docs/product-conventions.md. */
@@ -87,7 +89,11 @@ export function SessionVisibilityControl({
         : github
           ? 'GitHub'
           : externalProvider === 'feishu'
-            ? 'Feishu / Lark'
+            ? feishuRegion === 'lark'
+              ? 'Lark'
+              : feishuRegion === 'feishu'
+                ? 'Feishu'
+                : 'Feishu / Lark'
             : 'External'
     const title =
       externalResolution === 'settled'

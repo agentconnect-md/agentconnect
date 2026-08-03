@@ -13,6 +13,10 @@ import { ctxOf, orgOf } from './rbac.js'
 export interface ResolvedSessionAccess {
   identitySet: Set<string>
   externalAccess: SessionExternalAccessSnapshot
+  /** Provider scopes already loaded for this authorization decision. Detail
+   *  responses reuse their verified realm metadata instead of guessing a
+   *  provider variant from the session's protocol platform. */
+  externalScopes: readonly ExternalScopeRecord[]
   degraded: boolean
 }
 
@@ -83,6 +87,7 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
     const allowedScopes = resolvedScopes.filter((scope) => currentScopeRevisions.get(scope.id) === scope.aclRevision)
     return {
       identitySet,
+      externalScopes: scopes,
       externalAccess: {
         policies: currentPolicies.flatMap((policy, index) => {
           const initial = initialPolicies[index]

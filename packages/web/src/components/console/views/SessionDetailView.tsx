@@ -1885,6 +1885,7 @@ export default function SessionDetailView() {
         canChange={currentSessionDetail.canChangeVisibility === true}
         externalProvider={currentSessionDetail.externalProvider}
         externalResolution={currentSessionDetail.externalResolution}
+        feishuRegion={currentSessionDetail.feishuRegion}
         // Native runtime memory has no per-session gate, so the copy must not
         // promise a memory boundary this tier cannot deliver.
         nativeMemory={owner?.memoryProvider === 'native'}

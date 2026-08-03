@@ -286,6 +286,16 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
   }
 }
 
+function feishuRegionForSession(
+  session: { externalProvider: string | null; externalScopeId: string | null },
+  scopes: readonly { id: string; provider: string; realmKey: string }[]
+): 'feishu' | 'lark' | null {
+  if (session.externalProvider !== 'feishu' || !session.externalScopeId) return null
+  const scope = scopes.find((candidate) => candidate.id === session.externalScopeId && candidate.provider === 'feishu')
+  const region = scope?.realmKey.split(':', 1)[0]
+  return region === 'feishu' || region === 'lark' ? region : null
+}
+
 const SessionHistoryQueryDto = z
   .object({
     cursor: z.string().optional(),
@@ -735,6 +745,7 @@ export function sessionRoutes(deps: HttpDeps) {
           visibility: s.visibility,
           externalProvider: s.externalProvider,
           externalResolution: s.externalResolution,
+          feishuRegion: feishuRegionForSession(s, access.externalScopes),
           // The §5.1 cutover state: CP read gates apply at commit, but the memory
           // boundary only takes effect once every affected daemon has acked.
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),

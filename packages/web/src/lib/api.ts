@@ -498,6 +498,8 @@ export interface SessionDetailDto {
   canChangeVisibility?: boolean | null
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
+  /** Actual source gateway for Feishu/Lark external sessions. Absent on older CPs. */
+  feishuRegion?: 'feishu' | 'lark' | null
   accessSyncDegraded?: boolean
   /** Multi-agent webchat conversation roster, in pick order. Null for single-agent
    *  conversations and other platforms; absent on a CP that predates the feature.

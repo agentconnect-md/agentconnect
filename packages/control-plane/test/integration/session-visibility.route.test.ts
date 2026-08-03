@@ -274,6 +274,55 @@ describe('session visibility — external conversation audiences', () => {
     ).toEqual([sessionId])
   })
 
+  it('reports the verified Lark region for an inherited Feishu-provider session', async () => {
+    const viewer = await makeUser(`sv-lark-region-${randomUUID()}`, 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-lark-parent-${randomUUID()}`
+    const childId = `s-lark-child-${randomUUID()}`
+
+    await repo.recordMilestone({
+      sessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'feishu',
+      channel: 'oc_lark',
+      at: new Date(),
+      classification: { visibility: 'private', ownerIdentity: `user:${viewer}`, source: 'default' },
+      externalCandidate: {
+        provider: 'feishu',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'lark:cli_custom',
+          resourceKind: 'conversation',
+          resourceKey: 'oc_lark',
+          credentialKind: 'bot',
+          credentialId: randomUUID()
+        }
+      }
+    })
+    const child = await repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'dream',
+      channel: 'a2a',
+      at: new Date(),
+      classification: { inherit: true }
+    })
+    expect(child.session).toMatchObject({
+      externalProvider: 'feishu',
+      externalResolution: 'settled',
+      tenantScope: null
+    })
+
+    const response = await appAs(viewer).app.inject({ method: 'GET', url: `${ORG}/sessions/${childId}` })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({ feishuRegion: 'lark' })
+  })
+
   it('lets only owners change sync and withholds hidden-session diagnostics from other members', async () => {
     const owner = await makeUser(`sv-slack-owner-${randomUUID()}`, 'owner')
     const collaborator = await makeUser(`sv-slack-collab-${randomUUID()}`, 'collaborator')
