@@ -23,6 +23,7 @@ import { DAEMON_VERSION } from '../version.js'
 import {
   EVALUATION_RUN_SCHEMA_VERSION,
   atomicWrite,
+  redactEvaluationValue,
   writeEvaluationRunManifest,
   type EvaluationRunManifest,
   type EvaluationRunStatus
@@ -256,7 +257,13 @@ export class CollaborationGameRunner {
       failure ??= { code: 'EVALUATION_OBSERVER_ERROR', message: 'evaluation observer rejected semantic evidence' }
     }
 
-    const verdict = world.verdict()
+    // Redact BEFORE anything is returned or written: the verdict and failure
+    // strings can carry text a real subject's runtime echoed.
+    const redactionSecrets = options.secrets ?? []
+    if (failure) {
+      failure = redactEvaluationValue(failure, redactionSecrets) as { code: string; message: string }
+    }
+    const verdict = redactEvaluationValue(world.verdict(), redactionSecrets) as GameVerdict
     if (status === 'passed' && !verdict.refereeConsistent) {
       status = 'infra_error'
       failure ??= { code: 'REFEREE_INCONSISTENT', message: 'game referee lost internal consistency' }
@@ -312,13 +319,19 @@ export class CollaborationGameRunner {
       }),
       options.secrets ?? []
     )
+    // Game artifacts pass through the same redaction as the product trace: a
+    // real subject's runtime can echo template credentials into room speech.
+    const secrets = redactionSecrets
     const worldLines = world
       .worldEventRecords()
-      .map((record) => JSON.stringify(record))
+      .map((record) => JSON.stringify(redactEvaluationValue(record, secrets)))
       .join('\n')
     atomicWrite(paths.worldEvents, worldLines.length > 0 ? `${worldLines}\n` : '')
-    atomicWrite(paths.gameResult, `${JSON.stringify(gameResult, null, 2)}\n`)
-    atomicWrite(paths.topology, `${JSON.stringify(world.topologyArtifact(), null, 2)}\n`)
+    atomicWrite(paths.gameResult, `${JSON.stringify(redactEvaluationValue(gameResult, secrets), null, 2)}\n`)
+    atomicWrite(
+      paths.topology,
+      `${JSON.stringify(redactEvaluationValue(world.topologyArtifact(), secrets), null, 2)}\n`
+    )
     const manifest: EvaluationRunManifest = {
       schemaVersion: EVALUATION_RUN_SCHEMA_VERSION,
       runId,

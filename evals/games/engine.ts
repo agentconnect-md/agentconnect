@@ -11,14 +11,14 @@
  * arrival wins" still follows runtime turn scheduling — the world records
  * every admission and `sequence`-stamped effect so any run is explainable.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { CollaborationGameRunner, type CollaborationGameResult } from '../../packages/daemon/src/evaluation/index.js'
 import { CountingGame } from './counting.js'
+import { prepareGameSubject, prepareScriptedSubject, type GameSubjectSpec } from './subject.js'
 import { compileTopology } from './topology.js'
-import type { CompiledTopology, GameTopologyManifest } from './types.js'
+import type { GameTopologyManifest } from './types.js'
 import { ArenaWorld } from './world.js'
+
+export { prepareScriptedSubject as scaffoldSubject }
 
 export interface CountingGameRunOptions {
   seed?: number
@@ -28,6 +28,9 @@ export interface CountingGameRunOptions {
   artifactDir: string
   maxSteps?: number
   timeoutMs?: number
+  /** Who plays (§8.1): scripted hosts (default; the reproducible engine gate)
+   *  or a real-runtime subject template — the identical game either way. */
+  subject?: GameSubjectSpec
   /** Preserve the disposable subject root for debugging. */
   keepSubject?: boolean
 }
@@ -39,43 +42,6 @@ export function countingManifest(options: { seed: number; agents: string[] }): G
     agents: options.agents.map((alias) => ({ id: alias })),
     rooms: [{ id: 'counting-room', platform: 'slack', members: options.agents }]
   }
-}
-
-/** Disposable subject root: one scripted-runtime agent per compiled agent id.
- *  Integrations stay EMPTY on disk — the evaluation environment (§5) is the
- *  only authority that projects the virtual integrations in. */
-export function scaffoldSubject(topology: CompiledTopology): { root: string; cleanup: () => void } {
-  const root = mkdtempSync(join(tmpdir(), 'ac-arena-'))
-  writeFileSync(
-    join(root, 'config.json'),
-    JSON.stringify({
-      version: 1,
-      controlPlane: { enabled: false },
-      runtimes: { scripted: { command: 'node', args: ['unused'] } }
-    })
-  )
-  for (const agent of topology.agents) {
-    const agentDir = join(root, 'agents', agent.agentId)
-    mkdirSync(agentDir, { recursive: true, mode: 0o700 })
-    mkdirSync(join(agentDir, 'workspace'), { recursive: true, mode: 0o700 })
-    writeFileSync(
-      join(agentDir, 'agent.json'),
-      JSON.stringify(
-        {
-          id: agent.agentId,
-          name: agent.alias,
-          status: 'active',
-          runtime: 'scripted',
-          workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
-          integrations: [],
-          output: { mode: 'low', showFooter: false, showStatusBar: false }
-        },
-        null,
-        2
-      )
-    )
-  }
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
 /**
@@ -114,6 +80,7 @@ export function scriptedCountingHostFactory(): (
 export async function runSameRoomCounting(options: CountingGameRunOptions): Promise<CollaborationGameResult> {
   const seed = options.seed ?? 42
   const agents = options.agents ?? ['agent-a', 'agent-b', 'agent-c', 'agent-d']
+  const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
   const topology = compileTopology(countingManifest({ seed, agents }))
   const world = new ArenaWorld(topology)
   const game = new CountingGame({
@@ -121,7 +88,7 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
     roomAlias: 'counting-room',
     ...(options.target !== undefined ? { target: options.target } : {})
   })
-  const subject = scaffoldSubject(topology)
+  const subject = prepareGameSubject(topology, subjectSpec)
   try {
     const runner = new CollaborationGameRunner({
       root: subject.root,
@@ -130,14 +97,18 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
       game: 'same-room-counting',
       seed,
       mode: 'deterministic',
-      subjectKind: 'scripted',
-      hostFactory: scriptedCountingHostFactory() as never,
+      subjectKind: subjectSpec.kind,
+      // Real subjects launch their template's actual ACP runtimes — no host
+      // seam. Repeated trials and pass^k aggregation are Promptfoo's job (§12).
+      ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedCountingHostFactory() as never } : {}),
       capabilityProfile: { memory: 'off', collaboration: 'configured' },
       limits: {
         maxSteps: options.maxSteps ?? (options.target ?? 12) * 3 + 4,
-        timeoutMs: options.timeoutMs ?? 120_000
+        timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 120_000 : 15 * 60_000)
       },
-      agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
+      agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias })),
+      // Real subjects carry template credentials; every artifact writer redacts them.
+      secrets: subject.secrets
     })
     return await runner.run()
   } finally {
