@@ -340,6 +340,7 @@ import type {
   RdAck,
   RdAgentMsgFwd,
   RdAgentMsgAck,
+  RdAgentMsgDeliveryKind,
   RdChatEvent,
   HookConfigSnapshot,
   GithubHookMetadata,
@@ -6919,7 +6920,12 @@ export class Daemon {
       // A `toAgent`+`channel` wake was preceded by a visible post the SOURCE daemon made; carry
       // its real ts so this turn's transcript row collapses onto the post we fetch from the
       // shared thread (`conversations.replies`) instead of duplicating at the delivery id.
-      ...(msg.transcriptTs !== undefined ? { transcriptTs: msg.transcriptTs } : {})
+      ...(msg.transcriptTs !== undefined ? { transcriptTs: msg.transcriptTs } : {}),
+      // §8.3: a `session-reply` is required-headless on the TARGET too — same contract as
+      // the same-daemon path in `replyToSession`, so a parent that happens to live on
+      // another daemon behaves identically. The relay has already refused to forward this
+      // kind to a daemon that cannot honor it (§8.4), so reaching here means we can.
+      ...(msg.deliveryKind === 'session-reply' ? { headless: true } : {})
     }
 
     // send-message-routing-rework.md §3.2: the target daemon owns the rendezvous for a
@@ -7478,7 +7484,22 @@ export class Daemon {
           : resolved?.botUserId
             ? [resolved.botUserId]
             : [],
-        isDm: false
+        isDm: false,
+        // send-message-routing-rework.md §7 — a parent-session reply is SESSION-ONLY by
+        // default. The parent still processes the input and records the work, but this
+        // turn emits no ordinary IM body, typing indicator, status message/bar, footer,
+        // permission card, or completion notification.
+        //
+        // Previously the resumed parent owned an ordinary IM reply connection, so relaying
+        // an answer upward also republished it into the parent's channel — a second copy
+        // of something the child had usually already delivered. Removing the connection is
+        // what makes the reply an injection rather than a broadcast.
+        //
+        // NOT a turn-wide egress prohibition: an explicit visible `sendMessage` from the
+        // resumed parent resolves its gateway from the daemon's integrations, not from
+        // this connection, so it remains available as a separately authorized, intentional
+        // outbound action (§7).
+        headless: true
       }
       void this.dispatch(originOwner, normalized, integrationId, undefined, callMeta).catch((err) =>
         this.log.error(`replyToSession dispatch failed for session "${req.sessionId}": ${formatErr(err)}`)
@@ -7515,7 +7536,12 @@ export class Daemon {
         ...(correlationId !== undefined ? { correlationId } : {}),
         ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
         originCoords: replyOriginCoords,
-        ...(externalOrigin ? { externalOrigin } : {})
+        ...(externalOrigin ? { externalOrigin } : {}),
+        // §7/§8.4: mark the delivery REQUIRED-HEADLESS so a relay refuses to hand it to a
+        // daemon too old to run the parent turn silently. Failing the reply is correct
+        // here and silently degrading is not: the alternative publishes the parent's whole
+        // ordinary response into its channel, which is exactly what §7 removes.
+        deliveryKind: 'session-reply'
       }
     )
     return {
@@ -7885,6 +7911,11 @@ export class Daemon {
       originSessionId?: string
       originCoords?: CallMeta['originCoords']
       externalOrigin?: CallMeta['externalOrigin']
+      /** send-message-routing-rework.md §8.3. `session-reply` is REQUIRED-HEADLESS: the
+       *  relay refuses to forward it to a daemon that has not advertised
+       *  `headless-agent-delivery-v1` rather than letting the resumed parent's ordinary
+       *  response leak to IM. Absent ⇒ `wake`, an ordinary postless call. */
+      deliveryKind?: RdAgentMsgDeliveryKind
     }
   ): Promise<MessageAgentResult> {
     if (!this.relays) {
@@ -7917,7 +7948,8 @@ export class Daemon {
         // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
         // having an origin for exactly the reason the local path is — there is nothing to report to
         // without one, and the target ignores it in that case anyway.
-        ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {})
+        ...(req.needsReply === true && ctx.originSessionId !== undefined ? { needsReply: true } : {}),
+        ...(ctx.deliveryKind !== undefined ? { deliveryKind: ctx.deliveryKind } : {})
       })
       // §5.4: prefer the CANONICAL key the target computed — its transport scope depends on the
       // reply integration the relay chose, which we cannot derive. Fall back to our own guess only

@@ -1291,6 +1291,11 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     // §5.3 step 3: replying into the origin inherits the origin turn's correlationId (so a
     // main-agent's N-of-N orchestration closes) and bumps the hop count.
     expect(callMeta).toMatchObject({ callFrom: 'bot-b', correlationId: 'orch-1', hopCount: 2 })
+    // send-message-routing-rework.md §7: the resumed parent turn is SESSION-ONLY. It
+    // processes the input and records its work, but emits no ordinary IM body, typing
+    // indicator, status message/bar, footer, permission card, or completion notification —
+    // relaying an answer upward must not republish it into the parent's channel.
+    expect(msg.headless).toBe(true)
     await daemon.stop()
   })
 
@@ -1331,6 +1336,36 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     expect(calls).toHaveLength(1)
     // No inbound depth on a human turn ⇒ the reply chain starts at hop 1; callFrom = the replier.
     expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-b', hopCount: 1 })
+    await daemon.stop()
+  })
+
+  it('marks a cross-daemon reply required-headless, and surfaces a refusal instead of leaking it', async () => {
+    // send-message-routing-rework.md §8.3/§8.4. A parent on another daemon must get the
+    // same session-only treatment as a local one, so the delivery carries its KIND; a
+    // relay that finds the target too old answers `unsupported`, which the caller sees as
+    // a failed reply rather than as an answer quietly republished into the parent channel.
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    ;(daemon as any).activeTurnCallMeta.set(callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-1',
+      originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+    })
+    // No local row for `acp-parent-1` ⇒ the origin lives on another daemon.
+    const sendAgentMsg = vi.fn(async (payload: any) => ({
+      deliveryId: payload.deliveryId,
+      delivered: false,
+      reason: 'unsupported' as const
+    }))
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendAgentMsg }
+
+    const res = await (daemon as any).replyToSession(replyReq())
+    expect(sendAgentMsg).toHaveBeenCalledTimes(1)
+    expect(sendAgentMsg.mock.calls[0]![0]).toMatchObject({ deliveryKind: 'session-reply' })
+    expect(res).toMatchObject({ delivered: false, reason: 'unsupported' })
     await daemon.stop()
   })
 })

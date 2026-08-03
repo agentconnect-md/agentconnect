@@ -7,6 +7,7 @@ import type {
   RdAgentMsgFwd,
   RdAgentMsgAck
 } from '@agentconnect.md/protocol'
+import { RD_HEADLESS_AGENT_DELIVERY_V1 } from '@agentconnect.md/protocol'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
@@ -94,9 +95,16 @@ function baseMsg(over: Partial<RdAgentMsg> = {}): RdAgentMsg {
   }
 }
 
-/** A fake D2 connection that records forwards + returns a canned ack. */
-function fakeDaemons(ack: RdAgentMsgAck, forwards: RdAgentMsgFwd[]): RelayDaemonServer {
+/** A fake D2 connection that records forwards + returns a canned ack. `capabilities` is
+ *  what the daemon advertised at `rd/hello`; the default mirrors a current daemon. Pass
+ *  an empty list to model an OLDER daemon, which advertises nothing (§8.4). */
+function fakeDaemons(
+  ack: RdAgentMsgAck,
+  forwards: RdAgentMsgFwd[],
+  capabilities: readonly string[] = [RD_HEADLESS_AGENT_DELIVERY_V1]
+): RelayDaemonServer {
   const conn = {
+    supports: (capability: string) => capabilities.includes(capability),
     forwardAgentMsg: vi.fn(async (fwd: RdAgentMsgFwd) => {
       forwards.push(fwd)
       return ack
@@ -135,6 +143,59 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0].orgId).toBe(ORG)
     expect(forwards[0].hopCount).toBe(1)
     expect(forwards[0].integrationId).toBe(INT)
+  })
+
+  it('forwards a required-headless session reply to a capable daemon', async () => {
+    // send-message-routing-rework.md §8.3: the delivery KIND rides through so the target
+    // resumes the parent silently, exactly as the same-daemon path does.
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+
+    const ack = await route(D1, baseMsg({ deliveryKind: 'session-reply' }))
+    expect(ack.delivered).toBe(true)
+    expect(forwards[0].deliveryKind).toBe('session-reply')
+  })
+
+  it('REFUSES a required-headless session reply to a daemon that cannot run it silently', async () => {
+    // §8.4 / §10 case 14. The failure mode this prevents is not a lost message but a
+    // LEAKED one: an old target would resume the parent with an ordinary IM connection
+    // and republish its entire response into the parent's channel. `unsupported` is
+    // deliberately distinct from `offline` — the daemon is reachable, just too old.
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards, []),
+      log: noopLog
+    })
+
+    const ack = await route(D1, baseMsg({ deliveryKind: 'session-reply' }))
+    expect(ack).toMatchObject({ delivered: false, reason: 'unsupported' })
+    expect(forwards).toHaveLength(0)
+  })
+
+  it('still forwards an ordinary wake to a daemon advertising nothing', async () => {
+    // Only the required-headless kind is gated; a plain postless wake has always been
+    // safe against an older target, so the capability must not become a general fence.
+    const router = new CollaborationRouter()
+    router.replace(snap())
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards, []),
+      log: noopLog
+    })
+
+    expect((await route(D1, baseMsg())).delivered).toBe(true)
+    expect(forwards).toHaveLength(1)
+    expect(forwards[0].deliveryKind).toBeUndefined()
   })
 
   it('forwards the visible-post transcriptTs opaquely (toAgent+channel wake dedup)', async () => {
