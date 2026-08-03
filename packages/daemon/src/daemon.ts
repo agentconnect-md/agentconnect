@@ -102,6 +102,7 @@ import {
   type DreamOperationPolicy
 } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
+import { createLocalSkillsReader } from './cp/local-skills-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
 import {
@@ -17918,6 +17919,10 @@ export class Daemon {
       },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
+      localSkillsReader: createLocalSkillsReader(
+        (id) => this.agents.get(id)?.workspace.path,
+        join(this.root, 'skill-installs')
+      ),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
       // relay's rd/* wire, wired through RelayManager.onRelayMsg below.
       clock: systemClock,

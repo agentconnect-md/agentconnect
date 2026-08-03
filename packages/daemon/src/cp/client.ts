@@ -68,6 +68,7 @@ import type {
   DreamFileReadReq,
   DreamSkillReviewReq,
   DreamSkillReadReq,
+  LocalSkillsReq,
   SessionVisibilityPush,
   WebchatMcpGrantIssue,
   WebchatMcpGrantIssued,
@@ -103,6 +104,7 @@ import {
 } from './memory-reader.js'
 import type { WorkspaceGit } from './workspace-git.js'
 import type { DreamReader } from './dream-reader.js'
+import type { LocalSkillsReader } from './local-skills-reader.js'
 import { DreamViolationError, DreamStateError } from '../agents/dream-runner.js'
 import { ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { ConfigApply } from './config-apply.js'
@@ -166,6 +168,8 @@ export interface CpClientDeps {
   memoryReader: MemoryReader
   /** Dream-job lifecycle + staged-output review seam (docs/designs/memory-dreaming.md §10). */
   dreamReader: DreamReader
+  /** Read-only inventory of the skills an agent's workspace can load (skills/local). */
+  localSkillsReader: LocalSkillsReader
   // webchat content no longer rides this control WS (milestone A4) — the daemon serves
   // webchat over the relay's rd/* wire (RelayClient / Daemon.handleRelayMsg) instead.
   clock: Clock
@@ -1374,6 +1378,16 @@ export class CpClient {
           .skillDismiss(frame.payload as DreamSkillReviewReq)
           .then((state) => this.reply(frame, 'memory/dream/skill/dismiss/ok', state))
           .catch((err) => this.dreamError(frame.id, 'memory/dream/skill/dismiss', err))
+        return
+      }
+      case 'skills/local': {
+        this.deps.localSkillsReader
+          .list(frame.payload as LocalSkillsReq)
+          .then((list) => this.reply(frame, 'skills/local/list', list))
+          .catch((err) => {
+            this.deps.log.warn(`cp: skills/local failed: ${(err as Error)?.message}`)
+            this.sendError(frame.id, 'INTERNAL', 'skills/local failed', false)
+          })
         return
       }
       case 'knowledge/suggestion/read': {
