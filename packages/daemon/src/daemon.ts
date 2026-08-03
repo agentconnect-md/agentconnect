@@ -191,6 +191,12 @@ import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
 import {
+  finalizeGithubTurn,
+  isGithubFinalChunk,
+  onGithubUpdate,
+  type GithubTurnState
+} from './platforms/github/turn-output.js'
+import {
   GithubReviewClient,
   type GithubReviewEffect,
   type GithubReviewEvent,
@@ -1267,7 +1273,7 @@ interface Pending {
    *  GitHub issue/PR. Commentary stays transcript-local; final is awaited at turn end.
    *  For a headless hook, explicit final chunks are withheld from OutputConverger and
    *  persisted once from the collector so transport flushes cannot split one answer. */
-  github?: { poster: GithubFinalPoster; collector: GithubReplyCollector; deferredFinalTranscript: boolean }
+  github?: GithubTurnState
   conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
   /** §7.3 OPAQUE per-turn platform state, seeded by this turn's output surface and
    *  read only by that surface (see {@link turnState}). Core carries the slot and
@@ -11982,25 +11988,10 @@ export class Daemon {
       // the map is keyed by sessionKey and the gate guarantees one active turn per key.
       if (callMeta) this.activeTurnCallMeta.delete(key)
       if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
-      // A headless GitHub hook has no platform-send boundary. Explicit final chunks
-      // were withheld from OutputConverger above, so persist the collector's one
-      // logical final now instead of one row per idle/size flush.
-      const githubFinal =
-        p.github && !p.outputSuppressed && finalPhase === 'end' ? p.github.collector.finalText(true) : undefined
-      if (p.github?.deferredFinalTranscript && githubFinal?.trim()) {
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: monotonicTs(),
-          sender: p.agentId,
-          kind: 'text',
-          text: githubFinal
-        })
-      }
-      const fallbackAllowed = githubFallbackAllowed(hookContext)
       // Anything other than no attempt or a correlated definite no-effect
       // result is fail-closed: GitHub may already own the public response.
-      if (githubReply && !fallbackAllowed) {
+      const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
+      if (formalReviewOwnsResponse) {
         try {
           this.persistHookState(entry, 'settled', true)
         } catch (err) {
@@ -12009,24 +12000,37 @@ export class Daemon {
           // unredacted inbox row if local persistence is still unavailable.
           this.log.warn(`github poster: formal-review settlement failed (${formatErr(err)})`)
         }
-      } else if (p.github && !p.outputSuppressed) {
-        // With no formal effect (or a proved not_submitted effect), the ordinary
-        // final remains the fallback. publish() is time-bounded and degrading.
-        let recordedInFlight = false
-        try {
-          // A replay of `in_flight` suppresses another comment. If this write
-          // cannot be made durable, fail closed and do not perform the POST.
-          this.persistHookState(entry, 'in_flight', true)
-          recordedInFlight = true
-        } catch (err) {
-          this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
-        }
-        if (recordedInFlight) {
-          await p.github.poster
-            .publish(githubFinal)
-            .catch((err) => this.log.warn(`github poster: final publish failed (${formatErr(err)})`))
-          this.persistHookState(entry, 'settled')
-        }
+      }
+      // GitHub's turn output lives in its platform module (§7.6) — a turn-FINAL
+      // surface, not a streaming one. Core keeps the hook durability barrier
+      // (§12) and hands the surface only the verdicts it must obey.
+      if (p.github) {
+        await finalizeGithubTurn(
+          {
+            appendTranscript: (row) => this.store.appendTranscript(row),
+            monotonicTs: () => monotonicTs(),
+            beginPublish: () => {
+              try {
+                // A replay of `in_flight` suppresses another comment. If this write
+                // cannot be made durable, fail closed and do not perform the POST.
+                this.persistHookState(entry, 'in_flight', true)
+                return true
+              } catch (err) {
+                this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
+                return false
+              }
+            },
+            endPublish: () => this.persistHookState(entry, 'settled'),
+            warn: (message) => this.log.warn(message)
+          },
+          p,
+          p.github,
+          {
+            suppressed: !!p.outputSuppressed,
+            atEnd: finalPhase === 'end',
+            formalReviewOwnsResponse
+          }
+        )
       }
       // Pending ownership and the non-idle session state are the final safety
       // fence, so release them only after the exact selected cleanup.
@@ -13957,15 +13961,8 @@ export class Daemon {
     // Select the complete GitHub final in memory. Do not write any GitHub comment here:
     // the prompt (and every agent-side tool call) must finish before publish() performs
     // the first and only public POST.
-    const isHeadlessGithubFinal =
-      p.github !== undefined &&
-      p.platform === 'hook' &&
-      update?.sessionUpdate === 'agent_message_chunk' &&
-      update?._meta?.codex?.phase === 'final_answer'
-    if (p.github) {
-      p.github.collector.onUpdate(update)
-      if (isHeadlessGithubFinal) p.github.deferredFinalTranscript = true
-    }
+    const isHeadlessGithubFinal = p.github !== undefined && isGithubFinalChunk(p, update)
+    if (p.github) onGithubUpdate(p.github, update, isHeadlessGithubFinal)
     // webchat streams its reply through the sink (→ relay `rd/chat`), one WebchatOutput
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
