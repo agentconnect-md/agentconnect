@@ -134,7 +134,7 @@ import {
 } from './telegram/connection.js'
 import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord/connection.js'
 import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
-import { consolidateFeishu, feishuConnKey, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
+import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
@@ -310,6 +310,8 @@ import {
   applyTelegramAction as applyTelegramActionExternal,
   type TelegramTurnState
 } from './platforms/telegram/turn-output.js'
+import { applyDiscordAction as applyDiscordActionExternal } from './platforms/discord/turn-output.js'
+import { applyFeishuAction as applyFeishuActionExternal, type FeishuTurnState } from './platforms/feishu/turn-output.js'
 import {
   canonicalizeTelegramThread as canonicalizeTelegramThreadExternal,
   telegramMessageId as telegramMessageIdExternal,
@@ -1181,16 +1183,6 @@ interface SlackTurnState {
    *  body section and once more at finalization, so a transient Slack error cannot
    *  leave two footers standing. */
   staleReplyFooters?: { ts: string; text: string }[]
-}
-
-interface FeishuTurnState {
-  /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
-   *  `card-start` succeeds; `cardAttempted` prevents duplicate initial cards. */
-  card?: FeishuStreamingCard
-  cardAttempted?: boolean
-  /** Periodic cumulative CardKit element flush (separate from the transcript idle
-   *  flush core owns). */
-  streamTimer?: NodeJS.Timeout
 }
 
 /** Read a turn's opaque platform state as the owning surface's shape. Only that
@@ -12737,174 +12729,37 @@ export class Daemon {
    *  - progress / plan / reasoning → the single in-place message of that kind.
    *  - status-bar  → the per-turn status line + button row (Cancel / Fast / View).
    */
+  /** Discord's turn output lives in its platform module (§7.3); core supplies the
+   *  same two host capabilities Telegram's applier needs. */
   private async applyDiscordAction(p: Pending, action: DiscordAction): Promise<void> {
-    // minimal mode records each reply segment WITHOUT sending it — the channel shows only the
-    // single `live-reply` (see applySlackAction / recordReplySegment).
-    if (action.kind === 'post' && action.recordOnly) {
-      this.recordReplySegment(p, action.text)
-      return
-    }
-    // Routed here only for the discord platform (see enqueueApply), so p.conn is a
-    // Discord connection (or a test fake) — cast, not instanceof. Headless no-ops.
-    const conn = p.conn as DiscordConnection | undefined
-    if (!conn) return
-    switch (action.kind) {
-      case 'typing':
-        await conn.sendChatAction(p.channel)
-        return
-      case 'post': {
-        const id = await conn.postMessage(p.channel, action.text, p.thread)
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: id ?? `local-${Date.now()}`,
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-        return
-      }
-      case 'live-reply': {
-        // minimal mode's single agent reply: send once then edit in place as the turn
-        // streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
-        if (p.liveReplyText === action.text) return
-        p.liveReplyText = action.text
-        if (p.liveReplyTs) await conn.updateMessage(p.channel, p.liveReplyTs, action.text)
-        else if (!p.liveReplyAttempted) {
-          p.liveReplyAttempted = true
-          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread)
-        }
-        return
-      }
-      case 'notice':
-      case 'tool-output':
-        // Posted to the channel but NOT recorded — the done footer is chrome, and tool
-        // output is captured independently by the recorder.
-        await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        return
-      case 'progress':
-        if (p.progressTs) await conn.updateMessage(p.channel, p.progressTs, action.text)
-        else if (!p.progressAttempted) {
-          p.progressAttempted = true
-          p.progressTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'plan':
-        if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text)
-        else if (!p.planAttempted) {
-          p.planAttempted = true
-          p.planTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'reasoning':
-        if (p.reasoningTs) await conn.updateMessage(p.channel, p.reasoningTs, action.text)
-        else if (!p.reasoningAttempted) {
-          p.reasoningAttempted = true
-          p.reasoningTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'status-bar':
-        // Per-turn status line + button row: post once (registering the message →
-        // sessionKey so its button interactions resolve), then edit in place.
-        if (p.statusBarTs)
-          await conn.updateMessage(p.channel, p.statusBarTs, action.text, { keyboard: action.keyboard })
-        else if (!p.statusBarAttempted) {
-          p.statusBarAttempted = true
-          p.statusBarTs = await conn.postChrome(p.channel, action.text, {
-            threadTs: p.thread,
-            keyboard: action.keyboard,
-            sessionKey: p.sessionKey
-          })
-        }
-        return
-    }
+    await applyDiscordActionExternal(
+      {
+        recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
+        appendTranscript: (row) => this.store.appendTranscript(row)
+      },
+      p,
+      action
+    )
   }
 
   /** Apply one Feishu action. Agent body delivery is one CardKit entity for the whole
    * turn; `post(recordOnly)` retains transcript boundaries without duplicate chat
    * messages. Progress/plan/reasoning remain short text chrome edited in place. */
+  /** Feishu's turn output lives in its platform module (§7.3), which owns the
+   *  CardKit state the core turn record used to carry. Core supplies the two
+   *  shared host capabilities plus session-link construction. */
   private async applyFeishuAction(p: Pending, action: FeishuAction): Promise<void> {
-    // CardKit owns visible body delivery, so these actions are persistence-only.
-    if (action.kind === 'post' && action.recordOnly) {
-      this.recordReplySegment(p, action.text)
-      return
-    }
-    // Routed here only for the feishu platform (see enqueueApply), so p.conn is a Feishu
-    // connection (or a test fake) — cast, not instanceof. Headless no-ops.
-    const conn = p.conn as FeishuConnection | undefined
-    if (!conn) return
-    // The turn's Feishu state, read once through the opaque slot (§7.3).
-    const state = turnState<FeishuTurnState>(p)
-    switch (action.kind) {
-      case 'card-start':
-        if (state.cardAttempted) return
-        state.cardAttempted = true
-        state.card = await conn.startStreamingCard(p.channel, p.thread, {
-          sessionKey: p.sessionKey,
-          sessionUrl: this.sessionLink(p.acpSessionId, this.sessionLinkSource(p.platform, p.integrationId)),
-          ...(p.integrationId ? { target: { v: 1, agentId: p.agentId, integrationId: p.integrationId } as const } : {})
-        })
-        return
-      case 'card-stream':
-        if (state.card) await conn.updateStreamingCard(p.channel, state.card, action.text)
-        return
-      case 'card-final': {
-        if (state.card) {
-          const delivered = await conn.finishStreamingCard(p.channel, state.card, action.text, action.attribution)
-          if (delivered) return
-          // A final CardKit update failure must not lose the answer. Remove the stale
-          // partial card where possible, then fall back to ordinary text.
-          await conn.cancelStreamingCard(p.channel, state.card)
-        }
-        await conn.postMessage(p.channel, action.text, p.thread)
-        return
-      }
-      case 'card-cancel':
-        if (state.card) await conn.cancelStreamingCard(p.channel, state.card)
-        return
-      case 'typing':
-        await conn.sendChatAction(p.channel)
-        return
-      case 'post': {
-        const id = await conn.postMessage(p.channel, action.text, p.thread)
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: id ?? `local-${Date.now()}`,
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-        return
-      }
-      case 'notice':
-      case 'tool-output':
-        // Posted to the chat but NOT recorded — the done footer is chrome, and tool
-        // output is captured independently by the recorder.
-        await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        return
-      case 'progress':
-        if (p.progressTs) await conn.updateMessage(p.channel, p.progressTs, action.text)
-        else if (!p.progressAttempted) {
-          p.progressAttempted = true
-          p.progressTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'plan':
-        if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text)
-        else if (!p.planAttempted) {
-          p.planAttempted = true
-          p.planTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'reasoning':
-        if (p.reasoningTs) await conn.updateMessage(p.channel, p.reasoningTs, action.text)
-        else if (!p.reasoningAttempted) {
-          p.reasoningAttempted = true
-          p.reasoningTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-    }
+    await applyFeishuActionExternal(
+      {
+        recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
+        appendTranscript: (row) => this.store.appendTranscript(row),
+        sessionUrl: (turn) =>
+          this.sessionLink(turn.acpSessionId, this.sessionLinkSource(turn.platform, turn.integrationId))
+      },
+      p,
+      turnState<FeishuTurnState>(p),
+      action
+    )
   }
 
   /** Web App console base URL the CP sent on `auth/ok` (its own console origin). A local
