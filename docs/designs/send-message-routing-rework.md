@@ -214,7 +214,9 @@ paired-call correlation ID:
 
 The daemon derives `mentioned_agent_ids` before platform splitting. Model text
 cannot directly populate it. `agent_call_delivery_id` is present only on the
-visible half of `toAgent + channel`; ordinary replies omit it.
+visible half of `toAgent + channel`; ordinary replies omit it. `hop_count` is
+the trusted depth of the author's current turn before this platform delivery. A
+human/root turn has depth `0`; the model cannot set or reset this field.
 
 Ingress treats `author_agent_id` as a claim until it verifies that:
 
@@ -234,6 +236,42 @@ Drivers that cannot prove an exact agent author may still classify the sender as
 a third-party bot, but must not grant it AgentConnect call-policy identity. A
 shared bot with no exact author claim fails closed because its platform identity
 represents more than one agent.
+
+### 4.1 Trusted hop transition
+
+Every agent-to-agent delivery uses one transition and the same
+`MAX_AGENT_CALL_HOPS`, whether it is a same-daemon internal call, a relayed
+internal call, a direct-daemon platform mention, or a relayed platform mention.
+The trusted source is active-turn call metadata for an internal call and verified
+response metadata for a platform mention. Every routing edge computes:
+
+```text
+deliveryHopCount = verifiedSourceHopCount + 1
+```
+
+The transition is enforced as follows:
+
+1. A missing, non-integer, negative, or otherwise unverifiable source depth is
+   transcript-only; it cannot activate an AgentConnect agent.
+2. If `deliveryHopCount > MAX_AGENT_CALL_HOPS`, the edge records a `hop_limit`
+   rejection and does not dispatch.
+3. A direct daemon computes the transition and installs `deliveryHopCount` as
+   trusted active-turn call metadata on the admitted target turn.
+4. Relay ingress performs the identical addition and cap check, then forwards a
+   relay-minted `trustedDeliveryHopCount` outside the provider payload. The
+   target daemon terminal-verifies its range and installs it without incrementing
+   it a second time.
+5. Every ordinary platform response produced by that target turn stamps its
+   installed depth as the next event's `hop_count`. A subsequent target therefore
+   advances by one again. Queue persistence and replay retain the installed
+   depth; restart, compaction, and platform text cannot reset it.
+
+A paired `toAgent + channel` delivery remains governed by the complete internal
+call envelope at the rendezvous. Its envelope already contains the incremented
+target depth under the existing internal-call contract, so the platform echo
+does not perform another increment or replace it with provider metadata. Any
+metadata/envelope depth mismatch is an operational integrity error, but the
+platform observation never weakens or rewrites the authoritative envelope.
 
 ## 5. Final-message routing
 
@@ -298,6 +336,7 @@ final platform event
 |- verified AgentConnect author?
 |    |- no verified logical-response recipient -> transcript only
 |    |- target == author -> transcript only
+|    |- source hop invalid or source hop + 1 exceeds cap -> transcript only (hop_limit)
 |    |- author -> target policy denied -> transcript only
 |    `- target in verified recipient set -> claim activation key -> dispatch once
 |- third-party supported bot?
@@ -357,16 +396,19 @@ output.
 ### 8.1 Normalized platform message
 
 Add optional, explicitly untrusted provider authorship, logical-response
-recipient, response-state, and paired-delivery claims to the normalized provider
-message. The relay or daemon promotes them only after verifying the producing
-AgentConnect identity.
+recipient, response-state, source-hop, and paired-delivery claims to the
+normalized provider message. The relay or daemon promotes them only after
+verifying the producing AgentConnect identity. Provider `hop_count` always means
+source-turn depth, never already-incremented delivery depth.
 
 ### 8.2 Relay IM frame
 
 Add optional relay-minted `trustedFromAgentId`, response ID, recipient IDs,
-paired agent-call delivery ID, and trusted hop count to the pre-addressed IM
-frame. Keep them outside the provider payload so the target can distinguish
-relay assertions from provider fields.
+paired agent-call delivery ID, and `trustedDeliveryHopCount` to the pre-addressed
+IM frame. Keep them outside the provider payload so the target can distinguish
+relay assertions from provider fields. The relay computes the trusted delivery
+depth exactly once as verified source depth plus one; the target never increments
+that frame value again.
 
 ### 8.3 Cross-daemon agent message
 
@@ -440,18 +482,20 @@ The main implementation surfaces are:
 - `packages/relay/src/slack-http-ingest.ts`: stop dropping AgentConnect message
   echoes while retaining structural/chrome filtering.
 - `packages/relay/src/relay-ingress-manager.ts`: replace blanket managed-agent
-  suppression with author verification, policy checks, and mention-only routing.
+  suppression with author verification, source-hop transition/cap enforcement,
+  policy checks, and mention-only routing.
 - `packages/relay/src/bot-arbitration.ts`: add the verified-agent routing branch
   and shared-bot slug precedence.
 - `packages/daemon/src/daemon.ts`: replace direct and relayed managed-agent
-  suppression with verified routing, durable activation rendezvous records, and
-  headless `replyToSession` dispatch.
+  suppression with verified routing, trusted hop propagation, durable activation
+  rendezvous records, and headless `replyToSession` dispatch.
 - `packages/daemon/src/state-store.ts`: persist activation rendezvous state and
   make admission/retry transitions atomic with the durable inbox fence.
 - `packages/daemon/src/router/routing-table.ts`: keep verified agent traffic out
   of implicit routing rungs.
 - `packages/protocol`: carry authorship, logical recipient, paired-delivery,
-  delivery-state, headless, capability, and mention-address metadata.
+  source/delivery hop, delivery-state, headless, capability, and mention-address
+  metadata.
 - `packages/control-plane`: include public mention-address inputs in the
   collaboration/directory snapshot; message bodies remain off the Control Plane.
 
@@ -489,12 +533,19 @@ At minimum, cover:
     allowed and is tested as a separate intentional action.
 14. A required-headless cross-daemon reply refuses an old target daemon instead
     of leaking the ordinary parent response to IM.
+15. Direct and relay mention routing both admit source depth `7` as target depth
+    `8`, reject source depth `8` because the next hop is `9`, and reject invalid
+    or missing depth instead of resetting it to zero.
+16. An A -> B -> A ordinary-mention chain installs and re-stamps monotonically
+    increasing trusted depths, stops at the shared cap, and preserves its depth
+    across queue replay/restart.
 
 ## 11. Rollout
 
 1. Ship optional protocol fields and daemon/relay capability advertisement.
 2. Ship target-side final-message verification, logical recipient carry,
-   activation rendezvous/deduplication, and headless automatic-output support.
+   source-hop transition/propagation, activation rendezvous/deduplication, and
+   headless automatic-output support.
 3. Ship relay/direct-ingress routing and stop applying the blanket managed-agent
    filter.
 4. Ship the reduced `sendMessage` schema and updated model guidance.
