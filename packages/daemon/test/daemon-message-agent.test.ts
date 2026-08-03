@@ -1339,9 +1339,55 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     expect(calls).toHaveLength(1)
     const { msg } = calls[0]!
     // The synthesized message keeps the RAW session platform; only transport resolution
-    // went through the legacy mapping.
+    // went through the persisted-scope match.
     expect(msg.platform).toBe('dream')
     expect(msg.transportScope).toBe(scope)
+    await daemon.stop()
+  })
+
+  // The fallback half of the same contract: when the target has NO Slack integration, the
+  // spawn side falls back to the agent's FIRST integration (resolveAgentIntegration), so a
+  // dream child of a Telegram-only target carries a `telegram:…` scope. A lookup filtered
+  // under the legacy 'slack' coordinate would still find nothing — the session-transport
+  // resolution must match the persisted scope across ALL of the agent's integrations.
+  it('resolves a dream child’s reply transport for a Telegram-only target (first-integration fallback)', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    const tgInteg = {
+      id: 'int-tg-1',
+      platform: 'telegram',
+      telegram: { botToken: '12345:AAA-test-token' }
+    }
+    ;(daemon as any).agents.get('bot-a').integrations.push(tgInteg)
+    const scope = (daemon as any).transportScopeForIntegration(tgInteg)
+    expect(scope.startsWith('telegram:')).toBe(true)
+    const dreamKey = sessionKey('dream', 'a2a:bot-x', 'dream-2', 'bot-a', scope)
+    ;(daemon as any).store.upsertSession({
+      key: dreamKey,
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'a2a:bot-x',
+      thread: 'dream-2',
+      transportScope: scope,
+      acpSessionId: 'acp-parent-dream-tg',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd2',
+      originSessionId: 'acp-parent-dream-tg',
+      originCoords: { platform: 'dream', channel: 'a2a:bot-x', thread: 'dream-2' }
+    })
+    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-parent-dream-tg' }))
+    expect(res.delivered).toBe(true)
+    expect(res.targetSession).toBe(dreamKey)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.msg.platform).toBe('dream')
+    expect(calls[0]!.msg.transportScope).toBe(scope)
     await daemon.stop()
   })
 

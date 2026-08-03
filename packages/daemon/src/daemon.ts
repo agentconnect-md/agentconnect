@@ -7136,16 +7136,15 @@ export class Daemon {
       // otherwise post the reply through integrations[0]'s client, and a Telegram chat id
       // sent via the Slack client fails with channel_not_found (the reply turn runs but its
       // answer never reaches the origin channel).
-      // Integration resolution goes through the LEGACY coordinate platform: a channel-free
-      // hook/dream child's stored transportScope was derived from an integration resolved
-      // under `legacyCoordPlatform` at spawn, so a raw-platform filter would find nothing
-      // and refuse the reply. Only the session KEY and the synthesized message are raw.
-      const originCoordPlatform = this.legacyCoordPlatform(originPlatform)
-      const integrationId = this.integrationIdForTransportScope(originOwner, originCoordPlatform, local.transportScope)
+      // A channel-free hook/dream child's stored transportScope was derived from whichever
+      // integration the spawn side picked (requested-platform preferred, else the agent's
+      // FIRST integration), so the session-transport helper matches the scope across ALL
+      // integrations for those rows. Only the session KEY and the synthesized message are raw.
+      const integrationId = this.integrationIdForSessionTransport(originOwner, originPlatform, local.transportScope)
       if (local.transportScope && !integrationId) {
         return { delivered: false, targetSession: local.key, reason: 'not_found' }
       }
-      const resolved = this.resolveCpAgent(originOwner, originCoordPlatform)
+      const resolved = this.resolveCpAgent(originOwner, this.legacyCoordPlatform(originPlatform))
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
@@ -15054,6 +15053,28 @@ export class Daemon {
     return candidates.find((integration) => this.transportScopeForIntegration(integration) === transportScope)?.id
   }
 
+  /** Reply-transport resolution for a SESSION row (replyToSession / background-task wake).
+   *  A channel-free session identity (`hook`/`dream`) carries a transportScope derived from
+   *  whichever integration the spawn-side resolution picked — requested-platform preferred,
+   *  else the agent's FIRST integration (`resolveAgentIntegration`) — so no platform filter
+   *  can reconstruct the choice. The persisted scope embeds its integration's real platform
+   *  in the digest prefix, so matching it across ALL of the agent's integrations is
+   *  unambiguous; an unscoped row mirrors the same first-integration fallback. Real
+   *  platforms keep the platform-filtered lookup. */
+  private integrationIdForSessionTransport(
+    agentId: string,
+    platform: string,
+    transportScope?: string | null
+  ): string | undefined {
+    if (platform !== 'hook' && platform !== 'dream') {
+      return this.integrationIdForTransportScope(agentId, platform, transportScope)
+    }
+    const integrations = this.agents.get(agentId)?.integrations
+    if (!integrations?.length) return undefined
+    if (!transportScope) return integrations[0]?.id
+    return integrations.find((integration) => this.transportScopeForIntegration(integration) === transportScope)?.id
+  }
+
   /** Every integrationId served by `conn` — ingress attribution for gating. A Slack
    *  socket is per app token and may fan out to several integrations. */
   private srcIntegrationIds(conn: unknown): string[] {
@@ -15687,14 +15708,10 @@ export class Daemon {
     // Reply transport resolved from the SESSION's scope, not the agent's default integration —
     // a multi-platform agent would otherwise answer through integrations[0]'s client (mirrors
     // replyToSession). A scoped session whose integration is gone has nowhere to answer.
-    // Lookup under the LEGACY coordinate platform (mirrors replyToSession): a hook/dream
-    // session's scope was derived from a `legacyCoordPlatform`-resolved integration, so a
-    // raw-platform filter would silently skip the wake. The message itself stays raw.
-    const integrationId = this.integrationIdForTransportScope(
-      agentId,
-      this.legacyCoordPlatform(platform),
-      rec.transportScope
-    )
+    // Session-transport lookup (mirrors replyToSession): a hook/dream session's scope was
+    // derived from whichever integration the spawn side picked, so those rows match the
+    // scope across ALL integrations. The message itself stays raw.
+    const integrationId = this.integrationIdForSessionTransport(agentId, platform, rec.transportScope)
     if (rec.transportScope && !integrationId) return skip('integration for the session scope is gone')
 
     // No CallMeta: this is not an agent call, it carries no hop chain, and it must not look
