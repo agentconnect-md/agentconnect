@@ -8,7 +8,17 @@
 // structured events which we fold into the session's `steps` for the transcript
 // view.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode
+} from 'react'
 import {
   agentLabel,
   selectedPermissionPreset,
@@ -47,9 +57,14 @@ import {
 } from '@/lib/webchat-lanes'
 
 interface PlaygroundData {
-  /** Composer buffer for one session id (each live conversation has its own). */
+  /** Composer buffer for one session id (each live conversation has its own).
+   *  NOT reactive — drafts live outside React state so keystrokes don't
+   *  re-render every context consumer. Subscribe via usePgDraft()/
+   *  subscribePgDraft when the UI must follow the value. */
   getPgInput: (id: string) => string
   setPgInput: (id: string, v: string) => void
+  /** Notifies on any draft change; pair with getPgInput in useSyncExternalStore. */
+  subscribePgDraft: (listener: () => void) => () => void
   /** One prepared image waiting in this session's composer. */
   getPgImage: (id: string) => SessionImage | undefined
   setPgImage: (id: string, image?: SessionImage) => void
@@ -67,10 +82,12 @@ interface PlaygroundData {
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.
    *  Failures surface as a ⚠️ transcript step. Refused while a turn streams. */
   pgAddAgent: (id: string, agent: Agent) => Promise<void>
-  /** Returns whether the send was ACCEPTED — false when there is nothing to send
-   *  or a turn is already streaming. Callers that move the viewport on send (the
-   *  session view pins the transcript to the bottom) must not act on a rejected
-   *  one, and this keeps that condition in a single place. */
+  /** Returns whether the send was ACCEPTED — false only when there is nothing to
+   *  send. A send while a turn is still streaming is accepted too: it QUEUES
+   *  (Claude Code-style) and dispatches in order as turns finish. Callers that
+   *  move the viewport on send (the session view pins the transcript to the
+   *  bottom) must not act on a rejected one, and this keeps that condition in a
+   *  single place. */
   pgSend: (
     id: string,
     agentId: string,
@@ -78,6 +95,10 @@ interface PlaygroundData {
     conversationId?: string,
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   ) => boolean
+  /** Messages queued while a turn streams, oldest first. */
+  getPgQueue: (id: string) => QueuedTurn[]
+  /** Remove one queued message before it is sent. */
+  pgCancelQueued: (id: string, queueId: string) => void
   /** Switch the session's model (in-session, sticky). */
   pgSetModel: (id: string, agentId: string, model: string, conversationId?: string) => void
   /** Switch the session's reasoning effort (in-session, sticky). */
@@ -104,10 +125,22 @@ interface PlaygroundData {
   reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string) => void
 }
 
+/** One message waiting behind the in-flight turn. Send args are captured at
+ *  enqueue time so the auto-dispatch needs nothing from the view. */
+export interface QueuedTurn {
+  queueId: string
+  text: string
+  image?: SessionImage
+  agentId: string
+  conversationId?: string
+  participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+}
+
 // Synthetic playground session ids start with `pg_`; real CP session ids do not.
 // The prefix lets the provider tell the two apart without extra bookkeeping.
 const PG_PREFIX = 'pg_'
 const NO_STEPS: SessionStep[] = []
+const NO_QUEUE: QueuedTurn[] = []
 const WEBCHAT_RECONNECT_BASE_MS = 500
 const WEBCHAT_RECONNECT_MAX_MS = 4_000
 const WEBCHAT_RECONNECT_MAX_ATTEMPTS = 6
@@ -223,9 +256,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // Composer buffer + in-flight flag are PER session id: the provider keeps several
   // conversations live at once (each streams in the background across route changes),
   // so a single global would let one session disable/clear another's composer.
-  const [pgInputBy, setPgInputBy] = useState<Record<string, string>>({})
+  // Drafts live OUTSIDE React state on purpose: a keystroke must not invalidate
+  // the provider context (that re-renders every consumer, including the whole
+  // session transcript). Composers subscribe per-session via usePgDraft().
+  const pgDrafts = useRef<Record<string, string>>({})
+  const pgDraftListeners = useRef(new Set<() => void>())
   const [pgImageBy, setPgImageBy] = useState<Record<string, SessionImage>>({})
   const [pgBusyBy, setPgBusyBy] = useState<Record<string, boolean>>({})
+  // Messages sent while a turn was still streaming, oldest first per session id.
+  const [pgQueueBy, setPgQueueBy] = useState<Record<string, QueuedTurn[]>>({})
+  // Synchronous mirror of pgQueueBy — pgSend's queue-or-send decision cannot
+  // read state: when a turn ends, busyRef clears at once but the queue head is
+  // dispatched by a passive effect, and a send landing in that gap would jump
+  // ahead of messages already shown as queued. Every pgQueueBy write updates
+  // this ref in the same tick.
+  const pgQueueRef = useRef<Record<string, QueuedTurn[]>>({})
   const conns = useRef<Map<string, Conn>>(new Map())
   const conversationIds = useRef<Map<string, string>>(new Map())
   // Creation-time roster per session id (primary first) — drives the
@@ -275,7 +320,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     setPgBusyBy((cur) => (!!cur[id] === v ? cur : { ...cur, [id]: v }))
   }, [])
   const setPgInput = useCallback((id: string, v: string): void => {
-    setPgInputBy((cur) => ({ ...cur, [id]: v }))
+    if ((pgDrafts.current[id] ?? '') === v) return
+    pgDrafts.current = { ...pgDrafts.current, [id]: v }
+    for (const notify of pgDraftListeners.current) notify()
+  }, [])
+  const subscribePgDraft = useCallback((listener: () => void): (() => void) => {
+    pgDraftListeners.current.add(listener)
+    return () => pgDraftListeners.current.delete(listener)
   }, [])
   const setPgImage = useCallback((id: string, image?: SessionImage): void => {
     setPgImageBy((cur) => {
@@ -969,20 +1020,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [activeOrg, pgSessions, connect, pushStep]
   )
 
-  const pgSend = useCallback(
+  /** Put one turn on the wire NOW. The composer read / busy check / queueing live
+   *  in pgSend; the queue dispatcher calls this directly with the captured args. */
+  const sendTurn = useCallback(
     (
       id: string,
       agentForId: string,
-      textArg?: string,
+      text: string,
+      image: SessionImage | undefined,
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
-    ) => {
-      const text = String(textArg ?? pgInputBy[id] ?? '').trim()
-      const image = pgImageBy[id]
-      if ((!text && !image) || pgBusyBy[id]) return false
+    ): void => {
       pushStep(id, { kind: 'msg', who: '@you', text, ...(image ? { image } : {}) })
-      setPgInput(id, '')
-      setPgImage(id)
       setBusy(id, true)
       const requestedTurnId = crypto.randomUUID()
       // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
@@ -1071,10 +1120,72 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           dropLanes(id)
           setBusy(id, false)
         })
+    },
+    [pgSessions, connect, pushStep, setBusy, refreshSessions]
+  )
+
+  const pgSend = useCallback(
+    (
+      id: string,
+      agentForId: string,
+      textArg?: string,
+      conversationId?: string,
+      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
+    ) => {
+      const text = String(textArg ?? pgDrafts.current[id] ?? '').trim()
+      const image = pgImageBy[id]
+      if (!text && !image) return false
+      setPgInput(id, '')
+      setPgImage(id)
+      // Queue while a turn streams (Claude Code-style) — and also while older
+      // queued messages are still waiting for the dispatcher, so a send landing
+      // between a turn's end and the dispatch of the queue head stays FIFO.
+      if (busyRef.current[id] || (pgQueueRef.current[id]?.length ?? 0) > 0) {
+        const queued: QueuedTurn = {
+          queueId: crypto.randomUUID(),
+          text,
+          ...(image ? { image } : {}),
+          agentId: agentForId,
+          ...(conversationId ? { conversationId } : {}),
+          ...(knownParticipants ? { participants: knownParticipants } : {})
+        }
+        pgQueueRef.current[id] = [...(pgQueueRef.current[id] ?? NO_QUEUE), queued]
+        setPgQueueBy((cur) => ({ ...cur, [id]: [...(cur[id] ?? NO_QUEUE), queued] }))
+        return true
+      }
+      sendTurn(id, agentForId, text, image, conversationId, knownParticipants)
       return true
     },
-    [pgBusyBy, pgImageBy, pgInputBy, pgSessions, connect, pushStep, setPgImage, setPgInput, setBusy, refreshSessions]
+    [pgImageBy, sendTurn, setPgImage, setPgInput]
   )
+
+  // Dispatch the oldest queued message the moment its session's turn ends. The
+  // dispatched-set makes the effect idempotent (StrictMode runs effects twice).
+  const dispatchedQueueIds = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const id of Object.keys(pgQueueBy)) {
+      // Head comes from the synchronous mirror, NOT the render-time snapshot:
+      // a cancel landing after busy cleared but before this effect ran has
+      // already removed it from the mirror, and dispatching the snapshot's
+      // head would send a message the user watched disappear.
+      const next = pgQueueRef.current[id]?.[0]
+      if (!next || busyRef.current[id] || dispatchedQueueIds.current.has(next.queueId)) continue
+      dispatchedQueueIds.current.add(next.queueId)
+      pgQueueRef.current[id] = (pgQueueRef.current[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId)
+      setPgQueueBy((cur) => ({ ...cur, [id]: (cur[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId) }))
+      sendTurn(id, next.agentId, next.text, next.image, next.conversationId, next.participants)
+    }
+  }, [pgQueueBy, pgBusyBy, sendTurn])
+
+  const getPgQueue = useCallback((id: string) => pgQueueBy[id] ?? NO_QUEUE, [pgQueueBy])
+  const pgCancelQueued = useCallback((id: string, queueId: string): void => {
+    pgQueueRef.current[id] = (pgQueueRef.current[id] ?? NO_QUEUE).filter((q) => q.queueId !== queueId)
+    setPgQueueBy((cur) => {
+      const queue = cur[id]
+      if (!queue?.some((q) => q.queueId === queueId)) return cur
+      return { ...cur, [id]: queue.filter((q) => q.queueId !== queueId) }
+    })
+  }, [])
 
   /** Switch the session's model (fire-and-forget over the conversation socket). Updates
    *  the local model optimistically so the dropdown reflects the choice at once; the
@@ -1147,7 +1258,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string) => pgSessions[id] ?? Object.values(pgSessions).find((session) => session.realSessionId === id),
     [pgSessions]
   )
-  const getPgInput = useCallback((id: string) => pgInputBy[id] ?? '', [pgInputBy])
+  const getPgInput = useCallback((id: string) => pgDrafts.current[id] ?? '', [])
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
@@ -1169,6 +1280,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     () => ({
       getPgInput,
       setPgInput,
+      subscribePgDraft,
       getPgImage,
       setPgImage,
       getPgWorktree,
@@ -1177,6 +1289,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      getPgQueue,
+      pgCancelQueued,
       pgSetModel,
       pgSetEffort,
       pgSetPermissionPreset,
@@ -1191,6 +1305,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [
       getPgInput,
       setPgInput,
+      subscribePgDraft,
       getPgImage,
       setPgImage,
       getPgWorktree,
@@ -1199,6 +1314,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      getPgQueue,
+      pgCancelQueued,
       pgSetModel,
       pgSetEffort,
       pgSetPermissionPreset,
@@ -1219,4 +1336,26 @@ export function usePlayground(): PlaygroundData {
   const ctx = useContext(Ctx)
   if (!ctx) throw new Error('usePlayground must be used within <PlaygroundProvider>')
   return ctx
+}
+
+/** Reactive view of one session's composer draft. Only the calling component
+ *  re-renders on keystrokes — the provider context itself stays untouched. */
+export function usePgDraft(id: string): string {
+  const { getPgInput, subscribePgDraft } = usePlayground()
+  return useSyncExternalStore(
+    subscribePgDraft,
+    () => getPgInput(id),
+    () => ''
+  )
+}
+
+/** Reactive empty/non-empty flag for one session's draft — for send-button
+ *  enablement in big views: it only re-renders them when the flag flips. */
+export function usePgDraftHasText(id: string): boolean {
+  const { getPgInput, subscribePgDraft } = usePlayground()
+  return useSyncExternalStore(
+    subscribePgDraft,
+    () => getPgInput(id).trim().length > 0,
+    () => false
+  )
 }
