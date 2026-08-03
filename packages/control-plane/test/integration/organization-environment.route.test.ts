@@ -671,6 +671,62 @@ describe('organization environment — daemon feature gate', () => {
     expect(await prisma.organizationEnvironmentAssignment.count({ where: { entryId: entry.id } })).toBe(0)
   })
 
+  it('SKIPS an agent on an incompatible daemon from `all` enrollment instead of refusing', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
+    await seedDaemon(prisma, LEGACY_DAEMON, { capabilities: LEGACY })
+    const capableAgent = randomUUID()
+    const legacyAgent = randomUUID()
+    await seedAgent(prisma, capableAgent, { daemonId: DAEMON, name: 'capable-bot' })
+    await seedAgent(prisma, legacyAgent, { daemonId: LEGACY_DAEMON, name: 'legacy-skip-bot' })
+    const control = new RecordingControl()
+    const http = app({ control })
+
+    const created = await createEntry(http, { key: 'SKIP_ALL', kind: 'variable', value: 'v', audience: 'all' })
+    expect(created.status).toBe(201)
+    expect(created.entry.visibleAgentIds).toContain(capableAgent)
+    expect(created.entry.visibleAgentIds).not.toContain(legacyAgent)
+    expect(
+      await prisma.organizationEnvironmentAssignment.count({
+        where: { entryId: created.entry.id, agentId: legacyAgent }
+      })
+    ).toBe(0)
+    // Nothing was replicated to the daemon that cannot safely apply it.
+    expect(control.upserts.filter((u) => u.request.agentId === legacyAgent)).toEqual([])
+    expect(agentEnvOf(control.last(capableAgent)!)).toEqual({ SKIP_ALL: 'v' })
+  })
+
+  it('skips an incompatible agent on a retarget to `all`, but still gates rotation to a BOUND one', async () => {
+    await seedDaemon(prisma, LEGACY_DAEMON, { capabilities: LEGACY })
+    const legacyAgent = randomUUID()
+    await seedAgent(prisma, legacyAgent, { daemonId: LEGACY_DAEMON, name: 'legacy-retarget-bot' })
+    const http = app({ control: new RecordingControl() })
+    const entry = (await createEntry(http, { key: 'RETARGET', kind: 'variable', value: 'v', audience: 'selected' }))
+      .entry
+
+    const retarget = await http.app.inject({
+      method: 'PATCH',
+      url: `${ENV}/${entry.id}`,
+      payload: { expectedVersion: entry.version, audience: 'all' }
+    })
+    expect(retarget.statusCode).toBe(200)
+    expect(
+      await prisma.organizationEnvironmentAssignment.count({ where: { entryId: entry.id, agentId: legacyAgent } })
+    ).toBe(0)
+
+    // A binding that already exists (e.g. created before the daemon downgraded)
+    // cannot be skipped: the new value genuinely reaches it, so rotation refuses.
+    await prisma.organizationEnvironmentAssignment.create({
+      data: { orgId: DEFAULT_ORG_ID, entryId: entry.id, agentId: legacyAgent }
+    })
+    const rotate = await http.app.inject({
+      method: 'PATCH',
+      url: `${ENV}/${entry.id}`,
+      payload: { expectedVersion: entry.version + 1, value: 'v2' }
+    })
+    expect(rotate.statusCode).toBe(409)
+    expect(rotate.body).toContain('does not yet support')
+  })
+
   it('still allows WITHDRAWING a credential from an agent on an older daemon', async () => {
     await seedDaemon(prisma, LEGACY_DAEMON, { capabilities: LEGACY })
     const legacyAgent = randomUUID()

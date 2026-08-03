@@ -37,7 +37,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { ctxOf, denyNonOwner, orgOf } from '../rbac.js'
-import { AgentId, type OrgId } from '../../domain/ids.js'
+import { AgentId, type DaemonId, type OrgId } from '../../domain/ids.js'
 import { canEdit, canView, type ViewCtx } from '../../authorization/policy.js'
 import type {
   OrganizationEnvironmentEntryRecord,
@@ -135,13 +135,43 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
       )
     }
 
+    /** Does this placed agent's daemon persist and enforce `configRevision`? An
+     *  unplaced agent is always fine (placement re-checks the feature), and an
+     *  unknown/never-registered daemon cannot be proven compatible — the gate
+     *  never relies on lenient behavior from an unverified daemon. */
+    const onCompatibleDaemon = async (daemonId: DaemonId | null): Promise<boolean> => {
+      if (daemonId === null) return true
+      const daemon = await deps.registry.get(daemonId)
+      return !!daemon?.capabilities.features.includes(AGENT_CONFIG_REVISION_FEATURE)
+    }
+
     /**
-     * Rollout gate (§10 step 3). An organization-environment write is admitted only
-     * when every affected PLACED agent sits on a daemon that persists and enforces
-     * `configRevision`. Full-map replacement is only safe behind that fence: on an
-     * older daemon a late-completing older snapshot could reinstate a rotated or
-     * deleted value. An unplaced bound agent may be saved — placement then requires
-     * the same daemon feature.
+     * The subset of `agentIds` on an incompatible daemon — the agents `all`
+     * enrollment SKIPS (§10 step 3) rather than letting one stale daemon block an
+     * organization-wide entry. A skipped agent stays unbound until a later
+     * authorized configuration write enrolls it, by which point rotation and
+     * placement gates protect it. Callers pass only caller-editable ids, so the
+     * result is always safe to act on (and count in logs).
+     */
+    const incompatiblePlacedAgentIds = async (orgId: OrgId, agentIds: readonly string[]): Promise<string[]> => {
+      if (agentIds.length === 0) return []
+      const wanted = new Set(agentIds)
+      const placed = (await deps.repos.agent.list(orgId)).filter((agent) => wanted.has(agent.id))
+      const out: string[] = []
+      for (const agent of placed) {
+        if (!(await onCompatibleDaemon(agent.daemonId))) out.push(agent.id)
+      }
+      return out
+    }
+
+    /**
+     * Rollout gate (§10 step 3) for the writes that CANNOT skip an agent: an
+     * explicitly requested binding (the caller named the agent, so a silent
+     * no-op would lie) and a value rotation that genuinely reaches every
+     * already-bound agent. Full-map replacement is only safe behind the
+     * `configRevision` fence: on an older daemon a late-completing older snapshot
+     * could reinstate a rotated or deleted value. An unplaced bound agent may be
+     * saved — placement then requires the same daemon feature.
      *
      * Returns the message to refuse with, or null when every affected agent is fine.
      *
@@ -171,12 +201,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
       // what keeps the refusal indistinguishable from a missing agent.
       const inScope = mode === 'requested' ? agents.filter((agent) => canEdit(agent, ctx)) : agents
       for (const agent of inScope) {
-        if (agent.daemonId === null) continue
-        const daemon = await deps.registry.get(agent.daemonId)
-        // An unknown/never-registered daemon cannot be proven compatible. Treat it
-        // as incompatible rather than assuming: the whole point of the gate is that
-        // the feature never relies on lenient behavior from an unverified daemon.
-        if (!daemon?.capabilities.features.includes(AGENT_CONFIG_REVISION_FEATURE)) {
+        if (!(await onCompatibleDaemon(agent.daemonId))) {
           // Naming is safe only for an agent the caller can already see.
           return canView(agent, ctx)
             ? `agent ${agent.name} runs on a daemon that does not yet support organization environment entries; upgrade it first`
@@ -285,7 +310,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
           tags: [Tag.Environment],
           summary: 'Create an organization variable or secret',
           description:
-            'Defines one organization-owned entry and targets it at all agents or a selected set. A secret value is write-only: it is accepted here and never returned. `all` enrolls every agent the caller may edit and auto-enrolls agents on later authorized configuration writes; it never reaches an agent the caller cannot manage. `key` and `kind` are immutable afterwards.',
+            'Defines one organization-owned entry and targets it at all agents or a selected set. A secret value is write-only: it is accepted here and never returned. `all` enrolls every agent the caller may edit and auto-enrolls agents on later authorized configuration writes; it never reaches an agent the caller cannot manage, and it skips an agent placed on a daemon that does not yet support organization environment entries (that agent enrolls on a later configuration write once its daemon is upgraded). `key` and `kind` are immutable afterwards.',
           operationId: 'createOrganizationEnvironmentEntry',
           body: CreateOrganizationEnvironmentEntryBody,
           response: { 201: OrganizationEnvironmentEntryDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -295,13 +320,24 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
         if (denyNonOwner(req, reply)) return
         const orgId = orgOf(req)
         const ctx = ctxOf(req)
-        // Gate every agent this write would reach: the explicit selection, or — for
-        // `all` — the set this caller may edit. The repository re-decides
-        // authorization inside its transaction; this only refuses early rather than
-        // persisting an entry a placed daemon could not safely apply.
-        const gated = req.body.audience === 'all' ? await enrollableAgentIdsOf(orgId, ctx) : (req.body.agentIds ?? [])
-        const blocked = await incompatibleDaemonMessage(orgId, ctx, gated, 'requested')
-        if (blocked) return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: blocked })
+        // Daemon compatibility, two postures: an EXPLICIT selection is gated (the
+        // caller named the agent and can deselect it), while `all` enrollment SKIPS
+        // an agent on an incompatible daemon — one stale daemon must not block an
+        // organization-wide entry. The repository re-decides authorization inside
+        // its transaction; this only shapes what a placed daemon must safely apply.
+        let excludeAgentIds: string[] = []
+        if (req.body.audience === 'all') {
+          excludeAgentIds = await incompatiblePlacedAgentIds(orgId, await enrollableAgentIdsOf(orgId, ctx))
+          if (excludeAgentIds.length > 0) {
+            app.log.info(
+              { orgId, skippedAgents: excludeAgentIds.length },
+              'organization environment `all` enrollment skipped agents on incompatible daemons'
+            )
+          }
+        } else {
+          const blocked = await incompatibleDaemonMessage(orgId, ctx, req.body.agentIds ?? [], 'requested')
+          if (blocked) return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: blocked })
+        }
         // Seal OUTSIDE the transaction: a real cipher may make network calls, and a
         // transaction must never wait on one. Material prepared for a losing write is
         // discarded, never logged.
@@ -315,7 +351,8 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
             ...(req.body.kind === 'variable' ? { variableValue: req.body.value } : {}),
             ...(sealedSecret !== undefined ? { sealedSecret } : {}),
             audience: req.body.audience,
-            ...(req.body.agentIds ? { agentIds: req.body.agentIds } : {})
+            ...(req.body.agentIds ? { agentIds: req.body.agentIds } : {}),
+            ...(excludeAgentIds.length > 0 ? { excludeAgentIds } : {})
           },
           { actorUserId: ctx.userId, viewer: ctx }
         )
@@ -330,7 +367,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
           tags: [Tag.Environment],
           summary: 'Replace a value or retarget an organization entry',
           description:
-            'Replaces the value and/or changes the audience under `expectedVersion`. An omitted value leaves it unchanged, which is how the Console keeps an existing secret while editing other fields. Switching to `all` enrolls every agent the caller may edit and keeps existing delegated bindings; switching to `selected` stops automatic enrollment without revoking bindings to private agents the caller cannot see. `key` and `kind` cannot change — rename or convert by deleting and recreating.',
+            'Replaces the value and/or changes the audience under `expectedVersion`. An omitted value leaves it unchanged, which is how the Console keeps an existing secret while editing other fields. Switching to `all` enrolls every agent the caller may edit (skipping agents on daemons that do not yet support organization environment entries) and keeps existing delegated bindings; switching to `selected` stops automatic enrollment without revoking bindings to private agents the caller cannot see. `key` and `kind` cannot change — rename or convert by deleting and recreating.',
           operationId: 'updateOrganizationEnvironmentEntry',
           params: OrganizationEnvironmentEntryParam,
           body: UpdateOrganizationEnvironmentEntryBody,
@@ -343,27 +380,28 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const existing = await repo.get(orgId, req.params.entryId)
         if (!existing) return missing(reply)
-        // A value replacement re-reaches every currently bound agent; switching to
-        // `all` reaches every agent this caller may edit. Both sets must be on a
-        // compatible daemon.
-        // Two sets with different disclosure rules, so two calls: already-bound
-        // agents are gated in full (the rotation reaches them) but unnamed when the
-        // caller cannot see them, while newly enrolled agents are caller-editable by
-        // construction.
-        const blocked =
-          (await incompatibleDaemonMessage(
-            orgId,
-            ctx,
-            req.body.value !== undefined ? existing.agentIds : [],
-            'bound'
-          )) ??
-          (await incompatibleDaemonMessage(
-            orgId,
-            ctx,
-            req.body.audience === 'all' ? await enrollableAgentIdsOf(orgId, ctx) : [],
-            'requested'
-          ))
+        // A value replacement re-reaches every currently bound agent, so that set
+        // is GATED in full (the rotation genuinely reaches them; an agent the
+        // caller cannot see is described without its name). A switch to `all` only
+        // adds bindings, so newly enrolled agents on an incompatible daemon are
+        // SKIPPED instead — same posture as create.
+        const blocked = await incompatibleDaemonMessage(
+          orgId,
+          ctx,
+          req.body.value !== undefined ? existing.agentIds : [],
+          'bound'
+        )
         if (blocked) return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: blocked })
+        const excludeAgentIds =
+          req.body.audience === 'all'
+            ? await incompatiblePlacedAgentIds(orgId, await enrollableAgentIdsOf(orgId, ctx))
+            : []
+        if (excludeAgentIds.length > 0) {
+          app.log.info(
+            { orgId, entryId: req.params.entryId, skippedAgents: excludeAgentIds.length },
+            'organization environment `all` enrollment skipped agents on incompatible daemons'
+          )
+        }
         const sealedSecret =
           existing.kind === 'secret' && req.body.value !== undefined
             ? await deps.repos.organizationEnvironmentSecret.seal(req.body.value)
@@ -375,7 +413,8 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
           {
             ...(existing.kind === 'variable' && req.body.value !== undefined ? { variableValue: req.body.value } : {}),
             ...(sealedSecret !== undefined ? { sealedSecret } : {}),
-            ...(req.body.audience !== undefined ? { audience: req.body.audience } : {})
+            ...(req.body.audience !== undefined ? { audience: req.body.audience } : {}),
+            ...(excludeAgentIds.length > 0 ? { excludeAgentIds } : {})
           },
           { actorUserId: ctx.userId, viewer: ctx }
         )
