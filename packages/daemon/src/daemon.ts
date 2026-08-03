@@ -135,6 +135,7 @@ import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord
 import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
+import { manifestFor } from './platforms/manifest.js'
 import {
   applySlackAction as applySlackActionExternal,
   clearStaleSlackReplyFooters as clearStaleSlackReplyFootersExternal,
@@ -248,7 +249,8 @@ import {
   WireFeishuCardActionEvent,
   gitRepoLabel,
   normalizeGitCloneUrl,
-  normalizeGithubRepoUrl
+  normalizeGithubRepoUrl,
+  originKindOf
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
@@ -3778,7 +3780,10 @@ export class Daemon {
     const resolver = this.channelNameResolver
     if (!resolver) return
     for (const row of this.store.listSessions()) {
-      if (row.platform !== 'discord' && row.platform !== 'telegram' && row.platform !== 'feishu') continue
+      // Only chat platforms without a bulk membership snapshot need per-session
+      // channel resolution; Slack's analog is refreshChannels' bulk snapshot.
+      if (originKindOf(row.platform) !== 'chat' || manifestFor(row.platform).membershipEnumeration !== 'observed')
+        continue
       // Legacy unscoped sessions cannot be attributed to the current physical bot.
       // In particular, never use a replacement bot to look up an old bot's chats.
       if (!row.transportScope) continue
@@ -10371,13 +10376,7 @@ export class Daemon {
     }
     if (msg.sender.avatarUrl && msg.transportScope)
       this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
-    if (
-      this.cfg.features.turnFinalContextRefresh &&
-      (msg.platform === 'slack' ||
-        msg.platform === 'telegram' ||
-        msg.platform === 'discord' ||
-        msg.platform === 'feishu')
-    ) {
+    if (this.cfg.features.turnFinalContextRefresh && originKindOf(msg.platform) === 'chat') {
       this.recordObservedInbound(msg, agentId)
     }
     return new Promise<string | null>((resolve, reject) => {
@@ -11225,7 +11224,7 @@ export class Daemon {
       // A first-seen Telegram/Discord/Feishu chat widens the observed reachable set
       // (approach-A discovery) — report it after the session row exists so the console
       // cannot miss a name lookup that completed during cold session startup.
-      if (msg.platform === 'telegram' || msg.platform === 'discord' || msg.platform === 'feishu') {
+      if (originKindOf(msg.platform) === 'chat' && manifestFor(msg.platform).membershipEnumeration === 'observed') {
         this.refreshObservedChannels()
       }
     }
@@ -11261,13 +11260,7 @@ export class Daemon {
       attemptReplyText: '',
       attemptAnswerUpdates: [],
       stageAnswer:
-        this.cfg.features.turnFinalContextRefresh &&
-        !webchat &&
-        !githubReply &&
-        (msg.platform === 'slack' ||
-          msg.platform === 'telegram' ||
-          msg.platform === 'discord' ||
-          msg.platform === 'feishu'),
+        this.cfg.features.turnFinalContextRefresh && !webchat && !githubReply && originKindOf(msg.platform) === 'chat',
       webchatRefresh: this.cfg.features.turnFinalContextRefresh && !!webchat && msg.platform === 'webchat',
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
@@ -12759,6 +12752,9 @@ export class Daemon {
       // Telegram/Discord/Feishu have no per-turn status bar — session state is queried on
       // demand via `/status` (handleCommand). Record the dedup key so the shared bookkeeping
       // stays consistent, but emit nothing.
+      // These four literals are class (c) `status-bar renderer` per the S0 audit, NOT a
+      // manifest capability: they are read from `Pending`, i.e. after the turn and its
+      // output surface exist. They retire with the chrome/status-bar strategy extraction.
       p.lastStatusBar = key
     } else {
       // Slack: ensure/refresh the status bar from turn START unconditionally — it must be
