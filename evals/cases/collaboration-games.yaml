@@ -45,6 +45,23 @@
       value: file://assertions/game-result.ts
       metric: game
 
+- description: Werewolf · 7 players · §6 structured actions · private-role canaries
+  metadata:
+    game: werewolf
+  vars:
+    case: |
+      {
+        "kind": "game",
+        "id": "werewolf-minimal-v1",
+        "game": "werewolf",
+        "seed": 42,
+        "maxRounds": 6
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
 - description: Same-room counting · alternate seed
   metadata:
     game: counting

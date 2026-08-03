@@ -202,6 +202,26 @@ describe('collaboration game Promptfoo provider (§12)', () => {
     expect(withAgents.error).toContain('fixed §10.2 topology')
   })
 
+  it('dispatches werewolf cases to the werewolf engine with the fixed §10.3 topology', async () => {
+    const runWerewolfGame = vi.fn(async (_options: { seed?: number }) => fakeResult())
+    const runGame = vi.fn(async (_options: Parameters<typeof runSameRoomCounting>[0]) => fakeResult())
+    const provider = new CollaborationGameProvider(
+      { config: { artifactRoot: scratch() } },
+      { runGame, runWerewolfGame }
+    )
+    const response = await provider.callApi(
+      JSON.stringify({ kind: 'game', id: 'ww', game: 'werewolf', seed: 4, maxRounds: 5 })
+    )
+    expect(response.error).toBeUndefined()
+    expect(runGame).not.toHaveBeenCalled()
+    expect(runWerewolfGame).toHaveBeenCalledOnce()
+    expect(runWerewolfGame.mock.calls[0]![0]).toMatchObject({ seed: 4, maxRounds: 5 })
+    const withAgents = await provider.callApi(
+      JSON.stringify({ kind: 'game', id: 'ww', game: 'werewolf', agentIds: ['x', 'y'] })
+    )
+    expect(withAgents.error).toContain('seven-player topology')
+  })
+
   it('parses defaults per the §12 case shape', () => {
     expect(parseGameCase({ kind: 'game', id: 'defaults', game: 'counting' })).toEqual({
       kind: 'game',

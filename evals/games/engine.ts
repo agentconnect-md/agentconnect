@@ -18,6 +18,7 @@ import { callDaemonTool, daemonMcpBinding, type DaemonMcpBinding } from './mcp-c
 import { prepareGameSubject, prepareScriptedSubject, type GameSubjectSpec } from './subject.js'
 import { compileTopology } from './topology.js'
 import type { GameTopologyManifest } from './types.js'
+import { assignWerewolfRoles, WerewolfGame } from './werewolf.js'
 import { ArenaWorld } from './world.js'
 
 export { prepareScriptedSubject as scaffoldSubject }
@@ -147,6 +148,191 @@ export function scriptedCrossRoomHostFactory(): (
       cancel: async () => {},
       stop: async () => {}
     }
+  }
+}
+
+// ── Werewolf (§14 step 6) ───────────────────────────────────────────────────
+
+export const WEREWOLF_PLAYERS = [
+  'player-1',
+  'player-2',
+  'player-3',
+  'player-4',
+  'player-5',
+  'player-6',
+  'player-7'
+] as const
+
+export function werewolfDmRoomAlias(playerAlias: string): string {
+  return `dm-${playerAlias}`
+}
+
+/** The public room, each player's private referee DM, and a REAL private wolf
+ *  den whose membership follows the seeded role assignment. */
+export function werewolfManifest(options: { seed: number }): GameTopologyManifest {
+  const players = [...WEREWOLF_PLAYERS]
+  const roles = assignWerewolfRoles(players, options.seed)
+  const wolves = players.filter((alias) => roles.get(alias) === 'werewolf')
+  return {
+    game: 'werewolf',
+    seed: options.seed,
+    agents: players.map((alias) => ({ id: alias })),
+    rooms: [
+      { id: 'village-square', platform: 'slack', members: players },
+      { id: 'wolf-den', platform: 'slack', members: wolves, isPrivate: true },
+      ...players.map((alias) => ({
+        id: werewolfDmRoomAlias(alias),
+        platform: 'slack' as const,
+        members: [alias],
+        dm: true
+      }))
+    ]
+  }
+}
+
+/**
+ * Scripted werewolf policy — deterministic role-following (no strategy):
+ * role/partner learned from the private referee message; night actions and day
+ * votes go through the REAL §6 evaluation tools over the daemon MCP socket;
+ * public speech stays natural language and never repeats private content.
+ */
+export function scriptedWerewolfHostFactory(): (
+  agent: { id: string; name?: string },
+  onUpdate: (sessionId: string, update: unknown) => void
+) => unknown {
+  return (agent, onUpdate) => {
+    let sessions = 0
+    const bindings = new Map<string, DaemonMcpBinding>()
+    const state: { role?: string; partner?: string; knownWolf?: string } = {}
+    const chunk = (sessionId: string, text: string) =>
+      onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+    const listAfter = (text: string, label: string): string[] => {
+      const match = new RegExp(`${label}:\\s*([^.\\n]+)`).exec(text)
+      return match
+        ? match[1]!
+            .split(',')
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        : []
+    }
+    const act = async (sessionId: string, tool: string, target: string): Promise<string> => {
+      const binding = bindings.get(sessionId)
+      if (!binding) return 'no daemon tools in this session'
+      const result = await callDaemonTool(binding, tool, { target })
+      return result.ok ? `${tool} done` : `${tool} failed: ${result.error ?? 'unknown error'}`
+    }
+    return {
+      start: async () => {},
+      newSession: async (_cwd: string, mcpServers?: unknown) => {
+        const sessionId = `scripted-${agent.id.slice(0, 8)}-${(sessions += 1)}`
+        const binding = daemonMcpBinding(mcpServers)
+        if (binding) bindings.set(sessionId, binding)
+        return sessionId
+      },
+      hasSession: () => true,
+      modelOptions: () => ({ current: 'scripted-werewolf', models: ['scripted-werewolf'] }),
+      prompt: async (sessionId: string, blocks: { text?: string }[]) => {
+        const text = blocks.map((block) => block.text ?? '').join('\n')
+        const role = /Your role: (\w+)/.exec(text)
+        if (role) {
+          state.role = role[1]
+          const partner = /Your fellow wolf: (\S+?)\.?(?:\s|$)/.exec(text)
+          if (partner && partner[1] !== 'none') state.partner = partner[1]
+          chunk(sessionId, 'acknowledged')
+          return { stopReason: 'end_turn' }
+        }
+        const inspection = /Inspection result: (\S+) is (a werewolf|not a werewolf)/.exec(text)
+        if (inspection) {
+          if (inspection[2] === 'a werewolf') state.knownWolf = inspection[1]
+          chunk(sessionId, 'noted')
+          return { stopReason: 'end_turn' }
+        }
+        if (/NIGHT \d+/.test(text)) {
+          if (state.role === 'werewolf') {
+            const targets = listAfter(text, 'Targets')
+            chunk(sessionId, targets[0] ? await act(sessionId, 'kill', targets[0]) : 'no targets')
+          } else if (state.role === 'seer') {
+            const living = listAfter(text, 'Living').filter((alias) => alias !== agent.name)
+            chunk(sessionId, living[0] ? await act(sessionId, 'inspect', living[0]) : 'no one to inspect')
+          } else if (state.role === 'doctor') {
+            const living = listAfter(text, 'Living')
+            chunk(sessionId, living[0] ? await act(sessionId, 'protect', living[0]) : 'no one to protect')
+          } else {
+            chunk(sessionId, 'sleeping')
+          }
+          return { stopReason: 'end_turn' }
+        }
+        if (/DAY \d+/.test(text)) {
+          const living = listAfter(text, 'Living players')
+          const candidates = living.filter((alias) => alias !== agent.name)
+          const target =
+            state.knownWolf && living.includes(state.knownWolf)
+              ? state.knownWolf
+              : state.role === 'werewolf'
+                ? candidates.find((alias) => alias !== state.partner)
+                : candidates[0]
+          if (!target) {
+            chunk(sessionId, 'abstaining')
+            return { stopReason: 'end_turn' }
+          }
+          const outcome = await act(sessionId, 'vote', target)
+          chunk(sessionId, `I suspect ${target}. (${outcome})`)
+          return { stopReason: 'end_turn' }
+        }
+        chunk(sessionId, 'waiting')
+        return { stopReason: 'end_turn' }
+      },
+      cancel: async () => {},
+      stop: async () => {}
+    }
+  }
+}
+
+export interface WerewolfGameRunOptions {
+  seed?: number
+  artifactDir: string
+  maxRounds?: number
+  maxSteps?: number
+  timeoutMs?: number
+  subject?: GameSubjectSpec
+  keepSubject?: boolean
+}
+
+export async function runWerewolf(options: WerewolfGameRunOptions): Promise<CollaborationGameResult> {
+  const seed = options.seed ?? 42
+  const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
+  const topology = compileTopology(werewolfManifest({ seed }))
+  const world = new ArenaWorld(topology)
+  const game = new WerewolfGame({
+    world,
+    publicRoomAlias: 'village-square',
+    wolfDenAlias: 'wolf-den',
+    dmRoomAliasFor: werewolfDmRoomAlias,
+    ...(options.maxRounds !== undefined ? { maxRounds: options.maxRounds } : {})
+  })
+  const subject = prepareGameSubject(topology, subjectSpec)
+  try {
+    const runner = new CollaborationGameRunner({
+      root: subject.root,
+      world: game,
+      artifactDir: options.artifactDir,
+      game: 'werewolf',
+      seed,
+      mode: 'deterministic',
+      subjectKind: subjectSpec.kind,
+      ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedWerewolfHostFactory() as never } : {}),
+      capabilityProfile: { memory: 'off', collaboration: 'configured' },
+      limits: {
+        maxSteps: options.maxSteps ?? 60,
+        timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 240_000 : 30 * 60_000)
+      },
+      agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias })),
+      // Real subjects carry template credentials; every artifact writer redacts them.
+      secrets: subject.secrets
+    })
+    return await runner.run()
+  } finally {
+    if (!options.keepSubject) subject.cleanup()
   }
 }
 

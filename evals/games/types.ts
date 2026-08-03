@@ -21,6 +21,10 @@ export interface GameRoomSpec {
    *  they are not members (§7.2 distinguishes `channel_not_visible` from
    *  `not_a_member`). */
   observers?: string[]
+  /** Direct-message conversation (referee↔agent private channel). */
+  dm?: boolean
+  /** Private group room (e.g. the werewolves' den) — visible only to members. */
+  isPrivate?: boolean
 }
 
 export interface GameAgentSpec {
@@ -41,6 +45,8 @@ export interface CompiledRoom {
   channel: string
   /** Platform-shaped thread coordinate the room conversation lives in. */
   thread: string
+  isDm: boolean
+  isPrivate: boolean
   memberAgentIds: string[]
   memberIntegrationIds: string[]
   observerIntegrationIds: string[]
