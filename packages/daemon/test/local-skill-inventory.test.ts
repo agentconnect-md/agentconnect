@@ -77,6 +77,19 @@ describe('local skill inventory', () => {
     expect(skills.map((s) => s.name)).toEqual(['ok']) // no 'stolen' (symlinked root), no 'linkmd' (symlinked SKILL.md)
   })
 
+  it('lists a skill present under both roots only once', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'ac-localskills-'))
+    const stateDir = await mkdtemp(join(tmpdir(), 'ac-skillstate-'))
+    // Same skill name installed/committed under both harness roots.
+    await writeSkill(cwd, '.claude/skills', 'update-model-pricing', 'name: update-model-pricing\ndescription: prices')
+    await writeSkill(cwd, '.agents/skills', 'update-model-pricing', 'name: update-model-pricing\ndescription: prices')
+    await writeSkill(cwd, '.claude/skills', 'solo', 'name: solo\ndescription: one')
+
+    const skills = await listLocalSkills(cwd, stateDir)
+    expect(skills.map((s) => s.name)).toEqual(['solo', 'update-model-pricing']) // deduped, not two entries
+    expect(skills.filter((s) => s.name === 'update-model-pricing')).toHaveLength(1)
+  })
+
   it('returns [] for an unmaterialized workspace with no skill roots', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'ac-localskills-'))
     const stateDir = await mkdtemp(join(tmpdir(), 'ac-skillstate-'))
