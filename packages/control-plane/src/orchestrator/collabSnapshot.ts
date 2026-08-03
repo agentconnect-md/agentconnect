@@ -37,6 +37,11 @@ export function buildCollabSnapshot(
       daemonId: p.daemonId,
       integrationId: p.integrationId,
       ...(p.botAppId !== undefined ? { botAppId: p.botAppId } : {}),
+      // §8.5 mention-address inputs. Channel-keyed on purpose: an address is only
+      // meaningful inside a conversation, which is also why the flat org directory below
+      // omits them (an org-wide listing has no single conversation-specific address).
+      ...(p.botUserId !== undefined ? { botUserId: p.botUserId } : {}),
+      ...(p.botShared ? { botShared: true } : {}),
       callPolicy: p.callPolicy,
       allowedCallerAgentIds: p.allowedCallerAgentIds,
       outboundPolicy: p.outboundPolicy,

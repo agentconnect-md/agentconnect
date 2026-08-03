@@ -35,10 +35,24 @@ export const CollabAgentPlacement = z.object({
   agentId: z.string().uuid(),
   daemonId: z.string().uuid(),
   integrationId: z.string().uuid().optional(),
-  /** Public Slack app id (`A…`) for this agent's bot. Receivers use it only to
-   *  recognize AgentConnect-authored platform messages and keep agent-to-agent
-   *  activation on the trusted `messageAgent` path. */
+  /** Public Slack app id (`A…`) for this agent's bot. Receivers use it to recognize
+   *  AgentConnect-authored platform messages — the first half of verifying an
+   *  authorship claim (send-message-routing-rework.md §4). */
   botAppId: z.string().optional(),
+  /** Public platform member id this agent's bot posts as (Slack `U…`) — the id a
+   *  `<@…>` mention resolves to. With {@link botShared} and `name` it is the complete
+   *  input for the conversation-specific mention ADDRESS
+   *  (send-message-routing-rework.md §8.5), which both directions need: rendering an
+   *  exact address to post, and resolving an inbound mention back to an agent.
+   *  Public metadata, never a credential. */
+  botUserId: z.string().optional(),
+  /** True when {@link botUserId} backs MORE THAN ONE agent (a shared bot). The bot user
+   *  id alone then cannot identify an agent, so its address carries the agent slug too
+   *  (`<@U_SHARED> reviewer`) and a BARE mention of it addresses no specific agent —
+   *  which is why a shared bot with no exact author claim fails closed at ingress (§4)
+   *  and why a bare shared-bot mention from an agent must not fall back to the channel
+   *  default (§6). */
+  botShared: z.boolean().optional(),
   callPolicy: z.enum(['all', 'selected']).default('all'),
   allowedCallerAgentIds: z.array(z.string()).default([]),
   /** Caller-side authorization. Effective A→B access requires A's outbound

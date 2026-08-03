@@ -127,6 +127,7 @@ import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channe
 import { consolidateFeishu, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
+import { resolveSlackMentionedAgents } from '@agentconnect.md/message'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
@@ -1255,6 +1256,18 @@ interface Pending {
   /** Current successfully-delivered agent reply message. `footerKey` records which footer
    *  it owns; progress/tool/reasoning chrome never replaces this pointer. */
   lastReply?: { ts: string; text: string; footerKey?: string }
+  /** send-message-routing-rework.md §5.1: the id of the ONE complete logical response
+   *  this turn produces. Every physical message of a long answer carries it, so a peer
+   *  deduplicates on (responseId, target agent) and activates exactly once even when the
+   *  answer was split across several Slack messages. Minted per turn, never per post. */
+  responseId: string
+  /** The LAST agent-authored conversational message posted this turn, with the exact
+   *  text it currently shows — the message turn finalization re-stamps as
+   *  `delivery_state: 'final'` (§5.5). The text is carried because chat.update REPLACES
+   *  content, so closing the response means re-sending what is already displayed.
+   *  Undefined when the turn posted no conversational body (chrome-only, `none` mode, or
+   *  a headless turn): there is then no response event to close. */
+  lastResponse?: { ts: string; text: string }
   /** Older reply sections whose footer-removal update failed. Retried on the next body
    *  section and once more at finalization so a transient Slack error cannot leave two. */
   staleReplyFooters?: { ts: string; text: string }[]
@@ -11114,6 +11127,9 @@ export class Daemon {
       webchatRefresh: this.cfg.features.turnFinalContextRefresh && !!webchat && msg.platform === 'webchat',
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
+      // One id for this turn's complete logical response (§5.1), minted before any
+      // output can be produced so every physical section of it agrees.
+      responseId: randomUUID(),
       agentId,
       agentName,
       requesterId: msg.sender.id,
@@ -11658,6 +11674,10 @@ export class Daemon {
       // …and any trailing reasoning the agent emitted after its last reply.
       for (const ev of rec.onFinal()) this.recordEvent(agentId, transcriptChannel, statusThread, ev)
       await p.applyChain
+      // Every section has now been delivered, so the complete logical response exists and
+      // exactly one of its messages can be marked final (§5.5). Must run AFTER applyChain:
+      // before it, the message being closed might not be the last one posted.
+      await this.finalizeSlackResponse(p)
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable
       // capture outbox. Webchat carries the canonical per-turn id separately from
@@ -12154,12 +12174,39 @@ export class Daemon {
 
   /** Agent-authored conversation messages add a stable author id to Slack metadata.
    *  Peer daemons use it during thread backfill, so shared/custom bot ids never replace
-   *  the Agent's name and icon in the Console transcript. */
+   *  the Agent's name and icon in the Console transcript.
+   *
+   *  They also carry this turn's STREAMING response block (send-message-routing-rework.md
+   *  §5.4): the logical response id, the author's trusted turn depth, and an explicitly
+   *  `streaming` lifecycle position. A streaming event never enters recipient routing —
+   *  its text may still be a prefix — so the recipient set is deliberately empty until
+   *  finalization resolves it from the complete response. */
   private slackAgentPostOptions(
-    p: Pick<Pending, 'platform' | 'agentId' | 'agentName' | 'iconUrl'>
+    p: Pick<Pending, 'platform' | 'agentId' | 'agentName' | 'iconUrl'> &
+      Partial<Pick<Pending, 'responseId' | 'callMeta'>>
   ): SlackPostOptions | undefined {
     const identity = this.slackAgentIdentityOptions(p)
-    return identity ? { ...identity, agentAuthorId: p.agentId } : undefined
+    if (!identity) return undefined
+    return {
+      ...identity,
+      agentAuthorId: p.agentId,
+      // No `responseId` ⇒ this post is not part of an agent's logical response at all
+      // (the cron/hook trigger ANCHOR takes this path): it carries authorship for the
+      // transcript, but it closes no response and must never be routed as one.
+      ...(p.responseId
+        ? {
+            response: {
+              responseId: p.responseId,
+              deliveryState: 'streaming' as const,
+              // The SOURCE depth: this turn's own trusted depth, BEFORE the delivery this
+              // post may become. A human/root turn carries none and is depth 0; each
+              // routing edge adds exactly one (§4.1). The model can neither set nor reset it.
+              hopCount: p.callMeta?.hopCount ?? 0,
+              mentionedAgentIds: []
+            }
+          }
+        : {})
+    }
   }
 
   /** Opaque routing target attached to daemon-rendered interactive Slack blocks when
@@ -12242,6 +12289,11 @@ export class Daemon {
     const agentPostOptions = this.slackAgentPostOptions(p)
     const options = attribution ? { ...agentPostOptions, trailingBlocks: attribution.blocks } : agentPostOptions
     const ts = await conn.postMessage(p.channel, text, p.thread, options)
+    // Remember the newest conversational body so finalization knows which message closes
+    // the response (§5.5). Tracked for every agent-authored body, including the
+    // `attributed:false` sections, because "last posted" is a fact about ordering, not
+    // about footer ownership.
+    if (ts) p.lastResponse = { ts, text }
     if (ts && trackReply) {
       if (attribution)
         await this.clearStaleSlackReplyFooters(
@@ -12263,6 +12315,9 @@ export class Daemon {
    *  metadata refresh. */
   private async updateSlackLiveReply(conn: SlackConnection, p: Pending, text: string): Promise<void> {
     if (!p.liveReplyTs) return
+    // minimal mode edits ONE message as the answer streams, so the text finalization must
+    // re-send is the latest edit, not the text this message was born with (§5.5).
+    if (p.lastResponse?.ts === p.liveReplyTs) p.lastResponse.text = text
     const attribution = p.attribution
     if (!attribution) {
       await conn.updateMessage(p.channel, p.liveReplyTs, text, false, p.agentId)
@@ -12284,6 +12339,50 @@ export class Daemon {
       p.lastReply.text = text
       p.lastReply.footerKey = attribution.key
     }
+  }
+
+  /**
+   * Close this turn's logical response (send-message-routing-rework.md §5.5): resolve
+   * the recipient set from the COMPLETE response and re-stamp the last delivered message
+   * as the single `final` event.
+   *
+   * Why the recipient set is computed here rather than per post: a streamed answer may
+   * put its `@mention` in section one and finish in section three. Reparsing only the
+   * last physical message would lose the mention entirely; carrying the whole set on the
+   * final event is what lets a peer be selected once, with complete context, no matter
+   * where in the answer it was addressed (§5.2/§5.7).
+   *
+   * The set is resolved against the CONVERSATION's directory — the same bidirectional
+   * mapping the target will use — so author and target cannot disagree about who was
+   * addressed. Self-mentions are dropped here as well as at ingress: §2.3 says an author
+   * cannot activate itself, and stating that in the metadata is clearer than shipping a
+   * recipient the reader must know to discard.
+   *
+   * Best-effort throughout. A turn with no conversational body has no response to close;
+   * a failed edit leaves the message `streaming`, which means unrouted — the safe
+   * direction, since the alternative is routing an answer never confirmed complete.
+   */
+  private async finalizeSlackResponse(p: Pending): Promise<void> {
+    if (p.platform !== 'slack') return
+    const body = p.lastResponse
+    const conn = p.conn as SlackConnection | undefined
+    if (!body || !conn) return
+    const orgId = this.cpCollab.orgForAgent(p.agentId)
+    const mentionedAgentIds = orgId
+      ? resolveSlackMentionedAgents(p.replyText, this.cpCollab.mentionDirectory(orgId, 'slack', p.channel)).filter(
+          (id) => id !== p.agentId
+        )
+      : []
+    // Re-supply exactly what the message already shows: chat.update replaces content, and
+    // the footer belongs to this message only while `lastReply` still points at it.
+    const ownsFooter = p.lastReply?.ts === body.ts && p.lastReply.footerKey !== undefined
+    const blocks = [{ type: 'markdown', text: body.text }, ...(ownsFooter && p.attribution ? p.attribution.blocks : [])]
+    await conn.finalizeResponse(p.channel, body.ts, blocks, body.text, p.agentId, {
+      responseId: p.responseId,
+      deliveryState: 'final',
+      hopCount: p.callMeta?.hopCount ?? 0,
+      mentionedAgentIds
+    })
   }
 
   private async applySlackAction(p: Pending, action: SlackAction): Promise<void> {

@@ -2,7 +2,11 @@ import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
 import { decodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
-import { extractSlackMessageText, isSlackSystemMessage } from '@agentconnect.md/message'
+import {
+  extractSlackMessageText,
+  isSlackSystemMessage,
+  normalizeSlackResponseFinalization
+} from '@agentconnect.md/message'
 import type { Agent } from '../agents/agent-schema.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
@@ -593,9 +597,30 @@ export class SlackConnection {
     // `message.channels`/`message.groups`/`message.im` bot-event subscriptions).
     this.app.message(async ({ message }) => {
       const ev = message as SlackMessageEvent
-      if (ev.type !== 'message' || !ev.channel || !isRoutableMessageEvent(ev)) {
+      if (ev.type !== 'message' || !ev.channel) {
         log?.debug(
           `slack: inbound event ignored (type=${ev.type}, subtype=${ev.subtype ?? 'none'}, channel=${ev.channel ?? 'none'})`
+        )
+        return
+      }
+      // send-message-routing-rework.md §5: edit wrappers stay filtered — EXCEPT the one
+      // that closes an agent's logical response. A streamed answer can only be declared
+      // complete by editing its last message, so dropping every edit would mean no agent
+      // reply could ever be routed. Selective by daemon-written metadata, not by being an
+      // edit: a mid-answer `streaming` edit still returns null here.
+      const finalization = normalizeSlackResponseFinalization(ev, { traceId: this.deps.newTraceId() })
+      if (finalization) {
+        log?.debug(
+          `slack: inbound response finalization ch=${finalization.channel} thread=${finalization.thread ?? 'none'} ` +
+            `author=${finalization.agentAuthorship?.authorAgentId ?? 'unknown'} ` +
+            `recipients=[${finalization.agentAuthorship?.mentionedAgentIds.join(',') ?? ''}]`
+        )
+        this.deps.onMessage(finalization)
+        return
+      }
+      if (!isRoutableMessageEvent(ev)) {
+        log?.debug(
+          `slack: inbound event ignored (type=${ev.type}, subtype=${ev.subtype ?? 'none'}, channel=${ev.channel})`
         )
         return
       }
@@ -956,6 +981,51 @@ export class SlackConnection {
       )
       return res?.ts
     })
+  }
+
+  /**
+   * Re-stamp an already-posted agent reply as the FINAL event of its logical response
+   * (send-message-routing-rework.md §5.5), leaving the visible content byte-identical.
+   *
+   * A streamed answer is posted before its own text is complete, so the daemon cannot
+   * know at post time which message will end up last, nor which agents the COMPLETE
+   * response addresses. Both are only knowable at turn finalization — hence one closing
+   * edit that flips `delivery_state` to `final` and attaches the recipient set resolved
+   * from the whole response. Ingress routes that event and no other, which is what keeps
+   * a half-streamed prefix from prompting a peer (§5.4).
+   *
+   * `blocks` and `text` must be exactly what the message already shows: chat.update
+   * REPLACES content, and it also drops any metadata that isn't re-supplied — so the
+   * caller passes the content back unchanged and this method re-attaches the full
+   * authorship block. Best-effort like the other edits: a failed re-stamp leaves the
+   * message `streaming`, which means it is not routed — the safe direction, since the
+   * alternative would be routing an answer nobody confirmed was finished.
+   */
+  async finalizeResponse(
+    channel: string,
+    ts: string,
+    blocks: unknown[],
+    text: string,
+    agentAuthorId: string,
+    response: SlackResponseMetadata
+  ): Promise<boolean> {
+    try {
+      return await this.queue.enqueue(async () => {
+        await this.app.client.chat.update({
+          channel,
+          ts,
+          text,
+          blocks,
+          unfurl_links: false,
+          unfurl_media: false,
+          ...slackMessageMetadata({ agentAuthorId, response })
+        })
+        return true
+      })
+    } catch (err) {
+      this.deps.log?.debug(`slack: response finalization failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
+      return false
+    }
   }
 
   /** Edit a previously-posted Block Kit message in place (chat.update). Best-effort;

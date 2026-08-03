@@ -10,6 +10,7 @@
  * assumed. Documented in the PR description.
  */
 import type { CollabRoutesSnapshot, CollabAgentPlacement, CollabOrgAgent } from '@agentconnect.md/protocol'
+import { slackMentionAddress, type AgentMentionIdentity } from '@agentconnect.md/message'
 
 export interface CollabResolved extends CollabAgentPlacement {
   orgId: string
@@ -257,6 +258,41 @@ export class CpCollabRoutes {
   /** Directory name of `agentId` from the latest snapshot (across any channel), or undefined. */
   nameOf(agentId: string): { name?: string; displayName?: string } | undefined {
     return this.names.get(agentId)
+  }
+
+  /**
+   * The mention-address directory for ONE conversation
+   * (send-message-routing-rework.md §8.5): every agent placed in `(orgId, platform,
+   * channelId)` with the public inputs needed to render its exact `@mention` and to
+   * resolve an inbound mention back to it.
+   *
+   * Conversation-scoped on purpose. The same slug can name different agents in
+   * different channels, and a bot user id only identifies an agent relative to the
+   * conversation's membership — so an org-wide list would resolve mentions to the
+   * wrong agent, which for §2.1 routing means delivering to the wrong agent.
+   */
+  mentionDirectory(orgId: string, platform: string, channelId: string): AgentMentionIdentity[] {
+    const members = this.channels.get(this.key(orgId, platform, channelId))
+    if (!members) return []
+    return [...members.values()].map((a) => ({
+      agentId: a.agentId,
+      ...(a.botUserId !== undefined ? { botUserId: a.botUserId } : {}),
+      ...(a.botShared ? { botShared: true } : {}),
+      ...(a.name !== undefined ? { name: a.name } : {})
+    }))
+  }
+
+  /** The exact address for `agentId` in this conversation, or undefined when it has
+   *  none there (no Slack presence, or a shared bot with no slug to disambiguate it). */
+  mentionAddress(orgId: string, platform: string, channelId: string, agentId: string): string | undefined {
+    const placement = this.resolve(orgId, platform, channelId, agentId)
+    if (!placement) return undefined
+    return slackMentionAddress({
+      agentId,
+      ...(placement.botUserId !== undefined ? { botUserId: placement.botUserId } : {}),
+      ...(placement.botShared ? { botShared: true } : {}),
+      ...(placement.name !== undefined ? { name: placement.name } : {})
+    })
   }
 
   /** True when an inbound app backs another AgentConnect agent in this channel.

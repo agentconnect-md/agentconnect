@@ -440,7 +440,10 @@ export class PgIntegrationRepo implements IntegrationRepo {
       select: {
         id: true,
         platform: true,
-        bot: { select: { slackAppId: true } },
+        // `botUserId` + `shareable` are the §8.5 mention-address inputs: the member id a
+        // `<@…>` resolves to, and whether that identity backs more than one agent (so the
+        // address needs the agent slug). Both are public metadata already stored on the bot.
+        bot: { select: { slackAppId: true, botUserId: true, shareable: true } },
         agent: {
           select: {
             id: true,
@@ -471,6 +474,8 @@ export class PgIntegrationRepo implements IntegrationRepo {
           daemonId: i.agent.daemonId,
           integrationId: IntegrationId(i.id),
           ...(platform === 'slack' && i.bot.slackAppId ? { botAppId: i.bot.slackAppId } : {}),
+          ...(platform === 'slack' && i.bot.botUserId ? { botUserId: i.bot.botUserId } : {}),
+          ...(platform === 'slack' && i.bot.shareable ? { botShared: true } : {}),
           callPolicy: i.agent.callPolicy as ChannelPlacementRecord['callPolicy'],
           allowedCallerAgentIds: i.agent.allowedCallerAgentIds,
           outboundPolicy: i.agent.outboundPolicy as ChannelPlacementRecord['outboundPolicy'],
