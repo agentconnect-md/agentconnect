@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { Platform } from './route.js'
 
 /**
  * Cron sinks to the daemon (D5) — protocol §5.4.
@@ -17,7 +18,10 @@ import { z } from 'zod'
  */
 
 export const CronTarget = z.object({
-  platform: z.enum(['slack', 'telegram', 'discord', 'feishu']).default('slack'),
+  // S1a open reader (route.ts Platform policy). The `'slack'` default is the
+  // legacy envelope default §6.8 removes (anchor platform will derive from
+  // `integrationId`); it is NOT a fold — a present unknown id passes through.
+  platform: Platform.default('slack'),
   channel: z.string(),
   // The agent integration whose connection posts the anchor — targets come from
   // the owning agent's integrations, so the daemon posts through the right bot

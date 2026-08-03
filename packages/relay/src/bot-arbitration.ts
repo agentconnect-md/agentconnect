@@ -19,7 +19,9 @@ import type { AttributedRoute, RcAgentDirEntry, WireNormalizedMessage } from '@a
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
 export interface BotAssignment {
   botId: string
-  platform: 'slack' | 'telegram' | 'discord' | 'feishu'
+  // S1a open reader (protocol route.ts Platform policy): the wire field is an
+  // open string; the assign handler refuses an unsupported platform gracefully.
+  platform: string
   secrets: { botToken: string; signingSecret: string } | { verificationToken: string; encryptKey?: string }
   /** Provider app id — the O(1) HTTP demux key when present. */
   apiAppId?: string

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { Platform } from './frames/route.js'
 
 /**
  * Provider-backed attachment metadata shared by direct daemon ingress and relay
@@ -34,7 +35,9 @@ export const NormalizedPlatformMessageSchema = z.object({
   msgId: z.string(),
   traceId: z.string(),
   source: z.enum(['user', 'cron', 'agent']),
-  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+  // S1a open reader (frames/route.ts Platform policy): writers emit only known
+  // ids; an unknown id decodes and is handled fail-closed downstream.
+  platform: Platform,
   channel: z.string(),
   thread: z.string().optional(),
   sender: z.object({

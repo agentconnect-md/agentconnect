@@ -11,6 +11,7 @@ import { ErrorFrame } from './error.js'
 import { WebchatDone, WebchatImageAttachment, WebchatOutput, WebchatPost } from './webchat.js'
 import { GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
 import { CronTarget } from './cron.js'
+import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
@@ -367,7 +368,10 @@ export const RdAgentMsg = z.object({
   toAgentId: z.string().uuid(),
   text: z.string(),
   coords: z.object({
-    platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+    // S1a open reader (route.ts Platform policy): an unknown chat-shaped id
+    // decodes fine and is refused fail-closed by `coordsDecision`, never by
+    // the schema (refusing here would kill the frame, not the item).
+    platform: Platform,
     channel: z.string().min(1),
     thread: z.string().optional()
   }),
@@ -389,7 +393,7 @@ export const RdAgentMsg = z.object({
   originSessionId: z.string().min(1).optional(),
   originCoords: z
     .object({
-      platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+      platform: Platform, // S1a open reader (route.ts policy)
       channel: z.string().min(1),
       thread: z.string().optional()
     })
@@ -459,7 +463,7 @@ export const RdAgentMsgFwd = z.object({
   integrationId: z.string().uuid().optional(), // DEFINITE target reply integration (§6.2)
   text: z.string(),
   coords: z.object({
-    platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+    platform: Platform, // S1a open reader (route.ts policy); coordsDecision fail-closes unknown chat ids
     channel: z.string().min(1),
     thread: z.string().optional()
   }),
@@ -476,7 +480,7 @@ export const RdAgentMsgFwd = z.object({
   originSessionId: z.string().min(1).optional(),
   originCoords: z
     .object({
-      platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+      platform: Platform, // S1a open reader (route.ts policy)
       channel: z.string().min(1),
       thread: z.string().optional()
     })

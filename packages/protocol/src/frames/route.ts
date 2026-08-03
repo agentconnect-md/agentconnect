@@ -12,7 +12,28 @@ import { z } from 'zod'
 // Playground conversation / a webhook trigger / a background memory-consolidation
 // run) — no integration, no bind rules, no routing-table participation, never a
 // persisted DB Platform.
-export const Platform = z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream'])
+//
+// S1a tolerant readers (integration-plugin-architecture.md §6.2): every peer
+// READS platform fields as an open string, because zod rejects unknown enum
+// values wholesale and an unknown id inside a known frame is frame-fatal —
+// a new id reaching an old peer's `register` reader is a fatal handshake
+// reconnect loop. WRITERS keep emitting only `KNOWN_PLATFORMS` values until
+// the fleet gate passes (every deployed peer reads tolerantly); only then may
+// a new platform id be emitted (S1b).
+//
+// Per-frame policy for an unknown (non-legacy) id, decided per frame where the
+// value is consumed, never by closing this schema:
+//   - `register.capabilities.platforms` — accept the frame; an unknown id
+//     simply never matches a placement/capability gate (ignore-unknown).
+//   - `event/session` — store the value verbatim (session rows are text).
+//   - `rd/msg` — decode succeeds; the daemon may refuse the ITEM on semantic
+//     grounds (fail-closed coordinate checks), but never the socket.
+export const KNOWN_PLATFORMS = ['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream'] as const
+export type KnownPlatform = (typeof KNOWN_PLATFORMS)[number]
+export function isKnownPlatform(p: string): p is KnownPlatform {
+  return (KNOWN_PLATFORMS as readonly string[]).includes(p)
+}
+export const Platform = z.string().min(1)
 export type Platform = z.infer<typeof Platform>
 
 export const SessionKey = z.object({
