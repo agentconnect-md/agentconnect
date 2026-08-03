@@ -182,6 +182,27 @@ describe('runRecoveryFlow', () => {
     expect(f.output()).not.toContain('retrying')
   })
 
+  it('a stop finishes the flow immediately even while the action never settles', async () => {
+    const r = rootWithHistory()
+    const f = fakeDeps(['2'])
+    const stop = new AbortController()
+    let started = (): void => {}
+    const actionStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    // A reinstall stuck on the version lock or in a non-abortable registry
+    // fetch: the promise never settles, yet the stop must not be swallowed.
+    f.reinstall.mockImplementationOnce(() => {
+      started()
+      return new Promise<never>(() => {})
+    })
+    const flow = runRecoveryFlow(r, failed, { ...f.deps, signal: stop.signal })
+    await actionStarted
+    stop.abort()
+    await expect(flow).resolves.toBe('exit')
+    expect(f.output()).not.toContain('retrying')
+  })
+
   it('hides rollback when previous is missing from the store', async () => {
     const r = root()
     install(r, '1.1.0')

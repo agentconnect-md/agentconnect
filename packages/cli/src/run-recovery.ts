@@ -113,10 +113,17 @@ export async function runRecoveryFlow(
   deps.out.write(`agentconnect: daemon${cur ? ` ${cur}` : ''} exited with code ${result.code} during startup\n`)
   const rl = createInterface({ input: deps.input, output: deps.out })
   // Ctrl-C at the prompt and a stop signal both cancel: close the prompt AND
-  // remember it, so an action already in flight cannot respawn afterwards.
+  // resolve `cancellation`, which races every awaited action below — a cancel
+  // must finish this flow immediately even while an action is stuck waiting on
+  // the version lock or inside a non-abortable registry fetch.
   let cancelled = false
+  let markCancelled = (): void => {}
+  const cancellation = new Promise<'cancelled'>((resolve) => {
+    markCancelled = () => resolve('cancelled')
+  })
   const cancel = (): void => {
     cancelled = true
+    markCancelled()
     rl.close()
   }
   rl.on('SIGINT', cancel)
@@ -136,16 +143,25 @@ export async function runRecoveryFlow(
         deps.out.write(MANUAL_VERSION_HELP + '\n')
         return 'exit'
       }
-      try {
-        const v = choice.action === 'rollback' ? await deps.rollback(root) : await deps.reinstall(root)
-        if (cancelled) return 'exit' // stop arrived while the action ran — never respawn past it
-        deps.out.write(`agentconnect: retrying with daemon ${v}…\n`)
+      // Settle-capture so the race below never leaves an unhandled rejection,
+      // then race the action against cancellation. On cancel the orphaned
+      // action keeps running only for the moments until the run shell exits —
+      // the same interruption profile as Ctrl-C during a plain `version
+      // install` (the tmp extract dir and a dead holder's version lock both
+      // self-recover on the next run).
+      const action = choice.action === 'rollback' ? deps.rollback : deps.reinstall
+      const settled = action(root).then(
+        (v) => ({ ok: true as const, v }),
+        (err: unknown) => ({ ok: false as const, err })
+      )
+      const outcome = await Promise.race([settled, cancellation])
+      if (outcome === 'cancelled' || cancelled) return 'exit' // stop wins — never respawn past it
+      if (outcome.ok) {
+        deps.out.write(`agentconnect: retrying with daemon ${outcome.v}…\n`)
         return 'respawn'
-      } catch (err) {
-        if (cancelled) return 'exit'
-        deps.out.write(`agentconnect: ${choice.action} failed: ${(err as Error).message}\n`)
-        // fall through: the menu is offered again (e.g. registry down → roll back)
       }
+      deps.out.write(`agentconnect: ${choice.action} failed: ${(outcome.err as Error).message}\n`)
+      // fall through: the menu is offered again (e.g. registry down → roll back)
     }
   } finally {
     deps.signal?.removeEventListener('abort', cancel)
