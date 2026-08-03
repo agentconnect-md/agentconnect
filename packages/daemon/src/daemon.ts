@@ -5847,8 +5847,15 @@ export class Daemon {
       callFrom: verified.authorAgentId,
       hopCount: deliveryHopCount
     })
-    // The inbox id this dispatch will write, so a crash before admission is reconcilable.
-    const claimed = this.store.attachActivationEnvelope(key, envelope, expiresAt, msg.msgId)
+    // TARGET-SCOPED, and it has to be: one finalized response can name several local
+    // agents, and the durable inbox is keyed by a single global id. Reusing the platform
+    // msgId for each of them would make the first target's row win the PRIMARY KEY and
+    // every later `INSERT OR IGNORE` report `existing` — dispatch would treat those
+    // deliveries as duplicates and enqueue no turn, so only the first mentioned agent
+    // would ever wake. The same id is used for the inbox row and the rendezvous claim so
+    // the two stay reconcilable per target.
+    const deliveryId = `${msg.msgId}#${targetAgentId}`
+    const claimed = this.store.attachActivationEnvelope(key, envelope, expiresAt, deliveryId)
     if (!claimed.dispatch) {
       this.recordUnrouted(msg)
       this.log.debug(
@@ -5867,7 +5874,7 @@ export class Daemon {
       // source depth, so an A → B → A chain advances by one per hop and stops at the cap
       // — across queue replay and restart, since it is persisted with the inbox row.
       hopCount: deliveryHopCount,
-      deliveryId: msg.msgId,
+      deliveryId,
       // §8.6: persisted with the row, so a replayed turn completes this rendezvous itself.
       activationKey: key
     }

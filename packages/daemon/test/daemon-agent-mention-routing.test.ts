@@ -72,7 +72,7 @@ const fakeHost = () => ({
  *  behind ONE AgentConnect Slack app, each with its own bot user id. */
 async function boot(
   agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
-  over: { botUserIds?: Record<string, string>; botShared?: boolean } = {}
+  over: { botUserIds?: Record<string, string>; botShared?: boolean; realDispatch?: boolean } = {}
 ) {
   const daemon = new Daemon({ root: scaffold(agents), hostFactory: () => fakeHost() as any })
   await daemon.start()
@@ -95,6 +95,9 @@ async function boot(
     agents: placements.map((p) => ({ ...p, orgId: TEST_ORG }))
   })
   const calls: { agentId: string; msg: any; callMeta?: any }[] = []
+  // `realDispatch` keeps the genuine dispatch/persistence path, so a test can observe the
+  // durable inbox — which is the only place a delivery-id collision is visible.
+  if (over.realDispatch) return { daemon, calls }
   // Mirrors the part of real dispatch these tests depend on: settling the admission
   // barrier AND completing the activation rendezvous from `callMeta.activationKey`. §8.6
   // puts that reconciliation inside dispatch precisely so replay performs it too, which
@@ -289,6 +292,25 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     expect(calls.map((c) => c.agentId).sort()).toEqual(['bot-b', 'bot-c'])
     // Each is its own delivery at the same depth — one edge from the author, not a chain.
     expect(calls.every((c) => c.callMeta?.hopCount === 1)).toBe(true)
+    // …and each carries a DISTINCT durable delivery id. The inbox is keyed by one global
+    // id, so sharing the platform msgId across targets would make the first row win the
+    // primary key and every later `INSERT OR IGNORE` report `existing` — dispatch would
+    // treat those as duplicates and enqueue no turn, leaving only the first agent awake.
+    const deliveryIds = calls.map((c) => c.callMeta?.deliveryId)
+    expect(new Set(deliveryIds).size).toBe(2)
+    expect(new Set(calls.map((c) => c.callMeta?.activationKey)).size).toBe(2)
+    await daemon.stop()
+  })
+
+  it('durably enqueues a turn for EVERY recipient through the real inbox', async () => {
+    // The assertion above rides on a dispatch stub, which cannot see the primary-key
+    // collision that made this a real delivery bug. Let real `dispatch` run so the durable
+    // inbox itself is the witness: two recipients must produce two rows.
+    const { daemon } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }], { realDispatch: true })
+    route(daemon, agentMessage({}, { mentionedAgentIds: ['bot-b', 'bot-c'] }))
+    const rows = (daemon as any).store.listInboxBySessionKeyFifo() as { id: string; agentId: string }[]
+    expect(rows.map((r) => r.agentId).sort()).toEqual(['bot-b', 'bot-c'])
+    expect(new Set(rows.map((r) => r.id)).size).toBe(2)
     await daemon.stop()
   })
 
