@@ -59,20 +59,28 @@ export function useStickToBottom(resetKey: string | null): () => void {
     // arming it — the exact growth-time measurement this whole design avoids.
     // So swallow the echo of our own pin; only a scroll we did not cause may
     // un-arm.
-    let selfScroll = false
+    //
+    // Identified by POSITION, not by "the next event is mine": scroll events for
+    // one scroller coalesce, so anything that moves the viewport before the
+    // pending echo is delivered — the `?focus` scrollIntoView, a quick flick of
+    // the wheel — arrives as that same single event. A bare flag would discard
+    // it and leave the follow armed, dragging the reader back down on the next
+    // row. Recording where the pin actually landed makes the echo verifiable:
+    // if the viewport still sits there, nothing else moved it.
+    let pinnedTop: number | null = null
     const pin = () => {
       const before = scroller.scrollTop
-      scroller.scrollTop = scroller.scrollHeight // clamped by the browser
-      // No movement means no event to swallow — arming the flag here would eat
-      // the user's next real scroll instead.
-      if (scroller.scrollTop !== before) selfScroll = true
+      scroller.scrollTop = scroller.scrollHeight
+      // Read back, because the browser clamps to `scrollHeight - clientHeight`.
+      // No movement means no event to swallow — recording a position here would
+      // eat the user's next real scroll instead.
+      pinnedTop = scroller.scrollTop === before ? null : scroller.scrollTop
     }
     pinRef.current = pin
     const onScroll = () => {
-      if (selfScroll) {
-        selfScroll = false
-        return
-      }
+      const echo = pinnedTop !== null && scroller.scrollTop === pinnedTop
+      pinnedTop = null
+      if (echo) return
       stick.current = nearBottom(scroller)
     }
     scroller.addEventListener('scroll', onScroll, { passive: true })

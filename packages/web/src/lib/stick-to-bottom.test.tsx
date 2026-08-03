@@ -189,6 +189,45 @@ describe('useStickToBottom self-inflicted scroll', () => {
     expect(scroller.scrollTop).toBe(bottom())
   })
 
+  // Scroll events for one scroller COALESCE, so a pin's echo is not reliably
+  // "the next event": anything that moves the viewport first arrives as that same
+  // single event. Swallowing by position rather than by turn is what keeps these
+  // from being mistaken for the echo.
+  it('does not swallow the ?focus scrollIntoView that lands before the echo', () => {
+    setMetrics(2000)
+    scroller.scrollTop = bottom()
+    act(() => root.render(<Probe resetKey="s1" />))
+    act(() => scroller.dispatchEvent(new Event('scroll'))) // following
+
+    setMetrics(3000) // history renders; the pin's echo is now pending
+    act(() => fireResize?.())
+    expect(scroller.scrollTop).toBe(bottom())
+
+    // The ?focus effect centres the linked participant's block, then the single
+    // coalesced event is delivered from that new position.
+    scroller.scrollTop = 300
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+
+    setMetrics(3600) // more output must NOT drag the focused reader down
+    act(() => fireResize?.())
+    expect(scroller.scrollTop).toBe(300)
+  })
+
+  it('does not swallow a user scroll that beats the echo of a re-arm pin', () => {
+    setMetrics(2000)
+    scroller.scrollTop = 200
+    act(() => root.render(<Probe resetKey="s1" />))
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+
+    act(() => reArm?.()) // pins to the bottom, echo pending
+    scroller.scrollTop = 500 // the reader flicks back up before it is delivered
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+
+    setMetrics(2600)
+    act(() => fireResize?.())
+    expect(scroller.scrollTop).toBe(500)
+  })
+
   it('still lets a real user scroll un-arm when the pin moved nothing', () => {
     setMetrics(2000)
     scroller.scrollTop = bottom() // already at the bottom: the pin is a no-op
