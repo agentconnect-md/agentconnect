@@ -11,14 +11,14 @@ export function sessionViewerSql(
   if (!viewer) return null
   const s = alias
   const direct = Prisma.sql`(
-    ${s}."externalProvider" IS NULL
-    AND (
-      ${s}."visibility" = 'org'::"SessionVisibility"
-      OR (
-        ${s}."visibility" = 'private'::"SessionVisibility"
-        AND ${s}."ownerIdentity" IS NOT NULL
-        AND ${s}."ownerIdentity" = ANY(${viewer.identitySet}::text[])
-      )
+    (
+      ${s}."externalProvider" IS NULL
+      AND ${s}."visibility" = 'org'::"SessionVisibility"
+    )
+    OR (
+      ${s}."visibility" = 'private'::"SessionVisibility"
+      AND ${s}."ownerIdentity" IS NOT NULL
+      AND ${s}."ownerIdentity" = ANY(${viewer.identitySet}::text[])
     )
   )`
   const snapshot = viewer.externalAccess
@@ -44,7 +44,13 @@ export function sessionViewerSql(
   }
   for (const allowed of snapshot.allowedScopes) {
     externalArms.push(Prisma.sql`(
-      ${s}."visibility" = 'external'::"SessionVisibility"
+      (
+        ${s}."visibility" = 'external'::"SessionVisibility"
+        OR (
+          ${s}."visibility" = 'private'::"SessionVisibility"
+          AND ${s}."externalProvider" = 'feishu'
+        )
+      )
       AND ${s}."externalResolution" = 'settled'::"ExternalResolution"
       AND ${s}."externalScopeId" = ${allowed.id}::uuid
       AND EXISTS (

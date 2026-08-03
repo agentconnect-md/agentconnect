@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { BotRecord, ExternalScopeRecord } from '../persistence/ports.js'
-import { FeishuSessionAccessService } from './feishu-session-access.js'
+import { FeishuSessionAccessService, type FeishuSessionViewer } from './feishu-session-access.js'
 
 const BOT_ID = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
@@ -9,7 +9,7 @@ function scope(): ExternalScopeRecord {
     id: '11111111-1111-4111-8111-111111111111',
     orgId: 'org-1',
     provider: 'feishu',
-    realmKey: 'lark:cli_platform',
+    realmKey: 'lark:cli_custom',
     resourceKind: 'conversation',
     resourceKey: 'oc_chat',
     credentialKind: 'bot',
@@ -33,7 +33,7 @@ function bot(): BotRecord {
     orgId: 'org-1',
     platform: 'feishu',
     feishuRegion: 'lark',
-    feishuAppId: 'cli_platform',
+    feishuAppId: 'cli_custom',
     revokedAt: null,
     credentialRevision: 3
   } as BotRecord
@@ -46,76 +46,61 @@ function json(body: unknown, status = 200): Response {
 function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
   return new FeishuSessionAccessService({
     bots: { get: async () => bot() } as never,
-    apps: { lark: { appId: 'cli_platform', appSecret: 'secret' } },
     clock: { now: () => 1_000 } as never,
     fetchImpl
   })
 }
 
+function viewer(accessTokenFor = vi.fn(async () => 'user-token')): FeishuSessionViewer {
+  return { subject: 'logto-user', accessTokenFor }
+}
+
 describe('FeishuSessionAccessService', () => {
-  it('resolves allowed scopes beyond the first 200', async () => {
-    const fetchImpl = async (url: string) =>
-      url.includes('/auth/v3/')
-        ? json({ code: 0, tenant_access_token: 'token', expire: 3600 })
-        : json({ code: 0, data: { items: [{ member_id: 'ou_member' }], has_more: false } })
+  it('resolves allowed scopes beyond the first 200 with one regional user token', async () => {
+    const accessTokenFor = vi.fn(async () => 'user-token')
+    const fetchImpl = async () => json({ code: 0, data: { is_in_chat: true } })
     const scopes = Array.from({ length: 201 }, (_, index) => scopeAt(index + 1))
-    const result = await service(fetchImpl).resolve(scopes, new Set(['feishu:lark:cli_platform:ou_member']))
+    const result = await service(fetchImpl).resolve(scopes, viewer(accessTokenFor))
     expect(result.allowedScopes).toHaveLength(201)
     expect(result.degraded).toBe(false)
+    expect(accessTokenFor).toHaveBeenCalledOnce()
   })
 
-  it('uses the Lark gateway and allows a current chat member', async () => {
-    const fetchImpl = vi.fn(async (url: string) =>
-      url.includes('/auth/v3/')
-        ? json({ code: 0, tenant_access_token: 'token', expire: 3600 })
-        : json({ code: 0, data: { items: [{ member_id: 'ou_member' }], has_more: false } })
-    )
+  it('uses the Lark gateway and allows a current member of a custom Bot chat', async () => {
+    const fetchImpl = vi.fn(async () => json({ code: 0, data: { is_in_chat: true } }))
 
-    await expect(
-      service(fetchImpl).resolve([scope()], new Set(['feishu:lark:cli_platform:ou_member']))
-    ).resolves.toEqual({ allowedScopes: [{ id: scope().id, aclRevision: 2n }], degraded: false })
-    expect(fetchImpl.mock.calls.every(([url]) => String(url).startsWith('https://open.larksuite.com/'))).toBe(true)
-  })
-
-  it('walks member pages and denies a user who is absent', async () => {
-    let page = 0
-    const fetchImpl = vi.fn(async (url: string) => {
-      if (url.includes('/auth/v3/')) return json({ code: 0, tenant_access_token: 'token', expire: 3600 })
-      page++
-      return page === 1
-        ? json({ code: 0, data: { items: [{ member_id: 'ou_other' }], has_more: true, page_token: 'next' } })
-        : json({ code: 0, data: { items: [], has_more: false } })
+    await expect(service(fetchImpl).resolve([scope()], viewer())).resolves.toEqual({
+      allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+      degraded: false
     })
-
-    await expect(
-      service(fetchImpl).resolve([scope()], new Set(['feishu:lark:cli_platform:ou_missing']))
-    ).resolves.toEqual({ allowedScopes: [], degraded: false })
-    expect(page).toBe(2)
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://open.larksuite.com/open-apis/im/v1/chats/oc_chat/members/is_in_chat',
+      expect.objectContaining({ headers: expect.any(Headers) })
+    )
+    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer user-token')
   })
 
-  it('treats an inaccessible or dissolved chat as a definitive denial', async () => {
-    const fetchImpl = async (url: string) =>
-      url.includes('/auth/v3/')
-        ? json({ code: 0, tenant_access_token: 'token', expire: 3600 })
-        : json({ code: 232011, msg: 'operator is not in chat' })
+  it('denies when the user token is not in the chat', async () => {
     await expect(
-      service(fetchImpl).resolve([scope()], new Set(['feishu:lark:cli_platform:ou_member']))
+      service(async () => json({ code: 0, data: { is_in_chat: false } })).resolve([scope()], viewer())
     ).resolves.toEqual({ allowedScopes: [], degraded: false })
   })
 
-  it('fails closed and reports degradation for missing scope or provider failure', async () => {
-    const fetchImpl = async (url: string) =>
-      url.includes('/auth/v3/')
-        ? json({ code: 0, tenant_access_token: 'token', expire: 3600 })
-        : json({ code: 99991672, msg: 'missing scope' })
+  it('fails closed and reports degradation when no request-bound user credential is present', async () => {
+    const fetchImpl = vi.fn(async () => json({ code: 0, data: { is_in_chat: true } }))
+    await expect(service(fetchImpl).resolve([scope()])).resolves.toEqual({ allowedScopes: [], degraded: true })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('fails closed and reports degradation for a provider permission failure', async () => {
     await expect(
-      service(fetchImpl).resolve([scope()], new Set(['feishu:lark:cli_platform:ou_member']))
+      service(async () => json({ code: 99991672, msg: 'missing scope' })).resolve([scope()], viewer())
     ).resolves.toEqual({ allowedScopes: [], degraded: true })
   })
 
-  it('never compares an open_id from a different app domain', async () => {
-    const fetchImpl = vi.fn(async () => json({ code: 0 }))
-    await expect(service(fetchImpl).resolve([scope()], new Set(['feishu:lark:cli_other:ou_member']))).resolves.toEqual({
+  it('rejects a scope whose realm does not match its custom Bot app', async () => {
+    const fetchImpl = vi.fn(async () => json({ code: 0, data: { is_in_chat: true } }))
+    await expect(service(fetchImpl).resolve([{ ...scope(), realmKey: 'lark:cli_other' }], viewer())).resolves.toEqual({
       allowedScopes: [],
       degraded: false
     })

@@ -1,8 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('./auth', () => ({
+  getAccountToken: vi.fn(async () => 'account-token'),
+  getToken: vi.fn(async () => undefined),
+  getIdTokenRaw: vi.fn(async () => undefined),
+  getUser: vi.fn(async () => undefined),
+  signOutDeletedAccount: vi.fn()
+}))
+
+import { getAccountToken } from './auth'
 import { subscribeSessionEvents } from './api'
+
+const LOGTO_ACCOUNT_TOKEN_HEADER = 'x-ac-logto-account-token'
 
 describe('subscribeSessionEvents', () => {
   afterEach(() => {
+    vi.useRealTimers()
+    vi.mocked(getAccountToken).mockReset().mockResolvedValue('account-token')
     vi.unstubAllGlobals()
   })
 
@@ -34,6 +48,9 @@ describe('subscribeSessionEvents', () => {
       expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) })
     )
     expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>).accept).toBe('text/event-stream')
+    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>)['x-ac-logto-account-token']).toBe(
+      'account-token'
+    )
 
     const encoder = new TextEncoder()
     streamController.enqueue(encoder.encode('event: sess'))
@@ -56,5 +73,44 @@ describe('subscribeSessionEvents', () => {
 
     unsubscribe()
     expect(requestSignal.aborted).toBe(true)
+  })
+
+  it('reopens a live stream to rotate its Account API token', async () => {
+    vi.useFakeTimers()
+    vi.mocked(getAccountToken).mockReset().mockResolvedValueOnce('account-token-1').mockResolvedValue('account-token-2')
+    const requestSignals: AbortSignal[] = []
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal as AbortSignal
+      requestSignals.push(signal)
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), {
+            once: true
+          })
+        }
+      })
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onConnect = vi.fn()
+    const onError = vi.fn()
+
+    const unsubscribe = subscribeSessionEvents('org-1', { onConnect, onSession: vi.fn(), onActivity: vi.fn() }, onError)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    expect(requestSignals[0]?.aborted).toBe(true)
+    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>)[LOGTO_ACCOUNT_TOKEN_HEADER]).toBe(
+      'account-token-1'
+    )
+    expect((fetchMock.mock.calls[1]![1]!.headers as Record<string, string>)[LOGTO_ACCOUNT_TOKEN_HEADER]).toBe(
+      'account-token-2'
+    )
+    expect(onConnect).toHaveBeenCalledTimes(2)
+    expect(onError).not.toHaveBeenCalled()
+
+    unsubscribe()
   })
 })

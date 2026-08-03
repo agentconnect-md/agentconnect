@@ -179,7 +179,101 @@ describe('session visibility — list & detail', () => {
   })
 })
 
-describe('session visibility — Slack conversation audience', () => {
+describe('session visibility — external conversation audiences', () => {
+  it('keeps a provider-bound p2p owner-only until live audience sync is enabled', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const sessionId = `s-feishu-p2p-${randomUUID()}`
+    const ownerIdentity = 'feishu:lark:cli_custom:ou_owner'
+    const repo = new PgSessionRepo(prisma)
+    const recorded = await repo.recordMilestone({
+      sessionId: SessionId(sessionId),
+      agentId,
+      phase: 'start',
+      platform: 'feishu',
+      channel: 'oc_p2p',
+      at: new Date(),
+      classification: { visibility: 'private', ownerIdentity, source: 'default' },
+      externalCandidate: {
+        provider: 'feishu',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'lark:cli_custom',
+          resourceKind: 'conversation',
+          resourceKey: 'oc_p2p',
+          credentialKind: 'bot',
+          credentialId: randomUUID()
+        }
+      }
+    })
+    expect(recorded.session).toMatchObject({ visibility: 'private', externalProvider: 'feishu' })
+    const [scope] = await repo.getExternalScopes([recorded.session!.externalScopeId!])
+
+    const baseline = {
+      role: 'collaborator' as const,
+      identitySet: [ownerIdentity],
+      externalAccess: {
+        policies: [{ provider: 'feishu', readFenceRev: null }],
+        allowedScopes: [],
+        decisionAt: new Date()
+      }
+    }
+    expect(
+      (await repo.listPage({ agentIds: [agentId], limit: 10, includeTotal: false, viewer: baseline })).sessions.map(
+        (session) => session.id
+      )
+    ).toEqual([sessionId])
+    expect(
+      (
+        await repo.listPage({
+          agentIds: [agentId],
+          limit: 10,
+          includeTotal: false,
+          viewer: { ...baseline, identitySet: [] }
+        })
+      ).sessions
+    ).toHaveLength(0)
+    expect(
+      (
+        await repo.listPage({
+          agentIds: [agentId],
+          limit: 10,
+          includeTotal: false,
+          viewer: {
+            ...baseline,
+            identitySet: [],
+            externalAccess: {
+              ...baseline.externalAccess,
+              allowedScopes: [{ id: scope!.id, aclRevision: scope!.aclRevision }]
+            }
+          }
+        })
+      ).sessions.map((session) => session.id)
+    ).toEqual([sessionId])
+
+    const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'feishu', true)
+    const external = await repo.get(SessionId(sessionId))
+    expect(external).toMatchObject({ visibility: 'external', externalProvider: 'feishu' })
+    expect(
+      (
+        await repo.listPage({
+          agentIds: [agentId],
+          limit: 10,
+          includeTotal: false,
+          viewer: {
+            ...baseline,
+            identitySet: [],
+            externalAccess: {
+              policies: [{ provider: 'feishu', readFenceRev: enabled.policy.readFenceRev }],
+              allowedScopes: [{ id: scope!.id, aclRevision: scope!.aclRevision }],
+              decisionAt: new Date()
+            }
+          }
+        })
+      ).sessions.map((session) => session.id)
+    ).toEqual([sessionId])
+  })
+
   it('lets only owners change sync and withholds hidden-session diagnostics from other members', async () => {
     const owner = await makeUser(`sv-slack-owner-${randomUUID()}`, 'owner')
     const collaborator = await makeUser(`sv-slack-collab-${randomUUID()}`, 'collaborator')

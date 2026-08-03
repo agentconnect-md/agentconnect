@@ -174,7 +174,7 @@ describe('handleEventSession', () => {
     )
   })
 
-  it('binds a Feishu/Lark audience only for the environment-owned matching app', async () => {
+  it('binds a Feishu/Lark audience to the registered Bot app', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({
       session: { recordMilestone },
@@ -198,7 +198,6 @@ describe('handleEventSession', () => {
           revokedAt: null
         })
       },
-      feishuPlatformApps: { lark: { appId: 'cli_platform', appSecret: 'secret' } },
       events: { publish: vi.fn() }
     })
     const frame = eventSessionFrame()
@@ -233,7 +232,7 @@ describe('handleEventSession', () => {
     )
   })
 
-  it('leaves a user-built Feishu/Lark app on ordinary org visibility', async () => {
+  it('binds a user-built Feishu/Lark app without matching the login App ID', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({
       session: { recordMilestone },
@@ -257,7 +256,6 @@ describe('handleEventSession', () => {
           revokedAt: null
         })
       },
-      feishuPlatformApps: { lark: { appId: 'cli_platform', appSecret: 'secret' } },
       events: { publish: vi.fn() }
     })
     const frame = eventSessionFrame()
@@ -275,7 +273,21 @@ describe('handleEventSession', () => {
 
     await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
 
-    expect(recordMilestone).toHaveBeenCalledWith(expect.not.objectContaining({ externalCandidate: expect.anything() }))
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalCandidate: {
+          provider: 'feishu',
+          resolution: 'settled',
+          scope: {
+            realmKey: 'lark:cli_custom',
+            resourceKind: 'conversation',
+            resourceKey: 'oc_chat',
+            credentialKind: 'bot',
+            credentialId: BOT_ID
+          }
+        }
+      })
+    )
   })
 
   it('keeps a root shared Slack session from an older daemon as an unresolved candidate', async () => {

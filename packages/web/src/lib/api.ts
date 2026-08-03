@@ -18,7 +18,7 @@ import type {
 import { isSelfSender, lifecycleStatus, MOCK_MODE } from '@/lib/data'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
-import { getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
+import { getAccountToken, getToken, getIdTokenRaw, getUser, signOutDeletedAccount } from '@/lib/auth'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
@@ -1174,7 +1174,17 @@ export interface MintedUserKeyDto {
 }
 
 // ── fetch helpers ───────────────────────────────────────────────────────────
-async function authHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
+const LOGTO_ACCOUNT_TOKEN_HEADER = 'x-ac-logto-account-token'
+
+interface AuthHeaderOptions {
+  /** Forward only to CP reads that enforce live Session provider access. */
+  accountToken?: boolean
+}
+
+async function authHeaders(
+  extra?: Record<string, string>,
+  options: AuthHeaderOptions = {}
+): Promise<Record<string, string>> {
   const h: Record<string, string> = { ...extra }
   // Live OIDC token (when configured) wins; otherwise fall back to the static one.
   const token = (await getToken()) ?? TOKEN
@@ -1191,11 +1201,15 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
   // x-ac-user-email header above stays display-only.
   const idToken = await getIdTokenRaw()
   if (idToken) h['x-ac-id-token'] = idToken
+  if (options.accountToken) {
+    const accountToken = await getAccountToken()
+    if (accountToken) h[LOGTO_ACCOUNT_TOKEN_HEADER] = accountToken
+  }
   return h
 }
 
-async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(), cache: 'no-store' })
+async function apiGet<T>(path: string, options: AuthHeaderOptions = {}): Promise<T> {
+  const res = await fetch(`${cpBase()}${path}`, { headers: await authHeaders(undefined, options), cache: 'no-store' })
   // Parse the denial body like the write helpers do: reads carry machine-readable
   // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a
   // status-only ApiError silently drops them.
@@ -1216,6 +1230,12 @@ export interface SessionEventHandlers {
   onActivity: (activity: SessionActivityDto) => void
 }
 
+// Logto's no-resource Account API token is opaque, so the browser cannot read
+// its expiry. Reopen the stream well inside the normal token lifetime; each
+// cycle asks the SDK for a current token without forcing a refresh when the
+// cached one is still valid.
+const SESSION_STREAM_REAUTH_MS = 5 * 60_000
+
 function waitBeforeReconnect(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const finish = () => {
@@ -1233,53 +1253,71 @@ async function readSessionEventStream(
   orgId: string,
   signal: AbortSignal,
   handlers: SessionEventHandlers
-): Promise<void> {
+): Promise<'ended' | 'reauth'> {
+  const request = new AbortController()
+  let reauth = false
+  const abort = () => request.abort(signal.reason)
+  if (signal.aborted) abort()
+  else signal.addEventListener('abort', abort, { once: true })
+  const reauthTimer = setTimeout(() => {
+    reauth = true
+    request.abort()
+  }, SESSION_STREAM_REAUTH_MS)
   const path = `/orgs/${encodeURIComponent(orgId)}/stream`
-  const res = await fetch(`${cpBase()}${path}`, {
-    headers: await authHeaders({ accept: 'text/event-stream' }),
-    cache: 'no-store',
-    signal
-  })
-  if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
-  if (!res.body) throw new Error('session event stream is not readable')
-
-  // The sink has no replay/event ids, so every successful (re)connect invalidates
-  // the list once. This closes both a disconnect gap and the initial GET→subscribe
-  // race without requiring a polling cache layer.
-  handlers.onConnect()
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  const parser = createSseParser((event) => {
-    if (event.event === 'session') {
-      handlers.onSession()
-      return
-    }
-    if (event.event !== 'session-activity') return
-    try {
-      const activity = (JSON.parse(event.data) as { activity?: SessionActivityDto }).activity
-      if (
-        activity &&
-        typeof activity.sessionId === 'string' &&
-        typeof activity.agentId === 'string' &&
-        /^\d+$/.test(activity.revision) &&
-        typeof activity.ts === 'string'
-      )
-        handlers.onActivity(activity)
-    } catch {
-      // A malformed optional invalidation is ignored; reconnect/fallback polling heals it.
-    }
-  })
-
   try {
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      parser.push(decoder.decode(value, { stream: true }))
+    const res = await fetch(`${cpBase()}${path}`, {
+      headers: await authHeaders({ accept: 'text/event-stream' }, { accountToken: true }),
+      cache: 'no-store',
+      signal: request.signal
+    })
+    if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
+    if (!res.body) throw new Error('session event stream is not readable')
+
+    // The sink has no replay/event ids, so every successful (re)connect invalidates
+    // the list once. This closes both a disconnect gap and the initial GET→subscribe
+    // race without requiring a polling cache layer.
+    handlers.onConnect()
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    const parser = createSseParser((event) => {
+      if (event.event === 'session') {
+        handlers.onSession()
+        return
+      }
+      if (event.event !== 'session-activity') return
+      try {
+        const activity = (JSON.parse(event.data) as { activity?: SessionActivityDto }).activity
+        if (
+          activity &&
+          typeof activity.sessionId === 'string' &&
+          typeof activity.agentId === 'string' &&
+          /^\d+$/.test(activity.revision) &&
+          typeof activity.ts === 'string'
+        )
+          handlers.onActivity(activity)
+      } catch {
+        // A malformed optional invalidation is ignored; reconnect/fallback polling heals it.
+      }
+    })
+
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        parser.push(decoder.decode(value, { stream: true }))
+      }
+      parser.push(decoder.decode())
+    } finally {
+      reader.releaseLock()
     }
-    parser.push(decoder.decode())
+    return 'ended'
+  } catch (error) {
+    if (reauth && !signal.aborted) return 'reauth'
+    throw error
   } finally {
-    reader.releaseLock()
+    clearTimeout(reauthTimer)
+    signal.removeEventListener('abort', abort)
   }
 }
 
@@ -1299,8 +1337,9 @@ export function subscribeSessionEvents(
   void (async () => {
     while (!ctrl.signal.aborted) {
       try {
-        await readSessionEventStream(orgId, ctrl.signal, handlers)
+        const ended = await readSessionEventStream(orgId, ctrl.signal, handlers)
         retryMs = 1000
+        if (ended === 'reauth') continue
       } catch (error) {
         if (ctrl.signal.aborted) return
         onError?.(error)
@@ -1352,10 +1391,10 @@ async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T
 }
 
-async function apiPut<T>(path: string, body?: unknown): Promise<T> {
+async function apiPut<T>(path: string, body?: unknown, options: AuthHeaderOptions = {}): Promise<T> {
   const res = await fetch(`${cpBase()}${path}`, {
     method: 'PUT',
-    headers: await authHeaders(body === undefined ? undefined : { 'content-type': 'application/json' }),
+    headers: await authHeaders(body === undefined ? undefined : { 'content-type': 'application/json' }, options),
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   })
   if (!res.ok) throw await apiErrorFromResponse('PUT', path, res)
@@ -1906,7 +1945,7 @@ export async function fetchSessions(
   const q = new URLSearchParams({ limit: String(limit), view: 'flat' })
   if (cursor) q.set('cursor', cursor)
   appendSessionFilters(q, filters)
-  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
+  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`, { accountToken: true })
   return {
     sessions: (page.sessions ?? []).map(sessionFromDto),
     total: page.total,
@@ -1921,7 +1960,7 @@ export async function fetchSessions(
  *  the members (indistinguishable from a conversation that never existed). */
 export async function fetchConversationByKey(key: string, orgId?: string): Promise<ConversationDto | null> {
   const q = new URLSearchParams({ conversationKey: key })
-  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
+  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`, { accountToken: true })
   return page.conversations?.[0] ?? null
 }
 
@@ -1940,7 +1979,7 @@ export async function fetchConversations(
   const q = new URLSearchParams({ limit: String(limit) })
   if (cursor) q.set('cursor', cursor)
   appendSessionFilters(q, filters)
-  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
+  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`, { accountToken: true })
   const sessions = (page.conversations ?? []).map((conversation) => {
     const members = conversation.sessions.map(sessionFromDto)
     const rep = members[0]!
@@ -1998,7 +2037,7 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
   appendSessionFilters(q, filters)
   const query = q.toString()
   const suffix = query ? `?${query}` : ''
-  const facets = await apiGet<SessionFacetsDto>(`${orgBase(orgId)}/sessions/facets${suffix}`)
+  const facets = await apiGet<SessionFacetsDto>(`${orgBase(orgId)}/sessions/facets${suffix}`, { accountToken: true })
   return {
     agentIds: facets.agents,
     integrations: facets.integrations,
@@ -2020,7 +2059,9 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
 /** CP-stored detail metadata used for session-family navigation. The linked
  *  rows are already filtered by the caller's agent visibility on the server. */
 export function fetchSessionDetail(sessionId: string, orgId?: string): Promise<SessionDetailDto> {
-  return apiGet<SessionDetailDto>(`${orgBase(orgId)}/sessions/${encodeURIComponent(sessionId)}`)
+  return apiGet<SessionDetailDto>(`${orgBase(orgId)}/sessions/${encodeURIComponent(sessionId)}`, {
+    accountToken: true
+  })
 }
 
 // PUT /sessions/:id/visibility response. `state` is the §5.1 cutover: 'pending'
@@ -2083,7 +2124,9 @@ export async function fetchSessionMessages(
   const q = new URLSearchParams({ limit: String(options.limit ?? 50) })
   if (options.cursor) q.set('cursor', options.cursor)
   if (options.after) q.set('after', options.after)
-  return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`)
+  return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`, {
+    accountToken: true
+  })
 }
 
 // One frame-budgeted byte slice of a tool call's FULL ToolBody JSON (mirrors the
@@ -2109,7 +2152,8 @@ export async function fetchToolBody(sessionId: string, toolCallId: string): Prom
   for (;;) {
     const q = new URLSearchParams({ toolCallId, offset: String(offset) })
     const chunk = await apiGet<SessionToolBodyChunkDto>(
-      `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/tool-body?${q.toString()}`
+      `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/tool-body?${q.toString()}`,
+      { accountToken: true }
     )
     out += chunk.data
     if (chunk.nextOffset == null || chunk.nextOffset <= offset) break
@@ -2698,7 +2742,7 @@ export async function fetchUsage(range: UsageRange, orgId?: string): Promise<Usa
   // Send the viewer's tz offset so the CP buckets the spend series to local
   // day/hour (getTimezoneOffset ⇒ UTC − local; stable per client, not in the key).
   const tz = new Date().getTimezoneOffset()
-  return apiGet<UsageDto>(`${orgBase(orgId)}/usage?range=${range}&tz=${tz}`)
+  return apiGet<UsageDto>(`${orgBase(orgId)}/usage?range=${range}&tz=${tz}`, { accountToken: true })
 }
 
 // Edit an agent's spec (PATCH /agents/:id). The CP persists it and hot-syncs the
