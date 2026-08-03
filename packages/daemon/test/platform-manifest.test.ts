@@ -15,34 +15,41 @@ describe('platform manifest', () => {
     const m = manifestFor('some-future-platform')
     expect(m.platform).toBe('some-future-platform')
     expect(m.membershipEnumeration).toBe(DEFAULT_MANIFEST.membershipEnumeration)
-    expect(m.statusSurface).toBe(DEFAULT_MANIFEST.statusSurface)
+  })
+
+  it('stays total for Object.prototype keys', () => {
+    // A plain-record table would return inherited members here — `constructor`
+    // would spread a function and advertise an undefined axis, which is fail-OPEN
+    // in exactly the guarantee above. Hence the Map.
+    for (const key of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+      const m = manifestFor(key)
+      expect(m.platform).toBe(key)
+      expect(m.membershipEnumeration).toBe(DEFAULT_MANIFEST.membershipEnumeration)
+    }
   })
 
   it('defaults to the conservative arm of every axis', () => {
-    // No bulk enumeration API is assumed to exist; no status bar is assumed
-    // editable. Both are the "everyone else" arm of the branches this replaces.
-    expect(DEFAULT_MANIFEST.membershipEnumeration).toBe('per-conversation')
-    expect(DEFAULT_MANIFEST.statusSurface).toBe('on-demand')
+    // No authoritative enumeration API is assumed to exist. That is the "everyone
+    // else" arm of the branches this replaces.
+    expect(DEFAULT_MANIFEST.membershipEnumeration).toBe('observed')
   })
 
-  it('keeps Slack the only bulk-enumeration, turn-bar platform', () => {
+  it('keeps Slack the only authoritative-enumeration platform', () => {
     // This is what made the retired branches readable as `=== 'slack'`; pin it so
     // a later manifest edit cannot silently widen a Slack-only path.
     for (const p of ['slack', 'telegram', 'discord', 'feishu']) {
-      const m = manifestFor(p)
-      expect(m.membershipEnumeration === 'bulk').toBe(p === 'slack')
-      expect(m.statusSurface === 'turn-bar').toBe(p === 'slack')
+      expect(manifestFor(p).membershipEnumeration === 'authoritative').toBe(p === 'slack')
     }
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
-    // emitStatusBar's skip arm and backfillChannelNames both gate on BOTH axes:
+    // backfillChannelNames and the first-seen-chat refresh both gate on BOTH axes:
     // hook / dream / webchat have no manifest and must keep the core path, so a
     // bare manifest read would have changed their behavior.
     for (const nonChat of ['hook', 'dream', 'webchat']) {
       expect(originKindOf(nonChat)).not.toBe('chat')
-      // The default manifest alone would have sent them down the on-demand arm.
-      expect(manifestFor(nonChat).statusSurface).toBe('on-demand')
+      // The default manifest alone would have sent them down the observed arm.
+      expect(manifestFor(nonChat).membershipEnumeration).toBe('observed')
     }
     for (const chat of ['slack', 'telegram', 'discord', 'feishu']) {
       expect(originKindOf(chat)).toBe('chat')

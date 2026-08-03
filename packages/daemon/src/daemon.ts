@@ -3782,10 +3782,7 @@ export class Daemon {
     for (const row of this.store.listSessions()) {
       // Only chat platforms without a bulk membership snapshot need per-session
       // channel resolution; Slack's analog is refreshChannels' bulk snapshot.
-      if (
-        originKindOf(row.platform) !== 'chat' ||
-        manifestFor(row.platform).membershipEnumeration !== 'per-conversation'
-      )
+      if (originKindOf(row.platform) !== 'chat' || manifestFor(row.platform).membershipEnumeration !== 'observed')
         continue
       // Legacy unscoped sessions cannot be attributed to the current physical bot.
       // In particular, never use a replacement bot to look up an old bot's chats.
@@ -11227,10 +11224,7 @@ export class Daemon {
       // A first-seen Telegram/Discord/Feishu chat widens the observed reachable set
       // (approach-A discovery) — report it after the session row exists so the console
       // cannot miss a name lookup that completed during cold session startup.
-      if (
-        originKindOf(msg.platform) === 'chat' &&
-        manifestFor(msg.platform).membershipEnumeration === 'per-conversation'
-      ) {
+      if (originKindOf(msg.platform) === 'chat' && manifestFor(msg.platform).membershipEnumeration === 'observed') {
         this.refreshObservedChannels()
       }
     }
@@ -12719,7 +12713,7 @@ export class Daemon {
   private settleStatusBar(p: Pending): void {
     const emitted = p.lastStatusBar !== undefined
     p.statusCancellable = false
-    if (manifestFor(p.platform).statusSurface === 'turn-bar' && emitted) this.emitStatusBar(p, true)
+    if (p.platform === 'slack' && emitted) this.emitStatusBar(p, true)
   }
 
   /** Emit/refresh the session's status bar (model / context / tokens / cost). Called at
@@ -12732,7 +12726,7 @@ export class Daemon {
    *  applyAction (no connection), which is fine. */
   private emitStatusBar(p: Pending, allowWhenSuppressed = false): void {
     if (p.outputSuppressed && !allowWhenSuppressed) return
-    if (manifestFor(p.platform).statusSurface === 'turn-bar' && !p.showStatusBar) {
+    if (p.platform === 'slack' && !p.showStatusBar) {
       const key = 'status-bar:hidden'
       if (key === p.lastStatusBar) return
       p.lastStatusBar = key
@@ -12740,10 +12734,7 @@ export class Daemon {
       return
     }
     const info = this.buildStatusInfo(p)
-    const key = JSON.stringify([
-      info,
-      manifestFor(p.platform).statusSurface === 'turn-bar' ? p.statusCancellable : null
-    ])
+    const key = JSON.stringify([info, p.platform === 'slack' ? p.statusCancellable : null])
     if (key === p.lastStatusBar) return // unchanged since the last emit — no-op
     if (p.webchat) {
       // Webchat: skip a truly-empty frame (nothing for the web bar to show); the model /
@@ -12757,11 +12748,13 @@ export class Daemon {
         index: wc.index++,
         status: info
       })
-    } else if (originKindOf(p.platform) === 'chat' && manifestFor(p.platform).statusSurface === 'on-demand') {
-      // A chat platform with no per-turn status bar — session state is queried on demand
-      // via `/status` (handleCommand). Record the dedup key so the shared bookkeeping stays
-      // consistent, but emit nothing. Gated on the origin KIND because the arm below still
-      // serves hook / dream / headless turns, which no manifest describes.
+    } else if (p.platform === 'telegram' || p.platform === 'discord' || p.platform === 'feishu') {
+      // Telegram/Discord/Feishu have no per-turn status bar — session state is queried on
+      // demand via `/status` (handleCommand). Record the dedup key so the shared bookkeeping
+      // stays consistent, but emit nothing.
+      // These four literals are class (c) `status-bar renderer` per the S0 audit, NOT a
+      // manifest capability: they are read from `Pending`, i.e. after the turn and its
+      // output surface exist. They retire with the chrome/status-bar strategy extraction.
       p.lastStatusBar = key
     } else {
       // Slack: ensure/refresh the status bar from turn START unconditionally — it must be
