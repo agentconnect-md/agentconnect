@@ -336,8 +336,11 @@ session (`sessionId`, `agentId`).
    merged row list feeds the same turn builder the per-agent page uses — the
    right side is reserved for the viewer, every agent renders as its own
    left-side block via the `agentId`-keyed grouping (`sameBotSpeaker`), humans
-   render as sender rows. No new rendering rules; the merged view is "the
-   per-agent page fed a union instead of one source".
+   render as sender rows. Each author row retains its maximal owner-authored
+   run from the source transcript, so another agent's private work can
+   interleave chronologically without splitting the source-local turn into
+   several blocks. No new rendering rules; the merged view is "the per-agent
+   page fed a union instead of one source".
 
 Notes:
 

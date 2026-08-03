@@ -270,14 +270,16 @@ function countsAsOfflineSource(error: unknown): boolean {
 function mergeConversationRows(
   sources: { sessionId: string; agentId: string; platform: string }[],
   rows: Map<string, SessionMessageDto[]>,
-  sourceSessionByMessage: WeakMap<SessionMessageDto, string>
+  sourceSessionByMessage: WeakMap<SessionMessageDto, string>,
+  sourceTurnByMessage: WeakMap<SessionMessageDto, string>
 ): SessionMessageDto[] {
   return mergeConversation(
     sources
       .filter((source) => rows.has(source.sessionId))
       .map((source) => ({ ...source, rows: rows.get(source.sessionId)! }) satisfies MergeSource)
-  ).map(({ row, sourceSessionId }) => {
+  ).map(({ row, sourceSessionId, sourceTurnKey }) => {
     sourceSessionByMessage.set(row, sourceSessionId)
+    if (sourceTurnKey) sourceTurnByMessage.set(row, sourceTurnKey)
     return row
   })
 }
@@ -1151,6 +1153,7 @@ export default function SessionDetailView() {
     older: Map<string, string | null>
   }>({ rows: new Map(), cursors: new Map(), older: new Map() })
   const conversationSourceSessionByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
+  const conversationSourceTurnByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
   const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
   const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
   // Which conversation key the CURRENT fan-out state belongs to — the focus
@@ -1594,7 +1597,14 @@ export default function SessionDetailView() {
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
-        setMsgs(mergeConversationRows(sources, rowsBySession, conversationSourceSessionByMessageRef.current))
+        setMsgs(
+          mergeConversationRows(
+            sources,
+            rowsBySession,
+            conversationSourceSessionByMessageRef.current,
+            conversationSourceTurnByMessageRef.current
+          )
+        )
         setMsgLoading(false)
         setMsgPaging(false)
         liveCursorRef.current = cursors.get(sid) ?? null
@@ -1700,7 +1710,14 @@ export default function SessionDetailView() {
         }
         if (tailSessionRef.current !== sid) return
         setConversationOffline(failed)
-        setMsgs(mergeConversationRows(sources, state.rows, conversationSourceSessionByMessageRef.current))
+        setMsgs(
+          mergeConversationRows(
+            sources,
+            state.rows,
+            conversationSourceSessionByMessageRef.current,
+            conversationSourceTurnByMessageRef.current
+          )
+        )
         if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
           reconcileLiveSteps(sid, repRows, aid)
       })()
@@ -1772,7 +1789,14 @@ export default function SessionDetailView() {
           }
         })
       )
-      setMsgs(mergeConversationRows(sources, state.rows, conversationSourceSessionByMessageRef.current))
+      setMsgs(
+        mergeConversationRows(
+          sources,
+          state.rows,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current
+        )
+      )
       setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
     } finally {
       setConversationPagingEarlier(false)
@@ -2153,18 +2177,21 @@ export default function SessionDetailView() {
     })
     turns.push(turn)
   }
+  const conversationTurnByKey = new Map<string, Extract<Turn, { kind: 'bot' }>>()
   // Another agent speaking in this session — a webchat peer participant or a
   // trusted a2a bot — renders as its own left-side agent block: the right side
-  // is reserved for humans. Groups consecutive rows like live bot steps.
-  const pushAgentTurn = (agent: Agent, step: FmtStep): void => {
+  // is reserved for humans. Conversation rows retain their source-local turn;
+  // every other path groups consecutive rows like live bot steps.
+  const pushAgentTurn = (agent: Agent, step: FmtStep, sourceTurnKey?: string): void => {
     const name = agentLabel(agent)
     rememberAgentParticipant(agent.id, name, agent)
-    let last = turns[turns.length - 1]
+    let last = sourceTurnKey ? conversationTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
       // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
       last = { kind: 'bot', agentName: name, agentId: agent.id, model: '', time: '', steps: [] }
       turns.push(last)
+      if (sourceTurnKey) conversationTurnByKey.set(sourceTurnKey, last)
     }
     last.steps.push(step)
     if (!last.time && step.time) last.time = step.time
@@ -2174,8 +2201,9 @@ export default function SessionDetailView() {
     // is a human/cron author. Group consecutive agent messages into one turn.
     for (const m of visibleMsgs ?? []) {
       const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
+      const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
       if (m.sender === session.agentId) {
-        let last = turns[turns.length - 1]
+        let last = sourceTurnKey ? conversationTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
         const ownerName = session.agentName ?? ''
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
@@ -2187,6 +2215,7 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+          if (sourceTurnKey) conversationTurnByKey.set(sourceTurnKey, last)
         }
         const step = msgStep(m, toolSessionId)
         last.steps.push(step)
@@ -2199,10 +2228,14 @@ export default function SessionDetailView() {
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
         const self = isSelf(m.sender)
         if (senderAgent && !self) {
-          pushAgentTurn(senderAgent, {
-            ...msgStep(m, toolSessionId),
-            ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
-          })
+          pushAgentTurn(
+            senderAgent,
+            {
+              ...msgStep(m, toolSessionId),
+              ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
+            },
+            sourceTurnKey
+          )
           continue
         }
         const participant = self
