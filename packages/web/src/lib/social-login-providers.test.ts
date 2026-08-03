@@ -11,11 +11,11 @@ describe('social login provider selection', () => {
     expect(targets('   ')).toEqual(['github', 'google', 'slack'])
   })
 
-  it('narrows to the configured targets, in catalog order', () => {
-    // Order comes from the catalog, not from however the variable was written.
+  it('keeps catalog order except for the configured Lark/Feishu preference', () => {
     expect(targets('slack,github')).toEqual(['github', 'slack'])
     expect(targets(' google , slack ')).toEqual(['google', 'slack'])
-    expect(targets('feishu,lark')).toEqual(['lark', 'feishu'])
+    expect(targets('lark,feishu')).toEqual(['lark', 'feishu'])
+    expect(targets('feishu,lark')).toEqual(['feishu', 'lark'])
     expect(targets('github')).toEqual(['github'])
   })
 
