@@ -56,21 +56,26 @@ export function spawnDaemonViaLoginShell(
 
   let ready = false
   const lockFile = daemonLockPath(root)
+  const checkReady = (): boolean => {
+    try {
+      ready ||= Number.parseInt(readFileSync(lockFile, 'utf8').trim(), 10) === child.pid
+    } catch {
+      // lock not written yet
+    }
+    return ready
+  }
   const clear = (): void => {
     clearInterval(poll)
     clearTimeout(deadline)
   }
   const poll = setInterval(() => {
-    try {
-      if (Number.parseInt(readFileSync(lockFile, 'utf8').trim(), 10) === child.pid) {
-        ready = true
-        clear()
-      }
-    } catch {
-      // lock not written yet — keep polling
-    }
+    if (checkReady()) clear()
   }, opts.pollMs ?? POLL_MS)
   const deadline = setTimeout(() => {
+    if (checkReady()) {
+      clear()
+      return
+    }
     clearInterval(poll)
     console.error(
       `agentconnect: daemon did not come up within ${Math.round((opts.readyTimeoutMs ?? READY_TIMEOUT_MS) / 1000)}s ` +
@@ -89,6 +94,7 @@ export function spawnDaemonViaLoginShell(
 
   const done = new Promise<ServiceChildResult>((resolve) => {
     child.on('exit', (code, signal) => {
+      checkReady()
       clear()
       resolve({ code, signal, ready })
     })
