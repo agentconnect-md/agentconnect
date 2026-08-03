@@ -457,7 +457,9 @@ export function sessionRoutes(deps: HttpDeps) {
           githubHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {})
         }
-        const { viewer } = await viewerForQuery(req, query)
+        // Each facet drops its own active filter, so its external-audience
+        // snapshot must span the same visible-agent superset.
+        const { viewer } = await viewerForQuery(req, { agentIds: visibleAgentIds.map(AgentId) })
         const index = await deps.repos.session.listFacets({ ...query, viewer })
         const metadataRows = [...index.integrations, ...index.channels, ...index.triggers]
         const hookMetadata = await hookMetadataForSessions(deps, metadataRows, orgOf(req))

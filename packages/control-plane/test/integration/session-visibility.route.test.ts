@@ -628,6 +628,73 @@ describe('session visibility — GitHub repository audience', () => {
     expect(enabled.statusCode).toBe(200)
     expect(enabled.json()).toMatchObject({ provider: 'github', available: true, enabled: true, state: 'enabled' })
   })
+
+  it('keeps allowed GitHub alternatives when another integration is selected', async () => {
+    const viewer = await makeUser(`sv-github-facets-${randomUUID()}`, 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const hookId = randomUUID()
+    const repo = new PgSessionRepo(prisma)
+
+    await prisma.hookDef.create({
+      data: {
+        id: hookId,
+        orgId: DEFAULT_ORG_ID,
+        agentId,
+        kind: 'github',
+        name: 'example-org/example-repo',
+        sessionMode: 'perThread',
+        repoId: 123n,
+        repoFullName: 'example-org/example-repo'
+      }
+    })
+    const githubSessionId = SessionId(`s-github-facet-${randomUUID()}`)
+    await repo.recordMilestone({
+      sessionId: githubSessionId,
+      agentId: AgentId(agentId),
+      phase: 'start',
+      platform: 'hook',
+      channel: hookId,
+      triggeredBy: `hook:${hookId}`,
+      at: new Date(1_000),
+      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+      externalCandidate: {
+        provider: 'github',
+        resolution: 'settled',
+        scope: {
+          realmKey: 'github.com',
+          resourceKind: 'repository',
+          resourceKey: '123',
+          credentialKind: 'github_installation',
+          credentialId: randomUUID()
+        }
+      }
+    })
+    await repo.recordMilestone({
+      sessionId: SessionId(`s-webchat-facet-${randomUUID()}`),
+      agentId: AgentId(agentId),
+      phase: 'start',
+      platform: 'webchat',
+      channel: randomUUID(),
+      at: new Date(2_000),
+      classification: { visibility: 'private', ownerIdentity: `user:${viewer}`, source: 'default' }
+    })
+
+    await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'github', true)
+    expect(await repo.get(githubSessionId)).toMatchObject({ visibility: 'external', externalResolution: 'settled' })
+
+    const response = await appAs(viewer, {
+      githubSessionAccess: {
+        resolve: async (scopes) => ({
+          allowedScopes: scopes.map((scope) => ({ id: scope.id, aclRevision: scope.aclRevision })),
+          degraded: false
+        })
+      }
+    }).app.inject({ method: 'GET', url: `${ORG}/sessions/facets?integration=webchat` })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({ integrations: ['webchat', 'github'] })
+  })
 })
 
 describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
