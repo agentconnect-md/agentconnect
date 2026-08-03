@@ -2,6 +2,12 @@
 
 **Status:** Current design
 
+> **Proposed change:** [`send-message-routing-rework.md`](send-message-routing-rework.md)
+> removes every visible in-thread `sendMessage` form, keeps `toAgent + channel`
+> as a channel-root send, makes current-thread addressing use ordinary
+> `@mention` replies, and makes parent-session reply turns headless. This document
+> remains authoritative until that proposal is implemented.
+
 > This document does one thing: define **session** precisely--what it is, what
 > it contains, how messages record source and destination, how agent-to-agent
 > communication and cross-platform sends enter sessions, and how **replies**

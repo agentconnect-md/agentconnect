@@ -3,6 +3,12 @@
 **Status:** Implemented. See
 [`loop-breaker-design.md`](loop-breaker-design.md) for loop safety.
 
+> **Proposed change:** [`send-message-routing-rework.md`](send-message-routing-rework.md)
+> makes finalized AgentConnect-authored platform mentions routable, removes the
+> visible in-thread `sendMessage` forms while retaining `toAgent + channel` as a
+> channel-root send, and makes parent-session replies headless. The current
+> implementation described below remains authoritative until that proposal lands.
+
 > **Current behavior:** the `sendMessage` peer-agent target and
 > `startOrchestration` use the daemon's internal `messageAgent` delivery
 > primitive. A peer wake is postless unless `sendMessage` explicitly includes a
