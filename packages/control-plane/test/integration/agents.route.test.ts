@@ -432,7 +432,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       model: string | null
       daemonId: string | null
       status: string
-      workspace: { mode: string; gitRepo?: string; gitBranch?: string; agentDir?: string }
+      workspace: { mode: string; worktree?: boolean; gitRepo?: string; gitBranch?: string; agentDir?: string }
     }
     expect(created.model).toBe('opus')
     expect(created.daemonId).toBe(daemonId) // placed on the chosen daemon
@@ -440,6 +440,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     // shorthand input is normalized to the full cloneable address at the DTO boundary
     expect(created.workspace).toEqual({
       mode: 'github',
+      worktree: true,
       gitRepo: 'https://github.com/acme/infra',
       gitBranch: 'main',
       agentDir: 'services/api'
@@ -448,6 +449,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     // Persisted inline on the agent row (no separate workspace entity), full address.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
     expect(row?.workspaceMode).toBe('github')
+    expect(row?.workspaceIsolation).toBe('session')
     expect(row?.gitRepo).toBe('https://github.com/acme/infra')
     expect(row?.agentDir).toBe('services/api')
     expect((row?.runtimeOverrides as { model: string }).model).toBe('opus')

@@ -86,7 +86,10 @@ describe('SessionManager', () => {
 
     await sm.handle('bot-a', msg({ ts: '100.2', thread: '100.2', text: 'warm session' }))
 
-    expect(prepareWorkspace).toHaveBeenCalledWith(agent, host)
+    expect(prepareWorkspace).toHaveBeenCalledWith(agent, host, {
+      sessionKey: 'slack:C1:100.2:bot-a',
+      isolation: 'shared'
+    })
     store.close()
   })
 

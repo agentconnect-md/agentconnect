@@ -246,7 +246,11 @@ export class SessionManager {
        * reconciliation. Tests and the standalone chat CLI use the ordinary
        * workspace preparer. Production also passes the ordinary warm host so
        * teardown can reject a preparation registered by a stale generation. */
-      prepareWorkspace?: (agent: Agent, expectedWarmHost?: AcpHost) => Promise<string>
+      prepareWorkspace?: (
+        agent: Agent,
+        expectedWarmHost?: AcpHost,
+        request?: { sessionKey: string; isolation: 'shared' | 'session' }
+      ) => Promise<string>
       /** Resolve the cwd produced by hostFor's cold preparation without
        * repeating pull/source acquisition/reconciliation. Production supplies
        * this seam; lightweight host mocks fall back to pre-host preparation. */
@@ -375,6 +379,13 @@ export class SessionManager {
        * memory. Computed by the daemon before any transcript or prompt body is
        * handed to this method. */
       sharedMemoryExcluded?: boolean
+      /** Product Worktree override for a brand-new logical session. Existing
+       * sessions keep their persisted choice unless the trusted review path
+       * explicitly forces an exact workspace migration. */
+      workspaceIsolation?: 'shared' | 'session'
+      forceWorkspaceIsolation?: boolean
+      /** A daemon-verified cwd prepared before handle() (GitHub exact-ref turns). */
+      preparedWorkspaceCwd?: string
     } = {}
   ): Promise<{
     sessionId: string
@@ -498,6 +509,23 @@ export class SessionManager {
         this.deps.store.upsertSession(rec)
       }
     }
+    const requestedWorkspaceIsolation =
+      agent.workspace.mode === 'git-repo' ? (options.workspaceIsolation ?? agent.workspace.isolation) : 'shared'
+    const workspaceIsolation =
+      options.forceWorkspaceIsolation === true
+        ? requestedWorkspaceIsolation
+        : (rec?.workspaceIsolation ?? requestedWorkspaceIsolation)
+    if (rec && rec.workspaceIsolation !== workspaceIsolation) {
+      rec = {
+        ...rec,
+        workspaceIsolation,
+        ...(options.forceWorkspaceIsolation
+          ? { acpSessionId: null, state: rec.state === 'closed' ? 'closed' : 'idle', lastDeliveredTs: null }
+          : {}),
+        updatedAt: Date.now()
+      }
+      this.deps.store.upsertSession(rec)
+    }
     // Durable parent link (§5.3): prefer the origin persisted on the session (present on EVERY
     // turn of a spawned session) over this turn's wake origin (only the one agent-call turn that
     // first spawns the session carries it). This value both drives the `Parent session` line and,
@@ -537,7 +565,12 @@ export class SessionManager {
     const hostCold = options.host ? false : !(this.deps.isHostRunning?.(agentId) ?? false)
     let preparedCwd =
       hostCold && !this.deps.resolvePreparedWorkspace
-        ? await abortable(() => this.deps.prepareWorkspace?.(agent) ?? prepareWorkspace(agent), signal)
+        ? await abortable(
+            () =>
+              this.deps.prepareWorkspace?.(agent, undefined, { sessionKey: key, isolation: workspaceIsolation }) ??
+              prepareWorkspace(agent),
+            signal
+          )
         : undefined
     const host = options.host ?? (await abortable(() => this.deps.hostFor(agentId), signal))
     // Explicit private-cell hosts are not owned by the daemon's ordinary host
@@ -776,9 +809,12 @@ export class SessionManager {
       // brand-new session; use the pre-host preparation when the host was cold, else
       // prepare now (warm host — ordering vs spawn is moot).
       const cwd =
-        preparedCwd ??
+        options.preparedWorkspaceCwd ??
+        (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost) ?? prepareWorkspace(agent),
+          () =>
+            this.deps.prepareWorkspace?.(agent, expectedWarmHost, { sessionKey: key, isolation: workspaceIsolation }) ??
+            prepareWorkspace(agent),
           signal
         ))
       const mcpServers = [
@@ -811,6 +847,7 @@ export class SessionManager {
         // from the GitHub actor credited on the transcript row above.
         triggeredBy: msg.sessionTriggerId ?? msg.sender.id,
         memoryProvider: currentMemoryProvider,
+        workspaceIsolation,
         // Durable parent link, set once at spawn (first-wins in the store).
         ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {}),
         // Durable report-back obligation (sticky-true in the store).
@@ -830,9 +867,12 @@ export class SessionManager {
       // Resume: use the pre-host preparation when the host cold-started here (persisted
       // session after restart/eviction — skills must precede spawn), else prepare now.
       const cwd =
-        preparedCwd ??
+        options.preparedWorkspaceCwd ??
+        (workspaceIsolation === 'shared' ? preparedCwd : undefined) ??
         (await abortable(
-          () => this.deps.prepareWorkspace?.(agent, expectedWarmHost) ?? prepareWorkspace(agent),
+          () =>
+            this.deps.prepareWorkspace?.(agent, expectedWarmHost, { sessionKey: key, isolation: workspaceIsolation }) ??
+            prepareWorkspace(agent),
           signal
         ))
       // Resolved once, shared by both paths: session/load must re-attach the same

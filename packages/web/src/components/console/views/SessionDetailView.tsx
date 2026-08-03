@@ -1035,6 +1035,7 @@ export default function SessionDetailView() {
     reconcileLiveSteps,
     getPgInput,
     getPgImage,
+    getPgWorktree,
     isPgBusy,
     setPgInput: setPgInputById,
     setPgImage,
@@ -1044,6 +1045,7 @@ export default function SessionDetailView() {
     pgSetEffort,
     pgSetPermissionPreset,
     pgSetFast,
+    pgSetWorktree,
     pgCancel
   } = usePlayground()
   const { user: viewer, me } = useProfile()
@@ -1123,6 +1125,7 @@ export default function SessionDetailView() {
   const [runtimeSelections, setRuntimeSelections] = useState<
     Record<string, { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
   >({})
+  const [worktreeSelections, setWorktreeSelections] = useState<Record<string, boolean>>({})
   // A rail row already carries enough metadata to paint the next session while
   // its detail/transcript requests catch up. Keeping it here also holds the
   // agent-filtered rail steady instead of briefly dropping it between ids.
@@ -1989,6 +1992,12 @@ export default function SessionDetailView() {
   // still playground-only — `pgAddAgent` mutates provider-side session state that
   // an adopted webchat session never had — so a resumed conversation shows its
   // roster (above) without the `+`.
+  const pgWorktree =
+    worktreeSelections[session.id] ??
+    getPgWorktree(session.id) ??
+    (owner?.workspace?.mode === 'github' && owner.workspace.worktree === true)
+  const canChooseWorktree =
+    isPg && !multiLive && owner?.workspace?.mode === 'github' && !session.steps.some((step) => step.kind === 'msg')
   const addAgentOptions = isPg
     ? agents
         .filter((a) => !liveRoster.some((p) => p.agentId === a.id))
@@ -3277,6 +3286,21 @@ export default function SessionDetailView() {
                             </span>
                           )
                         ))}
+                      {canChooseWorktree && (
+                        <label className={`${COMPOSER_CHIP} cursor-pointer`}>
+                          <input
+                            type="checkbox"
+                            checked={pgWorktree}
+                            onChange={(event) => {
+                              const worktree = event.target.checked
+                              setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
+                              pgSetWorktree(session.id, worktree)
+                            }}
+                            className="h-4 w-4 accent-(--brand)"
+                          />
+                          Worktree
+                        </label>
+                      )}
                     </div>
                     <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
                     <button

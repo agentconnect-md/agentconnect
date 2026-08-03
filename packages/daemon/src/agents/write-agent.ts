@@ -820,6 +820,7 @@ function applySpecFields(
       typeof raw.workspace === 'object' && raw.workspace !== null ? (raw.workspace as Record<string, unknown>) : {}
     ) as Record<string, unknown>
     existing.mode = mapWorkspaceMode(ws.mode)
+    existing.isolation = ws.isolation
     // AgentSpec carries the complete workspace state. Root/scratch therefore
     // clears a previously replicated cwd rather than preserving a stale local value.
     delete existing.agentDir

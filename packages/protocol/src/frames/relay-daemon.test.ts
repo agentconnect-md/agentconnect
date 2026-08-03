@@ -174,6 +174,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         op: 'turn',
         text: 'hello',
         turnId: TURN_ID,
+        worktree: false,
         runtime: { model: 'gpt-5.6-sol', effort: 'xhigh', permissionMode: 'full-access', fastMode: true }
       },
       { op: 'resume', turnId: TURN_ID, generation: 2, afterIndex: 3 },
@@ -192,6 +193,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RelayWebchatOp.safeParse({ op: 'set_theme', theme: 'dark' }).success).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'turn' }).success).toBe(false) // text required
     expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'hi', runtime: { fastMode: 'yes' } }).success).toBe(false)
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'hi', worktree: 'yes' }).success).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'resume', turnId: TURN_ID, generation: 1, afterIndex: -2 }).success).toBe(
       false
     )

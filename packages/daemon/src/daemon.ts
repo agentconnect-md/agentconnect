@@ -134,9 +134,12 @@ import {
   ensureWorkspaceMaterialization,
   isWorkspaceEmpty,
   prepareWorkspace,
+  prepareSessionWorkspace,
   prepareWorkspaceForActivation,
   resolvePreparedWorkspaceCwd,
-  prefetchWorkspace
+  prefetchWorkspace,
+  sessionWorktreeRoot,
+  type PrepareSessionWorkspaceRequest
 } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import {
@@ -167,7 +170,7 @@ import { FeishuConverger, renderStatusReply as renderFeishuStatusReply, type Fei
 import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
-import { buildHookMessage, hookAnchorText } from './messages/hook-message.js'
+import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
 import {
   GithubReviewClient,
@@ -216,7 +219,9 @@ import {
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   effectiveMemoryDreamingPolicy,
-  gitRepoLabel
+  gitRepoLabel,
+  normalizeGitCloneUrl,
+  normalizeGithubRepoUrl
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
@@ -1339,6 +1344,7 @@ interface WebchatTurnContext {
    * (webchat-multi-agents.md §5.2). Absent on an older relay / synthetic turn. */
   postSink?: (post: RdWebchatPost) => void
   runtime?: WebchatRuntimeConfig
+  worktree?: boolean
   /** Authority captured only from the relay's validated rd/msg envelope. It is
    * consumed by the daemon host selector and never forwarded to ACP/model input. */
   remoteMcp?: WebchatRemoteMcpEntitlement
@@ -2632,7 +2638,8 @@ export class Daemon {
       // single preparation rather than starting a warm preparation afterward.
       isHostRunning: (agentId) => this.readyHosts.has(agentId),
       agentById: (id) => this.agents.get(id),
-      prepareWorkspace: (agent, expectedWarmHost) => this.prepareAgentWorkspace(agent, expectedWarmHost),
+      prepareWorkspace: (agent, expectedWarmHost, request) =>
+        this.prepareAgentWorkspace(agent, expectedWarmHost, request),
       resolvePreparedWorkspace: (agent) => resolvePreparedWorkspaceCwd(agent),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
@@ -4205,13 +4212,14 @@ export class Daemon {
     return effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
   }
 
-  private async runAgentWorkspacePreparation(agent: Agent): Promise<string> {
+  private async runAgentWorkspacePreparation(agent: Agent, request?: PrepareSessionWorkspaceRequest): Promise<string> {
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
-    return prepareWorkspace(agent, {
-      managedSkills: (value) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
+    const opts = {
+      managedSkills: (value: Agent) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null
-    })
+    }
+    return request ? prepareSessionWorkspace(agent, request, opts) : prepareWorkspace(agent, opts)
   }
 
   private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
@@ -4278,10 +4286,15 @@ export class Daemon {
     return run
   }
 
-  private prepareAgentWorkspace(agent: Agent, expectedWarmHost?: AcpHost, allowAgentDrain = false): Promise<string> {
+  private prepareAgentWorkspace(
+    agent: Agent,
+    expectedWarmHost?: AcpHost,
+    request?: PrepareSessionWorkspaceRequest,
+    allowAgentDrain = false
+  ): Promise<string> {
     return this.enqueueAgentWorkspacePreparation(
       agent,
-      () => this.runAgentWorkspacePreparation(agent),
+      () => this.runAgentWorkspacePreparation(agent, request),
       expectedWarmHost,
       allowAgentDrain
     )
@@ -4511,6 +4524,8 @@ export class Daemon {
         runtimeReadRoots: runInSandbox
           ? this.sandboxRuntimeReadRoots(agent, runtime, { ...runtimeEnv, ...env }, githubAppCredentials)
           : undefined,
+        trustedWorkspaceWriteRoots:
+          runInSandbox && agent.workspace.mode === 'git-repo' ? [sessionWorktreeRoot(agent)] : undefined,
         explicitEnv: { ...runtimeEnv, ...env },
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
@@ -5584,7 +5599,8 @@ export class Daemon {
     remoteMcp?: WebchatRemoteMcpEntitlement,
     mentions?: string[],
     post?: { postId: string; at: number },
-    postSink?: (p: RdWebchatPost) => void
+    postSink?: (p: RdWebchatPost) => void,
+    requestedWorktree?: boolean
   ): WebchatAck {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -5672,7 +5688,15 @@ export class Daemon {
     }
     const initialRuntime =
       this.agents.get(result.agentId)?.allowRuntimeChangesInChat === true ? requestedRuntime : undefined
-    const stream = this.createWebchatTurnStream(result.agentId, chatId, turnId, sink, initialRuntime, remoteMcp)
+    const stream = this.createWebchatTurnStream(
+      result.agentId,
+      chatId,
+      turnId,
+      sink,
+      initialRuntime,
+      remoteMcp,
+      requestedWorktree
+    )
     if (postSink) stream.postSink = postSink
     // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the
     // user message at ADMISSION — not only when its turn eventually runs — so a
@@ -5739,7 +5763,8 @@ export class Daemon {
     turnId: string,
     transport: WebchatSink,
     runtime?: WebchatRuntimeConfig,
-    remoteMcp?: WebchatRemoteMcpEntitlement
+    remoteMcp?: WebchatRemoteMcpEntitlement,
+    worktree?: boolean
   ): WebchatTurnStream {
     this.pruneWebchatStreams()
     const stream: WebchatTurnStream = {
@@ -5748,6 +5773,7 @@ export class Daemon {
       turnId,
       transport,
       ...(runtime ? { runtime } : {}),
+      ...(worktree !== undefined ? { worktree } : {}),
       ...(remoteMcp ? { remoteMcp } : {}),
       resumeGeneration: 0,
       sink: {
@@ -8060,6 +8086,132 @@ export class Daemon {
     return { accepted: true }
   }
 
+  private githubFormalReviewEnabled(entry: QueueEntry): boolean {
+    const hook = entry.hookContext
+    const snapshot = hook?.snapshot
+    const github = hook?.github
+    return Boolean(
+      hook &&
+      snapshot &&
+      github?.subjectKind === 'pull_request' &&
+      github.pullNumber !== undefined &&
+      snapshot.reviewPolicy !== 'off' &&
+      snapshot.gateMode === 'informational' &&
+      snapshot.reportingMode !== 'status' &&
+      (!this.cfg.daemonId || snapshot.dispatchDaemonId === this.cfg.daemonId) &&
+      githubOpensReviewGeneration(hook.event, github, snapshot.reviewPolicy) &&
+      !isGithubReviewCommentHook(hook)
+    )
+  }
+
+  /** Fill the trusted revision gap on issue_comment deliveries before either
+   * workspace preparation or hook/start. Formal reviews fail closed when the
+   * daemon cannot prove which base/head the model would review. */
+  private async ensureGithubPullRevision(
+    entry: QueueEntry,
+    required: boolean
+  ): Promise<GithubHookMetadata | undefined> {
+    const hook = entry.hookContext
+    const github = hook?.github
+    if (!hook || !github || github.subjectKind !== 'pull_request' || github.pullNumber === undefined) {
+      return github
+    }
+    if (github.headSha && github.baseSha) return github
+
+    try {
+      const postToken = await this.gitCreds.getPostToken(hook.agentId, github.repoFullName, hook.hookId)
+      const revision = await this.githubReviewClient.getPull(postToken.token, github.repoFullName, github.pullNumber)
+      hook.github = {
+        ...github,
+        headSha: revision.headSha,
+        baseSha: revision.baseSha,
+        reportSha: revision.headSha,
+        ...(revision.mergeCommitSha ? { mergeCommitSha: revision.mergeCommitSha } : {}),
+        isDraft: revision.draft
+      }
+      this.persistHookState(entry, undefined, true)
+      return hook.github
+    } catch (err) {
+      this.log.warn(`github review: unable to resolve PR revision (${formatErr(err)})`)
+      if (required) {
+        throw new Error('github review blocked: unable to resolve the authoritative PR base and head', {
+          cause: err
+        })
+      }
+      return undefined
+    }
+  }
+
+  private githubWorkspaceMatches(agent: Agent, github: GithubHookMetadata): boolean {
+    if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) return false
+    try {
+      const clone = normalizeGitCloneUrl(agent.workspace.gitRepo)
+      const cloneHost = new URL(clone).hostname.toLowerCase()
+      // App-backed workspace URLs are canonicalized to GitHub by the daemon.
+      // Anonymous repos must already name GitHub; never reinterpret another
+      // host's owner/repo path as the trusted hook repository.
+      if (agent.workspace.gitCredential !== 'github-app' && cloneHost !== 'github.com') return false
+      const workspaceRepo = normalizeGithubRepoUrl(agent.workspace.gitRepo)
+        .replace(/\.git$/i, '')
+        .toLowerCase()
+      const hookRepo = normalizeGithubRepoUrl(github.repoFullName)
+        .replace(/\.git$/i, '')
+        .toLowerCase()
+      return workspaceRepo === hookRepo
+    } catch {
+      return false
+    }
+  }
+
+  /** Prepare an exact, isolated checkout before a formal review generation. A
+   * formal review may use GitHub read-only inspection when its configured local
+   * repo differs, but it must never silently fall back to a stale checkout.
+   * Ordinary PR conversations preserve their stable session worktree. */
+  private async prepareGithubReviewWorkspace(
+    entry: QueueEntry,
+    key: string,
+    agent: Agent
+  ): Promise<{
+    workspaceIsolation?: 'session'
+    forceWorkspaceIsolation?: true
+    preparedWorkspaceCwd?: string
+  }> {
+    if (!this.githubFormalReviewEnabled(entry)) return {}
+
+    const github = await this.ensureGithubPullRevision(entry, true)
+    if (!github?.headSha || !github.baseSha || github.pullNumber === undefined) {
+      throw new Error('github review blocked: authoritative PR base and head are unavailable')
+    }
+
+    const revisionLine = `Base SHA: ${github.baseSha}\nHead SHA: ${github.headSha}`
+    if (!this.githubWorkspaceMatches(agent, github)) {
+      entry.msg.text +=
+        `\n\nTrusted review revision:\n${revisionLine}\n` +
+        "This Agent's local workspace is not the pull request repository. Do not trust local files or repository traces for this review; inspect the exact base and head through GitHub read-only tools."
+      return {}
+    }
+
+    try {
+      const warmHost = this.readyHosts.has(agent.id) ? this.hosts.get(agent.id) : undefined
+      const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
+        sessionKey: key,
+        isolation: 'session',
+        review: {
+          pullNumber: github.pullNumber,
+          baseSha: github.baseSha,
+          headSha: github.headSha,
+          ...(github.mergeCommitSha ? { mergeCommitSha: github.mergeCommitSha } : {})
+        }
+      })
+      entry.msg.text +=
+        `\n\nTrusted review workspace:\n${revisionLine}\n` +
+        'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.'
+      return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
+    } catch (err) {
+      throw new Error('github review blocked: exact PR workspace preparation failed', { cause: err })
+    }
+  }
+
   /** Resolve a PR revision if the webhook omitted it (notably
    * issue_comment), cross the CP hook/start barrier, then return the active
    * review authority. Failure only disables structured effects; the agent turn
@@ -8085,23 +8237,7 @@ export class Daemon {
       return undefined
     }
 
-    if (!github.headSha || !github.baseSha) {
-      try {
-        const postToken = await this.gitCreds.getPostToken(hook.agentId, github.repoFullName, hook.hookId)
-        const revision = await this.githubReviewClient.getPull(postToken.token, github.repoFullName, github.pullNumber)
-        hook.github = {
-          ...github,
-          headSha: revision.headSha,
-          baseSha: revision.baseSha,
-          reportSha: revision.headSha,
-          isDraft: revision.draft
-        }
-        this.persistHookState(entry, undefined, true)
-      } catch (err) {
-        this.log.warn(`github review: unable to resolve PR revision (${formatErr(err)})`)
-        return undefined
-      }
-    }
+    if (!github.headSha || !github.baseSha) await this.ensureGithubPullRevision(entry, false)
 
     const trusted = hook.github!
     if (!trusted.headSha || !trusted.baseSha || trusted.pullNumber === undefined) return undefined
@@ -8131,7 +8267,12 @@ export class Daemon {
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
       }
     }
-    if (snapshot.reviewPolicy === 'off' || isGithubReviewCommentHook(hook)) return undefined
+    if (
+      snapshot.reviewPolicy === 'off' ||
+      isGithubReviewCommentHook(hook) ||
+      !githubOpensReviewGeneration(hook.event, trusted, snapshot.reviewPolicy)
+    )
+      return undefined
     const recoverableAttempt =
       hook.reviewAttemptId !== undefined &&
       hook.reviewRequestedEvent !== undefined &&
@@ -8378,7 +8519,8 @@ export class Daemon {
           msg.remoteMcp,
           op.mentions,
           op.post,
-          post
+          post,
+          op.worktree
         )
         return {
           msgId: msg.msgId,
@@ -10685,6 +10827,7 @@ export class Daemon {
     const persistedSessionId = this.store.getSession(key)?.acpSessionId
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
+      const reviewWorkspace = await this.prepareGithubReviewWorkspace(entry, key, agent)
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
@@ -10748,7 +10891,11 @@ export class Daemon {
                 msg.platform === 'webchat' ||
                 this.pendingLaunchCorrelation.has(agentId) ||
                 this.conversationExternalSource(agentId, msg, callMeta !== undefined) !== undefined),
-          ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {})
+          ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
+          ...(webchat?.worktree !== undefined
+            ? { workspaceIsolation: webchat.worktree ? ('session' as const) : ('shared' as const) }
+            : {}),
+          ...reviewWorkspace
         }
       )
     } catch (err) {
@@ -14438,7 +14585,7 @@ export class Daemon {
       // attempt. A failed ACP child had workspace write authority; re-verify the
       // immutable skill receipts after it is fully reaped and before constructing
       // its replacement, rather than trusting the first attempt's gate.
-      await this.prepareAgentWorkspace(agent, undefined, allowAgentDrain)
+      await this.prepareAgentWorkspace(agent, undefined, undefined, allowAgentDrain)
       if (this.hostStartGeneration.get(agentId) !== generation) {
         throw new Error(`host start superseded for ${agentId}`)
       }

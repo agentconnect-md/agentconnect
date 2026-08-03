@@ -489,10 +489,12 @@ export interface RelayRepo {
 // ───────────────────────────────────────────────────────────────────────────
 
 /** Where the agent runs (inline on the agent; path is daemon-generated). */
+export type WorkspaceIsolation = 'shared' | 'session'
 export type AgentWorkspace =
-  | { mode: 'scratch' }
+  | { mode: 'scratch'; isolation?: WorkspaceIsolation }
   | {
       mode: 'github'
+      isolation?: WorkspaceIsolation
       gitRepo: string
       gitBranch?: string
       agentDir?: string

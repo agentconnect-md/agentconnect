@@ -157,6 +157,9 @@ export function prepareRuntimeLaunch(opts: {
   /** Daemon/registry-owned executable and package roots needed to start the
    * runtime and its configured stdio children. Never derive this from agent env. */
   trustedRuntimeReadRoots?: string[]
+  /** Additional daemon-derived workspace parents (for session worktrees).
+   * Every entry is revalidated as a strict descendant of scopeDir. */
+  trustedWorkspaceWriteRoots?: string[]
   /** Test seam. Shared login remains Linux-only with the sandbox rollout. */
   credentialPlatform?: NodeJS.Platform
   sandboxMechanism?: SandboxMechanism
@@ -319,6 +322,16 @@ export function prepareRuntimeLaunch(opts: {
       return trusted
     })
   )
+  const agentRoot = safeRoot(opts.scopeDir, 'agent root')
+  const trustedWorkspaceWriteRoots = compactReadRoots(
+    (opts.trustedWorkspaceWriteRoots ?? []).map((path) => {
+      const trusted = safeRoot(path, 'trusted workspace write root')
+      if (trusted === agentRoot || !inside(agentRoot, trusted)) {
+        throw new Error(`trusted workspace write root "${trusted}" is outside the agent root`)
+      }
+      return trusted
+    })
+  )
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   if (claudeRuntime) {
     // Anthropic profile JSON may live in the agent-writable private HOME and may
@@ -356,7 +369,7 @@ export function prepareRuntimeLaunch(opts: {
     runtimeHome,
     mcpSocketPath: opts.mcpSocketPath,
     trustedReadRoots: [...trustedRuntimeReadRoots, ...providerCredentialReadRoots],
-    trustedWriteRoots: credentialWritableRoots
+    trustedWriteRoots: [...credentialWritableRoots, ...trustedWorkspaceWriteRoots]
   })
   // SRT write roots must exist before spawn.
   // This also initializes workspace/memory for a newly-created agent.

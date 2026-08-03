@@ -99,7 +99,10 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     attachments: z.array(WebchatImageAttachment).max(1).optional(),
     // A fresh Playground has no daemon session to receive standalone `set_*`
     // operations yet. Carry only the settings the user changed with its first turn.
-    runtime: WebchatRuntimeConfig.optional()
+    runtime: WebchatRuntimeConfig.optional(),
+    // Per-conversation workspace override. The daemon honors it only while
+    // creating the logical session; later turns cannot move an existing session.
+    worktree: z.boolean().optional()
   }),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's

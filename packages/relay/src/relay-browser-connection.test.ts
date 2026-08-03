@@ -90,17 +90,19 @@ describe('parseBrowserFrame', () => {
       }
     })
   })
-  it('carries staged runtime choices on the first turn', () => {
+  it('carries staged runtime and worktree choices on the first turn', () => {
     const runtime = { model: 'gpt-5.6-sol', effort: 'xhigh', permissionMode: 'full-access', fastMode: true }
-    expect(parseBrowserFrame({ text: 'hi', runtime }, USER)).toEqual({
+    expect(parseBrowserFrame({ text: 'hi', runtime, worktree: false }, USER)).toEqual({
       op: {
         op: 'turn',
         text: 'hi',
         user: USER,
-        runtime
+        runtime,
+        worktree: false
       }
     })
     expect(parseBrowserFrame({ text: 'hi', runtime: { fastMode: 'yes' } }, USER)).toBeNull()
+    expect(parseBrowserFrame({ text: 'hi', worktree: 'yes' }, USER)).toBeNull()
   })
   it('maps a bounded image attachment while keeping the verified user authoritative', () => {
     const attachment = {

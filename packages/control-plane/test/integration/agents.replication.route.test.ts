@@ -188,7 +188,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         runInSandbox: false,
         // Preset marker — always shipped so the daemon can gate preset-only capabilities.
         builtin: false,
-        workspace: { mode: 'scratch', gitCredential: 'github-app' }
+        workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app' }
       }
     })
 
@@ -261,6 +261,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(clear.statusCode).toBe(200)
     expect(spy.upserts.at(-1)?.u.spec.workspace).toEqual({
       mode: 'github',
+      isolation: 'shared',
       gitRepo: 'https://github.com/acme/monorepo',
       branch: 'main'
     })

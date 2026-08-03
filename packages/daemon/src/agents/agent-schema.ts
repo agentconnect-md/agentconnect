@@ -249,6 +249,9 @@ export const AgentSchema = z.object({
   memory: AgentMemoryBinding.optional(),
   workspace: z.object({
     mode: z.enum(['git-repo', 'from-scratch']),
+    // Internal isolation policy. Product surfaces call the session mode
+    // "Worktree"; keeping an enum here leaves room for other isolation modes.
+    isolation: z.enum(['shared', 'session']).default('shared'),
     path: z.string(),
     gitRepo: z.string().optional(), // full cloneable address (e.g. https://github.com/acme/infra)
     gitBranch: z.string().default('main'),

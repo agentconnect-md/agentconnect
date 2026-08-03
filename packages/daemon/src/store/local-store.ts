@@ -93,6 +93,9 @@ export interface SessionRecord {
   // so later turns edit the same status line instead of posting duplicates.
   statusBarTs?: string | null
   memoryProvider?: 'none' | 'native' | 'managed' | 'external' | null
+  /** Workspace choice pinned when the logical session is created. A manual
+   * Playground override is therefore session-local and survives daemon restarts. */
+  workspaceIsolation?: 'shared' | 'session' | null
   conversationKind?: 'dm' | 'group_dm' | 'channel' | null
   // Immutable trusted source binding for supported shared input. These fields
   // are metadata only and are echoed on every event/session milestone.
@@ -506,7 +509,7 @@ export class LocalStore {
         transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, modelOverride TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
-        outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT,
+        outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT, workspaceIsolation TEXT,
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
         externalProvider TEXT, externalRealmKey TEXT, externalResourceKind TEXT,
         externalResourceKey TEXT, externalIntegrationId TEXT, externalOriginJson TEXT,
@@ -1104,6 +1107,8 @@ export class LocalStore {
     if (!cols.some((c) => c.name === 'statusBarTs')) this.db.exec('ALTER TABLE sessions ADD COLUMN statusBarTs TEXT')
     if (!cols.some((c) => c.name === 'memoryProvider'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN memoryProvider TEXT')
+    if (!cols.some((c) => c.name === 'workspaceIsolation'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN workspaceIsolation TEXT')
     if (!cols.some((c) => c.name === 'originSessionId'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN originSessionId TEXT')
     if (!cols.some((c) => c.name === 'lastTurnOutcome'))
@@ -1674,13 +1679,13 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO sessions
-           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, originSessionId, needsParentReply,
+           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
             externalOriginJson, sourceBindingKind)
          VALUES
            (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
-            @triggeredBy, @memoryProvider, @originSessionId, @needsParentReply,
+            @triggeredBy, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
             @externalOriginJson, @sourceBindingKind)
          ON CONFLICT(key) DO UPDATE SET
@@ -1693,6 +1698,7 @@ export class LocalStore {
            END,
            triggeredBy=COALESCE(sessions.triggeredBy, excluded.triggeredBy),
            memoryProvider=excluded.memoryProvider,
+           workspaceIsolation=COALESCE(excluded.workspaceIsolation, sessions.workspaceIsolation),
            externalProvider=COALESCE(sessions.externalProvider, excluded.externalProvider),
            externalRealmKey=COALESCE(sessions.externalRealmKey, excluded.externalRealmKey),
            externalResourceKind=COALESCE(sessions.externalResourceKind, excluded.externalResourceKind),
@@ -1727,6 +1733,7 @@ export class LocalStore {
         updatedAt: rec.updatedAt,
         triggeredBy: rec.triggeredBy ?? null,
         memoryProvider: rec.memoryProvider ?? null,
+        workspaceIsolation: rec.workspaceIsolation ?? null,
         externalProvider: rec.externalProvider ?? null,
         externalRealmKey: rec.externalRealmKey ?? null,
         externalResourceKind: rec.externalResourceKind ?? null,

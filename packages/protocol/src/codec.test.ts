@@ -347,6 +347,7 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     expect(ws.gitRepo).toBe('github.com/acme/infra')
     expect(ws.agentDir).toBe('./services/api')
     expect(ws.branch).toBe('main') // zod default
+    expect(ws.isolation).toBe('shared')
   })
 
   it('spec.workspace accepts scratch with explicit-repo GitHub credentials', () => {
@@ -358,7 +359,11 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('agent/upsert')(r.frame)) throw new Error('expected agent/upsert')
-    expect(r.frame.payload.spec.workspace).toEqual({ mode: 'scratch', gitCredential: 'github-app' })
+    expect(r.frame.payload.spec.workspace).toEqual({
+      mode: 'scratch',
+      isolation: 'shared',
+      gitCredential: 'github-app'
+    })
   })
 
   it('agent/upsert and agent/remove decode for live CRUD', () => {

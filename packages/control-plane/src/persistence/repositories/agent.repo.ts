@@ -196,6 +196,7 @@ function workspaceOf(a: Agent): AgentWorkspace {
   if (a.workspaceMode === 'github') {
     return {
       mode: 'github',
+      isolation: a.workspaceIsolation,
       // Legacy rows may predate the credential-free clone URL invariant. Keep
       // reads total, but never let URL userinfo/query secrets enter DTOs or wire
       // projections through the domain record.
@@ -205,7 +206,7 @@ function workspaceOf(a: Agent): AgentWorkspace {
       ...(a.installationId !== null ? { installationId: a.installationId, gitAccess: a.gitAccess } : {})
     }
   }
-  return { mode: 'scratch' }
+  return { mode: 'scratch', isolation: a.workspaceIsolation }
 }
 
 function toRecord(a: AgentWithUsers): AgentRecord {
@@ -355,6 +356,7 @@ export class PgAgentRepo implements AgentRepo {
             : {}),
           ...(ownerUserId ? { ownerUserId } : {}),
           workspaceMode: ws.mode,
+          workspaceIsolation: ws.mode === 'github' ? (ws.isolation ?? 'session') : 'shared',
           gitRepo: ws.mode === 'github' ? ws.gitRepo : null,
           gitBranch: ws.mode === 'github' ? (ws.gitBranch ?? 'main') : null,
           agentDir: ws.mode === 'github' ? (ws.agentDir ?? null) : null,
@@ -571,6 +573,7 @@ export class PgAgentRepo implements AgentRepo {
           where: { id: agentId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
           data: {
             workspaceMode: workspace.mode,
+            workspaceIsolation: workspace.mode === 'github' ? (workspace.isolation ?? 'session') : 'shared',
             gitRepo: workspace.mode === 'github' ? workspace.gitRepo : null,
             gitBranch: workspace.mode === 'github' ? (workspace.gitBranch ?? 'main') : null,
             agentDir: workspace.mode === 'github' ? (workspace.agentDir ?? null) : null,
@@ -618,6 +621,7 @@ export class PgAgentRepo implements AgentRepo {
           },
           data: {
             workspaceMode: workspace.mode,
+            workspaceIsolation: workspace.mode === 'github' ? (workspace.isolation ?? 'session') : 'shared',
             gitRepo: workspace.mode === 'github' ? workspace.gitRepo : null,
             gitBranch: workspace.mode === 'github' ? (workspace.gitBranch ?? 'main') : null,
             agentDir: workspace.mode === 'github' ? (workspace.agentDir ?? null) : null,

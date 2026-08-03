@@ -678,6 +678,14 @@ workspace files and cannot be undone. Use an explicit `Replace workspace` save l
 for that destructive case. A working-subdirectory or access-only edit preserves the
 current checkout.
 
+GitHub workspace settings expose one boolean named `Worktree`. When enabled, each
+logical session runs in its own stable Git worktree under the Agent directory, so one
+Agent can work on several sessions concurrently without sharing branch or file state.
+When disabled, sessions use the primary checkout. New GitHub Agents default to enabled;
+existing Agents retain the shared-checkout behavior after upgrade. A fresh manual
+Playground may override `Worktree` before its first turn without changing the Agent;
+automatic triggers use the Agent setting.
+
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes
 write workspace authority for a repository must be rejected while an enabled GitHub

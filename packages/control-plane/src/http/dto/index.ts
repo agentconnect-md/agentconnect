@@ -277,6 +277,7 @@ export const AgentWorkspaceBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }),
   z.object({
     mode: z.literal('github'),
+    worktree: z.boolean(),
     gitRepo: GitRepoOutput,
     gitBranch: z.string().optional(),
     agentDir: z.string().optional(),
@@ -330,6 +331,9 @@ const AgentWorkspaceInputBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }),
   z.object({
     mode: z.literal('github'),
+    // Product-facing boolean; the domain stores the generic isolation policy.
+    // Omitted clients get the new-agent default in the route.
+    worktree: z.boolean().optional(),
     gitRepo: GitRepoInput,
     gitBranch: z.string().optional(),
     agentDir: AgentDirCreateInput.optional(),
@@ -590,6 +594,7 @@ export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
   z
     .object({
       mode: z.literal('github'),
+      worktree: z.boolean().optional(),
       repoFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/, 'repoFullName must be owner/repo'),
       gitBranch: z.string().min(1).optional(),
       agentDir: AgentDirCreateInput.optional(),

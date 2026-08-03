@@ -45,6 +45,7 @@ export interface GithubReviewTarget {
 export interface GithubPullRevision {
   headSha: string
   baseSha: string
+  mergeCommitSha?: string
   draft: boolean
   state: string
   merged: boolean
@@ -81,6 +82,7 @@ interface GithubPullResponse {
   draft?: boolean
   head?: { sha?: string }
   base?: { sha?: string }
+  merge_commit_sha?: string | null
 }
 
 interface GithubReviewResponse {
@@ -167,6 +169,7 @@ export class GithubReviewClient {
     return {
       headSha,
       baseSha,
+      ...(pull.merge_commit_sha ? { mergeCommitSha: pull.merge_commit_sha } : {}),
       draft: pull.draft === true,
       state: pull.state ?? 'unknown',
       merged: pull.merged === true
