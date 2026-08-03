@@ -72,8 +72,8 @@ touch one branch, keep the other in sync.
 
 ## Commands
 
-Requires **Node >= 24** (`.nvmrc` = 24) and **pnpm 11**. `package.json#engines` is
-authoritative over the README's older ">=20".
+Requires **Node >= 24.12.0** (`.nvmrc` = 24.12.0) and **pnpm 11**.
+`package.json#engines` is authoritative.
 
 ```bash
 pnpm install

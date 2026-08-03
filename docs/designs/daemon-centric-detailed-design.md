@@ -99,7 +99,7 @@ Every choice in this document is bounded by the following **settled product cons
 
 ## 4. Module Details (Responsibilities, Language, Dependencies, and Key Interfaces)
 
-The daemon and Control Plane use TypeScript on Node.js 24+. This keeps the
+The daemon and Control Plane use TypeScript on Node.js 24.12+. This keeps the
 daemon-owned platform adapters, routing, and session orchestration in one
 process and lets both sides share the zod-based `protocol` package. ACP and MCP
 remain language-neutral subprocess boundaries that communicate through JSON-RPC
@@ -158,7 +158,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 ### D1. Daemon Supervisor
 
 - **Responsibilities**: process bootstrap; start and stop modules (adapters, ACP Host, agent runtime) according to orchestration commands; health self-checks; act as the **degraded-mode controller**, switching to "local autonomy" when CP-Client disconnects so existing sessions remain active and new assignments are paused.
-- **Language/dependencies**: TypeScript / Node.js 24+; `node:child_process` for subprocesses; plain TypeScript for lifecycle state; `pino` for logging.
+- **Language/dependencies**: TypeScript / Node.js 24.12+; `node:child_process` for subprocesses; plain TypeScript for lifecycle state; `pino` for logging.
 - **Key interface**: coordinates daemon modules in process; it does not expose an external protocol itself.
 
 ### D2. CP-Client
@@ -267,7 +267,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 
 | Dimension                | Choice                                         | Rationale in one sentence                                                                                                                          |
 | ------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Primary language**     | TypeScript / Node.js 24+                       | Keep daemon-owned adapters in-process and share the `protocol` package across daemon/CP. ACP/MCP remain language-neutral stdio boundaries; see §4. |
+| **Primary language**     | TypeScript / Node.js 24.12+                    | Keep daemon-owned adapters in-process and share the `protocol` package across daemon/CP. ACP/MCP remain language-neutral stdio boundaries; see §4. |
 | **Monorepo**             | pnpm workspaces                                | Keep `protocol`, `daemon`, `control-plane`, and `web` in one repository and prevent type drift.                                                    |
 | **Protocol/validation**  | zod (shared schema)                            | One schema provides runtime validation and exported TypeScript types across processes.                                                             |
 | **ACP library**          | `@agentclientprotocol/sdk`                     | Drive ACP adapters over stdio JSON-RPC.                                                                                                            |

@@ -1094,7 +1094,7 @@ integration tests use real Postgres.
 
 ### 5.5 CI / local green
 
-Node 24 and pnpm 11 are required. `pnpm test:unit` is the no-Docker inner
+Node 24.12.0 or newer and pnpm 11 are required. `pnpm test:unit` is the no-Docker inner
 loop; `pnpm test:int` starts Testcontainers. Root `pnpm test` fans out through
 the workspace.
 

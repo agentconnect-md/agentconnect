@@ -68,7 +68,7 @@ export async function installTarget(
     const manifest = JSON.parse(readFileSync(`${tmp}/package.json`, 'utf8')) as { engines?: { node?: string } }
     if (!nodeSatisfies(manifest.engines?.node, process.versions.node)) {
       throw new Error(
-        `daemon ${target.version} requires Node ${manifest.engines?.node} but this CLI runs on ${process.versions.node}`
+        `daemon ${target.version} requires Node ${manifest.engines?.node} but this CLI runs on ${process.versions.node} — upgrade Node first`
       )
     }
     if (!existsSync(`${tmp}/dist/index.js`)) {

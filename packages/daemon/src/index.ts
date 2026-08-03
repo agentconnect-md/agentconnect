@@ -2,6 +2,14 @@
 import { startDaemonOpenTelemetry } from './observability.js'
 import { DAEMON_VERSION } from './version.js'
 
+const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number)
+if (!(nodeMajor > 24 || (nodeMajor === 24 && nodeMinor >= 12))) {
+  console.error(
+    `agentconnect: Node.js >=24.12.0 is required; found ${process.versions.node} at ${process.execPath}. Upgrade Node.js before starting AgentConnect (reinstall the background service after changing Node).`
+  )
+  process.exit(1)
+}
+
 // Internal per-ACP-host SRT provider. Fast-path it before telemetry/Commander:
 // the process is only a stdio-preserving sandbox parent and must not initialize
 // a second daemon's observability or CLI lifecycle.

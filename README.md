@@ -155,7 +155,7 @@ the complete message paths, trust boundaries, and failure model.
 
 ## Development
 
-Development requires Node >= 24 and pnpm 11. Docker is required for the Control
+Development requires Node >= 24.12.0 and pnpm 11. Docker is required for the Control
 Plane integration tests.
 
 ```bash
