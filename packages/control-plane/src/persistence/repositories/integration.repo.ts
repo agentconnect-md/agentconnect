@@ -12,7 +12,7 @@
 import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
 import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import { BotStillShared } from '../errors.js'
+import { BotExternalIdentityTaken, BotStillShared } from '../errors.js'
 import type {
   BotRepo,
   BotRecord,
@@ -59,6 +59,9 @@ function toBotRecord(b: BotJoined): BotRecord {
     prebuilt: b.prebuilt,
     slackAppId: b.slackAppId,
     teamId: b.teamId,
+    externalAppId: b.externalAppId,
+    externalTenantId: b.externalTenantId,
+    platformConfig: (b.platformConfig as Record<string, unknown> | null) ?? null,
     workspaceId: b.workspaceId,
     workspaceName: b.workspaceName,
     botUserId: b.botUserId,
@@ -83,36 +86,93 @@ function toBotRecord(b: BotJoined): BotRecord {
   }
 }
 
+/** Tenant sentinel for NEW rows of tenantless platforms (D6/§11): a real value —
+ *  unlike NULL — participates in the composite unique, so it is what makes
+ *  `(platform, externalAppId)` enforceable. NULL stays reserved for legacy rows. */
+export const TENANTLESS_SENTINEL = '-'
+
+/** Derive the D6 generic identity dual-write from the legacy per-platform input
+ *  fields. Reads stay on the legacy columns during the dual-write window; this
+ *  only keeps the generic columns in lockstep for every NEW row. */
+function botExternalIdentity(input: CreateBotInput): {
+  externalAppId?: string
+  externalTenantId?: string
+  platformConfig?: Record<string, string>
+} {
+  switch (input.platform) {
+    case 'slack':
+      // Tenant-scoped: the pair mirrors (slackAppId, teamId) verbatim. A manual
+      // single-workspace install without a captured identity keeps NULLs — the
+      // same pre-capture semantics the legacy fence has today.
+      return {
+        ...(input.slackAppId ? { externalAppId: input.slackAppId } : {}),
+        ...(input.teamId ? { externalTenantId: input.teamId } : {})
+      }
+    case 'feishu': {
+      const bag = {
+        ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
+        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {})
+      }
+      return {
+        // App-scoped identity (no tenant axis): the cli_ app id + the sentinel,
+        // which turns the composite unique into a one-bot-per-Feishu-app fence.
+        ...(input.feishuAppId ? { externalAppId: input.feishuAppId, externalTenantId: TENANTLESS_SENTINEL } : {}),
+        ...(Object.keys(bag).length ? { platformConfig: bag } : {})
+      }
+    }
+    case 'discord':
+      // Display-only app id; Discord has no ingress demux identity today.
+      return input.discordAppId ? { platformConfig: { discordAppId: input.discordAppId } } : {}
+    default:
+      return {}
+  }
+}
+
 export class PgBotRepo implements BotRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async create(input: CreateBotInput): Promise<BotRecord> {
-    const b = await this.db.bot.create({
-      data: {
-        id: input.id,
-        orgId: input.orgId,
-        platform: toDbPlatform(input.platform),
-        name: input.name,
-        ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
-        ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
-        ...(input.teamId ? { teamId: input.teamId } : {}),
-        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-        ...(input.workspaceName ? { workspaceName: input.workspaceName } : {}),
-        ...(input.botUserId ? { botUserId: input.botUserId } : {}),
-        ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
-        ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
-        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
-        ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
-        ...(input.transport !== undefined ? { transport: input.transport } : {}),
-        // Generation 1 (the column default) lands NOW — so a lifecycle event that
-        // predates this credential is fenced out even on a bot's first install.
-        // Legacy rows keep a null stamp and fall back to the revision arm alone.
-        credentialInstalledAt: new Date(),
-        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
-      },
-      include: botInclude
-    })
-    return toBotRecord(b)
+    try {
+      const b = await this.db.bot.create({
+        data: {
+          id: input.id,
+          orgId: input.orgId,
+          platform: toDbPlatform(input.platform),
+          name: input.name,
+          ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
+          ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
+          ...(input.teamId ? { teamId: input.teamId } : {}),
+          ...botExternalIdentity(input),
+          ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+          ...(input.workspaceName ? { workspaceName: input.workspaceName } : {}),
+          ...(input.botUserId ? { botUserId: input.botUserId } : {}),
+          ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
+          ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
+          ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
+          ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
+          ...(input.transport !== undefined ? { transport: input.transport } : {}),
+          // Generation 1 (the column default) lands NOW — so a lifecycle event that
+          // predates this credential is fenced out even on a bot's first install.
+          // Legacy rows keep a null stamp and fall back to the revision arm alone.
+          credentialInstalledAt: new Date(),
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
+        },
+        include: botInclude
+      })
+      return toBotRecord(b)
+    } catch (err) {
+      // The D6 composite unique fired: a bot with this external app identity
+      // already exists on this platform. Typed so routes can 409 instead of 500.
+      // The legacy (slackAppId, teamId) unique keeps its existing callers'
+      // handling; only the new index maps here.
+      if (
+        (err as { code?: string }).code === 'P2002' &&
+        String((err as { meta?: { target?: unknown } }).meta?.target ?? '').includes('externalAppId')
+      ) {
+        throw new BotExternalIdentityTaken(input.platform)
+      }
+      throw err
+    }
   }
 
   async get(id: BotId): Promise<BotRecord | null> {
@@ -148,7 +208,13 @@ export class PgBotRepo implements BotRepo {
   }
 
   async setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean> {
-    const result = await this.db.bot.updateMany({ where: { id, slackAppId: null }, data: { slackAppId } })
+    // Dual-write (D6): the generic column tracks the legacy one. The tenant half
+    // stays NULL here — the reconciler backfills legacy socket bots, whose
+    // pre-capture NULLs-distinct semantics must be preserved.
+    const result = await this.db.bot.updateMany({
+      where: { id, slackAppId: null },
+      data: { slackAppId, externalAppId: slackAppId }
+    })
     return result.count === 1
   }
 
@@ -188,6 +254,20 @@ export class PgBotRepo implements BotRepo {
     // callback must find it wherever it lives to refuse a second org's claim.
     const b = await this.db.bot.findUnique({
       where: { slackAppId_teamId: { slackAppId, teamId } },
+      include: botInclude
+    })
+    return b ? toBotRecord(b) : null
+  }
+
+  async getByExternalIdentity(
+    platform: string,
+    externalAppId: string,
+    externalTenantId: string
+  ): Promise<BotRecord | null> {
+    // Cross-org on purpose, mirroring getBySlackAppTeam: an external app identity
+    // binds to exactly one org, and a second org's claim must find it to refuse.
+    const b = await this.db.bot.findUnique({
+      where: { platform_externalAppId_externalTenantId: { platform, externalAppId, externalTenantId } },
       include: botInclude
     })
     return b ? toBotRecord(b) : null
