@@ -268,6 +268,30 @@ export class CollaborationGameRunner {
       status = 'infra_error'
       failure ??= { code: 'REFEREE_INCONSISTENT', message: 'game referee lost internal consistency' }
     }
+    // §9.1 trial validity over REAL subjects: a runtime that never authenticated
+    // or timed out is an infra_error, never an agent failure. Provider-level
+    // failures always invalidate; generic turn failures invalidate only when the
+    // game did not complete (a completed game that absorbed one failed turn is
+    // a legitimate trial — the failures stay visible in events.jsonl).
+    if (status === 'passed') {
+      const observedEvents = harness.events()
+      const turnFailures = observedEvents.filter(
+        (event) => event.type === 'turn.failed' || event.type === 'turn.timed_out'
+      )
+      const providerFailure = turnFailures.some(
+        (event) =>
+          event.type === 'turn.timed_out' ||
+          event.data.code === 'provider_auth_required' ||
+          event.data.code === 'provider_quota_exhausted'
+      )
+      if (providerFailure || (turnFailures.length > 0 && verdict.terminalReason !== 'completed')) {
+        status = 'infra_error'
+        failure ??= {
+          code: providerFailure ? 'PROVIDER_FAILURE' : 'TURN_FAILURES',
+          message: `${turnFailures.length} agent turn(s) failed or timed out before the game could complete`
+        }
+      }
+    }
     // §9.2 hard gates: any attempted invariant violation fails the trial even
     // when the game outcome scored well. Never averaged away.
     if (status === 'passed' && Object.values(verdict.invariants).some((count) => count > 0)) {

@@ -89,6 +89,53 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(gameResult.metrics.collisions).toBeGreaterThan(0)
   }, 120_000)
 
+  it('classifies a game stalled by failing turns as infra_error, never a passed trial (§9.1)', async () => {
+    // A subject whose host cannot complete any turn (e.g. an unreachable model)
+    // must invalidate the trial — the scripted default is replaced by a
+    // scripted-shaped subject whose runtime rejects every prompt.
+    const { CollaborationGameRunner } = await import('../../packages/daemon/src/evaluation/index.js')
+    const { compileTopology } = await import('../games/topology.js')
+    const { ArenaWorld } = await import('../games/world.js')
+    const { CountingGame } = await import('../games/counting.js')
+    const { countingManifest, scaffoldSubject } = await import('../games/engine.js')
+    const topology = compileTopology(countingManifest({ seed: 3, agents: ['agent-a', 'agent-b'] }))
+    const world = new ArenaWorld(topology)
+    const game = new CountingGame({ world, roomAlias: 'counting-room', target: 3 })
+    const subject = scaffoldSubject(topology)
+    try {
+      const runner = new CollaborationGameRunner({
+        root: subject.root,
+        world: game,
+        artifactDir: join(scratch(), 'failing'),
+        game: 'same-room-counting',
+        seed: 3,
+        mode: 'deterministic',
+        subjectKind: 'scripted',
+        hostFactory: ((agent: { id: string }) => ({
+          start: async () => {},
+          newSession: async () => `failing-${agent.id.slice(0, 8)}`,
+          hasSession: () => true,
+          modelOptions: () => ({ current: 'failing', models: ['failing'] }),
+          prompt: async () => {
+            throw new Error('model unreachable')
+          },
+          cancel: async () => {},
+          stop: async () => {}
+        })) as never,
+        capabilityProfile: { memory: 'off', collaboration: 'configured' },
+        limits: { maxSteps: 6, timeoutMs: 60_000 },
+        agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
+      })
+      const result = await runner.run()
+      expect(result.status).toBe('infra_error')
+      expect(result.valid).toBe(false)
+      expect(result.error?.code).toBe('TURN_FAILURES')
+      expect(result.verdict.outcome).toMatchObject({ completed: false })
+    } finally {
+      subject.cleanup()
+    }
+  }, 120_000)
+
   it('is environment-deterministic (§8.1): same seed, same world, same reproducible outcome', async () => {
     const first = await runSameRoomCounting({
       seed: 7,
