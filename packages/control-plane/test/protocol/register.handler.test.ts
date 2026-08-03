@@ -232,7 +232,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       runInSandbox: false,
       // Preset marker — always shipped so the daemon can gate preset-only capabilities.
       builtin: false,
-      workspace: { mode: 'scratch', gitCredential: 'github-app' }
+      workspace: { mode: 'scratch', isolation: 'shared', gitCredential: 'github-app' }
     })
 
     // drop: the stale local keys the CP no longer owns for this daemon.

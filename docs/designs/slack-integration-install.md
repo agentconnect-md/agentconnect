@@ -127,8 +127,7 @@ For a socket bot, the Control Plane builds an `IntegrationSpec` with:
 - `mode = direct`;
 - the bot token;
 - the app-level token;
-- optional bot user id;
-- allowed users; and
+- optional bot user id; and
 - effective bind rules.
 
 The spec is sent only to the daemon that owns the integration's agent through:

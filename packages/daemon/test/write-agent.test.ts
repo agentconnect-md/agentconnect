@@ -670,7 +670,6 @@ describe('writeAgentSpec — create (no agent.json)', () => {
             shareable: false,
             botToken: 'xoxb-secret',
             appToken: 'xapp-secret',
-            allowedUserIds: [],
             bindRules: []
           }
         },
@@ -819,7 +818,6 @@ describe('cold-move archive', () => {
         botToken: 'new-secret',
         appToken: 'new-app',
         appId: 'A123',
-        allowedUserIds: [],
         bindRules: []
       }
     } as IntegrationSpec
@@ -879,7 +877,6 @@ describe('cold-move archive', () => {
           botToken: 'new-secret',
           appToken: 'new-app',
           appId: 'A123',
-          allowedUserIds: [],
           bindRules: []
         }
       }

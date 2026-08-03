@@ -219,6 +219,7 @@ describe('Phase 5 — whole-app assembly via buildApp (REST + WS share one DB/or
       const agentSpec = snap.agents.find((a) => a.agentId === agentId)
       expect(agentSpec?.workspace).toEqual({
         mode: 'github',
+        isolation: 'session',
         gitRepo: 'https://github.com/acme/infra',
         branch: 'main',
         agentDir: 'services/api'

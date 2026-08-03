@@ -211,6 +211,7 @@ export type AgentWorkspaceDto =
   | { mode: 'scratch' }
   | {
       mode: 'github'
+      worktree?: boolean
       gitRepo: string
       gitBranch?: string
       agentDir?: string
@@ -503,6 +504,8 @@ export interface SessionDetailDto {
   canChangeVisibility?: boolean | null
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
+  /** Actual source gateway for Feishu/Lark external sessions. Absent on older CPs. */
+  feishuRegion?: 'feishu' | 'lark' | null
   accessSyncDegraded?: boolean
   /** Multi-agent webchat conversation roster, in pick order. Null for single-agent
    *  conversations and other platforms; absent on a CP that predates the feature.
@@ -872,6 +875,7 @@ export type SetAgentWorkspaceInput =
   | { mode: 'scratch' }
   | {
       mode: 'github'
+      worktree?: boolean
       repoFullName: string
       /** Absent lets the server use GitHub's current default branch. */
       gitBranch?: string
@@ -1570,6 +1574,7 @@ function workspaceFromDto(w: AgentWorkspaceDto, workspaceRepoId?: string | null)
   if (w.mode === 'github') {
     return {
       mode: 'github',
+      worktree: w.worktree === true,
       ...(workspaceRepoId ? { repoId: workspaceRepoId } : {}),
       repo: repoLabel(w.gitRepo),
       ...(repoWebUrl(w.gitRepo) ? { repoUrl: repoWebUrl(w.gitRepo) } : {}),

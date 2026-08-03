@@ -81,7 +81,6 @@ const INTEGRATION: IntegrationSpec = {
   slack: {
     botToken: 'xoxb-secret-abc',
     appToken: 'xapp-1-secret-def',
-    allowedUserIds: [],
     bindRules: [{ match: { kind: 'mention' } }]
   }
 }

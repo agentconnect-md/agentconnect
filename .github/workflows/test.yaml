@@ -48,7 +48,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
       - name: Restore Next.js build cache
         uses: actions/cache@v6
         with:
@@ -82,7 +82,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
       - name: Install
         run: pnpm install --frozen-lockfile
       # Run before any workspace build so source-checkout export resolution
@@ -116,7 +116,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client
@@ -192,7 +192,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client
@@ -247,7 +247,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .nvmrc
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma client

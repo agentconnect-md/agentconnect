@@ -135,8 +135,8 @@ describe('SessionRail column', () => {
   })
 
   it('renders the placeholder at the same width the populated rail uses', () => {
-    // SessionDetailFrame draws SessionRailSlot for every state that has no rail to
-    // show (loading, not found). It only holds the page still if it is the same box.
+    // SessionDetailFrame draws SessionRailSlot while the detail is loading. It only
+    // holds the page still if it is the same box as the populated rail.
     const slot = renderToStaticMarkup(<SessionRailSlot />)
 
     expect(slot).toContain(COLUMN)

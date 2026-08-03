@@ -71,27 +71,6 @@ hygiene we control, not as a defect claim about the provider.
   (`control-plane/src/http/viewer-identity.ts`), which builds its Slack entry
   from the same pair — both sides keyed alike, so neither can match on a bare
   `U…`.
-- **`allowedUserIds`** (daemon routing) compares a bare sender id:
-  `allowedUserIds.includes(msg.sender.id)` in `router/routing-table.ts`, against
-  a sender built as `message.user ?? message.bot_id` in
-  `packages/message/src/slack-message.ts` — no team component anywhere.
-
-  This is **reachable today**, and only half-dormant. The Control Plane supplies
-  `[]` on every path in `orchestrator/placement.ts`, so no CP-managed integration
-  populates it. But a local `agent.json` may set `slack.allowedUserIds` — the
-  schema takes any array — and `rulesFromAgent()` copies it into the
-  `source: 'config'` routing layer, which is always active, including while the
-  CP is offline.
-
-  Where it is populated, do not read the per-integration binding as making it
-  pair-safe. An integration is installed in one workspace, but under Slack
-  Connect a shared-channel message can be authored from another, so the two sides
-  of that comparison are not guaranteed to share a workspace: a foreign-workspace
-  author matches on a bare `U…` alone. **Carrying the author's team id into the
-  normalized sender is a prerequisite for treating this list as an authorization
-  boundary** — for the local path that prerequisite is already outstanding, not
-  deferred until someone turns a feature on.
-
 - **`slack_user_config`** is keyed `(orgId, userId)` where `userId` is the
   **console** user, not a Slack one. It stores that person's Slack App
   Configuration token; no Slack id is involved.

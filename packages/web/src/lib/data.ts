@@ -178,6 +178,7 @@ export function flattenFiles(files: WorkspaceFile[]): WorkspaceFile[] {
 // picks the mode and, for github, the repo/branch/subdir.
 export interface GithubWorkspace {
   mode: 'github'
+  worktree?: boolean
   /** Rename-proof GitHub numeric repository id, when repaired by the CP. */
   repoId?: string
   repo: string // short display form, e.g. acme/infra (storage keeps the full git address)

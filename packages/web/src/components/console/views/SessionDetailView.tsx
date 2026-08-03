@@ -66,7 +66,7 @@ import {
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
-import { AgentIconView, LoadingState, ModelMark, PlatformMark, Spinner } from '@/components/marks'
+import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Icon } from '@/components/ui'
@@ -850,18 +850,23 @@ function MobileSessionFamilyLinks({
 }
 
 /**
- * Every state this view can render that is not the session itself — loading, and
- * both not-found bodies — drawn on the SAME track the loaded page uses: the 1180px
- * wrap, the rail's column, then the 880px body. The route has one body position and
- * this is how the states that have no rail to draw still honour it; centring them in
- * the bare wrap instead would put each of them 125px left of the transcript that
- * replaces them.
+ * Loading stays on the same rail + body tracks as the transcript that replaces it.
+ * A resolved missing resource opts out of the rail so its standalone 404 card uses
+ * the whole content wrap instead of reserving an empty session-list column.
  */
-function SessionDetailFrame({ children }: { children: ReactNode }) {
+function SessionDetailFrame({ children, withRail = true }: { children: ReactNode; withRail?: boolean }) {
   return (
     <div className="wrap flex min-h-full items-stretch gap-[26px]">
-      <SessionRailSlot />
-      <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:p-4">{children}</div>
+      {withRail ? <SessionRailSlot /> : null}
+      <div
+        className={
+          withRail
+            ? 'mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:p-4'
+            : 'flex min-h-full min-w-0 flex-1 flex-col max-desktop:p-4'
+        }
+      >
+        {children}
+      </div>
     </div>
   )
 }
@@ -1030,6 +1035,7 @@ export default function SessionDetailView() {
     reconcileLiveSteps,
     getPgInput,
     getPgImage,
+    getPgWorktree,
     isPgBusy,
     setPgInput: setPgInputById,
     setPgImage,
@@ -1039,6 +1045,7 @@ export default function SessionDetailView() {
     pgSetEffort,
     pgSetPermissionPreset,
     pgSetFast,
+    pgSetWorktree,
     pgCancel
   } = usePlayground()
   const { user: viewer, me } = useProfile()
@@ -1118,6 +1125,7 @@ export default function SessionDetailView() {
   const [runtimeSelections, setRuntimeSelections] = useState<
     Record<string, { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
   >({})
+  const [worktreeSelections, setWorktreeSelections] = useState<Record<string, boolean>>({})
   // A rail row already carries enough metadata to paint the next session while
   // its detail/transcript requests catch up. Keeping it here also holds the
   // agent-filtered rail steady instead of briefly dropping it between ids.
@@ -1183,17 +1191,16 @@ export default function SessionDetailView() {
   const profileLinkProviderName = socialLoginProviders().find(
     (provider) => provider.target === profileLinkProvider
   )?.name
-  const profileLinkCandidate =
-    sessionDetailError instanceof ApiError &&
-    sessionDetailError.status === 404 &&
-    isAuthConfigured() &&
-    profileLinkProvider !== undefined
+  // Start the caller's identity lookup as soon as the provider hint is known,
+  // alongside the session request. The hint still affects presentation only:
+  // the recovery action cannot render until the protected session read is a 404.
+  const profileIdentityProvider = isAuthConfigured() ? profileLinkProvider : undefined
   const {
     data: profileIdentity,
     error: profileIdentityError,
-    isValidating: profileIdentityLoading
+    isLoading: profileIdentityLoading
   } = useSWR(
-    profileLinkCandidate ? (['logto-session-identity', profileLinkProvider] as const) : null,
+    profileIdentityProvider ? (['logto-session-identity', profileIdentityProvider] as const) : null,
     ([, provider]) => fetchMySessionIdentity(provider),
     {
       revalidateOnFocus: false,
@@ -1201,6 +1208,8 @@ export default function SessionDetailView() {
       shouldRetryOnError: false
     }
   )
+  const profileLinkCandidate =
+    sessionDetailError instanceof ApiError && sessionDetailError.status === 404 && profileIdentityProvider !== undefined
   const showProfileLink =
     profileLinkCandidate &&
     !profileIdentityLoading &&
@@ -1820,7 +1829,7 @@ export default function SessionDetailView() {
   if (conversationKey && (conversationError || !conversationRoster || conversationRoster.sessions.length === 0)) {
     // conversationError, a grace-expired null, or a resolved-but-empty roster.
     return (
-      <SessionDetailFrame>
+      <SessionDetailFrame withRail={false}>
         <NotFound
           icon="message-square-off"
           kind="CONVERSATION"
@@ -1847,7 +1856,7 @@ export default function SessionDetailView() {
       )
     }
     return (
-      <SessionDetailFrame>
+      <SessionDetailFrame withRail={false}>
         <NotFound
           icon="message-square-off"
           kind="SESSION"
@@ -1858,11 +1867,11 @@ export default function SessionDetailView() {
           actionLabel="Back to sessions"
           actionHref={orgPath('/sessions')}
           secondaryAction={
-            showProfileLink && profileLinkProviderName
+            showProfileLink && profileLinkProviderName && profileLinkProvider
               ? {
                   label: `Link ${profileLinkProviderName} profile`,
                   href: orgPath('/profile#sign-in-methods'),
-                  icon: 'link'
+                  icon: <SocialLoginMark target={profileLinkProvider} size={15} />
                 }
               : undefined
           }
@@ -1885,6 +1894,7 @@ export default function SessionDetailView() {
         canChange={currentSessionDetail.canChangeVisibility === true}
         externalProvider={currentSessionDetail.externalProvider}
         externalResolution={currentSessionDetail.externalResolution}
+        feishuRegion={currentSessionDetail.feishuRegion}
         // Native runtime memory has no per-session gate, so the copy must not
         // promise a memory boundary this tier cannot deliver.
         nativeMemory={owner?.memoryProvider === 'native'}
@@ -1982,6 +1992,12 @@ export default function SessionDetailView() {
   // still playground-only — `pgAddAgent` mutates provider-side session state that
   // an adopted webchat session never had — so a resumed conversation shows its
   // roster (above) without the `+`.
+  const pgWorktree =
+    worktreeSelections[session.id] ??
+    getPgWorktree(session.id) ??
+    (owner?.workspace?.mode === 'github' && owner.workspace.worktree === true)
+  const canChooseWorktree =
+    isPg && !multiLive && owner?.workspace?.mode === 'github' && !session.steps.some((step) => step.kind === 'msg')
   const addAgentOptions = isPg
     ? agents
         .filter((a) => !liveRoster.some((p) => p.agentId === a.id))
@@ -3270,6 +3286,21 @@ export default function SessionDetailView() {
                             </span>
                           )
                         ))}
+                      {canChooseWorktree && (
+                        <label className={`${COMPOSER_CHIP} cursor-pointer`}>
+                          <input
+                            type="checkbox"
+                            checked={pgWorktree}
+                            onChange={(event) => {
+                              const worktree = event.target.checked
+                              setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
+                              pgSetWorktree(session.id, worktree)
+                            }}
+                            className="h-4 w-4 accent-(--brand)"
+                          />
+                          Worktree
+                        </label>
+                      )}
                     </div>
                     <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
                     <button

@@ -234,8 +234,9 @@ export function workspaceGitPullTarget(repository: string): {
   const remote = `agentconnect-${randomUUID()}`
   const pairs = [
     ...workspaceGitConfigPairs(normalized),
-    // An empty value clears lower-priority URL lists before the daemon target.
-    [`remote.${remote}.url`, ''] as const,
+    // The unguessable name cannot collide with a checkout-owned remote after
+    // the local config audit. Do not prepend an empty value: Git treats it as
+    // the first fetch URL and fails before trying the authorized target.
     [`remote.${remote}.url`, normalized] as const,
     [`remote.${remote}.proxy`, ''] as const
   ]

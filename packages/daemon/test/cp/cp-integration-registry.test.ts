@@ -16,7 +16,6 @@ const spec = (over: Partial<IntegrationSpec> = {}): IntegrationSpec => ({
   slack: {
     botToken: 'xoxb-secret',
     appToken: 'xapp-secret',
-    allowedUserIds: [],
     bindRules: [{ match: { kind: 'mention' } }]
   },
   ...over
@@ -73,13 +72,12 @@ describe('CpIntegrationRegistry (filesystem-backed)', () => {
       ]
     })
     const { reg } = makeReg(dir)
-    reg.upsert(spec({ slack: { botToken: 'xoxb-new', appToken: 'xapp-new', allowedUserIds: ['U1'], bindRules: [] } }))
+    reg.upsert(spec({ slack: { botToken: 'xoxb-new', appToken: 'xapp-new', bindRules: [] } }))
     const a = readAgent(dir, 'helper')
     expect(a.integrations).toHaveLength(2)
     const [cp, local] = a.integrations as any[]
     expect(cp.id).toBe(I1)
     expect(cp.slack.botToken).toBe('xoxb-new')
-    expect(cp.slack.allowedUserIds).toEqual(['U1'])
     // Hand-authored placeholder-looking strings stay literal.
     expect(local.slack.botToken).toBe('${MY_BOT}')
     expect(local.slack.appToken).toBe('${MY_APP}')
@@ -136,9 +134,7 @@ describe('CpIntegrationRegistry (filesystem-backed)', () => {
       integrations: [{ id: I1, platform: 'slack', slack: { botToken: 'xoxb-a', appToken: 'xapp-a' } }]
     })
     const { reg, onChange } = makeReg(dir)
-    reg.converge([
-      spec({ integrationId: I2, slack: { botToken: 'xoxb-b', appToken: 'xapp-b', allowedUserIds: [], bindRules: [] } })
-    ])
+    reg.converge([spec({ integrationId: I2, slack: { botToken: 'xoxb-b', appToken: 'xapp-b', bindRules: [] } })])
     const a = readAgent(dir, 'helper')
     // I2 created from the roster; I1 NOT pruned (deletion only via integration/remove)
     expect((a.integrations as any[]).map((i) => i.id).sort()).toEqual([I1, I2].sort())

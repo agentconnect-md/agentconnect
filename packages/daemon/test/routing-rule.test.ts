@@ -22,7 +22,6 @@ function agent(over: Partial<Agent> = {}): Agent {
         slack: {
           botToken: 'x',
           appToken: 'y',
-          allowedUserIds: ['U1'],
           bindRules: [{ match: { kind: 'mention' } }, { channel: 'C1', match: { kind: 'auto' } }]
         } as any
       }
@@ -35,7 +34,7 @@ function agent(over: Partial<Agent> = {}): Agent {
 }
 
 describe('rulesFromAgent', () => {
-  it('derives one resolved RoutingRule per bindRule, with botUserId + allowedUserIds applied', () => {
+  it('derives one resolved RoutingRule per bindRule with the resolved botUserId', () => {
     const rules = rulesFromAgent(agent(), { int1: 'B1' })
     expect(rules).toHaveLength(2)
     expect(rules[0]).toMatchObject({
@@ -44,7 +43,6 @@ describe('rulesFromAgent', () => {
       botUserId: 'B1',
       match: { kind: 'mention' },
       source: 'config',
-      allowedUserIds: ['U1'],
       scope: {}
     })
     expect(rules[1]).toMatchObject({ match: { kind: 'auto' }, scope: { channel: 'C1' } })

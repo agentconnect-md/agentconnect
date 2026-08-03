@@ -105,11 +105,6 @@ describe('routeRules ladder', () => {
     ).toEqual({ agentId: 'private-bot', integrationId: 'lark-private', via: 'dm' })
   })
 
-  it('allowedUserIds gate rejects a non-listed sender', () => {
-    const rules = [rule({ match: { kind: 'auto' }, allowedUserIds: ['U2'] })]
-    expect(routeRules(msg({ sender: { id: 'U1', isBot: false } }), rules, noOwner)).toBeNull()
-  })
-
   it('keyword matches case-insensitively on substring', () => {
     const rules = [rule({ agentId: 'kw', match: { kind: 'keyword', value: 'Deploy' } })]
     expect(routeRules(msg({ text: 'please deploy now' }), rules, noOwner)?.agentId).toBe('kw')
@@ -286,7 +281,6 @@ const tgAgent = (over: Partial<Agent> = {}): Agent =>
         telegram: {
           botToken: '123:abc',
           botUsername: 'mybot',
-          allowedUserIds: ['77'],
           bindRules: [{ match: { kind: 'mention' } }, { channel: '-100', match: { kind: 'auto' } }]
         }
       }
@@ -302,7 +296,6 @@ describe('rulesFromAgent / resolveAgentIntegration (Telegram)', () => {
       expect(r.platform).toBe('telegram')
       expect(r.integrationId).toBe('i-tg')
       expect(r.botUserId).toBe('mybot')
-      expect(r.allowedUserIds).toEqual(['77'])
     }
     expect(rules[1]!.scope).toEqual({ channel: '-100' })
   })

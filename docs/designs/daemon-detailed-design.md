@@ -473,7 +473,6 @@ This aligns upstream section 6.6 `Agent` / `Integration` / `Workspace` / `CronJo
           { "channel": "C0ALERTS", "match": { "kind": "auto" } }, // Process all messages
           { "channel": "C0TEAM", "match": { "kind": "mention" } } // Mention only
         ],
-        "allowedUserIds": [], // Empty means all; integration-level authz copied to derived rules
         "notificationChannelId": "C0NOTIF"
       }
     }
@@ -607,13 +606,13 @@ A daemon can host many agents, each with many integrations. **Do not open one in
 5. Derive the local `RoutingRule[]` layer from every integration's `bindRules` through `rulesFromAgent()`.
 ```
 
-One `RoutingRule` model drives routing. Every integration `bindRules[]` entry derives a `source:"config"` local rule with agentId, integrationId, platform, scope, match, and allowedUserIds. Merge these with `source:"cp"` rules and arbitrate through `routeRules()`. Cache the local layer in `state/local.sqlite` for degradation; CP-layer persistence is described in sections 8.7/6.3. `rulesFromAgent()` in `packages/daemon/src/router/routing-rule.ts` derives the local rules, and `routeRules()` in `packages/daemon/src/router/routing-table.ts` defines arbitration.
+One `RoutingRule` model drives routing. Every integration `bindRules[]` entry derives a `source:"config"` local rule with agentId, integrationId, platform, scope, and match. Merge these with `source:"cp"` rules and arbitrate through `routeRules()`. Cache the local layer in `state/local.sqlite` for degradation; CP-layer persistence is described in sections 8.7/6.3. `rulesFromAgent()` in `packages/daemon/src/router/routing-rule.ts` derives the local rules, and `routeRules()` in `packages/daemon/src/router/routing-table.ts` defines arbitration.
 
 ### 6.3 Inbound Event -> Agent Routing
 
 After a Slack event reaches a connection:
 
-1. Over the union of local and CP rules, calculate **scope candidates** whose scope and `allowedUserIds` pass, then **kind candidates** whose `mention` / `dm` / `keyword` / `auto` matches.
+1. Over the union of local and CP rules, calculate **scope candidates**, then **kind candidates** whose `mention` / `dm` / `keyword` / `auto` matches.
 2. First-match arbitration: **explicit @bot mention** -> **thread affinity** (single reachable agent continues; multiple reachable agents require mention) -> **CP per-sessionKey override** -> **local layer**. Within a layer: `mention > dm > keyword > auto`.
 3. On match, normalize to `NormalizedMessage` with `traceId` and send to section 7 ACP Host. On null, drop + debug-log; it may still enter thread transcript for later catch-up.
 
@@ -767,13 +766,12 @@ interface RoutingRule {
   integrationId: string // Daemon-local Slack connection
   scope: { channel?: string; thread?: string } // Missing channel means any
   match: { kind: 'mention' } | { kind: 'dm' } | { kind: 'keyword'; value: string } | { kind: 'auto' }
-  allowedUserIds?: string[] // Daemon authz extension, not protocol BindRule
   source: 'config' | 'cp'
   epoch?: number // CP layer only: routingEpoch fence
 }
 ```
 
-- **Local layer (`source:"config"`):** Derived from `agent.json.slack.bindRules` through `rulesFromAgent`; copies integration-level allowedUserIds. Always active and authoritative for offline/bootstrap. Legacy migration: `subscribedChannels{trigger:"all"}` -> `{channel, match:auto}`; `trigger:"mention"` -> `{channel, match:mention}`; `mentionAnyChannel` -> unscoped mention; `respondToDms` -> dm.
+- **Local layer (`source:"config"`):** Derived from `agent.json.slack.bindRules` through `rulesFromAgent`. Always active and authoritative for offline/bootstrap. Legacy migration: `subscribedChannels{trigger:"all"}` -> `{channel, match:auto}`; `trigger:"mention"` -> `{channel, match:mention}`; `mentionAnyChannel` -> unscoped mention; `respondToDms` -> dm.
 - **CP layer (`source:"cp"`):** `route/assign` per-sessionKey overrides, `route/update` global rules, and `register/ok` reconcile snapshot. Persist to Local Store and use across restart/disconnect.
 - **Priority:** local is baseline, CP overrides by sessionKey, except explicit `@bot` wins across layers.
 
@@ -781,7 +779,7 @@ interface RoutingRule {
 
 An event arrives on one platform connection with connectionId, event type, channelId, thread_ts, user, text with `<@BOT>` markers, and attachments. The connection already narrows candidates to agents whose integrations use it.
 
-- **scope-candidates:** Rules whose channel/thread scope matches and whose allowedUserIds is absent/empty or includes sender. Ignore kind. Unique agentIds are **reachable agents** for thread gating.
+- **scope-candidates:** Rules whose channel/thread scope matches. Ignore kind. Unique agentIds are **reachable agents** for thread gating.
 - **kind-candidates:** Scope candidates whose kind matches: mention when `msg.mentionedBots` includes that rule's agent botUserId; dm when `msg.isDm`; case-insensitive keyword in text; auto always.
 - Human senders use the complete ladder. For Slack bot senders, compare sender app ID to managed app identity in the collaboration snapshot, with resolved bot user/bot ID fallback on the same daemon. Drop any AgentConnect-managed bot before command/model admission. An unmanaged third-party Slack bot can match only an explicit mention, never DM/thread/keyword/auto. Bot senders on other platforms do not route.
 
@@ -889,7 +887,7 @@ Some thread messages control the running agent rather than prompt it. `parseComm
 - **Prefix:** Slack reserves slash commands, so use `!`; also parse `/` for Telegram/Discord. Command must immediately follow prefix; `hello!` and `! note` are normal text.
 - **Vocabulary:** `!stop` / `!cancel` interrupt current turn; `!queue <text>` runs text after idle.
 
-Run `route()` on the command to locate `(agentId, integrationId)`, preserving thread affinity and allowedUserIds. If no target, ignore and log.
+Run `route()` on the command to locate `(agentId, integrationId)`, preserving thread affinity and conversation admission. If no target, ignore and log.
 
 - **`!stop` / `!cancel`:** For an in-flight session, first clear its queue, then send ACP `session/cancel`, and reply `🛑 Stopped.`. If nothing is running, reply `Nothing is running to stop.`
 - **`!queue <text>`:** If busy, enqueue stripped text in `queued: Map<acpSessionId, NormalizedMessage[]>` and reply `📥 Queued`; if idle, dispatch immediately. On clean turn completion, FIFO-dispatch one queued message, which chains the next. On prompt error, do not dispatch; retain the queue.

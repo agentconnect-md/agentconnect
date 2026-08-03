@@ -36,7 +36,7 @@ async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean>
 }
 
 describe('spawnDaemonViaLoginShell', () => {
-  it('marks ready when the exec-ed daemon writes the lock with the preserved pid', async () => {
+  it('marks ready on exit when the daemon writes the lock between polls', async () => {
     const root = dir()
     const lock = daemonLockPath(root)
     const { child, done } = spawnDaemonViaLoginShell(
@@ -46,7 +46,9 @@ describe('spawnDaemonViaLoginShell', () => {
       {},
       {
         shell: fakePosixShell(root),
-        pollMs: 25,
+        // Keep the background poll beyond the test window so the exit-time
+        // probe is what observes the lock written by the daemon.
+        pollMs: 60_000,
         readyTimeoutMs: 5000
       }
     )

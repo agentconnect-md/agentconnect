@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { GithubMark } from '@/components/marks'
-import { Button, Icon } from '@/components/ui'
+import { Button, Icon, Toggle } from '@/components/ui'
 
 export type WorkspaceMode = 'scratch' | 'github'
 export type WorkspaceRepoAccess = 'read' | 'write'
@@ -567,6 +567,17 @@ export function WorkingSubdirectoryField({
           {error}
         </span>
       )}
+    </div>
+  )
+}
+
+export function WorktreeField({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <div className="fld min-w-0">
+      <span className="fldlbl">Worktree</span>
+      <div className="inp min-w-0 justify-end">
+        <Toggle checked={checked} onChange={onChange} ariaLabel="Worktree" />
+      </div>
     </div>
   )
 }

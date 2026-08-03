@@ -68,7 +68,10 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
     expect(text).toContain('no per-session control')
   })
 
-  it('labels a settled Feishu/Lark external audience as current chat members', async () => {
+  it.each([
+    ['feishu', 'Feishu'],
+    ['lark', 'Lark']
+  ] as const)('labels a settled %s external audience as %s members', async (feishuRegion, brand) => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -79,12 +82,15 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
           visibility="external"
           externalProvider="feishu"
           externalResolution="settled"
+          feishuRegion={feishuRegion}
           canChange={false}
           onChanged={() => {}}
         />
       )
     })
-    expect(container.textContent).toContain('Feishu / Lark members')
-    expect(container.querySelector('span')?.title).toContain('current members')
+    expect(container.textContent).toContain(`${brand} members`)
+    expect(container.querySelector('span')?.title).toBe(
+      `Visible to current members of the source ${brand} conversation`
+    )
   })
 })

@@ -28,12 +28,16 @@ import { normalizeGitHubSkillSource } from '../git-url.js'
 export const AgentWorkspace = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal('scratch'),
+    // Workspace isolation is runtime-owned rather than a filesystem path. The
+    // console exposes this as the simpler Worktree on/off choice for Git repos.
+    isolation: z.enum(['shared', 'session']).default('shared'),
     // Scratch has no implicit/default repository. The credential helper still
     // lets git/gh request explicitly authorized repositories by name.
     gitCredential: z.enum(['github-app']).optional()
   }),
   z.object({
     mode: z.literal('github'),
+    isolation: z.enum(['shared', 'session']).default('shared'),
     gitRepo: z.string(), // FULL cloneable address, e.g. https://github.com/acme/infra (normalizeGitUrl)
     branch: z.string().default('main'),
     agentDir: z.string().optional(), // subdir within the repo; omitted ⇒ repo root

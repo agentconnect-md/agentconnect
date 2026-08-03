@@ -580,6 +580,11 @@ enum WorkspaceMode {
   github // clone gitRepo @ gitBranch, run in agentDir
 }
 
+enum WorkspaceIsolation {
+  shared // every session uses the primary checkout
+  session // each logical session uses its own git worktree
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // §3.6 Agent — agent definition & capability pin (C6 + C4)
 // ───────────────────────────────────────────────────────────────────────────
@@ -608,6 +613,7 @@ model Agent {
   daemonId              String?            @db.Uuid // 1 agent : 1 machine (null until placed)
   // ── workspace (inline; §3.5) — daemon-generated path ──
   workspaceMode         WorkspaceMode      @default(scratch)
+  workspaceIsolation    WorkspaceIsolation @default(shared)
   gitRepo               String? // github mode: e.g. github.com/acme/infra
   gitBranch             String?            @default("main")
   agentDir              String? // github mode: subdir within the repo (repo-root if null)
@@ -653,11 +659,11 @@ model Agent {
   createdAt             DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 
-  org                   Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  daemon                Daemon?                  @relation(fields: [daemonId], references: [id], onDelete: SetNull)
-  createdBy             User?                    @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  owner                 User?                    @relation("AgentOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  lastModifiedBy        User?                    @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
+  org                   Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  daemon                Daemon?                    @relation(fields: [daemonId], references: [id], onDelete: SetNull)
+  createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  owner                 User?                      @relation("AgentOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  lastModifiedBy        User?                      @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   assignments           Assignment[]
   launches              AgentLaunch[]
   sessions              SessionMeta[]

@@ -65,6 +65,42 @@ export async function versionPrune(root: string, keep: number): Promise<void> {
   )
 }
 
+/**
+ * Roll `current` back to the recorded previous version (the run shell's startup
+ * recovery, run-recovery.ts). Returns the version activated. `useVersion` swaps
+ * the roles: the failed version becomes the new `previous`.
+ */
+export async function versionRollback(root: string): Promise<string> {
+  return withVersionLock(root, 'rollback', () => {
+    const prev = readMeta(root).previous
+    if (!prev) throw new Error('no previous daemon version recorded to roll back to')
+    useVersion(root, prev)
+    note(`current → ${prev}`)
+    return prev
+  })
+}
+
+/**
+ * Force re-download the channel latest and activate it — recovery for a broken
+ * or corrupt active bundle, where the idempotent install would no-op instead of
+ * re-fetching. Returns the version activated.
+ */
+export async function versionReinstallLatest(root: string): Promise<string> {
+  return withVersionLock(
+    root,
+    'reinstall',
+    async () => {
+      const channel = readMeta(root).channel
+      const target = await resolveTarget({ channel })
+      await installTarget(root, target, note, { force: true })
+      useVersion(root, target.version)
+      note(`current → ${target.version}`)
+      return target.version
+    },
+    { wait: true }
+  )
+}
+
 export async function runUpgrade(
   root: string,
   opts: { to?: string; channel?: Channel; restart?: boolean }

@@ -120,7 +120,6 @@ capability invariant in section 5.
       appId: z.string(), // cli_... application ID; a semi-public identifier
       appSecret: z.string(), // Secret; never log it
       botOpenId: z.string().optional(), // Bot open_id for mention routing; resolve lazily through bot/info
-      allowedUserIds: z.array(z.string()).default([]),
       bindRules: z.array(IntegrationBindRule).default([])
     })
     ```
@@ -220,7 +219,6 @@ IntegrationFeishuConfig }`.
         mode: 'direct',
         appId: secret.appToken ?? '',
         appSecret: secret.botToken,
-        allowedUserIds: [],
         bindRules
       }
     }
@@ -326,7 +324,7 @@ IntegrationFeishuConfig }`.
 - Add `'feishu'` to `NormalizedMessage.platform` in
   `src/messages/normalized.ts`, plus optional `feishuTopLevel?: boolean`.
 - Add a Lark / Feishu branch to `src/router/routing-rule.ts`, extracting
-  `staticBotUserId` from `botOpenId`, `bindRules`, and `allowedUserIds`.
+  `staticBotUserId` from `botOpenId` together with its `bindRules`.
 - Add `FeishuConfigSchema` to the `IntegrationSchema` discriminated union and
   `'feishu'` to the cron target platform in `src/agents/agent-schema.ts`.
 - Add a Lark / Feishu branch in `src/agents/write-integration.ts` so

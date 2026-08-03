@@ -77,11 +77,8 @@ export function routeRules(
     // keyword/auto arbitration entirely. No Slack integration is involved.
     return { agentId: explicitAgentId, integrationId: '', via: 'mention' }
   }
-  const authz = (r: RoutingRule) =>
-    !r.allowedUserIds || r.allowedUserIds.length === 0 || r.allowedUserIds.includes(msg.sender.id)
-
-  // scope-candidates: scope + authz, KIND-AGNOSTIC (used for reachability + thread continuity).
-  const scopeCandidates = rules.filter((r) => scopeMatches(r, msg) && authz(r))
+  // Scope candidates are KIND-AGNOSTIC (used for reachability + thread continuity).
+  const scopeCandidates = rules.filter((r) => scopeMatches(r, msg))
   // kind-candidates: also match the message kind.
   const kindCandidates = scopeCandidates.filter((r) => kindMatches(r, msg))
 

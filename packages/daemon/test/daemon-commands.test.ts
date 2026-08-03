@@ -101,7 +101,6 @@ function makeRoutable(daemon: Daemon) {
         botToken: 'b',
         appToken: 'p',
         botUserId: 'UBOTA',
-        allowedUserIds: [],
         bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
       }
     }
@@ -138,25 +137,10 @@ describe('Daemon in-conversation commands', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
     await daemon.start()
     const conn = makeRoutable(daemon)
-    ;(daemon as any).agents.get('bot-a').integrations[0].slack.allowedUserIds = ['U1']
     const scope = LOOP_SCOPE
     ;(daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
 
     ;(daemon as any).onInbound({ ...dm('100', '!resume'), sender: { id: 'unknown', isBot: false } })
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
-    expect(conn.postMessage).not.toHaveBeenCalled()
-
-    ;(daemon as any).onInbound({ ...dm('150', '!resume'), sender: { id: 'U2', isBot: false } })
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
-    expect(conn.postMessage).not.toHaveBeenCalled()
-
-    // CP rules do not carry allowedUserIds. Even if one independently routes U2 to
-    // this agent, concrete-integration command auth must still reject the reset.
-    ;(daemon as any).cpRouting.applyUpdate({
-      routingEpoch: 1,
-      rules: [{ agentId: 'bot-a', match: { kind: 'dm' } }]
-    })
-    ;(daemon as any).onInbound({ ...dm('175', '!resume'), sender: { id: 'U2', isBot: false } })
     expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
     expect(conn.postMessage).not.toHaveBeenCalled()
 
@@ -173,7 +157,6 @@ describe('Daemon in-conversation commands', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
-    integration.slack.allowedUserIds = ['U1']
     integration.slack.bindRules = [{ match: { kind: 'mention' } }]
     const scope = 'slack:C-top:top-level'
     ;(daemon as any).store.tripLoopGuard(scope, 1, 'automatic_turn_burst')
@@ -195,10 +178,6 @@ describe('Daemon in-conversation commands', () => {
       trigger: 'mention' as const
     })
 
-    ;(daemon as any).onInbound(resume('U2'))
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
-    expect(conn.postMessage).not.toHaveBeenCalled()
-
     ;(daemon as any).onInbound(resume('U1'))
     expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
     expect(conn.postMessage).toHaveBeenCalledWith('C-top', expect.stringContaining('Resumed'), '9')
@@ -206,12 +185,11 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
-  it('shared-bot rd/msg(im) only lets an allowed human reset the loop guard', async () => {
+  it('shared-bot rd/msg(im) only lets a human reset the loop guard', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => blocked.host as any })
     await daemon.start()
     const conn = makeRoutable(daemon)
-    ;(daemon as any).agents.get('bot-a').integrations[0].slack.allowedUserIds = ['U1']
     const scope = LOOP_SCOPE
     ;(daemon as any).store.tripLoopGuard(scope, 1, 'test_loop')
 
@@ -226,7 +204,7 @@ describe('Daemon in-conversation commands', () => {
       payload: { ...dm(msgId, '!resume'), sender }
     })
 
-    // Even an allowlisted identity cannot issue control commands when the event is bot-authored.
+    // A bot-authored event cannot issue control commands.
     expect((daemon as any).handleRelayMsg(relayResume('relay-bot', { id: 'U1', isBot: true }), () => {})).toEqual({
       msgId: 'relay-bot',
       accepted: false,
@@ -234,14 +212,8 @@ describe('Daemon in-conversation commands', () => {
     })
     expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
 
-    expect(
-      (daemon as any).handleRelayMsg(relayResume('relay-unauthorized', { id: 'U2', isBot: false }), () => {})
-    ).toEqual({ msgId: 'relay-unauthorized', accepted: false, reason: 'unauthorized' })
-    expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(true)
-    expect(conn.postMessage).not.toHaveBeenCalled()
-
-    expect((daemon as any).handleRelayMsg(relayResume('relay-allowed', { id: 'U1', isBot: false }), () => {})).toEqual({
-      msgId: 'relay-allowed',
+    expect((daemon as any).handleRelayMsg(relayResume('relay-human', { id: 'U1', isBot: false }), () => {})).toEqual({
+      msgId: 'relay-human',
       accepted: true
     })
     expect((daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
@@ -1716,7 +1688,6 @@ describe('Slack interactive status bar', () => {
           appId: 'cli_http_app',
           appSecret: 'secret',
           region: 'lark',
-          allowedUserIds: [],
           bindRules: []
         }
       }
@@ -2009,7 +1980,6 @@ describe('Slack interactive status bar', () => {
             appId: 'cli_lark',
             appSecret: 'secret',
             region: 'lark',
-            allowedUserIds: [],
             bindRules: []
           }
         }

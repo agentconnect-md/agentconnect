@@ -292,7 +292,6 @@ slack: {
   mode: 'shared',
   shareable,
   botToken,
-  allowedUserIds: [],
   bindRules: []
 }
 ```
@@ -310,7 +309,6 @@ feishu: {
   appSecret,
   botOpenId,
   region,
-  allowedUserIds: [],
   bindRules: []
 }
 ```

@@ -152,6 +152,7 @@ export function composeRuntimeLaunch(opts: {
   /** Additional daemon-owned code/socket/config paths required by trusted
    * descendants such as the AgentConnect MCP bridge. */
   runtimeReadRoots?: string[]
+  trustedWorkspaceWriteRoots?: string[]
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
   allowModelToolUnixSockets?: boolean
@@ -182,6 +183,7 @@ export function composeRuntimeLaunch(opts: {
     daemonRoot: opts.daemonRoot,
     agentsRoot: opts.agentsRoot,
     trustedRuntimeReadRoots: [...(sandboxAccess?.readRoots ?? []), ...(opts.runtimeReadRoots ?? [])],
+    trustedWorkspaceWriteRoots: opts.trustedWorkspaceWriteRoots,
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
     allowModelToolUnixSockets: opts.allowModelToolUnixSockets

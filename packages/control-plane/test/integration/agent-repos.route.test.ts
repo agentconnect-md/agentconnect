@@ -362,7 +362,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
 
     expect(converted.statusCode).toBe(200)
     expect(converted.json()).toMatchObject({
-      workspace: { mode: 'github', gitBranch: 'trunk', gitAccess: 'write' },
+      workspace: { mode: 'github', worktree: true, gitBranch: 'trunk', gitAccess: 'write' },
       workspaceRepoId: '111'
     })
     expect(control.detaches).toMatchObject([{ agentId }])
@@ -376,6 +376,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     expect(await prisma.agentRepoAuthorization.count({ where: { agentId } })).toBe(0)
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
       workspaceMode: 'github',
+      workspaceIsolation: 'session',
       gitBranch: 'trunk',
       workspaceRepoId: 111n
     })
@@ -441,16 +442,22 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const edited = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/infra', gitAccess: 'read' }
+      payload: { mode: 'github', worktree: false, repoFullName: 'acme/infra', gitAccess: 'read' }
     })
 
     expect(edited.statusCode).toBe(200)
-    expect(edited.json()).toMatchObject({ workspace: { mode: 'github', gitAccess: 'read' } })
+    expect(edited.json()).toMatchObject({ workspace: { mode: 'github', worktree: false, gitAccess: 'read' } })
     expect(control.detaches).toHaveLength(1)
     expect(control.detaches[0]?.requireEmptyWorkspace).toBeUndefined()
     expect(control.activations).toHaveLength(1)
-    expect(control.activations[0]?.reconcileWorkspace).toBe(true)
-    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({ gitAccess: 'read' })
+    expect(control.activations[0]).toMatchObject({
+      reconcileWorkspace: true,
+      spec: { workspace: { isolation: 'shared' } }
+    })
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
+      gitAccess: 'read',
+      workspaceIsolation: 'shared'
+    })
   })
 
   it('switches repository, branch, and working directory, then converts GitHub back to scratch', async () => {

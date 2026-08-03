@@ -347,6 +347,7 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     expect(ws.gitRepo).toBe('github.com/acme/infra')
     expect(ws.agentDir).toBe('./services/api')
     expect(ws.branch).toBe('main') // zod default
+    expect(ws.isolation).toBe('shared')
   })
 
   it('spec.workspace accepts scratch with explicit-repo GitHub credentials', () => {
@@ -358,7 +359,11 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('agent/upsert')(r.frame)) throw new Error('expected agent/upsert')
-    expect(r.frame.payload.spec.workspace).toEqual({ mode: 'scratch', gitCredential: 'github-app' })
+    expect(r.frame.payload.spec.workspace).toEqual({
+      mode: 'scratch',
+      isolation: 'shared',
+      gitCredential: 'github-app'
+    })
   })
 
   it('agent/upsert and agent/remove decode for live CRUD', () => {
@@ -439,7 +444,6 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.frame.payload.slack.botToken).toBe('xoxb-abc')
     expect(r.frame.payload.slack.appToken).toBe('xapp-1-def')
     expect(r.frame.payload.slack.appId).toBe('A123')
-    expect(r.frame.payload.slack.allowedUserIds).toEqual([]) // zod default
     expect(r.frame.payload.slack.bindRules).toEqual([]) // zod default
   })
 
@@ -456,7 +460,6 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'telegram') throw new Error('expected telegram integration')
     expect(r.frame.payload.telegram.botToken).toBe('123456:ABC-def')
-    expect(r.frame.payload.telegram.allowedUserIds).toEqual([]) // zod default
     expect(r.frame.payload.telegram.bindRules).toEqual([]) // zod default
   })
 
@@ -474,7 +477,6 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     if (r.frame.payload.platform !== 'discord') throw new Error('expected discord integration')
     expect(r.frame.payload.discord.botToken).toBe('MTA-bot-token')
     expect(r.frame.payload.discord.applicationId).toBe('112233445566')
-    expect(r.frame.payload.discord.allowedUserIds).toEqual([]) // zod default
     expect(r.frame.payload.discord.bindRules).toEqual([]) // zod default
   })
 
@@ -494,7 +496,6 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.frame.payload.feishu.appSecret).toBe('secret-xyz')
     expect(r.frame.payload.feishu.mode).toBe('direct') // backwards-compatible default
     expect(r.frame.payload.feishu.region).toBe('feishu') // zod default — China gateway
-    expect(r.frame.payload.feishu.allowedUserIds).toEqual([]) // zod default
     expect(r.frame.payload.feishu.bindRules).toEqual([]) // zod default
   })
 

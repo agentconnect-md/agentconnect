@@ -40,10 +40,12 @@ vi.mock('simple-git', () => ({
 const {
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
+  prepareSessionWorkspace,
   prepareWorkspace,
   prepareWorkspaceForActivation,
   prefetchWorkspace,
-  recordWorkspaceMaterialization
+  recordWorkspaceMaterialization,
+  sessionWorktreeRoot
 } = await import('../src/workspace/workspace-manager.js')
 const { initGitInjection } = await import('../src/workspace/git-injection.js')
 
@@ -262,6 +264,78 @@ describe('prepareWorkspace', () => {
     symlinkSync(outside, join(dir, 'outside-link'))
 
     await expect(prepareWorkspace(gitRepoAgent(dir, 'outside-link'))).rejects.toThrow('outside the repository')
+  })
+})
+
+describe('prepareSessionWorkspace', () => {
+  it('fetches and checks out the exact trusted PR revision in a session worktree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-review-ws-'))
+    const path = join(root, 'workspace')
+    mkdirSync(join(path, '.git'), { recursive: true })
+    const agent = gitRepoAgent(path)
+    agent.workspace.pullOnNewSession = false
+    const base = 'a'.repeat(40)
+    const head = 'b'.repeat(40)
+
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      if (args[0] === 'rev-parse') {
+        const ref = args.at(-1) ?? ''
+        if (ref.includes('/base')) return `${base}\n`
+        return `${head}\n`
+      }
+      if (args[0] === 'fetch' && args.some((value) => value.includes('/merge:'))) {
+        throw new Error('merge ref unavailable')
+      }
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(join(args[3]!, '.git'), { recursive: true })
+      }
+      return ''
+    })
+
+    const cwd = await prepareSessionWorkspace(agent, {
+      sessionKey: 'hook:repo#461:bot-git',
+      isolation: 'session',
+      review: { pullNumber: 461, baseSha: base, headSha: head }
+    })
+
+    expect(dirname(cwd)).toBe(realpathSync(sessionWorktreeRoot(agent)))
+    const addCall = rawMock.mock.calls
+      .map((call) => call[0] as string[])
+      .find((args) => args[0] === 'worktree' && args[1] === 'add')
+    expect(addCall?.slice(0, 3)).toEqual(['worktree', 'add', '--detach'])
+    expect(realpathSync(addCall![3]!)).toBe(cwd)
+    expect(addCall?.[4]).toBe(head)
+    expect(
+      rawMock.mock.calls.some(
+        ([args]) =>
+          args[0] === 'fetch' &&
+          args.includes(`+${base}:refs/agentconnect/reviews/${basename(cwd)}/base`) &&
+          args.includes(`+refs/pull/461/head:refs/agentconnect/reviews/${basename(cwd)}/head`)
+      )
+    ).toBe(true)
+  })
+
+  it('uses a stable distinct worktree for each logical session', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-session-ws-'))
+    const path = join(root, 'workspace')
+    mkdirSync(join(path, '.git'), { recursive: true })
+    const agent = gitRepoAgent(path)
+    agent.workspace.pullOnNewSession = false
+    rawMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args[3]!, '.git'), { recursive: true })
+      return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
+    })
+
+    const first = await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    const again = await prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })
+    const second = await prepareSessionWorkspace(agent, { sessionKey: 'session-b', isolation: 'session' })
+
+    expect(again).toBe(first)
+    expect(second).not.toBe(first)
+    expect(dirname(first)).toBe(realpathSync(sessionWorktreeRoot(agent)))
+    expect(dirname(second)).toBe(realpathSync(sessionWorktreeRoot(agent)))
   })
 })
 

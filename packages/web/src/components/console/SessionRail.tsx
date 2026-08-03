@@ -98,8 +98,8 @@ function pinIdsOf(session: Session): string[] {
 
 /**
  * The rail's footprint with nothing in it — the shape every session detail state
- * holds so the body beside it never moves. Used by the loading and not-found
- * branches, which have no rail to draw, and by a rail with no rows worth drawing.
+ * holds so the body beside it never moves. Used by the loading branch, which has
+ * no rail to draw, and by a rail with no rows worth drawing.
  */
 export function SessionRailSlot() {
   return <div aria-hidden="true" className="hidden w-[224px] flex-none desktop:block" />

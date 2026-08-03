@@ -6,10 +6,11 @@
 //    (via <SocialLoginMark>) a brand mark for every target we know how to draw.
 //  - WHICH of them a deployment offers is config, because it is a property of
 //    the Logto tenant, not of this repo. `SOCIAL_PROVIDERS` names the enabled
-//    targets, and this module is the ONLY place that decides. The CP deliberately
-//    does not re-derive the set: a second implementation of these rules is how the
-//    buttons and the server came to disagree, so it validates shape only and lets
-//    the tenant's connector list be the real gate.
+//    targets, and this module is the ONLY place that decides. When both Lark and
+//    Feishu are enabled, their relative order is the deployment's regional
+//    preference. The CP deliberately does not re-derive the set: a second
+//    implementation lets the buttons and the server drift, so it validates shape
+//    only and lets the tenant's connector list be the real gate.
 //
 // Deliberately NOT read from Logto's API: the value reaches the browser inlined
 // in `window.__AC_ENV` (see lib/public-env), so it costs no request and cannot
@@ -35,6 +36,11 @@ export type SocialLoginProvider = (typeof SOCIAL_LOGIN_CATALOG)[number]
 /** Any target the catalog knows — independent of what a deployment enables. */
 export type SocialLoginTarget = SocialLoginProvider['target']
 
+const isRegionalProvider = (
+  provider: SocialLoginProvider | undefined
+): provider is Extract<SocialLoginProvider, { target: 'lark' | 'feishu' }> =>
+  provider?.target === 'lark' || provider?.target === 'feishu'
+
 const DEFAULT_SOCIAL_LOGIN_TARGETS = new Set<SocialLoginTarget>(['github', 'google', 'slack'])
 
 /** Parse the configured target list. Unset / blank ⇒ legacy defaults; `*` ⇒ all. */
@@ -49,7 +55,9 @@ export function parseEnabledTargets(raw: string | undefined): Set<string> | null
   return entries.length > 0 ? new Set(entries) : new Set(DEFAULT_SOCIAL_LOGIN_TARGETS)
 }
 
-/** Catalog entries this deployment offers, in catalog order. */
+/** Catalog entries this deployment offers. Non-regional providers keep catalog
+ * order; Lark and Feishu keep their configured relative order as the regional
+ * preference consumed by the combined login button. */
 export function selectEnabledProviders(raw: string | undefined): readonly SocialLoginProvider[] {
   const enabled = parseEnabledTargets(raw)
   if (!enabled) return SOCIAL_LOGIN_CATALOG
@@ -57,9 +65,14 @@ export function selectEnabledProviders(raw: string | undefined): readonly Social
   // A value naming only unknown targets would otherwise leave the sign-in page
   // with no way in at all; retain the pre-Lark/Feishu defaults without assuming
   // that the tenant has either newly supported connector.
-  return selected.length > 0
-    ? selected
-    : SOCIAL_LOGIN_CATALOG.filter((provider) => DEFAULT_SOCIAL_LOGIN_TARGETS.has(provider.target))
+  if (selected.length === 0) {
+    return SOCIAL_LOGIN_CATALOG.filter((provider) => DEFAULT_SOCIAL_LOGIN_TARGETS.has(provider.target))
+  }
+
+  const regionalProviders = [...enabled]
+    .map((target) => selected.find((provider) => provider.target === target))
+    .filter(isRegionalProvider)
+  return [...selected.filter((provider) => !isRegionalProvider(provider)), ...regionalProviders]
 }
 
 /** The providers to render. Reads the runtime config the server inlined. */

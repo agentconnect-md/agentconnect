@@ -1,5 +1,6 @@
 import { RESERVED_RESTART_CODE } from '@agentconnect.md/protocol'
 import { exitAsChild, resolveDaemonEntry, spawnDaemon, type ChildResult } from './delegate.js'
+import { runRecoveryFlow, shouldOfferRecovery } from './run-recovery.js'
 import { spawnDaemonViaLoginShell } from './service-spawn.js'
 import { versionInstall } from './version-commands.js'
 import { currentVersion, readMeta } from './version-store.js'
@@ -34,7 +35,9 @@ export async function ensureDaemonInstalled(root: string): Promise<void> {
  * supervisor — but the CLI process itself is already resident here, so it acts
  * as one. It spawns the daemon, and when the daemon exits with the reserved
  * restart code (a planned restart/upgrade), it re-resolves `<root>/current` and
- * respawns the (possibly upgraded) bundle. Any other exit is propagated.
+ * respawns the (possibly upgraded) bundle. Any other exit is propagated — except
+ * an interactive startup failure, where the recovery prompt (run-recovery.ts)
+ * may switch versions and respawn instead.
  *
  * The child runs with AGENTCONNECT_SUPERVISOR=cli so the daemon knows it is
  * shell-supervised and accepts CP-commanded restart/upgrade (§7.1).
@@ -83,9 +86,13 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
   const onInt = (): void => {
     // no-op: the child receives terminal SIGINT directly via the shared pgroup.
   }
+  // A SIGTERM can also land while the recovery prompt (or one of its actions)
+  // is pending — there is no child then, so the stop must abort the flow itself.
+  const recoveryStop = new AbortController()
   const onTerm = (): void => {
     stopRequested = true
     current?.kill('SIGTERM')
+    recoveryStop.abort()
   }
   process.on('SIGINT', onInt)
   process.on('SIGTERM', onTerm)
@@ -97,6 +104,7 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
   let viaShell = process.env.AGENTCONNECT_SUPERVISOR === 'service'
   for (;;) {
     const entry = resolveDaemonEntry(root)
+    const spawnedAt = Date.now()
     const { child, done } = viaShell
       ? spawnDaemonViaLoginShell(root, entry, argv, { AGENTCONNECT_SUPERVISOR: 'cli' })
       : spawnDaemon(entry, argv, { AGENTCONNECT_SUPERVISOR: 'cli' })
@@ -113,6 +121,20 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
       continue
     }
     if (next === 'respawn') continue // planned restart/upgrade — respawn current
+    // Startup failure in an interactive foreground run: offer rollback /
+    // re-download / manual version selection instead of just dying (run-recovery.ts).
+    const recoverable = shouldOfferRecovery(result, {
+      stopRequested,
+      supervised: process.env.AGENTCONNECT_SUPERVISOR === 'service',
+      devEntry: Boolean(process.env.AGENTCONNECT_DAEMON_ENTRY),
+      interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+      elapsedMs: Date.now() - spawnedAt
+    })
+    const recovered =
+      recoverable && (await runRecoveryFlow(root, result, { signal: recoveryStop.signal })) === 'respawn'
+    // Re-check the stop state after the wait: a stop that arrived during the
+    // prompt/action must win — never launch a daemon past a requested stop.
+    if (recovered && !stopRequested) continue
     return exitAsChild(result, cleanup)
   }
 }

@@ -32,11 +32,11 @@ export default function SocialLoginButtons({
 }) {
   const regionalProviders = providers.filter(isLarkOrFeishu)
   const firstRegionalProvider = regionalProviders[0]
-  const [selectedRegionalTarget, setSelectedRegionalTarget] = useState<LarkFeishuTarget>('feishu')
+  const [selectedRegionalTarget, setSelectedRegionalTarget] = useState<LarkFeishuTarget>(
+    firstRegionalProvider?.target ?? 'lark'
+  )
   const selectedRegionalProvider =
-    regionalProviders.find((provider) => provider.target === selectedRegionalTarget) ??
-    regionalProviders.find((provider) => provider.target === 'feishu') ??
-    firstRegionalProvider
+    regionalProviders.find((provider) => provider.target === selectedRegionalTarget) ?? firstRegionalProvider
 
   return providers.map((provider) => {
     if (isLarkOrFeishu(provider) && provider !== firstRegionalProvider) return null

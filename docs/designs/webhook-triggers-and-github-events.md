@@ -273,6 +273,12 @@ split the conversation.
 The daemon maps this to its normal session identity and resumes the same ACP
 session on later matching events. No GitHub-specific session store exists.
 
+The repository checkout follows the same logical session affinity. When the
+Agent uses worktrees, the daemon maps the session key to a stable opaque path
+under that Agent's `worktrees` directory; concurrent pull requests therefore
+use different working directories while later events for one pull request
+reuse its directory.
+
 ### Prompt Boundary
 
 GitHub content is untrusted external input. The daemon wraps model-visible
@@ -290,6 +296,24 @@ The trust boundary depends on runtime permissions and repository credentials:
 - ordinary comment mutation is unavailable to the agent during a numbered
   hook turn; and
 - formal reviews require the structured, action-time-authorized review path.
+
+Before a formal pull-request review generation starts, the daemon must also
+establish the trusted filesystem revision. It resolves any missing head/base
+metadata through the authenticated GitHub API. When the Agent workspace is the
+same repository, the daemon fetches the exact base and head objects into
+daemon-owned refs and checks out an isolated worktree. A GitHub merge ref may be
+used only after its object ID and ordered parents are proven to be the trusted
+base and head; otherwise the exact head is used. A formal review fails closed if
+that fetch or verification fails. If the Agent workspace is another repository,
+the prompt forbids trusting local traces and requires read-only GitHub inspection
+of the trusted revision instead. Ordinary PR conversations preserve their stable
+session worktree, do not carry formal-review authority, and require read-only or
+revision-addressed inspection instead of trusting working-tree paths.
+
+The model-visible formal-review instruction repeats the trusted base/head and
+requires verifying local `HEAD` before relying on file traces. This workspace
+fence is in addition to the action-time revision fence on formal review
+submission.
 
 ## GitHub Output Ownership
 

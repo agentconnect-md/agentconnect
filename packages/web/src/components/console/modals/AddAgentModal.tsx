@@ -78,6 +78,7 @@ import {
   GithubRepositoryField,
   GithubRepositoryOption,
   RepositoryAccessField,
+  WorktreeField,
   WorkingSubdirectoryField,
   WorkspaceBranchField,
   WorkspaceModeField
@@ -214,6 +215,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [repo, setRepo] = useState('')
   const [branch, setBranch] = useState('main')
   const [agentDir, setAgentDir] = useState('')
+  const [worktree, setWorktree] = useState(true)
   // GitHub App picker state (design: the picker IS the github path once the App
   // is installed — repo options only EXIST after an install; no App on this
   // deployment ⇒ everything stays the manual free-text flow — the daemon host
@@ -771,6 +773,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           ? picked
             ? {
                 mode: 'github',
+                worktree,
                 gitRepo: picked.fullName, // owner/repo — the CP normalizes to the full address
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
@@ -779,12 +782,14 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
               }
             : {
                 mode: 'github',
+                worktree,
                 gitRepo: publicRepo ?? ghRepo.trim(),
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
               }
           : {
               mode: 'github',
+              worktree,
               gitRepo: repo.trim(),
               ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
               ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
@@ -1315,28 +1320,31 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     }}
                   />
 
-                  <WorkspaceBranchField
-                    repositorySelected={!!ghRepo}
-                    value={branch}
-                    branches={ghBranches}
-                    defaultBranch={picked?.defaultBranch}
-                    open={ghBranchOpen}
-                    query={ghQ}
-                    onToggle={() => {
-                      setGhQ('')
-                      setGhRepoOpen(false)
-                      setGhAccessOpen(false)
-                      setGhBranchOpen((value) => !value)
-                    }}
-                    onClose={() => setGhBranchOpen(false)}
-                    onQueryChange={setGhQ}
-                    onChange={(value) => {
-                      setBranch(value)
-                      if (ghBranchOpen) setGhBranchOpen(false)
-                    }}
-                  />
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                    <WorkspaceBranchField
+                      repositorySelected={!!ghRepo}
+                      value={branch}
+                      branches={ghBranches}
+                      defaultBranch={picked?.defaultBranch}
+                      open={ghBranchOpen}
+                      query={ghQ}
+                      onToggle={() => {
+                        setGhQ('')
+                        setGhRepoOpen(false)
+                        setGhAccessOpen(false)
+                        setGhBranchOpen((value) => !value)
+                      }}
+                      onClose={() => setGhBranchOpen(false)}
+                      onQueryChange={setGhQ}
+                      onChange={(value) => {
+                        setBranch(value)
+                        if (ghBranchOpen) setGhBranchOpen(false)
+                      }}
+                    />
 
-                  <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                    <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                  </div>
                 </div>
               )}
 
@@ -1358,18 +1366,21 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       </span>
                     </div>
                   </div>
-                  <WorkspaceBranchField
-                    repositorySelected
-                    value={branch}
-                    branches={null}
-                    open={false}
-                    query=""
-                    onToggle={() => undefined}
-                    onClose={() => undefined}
-                    onQueryChange={() => undefined}
-                    onChange={setBranch}
-                  />
-                  <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                    <WorkspaceBranchField
+                      repositorySelected
+                      value={branch}
+                      branches={null}
+                      open={false}
+                      query=""
+                      onToggle={() => undefined}
+                      onClose={() => undefined}
+                      onQueryChange={() => undefined}
+                      onChange={setBranch}
+                    />
+                    <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                  </div>
                 </>
               )}
             </div>

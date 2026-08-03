@@ -1,6 +1,6 @@
 /**
  * Minimal `engines.node` range check (cli-daemon-split.md §5.1 step 3) — enough
- * for the simple ranges npm packages actually use (`>=24`, `>=24.0.0`, `24 || 25`)
+ * for the simple ranges npm packages actually use (`>=24.12.0`, `24 || 25`)
  * without pulling in a full semver dependency. Comparators within a group are
  * ANDed; `||` separates OR groups. Pre-release tags on the Node version are
  * ignored. An unparseable range returns `true` (accept) rather than blocking on
