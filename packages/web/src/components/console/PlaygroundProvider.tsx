@@ -1163,8 +1163,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // dispatched-set makes the effect idempotent (StrictMode runs effects twice).
   const dispatchedQueueIds = useRef<Set<string>>(new Set())
   useEffect(() => {
-    for (const [id, queue] of Object.entries(pgQueueBy)) {
-      const next = queue[0]
+    for (const id of Object.keys(pgQueueBy)) {
+      // Head comes from the synchronous mirror, NOT the render-time snapshot:
+      // a cancel landing after busy cleared but before this effect ran has
+      // already removed it from the mirror, and dispatching the snapshot's
+      // head would send a message the user watched disappear.
+      const next = pgQueueRef.current[id]?.[0]
       if (!next || busyRef.current[id] || dispatchedQueueIds.current.has(next.queueId)) continue
       dispatchedQueueIds.current.add(next.queueId)
       pgQueueRef.current[id] = (pgQueueRef.current[id] ?? NO_QUEUE).filter((q) => q.queueId !== next.queueId)

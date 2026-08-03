@@ -175,6 +175,33 @@ describe('pgSend acceptance', () => {
     expect(wireOrder).toEqual(['first', 'second', 'third'])
   })
 
+  // The cancel twin of the FIFO gap: the dispatcher must not send a head the
+  // user canceled after the turn ended but before the passive effect ran. The
+  // dispatcher derives its head from the synchronous queue mirror, so a cancel
+  // landing in that window always wins over the render-time snapshot.
+  it('never dispatches a head canceled at the idle transition', async () => {
+    act(() => {
+      expect(pgSend('s1', 'a1', 'first')).toBe(true)
+    })
+    act(() => {
+      expect(pgSend('s1', 'a1', 'doomed')).toBe(true) // busy → queued
+    })
+    const queueId = getPgQueue('s1')[0]!.queueId
+    await act(async () => {
+      // Pump microtasks so the (mocked, failing) first send settles and clears
+      // the busy ref, then cancel the queued head before the dispatcher effect
+      // has had a chance to run.
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+      pgCancelQueued('s1', queueId)
+    })
+    await act(async () => {})
+    expect(getPgQueue('s1')).toEqual([])
+    const wireOrder = getLiveSteps('s1')
+      .filter((s) => s.who === '@you')
+      .map((s) => s.text)
+    expect(wireOrder).toEqual(['first']) // 'doomed' must never reach the wire
+  })
+
   // openPlayground exists on the same context; touching it here documents that the
   // probe wiring is real and not a partially-mocked stand-in.
   it('exposes the real provider surface', () => {
