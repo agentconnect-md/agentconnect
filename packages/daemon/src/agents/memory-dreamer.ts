@@ -172,6 +172,7 @@ Rules:
 - agentMemory.index is always the complete, non-empty MEMORY.md text. When there are no persistent agent memories, return "# Memory\n\n_No persistent memories yet._\n" rather than an empty string.
 - organizationKnowledge entries are owner-review proposals in exactly this shape: {"operation":"create|update","targetId":"uuid only for update","targetRevision":1,"title":"...","summary":"...","tags":["..."],"content":"Markdown","sessionIds":["..."]}. The citation property is named "sessionIds" (never "groundedSessionIds").
 - Propose organization knowledge only when it is reusable across multiple agents or represents a durable organization-wide convention. Agent-specific facts stay in agentMemory.
+- Transcripts may include private or one-to-one conversations. Never surface a specific person's private or personal conversation content as organization knowledge; org knowledge is general, reusable convention — not personal, private, or individual-specific detail.
 - Cite organization knowledge in at least one mined session. Use only session ids taken from a session file's "session:" header line.
 - Return organizationSkills as [] unless the additional extract-procedures phase below is present.
 - The index must reference only files present in "files".

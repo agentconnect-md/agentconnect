@@ -122,8 +122,6 @@ export interface DreamStorePort {
     agentId: string,
     limit: number
   ): { sessionId: string; channel: string; thread: string; transportScope?: string | null }[]
-  /** Is this session excluded from agent-memory capture (session-visibility.md §5.1)? */
-  isCaptureExcluded(acpSessionId: string | undefined): boolean
   /** Chronological text rows of one session thread, scoped to the agent. */
   dreamTranscriptText(
     channel: string,
@@ -362,13 +360,18 @@ export class DreamRunner {
       }
       const sessionWindow = opts.sessionWindow ?? policy.sessionWindow ?? DEFAULT_SESSION_WINDOW
       const instructions = opts.instructions ?? policy.instructions
-      // Dreams distill transcripts straight from the store, bypassing the
-      // per-turn capture path — so the session-visibility gate has to be applied
-      // here too, or a private session's content reaches shared agent memory by
-      // the back door (session-visibility.md §5.1).
-      const sources = this.deps.store
-        .dreamSessionSources(agentId, sessionWindow)
-        .filter((source) => !this.deps.store.isCaptureExcluded(source.sessionId))
+      // A dream distills EVERY session this agent participated in — channel, DM,
+      // webchat, external (GitHub), A2A, or launched alike. We deliberately do NOT
+      // apply the per-turn capture-visibility gate here: an agent's own transcript
+      // is content it already saw, so consolidating it into that same agent's own
+      // memory adds no new audience. Peer isolation is preserved by the source
+      // itself — dreamSessionSources is scoped to `agentId` and dreamTranscriptText
+      // returns only the rows this agent sent, received, or was delivered — so a
+      // peer's private session never enters. What used to be a hard pre-filter is
+      // now handled by the dream policy prompt: it must not surface a person's
+      // private/personal conversation as shared organization knowledge
+      // (session-visibility.md §5.1, #36 follow-up).
+      const sources = this.deps.store.dreamSessionSources(agentId, sessionWindow)
 
       // Snapshot the live store — the digest is the adoption fence. Taken under
       // the shared memory-dir lock so it cannot tear against a concurrent

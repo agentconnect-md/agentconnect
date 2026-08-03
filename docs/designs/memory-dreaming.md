@@ -212,12 +212,20 @@ interface DreamRecord {
 1. **Snapshot.** Copy `<agent-root>/memory/` (excluding `.history`) into
    `memory-dreams/<dreamId>/input/`; record `snapshotDigest`.
 2. **Gather signal.** Pull the last `sessionWindow` sessions' transcripts for
-   this agent from the daemon store. For memory consolidation only user/agent
+   this agent from the daemon store. Every session the agent itself participated
+   in is mined — channel, DM, webchat, external (GitHub), A2A, and launched alike;
+   the per-turn capture-visibility gate is deliberately **not** applied here (see
+   session-visibility.md §5.1 dream-path carve-out). Peer isolation stays with the
+   source: sourcing is `agentId`-scoped and each transcript returns only the rows
+   this agent sent, received, or was delivered, so a peer's private session never
+   enters. For memory consolidation only user/agent
    text rows are used; when `mineSkills` is set, tool rows are included as
    **titles plus truncated inputs** (command lines, file paths — enough to see
    _what_ the agent did) while raw tool outputs stay excluded, both for
    context-budget and for secret-hygiene reasons. Everything is clamped per
-   session and overall, newest first until the byte budget is spent.
+   session and overall, newest first until the byte budget is spent. The dream
+   policy prompt — not a hard pre-filter — keeps a person's private/personal
+   conversation from becoming shared organization knowledge.
 3. **Dream.** Run an isolated ACP session on the agent's runtime host through
    the shared extraction-session helper (§8): temp cwd, read-only / plan
    permission mode when the runtime offers one, dream system prompt (§5),

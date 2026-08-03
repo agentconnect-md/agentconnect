@@ -459,6 +459,21 @@ distilled into agent memory (including by dream sessions) and later surface —
 via memory reads or recall in someone else's session — to any user who can
 view the agent, bypassing every gate in the table above.
 
+> **Dream-path carve-out (#36 follow-up).** The two-layer gate below governs the
+> **per-turn capture path**. Offline **dreams** deliberately do NOT apply it:
+> a dream mines every session the owning agent itself participated in — channel,
+> DM, webchat, external (GitHub), A2A, and launched alike — because that agent
+> already saw that content and consolidating it into the same agent's own memory
+> adds no new audience. Peer isolation still holds structurally: the dream reads
+> only `agentId`-scoped sessions and, within them, only the rows this agent sent,
+> received, or was delivered, so a peer's private session never enters. The
+> residual bypass — a private one-to-one exchange becoming **shared organization
+> knowledge** — is contained by the dream policy prompt instead of a hard
+> pre-filter: the dreamer is instructed never to surface a person's private or
+> personal conversation as organization knowledge (org knowledge must be general,
+> reusable convention). This is an owner-accepted trade-off favoring dream
+> usefulness for DM/external-centric agents over the strict capture gate.
+
 Origin inference alone cannot carry this: effective visibility can change, and
 a cross-daemon A2A child cannot infer its inherited privacy or external source
 from `isDm`/webchat/launch-correlation alone. The gate therefore has two layers:
