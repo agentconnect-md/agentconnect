@@ -46,6 +46,11 @@ function slackBotUserId(seed: number, alias: string): string {
   return `UB${digest.slice(0, 8).toUpperCase()}`
 }
 
+function slackBotAppId(seed: number, alias: string): string {
+  const digest = createHash('sha256').update(`app:${seed}:${alias}`).digest('hex')
+  return `A${digest.slice(0, 9).toUpperCase()}`
+}
+
 export function compileTopology(manifest: GameTopologyManifest): CompiledTopology {
   const seed = manifest.seed
   const orgId = `org_arena_${String(seed)}`
@@ -80,6 +85,7 @@ export function compileTopology(manifest: GameTopologyManifest): CompiledTopolog
           transportScope: `arena-${seed}-${key}`,
           ...(room.platform === 'slack' ? { tenant: { workspaceId: `TARENA${seed}` } } : {}),
           botUserId: slackBotUserId(seed, key),
+          ...(room.platform === 'slack' ? { botAppId: slackBotAppId(seed, key) } : {}),
           bindChannels: [],
           visibleChannels: []
         }
@@ -121,6 +127,9 @@ export function compileTopology(manifest: GameTopologyManifest): CompiledTopolog
         agentId: agentIdByAlias.get(alias)!,
         daemonId,
         integrationId: integrationByAgentPlatform.get(`${alias}/${room.platform}`)!.integrationId,
+        ...(integrationByAgentPlatform.get(`${alias}/${room.platform}`)!.botAppId !== undefined
+          ? { botAppId: integrationByAgentPlatform.get(`${alias}/${room.platform}`)!.botAppId }
+          : {}),
         callPolicy: 'all',
         allowedCallerAgentIds: [],
         outboundPolicy: 'all',

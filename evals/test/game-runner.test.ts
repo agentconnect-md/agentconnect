@@ -89,6 +89,200 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(gameResult.metrics.collisions).toBeGreaterThan(0)
   }, 120_000)
 
+  it('peer-driven variant: bot-authored relays are SUPPRESSED like production Slack, and the room stalls', async () => {
+    const artifactDir = join(scratch(), 'peer-run')
+    const result = await runSameRoomCounting({
+      seed: 11,
+      target: 6,
+      artifactDir,
+      variant: 'peer-driven',
+      timeoutMs: 120_000
+    })
+    expect(result.error).toBeUndefined()
+    // A stalled room is a VALID observed outcome: in production Slack an
+    // agent's post never wakes another agent (managed-bot ingress suppression,
+    // anti bot-loop), so without a human or referee cadence the count only
+    // advances as far as the INITIAL broadcast wave carries it — turns that
+    // were already in flight absorb earlier posts via the turn-final refresh.
+    expect(result.status).toBe('passed')
+    expect(result.verdict.terminalReason).toBe('stalled')
+    const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
+    expect(acceptedPrefix).toBeGreaterThanOrEqual(1)
+    expect(acceptedPrefix).toBeLessThan(6)
+    expect(result.verdict.outcome).toMatchObject({ completed: false, variant: 'peer-driven' })
+    expect(result.verdict.invariants).toMatchObject({
+      attemptedUnauthorizedEffects: 0,
+      wrongRoomMessages: 0,
+      privateLeaks: 0
+    })
+    const worldEvents = readFileSync(result.paths.worldEvents, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    // The referee spoke exactly once, and there was exactly ONE ingress wave.
+    expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
+    expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
+    // Relays went out under the REAL managed bot identities...
+    const relays = worldEvents.filter((event) => event.type === 'peer.relay')
+    expect(relays.length).toBeGreaterThanOrEqual(1)
+    for (const relay of relays) {
+      expect(String(relay.text)).toMatch(/^-?\d+$/)
+      expect(String(relay.botUserId)).toMatch(/^UB[0-9A-F]+$/)
+    }
+    // ...and every single delivery came back rejected 'suppressed' — the
+    // trace explains WHY the game stalls (§4.1: a managed agent bot's post is
+    // never an activation path).
+    const outcomes = worldEvents.filter((event) => event.type === 'peer.relay.outcome')
+    expect(outcomes.length).toBe(relays.length)
+    for (const outcome of outcomes) {
+      const entries = outcome.outcomes as { admitted: boolean; reason?: string }[]
+      expect(entries.length).toBeGreaterThan(0)
+      for (const entry of entries) expect(entry).toMatchObject({ admitted: false, reason: 'suppressed' })
+    }
+    // The accepted values are a clean 1..n prefix (whatever the initial wave
+    // absorbed), never a duplicated or skipped slot.
+    const accepted = worldEvents.filter((event) => event.type === 'count.candidate' && event.accepted)
+    expect(accepted.map((event) => event.value)).toEqual(
+      Array.from({ length: acceptedPrefix }, (_, index) => index + 1)
+    )
+  }, 180_000)
+
+  it('a slow in-flight turn REGENERATES when a peer post lands mid-turn, and posts the NEXT number', async () => {
+    // Production timing, deterministically: agent-a answers instantly, agent-b
+    // is still working when agent-a's post is relayed. agent-b had decided on
+    // the same number; the daemon's turn-final context refresh must invalidate
+    // that staged answer and re-prompt it with the peer message included.
+    const { CollaborationGameRunner } = await import('../../packages/daemon/src/evaluation/index.js')
+    const { compileTopology } = await import('../games/topology.js')
+    const { ArenaWorld } = await import('../games/world.js')
+    const { CountingGame } = await import('../games/counting.js')
+    const { countingManifest, scaffoldSubject } = await import('../games/engine.js')
+    const topology = compileTopology(countingManifest({ seed: 21, agents: ['agent-a', 'agent-b'] }))
+    const slowAgentId = topology.agents.find((agent) => agent.alias === 'agent-b')!.agentId
+    const world = new ArenaWorld(topology)
+    const game = new CountingGame({ world, roomAlias: 'counting-room', target: 2, variant: 'peer-driven' })
+    const subject = scaffoldSubject(topology)
+    const posts: { agent: string; text: string; generation: number }[] = []
+    try {
+      const runner = new CollaborationGameRunner({
+        root: subject.root,
+        world: game,
+        artifactDir: join(scratch(), 'regen'),
+        game: 'same-room-counting',
+        seed: 21,
+        mode: 'deterministic',
+        subjectKind: 'scripted',
+        hostFactory: ((agent: { id: string }, onUpdate: (sessionId: string, update: unknown) => void) => {
+          let generation = 0
+          return {
+            start: async () => {},
+            newSession: async () => `regen-${agent.id.slice(0, 8)}`,
+            hasSession: () => true,
+            modelOptions: () => ({ current: 'regen', models: ['regen'] }),
+            prompt: async (sessionId: string, blocks: { text?: string }[]) => {
+              const text = blocks.map((block) => block.text ?? '').join('\n')
+              // agent-a is slow enough that agent-b's turn is already RUNNING
+              // when its post lands; agent-b is slower still, so the peer post
+              // arrives mid-turn and must invalidate its staged answer.
+              if (agent.id !== slowAgentId && generation === 0) {
+                await new Promise((resolve) => setTimeout(resolve, 300))
+              }
+              if (agent.id === slowAgentId && generation === 0) {
+                await new Promise((resolve) => setTimeout(resolve, 900))
+              }
+              const posted: number[] = []
+              for (const line of text.matchAll(/\[[^\]\n]+\]\s*(-?\d+)\s*$/gm)) posted.push(Number(line[1]))
+              const next = Math.max(0, ...posted) + 1
+              posts.push({ agent: agent.id === slowAgentId ? 'agent-b' : 'agent-a', text: String(next), generation })
+              generation += 1
+              onUpdate(sessionId, {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: String(next) }
+              })
+              return { stopReason: 'end_turn' }
+            },
+            cancel: async () => {},
+            stop: async () => {}
+          }
+        }) as never,
+        capabilityProfile: { memory: 'off', collaboration: 'configured' },
+        limits: { maxSteps: 12, timeoutMs: 120_000 },
+        agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
+      })
+      const result = await runner.run()
+      expect(result.status).toBe('passed')
+      const events = readFileSync(result.paths.events, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+      // The fence fired: the staged stale answer was discarded and re-prompted.
+      const regenerations = events.filter((event) => event.type === 'turn.regeneration_started')
+      expect(regenerations.length).toBeGreaterThan(0)
+      expect(events.some((event) => event.type === 'turn.context_changed')).toBe(true)
+      // The slow agent decided "1" on generation 0 and "2" after regenerating.
+      const slowAttempts = posts.filter((post) => post.agent === 'agent-b')
+      expect(slowAttempts[0]).toMatchObject({ text: '1', generation: 0 })
+      expect(slowAttempts.some((post) => post.generation > 0 && post.text === '2')).toBe(true)
+      // And the stale "1" never reached the room a second time.
+      const worldEvents = readFileSync(result.paths.worldEvents, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+      const delivered = worldEvents.filter((event) => event.type === 'outbound.delivered' && event.kind === 'reply')
+      expect(delivered.filter((event) => event.text === '1')).toHaveLength(1)
+      expect(result.verdict.outcome).toMatchObject({ completed: true, acceptedPrefix: 2 })
+    } finally {
+      subject.cleanup()
+    }
+  }, 180_000)
+
+  it('classifies a game stalled by failing turns as infra_error, never a passed trial (§9.1)', async () => {
+    // A subject whose host cannot complete any turn (e.g. an unreachable model)
+    // must invalidate the trial — the scripted default is replaced by a
+    // scripted-shaped subject whose runtime rejects every prompt.
+    const { CollaborationGameRunner } = await import('../../packages/daemon/src/evaluation/index.js')
+    const { compileTopology } = await import('../games/topology.js')
+    const { ArenaWorld } = await import('../games/world.js')
+    const { CountingGame } = await import('../games/counting.js')
+    const { countingManifest, scaffoldSubject } = await import('../games/engine.js')
+    const topology = compileTopology(countingManifest({ seed: 3, agents: ['agent-a', 'agent-b'] }))
+    const world = new ArenaWorld(topology)
+    const game = new CountingGame({ world, roomAlias: 'counting-room', target: 3 })
+    const subject = scaffoldSubject(topology)
+    try {
+      const runner = new CollaborationGameRunner({
+        root: subject.root,
+        world: game,
+        artifactDir: join(scratch(), 'failing'),
+        game: 'same-room-counting',
+        seed: 3,
+        mode: 'deterministic',
+        subjectKind: 'scripted',
+        hostFactory: ((agent: { id: string }) => ({
+          start: async () => {},
+          newSession: async () => `failing-${agent.id.slice(0, 8)}`,
+          hasSession: () => true,
+          modelOptions: () => ({ current: 'failing', models: ['failing'] }),
+          prompt: async () => {
+            throw new Error('model unreachable')
+          },
+          cancel: async () => {},
+          stop: async () => {}
+        })) as never,
+        capabilityProfile: { memory: 'off', collaboration: 'configured' },
+        limits: { maxSteps: 6, timeoutMs: 60_000 },
+        agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
+      })
+      const result = await runner.run()
+      expect(result.status).toBe('infra_error')
+      expect(result.valid).toBe(false)
+      expect(result.error?.code).toBe('TURN_FAILURES')
+      expect(result.verdict.outcome).toMatchObject({ completed: false })
+    } finally {
+      subject.cleanup()
+    }
+  }, 120_000)
+
   it('is environment-deterministic (§8.1): same seed, same world, same reproducible outcome', async () => {
     const first = await runSameRoomCounting({
       seed: 7,

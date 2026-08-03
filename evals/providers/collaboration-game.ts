@@ -11,7 +11,8 @@
  */
 import type { ApiProvider, CallApiContextParams, CallApiOptionsParams, ProviderResponse } from 'promptfoo'
 import { resolve, sep } from 'node:path'
-import { runSameRoomCounting } from '../games/engine.js'
+import { runQuotaCounting, runSameRoomCounting } from '../games/engine.js'
+import type { CountingVariant } from '../games/counting.js'
 import type { GameSubjectSpec } from '../games/subject.js'
 import {
   environmentSecrets,
@@ -25,6 +26,12 @@ export interface GameCase {
   id: string
   game: 'counting'
   scenario: 'same-room'
+  /** What drives the waves: §10.1 referee announcements (default), §3.3
+   *  peer-message relays with a silent referee, or the quota variant (peer
+   *  mechanics + per-agent post quotas with a real endgame hazard). */
+  variant: CountingVariant | 'quota'
+  /** quota variant only: posts each participant must contribute. */
+  quotaPerAgent?: number
   seed: number
   target: number
   agentIds: string[]
@@ -41,6 +48,21 @@ export function parseGameCase(raw: unknown): GameCase {
   if (record.game !== 'counting') throw new Error(`unsupported game: ${String(record.game)}`)
   if ((record.scenario ?? 'same-room') !== 'same-room') {
     throw new Error(`unsupported counting scenario: ${String(record.scenario)}`)
+  }
+  const variant = record.variant ?? 'referee-announced'
+  if (variant !== 'referee-announced' && variant !== 'peer-driven' && variant !== 'quota') {
+    throw new Error(`unsupported counting variant: ${String(record.variant)}`)
+  }
+  const quotaPerAgent = record.quotaPerAgent
+  if (
+    quotaPerAgent !== undefined &&
+    (variant !== 'quota' ||
+      typeof quotaPerAgent !== 'number' ||
+      !Number.isInteger(quotaPerAgent) ||
+      quotaPerAgent < 1 ||
+      quotaPerAgent > 10)
+  ) {
+    throw new Error('quotaPerAgent is a quota-variant field: an integer in [1, 10]')
   }
   const seed = record.seed ?? 42
   if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0)
@@ -70,6 +92,8 @@ export function parseGameCase(raw: unknown): GameCase {
     id: record.id,
     game: 'counting',
     scenario: 'same-room',
+    variant: variant as CountingVariant | 'quota',
+    ...(quotaPerAgent !== undefined ? { quotaPerAgent } : {}),
     seed,
     target,
     agentIds: agentIds as string[],
@@ -97,8 +121,9 @@ interface CollaborationGameProviderOptions {
 }
 
 export interface CollaborationGameProviderDependencies {
-  /** Test seam; production runs the real engine. */
+  /** Test seams; production runs the real engine. */
   runGame?: (options: Parameters<typeof runSameRoomCounting>[0]) => Promise<CollaborationGameResult>
+  runQuotaGame?: (options: Parameters<typeof runQuotaCounting>[0]) => Promise<CollaborationGameResult>
 }
 
 function parseCase(prompt: string): GameCase {
@@ -186,20 +211,31 @@ export default class CollaborationGameProvider implements ApiProvider {
       if (artifactDir !== artifactBase && !artifactDir.startsWith(`${artifactBase}${sep}`)) {
         throw new Error('collaboration game artifact directory escaped the configured artifact root')
       }
-      const run = this.dependencies.runGame ?? runSameRoomCounting
-      const result = await run({
-        seed: gameCase.seed,
-        target: gameCase.target,
-        agents: gameCase.agentIds,
-        artifactDir,
-        subject,
-        ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
-      })
+      const result =
+        gameCase.variant === 'quota'
+          ? await (this.dependencies.runQuotaGame ?? runQuotaCounting)({
+              seed: gameCase.seed,
+              agents: gameCase.agentIds,
+              ...(gameCase.quotaPerAgent !== undefined ? { quotaPerAgent: gameCase.quotaPerAgent } : {}),
+              artifactDir,
+              subject,
+              ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
+            })
+          : await (this.dependencies.runGame ?? runSameRoomCounting)({
+              seed: gameCase.seed,
+              target: gameCase.target,
+              agents: gameCase.agentIds,
+              variant: gameCase.variant,
+              artifactDir,
+              subject,
+              ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
+            })
       const metadata = {
         schemaVersion: 'agentconnect.promptfoo/v1',
         caseId: gameCase.id,
         game: 'counting',
         scenario: gameCase.scenario,
+        variant: gameCase.variant,
         subjectKind: subject.kind,
         runId: result.runId,
         status: result.status,
