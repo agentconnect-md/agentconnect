@@ -331,6 +331,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
     expect(assign).toBeTruthy() // broadcast to the connected relay pool
+    // §6.1: a bot assignment is always a chat platform; the kind teaches an older relay
+    // to classify an id a newer CP introduces.
+    expect(assign.originKind).toBe('chat')
 
     // members: one entry per daemon, agents grouped.
     const members = Object.fromEntries(assign.members.map((m) => [m.daemonId, m.agentIds.sort()]))

@@ -3,8 +3,10 @@ import {
   decodeEnvelope,
   decodeRelayDaemonFrame,
   decodeRelayCpFrame,
+  CollabRoutesSnapshot,
   KNOWN_PLATFORMS,
-  isKnownPlatform
+  isKnownPlatform,
+  originKindOf
 } from './index.js'
 
 /**
@@ -191,6 +193,43 @@ describe('S1a tolerant platform readers — relay↔CP wire', () => {
     if (r.ok && r.frame.type === 'rc/bot-assign') {
       expect(r.frame.payload.platform).toBe(UNKNOWN)
     }
+  })
+})
+
+describe('§6.1 origin-kind classification on the wire', () => {
+  it('rc/bot-assign carries an optional originKind; absent stays decodable (older CP)', () => {
+    const base = {
+      botId: BOT_ID,
+      platform: UNKNOWN,
+      secrets: { botToken: 'xoxb-test', signingSecret: 'sig' },
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      routes: []
+    }
+    const withKind = decodeRelayCpFrame(envelope('rc/bot-assign', { ...base, originKind: 'chat' }))
+    expectOk(withKind)
+    if (withKind.ok && withKind.frame.type === 'rc/bot-assign') {
+      expect(withKind.frame.payload.originKind).toBe('chat')
+    }
+    const without = decodeRelayCpFrame(envelope('rc/bot-assign', base))
+    expectOk(without)
+  })
+
+  it('collab snapshots default platformKinds to [] (pre-S1b CP) and carry entries verbatim', () => {
+    const bare = CollabRoutesSnapshot.parse({ generation: 1 })
+    expect(bare.platformKinds).toEqual([])
+    const classified = CollabRoutesSnapshot.parse({
+      generation: 2,
+      platformKinds: [{ platformId: UNKNOWN, originKind: 'chat' }]
+    })
+    expect(classified.platformKinds).toEqual([{ platformId: UNKNOWN, originKind: 'chat' }])
+  })
+
+  it('originKindOf seeds the known ids and answers undefined for unknown ones', () => {
+    expect(originKindOf('slack')).toBe('chat')
+    expect(originKindOf('hook')).toBe('hook')
+    expect(originKindOf('dream')).toBe('dream')
+    expect(originKindOf('webchat')).toBe('webchat')
+    expect(originKindOf(UNKNOWN)).toBeUndefined()
   })
 })
 

@@ -48,6 +48,7 @@ function placement(over: Partial<CollabAgentPlacement> & { agentId: string; daem
 function snap(): CollabRoutesSnapshot {
   return {
     generation: 1,
+    platformKinds: [],
     // The flat directory is the authorization surface; `channels[]` below only carries the
     // delivery/ingress facts (integration, bot app id).
     agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
@@ -343,6 +344,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     const router = new CollaborationRouter()
     router.replace({
       generation: 1,
+      platformKinds: [],
       agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
       channels: [
         {
@@ -429,6 +431,36 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
       expect(ack).toMatchObject({ delivered: false, reason: 'not_allowed' })
     }
     expect(forwards).toHaveLength(2)
+  })
+
+  it('wire-carried platformKinds classify ids this relay build does not know (§6.1)', async () => {
+    const s = snap()
+    s.platformKinds = [
+      { platformId: 'teams-x', originKind: 'chat' },
+      { platformId: 'sandbox-x', originKind: 'sandbox' }
+    ]
+    const router = new CollaborationRouter()
+    router.replace(s)
+    const forwards: RdAgentMsgFwd[] = []
+    const route = createAgentMsgRouter({
+      router,
+      daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
+      log: noopLog
+    })
+    // Snapshot-classified chat id: unrecorded coordinate fails closed like the IM four.
+    const chat = await route(D1, baseMsg({ deliveryId: 'd-k1', coords: { platform: 'teams-x', channel: 'NOT_A_ROW' } }))
+    expect(chat).toMatchObject({ delivered: false, reason: 'not_allowed' })
+    // Snapshot-classified channel-free kind: admitted, forwarded verbatim.
+    const sandbox = await route(
+      D1,
+      baseMsg({ deliveryId: 'd-k2', coords: { platform: 'sandbox-x', channel: 'box-1' } })
+    )
+    expect(sandbox.delivered).toBe(true)
+    expect(forwards[0]!.coords).toEqual({ platform: 'sandbox-x', channel: 'box-1' })
+    // rc/bot-assign learning covers the same classification between snapshots.
+    router.learnPlatformKind('notes-x', 'notes')
+    const learned = await route(D1, baseMsg({ deliveryId: 'd-k3', coords: { platform: 'notes-x', channel: 'n-1' } }))
+    expect(learned.delivered).toBe(true)
   })
 
   it('lineage replies are exempt from the wake-coordinate membership gate (org + policy still apply)', async () => {
@@ -633,6 +665,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // dream) appears in no `channels[]` row, so channel membership cannot be the gate.
     const s: CollabRoutesSnapshot = {
       generation: 1,
+      platformKinds: [],
       agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
       channels: [] // nobody has an IM integration
     }
@@ -658,6 +691,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
   it('forged caller is still rejected with no channel in play (placement belongs to another daemon)', async () => {
     const s: CollabRoutesSnapshot = {
       generation: 1,
+      platformKinds: [],
       agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
       channels: []
     }
@@ -778,6 +812,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // The bot-agnostic snapshot co-locates them by (org, platform, channel).
     const s: CollabRoutesSnapshot = {
       generation: 1,
+      platformKinds: [],
       agents: [orgAgent({ agentId: A, daemonId: D1 }), orgAgent({ agentId: B, daemonId: D2 })],
       channels: [
         {
