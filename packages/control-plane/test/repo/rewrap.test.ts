@@ -9,7 +9,11 @@ import { describe, it, expect } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { rewrapAllSecrets } from '../../src/secrets/rewrap.js'
-import { PgBotSecretStore, PgAgentSecretStore } from '../../src/persistence/index.js'
+import {
+  PgBotSecretStore,
+  PgAgentSecretStore,
+  PgOrganizationEnvironmentSecretStore
+} from '../../src/persistence/index.js'
 import {
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo
@@ -88,6 +92,14 @@ async function seedAllSecretTables(): Promise<void> {
     data: { connectionId: MEM_CONNECTION, values: { apiKey: 'mem-plain', projectToken: 'mem-token-plain' } }
   })
   await prisma.externalMemoryGrant.create({ data: { connectionId: MEM_CONNECTION, key: 'memgrant-plain' } })
+
+  // Organization-owned secrets join the sweep like every other secret table
+  // (organization-secrets-and-variables.md §5). The sibling `variable` kind holds
+  // ordinary configuration inline and has no value row to re-seal.
+  const entry = await prisma.organizationEnvironmentEntry.create({
+    data: { orgId: DEFAULT_ORG_ID, key: 'ORG_API_KEY', kind: 'secret', audience: 'all' }
+  })
+  await prisma.organizationEnvironmentSecret.create({ data: { entryId: entry.id, value: 'org-secret-plain' } })
 }
 
 describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (real Postgres)', () => {
@@ -104,6 +116,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       'hook_secret',
       'mcp_grant',
       'mcp_provider_secret',
+      'organization_environment_secret',
       'slack_install',
       'slack_user_config'
     ])
@@ -142,6 +155,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       projectToken: 'sealed:mem-token-plain'
     })
     expect((await prisma.externalMemoryGrant.findFirstOrThrow()).key).toBe('sealed:memgrant-plain')
+    expect((await prisma.organizationEnvironmentSecret.findFirstOrThrow()).value).toBe('sealed:org-secret-plain')
 
     // The typed seams (same cipher) still hand back the original plaintexts.
     expect(await new PgBotSecretStore(prisma, cipher).get(BotId(BOT))).toEqual({
@@ -152,6 +166,10 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       encryptKey: null
     })
     expect(await new PgAgentSecretStore(prisma, cipher).get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-agent' })
+    const orgEntry = await prisma.organizationEnvironmentEntry.findFirstOrThrow({ where: { key: 'ORG_API_KEY' } })
+    expect(await new PgOrganizationEnvironmentSecretStore(prisma, cipher).values([orgEntry.id])).toEqual(
+      new Map([[orgEntry.id, 'org-secret-plain']])
+    )
     expect(await new PgExternalMemoryConnectionSecretStore(prisma, cipher).get(MEM_CONNECTION)).toEqual({
       apiKey: 'mem-plain',
       projectToken: 'mem-token-plain'

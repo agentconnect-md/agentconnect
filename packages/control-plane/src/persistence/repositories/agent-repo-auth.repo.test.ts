@@ -26,7 +26,13 @@ describe('workspace repository identity and additional grants', () => {
     const repo = new PgAgentRepo(transactionalDb(tx) as never)
 
     await expect(repo.setWorkspaceRepoId(AGENT, REPO)).resolves.toBe(true)
-    expect(tx.agent.update).toHaveBeenCalledWith({ where: { id: AGENT }, data: { workspaceRepoId: REPO } })
+    // The repair also advances the agent's configuration revision: `gitRepo`
+    // identity feeds AgentSpec.workspace, so it joins the single ordering domain
+    // the daemon's revision fence compares (organization-secrets-and-variables.md §5).
+    expect(tx.agent.update).toHaveBeenCalledWith({
+      where: { id: AGENT },
+      data: { workspaceRepoId: REPO, configRevision: { increment: 1 } }
+    })
     expect(tx.agentRepoAuthorization.deleteMany).toHaveBeenCalledWith({ where: { agentId: AGENT, repoId: REPO } })
     // No HookReviewProjection operation is part of redundant-grant repair.
     expect(Object.hasOwn(tx, 'hookReviewProjection')).toBe(false)

@@ -23,9 +23,20 @@ import {
   type ManagedSkillEntry,
   type AgentSpec
 } from '@agentconnect.md/protocol'
-import type { AgentRecord, AgentSecretStore, OrganizationKnowledgeRepo, SkillSourceRepo } from '../persistence/ports.js'
+import type {
+  AgentRecord,
+  AgentSecretStore,
+  OrganizationEnvironmentResolver,
+  OrganizationKnowledgeRepo,
+  SkillSourceRepo
+} from '../persistence/ports.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { resolveAgentSkillEntries, type InvalidSkillSourceProjection } from './skillSource.js'
+import {
+  emptyOrganizationEnvironmentValues,
+  resolveEffectiveEnvironment,
+  type OrganizationEnvironmentValues
+} from './organizationEnvironment.js'
 
 /** The wire spec plus the id it is keyed by on `agent/upsert` / the roster. */
 export type AssembledAgentSpec = AgentSpec & { agentId: string }
@@ -40,17 +51,33 @@ export class AgentSpecAssembler {
     // Optional for older/minimal test graphs. Production resolves explicitly
     // enabled centrally-managed skill ids into immutable revision metadata.
     private readonly organizationKnowledge?: OrganizationKnowledgeRepo,
-    private readonly onInvalidSkillSource?: (agentId: string, invalid: InvalidSkillSourceProjection) => void
+    private readonly onInvalidSkillSource?: (agentId: string, invalid: InvalidSkillSourceProjection) => void,
+    // Optional for minimal test graphs: resolves the organization entries assigned
+    // to the agent (organization-secrets-and-variables.md §7). Absent ⇒ the agent's
+    // own env/secrets only, exactly the pre-feature behavior.
+    private readonly organizationEnvironment?: OrganizationEnvironmentResolver,
+    // Reports a key that resolved to nothing — an organization variable colliding
+    // with an agent secret, or an organization secret with no stored material (§9).
+    // ID/key only: never a value.
+    private readonly onTombstonedEnvironmentKeys?: (agentId: string, keys: readonly string[]) => void
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
-    const [secrets, skillEntries, managedSkillEntries] = await Promise.all([
+    const [secrets, skillEntries, managedSkillEntries, organization] = await Promise.all([
       this.secrets.get(a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
-      this.managedSkillsOf(a)
+      this.managedSkillsOf(a),
+      this.organizationEnvironmentOf(a)
     ])
-    return this.project(a, secrets, skillEntries, managedSkillEntries)
+    return this.project(a, secrets, skillEntries, managedSkillEntries, organization)
+  }
+
+  /** The organization contribution to one agent's effective environment. */
+  organizationEnvironmentOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<OrganizationEnvironmentValues> {
+    return (
+      this.organizationEnvironment?.forAgent(a.orgId, a.id) ?? Promise.resolve(emptyOrganizationEnvironmentValues())
+    )
   }
 
   /** Batch form for the reconcile roster (one store read per owned agent).
@@ -122,9 +149,15 @@ export class AgentSpecAssembler {
     a: AgentRecord,
     secrets: Record<string, string>,
     skillEntries: AgentSkillEntry[],
-    managedSkillEntries: ManagedSkillEntry[] = []
+    managedSkillEntries: ManagedSkillEntry[] = [],
+    organization: OrganizationEnvironmentValues = emptyOrganizationEnvironmentValues()
   ): AssembledAgentSpec {
-    return agentRecordToSpec(a, secrets, this.iconBases, skillEntries, managedSkillEntries)
+    // Resolve by key across both sources BEFORE splitting into the two wire maps
+    // (organization-secrets-and-variables.md §3.2), so the winner of a collision
+    // is deterministic and a write-only key can never be declassified into `env`.
+    const effective = resolveEffectiveEnvironment(a.env, secrets, organization)
+    if (effective.tombstoned.length > 0) this.onTombstonedEnvironmentKeys?.(a.id, effective.tombstoned)
+    return agentRecordToSpec(a, effective.secrets, this.iconBases, skillEntries, managedSkillEntries, effective.env)
   }
 }
 
@@ -141,7 +174,11 @@ export function agentRecordToSpec(
   secrets: Record<string, string>,
   iconBases?: IconUrlBases,
   skillEntries: AgentSkillEntry[] = [],
-  managedSkillEntries: ManagedSkillEntry[] = []
+  managedSkillEntries: ManagedSkillEntry[] = [],
+  // The RESOLVED variable map (agent-local merged with assigned organization
+  // entries). Defaults to the agent's own env so a caller with no organization
+  // context — hand-authored tests, minimal graphs — behaves exactly as before.
+  env: Record<string, string> = a.env
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // App-backed GitHub workspaces have one implicit repo. Scratch workspaces have
@@ -206,11 +243,19 @@ export function agentRecordToSpec(
     ...(a.fastMode !== null ? { fastMode: a.fastMode } : {}),
     ...(a.pause !== null ? { pause: a.pause } : {}),
     // Always ship env (even {}): the daemon merge treats an absent key as
-    // "leave alone", so removing the last variable must still replicate.
-    env: a.env,
+    // "leave alone", so removing the last variable must still replicate. This is
+    // the RESOLVED map — agent-local variables with assigned organization
+    // variables layered over them — so unassigning an entry clears its value from
+    // the daemon through the same full-snapshot semantics.
+    env,
     // Write-only secrets ride the same wire as env (values are plaintext on the TLS WS,
     // never in a DTO response). Always shipped (even {}) so a removed secret replicates.
     secrets,
+    // The revision the daemon fences on (organization-secrets-and-variables.md §7).
+    // Decimal string, because the column is a bigint and a JSON number would lose
+    // precision. Always shipped by a current CP so the ordering guarantee holds on
+    // agent/upsert, the register/ok roster, and agent/activate alike.
+    configRevision: a.configRevision.toString(),
     // Likewise always shipped (even []) so disabling the last MCP server replicates.
     mcpServers: a.mcpServers,
     // Self-contained skill sources (shared-skills.md), resolved from the agent's

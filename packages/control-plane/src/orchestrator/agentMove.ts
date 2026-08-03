@@ -39,6 +39,7 @@ import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
+import type { OrganizationEnvironmentValues } from './organizationEnvironment.js'
 import type { ControlSender } from './outbound.js'
 import type { HookService } from '../hooks/hook.service.js'
 import type { HttpBotOrchestrator } from './httpBot.js'
@@ -101,6 +102,14 @@ interface MoveBundle {
   skills: AgentSkillEntry[]
   /** Exact accepted managed-skill revisions, pinned across the activation ACK. */
   managedSkills: ManagedSkillEntry[]
+  /**
+   * The organization entries assigned to this agent, resolved at snapshot time
+   * (organization-secrets-and-variables.md §7). Pinned like `secrets` so it enters
+   * the activation fingerprint: an entry rotation or audience change racing the
+   * move makes the bundle REPLAY instead of activating stale credentials on the
+   * target daemon.
+   */
+  organizationEnvironment: OrganizationEnvironmentValues
 }
 
 interface ActivationSnapshot {
@@ -561,12 +570,13 @@ export class AgentMoveService {
 
   /** Read every placement-dependent wire definition. */
   private async snapshot(agent: AgentRecord): Promise<MoveBundle> {
-    const [integrations, cronRows, secrets, skills, managedSkills] = await Promise.all([
+    const [integrations, cronRows, secrets, skills, managedSkills, organizationEnvironment] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
       this.deps.specs.secretsOf(agent),
       this.deps.specs.skillsOf(agent),
-      this.deps.specs.managedSkillsOf(agent)
+      this.deps.specs.managedSkillsOf(agent),
+      this.deps.specs.organizationEnvironmentOf(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -599,16 +609,24 @@ export class AgentMoveService {
       httpBotIds: [...new Set(specs.filter((s) => s.http).map((s) => s.botId))].sort(),
       secrets,
       skills,
-      managedSkills
+      managedSkills,
+      organizationEnvironment
     }
   }
 
   private activationDefinition(agent: AgentRecord, bundle: MoveBundle): Omit<AgentActivate, 'moveId'> {
     return {
       agentId: agent.id,
-      // project() (not assemble()): the snapshot pinned the secrets + skills into the
-      // bundle so the activation fingerprint compares stable inputs.
-      spec: this.deps.specs.project(agent, bundle.secrets, bundle.skills, bundle.managedSkills),
+      // project() (not assemble()): the snapshot pinned the secrets, skills, and
+      // resolved organization environment into the bundle so the activation
+      // fingerprint compares stable inputs.
+      spec: this.deps.specs.project(
+        agent,
+        bundle.secrets,
+        bundle.skills,
+        bundle.managedSkills,
+        bundle.organizationEnvironment
+      ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons
     }

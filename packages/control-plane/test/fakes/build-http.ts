@@ -47,6 +47,9 @@ import {
   PgMcpGrantRepo,
   PgSkillSourceRepo,
   PgOrganizationKnowledgeRepo,
+  PgOrganizationEnvironmentRepo,
+  PgOrganizationEnvironmentResolver,
+  PgOrganizationEnvironmentSecretStore,
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -171,6 +174,14 @@ export function buildHttpApp(
   const sessionRepo = new PgSessionRepo(prisma)
   const skillSourceRepo = new PgSkillSourceRepo(prisma)
   const organizationKnowledgeRepo = new PgOrganizationKnowledgeRepo(prisma)
+  // The organization environment registry + its ONE cipher seam, shared by the
+  // resolver and the spec assembler exactly as the production graph wires them.
+  const organizationEnvironmentSecretStore = new PgOrganizationEnvironmentSecretStore(prisma, cipher)
+  const organizationEnvironmentRepo = new PgOrganizationEnvironmentRepo(prisma)
+  const organizationEnvironmentResolver = new PgOrganizationEnvironmentResolver(
+    prisma,
+    organizationEnvironmentSecretStore
+  )
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
@@ -225,6 +236,9 @@ export function buildHttpApp(
       mcpGrant: new PgMcpGrantRepo(prisma, cipher),
       skillSource: skillSourceRepo,
       organizationKnowledge: organizationKnowledgeRepo,
+      organizationEnvironment: organizationEnvironmentRepo,
+      organizationEnvironmentSecret: organizationEnvironmentSecretStore,
+      organizationEnvironmentResolver,
       memoryPluginInstallation: new PgMemoryPluginInstallationRepo(prisma),
       externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
       externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
@@ -241,7 +255,14 @@ export function buildHttpApp(
       oauth: oauthRepo
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
-    agentSpecs: new AgentSpecAssembler(agentSecretStore, {}, skillSourceRepo, organizationKnowledgeRepo),
+    agentSpecs: new AgentSpecAssembler(
+      agentSecretStore,
+      {},
+      skillSourceRepo,
+      organizationKnowledgeRepo,
+      undefined,
+      organizationEnvironmentResolver
+    ),
     liveness,
     // Capability reads share the liveness fake: a test that needs a capable
     // daemon overrides `liveness` with one whose entries carry `capabilities`.

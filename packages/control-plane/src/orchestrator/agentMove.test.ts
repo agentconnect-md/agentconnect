@@ -67,7 +67,8 @@ function agent(daemonId: string | null): AgentRecord {
     callPolicy: 'all',
     allowedCallerAgentIds: [],
     lastModifiedAt: MODIFIED_AT,
-    lastModifiedBy: null
+    lastModifiedBy: null,
+    configRevision: 0n
   }
 }
 
@@ -120,7 +121,8 @@ const cron = {
   sharedWith: [],
   createdAt: new Date(),
   lastModifiedAt: new Date(),
-  lastModifiedBy: null
+  lastModifiedBy: null,
+  configRevision: 0n
 } satisfies CronRecord
 
 function make(

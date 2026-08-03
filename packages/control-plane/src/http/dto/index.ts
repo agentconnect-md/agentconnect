@@ -22,6 +22,7 @@ import {
   SessionImageAttachment,
   MAX_WORKSPACE_EDIT_BYTES,
   MAX_GIT_REPO_LENGTH,
+  MAX_ENVIRONMENT_VALUE_LENGTH,
   normalizeGitHubSkillSource,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
@@ -353,15 +354,19 @@ const AgentSlug = z
 
 /** A legal environment-variable name — the daemon passes these to the spawned ACP child. */
 const ENV_VAR_NAME = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'invalid env var name')
+/** One variable/secret value. Shared with the organization registry so a single
+ *  entry cannot be sized past what any resolved AgentSpec could carry; the
+ *  authoritative whole-environment budget is enforced transactionally. */
+const ENV_VAR_VALUE = z.string().max(MAX_ENVIRONMENT_VALUE_LENGTH)
 /** Extra env injected into the runtime (AgentSpec.env), replaced wholesale. */
-const AgentEnvBody = z.record(ENV_VAR_NAME, z.string())
+const AgentEnvBody = z.record(ENV_VAR_NAME, ENV_VAR_VALUE)
 /** Secret env vars, INITIAL set (create only). Values are write-only — the DTO
  *  returns only their key names. See {@link AgentSecretsPatchBody} for the edit shape. */
-const AgentSecretsCreateBody = z.record(ENV_VAR_NAME, z.string())
+const AgentSecretsCreateBody = z.record(ENV_VAR_NAME, ENV_VAR_VALUE)
 /** Secret env vars, PATCH shape. Unlike `env` (replaced wholesale), secrets are
  *  merged key-by-key because the client never holds the existing values: a string
  *  sets/replaces that secret, `null` deletes it, and an omitted key is left as-is. */
-const AgentSecretsPatchBody = z.record(ENV_VAR_NAME, z.string().nullable())
+const AgentSecretsPatchBody = z.record(ENV_VAR_NAME, ENV_VAR_VALUE.nullable())
 const McpServerNamesBody = z.array(
   z
     .string()
@@ -625,10 +630,20 @@ export const AgentDto = z.object({
   approvalsReviewer: ApprovalsReviewer.nullable(), // null ⇒ runtime default (`user`)
   allowRuntimeChangesInChat: z.boolean(),
   pause: z.boolean().nullable(), // null ⇒ not paused (#288)
+  // The agent's OWN variables. Unchanged meaning: a row here may be inactive while
+  // a same-key organization entry is assigned (the console marks it "Overridden by
+  // Organization"), and becomes effective again when that assignment goes away.
   env: z.record(z.string(), z.string()),
   // Names of the agent's write-only secret env vars, sorted. Values are NEVER
   // returned — set/replace them via the PATCH `secrets` body; the console masks them.
   secretKeys: z.array(z.string()),
+  // ── organization-owned rows assigned to THIS agent (design §6/§8.2) ──
+  // Read-only here: the agent editor cannot change an organization entry or its
+  // audience. Scoped per agent, so viewing agent A reveals nothing about entries
+  // assigned only to agent B. Organization variable VALUES are ordinary
+  // configuration and visible; organization secrets contribute key names only.
+  organizationVariables: z.array(z.object({ key: z.string(), value: z.string() })),
+  organizationSecretKeys: z.array(z.string()),
   mcpServers: z.array(z.string()), // enabled daemon-configured MCP server names ([] ⇒ none)
   skills: z.array(z.string()), // enabled shared-skills "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
@@ -1062,6 +1077,74 @@ export const AgentSkillSourceDto = z.object({
   skills: z.array(z.string()) // the source's own skill filter ([] ⇒ all)
 })
 export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
+
+// ── organization environment: variables & secrets ──────────────────────────
+// docs/designs/organization-secrets-and-variables.md §6. Owner-only registry.
+// Secret VALUES are write-only: they are accepted on create/replace and never
+// appear in a response, log, audit payload, or error.
+
+export const OrganizationEnvironmentKindDto = z.enum(['variable', 'secret'])
+export const OrganizationEnvironmentAudienceDto = z.enum(['all', 'selected'])
+
+/**
+ * Cap on the INITIAL selection a create request may carry. Bindings are edited
+ * incrementally through the per-agent endpoints afterwards (§6), so this only
+ * bounds one request body; it is not a limit on how many agents an entry reaches.
+ */
+const MAX_ENVIRONMENT_INITIAL_AGENTS = 256
+
+/** The metadata-only list row. No secret value, ever. */
+export const OrganizationEnvironmentEntryDto = z.object({
+  id: z.string().uuid(),
+  key: z.string(),
+  kind: OrganizationEnvironmentKindDto,
+  /** Present only for variables — ordinary configuration, readable by owners. */
+  variableValue: z.string().optional(),
+  /** Present only for secrets: whether material is stored. NEVER the value. */
+  secretConfigured: z.boolean().optional(),
+  audience: OrganizationEnvironmentAudienceDto,
+  /**
+   * Explicit bindings whose agents the CALLER can view. Bindings to other
+   * restricted agents are neither returned nor removed when the owner edits this
+   * selection, and their existence is not disclosed either way (§4).
+   */
+  visibleAgentIds: z.array(z.string().uuid()),
+  version: z.number().int().positive(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+})
+export const OrganizationEnvironmentListDto = z.array(OrganizationEnvironmentEntryDto)
+export type OrganizationEnvironmentEntryDtoT = z.infer<typeof OrganizationEnvironmentEntryDto>
+
+export const CreateOrganizationEnvironmentEntryBody = z.object({
+  key: ENV_VAR_NAME,
+  kind: OrganizationEnvironmentKindDto,
+  // Empty strings keep the same validity semantics as existing agent variables
+  // and secrets, so no `.min(1)` here.
+  value: ENV_VAR_VALUE,
+  audience: OrganizationEnvironmentAudienceDto,
+  /** Initial `resource.edit`-authorized selection; `selected` audience only.
+   *  Larger selections are built up through the idempotent per-agent endpoints. */
+  agentIds: z.array(z.string().uuid()).max(512).optional()
+})
+
+export const UpdateOrganizationEnvironmentEntryBody = z.object({
+  /** Editor-conflict fence: a competing edit returns 409 rather than losing a
+   *  secret rotation or an audience change. */
+  expectedVersion: z.number().int().positive(),
+  /** Replacement value. Omitted ⇒ unchanged (an empty secret field in the
+   *  Console's "Replace value" flow keeps the current secret). */
+  value: ENV_VAR_VALUE.optional(),
+  audience: OrganizationEnvironmentAudienceDto.optional()
+})
+// `key` and `kind` are deliberately absent: both are immutable, so renaming or
+// converting an entry is an explicit delete-and-create (§3.1).
+
+export const OrganizationEnvironmentEntryParam = z.object({ entryId: z.string().uuid() })
+export const OrganizationEnvironmentAgentParam = z.object({
+  entryId: z.string().uuid(),
+  agentId: z.string().uuid()
+})
 
 // ── organization Knowledge + managed Agent Skills ─────────────────────────
 

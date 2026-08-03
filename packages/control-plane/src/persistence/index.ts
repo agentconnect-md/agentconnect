@@ -41,6 +41,11 @@ export { PgMcpProviderRepo, PgMcpProviderSecretStore, PgMcpGrantRepo } from './r
 export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
 export { PgOrganizationKnowledgeRepo } from './repositories/organization-knowledge.repo.js'
 export {
+  PgOrganizationEnvironmentRepo,
+  PgOrganizationEnvironmentResolver,
+  PgOrganizationEnvironmentSecretStore
+} from './repositories/organization-environment.repo.js'
+export {
   PgMemoryPluginInstallationRepo,
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,

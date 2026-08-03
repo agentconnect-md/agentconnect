@@ -69,6 +69,7 @@ model Org {
   organizationSuggestions   OrganizationSuggestion[]
   externalScopes            ExternalScope[]
   sessionExternalAccess     SessionExternalAccessPolicy[]
+  environmentEntries        OrganizationEnvironmentEntry[]
 
   @@map("org")
 }
@@ -118,6 +119,9 @@ model User {
   inviteRedemptions                OrgInviteRedemption[]
   webchatConversations             WebchatConversation[]
   webchatMcpDelegations            WebchatMcpDelegation[]
+  createdEnvironmentEntries        OrganizationEnvironmentEntry[]      @relation("OrgEnvCreatedBy")
+  modifiedEnvironmentEntries       OrganizationEnvironmentEntry[]      @relation("OrgEnvModifiedBy")
+  authorizedEnvironmentAssignments OrganizationEnvironmentAssignment[] @relation("OrgEnvAuthorizedBy")
 
   @@map("app_user")
 }
@@ -639,6 +643,13 @@ model Agent {
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
   runInSandbox          Boolean            @default(false) // #642: request an OS sandbox; daemon policy may force it on
+  // Monotonic revision of the fully resolved AgentSpec (organization-secrets-and-
+  // variables.md §5). NOT environment-specific: every durable mutation that can
+  // change a CP-owned field assembled into the spec bumps it through the same
+  // writer, so there is ONE ordering domain per agent rather than competing
+  // revisions per feature area. The daemon refuses a snapshot older than the
+  // greatest it applied, which is what makes full-map env/secret replacement safe.
+  configRevision        BigInt             @default(0)
   createdAt             DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 
@@ -662,7 +673,12 @@ model Agent {
   webchatMcpDelegations WebchatMcpDelegation[]
   presetRecords         PresetAgent[]
 
+  organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
+
   @@unique([orgId, name]) // slug is unique within an org
+  // Referenced by the composite assignment FK: a binding cannot name an agent in
+  // another organization (organization-secrets-and-variables.md §5).
+  @@unique([id, orgId])
   @@index([orgId])
   @@index([orgId, ownerUserId])
   @@index([daemonId])
@@ -2269,6 +2285,92 @@ model SkillSource {
 // Pending candidate bodies stay daemon-local; only their metadata is indexed
 // here. Accepted revisions are immutable product-owned shared content.
 // ───────────────────────────────────────────────────────────────────────
+
+// ── organization environment registry (organization-secrets-and-variables.md) ──
+
+enum OrganizationEnvironmentKind {
+  variable
+  secret
+}
+
+/// How an entry enrolls agents. `all` is an automatic-ENROLLMENT policy, not an
+/// authorization bypass: every effective assignment is still an explicit
+/// OrganizationEnvironmentAssignment row created under a `resource.edit` decision
+/// for that agent (design §3.4).
+enum OrganizationEnvironmentAudience {
+  all
+  selected
+}
+
+/// One organization-owned variable or secret. Metadata only — a secret's value
+/// lives in the sibling OrganizationEnvironmentSecret row so list and human-DTO
+/// queries can never join it (the AgentSecret discipline).
+///
+/// `key` and `kind` are IMMUTABLE after creation: renaming or converting is an
+/// explicit delete-and-create, which prevents an edit from silently changing the
+/// meaning of the same organization-owned credential (design §3.1).
+model OrganizationEnvironmentEntry {
+  id                   String                          @id @default(uuid()) @db.Uuid
+  orgId                String
+  key                  String // env var name, validated at the API edge
+  kind                 OrganizationEnvironmentKind
+  variableValue        String? // non-null ONLY for kind=variable
+  audience             OrganizationEnvironmentAudience
+  version              Int                             @default(1) // editor-conflict fence for PATCH (expectedVersion)
+  createdByUserId      String?
+  lastModifiedByUserId String?
+  createdAt            DateTime                        @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime                        @updatedAt @db.Timestamptz(6)
+
+  org         Org                                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy   User?                               @relation("OrgEnvCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  modifiedBy  User?                               @relation("OrgEnvModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
+  secret      OrganizationEnvironmentSecret?
+  assignments OrganizationEnvironmentAssignment[]
+
+  // ONE organization keyspace: an org cannot hold both a variable and a secret
+  // with the same key (design §3.1).
+  @@unique([orgId, key])
+  // Referenced by the assignment FK so a binding cannot cross organizations.
+  @@unique([id, orgId])
+  @@index([orgId, audience])
+  @@map("organization_environment_entry")
+}
+
+/// The write-only value of an organization secret. Every value passes through the
+/// injected SecretCipher via OrganizationEnvironmentSecretStore — the ONLY
+/// value-reading seam — so at-rest encryption stays a wiring change.
+model OrganizationEnvironmentSecret {
+  entryId   String   @id @db.Uuid
+  value     String // passes through the SecretCipher seam (plaintext under the identity cipher)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  entry OrganizationEnvironmentEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@map("organization_environment_secret")
+}
+
+/// One entry→agent binding: the durable delegation created when a request
+/// authorized for `resource.edit` on that agent enrolled it (design §4). Once it
+/// exists, `organization.manage` may rotate or delete the entry without gaining
+/// any visibility into the agent.
+model OrganizationEnvironmentAssignment {
+  orgId              String
+  entryId            String   @db.Uuid
+  agentId            String   @db.Uuid
+  authorizedByUserId String? // the actor whose resource.edit decision created the delegation
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+
+  // Both FKs are COMPOSITE on orgId: a cross-organization binding is impossible
+  // even for an internal caller, not merely rejected in application code.
+  entry        OrganizationEnvironmentEntry @relation(fields: [entryId, orgId], references: [id, orgId], onDelete: Cascade)
+  agent        Agent                        @relation(fields: [agentId, orgId], references: [id, orgId], onDelete: Cascade)
+  authorizedBy User?                        @relation("OrgEnvAuthorizedBy", fields: [authorizedByUserId], references: [id], onDelete: SetNull)
+
+  @@id([entryId, agentId])
+  @@index([orgId, agentId])
+  @@map("organization_environment_assignment")
+}
 
 enum OrganizationArtifactSource {
   manual

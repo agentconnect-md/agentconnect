@@ -1,6 +1,6 @@
 # Organization Secrets and Variables
 
-> **Status:** Proposed
+> **Status:** Implemented
 >
 > **Scope:** protocol + control-plane + daemon + web
 >
@@ -294,9 +294,9 @@ discarded and is never logged.
 `expectedVersion` is only an editor-conflict check. Correct admission uses the
 organization and agent rows as transaction-time fences:
 
-1. Every agent-config or organization-environment writer first locks the parent
-   `Org` row `FOR UPDATE`; this serializes entry-set/enrollment changes with
-   agent create/PATCH. After that lock, determine the authoritative affected
+1. Every organization-environment writer, and agent **create**, first locks the
+   parent `Org` row `FOR UPDATE`; this serializes entry-set/enrollment changes
+   with agent creation. After that lock, determine the authoritative affected
    agent IDs and current `all` enrollment work.
 2. Lock the affected `Agent` rows `FOR UPDATE` in stable ID order.
 3. Re-read all local env/secret names, assigned organization metadata and secret
@@ -306,11 +306,33 @@ organization and agent rows as transaction-time fences:
 5. Persist the entry/binding/local-agent mutation and increment every affected
    agent's `configRevision` in that same transaction.
 
-Agent-local create/PATCH and every organization-environment writer use this
-same fence. Concurrent updates to different entries, bindings, or agent-local
-configuration that affect one agent therefore serialize before final
-validation; they cannot each validate against an obsolete partial state and
-jointly exceed `MAX_FRAME_BYTES` after persistence.
+Agent **PATCH** joins this fence at step 2 and deliberately does not take the
+`Org` row. It affects exactly one agent and the admission budget is per-agent, so
+the agent row is already the sufficient serialization point: two PATCHes to one
+agent serialize on it, and a PATCH racing an organization-environment writer
+serializes on it too, because every such writer locks the agent rows it affects.
+Whichever transaction commits second re-reads the other's committed state and is
+refused, which is what makes the cross-kind rule enforceable from both write
+directions. Taking the `Org` row here would instead serialize every agent edit in
+the organization behind one another for no admission benefit. Agent create is the
+exception because its row does not exist yet, so a concurrent `all` enrollment
+scan cannot see it.
+
+Concurrent updates to different entries, bindings, or agent-local configuration
+that affect one agent therefore serialize before final validation; they cannot
+each validate against an obsolete partial state and jointly exceed
+`MAX_FRAME_BYTES` after persistence.
+
+The resulting lock order is one chain for every writer that touches agent
+configuration:
+
+```text
+skill-source name scopes → Org row (create / entry writers) → Agent rows (ascending id)
+```
+
+The skill-source advisory scopes come first because a skill-source sharing write
+holds them and then takes `FOR KEY SHARE` on the same `Org` row; acquiring the
+`Org` row ahead of them would put those two writers in a cycle.
 
 Repository reads have two explicit shapes:
 

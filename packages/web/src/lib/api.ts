@@ -269,8 +269,13 @@ export interface AgentDto {
   approvalsReviewer: ApprovalsReviewer | null // null when never set (runtime default)
   allowRuntimeChangesInChat: boolean // explicit opt-in; defaults false
   pause: boolean | null // operational message-processing toggle; true ⇒ agent skips all messages; null ⇒ not paused
-  env: Record<string, string> // extra env injected into the runtime
+  env: Record<string, string> // the agent's OWN variables
   secretKeys: string[] // names of the agent's write-only secret env vars (values never returned)
+  // Organization-owned rows assigned to THIS agent (organization-secrets-and-variables.md
+  // §6). Absent on an older CP. Read-only in the agent surfaces; organization
+  // variable values are ordinary config, organization secrets contribute names only.
+  organizationVariables?: Array<{ key: string; value: string }>
+  organizationSecretKeys?: string[]
   status: string
   daemonId: string | null
   workspace: AgentWorkspaceDto
@@ -1662,6 +1667,10 @@ export function agentFromDto(d: AgentDto): Agent {
     allowRuntimeChangesInChat: d.allowRuntimeChangesInChat ?? false,
     env: Object.entries(d.env ?? {}).map(([k, v]) => ({ k, v })),
     secretKeys: d.secretKeys ?? [],
+    // Inherited organization rows. Empty on an older CP, which renders exactly as
+    // the pre-feature console did.
+    organizationVariables: (d.organizationVariables ?? []).map((e) => ({ k: e.key, v: e.value })),
+    organizationSecretKeys: d.organizationSecretKeys ?? [],
     daemon: d.daemonId ?? PLACEHOLDER,
     region: PLACEHOLDER,
     repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
@@ -3810,6 +3819,92 @@ export async function deleteSkillSource(id: string): Promise<void> {
 
 export async function updateSkillSourceSharing(id: string, body: SharingInput): Promise<SkillSourceDto> {
   return apiPut<SkillSourceDto>(`${orgBase()}/skill-sources/${encodeURIComponent(id)}/sharing`, body)
+}
+
+// ── organization variables & secrets (organization-secrets-and-variables.md) ──
+// Owner-only registry. A secret VALUE is write-only: it is accepted on create and
+// on replace, and no response ever carries it back.
+
+export type OrganizationEnvironmentKind = 'variable' | 'secret'
+/** UI labels: 'all' = "All agents", 'selected' = "Selected agents". */
+export type OrganizationEnvironmentAudience = 'all' | 'selected'
+
+export interface OrganizationEnvironmentEntryDto {
+  id: string
+  key: string
+  kind: OrganizationEnvironmentKind
+  /** Present only for variables. */
+  variableValue?: string
+  /** Present only for secrets: whether material is stored. Never the value. */
+  secretConfigured?: boolean
+  audience: OrganizationEnvironmentAudience
+  /**
+   * Bindings whose agents the CALLER can view. Assignments to other private
+   * agents are neither listed nor removed when this selection is edited, and
+   * whether any exist is deliberately not disclosed.
+   */
+  visibleAgentIds: string[]
+  /** Editor-conflict fence — echo it as `expectedVersion` on the next save. */
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateOrganizationEnvironmentEntryInput {
+  key: string
+  kind: OrganizationEnvironmentKind
+  value: string
+  audience: OrganizationEnvironmentAudience
+  /** Initial selection; `selected` audience only. */
+  agentIds?: string[]
+}
+
+export interface UpdateOrganizationEnvironmentEntryInput {
+  expectedVersion: number
+  /** Omit to leave the value unchanged — how "Replace value" keeps an existing secret. */
+  value?: string
+  audience?: OrganizationEnvironmentAudience
+}
+
+export async function fetchOrganizationEnvironment(orgId?: string): Promise<OrganizationEnvironmentEntryDto[]> {
+  return apiGet<OrganizationEnvironmentEntryDto[]>(`${orgBase(orgId)}/environment`)
+}
+
+export async function createOrganizationEnvironmentEntry(
+  input: CreateOrganizationEnvironmentEntryInput
+): Promise<OrganizationEnvironmentEntryDto> {
+  return apiPost<OrganizationEnvironmentEntryDto>(`${orgBase()}/environment`, input)
+}
+
+export async function updateOrganizationEnvironmentEntry(
+  entryId: string,
+  patch: UpdateOrganizationEnvironmentEntryInput
+): Promise<OrganizationEnvironmentEntryDto> {
+  return apiPatch<OrganizationEnvironmentEntryDto>(`${orgBase()}/environment/${encodeURIComponent(entryId)}`, patch)
+}
+
+export async function deleteOrganizationEnvironmentEntry(entryId: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/environment/${encodeURIComponent(entryId)}`)
+}
+
+/** Idempotent per-agent binding. Bindings are edited one agent at a time so two
+ *  owners adding different agents cannot overwrite each other's work. */
+export async function assignOrganizationEnvironmentEntry(
+  entryId: string,
+  agentId: string
+): Promise<OrganizationEnvironmentEntryDto> {
+  return apiPut<OrganizationEnvironmentEntryDto>(
+    `${orgBase()}/environment/${encodeURIComponent(entryId)}/agents/${encodeURIComponent(agentId)}`
+  )
+}
+
+export async function unassignOrganizationEnvironmentEntry(
+  entryId: string,
+  agentId: string
+): Promise<OrganizationEnvironmentEntryDto> {
+  return apiDelete<OrganizationEnvironmentEntryDto>(
+    `${orgBase()}/environment/${encodeURIComponent(entryId)}/agents/${encodeURIComponent(agentId)}`
+  )
 }
 
 // ── open-connector connectors (docs: connectors integration) ─────────────────

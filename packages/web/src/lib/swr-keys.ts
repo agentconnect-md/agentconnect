@@ -17,6 +17,7 @@ export const consoleKeys = {
   skillSources: (orgId: string | null | undefined) => consoleKey(orgId, 'skill-sources'),
   managedSkills: (orgId: string | null | undefined, includeArchived: boolean) =>
     consoleKey(orgId, 'managed-skills', includeArchived ? 'include-archived' : 'active'),
+  organizationEnvironment: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-environment'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),
   memoryPluginInstallations: (orgId: string | null | undefined) => consoleKey(orgId, 'memory-plugin-installations'),
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),

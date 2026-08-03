@@ -42,7 +42,8 @@ const AGENT: AgentRecord = {
   allowedCallerAgentIds: [],
   introduceOnJoin: false,
   lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
-  lastModifiedBy: null
+  lastModifiedBy: null,
+  configRevision: 0n
 }
 
 function storeWith(values: Record<string, Record<string, string>>): AgentSecretStore {

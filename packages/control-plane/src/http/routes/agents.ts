@@ -30,6 +30,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import {
   MAX_WORKSPACE_EDIT_BYTES,
+  AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   gitRepoLabel,
   normalizeGitUrl
@@ -40,6 +41,7 @@ import {
   type AgentRecord,
   type AgentSkillSourceFence,
   type AgentWorkspace,
+  type AssignedOrganizationMetadata,
   isSyntheticEmail
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
@@ -68,6 +70,7 @@ import {
   MemoryConnectionBusy,
   MemoryConnectionMissing
 } from '../../persistence/errors.js'
+import { OrganizationEnvironmentAdmissionError } from '../../persistence/repositories/organization-environment-fence.js'
 import {
   CreateAgentBody,
   SetAgentWorkspaceBody,
@@ -189,13 +192,26 @@ function organizationKnowledgeSupportedOn(daemon: DaemonView | null): boolean {
   return !!daemon?.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE)
 }
 
+/** Does this daemon persist and enforce the monotonic `AgentSpec.configRevision`?
+ *  The precondition for placing an agent bound to an organization environment entry
+ *  (organization-secrets-and-variables.md §10). */
+function configRevisionSupportedOn(daemon: DaemonView | null): boolean {
+  return !!daemon?.capabilities.features.includes(AGENT_CONFIG_REVISION_FEATURE)
+}
+
+/** No assigned organization rows — the shape a minimal/legacy graph resolves to. */
+const NO_ORGANIZATION_ENVIRONMENT: AssignedOrganizationMetadata = { variables: [], secretKeys: [] }
+
 function toDto(
   a: AgentRecord,
   ctx: ViewCtx,
   secretKeys: string[],
   hookKinds: AgentDtoT['hookKinds'],
   iconBases: IconUrlBases,
-  sandboxPolicy: SandboxPolicy
+  sandboxPolicy: SandboxPolicy,
+  // Organization entries assigned to THIS agent. Metadata only: variable values
+  // plus secret KEY names, resolved without decrypting anything (design §6).
+  organizationEnvironment: AssignedOrganizationMetadata = NO_ORGANIZATION_ENVIRONMENT
 ): AgentDtoT {
   return {
     id: a.id,
@@ -223,6 +239,11 @@ function toDto(
     // Only the secret NAMES leave the CP (AgentSecretStore.keys — values are
     // write-only and never on the record). Sorted for a stable DTO.
     secretKeys: [...secretKeys].sort(),
+    // Read-only inherited rows. A member who can view this agent sees its
+    // organization variable values and organization secret key names, and learns
+    // nothing about entries assigned only to another agent (§4).
+    organizationVariables: organizationEnvironment.variables,
+    organizationSecretKeys: organizationEnvironment.secretKeys,
     mcpServers: a.mcpServers,
     skills: a.skills,
     managedSkills: a.managedSkills,
@@ -495,6 +516,29 @@ export function agentRoutes(deps: HttpDeps) {
     // The agent's secret KEY NAMES for the DTO ([] when none) — never the values.
     const secretKeysOf = async (agentId: string): Promise<string[]> =>
       (await deps.repos.agentSecret.keys([AgentId(agentId)])).get(agentId) ?? []
+
+    /** Assigned organization rows for ONE agent's DTO. Metadata only — this path
+     *  never decrypts an organization secret (design §6). */
+    const organizationEnvironmentOf = async (agent: AgentRecord): Promise<AssignedOrganizationMetadata> =>
+      (await deps.repos.organizationEnvironmentResolver?.metadataForAgents(agent.orgId, [agent.id]))?.get(agent.id) ??
+      NO_ORGANIZATION_ENVIRONMENT
+
+    /** How many organization entries are assigned to this agent — the placement
+     *  gate's input. Counts through the metadata resolver, so it never decrypts. */
+    const organizationEnvironmentBindingCount = async (agent: AgentRecord): Promise<number> => {
+      const assigned = await organizationEnvironmentOf(agent)
+      return assigned.variables.length + assigned.secretKeys.length
+    }
+
+    /** The list-endpoint form: ONE batched resolve instead of a query per agent. */
+    const organizationEnvironmentOfAll = async (
+      orgId: OrgId,
+      agents: readonly AgentRecord[]
+    ): Promise<Map<string, AssignedOrganizationMetadata>> =>
+      (await deps.repos.organizationEnvironmentResolver?.metadataForAgents(
+        orgId,
+        agents.map((agent) => agent.id)
+      )) ?? new Map()
 
     // Replicate a spec change to the agent's owning daemon so its local config
     // replica stays current (direct Slack→daemon launch reads the replica, not
@@ -1089,6 +1133,8 @@ export function agentRoutes(deps: HttpDeps) {
             if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
             }
+            // Everything else (including the organization-environment fence's
+            // admission refusal) is mapped by the outer catch below.
             throw e
           }
           // `?connect=true` also provisions a daemon connect token + start command
@@ -1133,7 +1179,10 @@ export function agentRoutes(deps: HttpDeps) {
               await secretKeysOf(agent.id),
               await hookKindsOf(deps, agent.id),
               iconBasesOf(deps),
-              sandboxPolicy
+              sandboxPolicy,
+              // Create already enrolled the agent into the org's `all` entries in
+              // its own transaction, so the response shows what will actually apply.
+              await organizationEnvironmentOf(agent)
             ),
             ...(connect ? { connect } : {})
           })
@@ -1147,6 +1196,12 @@ export function agentRoutes(deps: HttpDeps) {
           }
           if (e instanceof MemoryConnectionMissing) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: e.message })
+          }
+          // See the PATCH handler: the organization-environment fence refused the
+          // complete resolved definition (cross-kind downgrade, or over the wire
+          // admission budget). Nothing was persisted.
+          if (e instanceof OrganizationEnvironmentAdmissionError) {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
           }
           throw e
         }
@@ -1169,6 +1224,8 @@ export function agentRoutes(deps: HttpDeps) {
         const rows = await deps.repos.agent.list(orgOf(req), ctx)
         const hookKinds = await deps.repos.hook.kindsByAgent(orgOf(req))
         const secretKeys = await deps.repos.agentSecret.keys(rows.map((a) => a.id))
+        // ONE batched resolve for the whole page (design §6) — never a query per agent.
+        const organizationEnvironment = await organizationEnvironmentOfAll(orgOf(req), rows)
         const daemonIds = [...new Set(rows.flatMap((a) => (a.daemonId ? [a.daemonId] : [])))]
         const policies = new Map(
           await Promise.all(
@@ -1182,7 +1239,8 @@ export function agentRoutes(deps: HttpDeps) {
             secretKeys.get(a.id) ?? [],
             hookKinds.get(a.id) ?? [],
             iconBasesOf(deps),
-            a.daemonId ? (policies.get(a.daemonId) ?? UNAVAILABLE_SANDBOX) : UNAVAILABLE_SANDBOX
+            a.daemonId ? (policies.get(a.daemonId) ?? UNAVAILABLE_SANDBOX) : UNAVAILABLE_SANDBOX,
+            organizationEnvironment.get(a.id) ?? NO_ORGANIZATION_ENVIRONMENT
           )
         )
       }
@@ -1209,7 +1267,8 @@ export function agentRoutes(deps: HttpDeps) {
           await secretKeysOf(agent.id),
           await hookKindsOf(deps, agent.id),
           iconBasesOf(deps),
-          await sandboxPolicyFor(deps, agent)
+          await sandboxPolicyFor(deps, agent),
+          await organizationEnvironmentOf(agent)
         )
       }
     )
@@ -1564,7 +1623,10 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
-            sandboxPolicy
+            sandboxPolicy,
+            // A PATCH may also have enrolled the agent into `all` entries added
+            // since its last edit, so re-resolve rather than echoing the request.
+            await organizationEnvironmentOf(agent)
           )
         } catch (e) {
           if (e instanceof MemoryConnectionBusy) {
@@ -1576,6 +1638,15 @@ export function agentRoutes(deps: HttpDeps) {
           }
           if (e instanceof MemoryConnectionMissing) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: e.message })
+          }
+          // The organization-environment fence refused this write inside its
+          // transaction (organization-secrets-and-variables.md §5): either an
+          // agent-local secret would sit beneath an assigned organization variable —
+          // the declassification the design rejects from BOTH write directions — or
+          // the resolved configuration would not fit the wire admission budget. The
+          // message names keys, never values.
+          if (e instanceof OrganizationEnvironmentAdmissionError) {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
           }
           throw e
         } finally {
@@ -1693,7 +1764,8 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(converted.id),
             await hookKindsOf(deps, converted.id),
             iconBasesOf(deps),
-            await sandboxPolicyFor(deps, converted)
+            await sandboxPolicyFor(deps, converted),
+            await organizationEnvironmentOf(converted)
           )
         } catch (err) {
           if (err instanceof AgentMoveConflict) return conflict(err.message)
@@ -1774,6 +1846,17 @@ export function agentRoutes(deps: HttpDeps) {
         }
         if (existing.managedSkills.length > 0 && !organizationKnowledgeSupportedOn(target)) {
           return conflict('target daemon does not support organization knowledge managed skills')
+        }
+        // Rollout gate (organization-secrets-and-variables.md §10 step 3): an agent
+        // bound to an organization entry receives FULL resolved env/secret maps, and
+        // that is only safe on a daemon that persists `configRevision` and refuses an
+        // older snapshot. An unplaced bound agent may be saved; placing it requires
+        // the feature. Deliberately not "old daemons ignore the optional field" — a
+        // late-completing older snapshot there would reinstate a rotated value.
+        if ((await organizationEnvironmentBindingCount(existing)) > 0 && !configRevisionSupportedOn(target)) {
+          return conflict(
+            'target daemon does not yet support organization variables and secrets, which this agent is assigned; upgrade it first'
+          )
         }
         const targetRuntime = target.runtimeProfiles.find((p) => p.runtime === existing.runtime)
         if (target.runtimeProfiles.length > 0 && !targetRuntime) {
@@ -1883,7 +1966,8 @@ export function agentRoutes(deps: HttpDeps) {
                 await secretKeysOf(repaired.id),
                 await hookKindsOf(deps, repaired.id),
                 iconBasesOf(deps),
-                sandboxPolicyOf(target)
+                sandboxPolicyOf(target),
+                await organizationEnvironmentOf(repaired)
               )
             } catch (err) {
               if (err instanceof AgentMoveConflict) return conflict(err.message)
@@ -1927,7 +2011,8 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(moved.id),
             await hookKindsOf(deps, moved.id),
             iconBasesOf(deps),
-            sandboxPolicyOf(target)
+            sandboxPolicyOf(target),
+            await organizationEnvironmentOf(moved)
           )
         } catch (err) {
           if (err instanceof AgentMoveConflict) return conflict(err.message)
@@ -2092,7 +2177,8 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
-            await sandboxPolicyFor(deps, agent)
+            await sandboxPolicyFor(deps, agent),
+            await organizationEnvironmentOf(agent)
           )
         } finally {
           release()
@@ -2171,7 +2257,8 @@ export function agentRoutes(deps: HttpDeps) {
             await secretKeysOf(agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
-            await sandboxPolicyFor(deps, agent)
+            await sandboxPolicyFor(deps, agent),
+            await organizationEnvironmentOf(agent)
           )
         } finally {
           release()

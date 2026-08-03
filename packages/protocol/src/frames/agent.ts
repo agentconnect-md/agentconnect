@@ -365,7 +365,24 @@ export const AgentSpec = z.object({
   // preset-only capabilities locally (e.g. advertising `webchat_remote_mcp_v1`
   // without waiting for a runtime probe). Optional so an older CP's spec leaves
   // the on-disk value alone; a current CP always ships it.
-  builtin: z.boolean().optional()
+  builtin: z.boolean().optional(),
+  // Monotonic revision of this agent's fully resolved CP-owned configuration
+  // (organization-secrets-and-variables.md §7). `env`/`secrets` are FULL maps, so
+  // an out-of-order snapshot would reinstate a rotated or deleted value; the
+  // daemon persists the greatest revision it applied and refuses an older one.
+  // Not environment-specific — every CP-side mutation that can change a field
+  // assembled into this spec bumps it through the same writer, giving one
+  // ordering domain per agent.
+  //
+  // Encoded as a DECIMAL STRING, not a number: the CP column is a bigint and a
+  // JSON number would silently lose precision past 2^53 on either side.
+  // Optional for rolling upgrades (an older CP omits it, an older daemon ignores
+  // it), but a bound agent may only be placed on a daemon advertising
+  // `agent-config-revision-v1` — the feature never relies on lenient decoding.
+  configRevision: z
+    .string()
+    .regex(/^(0|[1-9][0-9]*)$/)
+    .optional()
 })
 export type AgentSpec = z.infer<typeof AgentSpec>
 

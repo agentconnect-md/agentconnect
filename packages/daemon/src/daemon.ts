@@ -211,6 +211,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
+  AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_VISIBILITY_FEATURE,
@@ -2449,7 +2450,8 @@ export class Daemon {
       () =>
         void this.reconcile().catch((err) =>
           this.log.error(`cp: agent reconcile failed: ${(err as Error).stack ?? err}`)
-        )
+        ),
+      (m) => this.log.warn(m)
     )
     // CP integrations are written straight to the owning agent's on-disk agent.json
     // `integrations[]` (the single source of truth) — so they survive a restart with
@@ -4591,6 +4593,12 @@ export class Daemon {
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,
+      // This daemon persists the greatest applied AgentSpec.configRevision and
+      // refuses an older or contradicting snapshot (organization-secrets-and-
+      // variables.md §7). The CP gates placement of an agent bound to an
+      // organization environment entry on this marker. Static — the fence is
+      // unconditional daemon code, with no runtime dependency.
+      AGENT_CONFIG_REVISION_FEATURE,
       // Multi-agent webchat conversations (webchat-multi-agents.md): mentions/post
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
@@ -16599,7 +16607,11 @@ export class Daemon {
         // excludes them from effectiveAgents. Only complete writes clear the
         // durable latch and reopen their admission gate.
         const revivableAgents = desiredAgents.filter(({ agentId }) => !this.agentRemovalPending(agentId))
-        this.cpAgents?.converge(revivableAgents)
+        // Only entries the revision fence actually WROTE may clear a tombstone
+        // below: a stale or refused roster entry (organization-secrets-and-
+        // variables.md §7) leaves the existing replica untouched, so it is not the
+        // complete authority replacement that re-add requires.
+        const rewrittenAgents = new Set(this.cpAgents?.converge(revivableAgents) ?? [])
         const desiredIntegrations = (snap.integrations ?? []).filter(
           (integration) => !this.moveStagedAgents.has(integration.agentId)
         )
@@ -16610,6 +16622,7 @@ export class Daemon {
         const desiredCrons = (snap.crons ?? []).filter((cron) => !this.moveStagedAgents.has(cron.agentId))
         this.cpCrons?.converge(desiredCrons)
         for (const { agentId } of revivableAgents) {
+          if (!rewrittenAgents.has(agentId)) continue
           if (this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)) {
             // A failed/interrupted removal can leave platform credentials in the
             // old root. Re-add is a complete authority replacement: exact-prune
@@ -16659,7 +16672,16 @@ export class Daemon {
           // authoritative re-add commit point.
           const replacingDroppedAuthority =
             this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)
-          this.cpAgents.upsert(agentId, spec)
+          const applied = this.cpAgents.upsert(agentId, spec)
+          // The revision fence wrote nothing (organization-secrets-and-variables.md
+          // §7). A stale/idempotent snapshot is ACKed as a no-op — a newer revision
+          // already went through this same path and cleared any tombstone — while an
+          // equal revision carrying different content is a CP invariant violation and
+          // must be refused rather than silently resolved in either direction.
+          if (applied === 'conflict') {
+            return { ok: false, reason: 'agent config revision already applied with different content' }
+          }
+          if (applied !== 'apply') return { ok: true }
           if (replacingDroppedAuthority) {
             // A standalone upsert has no dependent bundle. Scrub every stale CP
             // integration/cron now; subsequent live frames may repopulate them.
@@ -16828,7 +16850,17 @@ export class Daemon {
             // agent is still excluded from effectiveAgents. Every write either lands
             // before the ACK or throws; retries remain safe behind the same gate.
             this.gitCreds?.clearDenied(agentId)
-            this.cpAgents?.upsert(agentId, activate.spec)
+            // The target enforces the revision fence independently (organization-
+            // secrets-and-variables.md §7). A bundle whose resolved spec is older
+            // than (or contradicts) what this daemon already applied must NOT
+            // activate stale credentials — refuse so the CP re-resolves and replays.
+            const applied = this.cpAgents?.upsert(agentId, activate.spec) ?? 'apply'
+            if (applied === 'stale' || applied === 'conflict') {
+              return {
+                ok: false,
+                reason: `agent/activate: spec revision ${activate.spec.configRevision ?? '(none)'} is not newer than the applied configuration`
+              }
+            }
             for (const integration of activate.integrations) this.cpIntegrations?.upsert(integration)
             for (const cron of activate.crons) this.cpCrons?.upsert(cron)
             const activation =

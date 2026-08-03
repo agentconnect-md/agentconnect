@@ -29,6 +29,9 @@ import type {
   McpProviderSecretStore,
   McpGrantRepo,
   SkillSourceRepo,
+  OrganizationEnvironmentRepo,
+  OrganizationEnvironmentResolver,
+  OrganizationEnvironmentSecretStore,
   OrganizationKnowledgeRepo,
   MemoryPluginInstallationRepo,
   ExternalMemoryConnectionRepo,
@@ -184,6 +187,15 @@ export interface HttpDeps {
     skillSource: SkillSourceRepo
     /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */
     organizationKnowledge?: OrganizationKnowledgeRepo
+    /** Organization-owned variables/secrets + their per-agent bindings (metadata and
+     *  binding CRUD only; secret VALUES go through `organizationEnvironmentSecret`). */
+    organizationEnvironment: OrganizationEnvironmentRepo
+    /** The only sealing/decrypting path for organization secret values. */
+    organizationEnvironmentSecret: OrganizationEnvironmentSecretStore
+    /** Resolves the organization entries assigned to an agent — the internal
+     *  effective-config read for wire assembly, and the metadata-only twin the
+     *  agent DTO uses (which never decrypts). */
+    organizationEnvironmentResolver: OrganizationEnvironmentResolver
     /** Owner-reviewed external-memory plugin installations (metadata only). */
     memoryPluginInstallation: MemoryPluginInstallationRepo
     /** Org external-memory connections and revision-fenced probe state. */

@@ -60,6 +60,7 @@ import EditMemberModal, { type MemberTarget } from '@/components/console/modals/
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
+import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
 
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
@@ -734,6 +735,9 @@ export default function SettingsView() {
   const { me } = useProfile()
   const { activeOrg, myRole, refreshOrgs, updateOrg: updateOrgSettings, leaveOrg, error: orgError } = useOrgs()
   const { openModal } = useModal()
+  // Shared with the Bots card below (same SWR context, no extra pull). The
+  // organization-environment picker filters this to agents the viewer can manage.
+  const { agents } = useConsoleData()
   const isOwner = myRole === 'owner'
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
 
@@ -847,6 +851,10 @@ export default function SettingsView() {
           await updateOrgSettings(activeOrg.id, { defaultAgentVisibility: policy })
         }}
       />
+
+      {/* Sits with the other organization-wide agent policies. Owner-only, so the
+          card renders nothing at all for collaborators and viewers (§8.1). */}
+      <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
 
       <div className="card mt-[18px]">
         <div className="cardhead">
