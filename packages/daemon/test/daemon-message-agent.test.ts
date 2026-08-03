@@ -901,6 +901,70 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     await daemon.stop()
   })
 
+  // §5.3 lineage reply: a SessionTarget reply into a channel-free origin must land in the
+  // EXACT origin session — coordinate keying would substitute a2a:<replier> and mint a
+  // DIFFERENT synthetic session, stranding a needsReply result outside the originating turn.
+  it('lineageReplyTo dispatches into the exact existing origin session (channel-free origin)', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const originKey = sessionKey('dream', 'memory', 'dream-1', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: originKey,
+      agentId: 'bot-b',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'dream-1',
+      acpSessionId: 'acp-dream-origin',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const ack = await (daemon as any).handleRelayAgentMsg(
+      fwd({
+        coords: { platform: 'dream', channel: 'memory', thread: 'dream-1' },
+        lineageReplyTo: 'acp-dream-origin',
+        deliveryId: 'd-reply-1'
+      })
+    )
+    // The ACK names the ORIGIN key — not a synthetic a2a:<caller> child.
+    expect(ack).toMatchObject({ delivered: true, childSessionId: originKey })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.agentId).toBe('bot-b')
+    // The reply message carries the origin session's OWN coordinates, raw platform included.
+    expect(calls[0]!.msg).toMatchObject({ platform: 'dream', channel: 'memory', thread: 'dream-1', source: 'agent' })
+    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', deliveryId: 'd-reply-1' })
+    await daemon.stop()
+  })
+
+  it('lineageReplyTo NAKs not_found for a missing or foreign session — it never creates one', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const missing = await (daemon as any).handleRelayAgentMsg(
+      fwd({ coords: { platform: 'dream', channel: 'memory' }, lineageReplyTo: 'acp-nope', deliveryId: 'd-r1' })
+    )
+    expect(missing).toMatchObject({ delivered: false, reason: 'not_found' })
+    // A session owned by ANOTHER agent is refused the same way (ownership half of the check).
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('dream', 'memory', 'dream-9', 'bot-x'),
+      agentId: 'bot-x',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'dream-9',
+      acpSessionId: 'acp-foreign',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const foreign = await (daemon as any).handleRelayAgentMsg(
+      fwd({ coords: { platform: 'dream', channel: 'memory' }, lineageReplyTo: 'acp-foreign', deliveryId: 'd-r2' })
+    )
+    expect(foreign).toMatchObject({ delivered: false, reason: 'not_found' })
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
   it('stamps the forwarded post ts as transcriptTs (toAgent+channel wake dedup across daemons)', async () => {
     // The source daemon made a visible post and forwarded its real ts. The target must stamp it
     // on the woken turn so its transcript row collapses onto the post it fetches from the shared
@@ -1300,10 +1364,11 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
   })
 
   // The regression the raw-platform migration exposed: a channel-free (dream/hook) child's
-  // transportScope is derived from an integration resolved under `legacyCoordPlatform` at
-  // spawn (there is no 'dream' integration to resolve), while the child row itself is keyed
-  // with the RAW platform. The reply-transport lookup must apply the same legacy mapping — a
-  // raw-platform integration filter finds nothing and refuses the reply as not_found.
+  // transportScope is derived from whichever integration the spawn side picked (there is no
+  // 'dream' integration to resolve, so resolution falls through to a real platform's), while
+  // the child row itself is keyed with the RAW platform. The reply-transport lookup must
+  // match the persisted scope across ALL integrations — a raw-platform integration filter
+  // finds nothing and refuses the reply as not_found.
   it('resolves a scoped dream child’s reply transport through the legacy coordinate platform', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
@@ -1392,6 +1457,41 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     expect(calls).toHaveLength(1)
     expect(calls[0]!.msg.platform).toBe('dream')
     expect(calls[0]!.msg.transportScope).toBe(scope)
+    await daemon.stop()
+  })
+
+  // The cross-daemon half of the same contract (§5.3): the reply rides the relay as a
+  // FIRST-CLASS lineage reply — raw origin coords for admission, plus the origin's
+  // acpSessionId so the target daemon dispatches into that exact session instead of
+  // substituting a synthetic a2a coordinate for the channel-free platform.
+  it('routes a remote reply into a channel-free origin as a lineage reply (raw coords + session id)', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    const sent: any[] = []
+    ;(daemon as any).relays = {
+      stop: async () => {},
+      sendAgentMsg: vi.fn(async (payload: any) => {
+        sent.push(payload)
+        return { deliveryId: payload.deliveryId, delivered: true, childSessionId: 'dream:memory:dream-1:bot-a' }
+      })
+    }
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-remote-dream',
+      originCoords: { platform: 'dream', channel: 'memory', thread: 'dream-1' }
+    })
+    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-remote-dream' }))
+    expect(res.delivered).toBe(true)
+    expect(res.targetSession).toBe('dream:memory:dream-1:bot-a')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({
+      toAgentId: 'bot-a',
+      coords: { platform: 'dream', channel: 'memory', thread: 'dream-1' },
+      lineageReplyTo: 'acp-remote-dream'
+    })
     await daemon.stop()
   })
 

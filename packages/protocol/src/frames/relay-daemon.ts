@@ -402,6 +402,17 @@ export const RdAgentMsg = z.object({
   // forwards it opaquely; the target daemon uses it only for its local
   // pre-prompt source-binding gate.
   externalOrigin: ExternalSessionAudience.optional(),
+  // session-concept §5.3 lineage REPLY (SessionTarget): when set, this delivery is a
+  // reply INTO the named existing session on the target daemon (its acpSessionId) —
+  // never a wake that may mint one. The sender's daemon enforced origin-only
+  // authorization (the replier's turn originated from exactly this session), and
+  // possession of the high-entropy id — handed out only through wake lineage — is the
+  // cross-daemon capability. The target daemon terminally validates the session
+  // exists and is owned by `toAgentId`, dispatches into it, and NAKs `not_found`
+  // when it is gone; it never substitutes a synthetic coordinate for a lineage
+  // reply (a channel-free origin's coordinate is not its key). Absent = ordinary
+  // coordinate-keyed wake.
+  lineageReplyTo: z.string().min(1).optional(),
   // session-concept §5.4: the caller asked the woken session to report its outcome back into
   // `originSessionId` (`sendMessage`'s `toAgent.needsReply`). The target daemon turns this into a
   // standing directive on the child; it is never part of the delivered `text`. Meaningless without
@@ -489,6 +500,13 @@ export const RdAgentMsgFwd = z.object({
   // Forwarded verbatim from RdAgentMsg. It is daemon-authored lineage metadata,
   // never inferred from model text or target coordinates.
   externalOrigin: ExternalSessionAudience.optional(),
+  // Forwarded verbatim from RdAgentMsg (§5.3 lineage reply): the target session's
+  // acpSessionId this delivery replies into. Opaque to the relay — the TARGET
+  // daemon is the side that terminally validates it (exists + owned by
+  // `toAgentId`) and dispatches into the existing session instead of coordinate
+  // keying. The relay still applies its ordinary coordinate-integrity check to
+  // `coords`; this field never widens what the caller may assert.
+  lineageReplyTo: z.string().min(1).optional(),
   // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
   // session report its outcome back into `originSessionId`. Opaque to the relay — it is the
   // caller's own instruction about its own lineage, not a claim the relay mints or validates.

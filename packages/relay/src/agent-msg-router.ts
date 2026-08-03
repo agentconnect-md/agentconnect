@@ -167,6 +167,9 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
         ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
         ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
+        // §5.3 lineage reply target — opaque to the relay; the TARGET daemon terminally
+        // validates it. Coordinate integrity above still applied to `coords` unchanged.
+        ...(msg.lineageReplyTo !== undefined ? { lineageReplyTo: msg.lineageReplyTo } : {}),
         // §5.4 report-back request, forwarded opaquely for the same reason: it is an instruction
         // about the caller's OWN lineage, so the relay carries it without minting or validating it.
         ...(msg.needsReply !== undefined ? { needsReply: msg.needsReply } : {}),
