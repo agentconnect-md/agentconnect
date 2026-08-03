@@ -32,6 +32,31 @@ const attribution = (): SlackAttributionInfo => ({
 })
 
 describe('OutputConverger', () => {
+  it('never splits a compound shared-bot address the daemon supplied', () => {
+    // send-message-routing-rework.md §5.3/§8.5. `<@U09SHARED> reviewer` is ONE address:
+    // the bot user id names the app, the slug selects the agent. The splitter finds
+    // self-delimiting `<…>` tokens by itself but cannot know the trailing word belongs to
+    // this one, so the daemon passes the addresses it rendered from its own directory.
+    // Splitting between the halves addresses the APP, which under §2.1 drops the delivery
+    // the mention was making rather than merely rendering oddly.
+    const address = '<@U09SHARED> reviewer'
+    // Place the 12000-char hard cut inside the SLUG, past the end of `<@U09SHARED>`. The
+    // generic `<…>` protection cannot help there — only the caller-supplied compound
+    // address can — so this offset is what makes the test exercise the plumbing rather
+    // than the protection the splitter already had.
+    const filler = 'x'.repeat(12_000 - 16)
+    const c2 = new OutputConverger('medium', [address])
+    c2.onUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: `${filler}${address} please verify` }
+    } as any)
+    const posts = c2.onFinal(undefined as never).filter((a) => a.kind === 'post') as { text: string }[]
+    expect(posts.length).toBeGreaterThan(1)
+    expect(posts.map((p) => p.text).join('')).toBe(`${filler}${address} please verify`)
+    // The address opens the following section whole rather than straddling the cut.
+    expect(posts.some((p) => p.text.startsWith(address))).toBe(true)
+  })
+
   it('buffers agent text chunks and flushes them as a single post', () => {
     const c = new OutputConverger('medium')
     expect(

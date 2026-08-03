@@ -134,7 +134,11 @@ import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channe
 import { consolidateFeishu, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
-import { resolveSlackMentionedAgents, SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX } from '@agentconnect.md/message'
+import {
+  resolveSlackMentionedAgents,
+  slackMentionAddress,
+  SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX
+} from '@agentconnect.md/message'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
@@ -5665,6 +5669,31 @@ export class Daemon {
    * which is the same data `routeRules` consults, minus the kind/trigger matching that
    * would be wrong here (an agent mention is explicit by construction).
    */
+  /**
+   * The COMPOUND mention addresses reachable in this conversation — a shared Slack bot's
+   * `<@U_SHARED> reviewer` (send-message-routing-rework.md §5.3/§8.5).
+   *
+   * The splitter protects every self-delimiting `<…>` token on its own; it cannot know
+   * that a bare word following a mention belongs to the address, because in any other
+   * message it is ordinary prose. These are the ones the daemon can name from its own
+   * directory. Only compound (shared-bot) addresses are worth carrying — a dedicated
+   * bot's `<@U…>` is already indivisible by construction.
+   *
+   * Empty off Slack, and empty with no collaboration snapshot: over-protecting nothing is
+   * the same behavior the splitter had before, whereas guessing would risk refusing to
+   * split a message for a boundary that is not really an address.
+   */
+  private compoundMentionAddresses(agentId: string, msg: { platform: string; channel: string }): string[] {
+    if (msg.platform !== 'slack') return []
+    const orgId = this.cpCollab.orgForAgent(agentId)
+    if (!orgId) return []
+    return this.cpCollab
+      .mentionDirectory(orgId, msg.platform, msg.channel)
+      .filter((entry) => entry.botShared)
+      .map((entry) => slackMentionAddress(entry))
+      .filter((address): address is string => address !== undefined)
+  }
+
   private agentConversationAdmits(agentId: string, msg: NormalizedMessage): boolean {
     const rules = this.mergedRules().filter((rule) => rule.agentId === agentId)
     if (rules.length === 0) return false
@@ -11523,7 +11552,7 @@ export class Daemon {
           ? new DiscordConverger(mode)
           : msg.platform === 'feishu'
             ? new FeishuConverger(mode)
-            : new OutputConverger(mode)
+            : new OutputConverger(mode, this.compoundMentionAddresses(agentId, msg))
     const slackStatusOptions = this.slackStatusOptions(msg.platform, agentName, iconUrl)
     this.showActivity(
       replyConn,
@@ -13246,7 +13275,7 @@ export class Daemon {
         // minimal mode never drops the tail of a long final answer. Every successful next
         // section is born with the footer before the prior section loses it, keeping the
         // footer anchored to the last delivered response throughout the handoff.
-        const sections = splitIntoSections(action.text)
+        const sections = splitIntoSections(action.text, undefined, this.compoundMentionAddresses(p.agentId, p))
         const [first, ...rest] = sections
         if (!first) return
         if (p.liveReplyReanchor) {

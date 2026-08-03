@@ -835,7 +835,21 @@ export class OutputConverger {
   private segmentReset = false
   private recordDirty = false
 
-  constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
+  /**
+   * `protectedAddresses` are the COMPOUND mention addresses in this conversation — a
+   * shared Slack bot's `<@U_SHARED> reviewer`, where the bot user id names the app and the
+   * trailing slug selects the agent (send-message-routing-rework.md §5.3/§8.5).
+   *
+   * The splitter finds every self-delimiting `<…>` address by itself; it cannot infer that
+   * a bare word after a mention is part of the address, because in every other message it
+   * is ordinary prose. So the daemon supplies the ones it rendered from its own directory.
+   * Splitting between the two halves would address the APP instead of the agent — under
+   * §2.1 that silently drops the delivery the mention was making, not just its formatting.
+   */
+  constructor(
+    private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
+    private protectedAddresses: readonly string[] = []
+  ) {}
 
   /** True while body text OR reasoning is pending — the daemon uses this to (re)arm
    *  the ~2s idle-flush timer (§9.1 text-buffer) so a long pure-text stream posts in
@@ -885,7 +899,7 @@ export class OutputConverger {
    *  full text in the web session — the untruncated segment always reaches the transcript
    *  via the paired `recordOnly` posts. */
   private liveDisplay(text: string): string {
-    const sections = splitIntoSections(text)
+    const sections = splitIntoSections(text, undefined, this.protectedAddresses)
     return sections.length <= 1 ? text : `${sections[0]}\n\n_…full reply in the web session_`
   }
 
@@ -903,7 +917,9 @@ export class OutputConverger {
     this.recordDirty = false
     return [
       final ? { kind: 'final-live-reply', text } : { kind: 'live-reply', text: this.liveDisplay(text) },
-      ...splitIntoSections(text).map((t) => ({ kind: 'post', text: t, recordOnly: true }) as SlackAction)
+      ...splitIntoSections(text, undefined, this.protectedAddresses).map(
+        (t) => ({ kind: 'post', text: t, recordOnly: true }) as SlackAction
+      )
     ]
   }
 
@@ -949,7 +965,7 @@ export class OutputConverger {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` is handled
     // before the connection check on every platform, so it lands even though replyConn is unset.
     const recordOnly = this.mode === 'none'
-    return splitIntoSections(text).map(
+    return splitIntoSections(text, undefined, this.protectedAddresses).map(
       (t) => ({ kind: 'post', text: t, ...(recordOnly ? { recordOnly: true } : {}) }) as SlackAction
     )
   }
