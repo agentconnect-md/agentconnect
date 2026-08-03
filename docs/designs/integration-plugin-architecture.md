@@ -198,6 +198,9 @@ interface PlatformManifest {
 
   // ---- CP-facing axes (read at install/config time, still pre-dispatch) ----
   credentialShape: 'token' | 'token+appToken' | 'appId+appSecret' | 'appId+appSecret+signing'
+  // Demux identity shape: tenant-scoped (Slack app+team) or app/token-scoped
+  // (Linear urlToken). Drives how core persists Bot identity columns (§11).
+  identityScope: 'tenant' | 'app'
   multiAgentShareable: boolean
   membershipEnumeration: 'authoritative' | 'observed'
   leaveGranularity: 'conversation' | 'space' | 'none'
@@ -455,9 +458,16 @@ interface RelayPlatformIngress {
   extractDemuxHints(rawBody): Hints
   verify(secrets, rawBody, headers, now): Verified | Challenge | Reject
   // Two platforms require SYNCHRONOUS bodies on the HTTP 200 (Slack
-  // block_suggestion options; Feishu card-action toast) — handle() returns
-  // both the deliveries and an optional sync response.
-  handle(event): { syncResponse?: unknown; deliveries: PreAddressedDelivery[] }
+  // block_suggestion options; Feishu card-action toast). handle() is async
+  // because the sync body may depend on a daemon round trip: the Feishu
+  // plugin awaits RelayHostServices.forwardAction(...) and surfaces the
+  // daemon-produced toast in the same HTTP response. Deadline ownership:
+  // the PLUGIN owns the platform-specific deadline (it races the daemon
+  // round trip against the platform's response window — Feishu ~2.5s,
+  // Slack's 3s trigger — using the host clock, degrading to an ack-only
+  // body on timeout); the HOST enforces one outer hard cap on the route so
+  // a misbehaving plugin cannot pin the HTTP worker.
+  handle(event): Promise<{ syncResponse?: unknown; deliveries: PreAddressedDelivery[] }>
   // Slack performs relay-side egress (modals under the 3s deadline, notices,
   // channel snapshots, auth.test revocation backstop); Feishu deliberately
   // keeps egress on the daemon. Optional by design.
@@ -514,6 +524,14 @@ interface CpPlatformProvider {
   // Per-USER provider tooling credentials (SlackUserConfig class): store +
   // rotation + status routes + a signal that changes the web wizard's mode.
   providerToolingCredentials?: ProviderToolingDecl
+  // Wire projection: the ONLY code that turns persisted integration/bot
+  // rows plus decrypted secret material into the opaque payloads of D4 and
+  // §6.7. These are today's integrationToSpec / httpIntegrationToSpec /
+  // HttpBotService.buildAssign branches, relocated behind the provider.
+  // Secret material reaches the projector at assembly time from the secret
+  // store; it is never persisted inside platformConfig JSON.
+  projectIntegrationConfig(integration, bot, secrets): unknown // -> IntegrationSpec.config (§6.4)
+  projectBotAssign(bot, secrets): { secrets: unknown; ingress: unknown } // -> rc/bot-assign (§6.7)
 }
 ```
 
@@ -524,11 +542,13 @@ Consequences the slot must own:
   credential sub-schema and transport refinements; core folds them into the
   route schema at `buildContainer` time so `/docs` and `openapi.json` stay
   accurate.
-- **Spec assembly leaves the CP.** With D4, `placement.ts` / `httpBot.ts`
-  stop branching per platform: the CP stores and forwards the opaque config;
-  validation lives in the platform module on the daemon/relay side. The
-  Slack bot-identity reconciler and similar background loops register via
-  the provider.
+- **Spec assembly moves into the provider — not out of the CP.** The CP
+  still assembles the wire payloads (it holds the rows and the decrypted
+  secrets), but through `projectIntegrationConfig` / `projectBotAssign`, so
+  `placement.ts` / `httpBot.ts` stop branching per platform and merely
+  forward provider output; shape validation of the opaque payload lives in
+  the same platform's daemon/relay module. The Slack bot-identity
+  reconciler and similar background loops register via the provider.
 - **The common create skeleton stays core:** visibility gates, placement
   check, daemon capability gate, mutation lease, `replicateUpsert`.
 - **Adjacent per-platform services get audit homes, not new slots:** the
@@ -599,13 +619,24 @@ Two decisions specific to this host:
   model Bot {
     platform          String
     externalAppId     String?   // Slack A… app id; Linear urlToken; …
-    externalTenantId  String?   // Slack T… team id; null where single-tenant
+    externalTenantId  String?   // Slack T… team id; '-' sentinel where tenantless
     platformConfig    Json?     // display ids, region, portal hints
     @@unique([platform, externalAppId, externalTenantId])
   }
   ```
 
-  NULL-distinct semantics must match today's behavior for legacy rows.
+  **Tenantless identities need a sentinel, not NULL.** Postgres treats
+  NULLs as distinct in unique indexes, so a NULL `externalTenantId` would
+  not enforce uniqueness for tenant-free identities — and Linear's
+  bot-scoped `urlToken` (this table's replacement for the Linear design's
+  `linearUrlToken @unique`) must stay unique because the relay selects the
+  bot by it. Rule: **NULL is reserved for legacy rows only** (pre-capture
+  Slack rows keep today's NULLs-distinct behavior); every new row on a
+  tenantless platform writes the sentinel `'-'` as `externalTenantId`, so
+  the composite unique index enforces `(platform, externalAppId)`
+  uniqueness declaratively — no partial index, no `NULLS NOT DISTINCT`
+  migration hazard. The manifest's `identityScope` axis (§5) tells core
+  which shape to persist.
   `discordAppId`, `feishuAppId`, `feishuRegion` fold into `platformConfig`.
   If a platform later needs a _second_ identity axis, the fallback is a
   `bot_platform_identity(botId, platformId, identityKind, identityValue)`
