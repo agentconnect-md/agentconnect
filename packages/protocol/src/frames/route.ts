@@ -45,6 +45,22 @@ export type SessionIdentityPlatform = (typeof SESSION_IDENTITY_PLATFORMS)[number
 export function isSessionIdentityPlatform(p: string): p is SessionIdentityPlatform {
   return (SESSION_IDENTITY_PLATFORMS as readonly string[]).includes(p)
 }
+// D3: the origin-KIND axis. `chat` = an external chat platform (an open, growing
+// set); the session-identity kinds are core surfaces and each is its own kind. A
+// new KIND is a core change, never a platform module — but wire fields carrying a
+// kind still read as open strings (the S1a rule), so adding one is not
+// frame-fatal to older peers.
+export const ORIGIN_KINDS = ['chat', 'hook', 'dream', 'webchat'] as const
+export type OriginKind = (typeof ORIGIN_KINDS)[number]
+/** Classification seed for the platform ids THIS build knows. Wire-carried
+ *  entries (`CollabRoutesSnapshot.platformKinds`, `rc/bot-assign.originKind`)
+ *  extend it for ids a newer peer introduces (§6.1). `undefined` = an id neither
+ *  the seed nor the wire classified — consumers treat it as `'chat'`, the
+ *  fail-closed default wherever placements matter. */
+export function originKindOf(p: string): OriginKind | undefined {
+  if (isSessionIdentityPlatform(p)) return p
+  return isKnownPlatform(p) ? 'chat' : undefined
+}
 export const Platform = z.string().min(1)
 export type Platform = z.infer<typeof Platform>
 

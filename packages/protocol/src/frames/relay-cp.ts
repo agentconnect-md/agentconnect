@@ -565,6 +565,11 @@ export const RcBotAssign = z.object({
   // relay build supports; the relay's assign handler already refuses an
   // unsupported platform gracefully ("not yet supported"), never the socket.
   platform: Platform,
+  // §6.1: the platform's origin kind, so an older relay can classify an id a
+  // newer CP introduces (always 'chat' for a bot assignment today). Overlaid on
+  // the relay's built-in seed; absent (older CP) ⇒ the seed answers, and an id
+  // neither classifies defaults to 'chat' (fail-closed in coordsDecision).
+  originKind: z.string().min(1).optional(),
   botUserId: z.string().optional(), // resolved by CP; for echo suppression + mention match
   // Platform app id (Slack "A…", Feishu "cli_…") — lets the relay demux an
   // inbound POST to this bot in O(1). Slack may omit it for a legacy manual

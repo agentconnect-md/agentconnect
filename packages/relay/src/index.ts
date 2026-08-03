@@ -148,10 +148,14 @@ async function main(): Promise<void> {
     onRevoke: (daemonId) => held.rdServer?.revoke(daemonId),
     // HTTP-bot control (§10): the manager is constructed below (after rdServer);
     // these callbacks only fire once the relay is READY, so `held.relayIngress` is set.
-    onBotAssign: (a) =>
+    onBotAssign: (a) => {
+      // §6.1: the assignment's origin-kind classification (present from an S1b CP)
+      // teaches this relay how to classify a platform id its build predates.
+      collab.learnPlatformKind(a.platform, a.originKind)
       void held.relayIngress
         ?.assign(toBotAssignment(a))
-        .catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`)),
+        .catch((err) => log.error(`relay: bot-assign failed: ${String(err)}`))
+    },
     onBotUnassign: (a) =>
       void held.relayIngress
         ?.unassign(a.botId, a.credentialRevision)
