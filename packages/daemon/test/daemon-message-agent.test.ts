@@ -456,18 +456,18 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
-  // A `dream` turn's platform is folded to 'slack' by `narrowPlatform` when the session key is
-  // computed, so the coordinate decision must read the RAW session platform — otherwise a
-  // genuinely channel-free session would be classified as a persisted IM coordinate and fail
-  // closed. (`hook` is the same shape: a target-less hook session's channel is the hook id.)
-  it('treats a raw session-identity platform as channel-free even though the session key narrows it', async () => {
+  // A `dream` turn is genuinely channel-free: the coordinate decision reads the RAW session
+  // platform and admits it as branch 3, and — since the `narrowPlatform` fold was deleted
+  // (S1a §6.3) — the woken session key now carries `dream` itself instead of a folded
+  // `slack` prefix nothing could continue. (`hook` is the same shape: a target-less hook
+  // session's channel is the hook id.)
+  it('treats a raw session-identity platform as channel-free and keys the child with it', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
     const dream = baseReq({ platform: 'dream', callerChannel: 'memory', channel: 'memory', thread: 'dream-1' })
     expect((daemon as any).wakeRejectionReason(dream)).toBeNull()
-    // narrowPlatform('dream') === 'slack', hence the slack prefix — but the CHANNEL is the
-    // caller-derived one, not 'memory'.
-    expect(await call(dream)).toMatchObject({ delivered: true, targetSession: 'slack:a2a:bot-a:dream-1:bot-b' })
+    // Raw platform prefix — and the CHANNEL is the caller-derived one, not 'memory'.
+    expect(await call(dream)).toMatchObject({ delivered: true, targetSession: 'dream:a2a:bot-a:dream-1:bot-b' })
 
     const hook = baseReq({ platform: 'hook', callerChannel: 'hook-1', channel: 'hook-1', thread: 'delivery-1' })
     expect((daemon as any).wakeRejectionReason(hook)).toBeNull()
@@ -993,10 +993,11 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
   })
 
   // The bypass an earlier revision of the coordinate gate had: it looked the coordinate up
-  // under the RAW wire platform, while the session key is computed from `narrowPlatform`,
-  // which folds `feishu` (and anything unrecognised) into 'slack'. The two key spaces
-  // differed and "unknown coordinate passes" hid it, so the SAME attack went through with a
-  // legal `coords.platform:'feishu'` and still produced a bit-identical childSessionId.
+  // under the RAW wire platform, while session keys were computed through the since-deleted
+  // `narrowPlatform` fold (`feishu` and anything unrecognised became 'slack'). The two key
+  // spaces differed and "unknown coordinate passes" hid it, so the SAME attack went through
+  // with a legal `coords.platform:'feishu'` and still produced a bit-identical
+  // childSessionId. Session keys are raw now; the channel-only lookup stays the guard.
   it('rejects the attack when the coordinate PLATFORM is switched to dodge the lookup', async () => {
     const root = scaffold([{ id: 'bot-b' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
@@ -1294,6 +1295,102 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     await daemon.stop()
   })
 
+  // The regression the raw-platform migration exposed: a channel-free (dream/hook) child's
+  // transportScope is derived from an integration resolved under `legacyCoordPlatform` at
+  // spawn (there is no 'dream' integration to resolve), while the child row itself is keyed
+  // with the RAW platform. The reply-transport lookup must apply the same legacy mapping — a
+  // raw-platform integration filter finds nothing and refuses the reply as not_found.
+  it('resolves a scoped dream child’s reply transport through the legacy coordinate platform', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    // The origin owner holds a real scoped Slack integration — the shape a dream wake's
+    // child inherits its transportScope from. Injected post-start so no socket connects.
+    const slackInteg = {
+      id: 'int-slack-1',
+      platform: 'slack',
+      slack: { mode: 'direct', shareable: false, botToken: 'xoxb-scope-test' }
+    }
+    ;(daemon as any).agents.get('bot-a').integrations.push(slackInteg)
+    const scope = (daemon as any).transportScopeForIntegration(slackInteg)
+    const dreamKey = sessionKey('dream', 'a2a:bot-x', 'dream-1', 'bot-a', scope)
+    ;(daemon as any).store.upsertSession({
+      key: dreamKey,
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'a2a:bot-x',
+      thread: 'dream-1',
+      transportScope: scope,
+      acpSessionId: 'acp-parent-dream',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-dream',
+      originCoords: { platform: 'dream', channel: 'a2a:bot-x', thread: 'dream-1' }
+    })
+    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-parent-dream' }))
+    expect(res.delivered).toBe(true)
+    expect(res.targetSession).toBe(dreamKey)
+    expect(calls).toHaveLength(1)
+    const { msg } = calls[0]!
+    // The synthesized message keeps the RAW session platform; only transport resolution
+    // went through the persisted-scope match.
+    expect(msg.platform).toBe('dream')
+    expect(msg.transportScope).toBe(scope)
+    await daemon.stop()
+  })
+
+  // The fallback half of the same contract: when the target has NO Slack integration, the
+  // spawn side falls back to the agent's FIRST integration (resolveAgentIntegration), so a
+  // dream child of a Telegram-only target carries a `telegram:…` scope. A lookup filtered
+  // under the legacy 'slack' coordinate would still find nothing — the session-transport
+  // resolution must match the persisted scope across ALL of the agent's integrations.
+  it('resolves a dream child’s reply transport for a Telegram-only target (first-integration fallback)', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    const tgInteg = {
+      id: 'int-tg-1',
+      platform: 'telegram',
+      telegram: { botToken: '12345:AAA-test-token' }
+    }
+    ;(daemon as any).agents.get('bot-a').integrations.push(tgInteg)
+    const scope = (daemon as any).transportScopeForIntegration(tgInteg)
+    expect(scope.startsWith('telegram:')).toBe(true)
+    const dreamKey = sessionKey('dream', 'a2a:bot-x', 'dream-2', 'bot-a', scope)
+    ;(daemon as any).store.upsertSession({
+      key: dreamKey,
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'a2a:bot-x',
+      thread: 'dream-2',
+      transportScope: scope,
+      acpSessionId: 'acp-parent-dream-tg',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd2',
+      originSessionId: 'acp-parent-dream-tg',
+      originCoords: { platform: 'dream', channel: 'a2a:bot-x', thread: 'dream-2' }
+    })
+    const res = await (daemon as any).replyToSession(replyReq({ sessionId: 'acp-parent-dream-tg' }))
+    expect(res.delivered).toBe(true)
+    expect(res.targetSession).toBe(dreamKey)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.msg.platform).toBe('dream')
+    expect(calls[0]!.msg.transportScope).toBe(scope)
+    await daemon.stop()
+  })
+
   it('authorizes via the caller session’s PERSISTED origin on a human turn with no active CallMeta', async () => {
     // The regression that "replies once then stops": a spawned session's later, human-triggered
     // turns carry no per-turn CallMeta, so auth must fall back to the DURABLE origin on the row.
@@ -1421,12 +1518,12 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     await daemon.stop()
   })
 
-  it('keys a Feishu spawn as feishu, not the narrowPlatform fallback', async () => {
+  it('keys a Feishu spawn as feishu, not a folded fallback', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls } = await bootWithDispatchSpy(root)
-    // `narrowPlatform` predated Feishu and folded it onto `slack`, so this dispatched a `slack:`
-    // message for a channel Feishu ingress records under `feishu:` — a session nothing could
-    // continue. Every other caller of that helper had the same hole.
+    // The since-deleted `narrowPlatform` helper predated Feishu and folded it onto `slack`, so
+    // this dispatched a `slack:` message for a channel Feishu ingress records under `feishu:` —
+    // a session nothing could continue. Every caller of that helper had the same hole.
     // A Feishu DM root post, the shape where the key and the raw ts differ most: ops resolves the
     // thread key to the CHAT id (what Feishu ingress keys a p2p conversation under) while the
     // post's own message id stays the transcript ts.
@@ -1586,11 +1683,12 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     await daemon.stop()
   })
 
-  it('resolves a Feishu caller, whose platform string is not one narrowPlatform keeps', async () => {
+  it('resolves a Feishu caller by its raw platform string', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
-    // narrowPlatform folds `feishu` onto `slack`; keying the lookup through it looked up a row
-    // that never existed, so a Feishu session could never resolve its parent.
+    // The since-deleted `narrowPlatform` fold turned `feishu` into `slack`; keying the lookup
+    // through it looked up a row that never existed, so a Feishu session could never resolve
+    // its parent.
     seed(daemon, {
       key: sessionKey('telegram', '-100123', 'tg:170', 'bot-a'),
       agentId: 'bot-a',

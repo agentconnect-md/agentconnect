@@ -447,11 +447,12 @@ export type RdAgentMsg = z.infer<typeof RdAgentMsg>
  *       daemon keys the woken session off `a2a:<trustedFromAgentId>` instead, which cannot
  *       collide with any real conversation id. The relay forwards `coords` verbatim; only the
  *       daemon that mints the key substitutes, so the two can never disagree about it.
- * The row LOOKUP keys on the CHANNEL ID alone, deliberately NOT on `coords.platform`: the
- * woken session's key is computed from a NARROWED platform (the daemon folds `feishu` and
- * anything it does not recognise into `'slack'`) while snapshot rows are keyed by the
- * integration platform, so a platform-keyed lookup would search a different key space than
- * the key it protects. The platform only picks between (2) and (3), for a coordinate (1)
+ * The row LOOKUP keys on the CHANNEL ID alone, deliberately NOT on `coords.platform`. That
+ * closed a relabelling dodge under the daemon's old `narrowPlatform` fold (session keys were
+ * narrowed while snapshot rows are keyed by the integration platform, so a platform-keyed
+ * lookup searched a different key space than the key it protects); the fold is deleted
+ * (S1a §6.3) and session keys carry the raw platform, but the channel-only match remains
+ * the rule on both sides. The platform only picks between (2) and (3), for a coordinate (1)
  * already found nothing for. Read `coords` as "the caller may assert this", never as
  * "verified member of" — and never assume the woken session key echoes it (case 3).
  */

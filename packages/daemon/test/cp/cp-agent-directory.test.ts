@@ -190,8 +190,9 @@ describe('CpCollabRoutes: org-scoped directory', () => {
   })
 
   it('coordsDecision ignores the coordinate PLATFORM when LOOKING UP the row', () => {
-    // `Daemon.narrowPlatform` folds `feishu` (and any unrecognised value) into 'slack' when
-    // computing the woken session key, while snapshot rows are keyed by the INTEGRATION
+    // The daemon's since-deleted `narrowPlatform` fold turned `feishu` (and any unrecognised
+    // value) into 'slack' when computing the woken session key, while snapshot rows are keyed
+    // by the INTEGRATION
     // platform. A platform-keyed lookup therefore searched a different key space than the key
     // it protects, and "unknown coordinate passes" swallowed the mismatch in BOTH directions.
     const r = new CpCollabRoutes()
