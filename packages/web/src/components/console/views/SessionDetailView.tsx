@@ -2948,7 +2948,13 @@ export default function SessionDetailView() {
                     // The trailing turn of a running session is the one streaming: its
                     // work panel defaults open so skill/command/tool calls are visible
                     // AS THEY RUN, and collapses on its own once the turn completes.
-                    const streaming = ti === turns.length - 1 && (pgBusy || session.status === 'online')
+                    // Platform runs are matched on the RAW session state (statusLabel):
+                    // the bucketed `status` key maps idle/completed to 'online' and an
+                    // active prompting turn to 'paused', which is exactly backwards for
+                    // an "is a turn in flight" signal.
+                    const turnInFlight =
+                      pgBusy || session.statusLabel === 'prompting' || session.statusLabel === 'cancelling'
+                    const streaming = ti === turns.length - 1 && turnInFlight
                     const openWork = workPanelOpen(workOverride.get(ti), streaming)
                     return (
                       <div
