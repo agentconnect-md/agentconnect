@@ -39,6 +39,12 @@ export interface ConsolidatedTelegramGroup {
 }
 
 /** §6.1 analog: group integrations by bot token (one grammY Bot per token). */
+/** §7.5 opaque identity of one Telegram long-poll connection: the BotFather
+ *  token is the whole identity (no app-level token exists). */
+export function telegramConnKey(c: { botToken: string }): string {
+  return c.botToken
+}
+
 export function consolidateTelegram(agents: Agent[]): Map<string, ConsolidatedTelegramGroup> {
   const groups = new Map<string, ConsolidatedTelegramGroup>()
   for (const a of agents) {

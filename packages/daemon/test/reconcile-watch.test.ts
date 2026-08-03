@@ -328,7 +328,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     await daemon.start()
 
     const shared = { botToken: 'xoxb-shared', botUserId: 'U_SHARED', stop: vi.fn().mockResolvedValue(undefined) }
-    ;(daemon as any).httpSlackConns = new Map([['xoxb-shared', shared]])
+    ;(daemon as any).slackSharedPool.add(shared)
     ;(daemon as any).agents = new Map([
       [
         'bot-shared',
@@ -360,7 +360,8 @@ describe('Daemon.reconcileSlackConnections', () => {
     // Two live sockets: conn-A (appToken A) and conn-B (appToken B, shared/already open).
     const connA = fakeConn('xapp-A', 'xoxb-A', 'U_A')
     const connB = fakeConn('xapp-B', 'xoxb-B', 'U_B')
-    ;(daemon as any).connections = [connA, connB]
+    ;(daemon as any).slackPool.add(connA)
+    ;(daemon as any).slackPool.add(connB)
     ;(daemon as any).connByIntegration.set('int-1', connA)
     ;(daemon as any).connByIntegration.set('int-other', connB)
     ;(daemon as any).botUserIds = { 'int-1': 'U_A', 'int-other': 'U_B' }
@@ -398,7 +399,7 @@ describe('Daemon.reconcileSlackConnections', () => {
 
     const conn = fakeConn('xapp-A', 'xoxb-A', 'U_A')
     const stop = vi.spyOn(conn, 'stop')
-    ;(daemon as any).connections = [conn]
+    ;(daemon as any).slackPool.add(conn)
     ;(daemon as any).connByIntegration.set('int-detached', conn)
     ;(daemon as any).connByIntegration.set('int-live', conn)
     ;(daemon as any).botUserIds = { 'int-detached': 'U_A', 'int-live': 'U_A' }
@@ -418,7 +419,7 @@ describe('Daemon.reconcileSlackConnections', () => {
 
     await (daemon as any).closeUnusedPlatformConnections()
     expect(stop).not.toHaveBeenCalled()
-    expect((daemon as any).connections).toEqual([conn])
+    expect((daemon as any).slackPool.all()).toEqual([conn])
     expect((daemon as any).connByIntegration.has('int-detached')).toBe(false)
     expect((daemon as any).connByIntegration.get('int-live')).toBe(conn)
     expect((daemon as any).botUserIds['int-detached']).toBeUndefined()
@@ -427,7 +428,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     ;(daemon as any).agents = new Map()
     await (daemon as any).closeUnusedPlatformConnections()
     expect(stop).toHaveBeenCalledTimes(1)
-    expect((daemon as any).connections).toEqual([])
+    expect((daemon as any).slackPool.all()).toEqual([])
     await daemon.stop()
   })
 
@@ -447,12 +448,9 @@ describe('Daemon.reconcileSlackConnections', () => {
     const telegramOld = conn('tg-old')
     const discordLive = conn('dc-live')
     const discordOld = conn('dc-old')
-    ;(daemon as any).httpSlackConns = new Map([
-      ['xoxb-live', sharedLive],
-      ['xoxb-old', sharedOld]
-    ])
-    ;(daemon as any).telegramConns = [telegramLive, telegramOld]
-    ;(daemon as any).discordConns = [discordLive, discordOld]
+    for (const c of [sharedLive, sharedOld]) (daemon as any).slackSharedPool.add(c)
+    for (const c of [telegramLive, telegramOld]) (daemon as any).telegramPool.add(c)
+    for (const c of [discordLive, discordOld]) (daemon as any).discordPool.add(c)
     ;(daemon as any).agents = new Map([
       [
         'bot-live',
@@ -490,7 +488,7 @@ describe('Daemon.reconcileSlackConnections', () => {
 
     const connection = fakeConn('xapp-final', 'xoxb-final', 'U_FINAL')
     const stop = vi.spyOn(connection, 'stop')
-    ;(daemon as any).connections = [connection]
+    ;(daemon as any).slackPool.add(connection)
     ;(daemon as any).agents = new Map()
     const release = (daemon as any).holdReplyConnection(connection) as () => void
 
@@ -505,7 +503,7 @@ describe('Daemon.reconcileSlackConnections', () => {
     release()
     await close
     expect(stop).toHaveBeenCalledTimes(1)
-    expect((daemon as any).connections).toEqual([])
+    expect((daemon as any).slackPool.all()).toEqual([])
     await daemon.stop()
   })
 })
