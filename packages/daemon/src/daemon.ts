@@ -5613,7 +5613,15 @@ export class Daemon {
   ):
     { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } | undefined {
     const platformMessageId = slackTsFromMsgId(msg.msgId)
-    const key = activationKey(msg.platform, msg.transportScope, platformMessageId, targetAgentId)
+    const integrationId = this.resolveCpAgent(targetAgentId, 'slack')?.integrationId
+    // The key's transport component is the TARGET's own reply scope — NOT the scope of
+    // the connection that happened to observe the post. Both halves of a paired delivery
+    // must compute the same key, and the internal wake can only know the target's scope
+    // (it never sees which connection received the echo). Keying on the observer instead
+    // would also mint a separate key per bot connection that sees the same channel:ts,
+    // turning one logical delivery into several — the opposite of what this record is for.
+    const targetScope = integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
+    const key = activationKey(msg.platform, targetScope, platformMessageId, targetAgentId)
     const expiresAt = this.clock.now() + ACTIVATION_PAIRING_TTL_MS
     if (verified.agentCallDeliveryId) {
       const record = this.store.claimActivationObservation(
@@ -5657,7 +5665,6 @@ export class Daemon {
       msg.transportScope
     )
     this.store.admitActivation(key, targetSessionKey)
-    const integrationId = this.resolveCpAgent(targetAgentId, 'slack')?.integrationId
     const callMeta: CallMeta = {
       callFrom: verified.authorAgentId,
       // §4.1 step 3/5: install the computed depth as trusted active-turn metadata. Every

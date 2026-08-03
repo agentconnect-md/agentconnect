@@ -126,6 +126,23 @@ const agentMessage = (over: Record<string, unknown> = {}, claim: Record<string, 
 
 const route = (daemon: Daemon, msg: unknown) => (daemon as any).onInboundOutcome(msg, ['int-bot-a'])
 
+/**
+ * The rendezvous key for the paired delivery these tests exercise, derived the way BOTH
+ * halves derive it: from the TARGET's own reply-integration scope, never from whichever
+ * connection observed the post.
+ *
+ * That distinction is the point. Ingress sees the echo on some connection (here `bot-a`'s,
+ * since both agents share this daemon) while the internal wake only ever knows the
+ * target's scope — so keying on the observer would put the two halves on different keys
+ * and quietly break the pairing, and would also mint a separate key per bot connection
+ * that sees the same channel:ts.
+ */
+function pairingKey(daemon: Daemon, targetAgentId = 'bot-b'): string {
+  const integrationId = (daemon as any).resolveCpAgent(targetAgentId, 'slack')?.integrationId
+  const scope = integrationId ? (daemon as any).transportScopeForIntegrationIds([integrationId]) : undefined
+  return ['slack', scope ?? '', '1720000000.000200', targetAgentId].join('\u0000')
+}
+
 describe('agent-authored platform mentions (send-message-routing-rework.md §6)', () => {
   it('activates exactly the mentioned agent, with the trusted hop already advanced', async () => {
     // §10 case 7. The one positive case: a finalized agent reply naming a peer wakes that
@@ -256,14 +273,95 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     expect(route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' })).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
     // The observation IS recorded, pending its other half — keyed by the visible post's ts
-    // and the target, which is exactly what the internal wake will independently compute.
-    const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-a']) ?? ''
-    const key = ['slack', scope, '1720000000.000200', 'bot-b'].join('\u0000')
-    expect((daemon as any).store.getActivation(key)).toMatchObject({
+    // and the TARGET's own scope, which is exactly what the internal wake computes.
+    expect((daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
       state: 'pending',
       agentCallDeliveryId: 'd-1',
       platformMessageId: '1720000000.000200'
     })
     await daemon.stop()
+  })
+
+  // §10 case 4 — the two halves of a paired `toAgent + channel` delivery may arrive in
+  // either order, over different transports, separated by a restart. Both orders must
+  // admit ONE child, built from the internal wake's complete envelope.
+  describe('activation rendezvous, both arrival orders (§3.2)', () => {
+    const wake = (daemon: Daemon, over: Record<string, unknown> = {}) =>
+      (daemon as any).messageAgent({
+        callerAgentId: 'bot-a',
+        platform: 'slack',
+        callerChannel: 'C1',
+        callerThread: '1720000000.000100',
+        toAgentId: 'bot-b',
+        text: 'please verify',
+        channel: 'C1',
+        thread: '1720000000.000200',
+        transcriptTs: '1720000000.000200',
+        ...over
+      }) as Promise<{ delivered: boolean; targetSession: string }>
+
+    it('internal wake first: the later platform echo does not open a second child', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const res = await wake(daemon)
+      expect(res.delivered).toBe(true)
+      expect(calls).toHaveLength(1)
+
+      // The visible echo of the SAME post now arrives through platform ingress.
+      expect(route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' })).kind).toBe('rejected')
+      expect(calls).toHaveLength(1)
+      expect((daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
+        state: 'admitted',
+        childSessionId: res.targetSession
+      })
+      await daemon.stop()
+    })
+
+    it('platform event first: the later wake admits once, with full lineage intact', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      // The echo beats the wake. Nothing dispatches: the observation carries none of the
+      // trusted envelope, so admitting on it would fabricate the call it accompanies.
+      expect(route(daemon, agentMessage({}, { agentCallDeliveryId: 'd-1' })).kind).toBe('rejected')
+      expect(calls).toHaveLength(0)
+      expect((daemon as any).store.getActivation(pairingKey(daemon))?.state).toBe('pending')
+
+      // Seed the caller's origin so `needsReply` has a parent session to report into —
+      // the lineage that would be LOST if the platform half had been allowed to dispatch.
+      ;(daemon as any).store.upsertSession({
+        key: 'slack:C1:1720000000.000100:bot-a',
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: '1720000000.000100',
+        acpSessionId: 'acp-parent-1',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      const res = await wake(daemon, { needsReply: true })
+      expect(res.delivered).toBe(true)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]!.callMeta).toMatchObject({
+        callFrom: 'bot-a',
+        originSessionId: 'acp-parent-1',
+        needsReply: true
+      })
+      expect((daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({
+        state: 'admitted',
+        // The visible observation survives the transition, so the two collapse onto one
+        // transcript row instead of duplicating the hand-off.
+        platformMessageId: '1720000000.000200'
+      })
+      await daemon.stop()
+    })
+
+    it('a retried wake reuses the admitted child instead of opening another', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const first = await wake(daemon)
+      const retry = await wake(daemon, { text: 'please verify (retry)' })
+      expect(retry.delivered).toBe(true)
+      expect(retry.targetSession).toBe(first.targetSession)
+      expect(calls).toHaveLength(1)
+      await daemon.stop()
+    })
   })
 })
