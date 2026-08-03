@@ -121,6 +121,7 @@ function sameWorkspaceDefinition(left: AgentWorkspace, right: AgentWorkspace): b
   if (left.mode !== right.mode) return false
   if (left.mode === 'scratch' || right.mode === 'scratch') return true
   return (
+    (left.isolation ?? 'shared') === (right.isolation ?? 'shared') &&
     gitRepoLabel(left.gitRepo).toLowerCase() === gitRepoLabel(right.gitRepo).toLowerCase() &&
     (left.gitBranch ?? 'main') === (right.gitBranch ?? 'main') &&
     (left.agentDir ?? '') === (right.agentDir ?? '') &&
