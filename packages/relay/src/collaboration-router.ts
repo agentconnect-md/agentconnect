@@ -171,10 +171,10 @@ export class CollaborationRouter {
    *     Deliberate, and not a regression: the `hasMembers(caller, target)` check this
    *     replaced refused the identical wake.
    *
-   * (3) UNKNOWN and channel-free (exactly the session-identity platforms — until the
-   *     legacy emission clamp lifts, only `webchat` arrives on this wire; a `dream`/`hook`
-   *     session's own platform reaches the daemon's twin on its same-daemon path) —
-   *     `synthetic`. NOT a reject: this is the case the org-scoped directory exists for.
+   * (3) UNKNOWN and channel-free (exactly the session-identity platforms: `webchat`, and
+   *     — since the S1a fleet gate passed — a `hook`/`dream` session's raw platform on a
+   *     cross-daemon wake) — `synthetic`. NOT a reject: this is the case the org-scoped
+   *     directory exists for.
    *     Instead the asserted channel never becomes the session coordinate at all;
    *     {@link a2aCoordChannel} derives it from the trusted caller, which cannot alias any
    *     platform session. The relay does not apply the substitution (see below), only skips

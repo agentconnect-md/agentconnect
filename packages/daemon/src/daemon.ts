@@ -6585,6 +6585,75 @@ export class Daemon {
       )
       return record(nak('not_allowed'))
     }
+    // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
+    // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
+    const callMeta: CallMeta = {
+      callFrom: msg.trustedFromAgentId,
+      ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),
+      hopCount: msg.hopCount,
+      deliveryId: msg.deliveryId,
+      // §5.3: preserve the remote caller's origin lineage so a child woken here can reply
+      // back across the relay to a parent session that lives on the caller's daemon.
+      ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
+      ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
+      ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
+      // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
+      // local path — the directive names `originSessionId`, so it is meaningless without one.
+      ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {}),
+      // §5.1: tighten-only. A `true` seals the child's capture gate immediately;
+      // a `false`/absent value changes nothing, because the child starts excluded
+      // and only the CP may open it.
+      ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
+    }
+
+    // §5.3 lineage REPLY: dispatch into the EXACT existing origin session instead of
+    // coordinate keying. The sender's daemon enforced origin-only authorization (the
+    // replier's turn originated from this session); terminal validation here is
+    // possession + ownership — the high-entropy acpSessionId is only handed out
+    // through wake lineage, and the AGENT-SCOPED lookup below IS the ownership check
+    // (ACP session ids are runtime/agent-local, so two agents may legitimately share
+    // one; a global lookup could surface the wrong agent's row). This branch runs
+    // BEFORE the wake-coordinate membership gate: a lineage reply never keys or
+    // creates a session from `coords`, so the aliasing threat that gate closes is
+    // absent — and membership would wrongly reject a replier that does not share the
+    // origin's channel (an explicitly supported org-scoped case). Org + directional
+    // policy above still apply. A missing session NAKs `not_found`, mirroring the
+    // local replyToSession contract — SessionTarget never creates a session.
+    if (msg.lineageReplyTo !== undefined) {
+      const origin = this.store.getSessionByAcpIdForAgent(msg.toAgentId, msg.lineageReplyTo)
+      if (!origin) return record(nak('not_found'))
+      // Reply transport from the SESSION's own scope (mirrors replyToSession's local branch).
+      const replyIntegrationId = this.integrationIdForSessionTransport(
+        origin.agentId,
+        origin.platform,
+        origin.transportScope
+      )
+      if (origin.transportScope && !replyIntegrationId) return record(nak('not_found'))
+      const reply: NormalizedMessage = {
+        msgId: `agentcall:${origin.channel}:${msg.deliveryId}`,
+        traceId: msg.deliveryId,
+        source: 'agent',
+        platform: origin.platform,
+        channel: origin.channel,
+        ...(origin.thread ? { thread: origin.thread } : {}),
+        ...(origin.transportScope ? { transportScope: origin.transportScope } : {}),
+        // Ordered as NEW content in the origin session (see replyToSession's local branch).
+        transcriptTs: monotonicTs(),
+        sender: { id: msg.trustedFromAgentId, isBot: true },
+        text: msg.text,
+        mentionedBots:
+          replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
+        isDm: false
+      }
+      void this.dispatch(msg.toAgentId, reply, replyIntegrationId, undefined, callMeta).catch((err) =>
+        this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
+      )
+      this.log.info(
+        `relay: rd/agentmsg/fwd lineage reply ${msg.trustedFromAgentId} → ${msg.toAgentId} (${origin.key}) delivery=${msg.deliveryId}`
+      )
+      return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: origin.key })
+    }
+
     // COORDINATE INTEGRITY (§2.5 #4), the second half of terminal-verify and the reason
     // dropping channel from the POLICY predicate is not the same as dropping it entirely:
     // `coords` is still the woken peer's SESSION key (see sessionChannel below), so a caller
@@ -6608,26 +6677,6 @@ export class Daemon {
     // wake from that caller collapses onto the one pairwise session.
     const sessionChannel = coordsVerdict.verdict === 'synthetic' ? coordsVerdict.channel : channel
 
-    // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
-    // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
-    const callMeta: CallMeta = {
-      callFrom: msg.trustedFromAgentId,
-      ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),
-      hopCount: msg.hopCount,
-      deliveryId: msg.deliveryId,
-      // §5.3: preserve the remote caller's origin lineage so a child woken here can reply
-      // back across the relay to a parent session that lives on the caller's daemon.
-      ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
-      ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
-      ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
-      // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
-      // local path — the directive names `originSessionId`, so it is meaningless without one.
-      ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {}),
-      // §5.1: tighten-only. A `true` seals the child's capture gate immediately;
-      // a `false`/absent value changes nothing, because the child starts excluded
-      // and only the CP may open it.
-      ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
-    }
     const resolved = this.resolveCpAgent(msg.toAgentId)
     const integrationId = msg.integrationId ?? resolved?.integrationId
     // §5.4: the CANONICAL child session key, computed with the same inputs `dispatch` will use —
@@ -6909,7 +6958,7 @@ export class Daemon {
     // already minted); originCoords are its landing coords for cross-daemon reply routing.
     const originSessionId = this.store.getSession(callerKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, originSessionId)
-    const originCoordPlatform = this.legacyCoordPlatform(platform)
+    const originCoordPlatform = platform
     const originCoords: CallMeta['originCoords'] = {
       platform: originCoordPlatform,
       channel: req.callerChannel,
@@ -6928,7 +6977,7 @@ export class Daemon {
       req.correlationId !== undefined ? req.correlationId : isReply ? inbound.correlationId : undefined
 
     const target = this.agents.get(req.toAgentId)
-    const resolved = target ? this.resolveCpAgent(req.toAgentId, this.legacyCoordPlatform(platform)) : null
+    const resolved = target ? this.resolveCpAgent(req.toAgentId, platform) : null
     const integrationId = resolved?.integrationId
     const targetTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
@@ -6970,7 +7019,7 @@ export class Daemon {
     // Local presence: if absent, route the delivery over the relay. The relay
     // decides whether the target is allowed to be woken by this caller.
     if (!target) {
-      const coordPlatform = this.legacyCoordPlatform(platform)
+      const coordPlatform = platform
       const remote = await this.routeAgentMsgCrossDaemon(
         { ...req, text: event.text, thread: event.thread },
         {
@@ -7130,7 +7179,7 @@ export class Daemon {
     const deliveryId = randomUUID()
     // Hand the origin owner a turn whose origin points back at the REPLIER's session, so the
     // origin could reply again (symmetric lineage). callFrom = the replier.
-    const replyCoordPlatform = this.legacyCoordPlatform(platform)
+    const replyCoordPlatform = platform
     const replierSessionId = callerRec?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, replierSessionId)
     const replyOriginCoords: CallMeta['originCoords'] = {
@@ -7174,7 +7223,7 @@ export class Daemon {
       if (local.transportScope && !integrationId) {
         return { delivered: false, targetSession: local.key, reason: 'not_found' }
       }
-      const resolved = this.resolveCpAgent(originOwner, this.legacyCoordPlatform(originPlatform))
+      const resolved = this.resolveCpAgent(originOwner, originPlatform)
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
@@ -7234,7 +7283,12 @@ export class Daemon {
         ...(correlationId !== undefined ? { correlationId } : {}),
         ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
         originCoords: replyOriginCoords,
-        ...(externalOrigin ? { externalOrigin } : {})
+        ...(externalOrigin ? { externalOrigin } : {}),
+        // §5.3: this is a REPLY into the validated origin session, not a wake — the
+        // target dispatches into that exact session (a channel-free origin's
+        // coordinate would otherwise be substituted and the reply would mint a
+        // different synthetic session).
+        lineageReplyTo: req.sessionId
       }
     )
     return {
@@ -7531,7 +7585,7 @@ export class Daemon {
     }
     const originSessionId = this.store.getSession(originKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.agentId, originSessionId)
-    const originCoordPlatform = this.legacyCoordPlatform(originPlatform)
+    const originCoordPlatform = originPlatform
     const deliveryId = randomUUID()
     const callMeta: CallMeta = {
       callFrom: req.agentId,
@@ -7604,6 +7658,9 @@ export class Daemon {
       originSessionId?: string
       originCoords?: CallMeta['originCoords']
       externalOrigin?: CallMeta['externalOrigin']
+      /** §5.3 lineage reply: the EXISTING target session (acpSessionId) this delivery
+       *  replies into — the target dispatches into it instead of coordinate keying. */
+      lineageReplyTo?: string
     }
   ): Promise<MessageAgentResult> {
     if (!this.relays) {
@@ -7633,6 +7690,7 @@ export class Daemon {
         ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
         ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
         ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
+        ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
         // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
         // having an origin for exactly the reason the local path is — there is nothing to report to
         // without one, and the target ignores it in that case anyway.
@@ -7648,17 +7706,6 @@ export class Daemon {
       this.log.warn(`messageAgent: cross-daemon route failed for ${req.toAgentId}: ${formatErr(err)}`)
       return { delivered: false, targetSession: ctx.targetSession, reason: 'offline' }
     }
-  }
-
-  /** Legacy COORDINATE-EMISSION clamp (S1a, integration-plugin-architecture.md §6.2/§6.3).
-   *  Session KEYS always use the raw session platform — the old `narrowPlatform` fold
-   *  (unknown → 'slack') minted keys nothing could continue and is deleted. But coords
-   *  handed to the relay wire or resolved against CP integration rows keep today's values:
-   *  peers may still read platform fields as closed enums until the fleet gate passes, and
-   *  the channel-free origin kinds (`hook`, `dream`) have no integration row to resolve.
-   *  Remove after the S1a fleet gate (S1b opens the emitted set). */
-  private legacyCoordPlatform(p: string): string {
-    return p === 'hook' || p === 'dream' ? 'slack' : p
   }
 
   // ══════════════════════════ §3.4/§6.8 main-agent orchestration ══════════════════════════

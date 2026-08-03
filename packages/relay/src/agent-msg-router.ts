@@ -103,7 +103,14 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     // channel-free platform is admitted, and the TARGET DAEMON (not the relay) replaces the
     // asserted channel with a caller-derived one when it mints the session key. The relay
     // therefore forwards `coords` verbatim and acts only on `reject`.
+    // A LINEAGE REPLY (§5.3, `lineageReplyTo`) is exempt from this gate: it never keys or
+    // creates a session from `coords` — the TARGET daemon dispatches into the exact session
+    // named by the high-entropy id and terminally validates possession + ownership — so the
+    // aliasing threat the gate closes is absent, and membership would wrongly reject a
+    // replier that does not share the origin's channel (an explicitly supported org-scoped
+    // case). Org membership (c), directional policy (d), and the hop cap (e) still apply.
     if (
+      msg.lineageReplyTo === undefined &&
       router.coordsDecision(orgId, msg.coords.platform, msg.coords.channel, msg.claimedFromAgentId).verdict === 'reject'
     ) {
       deps.log.warn(
@@ -167,6 +174,9 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
         ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
         ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
+        // §5.3 lineage reply target — opaque to the relay; the TARGET daemon terminally
+        // validates it. Coordinate integrity above still applied to `coords` unchanged.
+        ...(msg.lineageReplyTo !== undefined ? { lineageReplyTo: msg.lineageReplyTo } : {}),
         // §5.4 report-back request, forwarded opaquely for the same reason: it is an instruction
         // about the caller's OWN lineage, so the relay carries it without minting or validating it.
         ...(msg.needsReply !== undefined ? { needsReply: msg.needsReply } : {}),
