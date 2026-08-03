@@ -56,7 +56,14 @@ export { PgSlackInstallStore } from './repositories/slack-install.repo.js'
 export { PgSlackPlatformInstallStore } from './repositories/slack-platform-install.repo.js'
 export { PgFeishuAppRegistrationStore } from './repositories/feishu-app-registration.repo.js'
 export { PgSlackUserConfigStore } from './repositories/slack-user-config.repo.js'
-export { GENERAL_PRESET, RESERVED_AGENT_SLUGS, PgPresetAgentStore, provisionPresetAgents } from './preset-agents.js'
+export {
+  GENERAL_PRESET,
+  PRESET_AGENT_SKILLS,
+  PRESET_SKILL_SOURCE,
+  RESERVED_AGENT_SLUGS,
+  PgPresetAgentStore,
+  provisionPresetAgents
+} from './preset-agents.js'
 export { PresetAgentBackfill } from './preset-agent-backfill.js'
 export { PgCronRepo } from './repositories/cron.repo.js'
 export { PgHookRepo, PgHookSecretStore } from './repositories/hook.repo.js'

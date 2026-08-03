@@ -30,6 +30,7 @@ import type { PresetAgentKind, PresetAgentRecord, PresetAgentStore } from './por
 import { AgentId, OrgId } from '../domain/ids.js'
 import { RESERVED_AGENT_SLUGS } from '../domain/reserved-agent-slugs.js'
 import { PgAgentRepo } from './repositories/agent.repo.js'
+import { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
 
 export { RESERVED_AGENT_SLUGS }
 
@@ -50,6 +51,31 @@ export const GENERAL_PRESET = {
   // schema requires one — keep it the neutral dark plate.
   icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' } satisfies AgentIcon
 } as const
+
+/** The preset's default skill (§3.1): the platform's own `agentconnect-platform`
+ *  skill — platform introduction + admin-over-MCP/REST guidance — acquired from
+ *  the public AgentConnect monorepo's `skills/` directory. Registered as an
+ *  ordinary org skill source named after the preset, so the console lists and
+ *  manages it like any user-registered source. */
+export const PRESET_SKILL_SOURCE = {
+  name: 'agentconnect',
+  source: 'agentconnect-md/agentconnect',
+  // Rename-proof numeric identity of agentconnect-md/agentconnect — AgentSkillEntry
+  // requires it, and the daemon re-verifies it against
+  // api.github.com/repositories/{id} before any name-based fetch.
+  githubRepoId: 1310543401n,
+  // A subdir source must carry a ref (the skill-sources route invariant); pin the
+  // repo's default branch so the skill tracks head like a console-registered source.
+  ref: 'main',
+  subDir: 'skills',
+  skills: ['agentconnect-platform']
+} as const
+
+/** The preset agent's default enable-list ("<sourceName>/<skillName>") — resolved
+ *  by agentSpecAssembler into the AgentSpec.skills entry the daemon installs. */
+export const PRESET_AGENT_SKILLS: readonly string[] = PRESET_SKILL_SOURCE.skills.map(
+  (skill) => `${PRESET_SKILL_SOURCE.name}/${skill}`
+)
 
 /** Read one org's provisioning state for a preset — false ⇒ never provisioned. */
 export async function presetAgentRowExists(db: PrismaLike, orgId: string, preset: PresetAgentKind): Promise<boolean> {
@@ -72,6 +98,7 @@ export async function provisionPresetAgents(
   args: { orgId: string; createdByUserId?: string | null }
 ): Promise<void> {
   const agentId = AgentId(randomUUID())
+  const skills = await providePresetSkillSource(db, args.orgId)
   // Same creation core as POST /agents (PgAgentRepo composes under the ambient
   // tx via its PrismaLike constructor arg). Runtime stays UNSET — deferred exec
   // config; placement (M1/manual) chooses it. Everything else is the ordinary
@@ -83,11 +110,40 @@ export async function provisionPresetAgents(
     displayName: GENERAL_PRESET.displayName,
     description: GENERAL_PRESET.description,
     icon: GENERAL_PRESET.icon,
+    ...(skills.length > 0 ? { skills } : {}),
     ...(args.createdByUserId ? { createdByUserId: args.createdByUserId } : {})
   })
   await db.presetAgent.create({
     data: { orgId: args.orgId, preset: 'general', agentId, status: 'created' }
   })
+}
+
+/**
+ * Register the preset's default skill source and return the enable-list refs the
+ * preset agent should carry, composing under the caller's (possibly ambient)
+ * transaction.
+ *
+ * Collision discipline mirrors the agent row (header note): the guard is a READ,
+ * never a caught unique violation. A brand-new org cannot collide — it has no
+ * skill sources. A backfilled org that already owns the name keeps its source
+ * untouched and the preset simply ships without default skills: never capture a
+ * user's source name, and never bind the preset to a source we did not write.
+ */
+async function providePresetSkillSource(db: PrismaLike, orgId: string): Promise<string[]> {
+  const repo = new PgSkillSourceRepo(db)
+  if (await repo.getByName(OrgId(orgId), PRESET_SKILL_SOURCE.name)) return []
+  const created = await repo.create({
+    orgId: OrgId(orgId),
+    name: PRESET_SKILL_SOURCE.name,
+    source: PRESET_SKILL_SOURCE.source,
+    githubRepoId: PRESET_SKILL_SOURCE.githubRepoId,
+    ref: PRESET_SKILL_SOURCE.ref,
+    subDir: PRESET_SKILL_SOURCE.subDir,
+    skills: [...PRESET_SKILL_SOURCE.skills]
+  })
+  // null ⇒ some agent in this org already enables refs under the name (the repo's
+  // name-capture guard) — leave those bindings alone and ship without skills.
+  return created ? [...PRESET_AGENT_SKILLS] : []
 }
 
 /** Record a permanently-skipped preset (backfill slug collision / org opt-out). */
