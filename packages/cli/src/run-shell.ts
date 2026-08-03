@@ -86,9 +86,13 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
   const onInt = (): void => {
     // no-op: the child receives terminal SIGINT directly via the shared pgroup.
   }
+  // A SIGTERM can also land while the recovery prompt (or one of its actions)
+  // is pending — there is no child then, so the stop must abort the flow itself.
+  const recoveryStop = new AbortController()
   const onTerm = (): void => {
     stopRequested = true
     current?.kill('SIGTERM')
+    recoveryStop.abort()
   }
   process.on('SIGINT', onInt)
   process.on('SIGTERM', onTerm)
@@ -126,7 +130,11 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
       interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
       elapsedMs: Date.now() - spawnedAt
     })
-    if (recoverable && (await runRecoveryFlow(root, result)) === 'respawn') continue
+    const recovered =
+      recoverable && (await runRecoveryFlow(root, result, { signal: recoveryStop.signal })) === 'respawn'
+    // Re-check the stop state after the wait: a stop that arrived during the
+    // prompt/action must win — never launch a daemon past a requested stop.
+    if (recovered && !stopRequested) continue
     return exitAsChild(result, cleanup)
   }
 }

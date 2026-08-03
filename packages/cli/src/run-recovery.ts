@@ -72,6 +72,12 @@ export interface RecoveryDeps {
   out: NodeJS.WritableStream
   rollback: (root: string) => Promise<string>
   reinstall: (root: string) => Promise<string>
+  /**
+   * Stop signal from the run shell (SIGTERM while the prompt or an action is
+   * pending — there is no child to receive it). Aborting closes the prompt and
+   * vetoes a pending action's respawn, so a stop is never followed by a launch.
+   */
+  signal?: AbortSignal
 }
 
 function realRecoveryDeps(): RecoveryDeps {
@@ -88,14 +94,17 @@ function realRecoveryDeps(): RecoveryDeps {
 /**
  * Show the menu and act on the choice. Resolves 'respawn' when a version switch
  * succeeded (the run shell re-resolves `current` and retries), 'exit' when the
- * user declined or asked for the manual commands. A failed action (registry
- * down, previous pruned) re-offers the menu so the user can pick another way out.
+ * user declined, asked for the manual commands, or a stop aborted the flow. A
+ * failed action (registry down, previous pruned) re-offers the menu so the user
+ * can pick another way out.
  */
 export async function runRecoveryFlow(
   root: string,
   result: ChildResult,
-  deps: RecoveryDeps = realRecoveryDeps()
+  partial: Partial<RecoveryDeps> = {}
 ): Promise<'respawn' | 'exit'> {
+  const deps: RecoveryDeps = { ...realRecoveryDeps(), ...partial }
+  if (deps.signal?.aborted) return 'exit'
   const meta = readMeta(root)
   const cur = currentVersion(root)
   const previous = meta.previous && meta.previous !== cur && isInstalled(root, meta.previous) ? meta.previous : null
@@ -103,13 +112,22 @@ export async function runRecoveryFlow(
 
   deps.out.write(`agentconnect: daemon${cur ? ` ${cur}` : ''} exited with code ${result.code} during startup\n`)
   const rl = createInterface({ input: deps.input, output: deps.out })
-  rl.on('SIGINT', () => rl.close()) // Ctrl-C at the prompt = decline
+  // Ctrl-C at the prompt and a stop signal both cancel: close the prompt AND
+  // remember it, so an action already in flight cannot respawn afterwards.
+  let cancelled = false
+  const cancel = (): void => {
+    cancelled = true
+    rl.close()
+  }
+  rl.on('SIGINT', cancel)
+  deps.signal?.addEventListener('abort', cancel, { once: true })
   const iter = rl[Symbol.asyncIterator]()
   try {
     for (;;) {
       for (const o of options) deps.out.write(`  ${o.key}) ${o.label}\n`)
       deps.out.write(`Choose 1-${options.length}, or press Enter to exit: `)
       const { value, done } = await iter.next()
+      if (cancelled) return 'exit'
       const answer = done ? '' : String(value).trim()
       if (answer === '') return 'exit'
       const choice = options.find((o) => o.key === answer)
@@ -120,14 +138,17 @@ export async function runRecoveryFlow(
       }
       try {
         const v = choice.action === 'rollback' ? await deps.rollback(root) : await deps.reinstall(root)
+        if (cancelled) return 'exit' // stop arrived while the action ran — never respawn past it
         deps.out.write(`agentconnect: retrying with daemon ${v}…\n`)
         return 'respawn'
       } catch (err) {
+        if (cancelled) return 'exit'
         deps.out.write(`agentconnect: ${choice.action} failed: ${(err as Error).message}\n`)
         // fall through: the menu is offered again (e.g. registry down → roll back)
       }
     }
   } finally {
+    deps.signal?.removeEventListener('abort', cancel)
     rl.close()
   }
 }

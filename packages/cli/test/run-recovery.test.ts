@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 import {
   MANUAL_VERSION_HELP,
   recoveryOptions,
@@ -145,6 +145,41 @@ describe('runRecoveryFlow', () => {
     await expect(runRecoveryFlow(r, failed, f.deps)).resolves.toBe('respawn')
     expect(f.output()).toContain('reinstall failed: registry unreachable')
     expect(f.rollback).toHaveBeenCalledWith(r)
+  })
+
+  it('an already-aborted stop signal skips the prompt entirely', async () => {
+    const r = rootWithHistory()
+    const f = fakeDeps(['1'])
+    const stop = new AbortController()
+    stop.abort()
+    await expect(runRecoveryFlow(r, failed, { ...f.deps, signal: stop.signal })).resolves.toBe('exit')
+    expect(f.output()).toBe('')
+    expect(f.rollback).not.toHaveBeenCalled()
+  })
+
+  it('a stop arriving while the menu is idle aborts the prompt', async () => {
+    const r = rootWithHistory()
+    const f = fakeDeps([])
+    const idle = new PassThrough() // stays open: nobody is answering
+    const stop = new AbortController()
+    const flow = runRecoveryFlow(r, failed, { ...f.deps, input: idle, signal: stop.signal })
+    stop.abort()
+    await expect(flow).resolves.toBe('exit')
+    expect(f.rollback).not.toHaveBeenCalled()
+    expect(f.reinstall).not.toHaveBeenCalled()
+  })
+
+  it('a stop arriving while an action runs vetoes its respawn', async () => {
+    const r = rootWithHistory()
+    const f = fakeDeps(['1'])
+    const stop = new AbortController()
+    f.rollback.mockImplementationOnce(async () => {
+      stop.abort() // the stop lands mid-rollback…
+      return '1.0.0'
+    })
+    // …so even though the switch succeeded, the shell must not respawn past it.
+    await expect(runRecoveryFlow(r, failed, { ...f.deps, signal: stop.signal })).resolves.toBe('exit')
+    expect(f.output()).not.toContain('retrying')
   })
 
   it('hides rollback when previous is missing from the store', async () => {
