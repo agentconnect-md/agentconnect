@@ -2058,12 +2058,17 @@ export class Daemon {
     /** Trusted call metadata for a delivery that IS an agent call — today, a verified
      *  agent-authored platform mention, whose already-computed hop depth must reach the
      *  admitted turn (§4.1). Absent for ordinary human ingress. */
-    callMeta?: CallMeta
+    callMeta?: CallMeta,
+    /** Extra dispatch options for the caller's delivery contract (today: `requireDurable`
+     *  for a rendezvous-backed activation, whose record must not go terminal for a turn
+     *  that was never durably queued). */
+    dispatchOpts?: { requireDurable?: boolean }
   ): { handle: DeliveryHandle; turn: Promise<string | null> } {
     const turnId = stableTurnId(agentId, msg)
     let settleAdmission!: (admission: DeliveryAdmission) => void
     const admission = new Promise<DeliveryAdmission>((resolve) => (settleAdmission = resolve))
     const turn = this.dispatch(agentId, msg, integrationId, webchat, callMeta, {
+      ...dispatchOpts,
       onAdmission: (result) => {
         if (result.accepted && !result.duplicate) {
           const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
@@ -5760,7 +5765,8 @@ export class Daemon {
       callFrom: verified.authorAgentId,
       hopCount: deliveryHopCount
     })
-    const claimed = this.store.attachActivationEnvelope(key, envelope, expiresAt)
+    // The inbox id this dispatch will write, so a crash before admission is reconcilable.
+    const claimed = this.store.attachActivationEnvelope(key, envelope, expiresAt, msg.msgId)
     if (!claimed.dispatch) {
       this.recordUnrouted(msg)
       this.log.debug(
@@ -5781,7 +5787,11 @@ export class Daemon {
       hopCount: deliveryHopCount,
       deliveryId: msg.msgId
     }
-    const { handle, turn } = this.evaluationDispatchHandle(targetAgentId, msg, integrationId, undefined, callMeta)
+    const { handle, turn } = this.evaluationDispatchHandle(targetAgentId, msg, integrationId, undefined, callMeta, {
+      // `accepted` must IMPLY a replayable row: without this a failed inbox append still
+      // admits, and the activation goes terminal for a turn that can never be replayed.
+      requireDurable: true
+    })
     turn.catch((err) => this.log.error(`dispatch failed for agent "${targetAgentId}": ${formatErr(err)}`))
     // §8.6: the key becomes TERMINAL only once the turn is durably admitted. Marking it
     // admitted before dispatch would make exactly-once into never — a rejected turn, a
@@ -6753,7 +6763,8 @@ export class Daemon {
     const claimed = this.store.attachActivationEnvelope(
       key,
       JSON.stringify({ kind: 'relay-platform-mention', responseId: msg.trustedResponseId, callFrom: authorAgentId }),
-      this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+      this.clock.now() + ACTIVATION_PAIRING_TTL_MS,
+      msg.msgId
     )
     if (!claimed.dispatch) return false
     normalized.trigger = 'mention'
@@ -6766,6 +6777,8 @@ export class Daemon {
       normalized.transportScope
     )
     void this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, callMeta, {
+      // `accepted` must imply a replayable row — see the direct path.
+      requireDurable: true,
       onAdmission: (result) => {
         if (result.accepted) this.store.admitActivation(key, childKey)
         else this.store.releaseActivation(key)
@@ -7280,7 +7293,8 @@ export class Daemon {
       const claimed = this.store.attachActivationEnvelope(
         key,
         JSON.stringify(callMeta),
-        this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+        this.clock.now() + ACTIVATION_PAIRING_TTL_MS,
+        callMeta.deliveryId
       )
       if (!claimed.dispatch) {
         this.log.info(`relay: paired delivery ${msg.deliveryId} already admitted — reusing the existing child`)
@@ -7299,6 +7313,7 @@ export class Daemon {
     void this.dispatch(msg.toAgentId, normalized, integrationId, undefined, callMeta, {
       ...(pairingKey !== undefined
         ? {
+            requireDurable: true,
             onAdmission: (result) => {
               // A claimed-but-unadmitted key would deduplicate every retry against a child
               // that was never opened, turning exactly-once into never (§8.6).
@@ -7720,7 +7735,8 @@ export class Daemon {
       const claimed = this.store.attachActivationEnvelope(
         key,
         JSON.stringify(callMeta),
-        this.clock.now() + ACTIVATION_PAIRING_TTL_MS
+        this.clock.now() + ACTIVATION_PAIRING_TTL_MS,
+        callMeta.deliveryId
       )
       if (!claimed.dispatch) {
         // Already admitted (a retry reusing this delivery id, or a replay). Hand back the
@@ -7740,6 +7756,7 @@ export class Daemon {
     void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta, {
       ...(pairingKey !== undefined
         ? {
+            requireDurable: true,
             onAdmission: (result) => {
               if (result.accepted) this.store.admitActivation(pairingKey, targetSession)
               else this.store.releaseActivation(pairingKey)

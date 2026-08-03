@@ -1460,6 +1460,43 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     s.close()
   })
 
+  it('reconciles a crashed claim against the durable inbox instead of guessing', () => {
+    // A crash between claim and admission leaves two rows that look identical and need
+    // OPPOSITE answers. Releasing both would let a replayed turn be dispatched a second
+    // time; admitting both would strand a delivery that never persisted. The inbox row is
+    // the only evidence that distinguishes them.
+    const s = store()
+    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join(' ')
+    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join(' ')
+    expect(s.attachActivationEnvelope(durable, ENVELOPE, 1000, 'delivery-durable').dispatch).toBe(true)
+    expect(s.attachActivationEnvelope(lost, ENVELOPE, 1000, 'delivery-lost').dispatch).toBe(true)
+    // Only the first one's turn actually reached the durable queue before the crash.
+    s.appendInbox({ id: 'delivery-durable', sessionKey: 'k', agentId: 'bot-b', msg: '{}', enqueuedAt: '0000000001' })
+
+    const sweep = s.expireActivations(1000)
+    expect(sweep.transcriptOnly).toEqual([])
+    // Durably queued ⇒ startup replay will run it, so the claim COMPLETES. A later retry
+    // must be deduplicated against it, not allowed to deliver again.
+    expect(s.getActivation(durable)?.state).toBe('admitted')
+    expect(s.attachActivationEnvelope(durable, ENVELOPE, 5000).dispatch).toBe(false)
+    // Never persisted ⇒ nothing will replay, so the key must become claimable again.
+    expect(sweep.released).toBe(1)
+    expect(s.getActivation(lost)).toBeUndefined()
+    expect(s.attachActivationEnvelope(lost, ENVELOPE, 5000, 'delivery-lost-retry').dispatch).toBe(true)
+    s.close()
+  })
+
+  it('releases a legacy claim that carries no dispatch id', () => {
+    // Rows written before `dispatchId` existed cannot be reconciled. Releasing is the same
+    // answer as "never persisted" — the safe direction, since the alternative strands the
+    // key forever.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.expireActivations(1000).released).toBe(1)
+    expect(s.getActivation(KEY)).toBeUndefined()
+    s.close()
+  })
+
   it('keys separate targets of one visible post independently', () => {
     // §3.2: one channel-root post can address several agents; each must be admitted once,
     // and one target's admission must not consume another's.

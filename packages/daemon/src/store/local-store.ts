@@ -752,6 +752,10 @@ export class LocalStore {
         platformMessageId TEXT,
         transcriptCoordinates TEXT,
         callEnvelope TEXT,
+        -- The durable inbox row id this claim's dispatch will write, recorded AT CLAIM
+        -- TIME so a crash in the dispatch window is reconcilable rather than guessable:
+        -- the sweep can ask whether the turn is durably queued instead of assuming.
+        dispatchId TEXT,
         state TEXT NOT NULL CHECK (state IN ('pending', 'admitted', 'transcript-only')),
         childSessionId TEXT,
         expiresAt INTEGER NOT NULL
@@ -886,6 +890,7 @@ export class LocalStore {
     this.migrateSessionMutes()
     this.migrateSessionGates()
     this.migrateInboxLoopGuardCounted()
+    this.migrateActivationDispatchId()
     this.migrateTranscriptToolBody()
     this.migrateTranscriptAttachments()
     this.migrateTranscriptQuote()
@@ -1100,6 +1105,16 @@ export class LocalStore {
 
   /** Rows written before loop protection had no per-delivery accounting marker. They
    *  start at 0 so the first owner that can replay them charges them exactly once. */
+  /** Add `activation_rendezvous.dispatchId` to a pre-existing DB. Legacy rows migrate
+   *  NULL, which the sweep treats as "not reconcilable" and releases — the same answer it
+   *  would give for a dispatch that never persisted. */
+  private migrateActivationDispatchId(): void {
+    const cols = this.db.prepare('PRAGMA table_info(activation_rendezvous)').all() as { name: string }[]
+    if (cols.length > 0 && !cols.some((c) => c.name === 'dispatchId')) {
+      this.db.exec('ALTER TABLE activation_rendezvous ADD COLUMN dispatchId TEXT')
+    }
+  }
+
   private migrateInboxLoopGuardCounted(): void {
     const cols = this.db.prepare('PRAGMA table_info(inbox)').all() as { name: string }[]
     if (!cols.some((c) => c.name === 'loopGuardCounted'))
@@ -3826,7 +3841,12 @@ export class LocalStore {
   attachActivationEnvelope(
     activationKey: string,
     callEnvelope: string,
-    expiresAt: number
+    expiresAt: number,
+    /** The durable inbox row id the dispatch this claim authorizes will write. Recorded
+     *  now so a crash before admission is RECONCILABLE: the sweep can ask whether that
+     *  turn is durably queued instead of guessing. Omitted ⇒ not reconcilable, and the
+     *  sweep releases the claim rather than risk a double delivery. */
+    dispatchId?: string
   ): { dispatch: boolean; record: ActivationRecord } {
     this.db.exec('BEGIN')
     try {
@@ -3847,11 +3867,13 @@ export class LocalStore {
       }
       this.db
         .prepare(
-          `INSERT INTO activation_rendezvous (activationKey, callEnvelope, state, expiresAt)
-           VALUES (?, ?, 'pending', ?)
-           ON CONFLICT(activationKey) DO UPDATE SET callEnvelope = excluded.callEnvelope`
+          `INSERT INTO activation_rendezvous (activationKey, callEnvelope, dispatchId, state, expiresAt)
+           VALUES (?, ?, ?, 'pending', ?)
+           ON CONFLICT(activationKey) DO UPDATE SET
+             callEnvelope = excluded.callEnvelope,
+             dispatchId = excluded.dispatchId`
         )
-        .run(activationKey, callEnvelope, expiresAt)
+        .run(activationKey, callEnvelope, dispatchId ?? null, expiresAt)
       const record = this.getActivation(activationKey)!
       this.db.exec('COMMIT')
       return { dispatch: true, record }
@@ -3936,8 +3958,24 @@ export class LocalStore {
           )
           .run(now)
       }
-      // The crash-recovery arm. Deleting rather than marking terminal is the point: the
-      // key must become claimable again.
+      // The crash-recovery arm, RECONCILED against the durable inbox rather than assumed.
+      // A crash between claim and admission leaves two rows that look identical but need
+      // OPPOSITE answers:
+      //   - the inbox row EXISTS ⇒ startup replay will run this turn. The delivery is
+      //     alive, so the claim is completed (`admitted`), never released — releasing
+      //     would let a later retry dispatch the same logical delivery a second time.
+      //   - no inbox row ⇒ the dispatch never persisted. Release, so the next attempt is a
+      //     first attempt; leaving it claimed is exactly-once becoming never.
+      // A legacy row with no `dispatchId` is not reconcilable and takes the release arm —
+      // the same answer as "never persisted".
+      this.db
+        .prepare(
+          `UPDATE activation_rendezvous SET state = 'admitted'
+           WHERE state = 'pending' AND callEnvelope IS NOT NULL AND expiresAt <= ?
+             AND dispatchId IS NOT NULL
+             AND EXISTS (SELECT 1 FROM inbox WHERE inbox.id = activation_rendezvous.dispatchId)`
+        )
+        .run(now)
       const released = this.db
         .prepare(
           `DELETE FROM activation_rendezvous
