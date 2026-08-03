@@ -13,6 +13,7 @@
  */
 import { CollaborationGameRunner, type CollaborationGameResult } from '../../packages/daemon/src/evaluation/index.js'
 import { CountingGame, type CountingVariant } from './counting.js'
+import { QuotaCountingGame } from './quota-counting.js'
 import { prepareGameSubject, prepareScriptedSubject, type GameSubjectSpec } from './subject.js'
 import { compileTopology } from './topology.js'
 import type { GameTopologyManifest } from './types.js'
@@ -130,6 +131,129 @@ export function scriptedCountingHostFactory(): (
       cancel: async () => {},
       stop: async () => {}
     }
+  }
+}
+
+/**
+ * Scripted QUOTA policy — deterministic round-robin: participants come from the
+ * start message; agent k posts number n iff (n-1) mod N == k and it still has
+ * quota. Rules and observed numbers PERSIST per session (later prompts carry
+ * only the new peer messages). Completes with exact quotas, perfect
+ * alternation, and a termination acknowledgment from every non-final agent.
+ */
+export function scriptedQuotaHostFactory(): (
+  agent: { id: string; name?: string },
+  onUpdate: (sessionId: string, update: unknown) => void
+) => unknown {
+  return (agent, onUpdate) => {
+    let sessions = 0
+    interface QuotaSession {
+      participants: string[]
+      quota: number
+      target: number
+      seen: Set<number>
+      mine: number
+    }
+    const state = new Map<string, QuotaSession>()
+    return {
+      start: async () => {},
+      newSession: async () => {
+        const sessionId = `scripted-${agent.id.slice(0, 8)}-${(sessions += 1)}`
+        state.set(sessionId, { participants: [], quota: 0, target: 0, seen: new Set(), mine: 0 })
+        return sessionId
+      },
+      hasSession: () => true,
+      modelOptions: () => ({ current: 'scripted-quota', models: ['scripted-quota'] }),
+      prompt: async (sessionId: string, blocks: { text?: string }[]) => {
+        const session = state.get(sessionId) ?? {
+          participants: [],
+          quota: 0,
+          target: 0,
+          seen: new Set<number>(),
+          mine: 0
+        }
+        state.set(sessionId, session)
+        const text = blocks.map((block) => block.text ?? '').join('\n')
+        const participants = /Participants: ([^.]+)\./.exec(text)?.[1]
+        if (participants) session.participants = participants.split(',').map((alias) => alias.trim())
+        const quota = /exactly (\d+) numbers/.exec(text)
+        if (quota) session.quota = Number(quota[1])
+        const target = /ends at (\d+)/.exec(text)
+        if (target) session.target = Number(target[1])
+        for (const line of text.matchAll(/\[(U-[A-Z0-9-]+)\]\s*(-?\d+)\s*$/gm)) session.seen.add(Number(line[2]))
+        const myIndex = session.participants.indexOf(agent.name ?? '')
+        const maxSeen = Math.max(0, ...session.seen)
+        const reply = (value: string) =>
+          onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: value } })
+        if (session.target > 0 && maxSeen >= session.target) {
+          reply('the count is complete.')
+          return { stopReason: 'end_turn' }
+        }
+        const next = maxSeen + 1
+        if (
+          myIndex >= 0 &&
+          session.participants.length > 0 &&
+          (next - 1) % session.participants.length === myIndex &&
+          session.mine < session.quota
+        ) {
+          session.mine += 1
+          session.seen.add(next)
+          reply(String(next))
+        } else {
+          reply('waiting.')
+        }
+        return { stopReason: 'end_turn' }
+      },
+      cancel: async () => {},
+      stop: async () => {}
+    }
+  }
+}
+
+export interface QuotaCountingRunOptions {
+  seed?: number
+  quotaPerAgent?: number
+  /** Agent aliases in the counting room (default four). */
+  agents?: string[]
+  artifactDir: string
+  maxSteps?: number
+  timeoutMs?: number
+  subject?: GameSubjectSpec
+  keepSubject?: boolean
+}
+
+export async function runQuotaCounting(options: QuotaCountingRunOptions): Promise<CollaborationGameResult> {
+  const seed = options.seed ?? 42
+  const agents = options.agents ?? ['agent-a', 'agent-b', 'agent-c', 'agent-d']
+  const quotaPerAgent = options.quotaPerAgent ?? 5
+  const target = quotaPerAgent * agents.length
+  const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
+  const topology = compileTopology(countingManifest({ seed, agents }))
+  const world = new ArenaWorld(topology)
+  const game = new QuotaCountingGame({ world, roomAlias: 'counting-room', quotaPerAgent })
+  const subject = prepareGameSubject(topology, subjectSpec)
+  try {
+    const runner = new CollaborationGameRunner({
+      root: subject.root,
+      world: game,
+      artifactDir: options.artifactDir,
+      game: 'quota-counting',
+      seed,
+      mode: 'deterministic',
+      subjectKind: subjectSpec.kind,
+      ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedQuotaHostFactory() as never } : {}),
+      capabilityProfile: { memory: 'off', collaboration: 'configured' },
+      limits: {
+        maxSteps: options.maxSteps ?? target * 3 + 10,
+        timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 180_000 : 20 * 60_000)
+      },
+      agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias })),
+      // Real subjects carry template credentials; every artifact writer redacts them.
+      secrets: subject.secrets
+    })
+    return await runner.run()
+  } finally {
+    if (!options.keepSubject) subject.cleanup()
   }
 }
 

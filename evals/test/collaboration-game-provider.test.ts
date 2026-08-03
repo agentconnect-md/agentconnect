@@ -194,6 +194,31 @@ describe('collaboration game Promptfoo provider (§12)', () => {
     expect(bad.error).toContain('unsupported counting variant')
   })
 
+  it('dispatches the quota variant to the quota engine with its own fields', async () => {
+    const runQuotaGame = vi.fn(async (_options: { seed?: number }) => fakeResult())
+    const runGame = vi.fn(async (_options: Parameters<typeof runSameRoomCounting>[0]) => fakeResult())
+    const provider = new CollaborationGameProvider({ config: { artifactRoot: scratch() } }, { runGame, runQuotaGame })
+    const response = await provider.callApi(
+      JSON.stringify({
+        kind: 'game',
+        id: 'quota',
+        game: 'counting',
+        variant: 'quota',
+        quotaPerAgent: 3,
+        agentIds: ['agent-a', 'agent-b']
+      })
+    )
+    expect(response.error).toBeUndefined()
+    expect(runGame).not.toHaveBeenCalled()
+    expect(runQuotaGame).toHaveBeenCalledOnce()
+    expect(runQuotaGame.mock.calls[0]![0]).toMatchObject({ quotaPerAgent: 3, agents: ['agent-a', 'agent-b'] })
+    const misplaced = await provider.callApi(
+      JSON.stringify({ kind: 'game', id: 'bad', game: 'counting', variant: 'peer-driven', quotaPerAgent: 3 })
+    )
+    expect(misplaced.metadata).toMatchObject({ status: 'invalid_case' })
+    expect(misplaced.error).toContain('quota-variant field')
+  })
+
   it('parses defaults per the §12 case shape', () => {
     expect(parseGameCase({ kind: 'game', id: 'defaults', game: 'counting' })).toEqual({
       kind: 'game',

@@ -60,7 +60,7 @@ describe('same-room counting referee (§10.1)', () => {
     const verdict = game.verdict()
     // agent-a scored 1; agent-b's duplicate is stale; agent-c's 2 is next and valid.
     expect(verdict.outcome.acceptedPrefix).toBe(2)
-    expect(verdict.outcome.acceptedBy).toEqual(['agent-a', 'agent-c'])
+    expect(verdict.outcome.contributionOrder).toEqual(['agent-a', 'agent-c'])
     expect(verdict.metrics.collisions).toBe(1)
     const relay = game.nextDeliveries()
     expect(relay.platformEvents[0]!.payload.text).toContain('Accepted: 1 from agent-a')
@@ -79,7 +79,7 @@ describe('same-room counting referee (§10.1)', () => {
     await reply('agent-d', '2') // valid
     game.applyEffects(game.drainOutboundEffects())
     const verdict = game.verdict()
-    expect(verdict.outcome.acceptedBy).toEqual(['agent-a', 'agent-d'])
+    expect(verdict.outcome.contributionOrder).toEqual(['agent-a', 'agent-d'])
     const reasons = world
       .events()
       .filter((event) => event.type === 'count.candidate' && !event.accepted)
@@ -175,14 +175,35 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     expect(verdict.metrics.noiseReplies).toBe(1)
   })
 
-  it('accepts a consecutive scorer (visible transcript is ground truth) and tracks it as a fairness metric', async () => {
+  it('treats a post-completion acknowledgment as termination awareness, never noise', async () => {
+    const { game, reply } = fixture(2, 'peer-driven')
+    game.nextDeliveries()
+    await reply('agent-a', '1')
+    await reply('agent-b', '2')
+    game.applyEffects(game.drainOutboundEffects())
+    expect(game.isTerminal()).toBe(true)
+    // The group recognizing completion on its own is a POSITIVE signal.
+    await reply('agent-c', '2 has already been posted, so the count is complete.')
+    await reply('agent-d', 'we are done here.')
+    game.applyEffects(game.drainOutboundEffects())
+    const verdict = game.verdict()
+    expect(verdict.metrics.terminationAcknowledgments).toBe(2)
+    expect(verdict.metrics.noiseReplies).toBe(0)
+    // Neither acknowledgment is counted as a candidate or a collision.
+    expect(verdict.metrics.candidates).toBe(2)
+    expect(verdict.metrics.collisions).toBe(0)
+    // The collaboration report carries the group turn-taking record.
+    expect(verdict.outcome.contributions).toEqual({ 'agent-a': 1, 'agent-b': 1, 'agent-c': 0, 'agent-d': 0 })
+  })
+
+  it('records a consecutive contribution as a turn-taking-balance observation, never a violation', async () => {
     const { game, reply } = fixture(3, 'peer-driven')
     game.nextDeliveries()
     await reply('agent-a', '1')
     game.applyEffects(game.drainOutboundEffects())
     // A hidden rejection would diverge the official count from what the room
-    // can see — with a silent referee the consecutive score COUNTS, and the
-    // fairness miss is a metric, never a secret rejection.
+    // can see — with a silent referee the consecutive contribution COUNTS,
+    // and the turn-taking miss is a coordination-quality observation.
     await reply('agent-a', '2')
     game.applyEffects(game.drainOutboundEffects())
     await reply('agent-c', '3')
@@ -194,9 +215,9 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     expect(verdict.outcome).toMatchObject({
       completed: true,
       acceptedPrefix: 3,
-      acceptedBy: ['agent-a', 'agent-a', 'agent-c']
+      contributionOrder: ['agent-a', 'agent-a', 'agent-c']
     })
-    expect(verdict.metrics.consecutiveScores).toBe(1)
+    expect(verdict.metrics.consecutiveContributions).toBe(1)
     expect(verdict.metrics.consecutiveScorerRejections).toBe(0)
     // Terminal: the final number is not relayed and the loop halts.
     expect(game.nextDeliveries().platformEvents).toHaveLength(0)

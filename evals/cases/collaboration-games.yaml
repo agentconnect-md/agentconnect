@@ -47,6 +47,28 @@
       value: file://assertions/game-result.ts
       metric: game
 
+- description: Quota counting · each agent posts exactly 3 · leaderless endgame management
+  metadata:
+    game: counting
+    scenario: same-room
+    variant: quota
+  vars:
+    case: |
+      {
+        "kind": "game",
+        "id": "counting-quota-v1",
+        "game": "counting",
+        "scenario": "same-room",
+        "variant": "quota",
+        "seed": 42,
+        "quotaPerAgent": 3,
+        "agentIds": ["agent-a", "agent-b", "agent-c", "agent-d"]
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
 - description: Same-room counting · alternate seed
   metadata:
     game: counting

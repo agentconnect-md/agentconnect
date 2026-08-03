@@ -35,8 +35,17 @@
  * provider thread history additionally carries the post under its real bot
  * identity with `agentAuthorId`, which is what the turn-final snapshot reads.
  *
- * Rules: one accepted occurrence of each number; no skips; no agent scores
- * twice consecutively; no predefined order; waiting is legal.
+ * Counting has NO winner or loser. It is a probe of LEADERLESS group
+ * self-organization (无领导小组讨论): can a room of agents coordinate
+ * turn-taking without a moderator — fill in, avoid duplication, avoid spam,
+ * and recognize completion? The result is a collaboration report: did the
+ * GROUP complete the count, and with what coordination quality (participation
+ * balance, duplication, turn-taking, termination awareness)?
+ *
+ * Conventions: one accepted occurrence of each number; no skips; no predefined
+ * order; waiting is legal. Letting someone else continue after you contributed
+ * is a turn-taking convention the group is measured on, never a per-agent
+ * score.
  */
 import type {
   CollaborationGameWorld,
@@ -77,9 +86,16 @@ export class CountingGame implements CollaborationGameWorld {
   private readonly target: number
   private readonly refereeUserId: string
   private readonly accepted: AcceptedCandidate[] = []
-  private readonly candidateStats = { total: 0, rejected: 0, noise: 0, consecutiveRejections: 0, consecutiveScores: 0 }
+  private readonly candidateStats = {
+    total: 0,
+    rejected: 0,
+    noise: 0,
+    consecutiveRejections: 0,
+    consecutiveContributions: 0,
+    terminationAcks: 0
+  }
   private readonly acceptedByAgent = new Map<string, number>()
-  private lastScorer: string | undefined
+  private lastContributor: string | undefined
   private expected = 1
   private started = false
   private terminalReason: string | undefined
@@ -218,7 +234,7 @@ export class CountingGame implements CollaborationGameWorld {
       return this.roomBroadcast(
         `Let's play the counting game. Together, count from 1 to ${this.target} in this thread. ` +
           `Reply with ONLY the next number — nothing else. One number per message; the referee accepts the ` +
-          `first valid reply and announces it. No participant may score twice in a row; waiting is legal. ` +
+          `first valid reply and announces it. No participant may take two numbers in a row; waiting is legal. ` +
           `Next expected number: 1.`
       )
     }
@@ -237,6 +253,22 @@ export class CountingGame implements CollaborationGameWorld {
       const agentId = effect.agentId
       if (agentId === undefined) continue
       deliveredReplies.push(effect)
+      // Post-completion acknowledgments ("8 has already been posted, so the
+      // count is complete.") are a POSITIVE coordination signal — the group
+      // recognized termination on its own. They are never noise and never
+      // duplication.
+      if (this.isTerminal() && /complet|already|done|finish/i.test(effect.text)) {
+        this.candidateStats.terminationAcks += 1
+        this.world.appendEvent({
+          type: 'count.termination_ack',
+          origin: 'agent_effect',
+          effectSequence: effect.sequence,
+          agentAlias: this.world.aliasOfAgent(agentId),
+          roomId: this.room.alias,
+          text: effect.text
+        })
+        continue
+      }
       const match = /-?\d+/.exec(effect.text)
       if (!match) {
         this.candidateStats.noise += 1
@@ -245,32 +277,32 @@ export class CountingGame implements CollaborationGameWorld {
       const value = Number(match[0])
       this.candidateStats.total += 1
       if (this.isTerminal()) {
-        this.recordCandidate(effect, value, false, 'game_over')
+        this.recordCandidate(effect, value, false, 'post_completion')
         continue
       }
       if (value !== this.expected) {
         this.recordCandidate(effect, value, false, value < this.expected ? 'stale' : 'wrong_number')
         continue
       }
-      if (this.lastScorer === agentId) {
-        // Referee-announced mode enforces no-consecutive-scorer as a hard
-        // acceptance rule — the referee announces every acceptance, so the
-        // official count stays visible. With a SILENT referee, a hidden
-        // rejection would diverge the official count from the room-visible
-        // transcript (peers cannot know a posted number "didn't count"), so
-        // peer-driven mode accepts it and tracks the fairness miss as a
-        // metric instead.
+      if (this.lastContributor === agentId) {
+        // Turn-taking convention. Referee-announced mode enforces it at
+        // acceptance (the referee announces every acceptance, so the official
+        // count stays visible). With a SILENT referee, a hidden rejection would
+        // diverge the official count from the room-visible transcript, so the
+        // peer-driven variant accepts the contribution and records it as a
+        // TURN-TAKING BALANCE observation — a coordination-quality measure,
+        // not a rule violation.
         if (this.variant === 'referee-announced') {
           this.candidateStats.consecutiveRejections += 1
           this.recordCandidate(effect, value, false, 'consecutive_scorer')
           continue
         }
-        this.candidateStats.consecutiveScores += 1
+        this.candidateStats.consecutiveContributions += 1
       }
       // Atomic acceptance: first valid candidate in `sequence` order wins.
       this.accepted.push({ value, agentId, sequence: effect.sequence })
       this.acceptedByAgent.set(agentId, (this.acceptedByAgent.get(agentId) ?? 0) + 1)
-      this.lastScorer = agentId
+      this.lastContributor = agentId
       this.expected += 1
       this.recordCandidate(effect, value, true)
       if (this.expected > this.target) {
@@ -360,6 +392,10 @@ export class CountingGame implements CollaborationGameWorld {
       }
       entropy /= Math.log2(agents)
     }
+    // A collaboration report, not a scoreboard: DID THE GROUP complete the
+    // count, plus the coordination-quality measures — who contributed when
+    // (turn-taking record), how balanced participation was, how much
+    // duplication occurred, and whether the group recognized completion.
     return {
       terminalReason: this.terminalReason ?? (completed ? 'completed' : 'incomplete'),
       refereeConsistent,
@@ -372,14 +408,27 @@ export class CountingGame implements CollaborationGameWorld {
         variant: this.variant,
         acceptedPrefix: this.accepted.length,
         target: this.target,
-        acceptedBy: this.accepted.map((entry) => this.world.aliasOfAgent(entry.agentId))
+        /** Turn-taking record: which agent filled each slot, in order. */
+        contributionOrder: this.accepted.map((entry) => this.world.aliasOfAgent(entry.agentId)),
+        /** Per-agent contribution counts across the whole group. */
+        contributions: Object.fromEntries(
+          this.room.memberAgentIds.map((memberId) => [
+            this.world.aliasOfAgent(memberId),
+            this.acceptedByAgent.get(memberId) ?? 0
+          ])
+        )
       },
       metrics: {
         candidates: this.candidateStats.total,
+        /** Duplication: replies that raced an already-filled or wrong slot. */
         collisions: this.candidateStats.rejected,
+        /** Digit-free chatter that carried no count signal. */
         noiseReplies: this.candidateStats.noise,
         consecutiveScorerRejections: this.candidateStats.consecutiveRejections,
-        consecutiveScores: this.candidateStats.consecutiveScores,
+        /** Turn-taking balance: times one agent filled two slots in a row. */
+        consecutiveContributions: this.candidateStats.consecutiveContributions,
+        /** Termination awareness: post-completion acknowledgments. */
+        terminationAcknowledgments: this.candidateStats.terminationAcks,
         participationEntropy: Number(entropy.toFixed(4))
       }
     }
