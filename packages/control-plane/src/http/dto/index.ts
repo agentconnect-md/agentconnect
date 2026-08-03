@@ -2453,6 +2453,9 @@ export const SessionDetailDto = z.object({
   visibility: SessionVisibilityEnum,
   externalProvider: z.string().nullable(),
   externalResolution: z.enum(['pending', 'settled', 'invalid']).nullable(),
+  /** Feishu/Lark share one protocol provider. A settled external scope carries
+   *  the verified open-platform region used for the source conversation. */
+  feishuRegion: FeishuRegion.nullable(),
   /** §5.1 cutover: `pending` until every affected daemon has acked the change —
    *  CP read gates apply at commit, the memory boundary at acknowledgement. */
   visibilityState: SessionVisibilityStateEnum,
