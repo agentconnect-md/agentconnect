@@ -27,6 +27,7 @@ import {
   type SessionMessageDto
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
+import { wireMentions } from '@/lib/conversation-addressing'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
 import {
@@ -961,6 +962,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               .map((p) => p.agentId)
           : []
       const targets = roster.length > 1 ? (mentions.length ? mentions : roster.map((p) => p.agentId)) : [agentForId]
+      // A bare multi-agent send still carries the PRIMARY participant as a structured
+      // mention (the standing addressee — see wireMentions); `targets` is deliberately
+      // NOT narrowed, so the rest of the roster activates exactly as before.
+      const sentMentions = wireMentions(roster, mentions, agentForId)
       pendingTurnIds.current.set(id, requestedTurnId)
       finishedTurnLanes.current.delete(id)
       for (const target of targets) {
@@ -980,7 +985,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             JSON.stringify({
               text,
               turnId: requestedTurnId,
-              ...(roster.length > 1 ? { mentions, targets } : {}),
+              ...(roster.length > 1 ? { mentions: sentMentions, targets } : {}),
               ...(image ? { attachments: [image] } : {}),
               // Runtime staging is a single-agent affordance — multi-agent
               // conversations expose no runtime controls (§9.1/§9.3).
