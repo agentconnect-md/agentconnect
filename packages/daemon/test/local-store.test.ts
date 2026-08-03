@@ -960,12 +960,41 @@ describe('LocalStore session retention GC (#485)', () => {
     s.close()
   })
 
+  it('sessionHasPendingInboxRows counts admitted work, not terminal hook receipts', () => {
+    const s = store()
+    // A completed hook receipt (dedup row) must not pin the session forever —
+    // hook-triggered review sessions are exactly what #485 collects.
+    s.appendInbox({
+      id: 'receipt',
+      sessionKey: 'k',
+      agentId: 'bot-a',
+      msg: '{}',
+      completedAt: 50,
+      enqueuedAt: '0000000001'
+    })
+    expect(s.sessionHasPendingInboxRows('k')).toBe(false)
+    s.appendInbox({ id: 'queued', sessionKey: 'k', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000002' })
+    expect(s.sessionHasPendingInboxRows('k')).toBe(true)
+    s.close()
+  })
+
   it('deleteSession removes the row and its mute/inbox/gate/permission cascades, keeping transcripts', () => {
     const s = store()
     seed(s, 'gone', 'closed', 100)
     s.setSessionMuted('gone', true)
     s.setLocalCaptureGate('acp-gone', true)
     s.appendInbox({ id: 'm1', sessionKey: 'gone', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000001' })
+    // An unacknowledged terminal hook report is an outbox toward the CP and must
+    // survive the session delete (same rule as removeInboxByAgentId).
+    s.appendInbox({
+      id: 'm1-report',
+      sessionKey: 'gone',
+      agentId: 'bot-a',
+      msg: '{}',
+      completedAt: 90,
+      terminalReport: '{"outcome":"done"}',
+      enqueuedAt: '0000000002'
+    })
     s.createPermissionRequest({
       id: 'p1',
       agentId: 'bot-a',
@@ -977,17 +1006,31 @@ describe('LocalStore session retention GC (#485)', () => {
       status: 'pending',
       resolvedAt: null
     })
+    // ACP session ids are runtime-local: another agent's identically named
+    // session must keep its permission history.
+    s.createPermissionRequest({
+      id: 'p2',
+      agentId: 'bot-b',
+      sessionId: 'acp-gone',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: null,
+      command: 'ls',
+      status: 'pending',
+      resolvedAt: null
+    })
     // Thread history is (channel, thread)-scoped and shared — it must survive.
     s.appendTranscript({ channel: 'C1', thread: 'gone', ts: '1.1', sender: 'u1', kind: 'text', text: 'hello' })
-    expect(s.sessionHasInboxRows('gone')).toBe(true)
+    expect(s.sessionHasPendingInboxRows('gone')).toBe(true)
 
     expect(s.deleteSession('gone')).toBe(true)
 
     expect(s.getSession('gone')).toBeUndefined()
     expect(s.isSessionMuted('gone')).toBe(false)
-    expect(s.sessionHasInboxRows('gone')).toBe(false)
-    expect(s.listInboxBySessionKeyFifo()).toEqual([])
+    expect(s.sessionHasPendingInboxRows('gone')).toBe(false)
+    expect(s.listInboxBySessionKeyFifo().map((r) => r.id)).toEqual(['m1-report'])
     expect(s.listPermissionRequests('bot-a')).toEqual([])
+    expect(s.listPermissionRequests('bot-b').map((r) => r.id)).toEqual(['p2'])
     // The gate row is gone: an unknown session falls back to excluded-by-default.
     expect(s.transcriptSince('C1', 'gone', null).map((r) => r.text)).toEqual(['hello'])
     // Idempotent: a second delete (or an unknown key) reports false, not an error.
@@ -1004,7 +1047,7 @@ describe('LocalStore session retention GC (#485)', () => {
     s.deleteSession('gone')
     expect(s.getSession('kept')).toBeDefined()
     expect(s.isSessionMuted('kept')).toBe(true)
-    expect(s.sessionHasInboxRows('kept')).toBe(true)
+    expect(s.sessionHasPendingInboxRows('kept')).toBe(true)
     s.close()
   })
 })

@@ -2228,19 +2228,29 @@ export class LocalStore {
       .all(cutoff) as unknown as SessionRecord[]
   }
 
-  /** True when the session key still has durable inbox rows (admitted work that
-   *  has not reached a terminal state, or an unacknowledged hook receipt). The
-   *  retention sweep treats such a session as active and skips it. */
-  sessionHasInboxRows(key: string): boolean {
-    const row = this.db.prepare('SELECT 1 AS present FROM inbox WHERE sessionKey = ? LIMIT 1').get(key) as
-      { present: number } | undefined
+  /** True when the session key still has PENDING durable inbox rows (admitted
+   *  work that has not reached a terminal state). The retention sweep treats such
+   *  a session as active and skips it. Completed rows — hook dedup receipts and
+   *  unacknowledged terminal reports — do NOT pin the session: a hook session
+   *  keeps its receipt forever, and counting it would exempt exactly the
+   *  review-agent sessions #485 exists to collect. */
+  sessionHasPendingInboxRows(key: string): boolean {
+    const row = this.db
+      .prepare('SELECT 1 AS present FROM inbox WHERE sessionKey = ? AND completedAt IS NULL LIMIT 1')
+      .get(key) as { present: number } | undefined
     return row !== undefined
   }
 
   /** Retention-GC delete (#485): remove one session row and its dependent rows —
    *  mute, memory-capture gate, durable inbox, permission-request history.
-   *  Transcript rows are deliberately untouched: they are (channel, thread)-scoped
-   *  and shared across agents, so the thread's history survives the session.
+   *  Two deliberate survivors:
+   *  - transcript rows — (channel, thread)-scoped and shared across agents, the
+   *    thread's history outlives the session;
+   *  - unacknowledged terminal hook reports (`terminalReport IS NOT NULL`) — an
+   *    outbox the CP has not converged yet, preserved exactly like
+   *    removeInboxByAgentId does.
+   *  permission_requests is scoped by agentId as well: ACP session ids are
+   *  runtime-local, so two agents can both hold an `acp-1`.
    *  Returns false when the row is already gone (idempotent). */
   deleteSession(key: string): boolean {
     const rec = this.getSession(key)
@@ -2249,10 +2259,12 @@ export class LocalStore {
     try {
       this.db.prepare('DELETE FROM sessions WHERE key = ?').run(key)
       this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
-      this.db.prepare('DELETE FROM inbox WHERE sessionKey = ?').run(key)
+      this.db.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         this.db.prepare('DELETE FROM session_gates WHERE acpSessionId = ?').run(rec.acpSessionId)
-        this.db.prepare('DELETE FROM permission_requests WHERE sessionId = ?').run(rec.acpSessionId)
+        this.db
+          .prepare('DELETE FROM permission_requests WHERE agentId = ? AND sessionId = ?')
+          .run(rec.agentId, rec.acpSessionId)
       }
       this.db.exec('COMMIT')
     } catch (err) {

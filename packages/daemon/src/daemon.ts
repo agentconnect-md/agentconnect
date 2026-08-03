@@ -15780,6 +15780,19 @@ export class Daemon {
    *  commit unreachable from every remote ref. A worktree that fails the Git
    *  safety checks is only reported — its session row is kept so the working
    *  state stays reachable through the same logical session. */
+  /** The retention sweep's active-turn exclusion, beyond the durable-state filter:
+   *  a claimed serial gate (owns cold dispatch + queued arrivals), a live Pending
+   *  turn, pending durable inbox work, or unsettled SDK background tasks. */
+  private sessionRetentionActive(rec: { key: string; agentId: string; acpSessionId: string | null }): boolean {
+    return (
+      this.drainingAgents.has(rec.agentId) ||
+      this.inflight.has(rec.key) ||
+      [...this.pending.values()].some((p) => p.sessionKey === rec.key) ||
+      this.store.sessionHasPendingInboxRows(rec.key) ||
+      !this.sessionSdkQuiescent(rec.agentId, rec.acpSessionId)
+    )
+  }
+
   private async sweepSessionRetention(): Promise<void> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
     if (windowMs === null) return
@@ -15794,16 +15807,7 @@ export class Daemon {
       let failed = 0
       for (const rec of expired) {
         if (this.draining) return
-        // Active-turn exclusion beyond the durable-state filter: a claimed serial
-        // gate (owns cold dispatch + queued arrivals), a live Pending turn, durable
-        // admitted-not-terminal inbox work, or unsettled SDK background tasks.
-        if (
-          this.drainingAgents.has(rec.agentId) ||
-          this.inflight.has(rec.key) ||
-          [...this.pending.values()].some((p) => p.sessionKey === rec.key) ||
-          this.store.sessionHasInboxRows(rec.key) ||
-          !this.sessionSdkQuiescent(rec.agentId, rec.acpSessionId)
-        ) {
+        if (this.sessionRetentionActive(rec)) {
           active += 1
           continue
         }
@@ -15827,6 +15831,14 @@ export class Daemon {
             this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
             continue
           }
+        }
+        // Re-check synchronously after the git awaits: a message admitted mid-cleanup
+        // owns the serial gate now, and deleting the row underneath its turn would
+        // orphan the state the turn is about to write. The worktree (if any) is
+        // already gone, but prepareSessionWorkspace recreates it on that same turn.
+        if (this.sessionRetentionActive(rec)) {
+          active += 1
+          continue
         }
         if (this.store.deleteSession(rec.key)) {
           removed += 1
