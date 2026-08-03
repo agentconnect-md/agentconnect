@@ -1504,3 +1504,75 @@ describe('Daemon CP drain (#109)', () => {
     await daemon.stop()
   }, 15_000)
 })
+
+describe('Daemon session retention GC (#485)', () => {
+  const seedSession = (daemon: Daemon, key: string, state: 'idle' | 'prompting' | 'closed', updatedAt: number) =>
+    (daemon as any).store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: key,
+      acpSessionId: `acp-${key}`,
+      state,
+      lastDeliveredTs: null,
+      updatedAt
+    })
+
+  it('the idle sweep deletes expired sessions but spares live turns and gate-owned keys', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    await daemon.start()
+
+    seedSession(daemon, 'expired-closed', 'closed', 0)
+    seedSession(daemon, 'expired-idle', 'idle', 0)
+    seedSession(daemon, 'fresh-closed', 'closed', 2 * 24 * 3_600_000) // inside the window at sweep time
+    seedSession(daemon, 'expired-prompting', 'prompting', 0) // live turn — durable state guard
+    seedSession(daemon, 'expired-gated', 'closed', 0) // owned serial gate — in-memory guard
+    ;(daemon as any).inflight.add('expired-gated')
+
+    // Past the default 7d retention window; the hourly gate inside sweepIdle opens too.
+    clock.advance(8 * 24 * 3_600_000)
+    await vi.waitFor(() => expect((daemon as any).store.getSession('expired-closed')).toBeUndefined())
+    expect((daemon as any).store.getSession('expired-idle')).toBeUndefined()
+    expect((daemon as any).store.getSession('fresh-closed')).toBeDefined()
+    expect((daemon as any).store.getSession('expired-prompting')).toBeDefined()
+    expect((daemon as any).store.getSession('expired-gated')).toBeDefined()
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('retention "never" disables the sweep entirely', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    await daemon.start()
+    ;(daemon as any).cfg.sessions.retention = 'never'
+    seedSession(daemon, 'expired-closed', 'closed', 0)
+
+    clock.advance(8 * 24 * 3_600_000)
+    await (daemon as any).sweepSessionRetention()
+    expect((daemon as any).store.getSession('expired-closed')).toBeDefined()
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('a session with pending durable inbox work is treated as active and kept', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    await daemon.start()
+    seedSession(daemon, 'expired-queued', 'closed', 0)
+    ;(daemon as any).store.appendInbox({
+      id: 'm-queued',
+      sessionKey: 'expired-queued',
+      agentId: 'bot-a',
+      msg: '{}',
+      enqueuedAt: '0000000001'
+    })
+
+    clock.advance(8 * 24 * 3_600_000)
+    await (daemon as any).sweepSessionRetention()
+    expect((daemon as any).store.getSession('expired-queued')).toBeDefined()
+
+    await daemon.stop()
+  }, 15_000)
+})

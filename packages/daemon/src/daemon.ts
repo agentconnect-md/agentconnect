@@ -5,7 +5,7 @@ import { existsSync, readFileSync, type Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
-import type { RuntimeDef } from './config/config-schema.js'
+import { sessionRetentionMs, type RuntimeDef } from './config/config-schema.js'
 import { loadAgents, selectAgent, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -138,6 +138,7 @@ import {
   prepareWorkspaceForActivation,
   resolvePreparedWorkspaceCwd,
   prefetchWorkspace,
+  removeSessionWorktree,
   sessionWorktreeRoot,
   type PrepareSessionWorkspaceRequest
 } from './workspace/workspace-manager.js'
@@ -624,6 +625,11 @@ const DREAM_CANCEL_FORCE_MS = 15_000
  *  the idle cadence: the scan reads the whole OS temp dir, and a leaked root only costs
  *  disk, so a lazy reclaim is enough. */
 const PROBE_ROOT_SWEEP_INTERVAL_MS = 15 * 60_000
+
+/** How often the idle sweep also runs session-retention GC (#485). The retention
+ *  window is measured in days, so an hourly pass is plenty — each pass walks the
+ *  expired rows and may run several git commands per candidate. */
+const SESSION_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
 
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
@@ -1798,6 +1804,11 @@ export class Daemon {
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
+  // Last session-retention GC pass (#485); rides the idle sweep at its own cadence.
+  private lastSessionRetentionSweepAt = 0
+  // Single-flight for the retention pass — a slow git cleanup must not overlap
+  // the next sweep's pass (the sweep itself is synchronous, the GC is not).
+  private sessionRetentionSweepInFlight = false
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
   private cancelTimers = new Map<string, TimerHandle>()
   // Backstop for an interrupt that lands before a Pending/ACP session id exists
@@ -2865,6 +2876,13 @@ export class Daemon {
     this.log.info(`watching ${this.agentsDir} for agent changes`)
     this.replayInbox()
     this.rearmOrchestrationDeadlines()
+    // #485 startup retention pass: reconcile what accumulated (or was orphaned by a
+    // crash) while the daemon was down. Best-effort — never blocks readiness. Runs
+    // AFTER replayInbox so replayed durable work is visible to its active-turn guard.
+    this.lastSessionRetentionSweepAt = this.clock.now()
+    void this.sweepSessionRetention().catch((err) =>
+      this.log.warn(`retention: startup session GC failed (${formatErr(err)})`)
+    )
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.
     void this.probeRuntimesAndEmit(false).finally(() => this.armRuntimeProbeRefresh())
@@ -15762,6 +15780,90 @@ export class Daemon {
     }
   }
 
+  /** Session-retention GC (#485): delete sessions untouched (sessions.updatedAt)
+   *  for longer than `cfg.sessions.retention`, removing each one's per-session
+   *  worktree first. Runs at startup and hourly on the idle sweep. Auto-deletion
+   *  requires ALL of: no active turn (durable state + serial gate + pending map +
+   *  durable inbox + SDK background-task lease), no dirty/untracked files, and no
+   *  commit unreachable from every remote ref. A worktree that fails the Git
+   *  safety checks is only reported — its session row is kept so the working
+   *  state stays reachable through the same logical session. */
+  /** The retention sweep's active-turn exclusion, beyond the durable-state filter:
+   *  a claimed serial gate (owns cold dispatch + queued arrivals), a live Pending
+   *  turn, pending durable inbox work, or unsettled SDK background tasks. */
+  private sessionRetentionActive(rec: { key: string; agentId: string; acpSessionId: string | null }): boolean {
+    return (
+      this.drainingAgents.has(rec.agentId) ||
+      this.inflight.has(rec.key) ||
+      [...this.pending.values()].some((p) => p.sessionKey === rec.key) ||
+      this.store.sessionHasPendingInboxRows(rec.key) ||
+      !this.sessionSdkQuiescent(rec.agentId, rec.acpSessionId)
+    )
+  }
+
+  private async sweepSessionRetention(): Promise<void> {
+    const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
+    if (windowMs === null) return
+    if (this.sessionRetentionSweepInFlight) return
+    this.sessionRetentionSweepInFlight = true
+    try {
+      const expired = this.store.listExpiredSessions(this.clock.now() - windowMs)
+      if (!expired.length) return
+      let removed = 0
+      let retained = 0
+      let active = 0
+      let failed = 0
+      for (const rec of expired) {
+        if (this.draining) return
+        if (this.sessionRetentionActive(rec)) {
+          active += 1
+          continue
+        }
+        const agent = this.agents.get(rec.agentId)
+        // Only a git-repo agent whose session pinned (or may have pinned — legacy
+        // NULL) Worktree isolation can own a worktree. A missing agent was removed
+        // together with its whole directory, worktrees included.
+        if (agent && agent.workspace.mode === 'git-repo' && rec.workspaceIsolation !== 'shared') {
+          const res = await removeSessionWorktree(agent, rec.key)
+          if (res.outcome === 'retained') {
+            retained += 1
+            this.log.info(
+              `retention: keeping session ${rec.key} — worktree has ${
+                res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
+              } (delete or push them to release it)`
+            )
+            continue
+          }
+          if (res.outcome === 'failed') {
+            failed += 1
+            this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
+            continue
+          }
+        }
+        // Re-check synchronously after the git awaits: a message admitted mid-cleanup
+        // owns the serial gate now, and deleting the row underneath its turn would
+        // orphan the state the turn is about to write. The worktree (if any) is
+        // already gone, but prepareSessionWorkspace recreates it on that same turn.
+        if (this.sessionRetentionActive(rec)) {
+          active += 1
+          continue
+        }
+        if (this.store.deleteSession(rec.key)) {
+          removed += 1
+          if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
+        }
+      }
+      this.log.info(
+        `retention: session GC removed ${removed}/${expired.length} expired session(s)` +
+          (retained ? `, ${retained} retained (dirty/unique commits)` : '') +
+          (active ? `, ${active} still active` : '') +
+          (failed ? `, ${failed} failed` : '')
+      )
+    } finally {
+      this.sessionRetentionSweepInFlight = false
+    }
+  }
+
   private sweepIdle(): void {
     const now = this.clock.now()
     // Probe temp roots re-created by a runtime that outlived its adapter (see
@@ -15770,6 +15872,13 @@ export class Daemon {
     if (now - this.lastProbeRootSweepAt >= PROBE_ROOT_SWEEP_INTERVAL_MS) {
       this.lastProbeRootSweepAt = now
       sweepStaleProbeRoots({ log: this.log })
+    }
+    // #485 session-retention GC: delete long-inactive sessions and their worktrees.
+    if (now - this.lastSessionRetentionSweepAt >= SESSION_RETENTION_SWEEP_INTERVAL_MS) {
+      this.lastSessionRetentionSweepAt = now
+      void this.sweepSessionRetention().catch((err) =>
+        this.log.warn(`retention: session GC sweep failed (${formatErr(err)})`)
+      )
     }
     const ttl = this.cfg.limits.agentIdleTimeoutMs
     const maxLifetime = this.cfg.limits.agentMaxLifetimeMs

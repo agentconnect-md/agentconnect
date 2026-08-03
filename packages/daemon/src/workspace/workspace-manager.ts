@@ -335,13 +335,15 @@ export function sessionWorktreeRoot(agent: Agent): string {
   return join(agentRoot, 'worktrees')
 }
 
-function prepareSessionWorktreeRoot(agent: Agent): string {
-  const agentRoot = realpathSync((agent as { dir?: string }).dir ?? dirname(agent.workspace.path))
-  const root = sessionWorktreeRoot(agent)
-  if (existsSync(root) && lstatSync(root).isSymbolicLink()) {
+/** Canonicalize an EXISTING worktree root and prove it (and every ancestor
+ * symlink it may hide behind) still resolves inside the agent directory. Every
+ * destructive path must go through this — checking only the final entry misses
+ * a symlinked `worktrees/` parent redirecting the whole tree elsewhere. */
+function validateSessionWorktreeRoot(agent: Agent, root: string): string {
+  if (lstatSync(root).isSymbolicLink()) {
     throw new Error('session worktree root must not be a symlink')
   }
-  mkdirSync(root, { recursive: true, mode: 0o700 })
+  const agentRoot = realpathSync((agent as { dir?: string }).dir ?? dirname(agent.workspace.path))
   const canonicalRoot = realpathSync(root)
   const rel = relative(agentRoot, canonicalRoot)
   if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
@@ -350,12 +352,112 @@ function prepareSessionWorktreeRoot(agent: Agent): string {
   return canonicalRoot
 }
 
+function prepareSessionWorktreeRoot(agent: Agent): string {
+  const root = sessionWorktreeRoot(agent)
+  if (existsSync(root) && lstatSync(root).isSymbolicLink()) {
+    throw new Error('session worktree root must not be a symlink')
+  }
+  mkdirSync(root, { recursive: true, mode: 0o700 })
+  return validateSessionWorktreeRoot(agent, root)
+}
+
 function clearSessionWorktrees(agent: Agent): void {
   rmSync(sessionWorktreeRoot(agent), { recursive: true, force: true })
 }
 
 function sessionWorktreeId(sessionKey: string): string {
   return createHash('sha256').update(sessionKey).digest('hex').slice(0, 24)
+}
+
+/** The stable daemon-owned worktree directory for one logical session. Derived,
+ * never stored — the id is a hex hash, so the path always sits under the agent's
+ * worktrees root. */
+export function sessionWorktreePath(agent: Agent, sessionKey: string): string {
+  return join(sessionWorktreeRoot(agent), sessionWorktreeId(sessionKey))
+}
+
+export type SessionWorktreeRemoval =
+  | { outcome: 'removed' }
+  | { outcome: 'absent' }
+  /** The worktree holds work the daemon must not discard — the caller keeps the session. */
+  | { outcome: 'retained'; reason: 'dirty' | 'unique-commits' }
+  | { outcome: 'failed'; error: string }
+
+/** Retention GC (#485): remove one logical session's worktree, but only when it
+ * is provably safe — no dirty/untracked files and no commit unreachable from
+ * every remote ref (daemon-owned review refs count as remote-backed: they were
+ * fetched verbatim). Safe candidates go through Git-aware cleanup
+ * (`worktree remove` → `worktree prune`) and their review refs are deleted;
+ * anything else is reported as retained/failed so the caller keeps the session.
+ * The active-turn exclusion is the caller's job — this function only judges the
+ * on-disk state. */
+export async function removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
+  const id = sessionWorktreeId(sessionKey)
+  const primaryGit = () => gitFor(agent.workspace.path).env(workspaceGitLocalEnv())
+  // Drop the stale Git registration and this worktree's daemon-owned review refs.
+  // Ref deletion is best-effort: most worktrees never had review refs.
+  const cleanupRegistrations = async () => {
+    await primaryGit().raw(['worktree', 'prune'])
+    for (const name of ['base', 'head', 'merge']) {
+      await primaryGit()
+        .raw(['update-ref', '-d', `refs/agentconnect/reviews/${id}/${name}`])
+        .catch(() => undefined)
+    }
+  }
+  try {
+    if (agent.workspace.mode !== 'git-repo') throw new Error('agent workspace is not a Git repository')
+    const rootPath = sessionWorktreeRoot(agent)
+    if (!existsSync(rootPath)) {
+      // No root ⇒ no worktree directory can exist; Git may still hold a stale
+      // registration/review refs for it.
+      await cleanupRegistrations()
+      return { outcome: 'absent' }
+    }
+    // Re-derive cwd from the CANONICAL root: a symlinked root (or symlinked
+    // ancestor) must never redirect the destructive branches below outside the
+    // agent directory.
+    const cwd = join(validateSessionWorktreeRoot(agent, rootPath), id)
+    if (existsSync(cwd) && lstatSync(cwd).isSymbolicLink()) throw new Error('session worktree path is a symlink')
+    if (!existsSync(cwd)) {
+      await cleanupRegistrations()
+      return { outcome: 'absent' }
+    }
+    if (!existsSync(join(cwd, '.git'))) {
+      // The `.git` marker is gone, so Git no longer considers this a worktree —
+      // but a NONEMPTY directory may hold exactly the untracked work this GC
+      // promises never to auto-delete (`status` can't run without the marker).
+      // Reclaim only a provably empty leftover; report anything else.
+      if (readdirSync(cwd).length > 0) return { outcome: 'retained', reason: 'dirty' }
+      rmSync(cwd, { recursive: true, force: true })
+      await cleanupRegistrations()
+      return { outcome: 'removed' }
+    }
+    const worktreeGit = gitFor(cwd).env(workspaceGitLocalEnv())
+    if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '') {
+      return { outcome: 'retained', reason: 'dirty' }
+    }
+    // Session worktrees are detached, so there is no upstream to compare against:
+    // a commit is "unique" when no remote ref (and no fetched review ref of this
+    // worktree) can reach it.
+    const unique = (
+      await worktreeGit.raw([
+        'rev-list',
+        '--count',
+        'HEAD',
+        '--not',
+        '--remotes',
+        `--glob=refs/agentconnect/reviews/${id}`
+      ])
+    ).trim()
+    if (unique !== '0') return { outcome: 'retained', reason: 'unique-commits' }
+    // No --force: if the tree went dirty between the check and here, Git refuses
+    // and the failure keeps the session.
+    await primaryGit().raw(['worktree', 'remove', cwd])
+    await cleanupRegistrations()
+    return { outcome: 'removed' }
+  } catch (err) {
+    return { outcome: 'failed', error: (err as Error).message }
+  }
 }
 
 function exactObjectId(value: string, label: string): string {

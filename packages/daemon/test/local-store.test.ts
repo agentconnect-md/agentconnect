@@ -928,6 +928,160 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
   })
 })
 
+describe('LocalStore session retention GC (#485)', () => {
+  const seed = (
+    s: LocalStore,
+    key: string,
+    state: 'idle' | 'prompting' | 'cancelling' | 'resuming' | 'closed',
+    updatedAt: number,
+    acpSessionId: string | null = 'acp-' + key
+  ) =>
+    s.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: key,
+      acpSessionId,
+      state,
+      lastDeliveredTs: null,
+      updatedAt
+    })
+
+  it('listExpiredSessions returns idle/closed rows past the cutoff oldest-first, including unbound ones', () => {
+    const s = store()
+    seed(s, 'old-closed', 'closed', 200)
+    seed(s, 'older-idle', 'idle', 100)
+    seed(s, 'never-bound', 'closed', 150, null) // no ACP id, still a candidate (may own a worktree)
+    seed(s, 'fresh-closed', 'closed', 900)
+    seed(s, 'old-prompting', 'prompting', 100) // live turn — never a candidate
+    seed(s, 'old-resuming', 'resuming', 100) // re-attaching — never a candidate
+    expect(s.listExpiredSessions(500).map((r) => r.key)).toEqual(['older-idle', 'never-bound', 'old-closed'])
+    s.close()
+  })
+
+  it('sessionHasPendingInboxRows counts admitted work, not terminal hook receipts', () => {
+    const s = store()
+    // A completed hook receipt (dedup row) must not pin the session forever —
+    // hook-triggered review sessions are exactly what #485 collects.
+    s.appendInbox({
+      id: 'receipt',
+      sessionKey: 'k',
+      agentId: 'bot-a',
+      msg: '{}',
+      completedAt: 50,
+      enqueuedAt: '0000000001'
+    })
+    expect(s.sessionHasPendingInboxRows('k')).toBe(false)
+    s.appendInbox({ id: 'queued', sessionKey: 'k', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000002' })
+    expect(s.sessionHasPendingInboxRows('k')).toBe(true)
+    s.close()
+  })
+
+  it('deleteSession removes the row and its mute/inbox/gate/permission cascades, keeping transcripts', () => {
+    const s = store()
+    seed(s, 'gone', 'closed', 100)
+    s.setSessionMuted('gone', true)
+    s.setLocalCaptureGate('acp-gone', true)
+    s.appendInbox({ id: 'm1', sessionKey: 'gone', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000001' })
+    // An unacknowledged terminal hook report is an outbox toward the CP and must
+    // survive the session delete (same rule as removeInboxByAgentId).
+    s.appendInbox({
+      id: 'm1-report',
+      sessionKey: 'gone',
+      agentId: 'bot-a',
+      msg: '{}',
+      completedAt: 90,
+      terminalReport: '{"outcome":"done"}',
+      enqueuedAt: '0000000002'
+    })
+    s.createPermissionRequest({
+      id: 'p1',
+      agentId: 'bot-a',
+      sessionId: 'acp-gone',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: null,
+      command: 'rm -rf /tmp/x',
+      status: 'pending',
+      resolvedAt: null
+    })
+    // ACP session ids are runtime-local: another agent's identically named
+    // session must keep its permission history.
+    s.createPermissionRequest({
+      id: 'p2',
+      agentId: 'bot-b',
+      sessionId: 'acp-gone',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: null,
+      command: 'ls',
+      status: 'pending',
+      resolvedAt: null
+    })
+    // Thread history is (channel, thread)-scoped and shared — it must survive.
+    s.appendTranscript({ channel: 'C1', thread: 'gone', ts: '1.1', sender: 'u1', kind: 'text', text: 'hello' })
+    expect(s.sessionHasPendingInboxRows('gone')).toBe(true)
+
+    expect(s.deleteSession('gone')).toBe(true)
+
+    expect(s.getSession('gone')).toBeUndefined()
+    expect(s.isSessionMuted('gone')).toBe(false)
+    expect(s.sessionHasPendingInboxRows('gone')).toBe(false)
+    expect(s.listInboxBySessionKeyFifo().map((r) => r.id)).toEqual(['m1-report'])
+    expect(s.listPermissionRequests('bot-a')).toEqual([])
+    expect(s.listPermissionRequests('bot-b').map((r) => r.id)).toEqual(['p2'])
+    // The gate row is gone: an unknown session falls back to excluded-by-default.
+    expect(s.transcriptSince('C1', 'gone', null).map((r) => r.text)).toEqual(['hello'])
+    // Idempotent: a second delete (or an unknown key) reports false, not an error.
+    expect(s.deleteSession('gone')).toBe(false)
+    s.close()
+  })
+
+  it('deleteSession keeps a capture gate another agent still references through the same ACP id', () => {
+    const s = store()
+    // ACP session ids are runtime-local: bot-a and bot-b can both hold `acp-shared`.
+    const put = (key: string, agentId: string) =>
+      s.upsertSession({
+        key,
+        agentId,
+        platform: 'slack',
+        channel: 'C1',
+        thread: key,
+        acpSessionId: 'acp-shared',
+        state: 'closed',
+        lastDeliveredTs: null,
+        updatedAt: 100
+      })
+    put('a', 'bot-a')
+    put('b', 'bot-b')
+    s.setLocalCaptureGate('acp-shared', false) // capture open (not excluded)
+    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+
+    // bot-a's session expires first: bot-b still references the id — gate survives.
+    expect(s.deleteSession('a')).toBe(true)
+    expect(s.isCaptureExcluded('acp-shared')).toBe(false)
+
+    // The last referencing session goes: the gate is finally collected too.
+    expect(s.deleteSession('b')).toBe(true)
+    expect(s.isCaptureExcluded('acp-shared')).toBe(true) // no row ⇒ excluded-by-default
+    s.close()
+  })
+
+  it('deleteSession leaves unrelated sessions and their dependents alone', () => {
+    const s = store()
+    seed(s, 'gone', 'closed', 100)
+    seed(s, 'kept', 'closed', 100)
+    s.setSessionMuted('kept', true)
+    s.appendInbox({ id: 'm2', sessionKey: 'kept', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000002' })
+    s.deleteSession('gone')
+    expect(s.getSession('kept')).toBeDefined()
+    expect(s.isSessionMuted('kept')).toBe(true)
+    expect(s.sessionHasPendingInboxRows('kept')).toBe(true)
+    s.close()
+  })
+})
+
 describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)', () => {
   const meta = (runtimeId: string, fingerprint: string, observedAt = 100) => ({
     runtimeId,

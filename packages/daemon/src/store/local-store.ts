@@ -2216,6 +2216,74 @@ export class LocalStore {
     return rows
   }
 
+  /** Retention-GC candidates (#485): sessions whose last activity (`updatedAt`)
+   *  is older than `cutoff` and that are not mid-turn. Unlike listSessions this
+   *  includes rows with no ACP id — a session that never bound one can still own
+   *  a worktree directory. Oldest first, so a bounded pass drains the backlog in
+   *  eviction order. `resuming`/`prompting`/`cancelling` rows are live by
+   *  definition and never candidates. */
+  listExpiredSessions(cutoff: number): SessionRecord[] {
+    return this.db
+      .prepare("SELECT * FROM sessions WHERE state IN ('idle', 'closed') AND updatedAt < ? ORDER BY updatedAt ASC")
+      .all(cutoff) as unknown as SessionRecord[]
+  }
+
+  /** True when the session key still has PENDING durable inbox rows (admitted
+   *  work that has not reached a terminal state). The retention sweep treats such
+   *  a session as active and skips it. Completed rows — hook dedup receipts and
+   *  unacknowledged terminal reports — do NOT pin the session: a hook session
+   *  keeps its receipt forever, and counting it would exempt exactly the
+   *  review-agent sessions #485 exists to collect. */
+  sessionHasPendingInboxRows(key: string): boolean {
+    const row = this.db
+      .prepare('SELECT 1 AS present FROM inbox WHERE sessionKey = ? AND completedAt IS NULL LIMIT 1')
+      .get(key) as { present: number } | undefined
+    return row !== undefined
+  }
+
+  /** Retention-GC delete (#485): remove one session row and its dependent rows —
+   *  mute, memory-capture gate, durable inbox, permission-request history.
+   *  Two deliberate survivors:
+   *  - transcript rows — (channel, thread)-scoped and shared across agents, the
+   *    thread's history outlives the session;
+   *  - unacknowledged terminal hook reports (`terminalReport IS NOT NULL`) — an
+   *    outbox the CP has not converged yet, preserved exactly like
+   *    removeInboxByAgentId does.
+   *  permission_requests is scoped by agentId, and the capture gate is dropped
+   *  only when no surviving session still references the ACP id: ACP session ids
+   *  are runtime-local, so two agents can both hold an `acp-1`.
+   *  Returns false when the row is already gone (idempotent). */
+  deleteSession(key: string): boolean {
+    const rec = this.getSession(key)
+    if (!rec) return false
+    this.db.exec('BEGIN')
+    try {
+      this.db.prepare('DELETE FROM sessions WHERE key = ?').run(key)
+      this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
+      this.db.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
+      if (rec.acpSessionId) {
+        // session_gates is keyed by the ACP id ALONE, and ACP ids are runtime-local
+        // — another agent's still-live `acp-1` may share the key. Drop the gate only
+        // once no surviving session references it (the sessions row above is already
+        // deleted inside this transaction, so a self-reference cannot pin it).
+        const stillReferenced = this.db
+          .prepare('SELECT 1 AS present FROM sessions WHERE acpSessionId = ? LIMIT 1')
+          .get(rec.acpSessionId)
+        if (!stillReferenced) {
+          this.db.prepare('DELETE FROM session_gates WHERE acpSessionId = ?').run(rec.acpSessionId)
+        }
+        this.db
+          .prepare('DELETE FROM permission_requests WHERE agentId = ? AND sessionId = ?')
+          .run(rec.agentId, rec.acpSessionId)
+      }
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+    return true
+  }
+
   // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──
 
   private dreamToRow(dream: DreamInfo): SqlParams {
