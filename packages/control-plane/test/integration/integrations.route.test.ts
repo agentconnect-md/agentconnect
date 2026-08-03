@@ -936,7 +936,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // The daemon's spec dials the Lark gateway for the reinstalled bot.
     const u = spy.upserts[1]!.u
     if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
-    expect(u.feishu.region).toBe('lark')
+    expect(u.feishu!.region).toBe('lark')
   })
 
   it('reusing a bot that is STILL installed is refused with 409', async () => {

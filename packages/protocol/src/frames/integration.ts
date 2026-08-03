@@ -152,36 +152,67 @@ export const IntegrationFeishuConfig = z.object({
 export type IntegrationFeishuConfig = z.infer<typeof IntegrationFeishuConfig>
 
 /**
+ * §6.4 core routing ENVELOPE (integration-plugin-architecture.md D4): the knobs CORE
+ * reads — routing, gating, ingress mode — platform-independent. Dual-shape window:
+ * the CP emits this ALONGSIDE the legacy nested per-platform block (below) and the
+ * daemon prefers it; once the fleet reads the envelope, legacy emission drops and
+ * `config` becomes the only platform payload (validated by the platform module, S2).
+ */
+export const IntegrationCoreEnvelope = z.object({
+  mode: z.enum(['direct', 'shared']).default('direct'),
+  bindRules: z.array(IntegrationBindRule).default([]),
+  mutedChannels: z.array(z.string()).default([]),
+  gated: z.boolean().default(false)
+})
+export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
+
+/**
  * One platform integration, owned by exactly one agent. Also the element type of
  * `RegisterOk.integrations[]` (the per-daemon reconcile set). Discriminated on
  * `platform`: the daemon opens a Slack Socket Mode connection, a Telegram
  * long-poll, a Discord Gateway, or a Feishu long-connection from whichever variant
  * is delivered.
+ *
+ * DUAL-SHAPE (§6.4): each variant carries the legacy nested block (`slack` /
+ * `telegram` / `discord` / `feishu`) AND the `core` + `config` envelope. Readers
+ * prefer the legacy block while it is emitted and fall back to `config` (validated
+ * against the same per-platform schema); `core` overrides the routing knobs wherever
+ * present. A variant carrying NEITHER payload is rejected by the reader, not the
+ * schema (tolerant-reader rule). The union itself opens to a flat `platformId`
+ * object when legacy emission drops.
  */
 export const IntegrationSpec = z.discriminatedUnion('platform', [
   z.object({
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('slack'),
-    slack: IntegrationSlackConfig
+    slack: IntegrationSlackConfig.optional(),
+    core: IntegrationCoreEnvelope.optional(),
+    config: z.unknown().optional()
   }),
   z.object({
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('telegram'),
-    telegram: IntegrationTelegramConfig
+    telegram: IntegrationTelegramConfig.optional(),
+    core: IntegrationCoreEnvelope.optional(),
+    config: z.unknown().optional()
   }),
   z.object({
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('discord'),
-    discord: IntegrationDiscordConfig
+    discord: IntegrationDiscordConfig.optional(),
+    core: IntegrationCoreEnvelope.optional(),
+    config: z.unknown().optional()
   }),
   z.object({
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('feishu'),
-    feishu: IntegrationFeishuConfig
+    feishu: IntegrationFeishuConfig.optional(),
+    core: IntegrationCoreEnvelope.optional(),
+    config: z.unknown().optional()
   })
 ])
 export type IntegrationSpec = z.infer<typeof IntegrationSpec>

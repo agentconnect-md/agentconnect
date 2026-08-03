@@ -441,10 +441,10 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'slack') throw new Error('expected slack integration')
-    expect(r.frame.payload.slack.botToken).toBe('xoxb-abc')
-    expect(r.frame.payload.slack.appToken).toBe('xapp-1-def')
-    expect(r.frame.payload.slack.appId).toBe('A123')
-    expect(r.frame.payload.slack.bindRules).toEqual([]) // zod default
+    expect(r.frame.payload.slack!.botToken).toBe('xoxb-abc')
+    expect(r.frame.payload.slack!.appToken).toBe('xapp-1-def')
+    expect(r.frame.payload.slack!.appId).toBe('A123')
+    expect(r.frame.payload.slack!.bindRules).toEqual([]) // zod default
   })
 
   it('integration/upsert carries the telegram config (single botToken, no appToken); zod defaults fill lists', () => {
@@ -459,8 +459,8 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'telegram') throw new Error('expected telegram integration')
-    expect(r.frame.payload.telegram.botToken).toBe('123456:ABC-def')
-    expect(r.frame.payload.telegram.bindRules).toEqual([]) // zod default
+    expect(r.frame.payload.telegram!.botToken).toBe('123456:ABC-def')
+    expect(r.frame.payload.telegram!.bindRules).toEqual([]) // zod default
   })
 
   it('integration/upsert carries the discord config (single botToken, optional applicationId); zod defaults fill lists', () => {
@@ -475,9 +475,9 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'discord') throw new Error('expected discord integration')
-    expect(r.frame.payload.discord.botToken).toBe('MTA-bot-token')
-    expect(r.frame.payload.discord.applicationId).toBe('112233445566')
-    expect(r.frame.payload.discord.bindRules).toEqual([]) // zod default
+    expect(r.frame.payload.discord!.botToken).toBe('MTA-bot-token')
+    expect(r.frame.payload.discord!.applicationId).toBe('112233445566')
+    expect(r.frame.payload.discord!.bindRules).toEqual([]) // zod default
   })
 
   it('integration/upsert carries the feishu config (appId + appSecret pair, no appToken); zod defaults fill lists', () => {
@@ -492,11 +492,11 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
-    expect(r.frame.payload.feishu.appId).toBe('cli_abc123')
-    expect(r.frame.payload.feishu.appSecret).toBe('secret-xyz')
-    expect(r.frame.payload.feishu.mode).toBe('direct') // backwards-compatible default
-    expect(r.frame.payload.feishu.region).toBe('feishu') // zod default — China gateway
-    expect(r.frame.payload.feishu.bindRules).toEqual([]) // zod default
+    expect(r.frame.payload.feishu!.appId).toBe('cli_abc123')
+    expect(r.frame.payload.feishu!.appSecret).toBe('secret-xyz')
+    expect(r.frame.payload.feishu!.mode).toBe('direct') // backwards-compatible default
+    expect(r.frame.payload.feishu!.region).toBe('feishu') // zod default — China gateway
+    expect(r.frame.payload.feishu!.bindRules).toEqual([]) // zod default
   })
 
   it('integration/upsert preserves Feishu shared mode for daemon send-only API access', () => {
@@ -526,7 +526,7 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
-    expect(r.frame.payload.feishu.region).toBe('lark')
+    expect(r.frame.payload.feishu!.region).toBe('lark')
   })
 
   it('integration/upsert rejects an unknown platform', () => {
@@ -557,7 +557,7 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'slack') throw new Error('expected slack integration')
-    const rule = r.frame.payload.slack.bindRules[0]!
+    const rule = r.frame.payload.slack!.bindRules[0]!
     expect(rule.channel).toBe('C123')
     expect(rule.match).toEqual({ kind: 'keyword', value: 'deploy' })
   })
@@ -634,7 +634,7 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     if (!withInt.ok || !isFrame('register/ok')(withInt.frame)) throw new Error('expected register/ok')
     const int0 = withInt.frame.payload.integrations[0]!
     if (int0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(int0.slack.appToken).toBe('xapp-1-def')
+    expect(int0.slack!.appToken).toBe('xapp-1-def')
   })
 })
 
