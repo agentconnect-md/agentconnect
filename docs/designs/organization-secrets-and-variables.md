@@ -131,6 +131,14 @@ daemon would see new content at a revision it has already applied, refuse it as
 an invariant violation, and repeat that refusal on every reconnect until an
 unrelated agent edit happened to move the revision.
 
+Those derived bumps touch several agent rows at once, so they are bound by the
+same lock order as everything else in section 5. A bare multi-row update takes its
+locks in whatever order the query planner chooses, which deadlocks against an
+organization-environment transaction holding an overlapping set in ascending ID
+order. The revision writer therefore enters the ascending order itself rather than
+relying on each caller to remember, since a derived bump has no other reason to
+lock anything.
+
 ### 3.4 `all` is an authorized enrollment policy
 
 Every effective assignment is represented by an explicit agent binding. An

@@ -41,7 +41,6 @@
  */
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { Prisma } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
 import {
   crossKindConflicts,
   planEffectiveKeys,
@@ -136,11 +135,23 @@ export async function lockAgentsForConfigWrite(tx: Tx, agentIds: readonly string
  * Step 5. ONE ordering domain per agent: this is the only way `configRevision`
  * advances, so an organization-derived change and an ordinary agent edit cannot
  * mint competing revisions.
+ *
+ * Takes the ascending agent-row locks ITSELF rather than trusting callers to have
+ * done it. A bare `updateMany` over several rows locks them in whatever order the
+ * planner picks, which deadlocks against an organization-environment transaction
+ * holding an overlapping set in ascending id order. Entering the documented order
+ * here makes every path — including the derived skill-source and managed-skill
+ * bumps, which have no other reason to lock — correct by construction.
+ *
+ * Re-locking rows this transaction already holds is free, so callers that locked as
+ * part of their own fence pay nothing for the guarantee.
  */
-export async function bumpAgentConfigRevisions(tx: PrismaLike, agentIds: readonly string[]): Promise<void> {
+export async function bumpAgentConfigRevisions(tx: Tx, agentIds: readonly string[]): Promise<void> {
   if (agentIds.length === 0) return
+  const ordered = await lockAgentsForConfigWrite(tx, agentIds)
+  if (ordered.length === 0) return
   await tx.agent.updateMany({
-    where: { id: { in: [...new Set(agentIds)] } },
+    where: { id: { in: ordered } },
     data: { configRevision: { increment: 1 } }
   })
 }
