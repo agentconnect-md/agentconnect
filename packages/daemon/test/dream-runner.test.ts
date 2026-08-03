@@ -73,12 +73,6 @@ class FakeStore implements DreamStorePort {
   dreamSessionSources(): { sessionId: string; channel: string; thread: string }[] {
     return this.sources
   }
-  /** Sessions excluded from agent-memory capture (session-visibility.md §5.1).
-   *  Empty by default; a test adds an id to assert dreams skip private sources. */
-  captureExcluded = new Set<string>()
-  isCaptureExcluded(acpSessionId: string | undefined): boolean {
-    return acpSessionId !== undefined && this.captureExcluded.has(acpSessionId)
-  }
   toolRows: { sender: string; text: string; kind?: string }[] = []
   dreamTranscriptText(
     _c: string,
@@ -176,6 +170,28 @@ describe('DreamRunner pipeline', () => {
     expect(staged?.map((f) => f.name)).toEqual(['MEMORY.md', 'prefs.md'])
     const read = await runner.stagedRead('a1', started.dreamId, 'prefs.md')
     expect(read?.content).toContain('2026-07-24')
+  })
+
+  it('mines every session the agent participated in, without a capture-visibility filter (#36)', async () => {
+    // A dream distills all of the agent's own sessions — including DM / webchat /
+    // external (GitHub) / A2A ones that the per-turn capture gate marks private.
+    // Peer isolation stays with the source (agentId-scoped + agent-scoped rows);
+    // it is no longer a hard pre-filter here (session-visibility.md §5.1 follow-up).
+    const { runner, store, prompts } = await setup({})
+    store.sources = [
+      { sessionId: 'sess-channel', channel: 'C1', thread: 'T1' },
+      { sessionId: 'sess-dm', channel: 'C2', thread: 'T2' },
+      { sessionId: 'sess-github', channel: 'C3', thread: 'T3' }
+    ]
+    const started = await runner.start('a1', { trigger: 'manual' })
+    expect(started.sessionIds).toEqual(['sess-channel', 'sess-dm', 'sess-github'])
+    await settle(store, started.dreamId)
+
+    const inputDir = prompts[0]!.inputDir
+    expect(await readdir(join(inputDir, 'sessions'))).toEqual(
+      expect.arrayContaining(['sess-channel.md', 'sess-dm.md', 'sess-github.md'])
+    )
+    for (const id of ['sess-channel', 'sess-dm', 'sess-github']) expect(prompts[0]?.prompt).toContain(id)
   })
 
   it('keeps extraction correlation, usage, and lifecycle events on the job', async () => {
