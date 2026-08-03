@@ -1,0 +1,463 @@
+# Organization Secrets and Variables
+
+> **Status:** Proposed
+>
+> **Scope:** control-plane + web; no daemon or protocol shape change
+>
+> **Requirement mapping:**
+>
+> 1. Organization owners manage organization-level variables and secrets from
+>    Settings. See sections 4, 7, and 8.
+> 2. Every entry targets either **All agents** or **Selected agents**. See
+>    sections 3 and 6.
+> 3. An agent's Variables and Secrets surfaces show assigned organization
+>    entries with an **Organization** label. Those rows are read-only there. See
+>    section 8.
+
+## 1. Goal
+
+AgentConnect currently stores plain runtime variables on an agent and stores
+write-only agent secrets separately in `agent_secret`. Teams therefore repeat
+the same value on every agent and must rotate it one agent at a time.
+
+This design adds an organization-owned environment registry. An organization
+owner can define a variable or secret once and choose whether it applies to all
+agents or a selected set. The Control Plane resolves the assigned organization
+entries together with each agent's existing local entries before constructing
+the existing `AgentSpec.env` and `AgentSpec.secrets` maps.
+
+The feature is configuration distribution, not a new secret lease system. The
+Control Plane remains off the message hot path, and the daemon continues to
+start agents entirely from its locally persisted `agent.json` after receiving
+the resolved spec.
+
+## 2. Terminology and non-goals
+
+- An **organization entry** is one organization-owned variable or secret.
+- An **agent entry** is the existing variable or secret owned by one agent.
+- An entry's **audience** is `all` or `selected`. The Console labels these
+  values **All agents** and **Selected agents**.
+- An organization entry is **assigned** to an agent when its audience is `all`,
+  or when a selected-audience binding exists for that agent.
+- The **effective environment** is the resolved set sent to the daemon.
+
+This version does not:
+
+- expose secret values after they are saved;
+- let an agent editor change an organization entry or its audience;
+- add per-daemon, per-session, per-conversation, or per-workspace scopes;
+- substitute values into other settings;
+- give agents a new runtime API for fetching secrets;
+- move secret resolution onto the Control Plane message path; or
+- provide instantaneous revocation from an already-running OS process.
+
+## 3. Decisions and invariants
+
+### 3.1 One organization keyspace
+
+An organization cannot contain both a variable and a secret with the same key.
+Keys are unique by `(orgId, key)` across both kinds and use the existing env-var
+name rule:
+
+```text
+^[A-Za-z_][A-Za-z0-9_]*$
+```
+
+The key and kind are immutable after creation. Renaming or converting an entry
+is an explicit delete-and-create operation, which prevents an edit from
+silently changing the meaning of the same organization-owned credential.
+
+Variable values are ordinary configuration and may be read by authorized human
+APIs. Secret values are write-only: create and replacement requests accept the
+value, but no response, log, audit payload, or error echoes it.
+
+### 3.2 Organization entries take precedence
+
+An assigned organization entry wins over any same-key agent entry, regardless
+of whether either side is a variable or a secret. Resolution is by key first,
+then the surviving entries are separated into the two existing wire maps:
+
+```ts
+const effectiveByKey = new Map([...agentVariables, ...agentSecrets])
+for (const entry of assignedOrganizationEntries) effectiveByKey.set(entry.key, entry)
+
+const env = variablesOf(effectiveByKey)
+const secrets = secretsOf(effectiveByKey)
+```
+
+This is deliberately stronger than relying on the daemon's existing
+"secrets win over variables" merge. An organization owner assigning `API_KEY`
+must get one deterministic result even if an agent already has a local variable
+or secret with that name.
+
+Conflicting agent entries are preserved, not deleted. They are inactive while
+the organization entry is assigned and become effective again if that
+assignment or organization entry is removed. The agent UI marks such local rows
+**Overridden by Organization**. New or updated agent-local entries may still use
+the same name so an agent can retain a fallback, but the editor must explain
+that the value is not currently active.
+
+### 3.3 Full snapshots remove stale values
+
+`AgentSpec.env` and `AgentSpec.secrets` remain complete resolved maps and are
+always emitted, including `{}`. Removing an assignment, deleting an entry, or
+changing its kind through delete-and-create therefore clears the prior value
+from the daemon instead of relying on a separate remove frame.
+
+### 3.4 Assignment is dynamic for `all`
+
+`all` is a policy, not a materialized list. It applies to every current agent in
+the organization, including restricted agents the acting owner cannot discover,
+and automatically applies to agents created later. `selected` is represented by
+explicit agent bindings and may contain zero agents while an owner stages an
+entry.
+
+Deleting an agent cascades its selected bindings. Moving an agent between
+daemons does not affect assignments because they are anchored to the stable
+agent ID. Agents cannot move between organizations.
+
+## 4. Authorization and visibility
+
+In the current OSS role vocabulary, "organization admin" means a membership
+with role `owner` and the `organization.manage` action.
+
+| Operation                                                  | Required authorization                                       |
+| ---------------------------------------------------------- | ------------------------------------------------------------ |
+| List organization entries in Settings                      | `organization.manage`                                        |
+| Create, replace, retarget, or delete an organization entry | `organization.manage`                                        |
+| Add or remove one selected-agent binding                   | `organization.manage` plus `resource.view` for that agent    |
+| See assigned organization rows on an agent                 | normal `resource.view` for that agent                        |
+| Edit an agent-local variable or secret                     | existing `resource.edit`; organization rows remain immutable |
+
+Organization ownership must not become a restricted-agent discovery bypass.
+The selected-agent picker uses the normal human agent list and therefore shows
+only agents the owner can already view. Point assignment requests for an
+invisible or foreign agent return the existing not-found-shaped response.
+
+Selected bindings are edited as per-agent add/remove commands, not by replacing
+one returned array. A Settings response returns only bindings whose agents the
+caller can view. Bindings to other restricted agents, if any, are neither
+returned nor removed when the owner edits the visible selection. The UI always
+explains, without revealing whether hidden bindings exist, that only agents the
+viewer can access are listed and other private-agent assignments are unchanged.
+
+Changing `selected` to `all` clears all explicit bindings. Changing `all` to
+`selected` starts from the explicit visible selection submitted with that
+operation. Deleting the organization entry removes the known organization
+configuration globally; it does not disclose the agents that were receiving
+it.
+
+Human agent DTOs expose only organization entries assigned to that particular
+agent. Thus a member who can view agent A may see A's organization variable
+values and organization secret key names, but learns nothing about entries
+assigned only to agent B. Secret values remain unreadable to every human role,
+including owners.
+
+## 5. Persistence and secret-store seams
+
+The metadata and secret value are structurally separated, matching the current
+`Agent` / `AgentSecret` discipline:
+
+```prisma
+enum OrganizationEnvironmentKind {
+  variable
+  secret
+}
+
+enum OrganizationEnvironmentAudience {
+  all
+  selected
+}
+
+model OrganizationEnvironmentEntry {
+  id                   String                          @id @default(uuid()) @db.Uuid
+  orgId                String
+  key                  String
+  kind                 OrganizationEnvironmentKind
+  variableValue        String?                         // non-null only for variable
+  audience             OrganizationEnvironmentAudience
+  version              Int                             @default(1)
+  createdByUserId      String?
+  lastModifiedByUserId String?
+  createdAt            DateTime                        @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime                        @updatedAt @db.Timestamptz(6)
+
+  org         Org                                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  secret      OrganizationEnvironmentSecret?
+  assignments OrganizationEnvironmentAssignment[]
+
+  @@unique([orgId, key])
+  @@unique([id, orgId])
+  @@index([orgId, audience])
+  @@map("organization_environment_entry")
+}
+
+model OrganizationEnvironmentSecret {
+  entryId   String   @id @db.Uuid
+  value     String   // always passes through SecretCipher
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  entry OrganizationEnvironmentEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@map("organization_environment_secret")
+}
+
+model OrganizationEnvironmentAssignment {
+  orgId    String
+  entryId  String @db.Uuid
+  agentId  String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  entry OrganizationEnvironmentEntry @relation(fields: [entryId, orgId], references: [id, orgId], onDelete: Cascade)
+  agent Agent                        @relation(fields: [agentId, orgId], references: [id, orgId], onDelete: Cascade)
+
+  @@id([entryId, agentId])
+  @@index([orgId, agentId])
+  @@map("organization_environment_assignment")
+}
+```
+
+The migration adds the composite `Agent` uniqueness needed by the
+same-organization assignment foreign key. That database constraint makes a
+cross-organization binding impossible even for an internal caller.
+
+`OrganizationEnvironmentSecretStore` is the only value-reading seam for
+organization secrets. It receives the same mandatory `SecretCipher` instance
+as `AgentSecretStore`; `seal` happens before a transaction and the transaction
+persists only the prepared stored representation. Metadata list and human DTO
+queries never join the secret table. Rewrap convergence adds this table to the
+existing secret-table sweep.
+
+Create, secret replacement, audience change, and selected bindings update the
+metadata, secret row, and bindings atomically. PATCH includes `expectedVersion`;
+a competing owner edit returns `409` rather than losing a secret rotation or
+audience change. Secret sealing that finishes before a losing transaction is
+discarded and is never logged.
+
+Repository reads have two explicit shapes:
+
+- a human metadata read, which may include `variableValue` but never opens the
+  secret row; and
+- an internal effective-config read, which resolves assignments and opens only
+  the secrets needed for the requested agent or agent batch.
+
+## 6. HTTP API
+
+All routes are organization-scoped, use the existing org-scope guard, and must
+include OpenAPI tags, summary, description, and a unique `operationId`.
+
+```text
+GET    /api/v1/orgs/:orgId/environment
+POST   /api/v1/orgs/:orgId/environment
+PATCH  /api/v1/orgs/:orgId/environment/:entryId
+DELETE /api/v1/orgs/:orgId/environment/:entryId
+
+PUT    /api/v1/orgs/:orgId/environment/:entryId/agents/:agentId
+DELETE /api/v1/orgs/:orgId/environment/:entryId/agents/:agentId
+```
+
+Create accepts:
+
+```ts
+{
+  key: string
+  kind: 'variable' | 'secret'
+  value: string
+  audience: 'all' | 'selected'
+  agentIds?: string[] // initial visible selection; valid only for selected
+}
+```
+
+PATCH accepts `expectedVersion`, an optional replacement `value`, and an
+optional `audience`. When changing `all` to `selected`, it may also carry the
+initial caller-visible `agentIds` in the same transaction. Subsequent edits to
+an already-selected audience use the per-agent idempotent binding endpoints, so
+concurrent owners adding different visible agents do not overwrite one another
+or any invisible binding.
+
+The list DTO is metadata-only:
+
+```ts
+{
+  id: string
+  key: string
+  kind: 'variable' | 'secret'
+  variableValue?: string       // present only for variables
+  secretConfigured?: boolean   // present only for secrets, never its value
+  audience: 'all' | 'selected'
+  visibleAgentIds: string[]    // caller-visible selected bindings only
+  version: number
+  createdAt: string
+  updatedAt: string
+}[]
+```
+
+PATCH can replace a variable value, replace a secret value, or change audience;
+an omitted value leaves it unchanged. It cannot change `key` or `kind`. Empty
+strings retain the same validity semantics as existing agent variables and
+secrets. The two agent-binding endpoints are valid only while the entry has
+`selected` audience and are idempotent.
+
+Agent create/PATCH request bodies remain agent-local. Agent response DTOs retain
+the existing `env` and `secretKeys` meanings and add assigned-source fields:
+
+```ts
+{
+  // Existing, agent-owned fields:
+  env: Record<string, string>
+  secretKeys: string[]
+
+  // New, effective organization-owned rows assigned to this agent:
+  organizationVariables: Array<{ key: string; value: string }>
+  organizationSecretKeys: string[]
+}
+```
+
+The agent DTO path resolves metadata and key names only; it never decrypts an
+organization secret. List-agent endpoints use a batch resolver so this does not
+become one query per agent.
+
+Input limits use shared env/secret constants and the existing wire-frame budget.
+Both organization mutations and agent-local mutations validate the resulting
+effective configuration for every directly affected agent. A mutation that
+would make an individual resolved `AgentSpec` exceed admission limits is
+rejected before persistence rather than producing an unreconcilable agent.
+
+## 7. Resolution and distribution
+
+`AgentSpecAssembler` gains an injected `OrganizationEnvironmentResolver` and is
+still the single producer of CP-to-daemon agent specs:
+
+```ts
+interface OrganizationEnvironmentResolver {
+  forAgent(orgId: string, agentId: string): Promise<OrganizationEnvironmentValues>
+  forAgents(orgId: string, agentIds: readonly string[]): Promise<Map<string, OrganizationEnvironmentValues>>
+}
+```
+
+The assembler loads agent-local secrets, resolves assigned organization
+entries, applies the precedence rule from section 3.2, and emits the same
+`AgentSpec.env` and `AgentSpec.secrets` fields used today. There is no
+organization-environment protocol frame, daemon registry, or runtime lookup.
+
+An organization-entry mutation computes the union of agents affected before
+and after the transaction:
+
+- `all`: every placed agent in the organization, using an internal unfiltered
+  repository read;
+- `selected`: the old and new bound agent IDs; and
+- audience transitions: the union of both interpretations.
+
+After commit, the Control Plane sends the normal full `agent/upsert` to each
+affected online daemon. Unplaced agents need no event. Offline daemons receive
+the latest resolved maps through the normal `register/ok` roster on reconnect.
+Fan-out is best-effort after durable commit and uses the same reconnect backstop
+as an ordinary agent edit.
+
+Agent moves snapshot `effectiveEnv` and `effectiveSecrets`, not only the local
+agent fields. Move fingerprint stability re-resolves organization assignments
+before activation, so an entry rotation or audience change racing a move causes
+the move bundle to replay instead of activating stale credentials on the target.
+
+On the daemon, an env or secret change already participates in the host-spawn
+signature. Reconciliation persists the new full maps and replaces the host
+according to the existing background-task-aware lifecycle. An in-flight process
+is not mutated. Consequently, deletion or rotation prevents future hosts from
+receiving the old value, but cannot claw a value out of a process that has not
+yet reached its safe replacement point. The Console warning for deletion and
+rotation states this explicitly.
+
+## 8. Console behavior
+
+### 8.1 Organization Settings
+
+Settings adds a **Variables & secrets** card near the other organization-wide
+agent policies. Only owners see the registry and its controls.
+
+Each row shows:
+
+- the key;
+- **Variable** or **Secret**;
+- the variable value, or a fixed mask for a secret;
+- **All agents** or **Selected agents**; and
+- edit and delete actions.
+
+The add/edit sheet collects key, kind, value, and audience. For a saved secret,
+the value field is empty and labeled **Replace value**; leaving it empty keeps
+the current value. The selected-agent picker uses the caller-filtered agent
+list and edits bindings incrementally. Its standing help text says: "Only
+agents you can access are shown. Assignments to other private agents are left
+unchanged."
+
+Switching to **All agents**, deleting an entry, and rotating a secret use a
+confirmation that describes the affected runtime behavior. The UI never claims
+that a running process has already discarded an old value.
+
+### 8.2 Agent Variables and Secrets
+
+The agent detail page keeps its existing Variables and Secrets cards and renders
+one combined list in each:
+
+- agent-owned rows keep their current appearance and edit path;
+- assigned organization rows carry an **Organization** badge;
+- organization variable values are visible and read-only;
+- organization secret values remain masked and only the key is returned; and
+- no organization row has edit, replace, or remove controls.
+
+The cards' counts include both sources. The header **Edit** action continues to
+open the agent editor, where organization rows appear in a separate read-only
+**From organization** group above the editable agent-owned rows. Owners get a
+link to Organization Settings; other members get explanatory text only.
+
+When a local row has the same key as an assigned organization row, the local row
+is retained in the editor with **Overridden by Organization** and the
+organization row is the one shown as effective on the detail card. Removing the
+assignment later makes the local row active without requiring its value to be
+entered again.
+
+The responsive page uses the existing single Variables/Secrets tree with mobile
+and desktop utility variants; this feature does not introduce a form-factor-only
+behavior fork.
+
+## 9. Failure handling and observability
+
+- Secret-cipher failure rejects the write before persistence and never includes
+  plaintext or ciphertext in the response.
+- A missing secret value row is an invalid entry. Human metadata may show the
+  entry as not configured to an owner, while internal resolution omits it,
+  records an ID/key-only error, and never blocks unrelated entries.
+- A selected binding whose agent was deleted disappears by cascade. A foreign
+  organization binding is prevented by the composite foreign keys.
+- If live `agent/upsert` fails, the durable entry remains authoritative and the
+  daemon reconnect roster repairs it.
+- Logs may include organization ID, entry ID, key, kind, audience, version, and
+  affected-agent count. They must never include variable values in bulk fan-out
+  logs or any secret value.
+- Metrics count CRUD outcomes, conflict responses, fan-out attempts/failures,
+  and resolver failures without value-bearing labels.
+
+## 10. Rollout and verification
+
+The migration is additive. Existing agents have no organization assignments,
+so their effective maps and wire specs are unchanged. A CP-first rolling deploy
+is safe because the protocol shape is unchanged; old daemons already consume
+the fully resolved `env` and `secrets` maps.
+
+Focused verification covers:
+
+- owner-only registry access and ordinary agent-view access to assigned rows;
+- no restricted-agent discovery through lists, point binding requests, counts,
+  or replacement-style selection updates;
+- `all`, empty `selected`, selected add/remove, new-agent inheritance, agent
+  deletion, and audience transitions;
+- organization-over-agent precedence for all four variable/secret collision
+  combinations, plus fallback restoration after unassignment;
+- secret write-only DTOs, cipher sealing/opening, rollback, rewrap, logs, and
+  OpenAPI examples containing no stored value;
+- batch agent DTO resolution without secret decryption;
+- full-map replication on create, rotate, retarget, delete, reconnect, and agent
+  move races;
+- host replacement and stale-value removal while an in-flight/background task
+  follows the existing safe-reclaim behavior; and
+- one responsive Console tree with Organization badges and no edit affordance
+  on inherited rows.
