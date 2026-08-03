@@ -11,7 +11,7 @@ import {
   type ReactNode
 } from 'react'
 import Link from 'next/link'
-import { sameBotSpeaker } from '@/lib/bot-turn-grouping'
+import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { focusAction } from '@/lib/conversation-focus'
 import { encodeConversationKey } from '@/lib/conversation-key'
@@ -65,7 +65,7 @@ import {
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
-import { usePlayground } from '@/components/console/PlaygroundProvider'
+import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
@@ -127,9 +127,82 @@ function FastBadge() {
   )
 }
 
+// The composer's textarea, isolated so a keystroke re-renders ONLY this node:
+// the draft lives outside the playground context (usePgDraft subscription), and
+// SessionDetailView rebuilds the whole transcript on every render — routing
+// keystrokes through it made typing lag on long sessions.
+function ComposerTextarea({
+  sessionId,
+  placeholder,
+  onSend,
+  onImageFile
+}: {
+  sessionId: string
+  placeholder: string
+  onSend: () => void
+  onImageFile: (file: File) => void
+}) {
+  const draft = usePgDraft(sessionId)
+  const { setPgInput } = usePlayground()
+  return (
+    <textarea
+      className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+      placeholder={placeholder}
+      value={draft}
+      onChange={(e) => setPgInput(sessionId, e.target.value)}
+      onPaste={(event) => {
+        const image = clipboardImageFile(event.clipboardData)
+        if (!image) return
+        event.preventDefault()
+        onImageFile(image)
+      }}
+      onKeyDown={(e) => {
+        // Enter sends — but NOT while an IME is composing (that Enter
+        // just confirms the candidate), and Shift+Enter is a newline.
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault()
+          onSend()
+        }
+      }}
+    />
+  )
+}
+
+// Send/stop toggle, isolated for the same reason as ComposerTextarea: the
+// empty↔non-empty draft flip that enables it must not re-render the whole
+// detail view (that rebuilds the transcript, so the FIRST keystroke into an
+// empty composer lagged on long sessions).
+function ComposerSendButton({
+  sessionId,
+  busy,
+  imagePreparing,
+  hasImage,
+  onSend,
+  onStop
+}: {
+  sessionId: string
+  busy: boolean
+  imagePreparing: boolean
+  hasImage: boolean
+  onSend: () => void
+  onStop: () => void
+}) {
+  const hasText = usePgDraftHasText(sessionId)
+  return (
+    <button
+      className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
+      aria-label={busy ? 'Stop response' : 'Send message'}
+      onClick={() => (busy ? onStop() : onSend())}
+      disabled={!busy && (imagePreparing || (!hasText && !hasImage))}
+    >
+      <Icon name={busy ? 'square' : 'arrow-up'} size={busy ? 10 : 14} />
+    </button>
+  )
+}
+
 // One agent-turn step rendered from a real transcript message. Maps the daemon
 // transcript kind (text | tool | reasoning) onto the existing lane styling.
-function msgStep(m: SessionMessageDto): FmtStep {
+function msgStep(m: SessionMessageDto, toolSessionId?: string): FmtStep {
   const k = (m.kind || 'text').toLowerCase()
   if (k === 'tool') {
     return {
@@ -145,7 +218,7 @@ function msgStep(m: SessionMessageDto): FmtStep {
       time: formatTranscriptRowTime(m),
       // Carry the raw message so the row can render the captured tool body (input /
       // output / content / diff / locations) below the title, on demand.
-      ...(m.body ? { msg: m } : {})
+      ...(m.body ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
     }
   }
   if (k === 'reasoning') {
@@ -191,17 +264,24 @@ function countsAsOfflineSource(error: unknown): boolean {
 }
 
 /** Render input for conversation mode: mergeConversation over the CURRENT
- *  per-member row map (merged-conversation-view.md §6). */
+ *  per-member row map (merged-conversation-view.md §6). Preserve each row's
+ *  object identity while indexing its source out-of-band: ToolBodyDetail uses
+ *  exact-row identity to fence a previously fetched full body. */
 function mergeConversationRows(
   sources: { sessionId: string; agentId: string; platform: string }[],
-  rows: Map<string, SessionMessageDto[]>
+  rows: Map<string, SessionMessageDto[]>,
+  sourceSessionByMessage: WeakMap<SessionMessageDto, string>,
+  sourceTurnByMessage: WeakMap<SessionMessageDto, string>
 ): SessionMessageDto[] {
-  const merged = mergeConversation(
+  return mergeConversation(
     sources
       .filter((source) => rows.has(source.sessionId))
       .map((source) => ({ ...source, rows: rows.get(source.sessionId)! }) satisfies MergeSource)
-  )
-  return merged.map((m) => m.row)
+  ).map(({ row, sourceSessionId, sourceTurnKey }) => {
+    sourceSessionByMessage.set(row, sourceSessionId)
+    if (sourceTurnKey) sourceTurnByMessage.set(row, sourceTurnKey)
+    return row
+  })
 }
 
 interface FmtStep {
@@ -219,6 +299,9 @@ interface FmtStep {
   image?: SessionImage
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
+  // Conversation rows keep their owning session out-of-band so full-body reads
+  // do not accidentally target the representative member.
+  toolSessionId?: string
 }
 
 // A bare text step (no lane chrome) — how a peer participant's message renders
@@ -242,6 +325,7 @@ function plainStep(text: string, time?: string, image?: SessionImage): FmtStep {
 // A step's non-text extras (code block, file chips, captured tool body) — rendered
 // identically in a turn's plain answer and in its collapsed "work" rows.
 function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) {
+  const toolSessionId = step.toolSessionId ?? sessionId
   return (
     <>
       {step.code && (
@@ -258,7 +342,7 @@ function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) 
           ))}
         </div>
       )}
-      {step.msg && sessionId && <ToolBodyDetail msg={step.msg} sessionId={sessionId} />}
+      {step.msg && toolSessionId && <ToolBodyDetail msg={step.msg} sessionId={toolSessionId} />}
     </>
   )
 }
@@ -1034,13 +1118,13 @@ export default function SessionDetailView() {
     getLiveSteps,
     getBusyLaneAgentIds,
     reconcileLiveSteps,
-    getPgInput,
     getPgImage,
     getPgWorktree,
     isPgBusy,
-    setPgInput: setPgInputById,
     setPgImage,
     pgSend,
+    getPgQueue,
+    pgCancelQueued,
     pgAddAgent,
     pgSetModel,
     pgSetEffort,
@@ -1068,6 +1152,8 @@ export default function SessionDetailView() {
     cursors: Map<string, string | null>
     older: Map<string, string | null>
   }>({ rows: new Map(), cursors: new Map(), older: new Map() })
+  const conversationSourceSessionByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
+  const conversationSourceTurnByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
   const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
   const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
   // Which conversation key the CURRENT fan-out state belongs to — the focus
@@ -1511,7 +1597,14 @@ export default function SessionDetailView() {
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
-        setMsgs(mergeConversationRows(sources, rowsBySession))
+        setMsgs(
+          mergeConversationRows(
+            sources,
+            rowsBySession,
+            conversationSourceSessionByMessageRef.current,
+            conversationSourceTurnByMessageRef.current
+          )
+        )
         setMsgLoading(false)
         setMsgPaging(false)
         liveCursorRef.current = cursors.get(sid) ?? null
@@ -1617,7 +1710,14 @@ export default function SessionDetailView() {
         }
         if (tailSessionRef.current !== sid) return
         setConversationOffline(failed)
-        setMsgs(mergeConversationRows(sources, state.rows))
+        setMsgs(
+          mergeConversationRows(
+            sources,
+            state.rows,
+            conversationSourceSessionByMessageRef.current,
+            conversationSourceTurnByMessageRef.current
+          )
+        )
         if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
           reconcileLiveSteps(sid, repRows, aid)
       })()
@@ -1689,7 +1789,14 @@ export default function SessionDetailView() {
           }
         })
       )
-      setMsgs(mergeConversationRows(sources, state.rows))
+      setMsgs(
+        mergeConversationRows(
+          sources,
+          state.rows,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current
+        )
+      )
       setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
     } finally {
       setConversationPagingEarlier(false)
@@ -1928,9 +2035,8 @@ export default function SessionDetailView() {
   // Composer state is per-session in the provider — bind it to THIS session's id so a
   // different live conversation streaming in the background can't disable or clear it.
   const pgBusy = sessionBusy
-  const pgInput = getPgInput(session.id)
   const pgImage = getPgImage(session.id)
-  const setPgInput = (v: string) => setPgInputById(session.id, v)
+  const pgQueue = getPgQueue(session.id)
   const agentHref = session.agentId ? `/agents/${session.agentId}` : null
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
@@ -2071,18 +2177,21 @@ export default function SessionDetailView() {
     })
     turns.push(turn)
   }
+  const botTurnByKey = new Map<string, Extract<Turn, { kind: 'bot' }>>()
   // Another agent speaking in this session — a webchat peer participant or a
   // trusted a2a bot — renders as its own left-side agent block: the right side
-  // is reserved for humans. Groups consecutive rows like live bot steps.
-  const pushAgentTurn = (agent: Agent, step: FmtStep): void => {
+  // is reserved for humans. Conversation rows retain their source-local turn;
+  // live rows retain their stream turn; untagged legacy rows group by adjacency.
+  const pushAgentTurn = (agent: Agent, step: FmtStep, turnKey?: string): void => {
     const name = agentLabel(agent)
     rememberAgentParticipant(agent.id, name, agent)
-    let last = turns[turns.length - 1]
+    let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
       // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
       last = { kind: 'bot', agentName: name, agentId: agent.id, model: '', time: '', steps: [] }
       turns.push(last)
+      if (turnKey) botTurnByKey.set(turnKey, last)
     }
     last.steps.push(step)
     if (!last.time && step.time) last.time = step.time
@@ -2091,8 +2200,10 @@ export default function SessionDetailView() {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
     for (const m of visibleMsgs ?? []) {
+      const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
+      const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
       if (m.sender === session.agentId) {
-        let last = turns[turns.length - 1]
+        let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
         const ownerName = session.agentName ?? ''
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
@@ -2104,8 +2215,9 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+          if (sourceTurnKey) botTurnByKey.set(sourceTurnKey, last)
         }
-        const step = msgStep(m)
+        const step = msgStep(m, toolSessionId)
         last.steps.push(step)
         if (!last.time && step.time) last.time = step.time
       } else {
@@ -2116,7 +2228,14 @@ export default function SessionDetailView() {
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
         const self = isSelf(m.sender)
         if (senderAgent && !self) {
-          pushAgentTurn(senderAgent, { ...msgStep(m), ...(m.attachments?.[0] ? { image: m.attachments[0] } : {}) })
+          pushAgentTurn(
+            senderAgent,
+            {
+              ...msgStep(m, toolSessionId),
+              ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
+            },
+            sourceTurnKey
+          )
           continue
         }
         const participant = self
@@ -2150,7 +2269,11 @@ export default function SessionDetailView() {
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
         if (senderAgent && !self) {
-          pushAgentTurn(senderAgent, plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image))
+          pushAgentTurn(
+            senderAgent,
+            plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image),
+            liveBotTurnKey(stp.turnId, senderAgent.id)
+          )
           firstMsg = false
           return
         }
@@ -2182,7 +2305,8 @@ export default function SessionDetailView() {
         if (stp.agentId && stp.agentId !== session.agentId) {
           rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
         }
-        let last = turns[turns.length - 1]
+        const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
+        let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2193,6 +2317,7 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+          if (turnKey) botTurnByKey.set(turnKey, last)
         } else if (stp.agentId && last.agentId === undefined) {
           // A tagged step continuing an untagged block names its author retroactively.
           last.agentId = stp.agentId
@@ -2214,7 +2339,11 @@ export default function SessionDetailView() {
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
         if (senderAgent && !self) {
-          pushAgentTurn(senderAgent, plainStep(stp.text, stp.time ?? '', stp.image))
+          pushAgentTurn(
+            senderAgent,
+            plainStep(stp.text, stp.time ?? '', stp.image),
+            liveBotTurnKey(stp.turnId, senderAgent.id)
+          )
           continue
         }
         const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
@@ -2237,7 +2366,8 @@ export default function SessionDetailView() {
         if (stp.agentId && stp.agentId !== session.agentId) {
           rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
         }
-        let last = turns[turns.length - 1]
+        const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
+        let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2248,6 +2378,7 @@ export default function SessionDetailView() {
             steps: []
           }
           turns.push(last)
+          if (turnKey) botTurnByKey.set(turnKey, last)
         } else if (stp.agentId && last.agentId === undefined) {
           // A tagged step continuing an untagged block names its author retroactively.
           last.agentId = stp.agentId
@@ -3015,6 +3146,36 @@ export default function SessionDetailView() {
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
                 />
+                {/* Queued messages (Claude Code-style): sends accepted while a turn was
+                  still streaming wait here, dispatch in order as turns finish, and can
+                  be cancelled individually before they go out. */}
+                {pgQueue.length > 0 && (
+                  <div className="mb-2 flex flex-col items-end gap-1">
+                    {pgQueue.map((q) => (
+                      <div
+                        key={q.queueId}
+                        className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
+                      >
+                        <Icon name="clock" size={13} color="var(--text-tertiary)" />
+                        <span
+                          className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
+                          title={q.text}
+                        >
+                          {q.text || q.image?.name || 'Image'}
+                        </span>
+                        <button
+                          type="button"
+                          className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                          aria-label="Cancel queued message"
+                          title="Cancel queued message"
+                          onClick={() => pgCancelQueued(session.id, q.queueId)}
+                        >
+                          <Icon name="x" size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {/* Composer card (design "achero"): textarea on top, a toolbar row below
                   the divider — attach · model pill (fast toggle in its menu) · effort ·
                   permission · context ring · send. Tokens/cost live in the header's
@@ -3053,27 +3214,13 @@ export default function SessionDetailView() {
                       </button>
                     </div>
                   )}
-                  <textarea
-                    className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+                  <ComposerTextarea
+                    sessionId={session.id}
                     placeholder={
                       (session.participants?.length ?? 0) > 1 ? 'Message everyone…' : `Message ${session.agentName}…`
                     }
-                    value={pgInput}
-                    onChange={(e) => setPgInput(e.target.value)}
-                    onPaste={(event) => {
-                      const image = clipboardImageFile(event.clipboardData)
-                      if (!image) return
-                      event.preventDefault()
-                      void onImageFile(image)
-                    }}
-                    onKeyDown={(e) => {
-                      // Enter sends — but NOT while an IME is composing (that Enter
-                      // just confirms the candidate), and Shift+Enter is a newline.
-                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                        e.preventDefault()
-                        onPgSend()
-                      }
-                    }}
+                    onSend={() => onPgSend()}
+                    onImageFile={(file) => void onImageFile(file)}
                   />
                   <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
                     <div className="relative flex-none">
@@ -3316,16 +3463,14 @@ export default function SessionDetailView() {
                       )}
                     </div>
                     <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
-                    <button
-                      className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
-                      aria-label={pgBusy ? 'Stop response' : 'Send message'}
-                      onClick={() =>
-                        pgBusy ? pgCancel(session.id, session.agentId ?? '', webchatConversationId) : onPgSend()
-                      }
-                      disabled={!pgBusy && (imagePreparing || (!pgInput.trim() && !pgImage))}
-                    >
-                      <Icon name={pgBusy ? 'square' : 'arrow-up'} size={pgBusy ? 10 : 14} />
-                    </button>
+                    <ComposerSendButton
+                      sessionId={session.id}
+                      busy={pgBusy}
+                      imagePreparing={imagePreparing}
+                      hasImage={!!pgImage}
+                      onSend={() => onPgSend()}
+                      onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
+                    />
                   </div>
                 </div>
               </div>

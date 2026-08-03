@@ -38,7 +38,11 @@ export interface NormalizedMessage extends Omit<
    *  cross-daemon copies share an explicit identity. */
   transcriptPostId?: string
   source: 'user' | 'cron' | 'agent' | 'hook'
-  platform: 'slack' | 'telegram' | 'webchat' | 'discord' | 'feishu' | 'hook'
+  // S1a open reader (integration-plugin-architecture.md §6.2): the wire reads
+  // platform as an open string, so the runtime model matches. Writers still
+  // produce only the legacy ids; unknown ids are handled fail-closed where the
+  // value is consumed (coordsDecision, persistence narrowing), never by type.
+  platform: string
   /**
    * Opaque identity of the physical platform bot/connection that received this
    * message. Platform channel ids are only unique within one bot installation

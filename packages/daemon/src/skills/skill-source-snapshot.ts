@@ -184,7 +184,7 @@ function registerPath(seen: Map<string, SeenPath>, key: string, entry: SeenPath)
   seen.set(key, entry)
 }
 
-async function readBoundedFile(path: string, before: Stats, maxBytes: number): Promise<Buffer> {
+export async function readBoundedFile(path: string, before: Stats, maxBytes: number): Promise<Buffer> {
   assertRegularUnlinkedFile(before, 'skill source entry')
   if (before.size > maxBytes) throw new SkillSourceSnapshotError('skill source contains an oversized file')
 

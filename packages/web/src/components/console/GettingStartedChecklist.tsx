@@ -12,11 +12,15 @@
 import { Fragment, type ReactNode } from 'react'
 import { useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from './ModalProvider'
 import type { GsAction, GsItem } from '@/lib/getting-started'
 import { agentIsPlaced, agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
+import { isAuthConfigured } from '@/lib/auth'
+import { fetchMySocialAccount } from '@/lib/api'
+import { socialLoginProviders } from '@/lib/social-login-providers'
 import { useSlackPlatformInstall } from '@/lib/use-slack-platform-install'
 import { Button, Icon } from '@/components/ui'
 import { PlatformMark } from '@/components/marks'
@@ -53,6 +57,10 @@ export function useGsActions() {
           return action.agentId
             ? router.push(orgPath(`/agents/${action.agentId}?tab=workspace&editws=github`))
             : openModal('agent')
+        case 'github-profile':
+          // Land on Profile with the GitHub link flow auto-started (`link=github` is
+          // consumed one-shot by ProfileView → SocialSignInCard's autoLinkTarget).
+          return router.push(orgPath('/profile?link=github'))
         case 'chat':
           // The chat-first Home landing is where conversations start.
           return router.push(orgPath('/home'))
@@ -66,6 +74,21 @@ export function useGsActions() {
   )
 
   return { runAction, firstAgent }
+}
+
+// Backs the "Link your GitHub profile" step. The SWR key is shared with
+// SocialSignInCard, so this is deduped with the profile page. Undefined while
+// unknowable — auth off, no GitHub connector on this deployment, or the account
+// still loading — and computeGettingStarted omits the step for that value.
+export function useGithubProfileLinked(): boolean | undefined {
+  const offersGithub = isAuthConfigured() && socialLoginProviders().some((p) => p.target === 'github')
+  const { data } = useSWR(offersGithub ? 'logto-account-sign-in-methods' : null, fetchMySocialAccount, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    shouldRetryOnError: false
+  })
+  if (!data) return undefined
+  return data.identities.some((i) => i.target === 'github')
 }
 
 // The checklist item rows. `runAction` is supplied by the caller so each surface can

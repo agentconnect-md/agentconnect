@@ -2415,6 +2415,15 @@ export interface BotRecord {
   /** When the current credential landed; null for bots created before the fence
    *  (their revocations skip the timestamp check and rely on the revision). */
   credentialInstalledAt: Date | null
+  /** Generic demux identity (D6): the platform's app-scoped id. Dual-written beside
+   *  the legacy per-platform columns; NULL on legacy rows. */
+  externalAppId: string | null
+  /** Tenant half of the demux identity (Slack team id). `'-'` sentinel on new rows
+   *  of tenantless platforms; NULL on legacy rows (NULLs-distinct semantics). */
+  externalTenantId: string | null
+  /** Display-only per-platform bag (discordAppId / feishuAppId / feishuRegion fold
+   *  here when reads switch). */
+  platformConfig: Record<string, unknown> | null
   /** Discord application (client) id — lets the console offer a ready-made invite URL. */
   discordAppId: string | null
   /** Feishu/Lark app id — lets the console deep-link to this app's developer settings. */
@@ -2466,6 +2475,10 @@ export interface BotRepo {
   /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
    *  by the composite demux key (a workspace binds to exactly one org). */
   getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null>
+  /** CROSS-ORG lookup by the generic demux identity (D6). Pass the `'-'` sentinel
+   *  as `externalTenantId` for tenantless platforms. Legacy rows (NULL identity)
+   *  are unreachable here by design. */
+  getByExternalIdentity(platform: string, externalAppId: string, externalTenantId: string): Promise<BotRecord | null>
   /**
    * A fresh credential landed on an EXISTING bot (platform re-install / token
    * rotation): advance the install generation, stamp when it landed, and clear

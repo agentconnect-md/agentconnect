@@ -50,6 +50,40 @@ describe('game-result assertion (§9 layers)', () => {
     expect(gameResult(JSON.stringify({ schemaVersion: 'other/v9' }), context)).toMatchObject({ pass: false })
   })
 
+  it('never scores a rule-violating quota completion as clean: the game verdict is authoritative', () => {
+    // Quota counting: sequence reached the target, but quotas/turn-taking were
+    // violated — the game says completed: false and the score must agree.
+    const violated = gameResult(
+      doc({
+        terminalReason: 'completed',
+        outcome: {
+          completed: false,
+          variant: 'quota',
+          endgame: 'completed-with-violations',
+          acceptedPrefix: 8,
+          target: 8
+        }
+      }),
+      context
+    )
+    expect(violated).toMatchObject({ pass: true, score: 0.5 })
+    expect((violated as { reason: string }).reason).toContain('constraints were violated')
+    // A clean quota completion still scores full marks.
+    expect(
+      gameResult(
+        doc({
+          outcome: { completed: true, variant: 'quota', endgame: 'completed-clean', acceptedPrefix: 8, target: 8 }
+        }),
+        context
+      )
+    ).toMatchObject({ pass: true, score: 1 })
+    // And a partial outcome can never round up to a clean 1.0.
+    expect(gameResult(doc({ outcome: { completed: false, acceptedPrefix: 11, target: 12 } }), context)).toMatchObject({
+      pass: true,
+      score: expect.closeTo(11 / 12, 5)
+    })
+  })
+
   it('fails closed on missing or malformed §9.2 safety evidence', () => {
     // No invariants object at all.
     expect(

@@ -60,7 +60,7 @@ import { recallQueryFromBlocks } from './agents/memory-recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
-import { attachmentMention } from './session/attachment-block.js'
+import { attachmentMention, transcriptImageAttachments } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import { isValidatedRemoteMcpRuntime } from './mcp/remote-mcp-runtimes.js'
@@ -81,7 +81,13 @@ import { GitCredentialCache } from './cp/git-credential.js'
 import { CONFIG_FILE_CONVENTIONS, cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
-import { gitCredentialEnv, initGitInjection, probeGitVersion, sessionGitEnv } from './workspace/git-injection.js'
+import {
+  gitCredentialEnv,
+  initGitInjection,
+  probeGitVersion,
+  sessionGitEnv,
+  sessionGitPolicyEnv
+} from './workspace/git-injection.js'
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
@@ -96,6 +102,7 @@ import {
   type DreamOperationPolicy
 } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
+import { createLocalSkillsReader } from './cp/local-skills-reader.js'
 import { routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
 import {
@@ -222,9 +229,12 @@ import {
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   effectiveMemoryDreamingPolicy,
+  RdSlackAction,
+  WireFeishuCardActionEvent,
   gitRepoLabel,
   normalizeGitCloneUrl,
-  normalizeGithubRepoUrl
+  normalizeGithubRepoUrl,
+  MAX_AGENT_CALL_HOPS
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
@@ -336,6 +346,7 @@ import type {
   RdMsgIm,
   RdMsgSlackAction,
   RdMsgFeishuAction,
+  RdMsgPlatformAction,
   RdMsgHook,
   RdAck,
   RdAgentMsgFwd,
@@ -377,6 +388,18 @@ function formatErr(err: unknown): string {
     return `${e.name ?? 'Error'}: ${e.message ?? ''} (code=${e.code})${data}`
   }
   return e?.stack ?? String(err)
+}
+
+function formatErrWithCauses(err: unknown): string {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = err
+  while (current !== undefined && current !== null && parts.length < 6 && !seen.has(current)) {
+    seen.add(current)
+    parts.push(formatErr(current))
+    current = typeof current === 'object' ? (current as { cause?: unknown }).cause : undefined
+  }
+  return parts.join('\nCaused by: ')
 }
 
 function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: Stats): boolean {
@@ -744,12 +767,10 @@ function sdkLeaseKey(agentId: string, acpSessionId: string): string {
   return pendingTurnKey(agentId, acpSessionId)
 }
 
-/** Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` that
- *  would push the outgoing hopCount past this, so an A↔B wake loop can't run away.
- *  send-message-routing-rework.md §4.1 puts a platform `@mention` delivery on this SAME
- *  budget: one transition per agent-to-agent edge, whichever transport carried it, so a
- *  mention chain cannot be used to escape the internal-call limit. */
-const MAX_AGENT_CALL_HOPS = 8
+// Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` that would
+// push the outgoing hopCount past this, so an A↔B wake loop can't run away.
+// send-message-routing-rework.md §4.1 puts a platform `@mention` delivery on this SAME
+// budget, which is why the constant is shared with the relay rather than redeclared here.
 
 /**
  * How long a paired `toAgent + channel` rendezvous waits for its other half
@@ -2665,7 +2686,10 @@ export class Daemon {
       // conversation (no platform presence there, or a shared bot with no slug).
       mentionAddressFor: ({ agentId, platform, channel }) => {
         const orgId = this.cpCollab.orgForAgent(agentId)
-        return orgId ? this.cpCollab.mentionAddress(orgId, this.narrowPlatform(platform), channel, agentId) : undefined
+        // The RAW platform (S1a removed the narrowing fold): snapshot channel rows are
+        // keyed by the INTEGRATION platform, so folding here would search a different key
+        // space than the rows hold and silently return no address.
+        return orgId ? this.cpCollab.mentionAddress(orgId, platform, channel, agentId) : undefined
       },
       findKnowledge: async (req) => {
         const client = this.cpClient
@@ -4512,9 +4536,10 @@ export class Daemon {
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
     const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
-    // sessionGitEnv LAST: the github-app credential-helper env must win over
-    // runtimeOverrides env (a user-supplied GIT_CONFIG_* would reopen
-    // the machine-credential leak the injection exists to close).
+    // The Git session policy runs for every configured repository, not only
+    // GitHub review: repository hooks/fsmonitor stay disabled without rewriting
+    // checkout config. sessionGitEnv additionally supplies GitHub App identity.
+    // Keep this channel LAST so runtimeOverrides cannot replace either policy.
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     const runInSandbox = opts.runInSandbox
     if (agent.runInSandbox && !runInSandbox && opts.warnOnSandboxDowngrade) {
@@ -4532,7 +4557,11 @@ export class Daemon {
       // MemoryProviderUnavailableError for an unbuildable provider (external, or
       // native on an unregistered runtime) — surfaced here at spawn.
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission()).runtimeEnv(),
-      ...(githubAppCredentials ? sessionGitEnv(agent.id, this.gitCommitIdentity) : {})
+      ...(agent.workspace.mode === 'git-repo'
+        ? githubAppCredentials
+          ? sessionGitEnv(agent.id, this.gitCommitIdentity)
+          : sessionGitPolicyEnv()
+        : {})
     }
     // Config-file secrets (agents/config-file-env.ts): materialize `*_DATA`
     // contents under the agent dir and point the tool-native env vars
@@ -5417,12 +5446,16 @@ export class Daemon {
    */
   private canonicalizeTelegramThread(msg: NormalizedMessage): void {
     if (msg.platform !== 'telegram' || msg.thread !== undefined) return
-    if (msg.telegramTopicId !== undefined) {
-      msg.thread = msg.telegramTopicId
+    // §6.5 dual-shape reader: prefer the generic coordinates; the named per-platform
+    // fields stop being emitted once the fleet reads the generic ones.
+    const topicId = msg.topicId ?? msg.telegramTopicId
+    if (topicId !== undefined) {
+      msg.thread = topicId
       return
     }
-    if (msg.telegramThreadRoot !== undefined) {
-      msg.thread = `tg:${msg.telegramThreadRoot}`
+    const threadRoot = msg.threadRoot ?? msg.telegramThreadRoot
+    if (threadRoot !== undefined) {
+      msg.thread = `tg:${threadRoot}`
       return
     }
     if (msg.isDm) {
@@ -5829,7 +5862,7 @@ export class Daemon {
     // A Discord top-level channel @mention: open a thread off it first, then dispatch
     // into that thread (Slack-parity). Async (a REST call), so it runs on its own path;
     // dispatch is fire-and-forget either way.
-    if (msg.platform === 'discord' && msg.discordTopLevel) {
+    if (msg.platform === 'discord' && (msg.promoteToThread ?? msg.discordTopLevel)) {
       const topLevel = this.dispatchDiscordTopLevel(result.agentId, msg, result.integrationId)
       topLevel.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
       // The re-threaded dispatch owns its own admission; expose a coarse handle
@@ -6020,6 +6053,12 @@ export class Daemon {
     // SessionManager.handle dedups in place (same canonical ts, sender, text).
     if (post && this.cfg.features.turnFinalContextRefresh) {
       const observedMention = attachmentMention(msg.attachments)
+      // The bounded inline image must ride the ADMISSION write: it wins the slot,
+      // and SessionManager's later identical append dedups via INSERT OR IGNORE —
+      // an attachment-less row here would pin attachmentsJson to NULL, so the
+      // session reader could neither strip the `[attached: …]` suffix nor hand
+      // the console back the image.
+      const observedAttachments = transcriptImageAttachments(msg.attachments)
       const observedTs = this.appendWebchatTextRow(
         transcriptChannelKey(chatId, undefined),
         `webchat:${chatId}`,
@@ -6032,7 +6071,8 @@ export class Daemon {
           // same-text post from another tab would reuse this row instead of
           // bumping (§6).
           postId: post.postId,
-          text: observedMention ? `${text}\n${observedMention}`.trim() : text
+          text: observedMention ? `${text}\n${observedMention}`.trim() : text,
+          ...(observedAttachments.length ? { attachments: observedAttachments } : {})
         }
       )
       // The slot may have been collision-bumped (a self-authored row can occupy
@@ -6547,7 +6587,9 @@ export class Daemon {
           ? this.handleRelaySlackAction(msg)
           : msg.source === 'feishu_action'
             ? this.handleRelayFeishuAction(msg)
-            : this.handleRelayIm(msg)
+            : msg.source === 'platform_action'
+              ? this.handleRelayPlatformAction(msg)
+              : this.handleRelayIm(msg)
     if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
     this.relayMsgAcks.set(dedupKey, ack)
     return ack
@@ -6652,6 +6694,47 @@ export class Daemon {
    *  boundary before opening or mutating anything: the agent, HTTP Slack integration,
    *  local connection, session owner, and (when retained) exact delivery binding must all
    *  still agree. Message shortcuts resolve their channel/thread coordinates here. */
+  /**
+   * §6.6 `platform_action` envelope: the payload is opaque to relay core and is
+   * decoded HERE by the platform id's own vocabulary — today by delegating to the
+   * legacy per-platform handlers (the S2 platform module takes the decode over).
+   * An unknown platform id or an undecodable payload NAKs the ITEM (the relay
+   * already acked receipt semantics via rd/ack), never the socket. The ack
+   * dual-carries the generic `response` beside the deprecated Feishu-named slot
+   * while the relay may still read either.
+   */
+  private handleRelayPlatformAction(msg: RdMsgPlatformAction): RdAck {
+    if (msg.platformId === 'slack') {
+      const payload = RdSlackAction.safeParse(msg.payload)
+      if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+      return this.handleRelaySlackAction({
+        source: 'slack_action',
+        agentId: msg.agentId,
+        sessionKey: msg.sessionKey,
+        msgId: msg.msgId,
+        botId: msg.botId,
+        integrationId: msg.integrationId,
+        ...(msg.userId !== undefined ? { userId: msg.userId } : {}),
+        payload: payload.data
+      })
+    }
+    if (msg.platformId === 'feishu') {
+      const payload = WireFeishuCardActionEvent.safeParse(msg.payload)
+      if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+      const ack = this.handleRelayFeishuAction({
+        source: 'feishu_action',
+        agentId: msg.agentId,
+        sessionKey: msg.sessionKey,
+        msgId: msg.msgId,
+        botId: msg.botId,
+        integrationId: msg.integrationId,
+        payload: payload.data
+      })
+      return ack.feishuCardAction !== undefined ? { ...ack, response: ack.feishuCardAction } : ack
+    }
+    return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+  }
+
   private handleRelaySlackAction(msg: RdMsgSlackAction): RdAck {
     const agent = this.agents.get(msg.agentId)
     if (!agent) {
@@ -6844,6 +6927,75 @@ export class Daemon {
       )
       return record(nak('not_allowed'))
     }
+    // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
+    // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
+    const callMeta: CallMeta = {
+      callFrom: msg.trustedFromAgentId,
+      ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),
+      hopCount: msg.hopCount,
+      deliveryId: msg.deliveryId,
+      // §5.3: preserve the remote caller's origin lineage so a child woken here can reply
+      // back across the relay to a parent session that lives on the caller's daemon.
+      ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
+      ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
+      ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
+      // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
+      // local path — the directive names `originSessionId`, so it is meaningless without one.
+      ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {}),
+      // §5.1: tighten-only. A `true` seals the child's capture gate immediately;
+      // a `false`/absent value changes nothing, because the child starts excluded
+      // and only the CP may open it.
+      ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
+    }
+
+    // §5.3 lineage REPLY: dispatch into the EXACT existing origin session instead of
+    // coordinate keying. The sender's daemon enforced origin-only authorization (the
+    // replier's turn originated from this session); terminal validation here is
+    // possession + ownership — the high-entropy acpSessionId is only handed out
+    // through wake lineage, and the AGENT-SCOPED lookup below IS the ownership check
+    // (ACP session ids are runtime/agent-local, so two agents may legitimately share
+    // one; a global lookup could surface the wrong agent's row). This branch runs
+    // BEFORE the wake-coordinate membership gate: a lineage reply never keys or
+    // creates a session from `coords`, so the aliasing threat that gate closes is
+    // absent — and membership would wrongly reject a replier that does not share the
+    // origin's channel (an explicitly supported org-scoped case). Org + directional
+    // policy above still apply. A missing session NAKs `not_found`, mirroring the
+    // local replyToSession contract — SessionTarget never creates a session.
+    if (msg.lineageReplyTo !== undefined) {
+      const origin = this.store.getSessionByAcpIdForAgent(msg.toAgentId, msg.lineageReplyTo)
+      if (!origin) return record(nak('not_found'))
+      // Reply transport from the SESSION's own scope (mirrors replyToSession's local branch).
+      const replyIntegrationId = this.integrationIdForSessionTransport(
+        origin.agentId,
+        origin.platform,
+        origin.transportScope
+      )
+      if (origin.transportScope && !replyIntegrationId) return record(nak('not_found'))
+      const reply: NormalizedMessage = {
+        msgId: `agentcall:${origin.channel}:${msg.deliveryId}`,
+        traceId: msg.deliveryId,
+        source: 'agent',
+        platform: origin.platform,
+        channel: origin.channel,
+        ...(origin.thread ? { thread: origin.thread } : {}),
+        ...(origin.transportScope ? { transportScope: origin.transportScope } : {}),
+        // Ordered as NEW content in the origin session (see replyToSession's local branch).
+        transcriptTs: monotonicTs(),
+        sender: { id: msg.trustedFromAgentId, isBot: true },
+        text: msg.text,
+        mentionedBots:
+          replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
+        isDm: false
+      }
+      void this.dispatch(msg.toAgentId, reply, replyIntegrationId, undefined, callMeta).catch((err) =>
+        this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
+      )
+      this.log.info(
+        `relay: rd/agentmsg/fwd lineage reply ${msg.trustedFromAgentId} → ${msg.toAgentId} (${origin.key}) delivery=${msg.deliveryId}`
+      )
+      return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: origin.key })
+    }
+
     // COORDINATE INTEGRITY (§2.5 #4), the second half of terminal-verify and the reason
     // dropping channel from the POLICY predicate is not the same as dropping it entirely:
     // `coords` is still the woken peer's SESSION key (see sessionChannel below), so a caller
@@ -6867,27 +7019,6 @@ export class Daemon {
     // wake from that caller collapses onto the one pairwise session.
     const sessionChannel = coordsVerdict.verdict === 'synthetic' ? coordsVerdict.channel : channel
 
-    // Build the trusted turn context + NormalizedMessage (source:'agent'), reusing the
-    // same shape as the same-daemon path. callFrom = the RELAY-minted trusted caller.
-    const callMeta: CallMeta = {
-      callFrom: msg.trustedFromAgentId,
-      ...(msg.correlationId !== undefined ? { correlationId: msg.correlationId } : {}),
-      hopCount: msg.hopCount,
-      deliveryId: msg.deliveryId,
-      // §5.3: preserve the remote caller's origin lineage so a child woken here can reply
-      // back across the relay to a parent session that lives on the caller's daemon.
-      ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
-      ...(msg.originCoords !== undefined ? { originCoords: msg.originCoords } : {}),
-      ...(msg.externalOrigin !== undefined ? { externalOrigin: msg.externalOrigin } : {}),
-      // §5.4: the remote caller asked this child to report its outcome back. Same gate as the
-      // local path — the directive names `originSessionId`, so it is meaningless without one.
-      ...(msg.needsReply === true && msg.originSessionId !== undefined ? { needsReply: true } : {}),
-      // §5.1: tighten-only. A `true` seals the child's capture gate immediately;
-      // a `false`/absent value changes nothing, because the child starts excluded
-      // and only the CP may open it.
-      ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
-    }
-    const narrowed = this.narrowPlatform(platform)
     const resolved = this.resolveCpAgent(msg.toAgentId)
     const integrationId = msg.integrationId ?? resolved?.integrationId
     // §5.4: the CANONICAL child session key, computed with the same inputs `dispatch` will use —
@@ -6904,7 +7035,7 @@ export class Daemon {
     // it exactly as asserted; only the channel-free branch 3 substitutes).
     const childMsgId = `agentcall:${sessionChannel}:${msg.deliveryId}`
     const childSessionId = sessionKey(
-      narrowed,
+      platform,
       sessionChannel,
       thread ?? childMsgId,
       msg.toAgentId,
@@ -6922,7 +7053,7 @@ export class Daemon {
       msgId: childMsgId,
       traceId: msg.deliveryId,
       source: 'agent',
-      platform: narrowed,
+      platform,
       channel: sessionChannel,
       ...(thread !== undefined ? { thread } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
@@ -6949,7 +7080,9 @@ export class Daemon {
     // converge here, so this is the only place that can see both halves. The relay
     // forwards the pairing id but never synthesizes or stores the envelope.
     if (msg.transcriptTs !== undefined) {
-      const key = activationKey(narrowed, childTransportScope, msg.transcriptTs, msg.toAgentId)
+      // The RAW platform, matching the session key computed just above (S1a removed the
+      // narrowing fold) — both halves of the pairing must agree on every key component.
+      const key = activationKey(platform, childTransportScope, msg.transcriptTs, msg.toAgentId)
       const claimed = this.store.attachActivationEnvelope(
         key,
         JSON.stringify(callMeta),
@@ -7079,12 +7212,12 @@ export class Daemon {
     // request; `admits` above already proved the entry exists, so undefined is unreachable
     // and fails closed anyway.
     //
-    // The platform is the RAW trusted session platform, deliberately NOT `narrowPlatform`'s
-    // output: that helper folds `dream` (and any value the NormalizedMessage union does not
-    // carry) into 'slack', which would classify a genuinely channel-free session as a
-    // persisted IM coordinate and fail it closed. Only the branch-2/branch-3 split reads the
-    // platform at all — the row lookup itself stays platform-free — so passing the raw value
-    // cannot re-open the platform-relabelling dodge.
+    // The platform is the RAW trusted session platform — the same value session keys now
+    // use everywhere (the old `narrowPlatform` fold that turned `dream` and unknown values
+    // into 'slack' is deleted, §6.3). A fold here would classify a genuinely channel-free
+    // session as a persisted IM coordinate and fail it closed. Only the branch-2/branch-3
+    // split reads the platform at all — the row lookup itself stays platform-free — so
+    // passing the raw value cannot re-open the platform-relabelling dodge.
     const callerOrg = this.cpCollab.orgForAgent(req.callerAgentId)
     if (callerOrg === undefined) return { rejection: 'not_allowed' }
     const coords = this.cpCollab.coordsDecision(callerOrg, req.platform, req.channel, req.callerAgentId)
@@ -7101,7 +7234,7 @@ export class Daemon {
   }
 
   private wakeRejectionReason(req: MessageAgentReq): string | null {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     if (this.evaluationProfile.collaboration === 'off') return 'capability_disabled'
     if (platform === 'slack' && /^(?:[UW][A-Z0-9]+|<@[UW][A-Z0-9]+>)$/.test(req.toAgentId.trim())) {
       return 'invalid_target'
@@ -7120,7 +7253,7 @@ export class Daemon {
   }
 
   private async messageAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -7195,7 +7328,7 @@ export class Daemon {
     // already minted); originCoords are its landing coords for cross-daemon reply routing.
     const originSessionId = this.store.getSession(callerKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, originSessionId)
-    const originCoordPlatform = platform === 'hook' ? 'slack' : platform
+    const originCoordPlatform = platform
     const originCoords: CallMeta['originCoords'] = {
       platform: originCoordPlatform,
       channel: req.callerChannel,
@@ -7214,7 +7347,7 @@ export class Daemon {
       req.correlationId !== undefined ? req.correlationId : isReply ? inbound.correlationId : undefined
 
     const target = this.agents.get(req.toAgentId)
-    const resolved = target ? this.resolveCpAgent(req.toAgentId, platform === 'hook' ? 'slack' : platform) : null
+    const resolved = target ? this.resolveCpAgent(req.toAgentId, platform) : null
     const integrationId = resolved?.integrationId
     const targetTransportScope =
       integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
@@ -7256,7 +7389,7 @@ export class Daemon {
     // Local presence: if absent, route the delivery over the relay. The relay
     // decides whether the target is allowed to be woken by this caller.
     if (!target) {
-      const coordPlatform = platform === 'hook' ? 'slack' : platform
+      const coordPlatform = platform
       const remote = await this.routeAgentMsgCrossDaemon(
         { ...req, text: event.text, thread: event.thread },
         {
@@ -7409,7 +7542,7 @@ export class Daemon {
    * refused — an agent can never inject into an arbitrary session.
    */
   private async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -7442,7 +7575,7 @@ export class Daemon {
     const deliveryId = randomUUID()
     // Hand the origin owner a turn whose origin points back at the REPLIER's session, so the
     // origin could reply again (symmetric lineage). callFrom = the replier.
-    const replyCoordPlatform = platform === 'hook' ? 'slack' : platform
+    const replyCoordPlatform = platform
     const replierSessionId = callerRec?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.callerAgentId, replierSessionId)
     const replyOriginCoords: CallMeta['originCoords'] = {
@@ -7472,22 +7605,26 @@ export class Daemon {
     const local = this.store.getSessionByAcpId(req.sessionId)
     if (local) {
       const originOwner = local.agentId
-      const narrowedLocal = this.narrowPlatform(local.platform)
+      const originPlatform = local.platform
       // Resolve the reply's output transport by the ORIGIN session's platform, not the
       // agent's default integration. A multi-platform agent (e.g. Slack + Telegram) would
       // otherwise post the reply through integrations[0]'s client, and a Telegram chat id
       // sent via the Slack client fails with channel_not_found (the reply turn runs but its
       // answer never reaches the origin channel).
-      const integrationId = this.integrationIdForTransportScope(originOwner, narrowedLocal, local.transportScope)
+      // A channel-free hook/dream child's stored transportScope was derived from whichever
+      // integration the spawn side picked (requested-platform preferred, else the agent's
+      // FIRST integration), so the session-transport helper matches the scope across ALL
+      // integrations for those rows. Only the session KEY and the synthesized message are raw.
+      const integrationId = this.integrationIdForSessionTransport(originOwner, originPlatform, local.transportScope)
       if (local.transportScope && !integrationId) {
         return { delivered: false, targetSession: local.key, reason: 'not_found' }
       }
-      const resolved = this.resolveCpAgent(originOwner, narrowedLocal)
+      const resolved = this.resolveCpAgent(originOwner, originPlatform)
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
         source: 'agent',
-        platform: narrowedLocal,
+        platform: originPlatform,
         channel: local.channel,
         ...(local.thread ? { thread: local.thread } : {}),
         ...(local.transportScope ? { transportScope: local.transportScope } : {}),
@@ -7558,10 +7695,16 @@ export class Daemon {
         ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
         originCoords: replyOriginCoords,
         ...(externalOrigin ? { externalOrigin } : {}),
-        // §7/§8.4: mark the delivery REQUIRED-HEADLESS so a relay refuses to hand it to a
-        // daemon too old to run the parent turn silently. Failing the reply is correct
-        // here and silently degrading is not: the alternative publishes the parent's whole
-        // ordinary response into its channel, which is exactly what §7 removes.
+        // §5.3: this is a REPLY into the validated origin session, not a wake — the
+        // target dispatches into that exact session (a channel-free origin's
+        // coordinate would otherwise be substituted and the reply would mint a
+        // different synthetic session).
+        lineageReplyTo: req.sessionId,
+        // send-message-routing-rework.md §7/§8.4: mark the delivery REQUIRED-HEADLESS so a
+        // relay refuses to hand it to a daemon too old to run the parent turn silently.
+        // Failing the reply is correct here and silently degrading is not: the alternative
+        // publishes the parent's whole ordinary response into its channel, which is
+        // exactly what §7 removes.
         deliveryKind: 'session-reply'
       }
     )
@@ -7591,7 +7734,7 @@ export class Daemon {
    * back" — that is what `needsReply` is for.
    */
   private async viewSessionStatus(req: SessionStatusReq): Promise<SessionStatusResult | null> {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -7838,11 +7981,11 @@ export class Daemon {
     originChannel: string
     originThread: string
   }): boolean {
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     // The origin session may live on a DIFFERENT platform than this post (e.g. a Telegram
     // turn posting to Slack). Key the origin lookup by the ORIGIN's platform, not the target's,
     // or the caller session is never found and the new session loses its parent lineage.
-    const originPlatform = this.narrowPlatform(req.originPlatform ?? req.platform)
+    const originPlatform = req.originPlatform ?? req.platform
     const originKey = sessionKey(
       originPlatform,
       req.originChannel,
@@ -7859,7 +8002,7 @@ export class Daemon {
     }
     const originSessionId = this.store.getSession(originKey)?.acpSessionId ?? undefined
     const externalOrigin = this.externalOriginForSession(req.agentId, originSessionId)
-    const originCoordPlatform = originPlatform === 'hook' ? 'slack' : originPlatform
+    const originCoordPlatform = originPlatform
     const deliveryId = randomUUID()
     const callMeta: CallMeta = {
       callFrom: req.agentId,
@@ -7932,6 +8075,9 @@ export class Daemon {
       originSessionId?: string
       originCoords?: CallMeta['originCoords']
       externalOrigin?: CallMeta['externalOrigin']
+      /** §5.3 lineage reply: the EXISTING target session (acpSessionId) this delivery
+       *  replies into — the target dispatches into it instead of coordinate keying. */
+      lineageReplyTo?: string
       /** send-message-routing-rework.md §8.3. `session-reply` is REQUIRED-HEADLESS: the
        *  relay refuses to forward it to a daemon that has not advertised
        *  `headless-agent-delivery-v1` rather than letting the resumed parent's ordinary
@@ -7966,6 +8112,7 @@ export class Daemon {
         ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
         ...(ctx.originCoords !== undefined ? { originCoords: ctx.originCoords } : {}),
         ...(ctx.externalOrigin !== undefined ? { externalOrigin: ctx.externalOrigin } : {}),
+        ...(ctx.lineageReplyTo !== undefined ? { lineageReplyTo: ctx.lineageReplyTo } : {}),
         // §5.4: ask the remote child to report its outcome back into our origin session. Gated on
         // having an origin for exactly the reason the local path is — there is nothing to report to
         // without one, and the target ignores it in that case anyway.
@@ -7984,17 +8131,6 @@ export class Daemon {
     }
   }
 
-  /** Narrow the trusted session-context platform string to the NormalizedMessage union;
-   *  falls back to 'slack' for an unrecognized value (coords still resolve — the union is
-   *  a routing/key detail, not the trust basis). */
-  private narrowPlatform(p: string): NormalizedMessage['platform'] {
-    // Every caller turns a platform string off a session/orchestration row back into the union, to
-    // key a session or synthesize a message. `feishu` was missing from the list long after the
-    // platform shipped, so all of them silently produced a `slack:` key for a session ingress
-    // records under `feishu:` — a session nothing could then continue.
-    return p === 'telegram' || p === 'webchat' || p === 'discord' || p === 'feishu' || p === 'hook' ? p : 'slack'
-  }
-
   // ══════════════════════════ §3.4/§6.8 main-agent orchestration ══════════════════════════
 
   /**
@@ -8010,7 +8146,7 @@ export class Daemon {
    */
   private async startOrchestration(req: StartOrchestrationReq): Promise<StartOrchestrationResult> {
     const orchestrationId = randomUUID()
-    const platform = this.narrowPlatform(req.platform)
+    const platform = req.platform
     // The main's session key is the exact coords its tool call ran under, so a deadline
     // fire and a worker report both key to the SAME session as the caller.
     const mainSessionKey = sessionKey(platform, req.channel, req.thread, req.mainAgentId, req.transportScope)
@@ -8167,7 +8303,7 @@ export class Daemon {
    *  to the exact stored coords (so it lands in the same session that started it). Headless
    *  is NOT set — the main needs its reply transport to post the summary. */
   private wakeOrchestrationMain(orch: OrchestrationRow, text: string): void {
-    const platform = this.narrowPlatform(orch.platform)
+    const platform = orch.platform
     const msgId = `orchestration:${orch.orchestrationId}:${monotonicTs()}`
     const msg: NormalizedMessage = {
       msgId,
@@ -8294,13 +8430,7 @@ export class Daemon {
   private ownedOrchestration(req: OrchestrationOwnerReq): OrchestrationRow | undefined {
     const orch = this.store.getOrchestration(req.orchestrationId)
     if (!orch) return undefined
-    const requesterKey = sessionKey(
-      this.narrowPlatform(req.platform),
-      req.channel,
-      req.thread,
-      req.mainAgentId,
-      req.transportScope
-    )
+    const requesterKey = sessionKey(req.platform, req.channel, req.thread, req.mainAgentId, req.transportScope)
     if (orch.mainSessionKey !== requesterKey || orch.mainAgentId !== req.mainAgentId) return undefined
     return orch
   }
@@ -8565,7 +8695,7 @@ export class Daemon {
     key: string,
     agent: Agent
   ): Promise<{
-    workspaceIsolation?: 'session'
+    workspaceIsolation?: 'shared' | 'session'
     forceWorkspaceIsolation?: true
     preparedWorkspaceCwd?: string
   }> {
@@ -8577,15 +8707,34 @@ export class Daemon {
     }
 
     const revisionLine = `Base SHA: ${github.baseSha}\nHead SHA: ${github.headSha}`
-    if (!this.githubWorkspaceMatches(agent, github)) {
+    const warmHost = this.readyHosts.has(agent.id) ? this.hosts.get(agent.id) : undefined
+    const useRevisionOnlyWorkspace = async () => {
       entry.msg.text +=
         `\n\nTrusted review revision:\n${revisionLine}\n` +
-        "This Agent's local workspace is not the pull request repository. Do not trust local files or repository traces for this review; inspect the exact base and head through GitHub read-only tools."
-      return {}
+        'No trusted local pull-request checkout is available for this review. Do not trust local files or repository traces; inspect the exact base and head through GitHub read-only tools. Local execution may be skipped.'
+      try {
+        const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
+          sessionKey: key,
+          isolation: 'session',
+          githubReviewRevisionOnly: true
+        })
+        return { workspaceIsolation: 'session' as const, forceWorkspaceIsolation: true as const, preparedWorkspaceCwd }
+      } catch (fallbackErr) {
+        // A filesystem-level failure can still leave the ordinary workspace as
+        // the runtime cwd. The prompt above explicitly removes its evidentiary
+        // authority, so the review remains revision-addressed instead of dying
+        // solely because a clean local directory could not be materialized.
+        this.log.warn(
+          `github review: revision-only workspace unavailable; using the ordinary cwd as untrusted context (${formatErrWithCauses(fallbackErr)})`
+        )
+        return { workspaceIsolation: 'shared' as const, forceWorkspaceIsolation: true as const }
+      }
+    }
+    if (!this.githubWorkspaceMatches(agent, github)) {
+      return useRevisionOnlyWorkspace()
     }
 
     try {
-      const warmHost = this.readyHosts.has(agent.id) ? this.hosts.get(agent.id) : undefined
       const preparedWorkspaceCwd = await this.prepareAgentWorkspace(agent, warmHost, {
         sessionKey: key,
         isolation: 'session',
@@ -8601,7 +8750,10 @@ export class Daemon {
         'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.'
       return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
     } catch (err) {
-      throw new Error('github review blocked: exact PR workspace preparation failed', { cause: err })
+      this.log.warn(
+        `github review: exact checkout unavailable; continuing with trusted revision only (${formatErrWithCauses(err)})`
+      )
+      return useRevisionOnlyWorkspace()
     }
   }
 
@@ -15520,6 +15672,28 @@ export class Daemon {
     return candidates.find((integration) => this.transportScopeForIntegration(integration) === transportScope)?.id
   }
 
+  /** Reply-transport resolution for a SESSION row (replyToSession / background-task wake).
+   *  A channel-free session identity (`hook`/`dream`) carries a transportScope derived from
+   *  whichever integration the spawn-side resolution picked — requested-platform preferred,
+   *  else the agent's FIRST integration (`resolveAgentIntegration`) — so no platform filter
+   *  can reconstruct the choice. The persisted scope embeds its integration's real platform
+   *  in the digest prefix, so matching it across ALL of the agent's integrations is
+   *  unambiguous; an unscoped row mirrors the same first-integration fallback. Real
+   *  platforms keep the platform-filtered lookup. */
+  private integrationIdForSessionTransport(
+    agentId: string,
+    platform: string,
+    transportScope?: string | null
+  ): string | undefined {
+    if (platform !== 'hook' && platform !== 'dream') {
+      return this.integrationIdForTransportScope(agentId, platform, transportScope)
+    }
+    const integrations = this.agents.get(agentId)?.integrations
+    if (!integrations?.length) return undefined
+    if (!transportScope) return integrations[0]?.id
+    return integrations.find((integration) => this.transportScopeForIntegration(integration) === transportScope)?.id
+  }
+
   /** Every integrationId served by `conn` — ingress attribution for gating. A Slack
    *  socket is per app token and may fan out to several integrations. */
   private srcIntegrationIds(conn: unknown): string[] {
@@ -16149,11 +16323,14 @@ export class Daemon {
     }
     if (rec.state !== 'idle') return skip(`session is ${rec.state}`)
 
-    const platform = this.narrowPlatform(rec.platform)
+    const platform = rec.platform
     // Reply transport resolved from the SESSION's scope, not the agent's default integration —
     // a multi-platform agent would otherwise answer through integrations[0]'s client (mirrors
     // replyToSession). A scoped session whose integration is gone has nowhere to answer.
-    const integrationId = this.integrationIdForTransportScope(agentId, platform, rec.transportScope)
+    // Session-transport lookup (mirrors replyToSession): a hook/dream session's scope was
+    // derived from whichever integration the spawn side picked, so those rows match the
+    // scope across ALL integrations. The message itself stays raw.
+    const integrationId = this.integrationIdForSessionTransport(agentId, platform, rec.transportScope)
     if (rec.transportScope && !integrationId) return skip('integration for the session scope is gone')
 
     // No CallMeta: this is not an agent call, it carries no hop chain, and it must not look
@@ -18271,6 +18448,10 @@ export class Daemon {
       },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
+      localSkillsReader: createLocalSkillsReader(
+        (id) => this.agents.get(id)?.workspace.path,
+        join(this.root, 'skill-installs')
+      ),
       // webchat is no longer a CP control-WS integration (milestone A4) — it rides the
       // relay's rd/* wire, wired through RelayManager.onRelayMsg below.
       clock: systemClock,

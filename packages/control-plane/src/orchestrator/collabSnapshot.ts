@@ -14,7 +14,14 @@
  * caller; per-entry tombstone / TTL / fail-closed-on-stale is not implemented.
  */
 import type { CollabRoutesSnapshot, CollabChannelRoute, CollabOrgAgent } from '@agentconnect.md/protocol'
+import { KNOWN_PLATFORMS, originKindOf } from '@agentconnect.md/protocol'
 import type { ChannelPlacementRecord, OrgAgentRecord } from '../persistence/ports.js'
+
+// §6.1: the origin-kind classification for every platform id this CP build knows,
+// shipped on each snapshot so an OLDER daemon/relay can classify an id a newer CP
+// introduces. Static today (the seed and the emitted set coincide); the platform
+// registry replaces this list when providers land (S3).
+const PLATFORM_KINDS = KNOWN_PLATFORMS.map((id) => ({ platformId: id, originKind: originKindOf(id)! }))
 
 export function buildCollabSnapshot(
   orgId: string,
@@ -72,5 +79,5 @@ export function buildCollabSnapshot(
       ...(a.displayName !== null ? { displayName: a.displayName } : {})
     }))
 
-  return { generation, channels: [...byChannel.values()], agents }
+  return { generation, channels: [...byChannel.values()], agents, platformKinds: PLATFORM_KINDS }
 }

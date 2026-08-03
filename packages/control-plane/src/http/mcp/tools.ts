@@ -199,7 +199,9 @@ export const MCP_TOOLS: McpToolDef[] = [
     schema: z
       .object({
         agentId: z.string().min(1).optional().describe('Only sessions of this agent'),
-        platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'hook', 'dream']).optional(),
+        // Mirrors the `/sessions` route filter, which accepts the canonical
+        // `Platform` set — keep the two in step (tools.test.ts guards it).
+        platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream']).optional(),
         channel: z.string().min(1).optional(),
         limit: z.number().int().positive().max(200).optional().describe('Page size (default 50)')
       })

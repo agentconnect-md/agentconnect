@@ -11,6 +11,7 @@ import { ErrorFrame } from './error.js'
 import { WebchatDone, WebchatImageAttachment, WebchatOutput, WebchatPost } from './webchat.js'
 import { GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
 import { CronTarget } from './cron.js'
+import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
@@ -337,6 +338,34 @@ export const RdMsgFeishuAction = z.object({
 })
 export type RdMsgFeishuAction = z.infer<typeof RdMsgFeishuAction>
 
+/**
+ * R→D REQ → rd/ack (§6.6). The ONE platform-interaction envelope replacing the
+ * per-platform `slack_action` / `feishu_action` members: the ENVELOPE is
+ * core-typed — the routing fields relay core needs plus the dedup identity —
+ * and the PAYLOAD is opaque to relay core. The relay-side platform module
+ * parsed the provider interaction and minted `msgId`; the SAME platform's
+ * daemon-side module decodes `payload` into StatusAction / PermissionChoice /
+ * Elicitation calls. Reader-first: this build ACCEPTS the member while the
+ * relay keeps emitting the legacy members; the emission flips after the next
+ * fleet cycle and the legacy members retire after that. Dedup scope is
+ * (botId, sessionKey, msgId), identical to the legacy members — the daemon
+ * replays the prior ack on retransmit, and fencing is unaffected.
+ */
+export const RdMsgPlatformAction = z.object({
+  source: z.literal('platform_action'),
+  platformId: z.string().min(1),
+  agentId: z.string().uuid(),
+  sessionKey: z.string().min(1),
+  msgId: z.string().min(1),
+  botId: z.string().uuid(),
+  integrationId: z.string().uuid(),
+  // The platform user who tapped it (attribution); optional — absent records as
+  // an unknown actor, never a fabricated one.
+  userId: z.string().min(1).optional(),
+  payload: z.unknown()
+})
+export type RdMsgPlatformAction = z.infer<typeof RdMsgPlatformAction>
+
 // R→D REQ → rd/ack. One already-adjudicated trigger delivery: the relay matched
 // the hook rule and names the target agent (explicit-agent short-circuit, same
 // as webchat — no local trigger arbitration). The daemon synthesizes a
@@ -374,6 +403,7 @@ export const RdMsg = z.discriminatedUnion('source', [
   RdMsgIm,
   RdMsgSlackAction,
   RdMsgFeishuAction,
+  RdMsgPlatformAction,
   RdMsgHook
 ])
 export type RdMsg = z.infer<typeof RdMsg>
@@ -386,7 +416,13 @@ export const RdAck = z.object({
   accepted: z.boolean(),
   turnId: z.string().uuid().optional(),
   reason: z.string().optional(),
-  feishuCardAction: WireFeishuCardActionResponse.optional()
+  /** DEPRECATED (§6.6): read `response`. The Feishu-named sync-toast slot. */
+  feishuCardAction: WireFeishuCardActionResponse.optional(),
+  /** §6.6 opaque interaction response for a `platform_action` — the payload the
+   *  relay-side platform module surfaces on the synchronous HTTP body (Feishu
+   *  toast, Slack block_suggestion options). Dual-emitted with the deprecated
+   *  slot above during the window; decoded only by the platform module. */
+  response: z.unknown().optional()
 })
 export type RdAck = z.infer<typeof RdAck>
 
@@ -436,7 +472,10 @@ export const RdAgentMsg = z.object({
   toAgentId: z.string().uuid(),
   text: z.string(),
   coords: z.object({
-    platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+    // S1a open reader (route.ts Platform policy): an unknown chat-shaped id
+    // decodes fine and is refused fail-closed by `coordsDecision`, never by
+    // the schema (refusing here would kill the frame, not the item).
+    platform: Platform,
     channel: z.string().min(1),
     thread: z.string().optional()
   }),
@@ -458,7 +497,7 @@ export const RdAgentMsg = z.object({
   originSessionId: z.string().min(1).optional(),
   originCoords: z
     .object({
-      platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+      platform: Platform, // S1a open reader (route.ts policy)
       channel: z.string().min(1),
       thread: z.string().optional()
     })
@@ -467,6 +506,17 @@ export const RdAgentMsg = z.object({
   // forwards it opaquely; the target daemon uses it only for its local
   // pre-prompt source-binding gate.
   externalOrigin: ExternalSessionAudience.optional(),
+  // session-concept §5.3 lineage REPLY (SessionTarget): when set, this delivery is a
+  // reply INTO the named existing session on the target daemon (its acpSessionId) —
+  // never a wake that may mint one. The sender's daemon enforced origin-only
+  // authorization (the replier's turn originated from exactly this session), and
+  // possession of the high-entropy id — handed out only through wake lineage — is the
+  // cross-daemon capability. The target daemon terminally validates the session
+  // exists and is owned by `toAgentId`, dispatches into it, and NAKs `not_found`
+  // when it is gone; it never substitutes a synthetic coordinate for a lineage
+  // reply (a channel-free origin's coordinate is not its key). Absent = ordinary
+  // coordinate-keyed wake.
+  lineageReplyTo: z.string().min(1).optional(),
   // session-concept §5.4: the caller asked the woken session to report its outcome back into
   // `originSessionId` (`sendMessage`'s `toAgent.needsReply`). The target daemon turns this into a
   // standing directive on the child; it is never part of the delivered `text`. Meaningless without
@@ -515,11 +565,12 @@ export type RdAgentMsg = z.infer<typeof RdAgentMsg>
  *       daemon keys the woken session off `a2a:<trustedFromAgentId>` instead, which cannot
  *       collide with any real conversation id. The relay forwards `coords` verbatim; only the
  *       daemon that mints the key substitutes, so the two can never disagree about it.
- * The row LOOKUP keys on the CHANNEL ID alone, deliberately NOT on `coords.platform`: the
- * woken session's key is computed from a NARROWED platform (the daemon folds `feishu` and
- * anything it does not recognise into `'slack'`) while snapshot rows are keyed by the
- * integration platform, so a platform-keyed lookup would search a different key space than
- * the key it protects. The platform only picks between (2) and (3), for a coordinate (1)
+ * The row LOOKUP keys on the CHANNEL ID alone, deliberately NOT on `coords.platform`. That
+ * closed a relabelling dodge under the daemon's old `narrowPlatform` fold (session keys were
+ * narrowed while snapshot rows are keyed by the integration platform, so a platform-keyed
+ * lookup searched a different key space than the key it protects); the fold is deleted
+ * (S1a §6.3) and session keys carry the raw platform, but the channel-only match remains
+ * the rule on both sides. The platform only picks between (2) and (3), for a coordinate (1)
  * already found nothing for. Read `coords` as "the caller may assert this", never as
  * "verified member of" — and never assume the woken session key echoes it (case 3).
  */
@@ -531,7 +582,7 @@ export const RdAgentMsgFwd = z.object({
   integrationId: z.string().uuid().optional(), // DEFINITE target reply integration (§6.2)
   text: z.string(),
   coords: z.object({
-    platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+    platform: Platform, // S1a open reader (route.ts policy); coordsDecision fail-closes unknown chat ids
     channel: z.string().min(1),
     thread: z.string().optional()
   }),
@@ -548,7 +599,7 @@ export const RdAgentMsgFwd = z.object({
   originSessionId: z.string().min(1).optional(),
   originCoords: z
     .object({
-      platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu']),
+      platform: Platform, // S1a open reader (route.ts policy)
       channel: z.string().min(1),
       thread: z.string().optional()
     })
@@ -556,6 +607,17 @@ export const RdAgentMsgFwd = z.object({
   // Forwarded verbatim from RdAgentMsg. It is daemon-authored lineage metadata,
   // never inferred from model text or target coordinates.
   externalOrigin: ExternalSessionAudience.optional(),
+  // Forwarded verbatim from RdAgentMsg (§5.3 lineage reply): the target session's
+  // acpSessionId this delivery replies into. Opaque to the relay — the TARGET
+  // daemon terminally validates it with an AGENT-SCOPED lookup (ACP ids are
+  // runtime/agent-local) and dispatches into the existing session instead of
+  // coordinate keying. Both the relay and the target SKIP the wake-coordinate
+  // membership gate for lineage replies: nothing is keyed or created from
+  // `coords` on this path, so the aliasing threat that gate closes is absent,
+  // and membership would wrongly reject a replier that does not share the
+  // origin's channel. Org + directional policy and the session capability
+  // (possession of the id + ownership by `toAgentId`) still gate delivery.
+  lineageReplyTo: z.string().min(1).optional(),
   // Forwarded verbatim from RdAgentMsg (session-concept §5.4): the caller's request that the woken
   // session report its outcome back into `originSessionId`. Opaque to the relay — it is the
   // caller's own instruction about its own lineage, not a claim the relay mints or validates.

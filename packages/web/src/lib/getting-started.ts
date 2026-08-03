@@ -24,6 +24,7 @@ export type GsAction =
   | { kind: 'agent' }
   | { kind: 'slack'; agentId: string | null }
   | { kind: 'github'; agentId: string | null }
+  | { kind: 'github-profile' }
   | { kind: 'chat' }
   | { kind: 'members' }
 
@@ -64,8 +65,13 @@ export function computeGettingStarted(input: {
    *  caller-visibility-filtered, so restricted/private-only orgs would under-report.
    *  Undefined (not yet loaded / older CP) falls back to the visible list. */
   orgHasSessions?: boolean
+  /** Whether the caller's own profile has a GitHub identity linked (per-user — the
+   *  App install above is org-level; repo access checks act as the user). Undefined
+   *  ⇒ unknowable or not applicable (auth off, no GitHub connector, account still
+   *  loading): the step is omitted rather than shown un-tickable. */
+  githubLinked?: boolean
 }): GettingStarted {
-  const { agents, daemons, integrations, sessions, members, authOn, orgHasSessions } = input
+  const { agents, daemons, integrations, sessions, members, authOn, orgHasSessions, githubLinked } = input
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
   const builtin = agents.find((a) => a.builtin)
@@ -81,7 +87,9 @@ export function computeGettingStarted(input: {
       key: 'daemon',
       label: 'Connect a daemon',
       expl: 'Run one command on the host where your agents should live. It stays connected and runs agents locally over ACP.',
-      done: daemons.some((d) => d.status === 'online'),
+      // Registered is enough — an offline daemon has still been set up, and a laptop
+      // that's merely asleep shouldn't un-tick a step the user already completed.
+      done: daemons.length > 0,
       ctaLabel: 'Add a daemon',
       action: { kind: 'daemon' }
     },
@@ -109,6 +117,24 @@ export function computeGettingStarted(input: {
       ctaLabel: 'Connect GitHub',
       action: { kind: 'github', agentId: firstAgent }
     },
+    // The App install above is org-level; SEEING private repositories is per-user
+    // (repo probes act as the caller — GITHUB_IDENTITY_REQUIRED otherwise). Only a
+    // member signed in WITHOUT GitHub (Google/Slack — no GitHub identity on the
+    // profile) gets this step; GitHub sign-ins are born linked, and for them the
+    // row would be permanent done-noise. Also omitted when unknowable
+    // (see `githubLinked`).
+    ...(githubLinked !== false
+      ? []
+      : [
+          {
+            key: 'github-profile',
+            label: 'Link your GitHub profile',
+            expl: 'You signed in without GitHub. Link it to your profile so repository pickers and access checks act as you — private repositories included.',
+            done: false,
+            ctaLabel: 'Link GitHub profile',
+            action: { kind: 'github-profile' } as const
+          }
+        ]),
     {
       key: 'conversation',
       label: 'Start your first conversation',

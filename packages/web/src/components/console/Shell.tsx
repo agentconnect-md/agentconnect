@@ -23,7 +23,7 @@ import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import ConnectAiModal from './ConnectAiModal'
-import GettingStarted from './GettingStarted'
+import GettingStarted, { openGettingStarted } from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
 import { TooltipLayer } from './Tooltip'
 import { SearchOpenContext } from './search-open'
@@ -739,6 +739,18 @@ function ShellChrome({ children }: { children: ReactNode }) {
                   <>
                     <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
                     <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                      {/* The desktop way back to a skipped checklist, both auth modes — the
+                          pill has no other desktop re-entry point. */}
+                      <button
+                        className="dmi"
+                        onClick={() => {
+                          setHelpMenu(false)
+                          openGettingStarted()
+                        }}
+                      >
+                        <Icon name="rocket" size={15} color="var(--text-tertiary)" />
+                        Getting started
+                      </button>
                       <button
                         className="dmi"
                         onClick={() => {
@@ -1147,6 +1159,19 @@ function MobileSheets({
                 <span>{r.label}</span>
               </Link>
             ))}
+            {/* The rail (and both of its re-entry menus) is hidden at mobile widths, so
+                this is the phone/tablet way back to a skipped checklist — both auth modes. */}
+            <button
+              type="button"
+              className="msheet-row"
+              onClick={() => {
+                onClose()
+                openGettingStarted()
+              }}
+            >
+              <Icon name="rocket" size={20} color="var(--text-tertiary)" />
+              <span>Getting started</span>
+            </button>
             <button type="button" className="msheet-cancel" onClick={onClose}>
               Cancel
             </button>

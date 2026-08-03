@@ -87,6 +87,12 @@ describe('sessionTriggerKind', () => {
     expect(platName(sessionPlatform({ platform: 'feishu' }))).toBe('Lark')
   })
 
+  it('renders an unknown platform id as itself, not as Slack (S1a: the narrowPlatform mirror)', () => {
+    expect(platName('slack')).toBe('Slack')
+    expect(platName('')).toBe('Slack')
+    expect(platName('teams-x')).toBe('Teams-x')
+  })
+
   it('labels dream execution sessions without exposing their synthetic routing key', () => {
     const dream = sessionFromDto(
       sessionDto({

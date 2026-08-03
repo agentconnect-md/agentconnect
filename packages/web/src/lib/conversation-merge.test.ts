@@ -53,6 +53,56 @@ describe('duplicateIdentity', () => {
 })
 
 describe('mergeConversation', () => {
+  it('keeps each rendered tool row tied to its source session', () => {
+    const merged = mergeConversation([
+      src(A, 'slack', [row({ sender: A, kind: 'tool', toolCallId: 'tool-a', body: '{"toolCallId":"tool-a"}' })]),
+      src(B, 'slack', [row({ sender: B, kind: 'tool', toolCallId: 'tool-b', body: '{"toolCallId":"tool-b"}' })])
+    ])
+
+    expect(merged.map(({ row, sourceSessionId }) => ({ toolCallId: row.toolCallId, sourceSessionId }))).toEqual([
+      { toolCallId: 'tool-a', sourceSessionId: 'sess-aaaa' },
+      { toolCallId: 'tool-b', sourceSessionId: 'sess-bbbb' }
+    ])
+  })
+
+  it('preserves each source-local bot turn when private work interleaves', () => {
+    const triggerTs = '1754123456.000000'
+    const nextTriggerTs = '1754123457.000000'
+    const merged = mergeConversation([
+      src(A, 'slack', [
+        row({ sender: 'U-HUMAN', ts: triggerTs, text: 'start' }),
+        row({ sender: A, kind: 'reasoning', ts: '1754123456100', text: 'a-think' }),
+        row({ sender: A, kind: 'tool', ts: '1754123456300', text: 'a-tool' }),
+        row({ sender: A, ts: '1754123456500', text: 'a-answer' }),
+        row({ sender: 'U-HUMAN', ts: nextTriggerTs, text: 'next' }),
+        row({ sender: A, kind: 'reasoning', ts: '1754123457100', text: 'a-next-turn' })
+      ]),
+      src(B, 'slack', [
+        row({ sender: 'U-HUMAN', ts: triggerTs, text: 'start' }),
+        row({ sender: B, kind: 'reasoning', ts: '1754123456200', text: 'b-think' }),
+        row({ sender: B, ts: '1754123456400', text: 'b-answer' }),
+        row({ sender: 'U-HUMAN', ts: nextTriggerTs, text: 'next' })
+      ])
+    ])
+
+    expect(merged.map(({ row }) => row.text)).toEqual([
+      'start',
+      'a-think',
+      'b-think',
+      'a-tool',
+      'b-answer',
+      'a-answer',
+      'next',
+      'a-next-turn'
+    ])
+    const turnKeyByText = Object.fromEntries(merged.map(({ row, sourceTurnKey }) => [row.text, sourceTurnKey]))
+    expect(turnKeyByText['a-think']).toBe(turnKeyByText['a-tool'])
+    expect(turnKeyByText['a-tool']).toBe(turnKeyByText['a-answer'])
+    expect(turnKeyByText['b-think']).toBe(turnKeyByText['b-answer'])
+    expect(turnKeyByText['a-think']).not.toBe(turnKeyByText['b-think'])
+    expect(turnKeyByText['a-next-turn']).not.toBe(turnKeyByText['a-answer'])
+  })
+
   it('dedupes Discord copies on the snowflake and orders them by its embedded time', () => {
     // Snowflake for ~2024: time bits decode via (id >> 22) + Discord epoch.
     const SNOWFLAKE = '1101111111111111111'

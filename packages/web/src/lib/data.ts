@@ -837,6 +837,9 @@ export interface SessionImage {
 export interface SessionStep {
   kind: LaneKind
   who?: string
+  /** Stable identity of the live webchat turn. Pair with `agentId` when
+   *  folding interleaved participant streams into conversation blocks. */
+  turnId?: string
   /** Authoring participant of a live multi-agent webchat step — keys the per-agent
    *  stream lane accumulation and the per-block attribution label. */
   agentId?: string
@@ -1919,7 +1922,10 @@ export function platName(p: string): string {
   if (x.includes('tele')) return 'Telegram'
   if (x.includes('disc')) return 'Discord'
   if (x.includes('feishu') || x.includes('lark')) return 'Lark'
-  return 'Slack'
+  if (x.includes('slack') || x === '') return 'Slack'
+  // Unknown platform ids render as themselves — falling back to 'Slack' was the
+  // web mirror of the daemon's deleted narrowPlatform fold (S1a §6.3).
+  return p.charAt(0).toUpperCase() + p.slice(1)
 }
 
 /** A session's display integration. GitHub is a hook source rather than a

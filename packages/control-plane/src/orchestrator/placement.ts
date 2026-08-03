@@ -244,61 +244,49 @@ export function integrationToSpec(
     .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
   const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
   const mutedChannels = mutedChannelIds(channels, gated)
+  // §6.4 dual-shape emission: the legacy nested block AND the core+config envelope
+  // carry the same data (readers prefer the envelope's core knobs); legacy emission
+  // drops once the fleet reads the envelope.
+  const core = { mode: 'direct' as const, bindRules, mutedChannels, gated }
   if (i.platform === 'telegram') {
-    return {
-      integrationId: i.id,
-      agentId: i.agentId,
-      platform: 'telegram',
-      telegram: { botToken: secret.botToken, bindRules, mutedChannels, gated }
-    }
+    const telegram = { botToken: secret.botToken, bindRules, mutedChannels, gated }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'telegram', telegram, core, config: telegram }
   }
   if (i.platform === 'discord') {
-    return {
-      integrationId: i.id,
-      agentId: i.agentId,
-      platform: 'discord',
-      // Discord authenticates the Gateway with the single bot token (no appToken).
-      discord: { botToken: secret.botToken, bindRules, mutedChannels, gated }
-    }
+    // Discord authenticates the Gateway with the single bot token (no appToken).
+    const discord = { botToken: secret.botToken, bindRules, mutedChannels, gated }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'discord', discord, core, config: discord }
   }
   if (i.platform === 'feishu') {
-    return {
-      integrationId: i.id,
-      agentId: i.agentId,
-      platform: 'feishu',
-      // Feishu authenticates the WSClient with an appId + appSecret pair, stored in the
-      // two-slot bot_secret: botToken = appSecret (the secret), appToken = appId. The
-      // region (feishu.cn vs larksuite.com) rides on the integration row; NULL ⇒ 'feishu'.
-      feishu: {
-        mode: 'direct',
-        appId: secret.appToken ?? '',
-        appSecret: secret.botToken,
-        region: i.feishuRegion ?? 'feishu',
-        bindRules,
-        mutedChannels,
-        gated
-      }
-    }
-  }
-  return {
-    integrationId: i.id,
-    agentId: i.agentId,
-    platform: 'slack',
-    // 'direct' (transport==='socket') — this daemon owns the Socket Mode connection.
-    // The 'shared' wire variant (transport==='http', xoxb-only, no appToken/bindRules)
-    // is assembled by the HTTP-bot path, which reads the bot's `transport`; this mapper
-    // is always direct. A socket bot is single-agent, so it is never shareable. Slack
-    // always stores an app-level token (Socket Mode).
-    slack: {
-      mode: 'direct',
-      shareable: false,
-      botToken: secret.botToken,
-      appToken: secret.appToken ?? '',
+    // Feishu authenticates the WSClient with an appId + appSecret pair, stored in the
+    // two-slot bot_secret: botToken = appSecret (the secret), appToken = appId. The
+    // region (feishu.cn vs larksuite.com) rides on the integration row; NULL ⇒ 'feishu'.
+    const feishu = {
+      mode: 'direct' as const,
+      appId: secret.appToken ?? '',
+      appSecret: secret.botToken,
+      region: i.feishuRegion ?? 'feishu',
       bindRules,
       mutedChannels,
       gated
     }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', feishu, core, config: feishu }
   }
+  // 'direct' (transport==='socket') — this daemon owns the Socket Mode connection.
+  // The 'shared' wire variant (transport==='http', xoxb-only, no appToken/bindRules)
+  // is assembled by the HTTP-bot path, which reads the bot's `transport`; this mapper
+  // is always direct. A socket bot is single-agent, so it is never shareable. Slack
+  // always stores an app-level token (Socket Mode).
+  const slack = {
+    mode: 'direct' as const,
+    shareable: false,
+    botToken: secret.botToken,
+    appToken: secret.appToken ?? '',
+    bindRules,
+    mutedChannels,
+    gated
+  }
+  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', slack, core, config: slack }
 }
 
 /**
@@ -325,40 +313,39 @@ export function httpIntegrationToSpec(
   providerAppId?: string,
   botUserId?: string
 ): IntegrationSpec {
-  if (i.platform === 'feishu') {
-    return {
-      integrationId: i.id,
-      agentId: i.agentId,
-      platform: 'feishu',
-      feishu: {
-        mode: 'shared',
-        appId: secret.appToken ?? '',
-        appSecret: secret.botToken,
-        ...(botUserId ? { botOpenId: botUserId } : {}),
-        region: i.feishuRegion ?? 'feishu',
-        bindRules: gated ? gatedBindRules(channels) : [],
-        mutedChannels: mutedChannelIds(channels, gated),
-        gated
-      }
-    }
+  // §6.4 dual-shape emission (see integrationToSpec).
+  const httpCore = {
+    mode: 'shared' as const,
+    bindRules: gated ? gatedBindRules(channels) : [],
+    mutedChannels: mutedChannelIds(channels, gated),
+    gated
   }
-  return {
-    integrationId: i.id,
-    agentId: i.agentId,
-    platform: 'slack',
-    // `shareable` gates the daemon's in-thread "Switch agent" control: an HTTP bot
-    // routes through the relay either way, but only a multi-agent (shareable) bot has
-    // something to switch to.
-    slack: {
-      mode: 'shared',
-      shareable,
-      botToken: secret.botToken,
-      ...(providerAppId ? { appId: providerAppId } : {}),
-      bindRules: gated ? gatedBindRules(channels) : [],
-      mutedChannels: mutedChannelIds(channels, gated),
+  if (i.platform === 'feishu') {
+    const feishu = {
+      mode: 'shared' as const,
+      appId: secret.appToken ?? '',
+      appSecret: secret.botToken,
+      ...(botUserId ? { botOpenId: botUserId } : {}),
+      region: i.feishuRegion ?? 'feishu',
+      bindRules: httpCore.bindRules,
+      mutedChannels: httpCore.mutedChannels,
       gated
     }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', feishu, core: httpCore, config: feishu }
   }
+  // `shareable` gates the daemon's in-thread "Switch agent" control: an HTTP bot
+  // routes through the relay either way, but only a multi-agent (shareable) bot has
+  // something to switch to.
+  const slack = {
+    mode: 'shared' as const,
+    shareable,
+    botToken: secret.botToken,
+    ...(providerAppId ? { appId: providerAppId } : {}),
+    bindRules: httpCore.bindRules,
+    mutedChannels: httpCore.mutedChannels,
+    gated
+  }
+  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', slack, core: httpCore, config: slack }
 }
 
 /** A session to re-home: its key + the agent/workspace that should own it. */

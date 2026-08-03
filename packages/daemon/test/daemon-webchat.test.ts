@@ -1462,6 +1462,48 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   }, 15_000)
 
+  it('retains the inline image when the turn carries a canonical post (admission write wins the slot)', async () => {
+    // Real relay traffic ALWAYS mints `post`, which makes the turn-final-refresh
+    // admission write claim the transcript slot before SessionManager's append —
+    // INSERT OR IGNORE then dedups the authoritative copy, so the admission row
+    // itself must carry the image or attachmentsJson is pinned to NULL and the
+    // reopened console shows only the `[attached: …]` label.
+    const { factory, host } = streamingHost([text('I can see it')])
+    ;(host as any).promptSupports = (kind: string) => kind === 'image'
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+
+    const bytes = Buffer.from('image bytes')
+    const turnId = '88888888-8888-4888-8888-888888888888'
+    const events: RdChatEvent[] = []
+    const ack = (daemon as any).handleRelayMsg(
+      rd({
+        op: 'turn',
+        text: 'What is shown?',
+        user: 'ada',
+        turnId,
+        post: { postId: turnId, at: 1_000 },
+        attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: bytes.toString('base64') }]
+      }),
+      (event: RdChatEvent) => events.push(event)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
+
+    const rows = (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`) as Array<{
+      sender: string
+      text: string
+      attachmentsJson?: string
+    }>
+    const userRow = rows.find((row) => row.sender === 'ada')
+    expect(userRow?.text).toBe('What is shown?\n[attached: screen.webp (image/webp)]')
+    expect(JSON.parse(userRow?.attachmentsJson ?? '[]')).toEqual([
+      { name: 'screen.webp', mimeType: 'image/webp', data: bytes.toString('base64') }
+    ])
+    await daemon.stop()
+  }, 15_000)
+
   it('rejects a turn for an agent not on this daemon (accepted:false, reason no_agent)', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })

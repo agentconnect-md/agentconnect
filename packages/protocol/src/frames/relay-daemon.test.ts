@@ -8,6 +8,7 @@ import {
   RdAgentMsgAck,
   RdAgentMsgFwd,
   RdSlackAction,
+  MAX_AGENT_CALL_HOPS,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RelayWebchatOp,
   WEBCHAT_IMAGE_MAX_BYTES,
@@ -348,6 +349,18 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         payload: { ...im.payload, agentAuthorship: { ...im.payload.agentAuthorship, deliveryState: 'partial' } }
       }).success
     ).toBe(false)
+  })
+
+  it('publishes ONE agent-call hop cap for every component that can admit an edge', () => {
+    // send-message-routing-rework.md §4.1 requires one budget across transports: the same
+    // cap "whether it is a same-daemon internal call, a relayed internal call, a
+    // direct-daemon platform mention, or a relayed platform mention". It lives in the
+    // shared protocol package precisely so the daemon and the relay's two enforcement
+    // points cannot drift — a relay allowing one more hop than the daemon would let a
+    // relayed chain outlive the budget an internal chain gets, and no single package's
+    // tests would catch that.
+    expect(MAX_AGENT_CALL_HOPS).toBe(8)
+    expect(Number.isInteger(MAX_AGENT_CALL_HOPS)).toBe(true)
   })
 
   it('rd/hello advertises optional daemon capabilities, and an older daemon advertises none', () => {

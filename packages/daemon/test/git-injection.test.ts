@@ -14,6 +14,7 @@ import {
   parseGitVersion,
   pullWorkspaceRef,
   sessionGitEnv,
+  sessionGitPolicyEnv,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitPullTarget
@@ -98,8 +99,10 @@ describe('gitEnvBase', () => {
     expect(workspaceGitLocalEnv().GIT_ALLOW_PROTOCOL).toBe('')
     expect(workspaceGitEnvBase()).toMatchObject({
       GIT_CONFIG_NOSYSTEM: '1',
+      GIT_GRAFT_FILE: process.platform === 'win32' ? 'NUL' : '/dev/null',
       GIT_LFS_SKIP_SMUDGE: '1',
-      GIT_NO_LAZY_FETCH: '1'
+      GIT_NO_LAZY_FETCH: '1',
+      GIT_NO_REPLACE_OBJECTS: '1'
     })
     expect(workspaceGitEnvBase().GIT_CONFIG_GLOBAL).toBe(process.platform === 'win32' ? 'NUL' : '/dev/null')
     expect(Object.keys(workspaceGitEnvBase()).some((key) => /^(?:all|ftp|http|https|no)_proxy$/i.test(key))).toBe(false)
@@ -109,6 +112,8 @@ describe('gitEnvBase', () => {
       process.platform === 'win32' ? 'NUL' : '/dev/null'
     ])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['core.fsmonitor', 'false'])
+    expect(configPairs(workspaceGitEnvBase())).toContainEqual(['core.sparseCheckout', 'false'])
+    expect(configPairs(workspaceGitEnvBase())).toContainEqual(['core.sparseCheckoutCone', 'false'])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['credential.helper', ''])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['fetch.bundleURI', ''])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['transfer.bundleURI', 'false'])
@@ -165,6 +170,59 @@ describe('gitEnvBase', () => {
       await expect(
         gitFor(workspace).env(workspaceGitLocalEnv()).raw(['remote', 'get-url', 'origin'])
       ).resolves.toContain('https://other-host.example/acme/repo')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps daemon checkout and parent verification bound to repository objects', () => {
+    const root = mkdtempSync(join(tmpdir(), 'git-object-integrity-test-'))
+    const workspace = join(root, 'workspace')
+    const worktree = join(root, 'worktree')
+    const env = {
+      ...workspaceGitLocalEnv(),
+      GIT_AUTHOR_NAME: 'Test',
+      GIT_AUTHOR_EMAIL: 'test@example.invalid',
+      GIT_COMMITTER_NAME: 'Test',
+      GIT_COMMITTER_EMAIL: 'test@example.invalid'
+    }
+    try {
+      execFileSync('git', ['init', '-b', 'main', workspace], { env, stdio: 'ignore' })
+      writeFileSync(join(workspace, 'content'), 'trusted\n')
+      writeFileSync(join(workspace, 'hidden'), 'complete\n')
+      execFileSync('git', ['-C', workspace, 'add', 'content', 'hidden'], { env })
+      execFileSync('git', ['-C', workspace, 'commit', '-m', 'trusted'], { env, stdio: 'ignore' })
+      const trusted = execFileSync('git', ['-C', workspace, 'rev-parse', 'HEAD'], {
+        env,
+        encoding: 'utf8'
+      }).trim()
+
+      writeFileSync(join(workspace, 'content'), 'replacement\n')
+      execFileSync('git', ['-C', workspace, 'add', 'content'], { env })
+      execFileSync('git', ['-C', workspace, 'commit', '-m', 'replacement'], { env, stdio: 'ignore' })
+      const replacement = execFileSync('git', ['-C', workspace, 'rev-parse', 'HEAD'], {
+        env,
+        encoding: 'utf8'
+      }).trim()
+
+      execFileSync('git', ['-C', workspace, 'replace', trusted, replacement], { env })
+      writeFileSync(join(workspace, '.git', 'info', 'grafts'), `${replacement} ${replacement}\n`)
+      execFileSync('git', ['-C', workspace, 'config', 'core.sparseCheckout', 'true'], { env })
+      writeFileSync(join(workspace, '.git', 'info', 'sparse-checkout'), 'content\n')
+
+      expect(
+        execFileSync('git', ['-C', workspace, 'rev-list', '--parents', '-n', '1', replacement], {
+          env,
+          encoding: 'utf8'
+        }).trim()
+      ).toBe(`${replacement} ${trusted}`)
+      execFileSync('git', ['-C', workspace, 'worktree', 'add', '--detach', worktree, trusted], {
+        env,
+        stdio: 'ignore'
+      })
+      expect(readFileSync(join(worktree, 'content'), 'utf8')).toBe('trusted\n')
+      expect(readFileSync(join(worktree, 'hidden'), 'utf8')).toBe('complete\n')
+      expect(execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], { env, encoding: 'utf8' }).trim()).toBe(trusted)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -259,12 +317,67 @@ describe('gitEnvBase', () => {
     }
   })
 
-  it('rejects checkout-owned executable Git settings before host-side status or pull', async () => {
+  it('rejects checkout-owned executable Git settings that daemon policy does not override', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'git-executable-config-test-'))
     const localEnv = workspaceGitLocalEnv()
     try {
       execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
-      execFileSync('git', ['-C', workspace, 'config', 'core.hooksPath', 'custom-hooks'], { env: localEnv })
+      execFileSync('git', ['-C', workspace, 'config', 'filter.generated.process', './filter-process'], {
+        env: localEnv
+      })
+      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/executable setting/)
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('allows an included hooksPath while still auditing included network overrides', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'git-included-hook-policy-test-'))
+    const workspace = join(root, 'workspace')
+    const include = join(root, 'workspace.gitconfig')
+    const localEnv = workspaceGitLocalEnv()
+    try {
+      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
+      writeFileSync(include, '[core]\n\thooksPath = .github/.githooks\n')
+      execFileSync('git', ['-C', workspace, 'config', 'include.path', include], { env: localEnv })
+      await expect(assertSafeWorkspaceGitConfig(workspace)).resolves.toBeUndefined()
+
+      writeFileSync(
+        include,
+        '[core]\n\thooksPath = .github/.githooks\n[url "https://127.0.0.1.invalid/"]\n\tinsteadOf = https://github.com/\n'
+      )
+      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/disallowed network override/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects conditional includes that can activate only in a linked worktree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'git-conditional-include-policy-test-'))
+    const workspace = join(root, 'workspace')
+    const include = join(root, 'worktree.gitconfig')
+    const localEnv = workspaceGitLocalEnv()
+    try {
+      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
+      writeFileSync(include, '[filter "evil"]\n\tprocess = ./filter-process\n')
+      execFileSync('git', ['-C', workspace, 'config', 'includeIf.gitdir:**/.git/worktrees/**.path', include], {
+        env: localEnv
+      })
+
+      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/executable setting/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects the separate worktree config scope omitted by a local-scope audit', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'git-worktree-config-policy-test-'))
+    const localEnv = workspaceGitLocalEnv()
+    try {
+      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
+      execFileSync('git', ['-C', workspace, 'config', 'extensions.worktreeConfig', 'true'], { env: localEnv })
+      writeFileSync(join(workspace, '.git', 'config.worktree'), '[filter "evil"]\n\tsmudge = ./filter-smudge\n')
+
       await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/executable setting/)
     } finally {
       rmSync(workspace, { recursive: true, force: true })
@@ -433,6 +546,14 @@ describe('cloneGitEnv', () => {
 })
 
 describe('sessionGitEnv', () => {
+  it('disables repository hooks and fsmonitor for every configured Git workspace session', () => {
+    expect(configPairs(sessionGitPolicyEnv())).toEqual([
+      ['core.hooksPath', process.platform === 'win32' ? 'NUL' : '/dev/null'],
+      ['core.fsmonitor', 'false']
+    ])
+    expect(configPairs(sessionGitEnv('agent-1'))).toEqual(configPairs(sessionGitPolicyEnv()))
+  })
+
   it('pins the CP-provided bot as both author and committer', () => {
     const env = sessionGitEnv('agent-1', {
       name: 'agentconnect-example[bot]',

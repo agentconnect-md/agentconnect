@@ -21,7 +21,8 @@ let lastGitEnv: Record<string, string> | undefined
 const pullMock = vi.fn().mockResolvedValue(undefined)
 const rawMock = vi.fn().mockResolvedValue('')
 vi.mock('simple-git', () => ({
-  simpleGit: (_cwd?: string) => {
+  simpleGit: (options?: string | { baseDir?: string }) => {
+    const cwd = typeof options === 'string' ? options : options?.baseDir
     // .env() returns the chain (mirrors the real fluent API) and records the
     // injected child env so the credential-injection tests can assert on it.
     const chain = {
@@ -31,7 +32,7 @@ vi.mock('simple-git', () => ({
       },
       clone: (...args: any[]) => cloneImpl(...args),
       pull: pullMock,
-      raw: rawMock
+      raw: (args: string[]) => rawMock(args, cwd)
     }
     return chain
   }
@@ -271,7 +272,7 @@ describe('prepareWorkspace', () => {
 })
 
 describe('prepareSessionWorkspace', () => {
-  it('fetches and checks out the exact trusted PR revision in a session worktree', async () => {
+  it('fetches the exact trusted PR revision when the workspace includes a hooksPath', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-review-ws-'))
     const path = join(root, 'workspace')
     mkdirSync(join(path, '.git'), { recursive: true })
@@ -280,8 +281,9 @@ describe('prepareSessionWorkspace', () => {
     const base = 'a'.repeat(40)
     const head = 'b'.repeat(40)
 
-    rawMock.mockImplementation(async (args: string[]) => {
+    rawMock.mockImplementation(async (args: string[], cwd?: string) => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      if (cwd === path && args[0] === 'config') return 'include.path\0core.hooksPath\0'
       if (args[0] === 'rev-parse') {
         const ref = args.at(-1) ?? ''
         if (ref.includes('/base')) return `${base}\n`
@@ -296,11 +298,13 @@ describe('prepareSessionWorkspace', () => {
       return ''
     })
 
-    const cwd = await prepareSessionWorkspace(agent, {
+    const request = {
       sessionKey: 'hook:repo#461:bot-git',
-      isolation: 'session',
+      isolation: 'session' as const,
       review: { pullNumber: 461, baseSha: base, headSha: head }
-    })
+    }
+    const cwd = await prepareSessionWorkspace(agent, request)
+    await prepareSessionWorkspace(agent, request)
 
     expect(dirname(cwd)).toBe(realpathSync(sessionWorktreeRoot(agent)))
     const addCall = rawMock.mock.calls
@@ -311,12 +315,52 @@ describe('prepareSessionWorkspace', () => {
     expect(addCall?.[4]).toBe(head)
     expect(
       rawMock.mock.calls.some(
-        ([args]) =>
+        ([args, baseDir]) =>
           args[0] === 'fetch' &&
+          baseDir === path &&
           args.includes(`+${base}:refs/agentconnect/reviews/${basename(cwd)}/base`) &&
           args.includes(`+refs/pull/461/head:refs/agentconnect/reviews/${basename(cwd)}/head`)
       )
     ).toBe(true)
+    expect(rawMock.mock.calls.some(([args]) => args[0] === 'clean' && args[1] === '-ffdx')).toBe(true)
+  })
+
+  it('replaces a stale review checkout with an empty revision-only cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-review-fallback-'))
+    const path = join(root, 'workspace')
+    mkdirSync(join(path, '.git'), { recursive: true })
+    const agent = gitRepoAgent(path)
+    const request = {
+      sessionKey: 'hook:repo#461:bot-git',
+      isolation: 'session' as const,
+      githubReviewRevisionOnly: true as const
+    }
+
+    const cwd = await prepareSessionWorkspace(agent, request)
+    mkdirSync(join(cwd, '.git'))
+    writeFileSync(join(cwd, 'stale-review.txt'), 'must not be trusted')
+
+    await expect(prepareSessionWorkspace(agent, request)).resolves.toBe(cwd)
+    expect(readdirSync(cwd)).toEqual([])
+  })
+
+  it('blocks unsafe config before ordinary linked-worktree creation when pull is disabled', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-session-policy-'))
+    const path = join(root, 'workspace')
+    mkdirSync(join(path, '.git'), { recursive: true })
+    const agent = gitRepoAgent(path)
+    agent.workspace.pullOnNewSession = false
+
+    rawMock.mockImplementation(async (args: string[], cwd?: string) => {
+      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
+      if (cwd === path && args[0] === 'config') return 'filter.evil.smudge\0'
+      return ''
+    })
+
+    await expect(prepareSessionWorkspace(agent, { sessionKey: 'session-a', isolation: 'session' })).rejects.toThrow(
+      'workspace Git configuration contains a disallowed network override or executable setting'
+    )
+    expect(rawMock.mock.calls.some(([args]) => args[0] === 'worktree' && args[1] === 'add')).toBe(false)
   })
 
   it('uses a stable distinct worktree for each logical session', async () => {
@@ -350,10 +394,15 @@ describe('removeSessionWorktree (#485 retention GC)', () => {
     const path = join(root, 'workspace')
     mkdirSync(join(path, '.git'), { recursive: true })
     const agent = gitRepoAgent(path)
-    const cwd = sessionWorktreePath(agent, 'session-a')
-    mkdirSync(cwd, { recursive: true })
+    const requestedCwd = sessionWorktreePath(agent, 'session-a')
+    mkdirSync(requestedCwd, { recursive: true })
+    const cwd = realpathSync(requestedCwd)
     writeFileSync(join(cwd, '.git'), 'gitdir: elsewhere')
-    return { agent, cwd, id: basename(cwd) }
+    // Hand back the CANONICAL path: the GC re-derives its worktree path from the
+    // realpath'd root before every destructive step, so that is the path it puts
+    // on the Git command line. The two spellings differ wherever `$TMPDIR` sits
+    // behind a symlink — on macOS it does (`/var` → `/private/var`).
+    return { agent, cwd: realpathSync(cwd), id: basename(cwd) }
   }
   const gitCalls = () => rawMock.mock.calls.map((call) => call[0] as string[])
 

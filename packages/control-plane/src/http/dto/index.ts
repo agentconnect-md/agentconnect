@@ -2909,6 +2909,21 @@ export const DreamSkillParam = z.object({
 })
 export const DreamIdParam = z.object({ id: z.string().uuid(), dreamId: z.string().min(1).max(128) })
 
+/** One skill an agent's workspace can load, tagged by where it came from. */
+export const LocalSkillEntryDto = z.object({
+  name: z.string(),
+  description: z.string().nullable(),
+  origin: z.enum(['dream-accepted', 'managed', 'git-source', 'repo']),
+  path: z.string()
+})
+/** `GET /agents/:id/skills/local` — the workspace skill inventory. `materialized`
+ *  is false when the workspace has not been prepared yet, so an empty list then
+ *  means "unknown", not "no skills". */
+export const LocalSkillsDto = z.object({
+  materialized: z.boolean(),
+  skills: z.array(LocalSkillEntryDto)
+})
+
 export const WorkspaceGitFileDto = z.object({
   path: z.string(),
   index: z.string(), // staged (X) status char

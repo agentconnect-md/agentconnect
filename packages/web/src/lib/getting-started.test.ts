@@ -43,10 +43,11 @@ describe('computeGettingStarted', () => {
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'invite')).toBe(false)
   })
 
-  it('marks daemon done only for an online daemon', () => {
+  it('marks daemon done for any registered daemon, connected or not', () => {
     const done = (rows: DaemonRow[]) =>
       computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'daemon')!.done
-    expect(done([daemon('offline')])).toBe(false)
+    expect(done([])).toBe(false)
+    expect(done([daemon('offline')])).toBe(true)
     expect(done([daemon('online')])).toBe(true)
   })
 
@@ -118,6 +119,19 @@ describe('computeGettingStarted', () => {
       kind: 'github',
       agentId: null
     })
+  })
+
+  it('adds the GitHub-profile step only for a signed-in user with NO GitHub identity', () => {
+    const step = (githubLinked?: boolean) =>
+      computeGettingStarted({ ...empty, githubLinked }).items.find((i) => i.key === 'github-profile')
+    // auth off / no GitHub connector / account still loading → omitted entirely
+    expect(step(undefined)).toBeUndefined()
+    // GitHub sign-ins are born linked — never show them the step
+    expect(step(true)).toBeUndefined()
+    expect(step(false)).toMatchObject({ done: false, action: { kind: 'github-profile' } })
+    // slots in right after the org-level GitHub install step
+    const keys = computeGettingStarted({ ...empty, githubLinked: false }).items.map((i) => i.key)
+    expect(keys.indexOf('github-profile')).toBe(keys.indexOf('github') + 1)
   })
 
   it('reaches allDone with a full ring when every signal is satisfied', () => {

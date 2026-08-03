@@ -24,7 +24,8 @@ import {
   MOBILE_SESSION_ROWS
 } from '@/components/console/dashboard-rows'
 import { Icon } from '@/components/ui'
-import { AgentIconView, ModelMark, LoadingState, LogoMark } from '@/components/marks'
+import { AgentIconView, ModelMark, LoadingState, LogoMark, Spinner } from '@/components/marks'
+import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { useProfile } from '@/lib/profile'
 import {
   agentLabel,
@@ -42,7 +43,8 @@ import {
   resolvedPermissionMode,
   selectedPermissionPreset,
   supportsModes,
-  type Agent
+  type Agent,
+  type SessionImage
 } from '@/lib/data'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 
@@ -159,8 +161,14 @@ export default function HomeView() {
   }
 
   const [input, setInput] = useState('')
+  // One prepared image staged for the first turn (mirrors the session composer:
+  // prepareWebchatImage bounds it to the wire's 160 KiB WebP budget).
+  const [image, setImage] = useState<SessionImage | undefined>(undefined)
+  const [imagePreparing, setImagePreparing] = useState(false)
+  const [imageError, setImageError] = useState<string | null>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
-  const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | null>(null)
+  const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | 'attach' | null>(null)
   const [runtime, setRuntime] = useState<{ model?: string; effort?: string; permissionPreset?: string }>({})
   const [worktreeOverride, setWorktreeOverride] = useState<boolean>()
   const githubWorkspace = agent?.workspace?.mode === 'github' ? agent.workspace : undefined
@@ -243,9 +251,25 @@ export default function HomeView() {
   const canSend = !!agent && blocked === null && members.every(agentReady)
   const daemonHref = owningDaemon ? orgPath(`/daemons/${owningDaemon.daemonId}`) : null
 
+  const onImageFile = async (file: File | undefined): Promise<void> => {
+    if (!file || imagePreparing) return
+    setMenu(null)
+    setImagePreparing(true)
+    setImageError(null)
+    try {
+      setImage(await prepareWebchatImage(file))
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : 'Couldn’t prepare that image.')
+    } finally {
+      setImagePreparing(false)
+      if (imageInputRef.current) imageInputRef.current.value = ''
+    }
+  }
+
   const send = () => {
     const text = input.trim()
-    if (!text || !agent || !canSend) return // offline / unsigned-in agents can't take a session
+    if ((!text && !image) || imagePreparing) return
+    if (!agent || !canSend) return // offline / unsigned-in agents can't take a session
     const id = openPlayground(agent, members, !multi && githubWorkspace ? { worktree } : undefined)
     // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
     // overrides — so the session runs exactly what the composer showed. stageRuntimeChange
@@ -257,8 +281,12 @@ export default function HomeView() {
       if (effort) pgSetEffort(id, agent.id, effort)
       if (permissionPreset) pgSetPermissionPreset(id, agent.id, permissionPreset)
     }
-    pgSend(id, agent.id, text)
+    // The image rides as an explicit argument: the session id was just minted, so
+    // a setPgImage(id) state write could not land before this same-tick send.
+    pgSend(id, agent.id, text, undefined, undefined, image)
     setInput('')
+    setImage(undefined)
+    setImageError(null)
     router.push(orgPath(`/sessions/${id}`))
   }
 
@@ -375,10 +403,47 @@ export default function HomeView() {
       {/* Composer — hands off to a live session on send. The footer selectors mirror
           the design: agent + model as pills (leading mark), effort + permission as
           chips. Each picks the run's runtime; the choice is applied on send. */}
-      <div className="card mb-3 overflow-visible">
+      <div
+        className="card mb-3 overflow-visible"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') setMenu(null)
+        }}
+      >
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={(event) => void onImageFile(event.target.files?.[0])}
+        />
+        {image && (
+          <div className="relative mx-[15px] mt-3 w-fit">
+            <img
+              src={`data:${image.mimeType};base64,${image.data}`}
+              alt={image.name}
+              title={image.name}
+              className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+            />
+            <button
+              type="button"
+              className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+              title="Remove image"
+              aria-label="Remove image"
+              onClick={() => setImage(undefined)}
+            >
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+        )}
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onPaste={(event) => {
+            const file = clipboardImageFile(event.clipboardData)
+            if (!file) return
+            event.preventDefault()
+            void onImageFile(file)
+          }}
           onKeyDown={(e) => {
             // Enter sends, except during IME composition (candidate-confirming Enter)
             // or with Shift (newline).
@@ -394,7 +459,48 @@ export default function HomeView() {
         {/* items-start + a wrapping selector group so the controls reflow onto a second
             row at phone widths instead of overflowing (mobile .content clips overflow-x);
             the send button stays pinned top-right. */}
+        {imageError && (
+          <div className="px-[15px] pb-2 font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
+            {imageError}
+          </div>
+        )}
         <div className="flex items-start gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+          <div className="relative flex-none">
+            <button
+              type="button"
+              className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+              aria-label="Attach a file"
+              aria-haspopup="menu"
+              aria-expanded={menu === 'attach'}
+              title="Attach a file"
+              disabled={imagePreparing}
+              onClick={() => setMenu((cur) => (cur === 'attach' ? null : 'attach'))}
+            >
+              {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
+            </button>
+            {menu === 'attach' && (
+              <>
+                <div aria-hidden="true" className="fixed inset-0 z-40" onClick={() => setMenu(null)}></div>
+                <div
+                  role="menu"
+                  className="absolute top-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="fopt"
+                    onClick={() => {
+                      setMenu(null)
+                      imageInputRef.current?.click()
+                    }}
+                  >
+                    <Icon name="image" size={16} color="var(--text-secondary)" />
+                    Add photos
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             {agent ? (
               <>
@@ -523,7 +629,7 @@ export default function HomeView() {
           <button
             type="button"
             className="sendbtn h-7 w-7 flex-none rounded-[7px]"
-            disabled={!input.trim() || !canSend}
+            disabled={(!input.trim() && !image) || !canSend || imagePreparing}
             onClick={send}
             title={
               blocked === 'offline'

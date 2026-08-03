@@ -139,10 +139,37 @@ describe('CpCollabRoutes: org-scoped directory', () => {
       channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: [agent('a')] }],
       agents: [agent('a'), agent('b')]
     } as never)
-    for (const platform of ['slack', 'telegram', 'discord', 'feishu']) {
+    // S1a §6.1: unknown ids are chat-shaped until the registry says otherwise, so the
+    // fail-closed branch covers every id outside the session-identity set — including
+    // platforms this build has never heard of. The old enumerate-the-IM-platforms shape
+    // silently ADMITTED an unknown id into the synthetic branch.
+    for (const platform of ['slack', 'telegram', 'discord', 'feishu', 'teams-x', 'mattermost']) {
       expect(r.coordsDecision(ORG, platform, 'C_NEVER_SEEN', 'a')).toEqual({ verdict: 'reject' })
       expect(r.coordsDecision(ORG, platform, 'D0PPELGANGER', 'a')).toEqual({ verdict: 'reject' })
     }
+  })
+
+  it('coordsDecision: wire-carried platformKinds classify ids this build does not know', () => {
+    // §6.1: a NEWER CP ships the classification on every snapshot, so this (older) build
+    // can route an id it predates: a chat-classified id fails closed like the IM four; a
+    // channel-free-classified id takes the synthetic branch. Neither entry alters ids the
+    // built-in seed already covers, and an id classified by neither still defaults to
+    // 'chat' (the teams-x reject above).
+    const r = new CpCollabRoutes()
+    r.replace({
+      generation: 1,
+      channels: [{ orgId: ORG, platform: 'slack', channelId: 'C1', agents: [agent('a')] }],
+      agents: [agent('a'), agent('b')],
+      platformKinds: [
+        { platformId: 'teams-x', originKind: 'chat' },
+        { platformId: 'sandbox-x', originKind: 'sandbox' }
+      ]
+    } as never)
+    expect(r.coordsDecision(ORG, 'teams-x', 'C_NEVER_SEEN', 'a')).toEqual({ verdict: 'reject' })
+    expect(r.coordsDecision(ORG, 'sandbox-x', 'box-1', 'a')).toEqual({ verdict: 'synthetic', channel: 'a2a:a' })
+    // The seed still answers for ids the wire did not classify.
+    expect(r.coordsDecision(ORG, 'dream', 'memory', 'a')).toEqual({ verdict: 'synthetic', channel: 'a2a:a' })
+    expect(r.coordsDecision(ORG, 'telegram', 'NOT_A_ROW', 'a')).toEqual({ verdict: 'reject' })
   })
 
   it('coordsDecision: a DM row the caller owns is KNOWN, so DM-origin A2A keeps working', () => {
@@ -190,8 +217,9 @@ describe('CpCollabRoutes: org-scoped directory', () => {
   })
 
   it('coordsDecision ignores the coordinate PLATFORM when LOOKING UP the row', () => {
-    // `Daemon.narrowPlatform` folds `feishu` (and any unrecognised value) into 'slack' when
-    // computing the woken session key, while snapshot rows are keyed by the INTEGRATION
+    // The daemon's since-deleted `narrowPlatform` fold turned `feishu` (and any unrecognised
+    // value) into 'slack' when computing the woken session key, while snapshot rows are keyed
+    // by the INTEGRATION
     // platform. A platform-keyed lookup therefore searched a different key space than the key
     // it protects, and "unknown coordinate passes" swallowed the mismatch in BOTH directions.
     const r = new CpCollabRoutes()

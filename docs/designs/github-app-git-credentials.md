@@ -802,7 +802,8 @@ Injection uses **two channels**:
    host-socket visibility. If the operator disables the outer sandbox, the
    runtime-native profile still receives the same channel permission within
    that explicitly unconfined launch.
-   - **Do not carry session-level injection through `GIT_CONFIG_COUNT`.**
+   - **Do not carry the session-level credential-helper injection through
+     `GIT_CONFIG_COUNT`.**
      `GIT_CONFIG_COUNT` does **not compose across
      processes**. If the agent's own toolchain sets `GIT_CONFIG_COUNT`, it
      replaces the pairs we injected, removing the helper reset and reopening
@@ -820,7 +821,12 @@ Injection uses **two channels**:
      automatically uses its own App bot. Git always reads global config;
      children inherit the path, and no indexed-count conflict exists. Reserve
      indexed `GIT_CONFIG_*` variables for **short-lived subprocesses directly
-     controlled by the daemon, such as clone**.
+     controlled by the daemon, such as clone**, and for non-credential ambient
+     policy. In particular, configured Git workspaces inject
+     `core.hooksPath=/dev/null` (or `NUL`) and `core.fsmonitor=false` at command
+     scope for the Agent process. If a nested tool deliberately replaces that
+     indexed channel it can opt out of the ambient hook policy, but it cannot
+     remove or replace the global-file credential reset.
    - This injection must be spread **last, at the highest precedence** in the
      spawn-environment merge: after
      `{ ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }` in `ensureHost` at

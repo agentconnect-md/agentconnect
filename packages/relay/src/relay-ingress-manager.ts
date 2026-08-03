@@ -16,7 +16,7 @@
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
 import { createHash } from 'node:crypto'
-import { WireFeishuCardActionValue } from '@agentconnect.md/protocol'
+import { MAX_AGENT_CALL_HOPS, WireFeishuCardActionValue } from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
   RdMsgSlackAction,
@@ -25,11 +25,11 @@ import type {
   RcBotConversation,
   RcBotRevoked,
   WireFeishuCardActionEvent,
-  WireFeishuCardActionResponse,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadLookup
 } from '@agentconnect.md/protocol'
+import { WireFeishuCardActionResponse } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
@@ -41,16 +41,6 @@ import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
 const MAX_DEMUX_ENTRIES = 10_000
-
-/**
- * Agent-to-agent hop cap, mirroring the daemon's `MAX_AGENT_CALL_HOPS` and the
- * `agent-msg-router`'s copy (send-message-routing-rework.md §4.1: "the same
- * `MAX_AGENT_CALL_HOPS`, whether it is a same-daemon internal call, a relayed internal
- * call, a direct-daemon platform mention, or a relayed platform mention"). Change one,
- * change all three: a relay that allowed one more hop than the daemon would let a
- * relayed mention chain outlive the budget an internal chain gets.
- */
-const RELAY_MAX_AGENT_CALL_HOPS = 8
 
 /** Composite demux key for one workspace install of a distributed app. */
 function appTeamKey(apiAppId: string, teamId: string): string {
@@ -661,8 +651,8 @@ export class RelayIngressManager {
     // would, ONCE, and forwards the result. The target terminal-verifies its range and
     // installs it WITHOUT incrementing again.
     const trustedDeliveryHopCount = claim.hopCount + 1
-    if (trustedDeliveryHopCount > RELAY_MAX_AGENT_CALL_HOPS) {
-      return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${RELAY_MAX_AGENT_CALL_HOPS}`)
+    if (trustedDeliveryHopCount > MAX_AGENT_CALL_HOPS) {
+      return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
     const targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
     if (targets.length === 0) return drop('no verified recipient')
@@ -982,7 +972,10 @@ export class RelayIngressManager {
       if (!ack.accepted) {
         this.deps.log.warn(`relay-ingress(${botId}): daemon rejected Feishu card action (${ack.reason ?? 'unknown'})`)
       }
-      return ack.feishuCardAction
+      // §6.6 dual-shape: prefer the generic opaque `response`; a pre-§6.6 daemon
+      // fills only the deprecated Feishu-named slot.
+      const generic = WireFeishuCardActionResponse.safeParse(ack.response)
+      return generic.success && ack.response !== undefined ? generic.data : ack.feishuCardAction
     } catch (err) {
       this.deps.log.warn(`relay-ingress(${botId}): Feishu card action forward failed: ${(err as Error).message}`)
       return undefined

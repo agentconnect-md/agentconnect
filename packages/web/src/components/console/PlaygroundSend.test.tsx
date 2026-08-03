@@ -2,11 +2,11 @@
 //
 // `pgSend` reports whether a send was ACCEPTED, and SessionDetailView's composer
 // relies on that to decide whether to pin the transcript to the bottom. Enter on
-// an empty composer, or Enter while a turn is already streaming, must report
-// rejection — otherwise a reader who scrolled up into history gets yanked to the
-// bottom for a send that never happened. Both the textarea Enter path and the
-// send button route through the same `onPgSend`, so pinning this one condition
-// keeps the two entry points aligned.
+// an empty composer must report rejection — otherwise a reader who scrolled up
+// into history gets yanked to the bottom for a send that never happened. Enter
+// while a turn is already streaming is accepted: it QUEUES (Claude Code-style)
+// and dispatches once the turn finishes, and each queued message can be
+// cancelled before it goes out.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -45,11 +45,17 @@ class StubSocket {
 
 let pgSend: ReturnType<typeof usePlayground>['pgSend']
 let openPlayground: ReturnType<typeof usePlayground>['openPlayground']
+let getPgQueue: ReturnType<typeof usePlayground>['getPgQueue']
+let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
+let getLiveSteps: ReturnType<typeof usePlayground>['getLiveSteps']
 
 function Probe() {
   const pg = usePlayground()
   pgSend = pg.pgSend
   openPlayground = pg.openPlayground
+  getPgQueue = pg.getPgQueue
+  pgCancelQueued = pg.pgCancelQueued
+  getLiveSteps = pg.getLiveSteps
   return null
 }
 
@@ -88,22 +94,112 @@ describe('pgSend acceptance', () => {
     expect(pgSend('s1', 'a1', 'hello')).toBe(true)
   })
 
-  // The busy flag is React state, so the second Enter only sees it after a
-  // re-render — which is exactly the real ordering: two keypresses are two events
-  // with a commit in between. `act` flushes that commit and the probe hands back
-  // the fresh closure.
-  it('rejects a second send while the first turn is still streaming', () => {
+  // A second send while the first turn streams is ACCEPTED — it queues instead
+  // of going on the wire, and dispatches once the turn finishes.
+  it('queues a second send while the first turn is still streaming', () => {
     act(() => {
       expect(pgSend('s1', 'a1', 'hello')).toBe(true)
     })
-    expect(pgSend('s1', 'a1', 'again')).toBe(false) // busy
+    act(() => {
+      expect(pgSend('s1', 'a1', 'again')).toBe(true) // busy → queued
+    })
+    expect(getPgQueue('s1').map((q) => q.text)).toEqual(['again'])
+    expect(getPgQueue('s2')).toEqual([]) // per-session queue
   })
 
-  it('keeps the busy rejection per session', () => {
+  it('cancels a queued message before it is sent', () => {
     act(() => {
       expect(pgSend('s1', 'a1', 'hello')).toBe(true)
     })
-    expect(pgSend('s2', 'a1', 'hello')).toBe(true) // a different session is free
+    act(() => {
+      expect(pgSend('s1', 'a1', 'first queued')).toBe(true)
+      expect(pgSend('s1', 'a1', 'second queued')).toBe(true)
+    })
+    const queued = getPgQueue('s1')
+    expect(queued.map((q) => q.text)).toEqual(['first queued', 'second queued'])
+    act(() => pgCancelQueued('s1', queued[0]!.queueId))
+    expect(getPgQueue('s1').map((q) => q.text)).toEqual(['second queued'])
+  })
+
+  it('keeps queueing per session — a different session sends directly', () => {
+    act(() => {
+      expect(pgSend('s1', 'a1', 'hello')).toBe(true)
+    })
+    act(() => {
+      expect(pgSend('s2', 'a1', 'hello')).toBe(true) // a different session is free
+    })
+    expect(getPgQueue('s2')).toEqual([]) // sent, not queued
+  })
+
+  // The dispatcher drains the queue once the session is no longer busy. In this
+  // harness the turn "finishes" when the (mocked, failing) socket settles and
+  // clears the busy flag — flushing microtasks gets there without streaming.
+  it('auto-dispatches the queued message once the turn ends', async () => {
+    act(() => {
+      expect(pgSend('s1', 'a1', 'hello')).toBe(true)
+    })
+    act(() => {
+      expect(pgSend('s1', 'a1', 'queued')).toBe(true)
+    })
+    expect(getPgQueue('s1')).toHaveLength(1)
+    await act(async () => {}) // settle the send + run the dispatcher effect
+    expect(getPgQueue('s1')).toEqual([])
+  })
+
+  // The FIFO gap: when a turn ends, the synchronous busy ref clears at once but
+  // the queue head is dispatched by a passive effect. A send landing in that gap
+  // must go BEHIND the pending queue, not straight to the wire ahead of it.
+  it('keeps a send arriving at the idle transition behind the pending queue', async () => {
+    act(() => {
+      expect(pgSend('s1', 'a1', 'first')).toBe(true)
+    })
+    act(() => {
+      expect(pgSend('s1', 'a1', 'second')).toBe(true) // busy → queued
+    })
+    await act(async () => {
+      // Pump microtasks so the (mocked, failing) first send settles and clears
+      // the busy ref — the dispatcher effect cannot run until this act body
+      // returns, so the next send lands exactly in the race window.
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+      expect(pgSend('s1', 'a1', 'third')).toBe(true)
+    })
+    // Drain the dispatcher: each dispatched turn fails and frees the next.
+    await act(async () => {})
+    await act(async () => {})
+    expect(getPgQueue('s1')).toEqual([])
+    // '@you' transcript steps record wire order — FIFO means 'third' stays last
+    // ('s1' is not a synthetic pg_ session, so its steps land in the live tail).
+    const wireOrder = getLiveSteps('s1')
+      .filter((s) => s.who === '@you')
+      .map((s) => s.text)
+    expect(wireOrder).toEqual(['first', 'second', 'third'])
+  })
+
+  // The cancel twin of the FIFO gap: the dispatcher must not send a head the
+  // user canceled after the turn ended but before the passive effect ran. The
+  // dispatcher derives its head from the synchronous queue mirror, so a cancel
+  // landing in that window always wins over the render-time snapshot.
+  it('never dispatches a head canceled at the idle transition', async () => {
+    act(() => {
+      expect(pgSend('s1', 'a1', 'first')).toBe(true)
+    })
+    act(() => {
+      expect(pgSend('s1', 'a1', 'doomed')).toBe(true) // busy → queued
+    })
+    const queueId = getPgQueue('s1')[0]!.queueId
+    await act(async () => {
+      // Pump microtasks so the (mocked, failing) first send settles and clears
+      // the busy ref, then cancel the queued head before the dispatcher effect
+      // has had a chance to run.
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+      pgCancelQueued('s1', queueId)
+    })
+    await act(async () => {})
+    expect(getPgQueue('s1')).toEqual([])
+    const wireOrder = getLiveSteps('s1')
+      .filter((s) => s.who === '@you')
+      .map((s) => s.text)
+    expect(wireOrder).toEqual(['first']) // 'doomed' must never reach the wire
   })
 
   // openPlayground exists on the same context; touching it here documents that the

@@ -258,6 +258,21 @@ describe('canonicalizeTelegramThread', () => {
     expect(m.thread).toBe('555')
   })
 
+  it('§6.5: keys off the GENERIC coordinates alone (post-window emission)', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    const topic = tg(103, { topicId: '555', mentionedBots: ['mybot'] })
+    ;(daemon as any).canonicalizeTelegramThread(topic)
+    expect(topic.thread).toBe('555')
+    const reply = tg(104, { threadRoot: '6' })
+    ;(daemon as any).canonicalizeTelegramThread(reply)
+    expect(reply.thread).toBe('tg:6')
+    // The generic field wins when both are present (dual-shape window).
+    const both = tg(105, { topicId: '7', telegramTopicId: '8' })
+    ;(daemon as any).canonicalizeTelegramThread(both)
+    expect(both.thread).toBe('7')
+  })
+
   it('collapses a DM to one continuous session (dm)', async () => {
     const daemon = new Daemon({ root: scaffold() })
     await daemon.start()

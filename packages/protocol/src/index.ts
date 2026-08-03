@@ -12,6 +12,7 @@ export {
   AGENT_CONFIG_REVISION_FEATURE,
   CP_SUBPROTOCOL,
   CP_WS_PATH,
+  MAX_AGENT_CALL_HOPS,
   MAX_ENVIRONMENT_VALUE_LENGTH,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
@@ -40,6 +41,7 @@ export * from './frames/hook.js'
 export * from './frames/integration.js'
 export * from './frames/mcpserver.js'
 export * from './frames/memory-connection.js'
+export * from './frames/skill.js'
 export * from './frames/gitcred.js'
 export * from './frames/secrets.js'
 export * from './frames/session.js'

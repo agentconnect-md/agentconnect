@@ -34,6 +34,7 @@ import type { EvaluationCapabilityProfile } from './events.js'
 import type {
   DaemonEvaluationEnvironment,
   DeliveryAdmission,
+  DeliveryHandle,
   EvaluationPlatformEvent,
   RefereeEvent
 } from './environment.js'
@@ -86,6 +87,13 @@ export interface CollaborationGameWorld {
   /** Effects recorded since the last drain, in `sequence` order. */
   drainOutboundEffects(): readonly RecordedOutboundEffect[]
   applyEffects(effects: readonly RecordedOutboundEffect[]): void
+  /** Optional live-ingress port (§8): the runner supplies an inject function so
+   *  the world can deliver peer fan-out the MOMENT an effect lands, while other
+   *  turns are still open — production timing, which the daemon's turn-final
+   *  context refresh depends on. */
+  attachLiveIngress?(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void
+  /** Handles for live-injected deliveries since the last drain. */
+  drainLiveHandles?(): DeliveryHandle[]
   /** §8.1 decision log: the wave's composition and each admission outcome. */
   noteWave(record: GameWaveRecord): void
   terminate(reason: string): void
@@ -196,6 +204,9 @@ export class CollaborationGameRunner {
     let steps = 0
     try {
       await beforeDeadline(deadlineMs, 'daemon startup', () => harness.start())
+      // Live ingress: peer fan-out enters the daemon as soon as an effect is
+      // delivered, not at the wave barrier (see CollaborationGameWorld).
+      world.attachLiveIngress?.((event) => harness.inject(event))
       // ── the §8 wave loop ──
       while (!world.isTerminal()) {
         if (steps >= maxSteps) {
@@ -225,6 +236,19 @@ export class CollaborationGameRunner {
         )
         const effects = world.drainOutboundEffects()
         world.applyEffects(effects)
+        // Drain the live-injected cascade: a delivered post can wake peers whose
+        // own posts wake further peers. Each generation is settled and applied
+        // before the loop asks the world for the next wave.
+        let cascade = world.drainLiveHandles?.() ?? []
+        let generations = 0
+        while (cascade.length > 0 && generations < maxSteps) {
+          generations += 1
+          await beforeDeadline(deadlineMs, `wave ${steps} cascade ${generations}`, () =>
+            Promise.all(cascade.map((handle) => handle.completion))
+          )
+          world.applyEffects(world.drainOutboundEffects())
+          cascade = world.drainLiveHandles?.() ?? []
+        }
         steps += 1
       }
       await beforeDeadline(deadlineMs, 'daemon idle wait', () =>
@@ -267,6 +291,30 @@ export class CollaborationGameRunner {
     if (status === 'passed' && !verdict.refereeConsistent) {
       status = 'infra_error'
       failure ??= { code: 'REFEREE_INCONSISTENT', message: 'game referee lost internal consistency' }
+    }
+    // §9.1 trial validity over REAL subjects: a runtime that never authenticated
+    // or timed out is an infra_error, never an agent failure. Provider-level
+    // failures always invalidate; generic turn failures invalidate only when the
+    // game did not complete (a completed game that absorbed one failed turn is
+    // a legitimate trial — the failures stay visible in events.jsonl).
+    if (status === 'passed') {
+      const observedEvents = harness.events()
+      const turnFailures = observedEvents.filter(
+        (event) => event.type === 'turn.failed' || event.type === 'turn.timed_out'
+      )
+      const providerFailure = turnFailures.some(
+        (event) =>
+          event.type === 'turn.timed_out' ||
+          event.data.code === 'provider_auth_required' ||
+          event.data.code === 'provider_quota_exhausted'
+      )
+      if (providerFailure || (turnFailures.length > 0 && verdict.terminalReason !== 'completed')) {
+        status = 'infra_error'
+        failure ??= {
+          code: providerFailure ? 'PROVIDER_FAILURE' : 'TURN_FAILURES',
+          message: `${turnFailures.length} agent turn(s) failed or timed out before the game could complete`
+        }
+      }
     }
     // §9.2 hard gates: any attempted invariant violation fails the trial even
     // when the game outcome scored well. Never averaged away.

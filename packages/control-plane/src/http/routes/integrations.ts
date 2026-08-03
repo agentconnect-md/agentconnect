@@ -31,6 +31,7 @@ import { isDirectConversationKind } from '../../persistence/ports.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { installNewFeishuBot } from '../install-feishu.js'
+import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { discordAppIdFromBotToken } from '../discord-identity.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
@@ -577,23 +578,48 @@ export function integrationRoutes(deps: HttpDeps) {
                   'Could not resolve this app’s bot identity. Enable the bot capability in Feishu, then try again.'
               })
             }
+            // D6 fence: one Bot per Feishu app. New rows write the tenant sentinel,
+            // so the composite unique backstops the race below; this pre-check just
+            // turns the common case into a clean 409 with reuse guidance.
+            const identityTaken = await deps.repos.bot.getByExternalIdentity('feishu', feishu.appId, '-')
+            if (identityTaken) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message:
+                  'This Feishu app is already registered as a bot. Reuse that bot (pick it under "Existing") instead of registering the app again.'
+              })
+            }
             const provided = req.body.name?.trim()
             const derived = check?.status === 'ok' ? check.name : null
             const name = provided || derived || agent.name
-            const integration = await installNewFeishuBot(deps, app.log, {
-              orgId,
-              agent,
-              name,
-              appId: feishu.appId,
-              appSecret: feishu.appSecret,
-              region,
-              transport,
-              ...(check?.status === 'ok' && check.openId ? { botUserId: check.openId } : {}),
-              ...(feishu.verificationToken ? { verificationToken: feishu.verificationToken } : {}),
-              ...(feishu.encryptKey ? { encryptKey: feishu.encryptKey } : {}),
-              ...(req.principal ? { createdByUserId: req.principal.userId } : {})
-            })
-            return reply.code(201).send(toDto(integration))
+            try {
+              const integration = await installNewFeishuBot(deps, app.log, {
+                orgId,
+                agent,
+                name,
+                appId: feishu.appId,
+                appSecret: feishu.appSecret,
+                region,
+                transport,
+                ...(check?.status === 'ok' && check.openId ? { botUserId: check.openId } : {}),
+                ...(feishu.verificationToken ? { verificationToken: feishu.verificationToken } : {}),
+                ...(feishu.encryptKey ? { encryptKey: feishu.encryptKey } : {}),
+                ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+              })
+              return reply.code(201).send(toDto(integration))
+            } catch (err) {
+              // Race backstop for the pre-check above: the composite unique fired.
+              if (err instanceof BotExternalIdentityTaken) {
+                return reply.code(409).send({
+                  error: 'Conflict',
+                  statusCode: 409,
+                  message:
+                    'This Feishu app is already registered as a bot. Reuse that bot (pick it under "Existing") instead of registering the app again.'
+                })
+              }
+              throw err
+            }
           }
 
           // Register a new Slack bot from pasted tokens. Validate against Slack BEFORE

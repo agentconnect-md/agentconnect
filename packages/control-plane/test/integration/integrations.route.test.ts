@@ -298,6 +298,12 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // The application (client) id is decoded from the token and persisted (public metadata).
     const bot = await prisma.bot.findUnique({ where: { id: dto.botId as string } })
     expect(bot).toMatchObject({ platform: 'discord', discordAppId: '123456789012345678', slackAppId: null })
+    // D6: Discord has no demux identity — only the display bag is written.
+    expect(bot).toMatchObject({
+      externalAppId: null,
+      externalTenantId: null,
+      platformConfig: { discordAppId: '123456789012345678' }
+    })
 
     // The daemon got a discord-shaped spec (single botToken, no slack block).
     expect(spy.upserts).toHaveLength(1)
@@ -422,6 +428,13 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(secret).toMatchObject({ botToken: FEISHU.appSecret, appToken: FEISHU.appId })
     const bot = await prisma.bot.findUnique({ where: { id: dto.botId as string } })
     expect(bot).toMatchObject({ platform: 'feishu', feishuAppId: FEISHU.appId, feishuRegion: 'lark' })
+    // D6 dual-write: the generic demux identity carries the app id with the
+    // tenantless '-' sentinel, and the display bag holds the fold-ahead fields.
+    expect(bot).toMatchObject({
+      externalAppId: FEISHU.appId,
+      externalTenantId: '-',
+      platformConfig: { feishuAppId: FEISHU.appId, feishuRegion: 'lark' }
+    })
 
     // The bot roster exposes only the public app id + region needed for the
     // developer-console link; the secret never leaves bot_secret.
@@ -448,6 +461,55 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       feishu: { appId: FEISHU.appId, appSecret: FEISHU.appSecret, region: 'lark' }
     })
     expect(dto.region).toBe('lark')
+  })
+
+  it('POST feishu refuses a SECOND bot for the same Feishu app (D6 identity fence), and slack dual-writes its pair', async () => {
+    const agentId = await placedAgent()
+    const agentId2 = randomUUID()
+    await seedAgent(prisma, agentId2, { daemonId: DAEMON })
+    const { app } = withSpy()
+
+    const FEISHU = { appId: 'cli_dupfence01', appSecret: 'first-secret-value' }
+    const first = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId, feishu: FEISHU }
+    })
+    expect(first.statusCode).toBe(201)
+
+    // Same Feishu app pasted again (even by another agent, even with a different
+    // secret): one Bot per external app identity — reuse the existing bot instead.
+    const dup = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId: agentId2, feishu: { appId: FEISHU.appId, appSecret: 'other-secret' } }
+    })
+    expect(dup.statusCode).toBe(409)
+    expect((dup.json() as { message: string }).message).toContain('already registered')
+
+    // Slack manual create with a parsable xapp: the generic pair mirrors
+    // (slackAppId, teamId) — app id captured, tenant NULL until OAuth captures it
+    // (pre-capture rows keep NULLs-distinct semantics, so no fence engages).
+    const slackRes = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'slack',
+        agentId: agentId2,
+        slack: { botToken: SLACK.botToken, appToken: 'xapp-1-A0DUALW01-123-abcdef' }
+      }
+    })
+    expect(slackRes.statusCode).toBe(201)
+    const slackBot = await prisma.bot.findUnique({
+      where: { id: (slackRes.json() as { botId: string }).botId }
+    })
+    expect(slackBot).toMatchObject({
+      slackAppId: 'A0DUALW01',
+      teamId: null,
+      externalAppId: 'A0DUALW01',
+      externalTenantId: null,
+      platformConfig: null
+    })
   })
 
   it('POST an HTTP Feishu app assigns callback-only secrets and keeps API egress on the daemon', async () => {
@@ -586,13 +648,15 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect((named.json() as { name: string }).name).toBe('Matrix Bot')
 
     // Unreachable is best-effort, not a gate: a second agent installs fine, name falls back.
+    // (A different app id — registering the SAME Feishu app twice is refused by the
+    // D6 external-identity fence, covered in its own test.)
     const agentId2 = randomUUID()
     await seedAgent(prisma, agentId2, { daemonId: DAEMON })
     app.deps.verifyFeishuBot = async () => ({ status: 'unreachable' })
     const unreachable = await app.app.inject({
       method: 'POST',
       url: `${ORG}/integrations`,
-      payload: { platform: 'feishu', agentId: agentId2, feishu: { appId: 'cli_a', appSecret: 's' } }
+      payload: { platform: 'feishu', agentId: agentId2, feishu: { appId: 'cli_b', appSecret: 's' } }
     })
     expect(unreachable.statusCode).toBe(201)
     expect((unreachable.json() as { name: string }).name).toBe(`agent-${agentId2.slice(0, 4)}`)
@@ -872,7 +936,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // The daemon's spec dials the Lark gateway for the reinstalled bot.
     const u = spy.upserts[1]!.u
     if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
-    expect(u.feishu.region).toBe('lark')
+    expect(u.feishu!.region).toBe('lark')
   })
 
   it('reusing a bot that is STILL installed is refused with 409', async () => {

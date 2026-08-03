@@ -116,6 +116,15 @@ export const CollabRoutesSnapshot = z.object({
    * the authorization input for channel-free A2A. `default([])` keeps a snapshot from
    * an older CP (which advertises no `agent-directory-org-scope-v1`) decodable.
    */
-  agents: z.array(CollabOrgAgent).default([])
+  agents: z.array(CollabOrgAgent).default([]),
+  /**
+   * §6.1 origin-kind classification for the platform ids the EMITTER knows — how an
+   * older peer classifies an id a newer CP introduces (its own built-in seed only
+   * covers ids its build shipped with). Consumers overlay these entries on their
+   * seed; an id classified by neither defaults to `'chat'`, the fail-closed answer
+   * wherever placements matter (`coordsDecision`). Both fields read as open strings
+   * per the S1a rule. `default([])` keeps a pre-S1b snapshot decodable.
+   */
+  platformKinds: z.array(z.object({ platformId: z.string().min(1), originKind: z.string().min(1) })).default([])
 })
 export type CollabRoutesSnapshot = z.infer<typeof CollabRoutesSnapshot>

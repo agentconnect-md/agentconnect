@@ -59,15 +59,23 @@ const gameResult: AssertionValueFunction = (output) => {
     typeof parsed.outcome === 'object' && parsed.outcome !== null ? (parsed.outcome as Record<string, unknown>) : {}
   const target = typeof outcome.target === 'number' && outcome.target > 0 ? outcome.target : undefined
   const acceptedPrefix = typeof outcome.acceptedPrefix === 'number' ? outcome.acceptedPrefix : 0
+  const progress = target !== undefined ? Math.max(0, Math.min(1, acceptedPrefix / target)) : 0
+  // The game's own `completed` verdict is authoritative GROUP success: a
+  // quota game whose numeric sequence reached the target through quota or
+  // consecutive-post violations reports completed: false, and must never
+  // score as a clean completion. Full marks require the game to say so.
+  const constraintsViolated = outcome.completed !== true && progress >= 1
   const score =
-    target !== undefined ? Math.max(0, Math.min(1, acceptedPrefix / target)) : outcome.completed === true ? 1 : 0
+    outcome.completed === true ? 1 : constraintsViolated ? 0.5 : target !== undefined ? Math.min(progress, 0.99) : 0
   return {
     pass: true,
     score,
     reason:
       outcome.completed === true
         ? `game completed (${acceptedPrefix}/${target ?? '?'})`
-        : `valid trial, partial outcome (${acceptedPrefix}/${target ?? '?'})`
+        : constraintsViolated
+          ? `sequence reached ${acceptedPrefix}/${target ?? '?'} but group constraints were violated (${String(outcome.endgame ?? 'completed-with-violations')})`
+          : `valid trial, partial outcome (${acceptedPrefix}/${target ?? '?'})`
   }
 }
 

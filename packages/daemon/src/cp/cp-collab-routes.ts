@@ -10,6 +10,7 @@
  * assumed. Documented in the PR description.
  */
 import type { CollabRoutesSnapshot, CollabAgentPlacement, CollabOrgAgent } from '@agentconnect.md/protocol'
+import { originKindOf } from '@agentconnect.md/protocol'
 import { slackMentionAddress, type AgentMentionIdentity } from '@agentconnect.md/message'
 
 export interface CollabResolved extends CollabAgentPlacement {
@@ -30,16 +31,6 @@ export interface CollabResolved extends CollabAgentPlacement {
  * only rejects. Change one, change both.
  */
 export type CoordsVerdict = { verdict: 'reject' } | { verdict: 'asserted' } | { verdict: 'synthetic'; channel: string }
-
-/**
- * The platforms whose conversations are PERSISTED as `integration_channel` rows and
- * therefore appear in this snapshot — i.e. the protocol `Platform` enum minus the
- * session-identity members (`webchat`/`hook`/`dream`, which have no persisted row; see the
- * CP's `isSessionIdentityPlatform`). An UNKNOWN coordinate on one of these is evidence of a
- * problem, not of a channel-free session, so it fails closed ({@link
- * CpCollabRoutes.coordsDecision}).
- */
-const PERSISTED_IM_PLATFORMS: ReadonlySet<string> = new Set(['slack', 'telegram', 'discord', 'feishu'])
 
 /**
  * The coordinate a channel-free wake lands on: derived from the TRUSTED caller, never from
@@ -73,6 +64,11 @@ export class CpCollabRoutes {
   // channel-keyed maps above structurally cannot express that (see CollabOrgAgent).
   private readonly byAgent = new Map<string, CollabOrgAgent>()
 
+  // §6.1 wire-carried origin-kind classification (snapshot `platformKinds`): how THIS
+  // build classifies a platform id a newer CP introduces. Overlaid on the protocol
+  // seed; an id neither classifies defaults to 'chat' (fail-closed in coordsDecision).
+  private readonly platformKinds = new Map<string, string>()
+
   private key(orgId: string, platform: string, channelId: string): string {
     return orgId + '\u0000' + platform + '\u0000' + channelId
   }
@@ -80,6 +76,11 @@ export class CpCollabRoutes {
   /** Coordinate-integrity key: deliberately PLATFORM-FREE — see {@link coordsDecision}. */
   private coordsKey(orgId: string, channelId: string): string {
     return orgId + '\u0000' + channelId
+  }
+
+  /** §6.1 kind resolution: wire classification → protocol seed → 'chat' (fail-closed). */
+  private originKindFor(platform: string): string {
+    return this.platformKinds.get(platform) ?? originKindOf(platform) ?? 'chat'
   }
 
   /** FULL-REPLACE from a CP snapshot (converge-don't-diff); ignore an older generation.
@@ -93,6 +94,8 @@ export class CpCollabRoutes {
     this.botAppsByChannel.clear()
     this.names.clear()
     this.byAgent.clear()
+    this.platformKinds.clear()
+    for (const k of snap.platformKinds ?? []) this.platformKinds.set(k.platformId, k.originKind)
     for (const ch of snap.channels) {
       const byAgent = new Map<string, CollabResolved>()
       const botApps = new Set<string>()
@@ -187,11 +190,15 @@ export class CpCollabRoutes {
    *     `im`/`mpim` row is an ordinary KNOWN coordinate with its owning integration's agent
    *     as a member.
    *
-   * (2) UNKNOWN on a PERSISTED IM platform ({@link PERSISTED_IM_PLATFORMS}) — `reject`,
-   *     FAIL CLOSED. An unrecorded IM coordinate is either a conversation the caller cannot
-   *     reach or a stale/departed row; admitting it is exactly what let a caller alias an
-   *     existing platform session. A brief snapshot lag can therefore transiently reject a
-   *     genuine wake — the correct direction for a security boundary, and the caller retries.
+   * (2) UNKNOWN on any CHAT-SHAPED platform — every id outside the enumerated
+   *     session-identity set (`isSessionIdentityPlatform`), including ids this build does
+   *     not know — `reject`, FAIL CLOSED. An unrecorded chat coordinate is either a
+   *     conversation the caller cannot reach or a stale/departed row; admitting it is
+   *     exactly what let a caller alias an existing platform session, and admitting an
+   *     UNKNOWN id would reopen that hole for every future platform (S1a §6.1 replaced the
+   *     old enumerate-the-IM-platforms shape, which silently admitted unknown ids). A brief
+   *     snapshot lag can therefore transiently reject a genuine wake — the correct
+   *     direction for a security boundary, and the caller retries.
    *     ACCEPTED RECALL LOSS (agent-collaboration §2.5 "what the fail-closed branch actually
    *     covers", §2.7 item 5): a direct-conversation row is only WRITTEN where something
    *     observed it — Slack's authoritative membership snapshot enumerates
@@ -202,29 +209,33 @@ export class CpCollabRoutes {
    *     wake asserting it is refused here. Deliberate, and not a regression: the
    *     `hasMembers(caller, target)` check this replaced refused the identical wake.
    *
-   * (3) UNKNOWN and channel-free (anything else: `webchat`, `dream`, a target-less `hook`
-   *     session's own platform, or an unrecognised value) — `synthetic`. NOT a reject: this
-   *     is the case the org-scoped directory exists for. Instead the asserted channel never
-   *     becomes the session coordinate at all; {@link a2aCoordChannel} derives it from the
-   *     trusted caller, which cannot alias any platform session.
+   * (3) UNKNOWN and channel-free (exactly the session-identity platforms: `webchat`,
+   *     `dream`, a target-less `hook` session's own platform) — `synthetic`. NOT a reject:
+   *     this is the case the org-scoped directory exists for. Instead the asserted channel
+   *     never becomes the session coordinate at all; {@link a2aCoordChannel} derives it
+   *     from the trusted caller, which cannot alias any platform session. An unrecognised
+   *     id does NOT land here — it is chat-shaped until the registry says otherwise (2).
    *
    * Branch (1) running FIRST and platform-free is what keeps (3) from being an escape hatch:
    * relabelling a real channel's coordinate as `webchat` still hits branch 1 and still
    * demands membership.
    *
-   * PLATFORM-FREE KEY, platform-keyed BRANCH. The lookup key must NOT include the coordinate
-   * platform: the woken session's key is computed from {@link Daemon.narrowPlatform}, which
-   * folds `feishu` — and any value it does not recognise — into `'slack'`, while snapshot
-   * rows are keyed by the INTEGRATION platform. Keying the LOOKUP on it searched a different
-   * key space than the session key it protects, and the old "unknown coordinate passes"
-   * branch silently swallowed the mismatch in BOTH directions: `coords.platform:'feishu'`
-   * over a Slack channel id, and (in a Feishu org) an honest narrowed `'slack'` over a
-   * `feishu` row. Either missed the row, passed, and still computed a bit-identical child
-   * session key. Matching on the channel id alone closes both and keeps this and the relay's
-   * copy — which has no `narrowPlatform` — expressing literally the same rule. The platform
-   * is consulted ONLY to pick between branch 2 and branch 3, and only for a coordinate
-   * branch 1 already found nothing for, where the collapse cannot help an attacker because
-   * branch 3 hands back a caller-derived channel rather than the asserted one.
+   * PLATFORM-FREE KEY, platform-keyed BRANCH. The lookup key does NOT include the coordinate
+   * platform. Historically it COULD not: session keys were computed through the deleted
+   * `narrowPlatform` helper, which folded `feishu` — and any value it did not recognise —
+   * into `'slack'`, while snapshot rows are keyed by the INTEGRATION platform, so a
+   * platform-keyed lookup searched a different key space than the session key it protects
+   * and the old "unknown coordinate passes" branch silently swallowed the mismatch in BOTH
+   * directions (`coords.platform:'feishu'` over a Slack channel id; an honest narrowed
+   * `'slack'` over a `feishu` row). Session keys now carry the raw platform (S1a §6.3), but
+   * the channel-id-only match stays: it is what closes the relabelling dodge in both
+   * directions regardless of key regime, and it keeps this and the relay's copy — which
+   * never had a fold — expressing literally the same rule. Re-keying the lookup by platform
+   * is a separate decision for the registry-driven rewrite, not a consequence of the fold's
+   * removal. The platform is consulted ONLY to pick between branch 2 and branch 3, and only
+   * for a coordinate branch 1 already found nothing for, where the collapse cannot help an
+   * attacker because branch 3 hands back a caller-derived channel rather than the asserted
+   * one.
    *
    * A NON-EMPTY member map is what counts as "known": an agent-less row is not a channel
    * anyone in this org can reach, so gating on it would reject every call naming it while
@@ -234,13 +245,12 @@ export class CpCollabRoutes {
    * here (`handleRelayAgentMsg` terminal-verify, `localWakeDecision`, and through it
    * `wakeRejectionReason`'s preflight) go through this one method.
    *
-   * ACCEPTED CONSEQUENCE of the wire's platform narrowing: `RdAgentMsg.coords.platform` is
-   * `slack | telegram | webchat | discord | feishu`, so `messageAgent` maps a target-less
-   * `hook` session's coords platform to `'slack'` before handing them to the relay (and
-   * {@link Daemon.narrowPlatform} does the same for `dream`). A CROSS-DAEMON wake out of such
-   * a session therefore lands in branch 2 and is rejected, while the same wake to a
-   * co-located peer — which passes the RAW `req.platform` — takes branch 3. Un-narrowing it
-   * needs a new coords platform value on the wire: a protocol change, out of scope here.
+   * Coordinates carry the RAW session platform end-to-end (S1b, post-fleet-gate): a
+   * target-less `hook`/`dream` session's cross-daemon wake now asserts its real platform,
+   * takes branch 3 on the relay AND on this twin — exactly like the same-daemon path —
+   * and the woken child keys off the caller-derived channel. (Until the S1a fleet gate
+   * passed, the daemon clamped these to `'slack'` on emission because an un-upgraded peer
+   * read `coords.platform` as a closed enum; that clamp is deleted.)
    */
   coordsDecision(orgId: string, platform: string, channelId: string, callerAgentId: string): CoordsVerdict {
     const sharing = this.byOrgChannel.get(this.coordsKey(orgId, channelId))
@@ -251,7 +261,14 @@ export class CpCollabRoutes {
       if (members.has(callerAgentId)) return { verdict: 'asserted' }
     }
     if (known) return { verdict: 'reject' }
-    if (PERSISTED_IM_PLATFORMS.has(platform)) return { verdict: 'reject' }
+    // Registry-driven fail-closed default (§6.1): the platform's ORIGIN KIND decides the
+    // branch — wire-carried classification (snapshot `platformKinds`, for ids a newer CP
+    // introduces) overlaid on the protocol seed, defaulting to 'chat' for an id neither
+    // classifies. 'chat' ⇒ an unrecorded coordinate is refused, fail-closed. Any other
+    // classified kind is channel-free ⇒ synthetic, which is safe for kinds this build
+    // has never heard of too: the substituted coordinate derives from the TRUSTED caller
+    // and can never alias a platform session.
+    if (this.originKindFor(platform) === 'chat') return { verdict: 'reject' }
     return { verdict: 'synthetic', channel: a2aCoordChannel(callerAgentId) }
   }
 

@@ -15,77 +15,106 @@
  * Editing the raw file preserves the original relative path.
  */
 import { readFileSync } from 'node:fs'
-import type { IntegrationSpec } from '@agentconnect.md/protocol'
+import type { IntegrationBindRule, IntegrationSpec } from '@agentconnect.md/protocol'
+import {
+  IntegrationDiscordConfig,
+  IntegrationFeishuConfig,
+  IntegrationSlackConfig,
+  IntegrationTelegramConfig
+} from '@agentconnect.md/protocol'
 import type { Integration } from './agent-schema.js'
 import { protectAgentJson, writeAgentJson } from './agent-json-file.js'
 import { findAgentFiles } from './load-agents.js'
 import { findAgentFileById } from './write-agent.js'
 
-/** Map the wire spec to the daemon's `Integration` shape (agent-schema). */
-function toIntegration(spec: IntegrationSpec): Integration {
+/**
+ * Map the wire spec to the daemon's `Integration` shape (agent-schema).
+ *
+ * §6.4 DUAL-SHAPE reader: the platform payload comes from the legacy nested block
+ * while the CP still emits it, else from the opaque `config` validated against the
+ * SAME per-platform schema (the S2 platform module takes validation over later).
+ * `core` overrides the routing knobs wherever present — it is the envelope that
+ * survives once legacy emission drops. The wire envelope is folded back into
+ * today's on-disk shape, so everything downstream of agent.json is unchanged.
+ * Returns null (reader-side rejection) for a spec carrying neither payload.
+ */
+function toIntegration(spec: IntegrationSpec): Integration | null {
+  const core = spec.core
+  const knobs = (legacy: { bindRules: IntegrationBindRule[]; mutedChannels: string[]; gated: boolean }) => ({
+    bindRules: core?.bindRules ?? legacy.bindRules,
+    mutedChannels: core?.mutedChannels ?? legacy.mutedChannels,
+    gated: core?.gated ?? legacy.gated
+  })
   if (spec.platform === 'telegram') {
+    const cfg = spec.telegram ?? parseConfig(IntegrationTelegramConfig, spec.config)
+    if (!cfg) return null
     return {
       id: spec.integrationId,
       origin: 'cp',
       platform: 'telegram',
-      telegram: {
-        botToken: spec.telegram.botToken,
-        bindRules: spec.telegram.bindRules,
-        mutedChannels: spec.telegram.mutedChannels,
-        gated: spec.telegram.gated
-      }
+      telegram: { botToken: cfg.botToken, ...knobs(cfg) }
     }
   }
   if (spec.platform === 'discord') {
+    const cfg = spec.discord ?? parseConfig(IntegrationDiscordConfig, spec.config)
+    if (!cfg) return null
     return {
       id: spec.integrationId,
       origin: 'cp',
       platform: 'discord',
       discord: {
-        botToken: spec.discord.botToken,
-        ...(spec.discord.applicationId ? { applicationId: spec.discord.applicationId } : {}),
-        bindRules: spec.discord.bindRules,
-        mutedChannels: spec.discord.mutedChannels,
-        gated: spec.discord.gated
+        botToken: cfg.botToken,
+        ...(cfg.applicationId ? { applicationId: cfg.applicationId } : {}),
+        ...knobs(cfg)
       }
     }
   }
   if (spec.platform === 'feishu') {
+    const cfg = spec.feishu ?? parseConfig(IntegrationFeishuConfig, spec.config)
+    if (!cfg) return null
     return {
       id: spec.integrationId,
       origin: 'cp',
       platform: 'feishu',
       feishu: {
-        mode: spec.feishu.mode,
-        appId: spec.feishu.appId,
-        appSecret: spec.feishu.appSecret,
-        ...(spec.feishu.botOpenId ? { botOpenId: spec.feishu.botOpenId } : {}),
-        region: spec.feishu.region,
-        bindRules: spec.feishu.bindRules,
-        mutedChannels: spec.feishu.mutedChannels,
-        gated: spec.feishu.gated
+        mode: core?.mode ?? cfg.mode,
+        appId: cfg.appId,
+        appSecret: cfg.appSecret,
+        ...(cfg.botOpenId ? { botOpenId: cfg.botOpenId } : {}),
+        region: cfg.region,
+        ...knobs(cfg)
       }
     }
   }
+  const cfg = spec.slack ?? parseConfig(IntegrationSlackConfig, spec.config)
+  if (!cfg) return null
   return {
     id: spec.integrationId,
     origin: 'cp',
     platform: 'slack',
     slack: {
-      mode: spec.slack.mode,
+      mode: core?.mode ?? cfg.mode,
       // Multi-agent opt-in (shared mode only) — gates the in-thread "Switch agent" control.
-      shareable: spec.slack.shareable,
-      botToken: spec.slack.botToken,
+      shareable: cfg.shareable,
+      botToken: cfg.botToken,
       // Shared mode carries no appToken (the relay owns the event stream) but does
       // carry the CP-resolved botUserId; direct mode is the reverse.
-      ...(spec.slack.appToken ? { appToken: spec.slack.appToken } : {}),
-      ...(spec.slack.appId ? { appId: spec.slack.appId } : {}),
-      ...(spec.slack.botUserId ? { botUserId: spec.slack.botUserId } : {}),
-      bindRules: spec.slack.bindRules,
-      mutedChannels: spec.slack.mutedChannels,
-      gated: spec.slack.gated
+      ...(cfg.appToken ? { appToken: cfg.appToken } : {}),
+      ...(cfg.appId ? { appId: cfg.appId } : {}),
+      ...(cfg.botUserId ? { botUserId: cfg.botUserId } : {}),
+      bindRules: knobs(cfg).bindRules,
+      mutedChannels: knobs(cfg).mutedChannels,
+      gated: knobs(cfg).gated
     }
   }
+}
+
+/** Validate the opaque envelope payload against the per-platform wire schema;
+ *  null (not throw) on mismatch — the caller warns and skips the spec. */
+function parseConfig<T>(schema: { safeParse(v: unknown): { success: boolean; data?: T } }, v: unknown): T | null {
+  if (v === undefined) return null
+  const r = schema.safeParse(v)
+  return r.success ? (r.data as T) : null
 }
 
 export interface WriteIntegrationDeps {
@@ -112,6 +141,12 @@ export function writeIntegrationSpec(agentsDir: string, spec: IntegrationSpec, d
   const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
   const list: unknown[] = Array.isArray(raw.integrations) ? raw.integrations : []
   const next = toIntegration(spec)
+  if (!next) {
+    // Ids only — never token material. A spec with neither the legacy block nor a
+    // valid `config` payload is unusable; the CP re-sends on the next push.
+    deps.warn?.(`cp: integration ${spec.integrationId} carried no usable platform payload — not persisted`)
+    return false
+  }
   const idx = list.findIndex((i) => typeof i === 'object' && i !== null && (i as { id?: unknown }).id === next.id)
   if (idx >= 0) list[idx] = next
   else list.push(next)

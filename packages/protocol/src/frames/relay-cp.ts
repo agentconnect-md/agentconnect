@@ -3,6 +3,7 @@ import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
+import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import { GithubHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -527,14 +528,26 @@ export type AttributedRoute = z.infer<typeof AttributedRoute>
 // sends only callback verification material: its app secret and all provider API
 // egress stay on the daemon. Secret — NEVER log this frame.
 export const RcBotSecrets = z.union([
-  z.object({
-    botToken: z.string(),
-    signingSecret: z.string()
-  }),
-  z.object({
-    verificationToken: z.string(),
-    encryptKey: z.string().optional()
-  })
+  // The typed variants keep full validation for today's platforms AND pass unknown
+  // keys through (`catchall`): a bag that satisfies a typed prefix may still carry
+  // additional credential fields a newer platform module needs — stripping them
+  // here would hand the §6.7 platform-module boundary less than what was on the
+  // wire. Ordered first so validation still applies during the window.
+  z
+    .object({
+      botToken: z.string(),
+      signingSecret: z.string()
+    })
+    .catchall(z.unknown()),
+  z
+    .object({
+      verificationToken: z.string(),
+      encryptKey: z.string().optional()
+    })
+    .catchall(z.unknown()),
+  // §6.7 open reader: a platform this build predates ships an opaque secret bag;
+  // the relay's platform module (S3) validates its shape.
+  z.record(z.string(), z.unknown())
 ])
 export type RcBotSecrets = z.infer<typeof RcBotSecrets>
 
@@ -560,7 +573,15 @@ export type RcAgentDirEntry = z.infer<typeof RcAgentDirEntry>
 // relay expects). NEVER log.
 export const RcBotAssign = z.object({
   botId: z.string().uuid(),
-  platform: z.enum(['slack', 'telegram', 'discord', 'feishu']),
+  // S1a open reader (route.ts Platform policy). The CP only emits ids the
+  // relay build supports; the relay's assign handler already refuses an
+  // unsupported platform gracefully ("not yet supported"), never the socket.
+  platform: Platform,
+  // §6.1: the platform's origin kind, so an older relay can classify an id a
+  // newer CP introduces (always 'chat' for a bot assignment today). Overlaid on
+  // the relay's built-in seed; absent (older CP) ⇒ the seed answers, and an id
+  // neither classifies defaults to 'chat' (fail-closed in coordsDecision).
+  originKind: z.string().min(1).optional(),
   botUserId: z.string().optional(), // resolved by CP; for echo suppression + mention match
   // Platform app id (Slack "A…", Feishu "cli_…") — lets the relay demux an
   // inbound POST to this bot in O(1). Slack may omit it for a legacy manual
@@ -579,6 +600,11 @@ export const RcBotAssign = z.object({
   // ⇒ the CP applies revocations without the revision arm of the fence.
   credentialRevision: z.number().int().nonnegative().optional(),
   secrets: RcBotSecrets,
+  // §6.7 opaque INGRESS bag, dual-emitted beside the named demux fields above
+  // (apiAppId/teamId/botUserId). Shape validation belongs to the platform module
+  // on both ends (S3); the relay ignores it during the dual-shape window and the
+  // named fields stop being emitted once the fleet reads the bag.
+  ingress: z.unknown().optional(),
   members: z.array(z.object({ daemonId: z.string().uuid(), agentIds: z.array(z.string().uuid()) })),
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal
   routes: z.array(AttributedRoute),
