@@ -13,10 +13,11 @@ const installTarget = vi.fn(async (root: string, target: { version: string }) =>
 })
 vi.mock('../src/install.js', () => ({
   resolveTarget: (o: unknown) => resolveTarget(o),
-  installTarget: (r: string, t: { version: string }, log?: (m: string) => void) => installTarget(r, t, log)
+  installTarget: (r: string, t: { version: string }, log?: (m: string) => void, opts?: { force?: boolean }) =>
+    installTarget(r, t, log, opts)
 }))
 
-const { versionInstall } = await import('../src/version-commands.js')
+const { versionInstall, versionReinstallLatest, versionRollback } = await import('../src/version-commands.js')
 const { currentVersion, readMeta, writeMeta } = await import('../src/version-store.js')
 
 const root = () => mkdtempSync(join(tmpdir(), 'ac-vinstall-'))
@@ -70,5 +71,36 @@ describe('versionInstall', () => {
     expect(resolveTarget).toHaveBeenCalledWith({ to: undefined, channel: 'stable' })
     // No versions.json written: the default must not become a stored preference.
     expect(existsSync(join(r, 'versions.json'))).toBe(false)
+  })
+})
+
+describe('versionRollback', () => {
+  it('reactivates the recorded previous version and returns it', async () => {
+    const r = root()
+    resolveTarget.mockResolvedValueOnce({ version: '1.0.0', channel: 'stable' })
+    await versionInstall(r, {}) // activates 1.0.0
+    mkdirSync(join(r, 'versions', '1.1.0'), { recursive: true })
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.1.0') // previous = 1.0.0
+    await expect(versionRollback(r)).resolves.toBe('1.0.0')
+    expect(currentVersion(r)).toBe('1.0.0')
+    // The failed version becomes the new rollback target.
+    expect(readMeta(r).previous).toBe('1.1.0')
+  })
+
+  it('refuses when no previous version is recorded', async () => {
+    await expect(versionRollback(root())).rejects.toThrow(/no previous/)
+  })
+})
+
+describe('versionReinstallLatest', () => {
+  it('force-installs the channel latest and activates it', async () => {
+    const r = root()
+    writeMeta(r, { channel: 'rc', previous: null })
+    resolveTarget.mockResolvedValue({ version: '2.0.0-rc.1', channel: 'rc' })
+    await expect(versionReinstallLatest(r)).resolves.toBe('2.0.0-rc.1')
+    expect(resolveTarget).toHaveBeenCalledWith({ channel: 'rc' })
+    expect(installTarget.mock.calls[0]![3]).toEqual({ force: true })
+    expect(currentVersion(r)).toBe('2.0.0-rc.1')
   })
 })

@@ -178,6 +178,23 @@ launchd's nonzero-exit restart condition.
    `RESERVED_RESTART_CODE`;
 4. propagates every other exit status or signal.
 
+One exception to step 4: an **interactive startup failure**. When the daemon
+exits nonzero (no signal) within the startup window of an interactive
+foreground run — stdin and stderr are TTYs, no service supervisor, no
+`AGENTCONNECT_DAEMON_ENTRY` dev override, no pending stop — the shell offers a
+recovery menu instead of dying with the exit code:
+
+1. switch back to the recorded `previous` version and retry (offered only when
+   that version is still installed);
+2. force re-download the channel's latest version (replacing the possibly
+   corrupt installed bundle) and retry;
+3. print the manual `agentconnect version list / install / use` commands and
+   exit.
+
+A successful switch re-enters the respawn loop; declining (empty answer,
+Ctrl-C, or EOF) propagates the original exit status unchanged. Non-interactive
+and service runs never prompt — their supervisor must see the real exit code.
+
 The shell forwards `SIGTERM` to the child. Terminal `SIGINT` reaches both
 processes through the foreground process group, so the shell waits for and
 faithfully reproduces the child's termination instead of double-delivering the
