@@ -16714,11 +16714,18 @@ export class Daemon {
     // never arrived expires TRANSCRIPT-ONLY and is reported as an operational delivery
     // failure. It must never fall back to an envelope-less child, so this sweep only ever
     // closes the record — it never dispatches anything.
-    for (const expired of this.store.expireActivations(now)) {
+    const sweep = this.store.expireActivations(now)
+    for (const expired of sweep.transcriptOnly) {
       this.log.warn(
         `activation: paired delivery ${expired.agentCallDeliveryId ?? expired.activationKey} expired without its ` +
           `internal call envelope — recorded as transcript-only, no child session was opened`
       )
+    }
+    // A claim whose dispatch never admitted, almost always because the process died in
+    // that window. Releasing it is what keeps a restart from deduplicating every retry
+    // against a child that was never opened.
+    if (sweep.released > 0) {
+      this.log.warn(`activation: released ${sweep.released} stale delivery claim(s) that never reached admission`)
     }
     // #485 session-retention GC: delete long-inactive sessions and their worktrees.
     if (now - this.lastSessionRetentionSweepAt >= SESSION_RETENTION_SWEEP_INTERVAL_MS) {

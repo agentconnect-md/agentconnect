@@ -979,16 +979,20 @@ export async function executeTool(
         agentAuthorId: ctx.agentId,
         // §3.2/§4: the visible half of a paired call is COMPLETE when posted — no later
         // finalization edit closes it — so it is stamped `final` with the pairing id here.
-        // The recipient set is empty on purpose: the target is being woken by the internal
-        // wake's authoritative envelope, not by this post's recipient list, and listing it
-        // would invite a second, envelope-less activation of the same peer.
-        ...(agentCallDeliveryId !== undefined
+        //
+        // The recipient set NAMES THE TARGET, and must: ingress selects targets from this
+        // field, so an empty set makes the echo unroutable and the platform-first
+        // rendezvous unreachable — a lost wake would then leave no record at all, silently,
+        // instead of the delivery failure §8.6 promises. It cannot double-activate: the
+        // pairing id is checked first at ingress, which routes this event to the
+        // claim-an-observation branch and never to dispatch.
+        ...(agentCallDeliveryId !== undefined && toAgent !== undefined
           ? {
               response: {
                 responseId: agentCallDeliveryId,
                 deliveryState: 'final' as const,
                 hopCount: deps.currentHopCount?.(ctx) ?? 0,
-                mentionedAgentIds: [],
+                mentionedAgentIds: [toAgent],
                 agentCallDeliveryId
               }
             }

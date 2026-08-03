@@ -3902,21 +3902,33 @@ export class LocalStore {
   }
 
   /**
-   * Expire pending pairings whose authoritative half never arrived: they become
-   * `transcript-only` (§3.2/§8.6) — the visible observation stands, the delivery is a
-   * failure, and no envelope-less child is ever synthesized from platform metadata.
-   * Returns the expired records so the caller can raise the operational failure.
+   * Sweep expired pending records. Two DIFFERENT failures share this table, and they must
+   * not share an outcome.
+   *
+   * **No envelope** — the visible half of a paired call whose authoritative wake never
+   * arrived (§3.2/§8.6). The observation stands, the delivery is a FAILURE, and no
+   * envelope-less child is ever synthesized from platform metadata. Terminal
+   * `transcript-only`, returned so the caller can raise the operational failure.
+   *
+   * **With an envelope** — a claim whose dispatch never reached admission. In-process that
+   * is repaired by `releaseActivation` on the admission barrier, but a hard CRASH between
+   * the claim and admission leaves the row behind with nobody to run that callback. Left
+   * alone it is claimed forever: `attachActivationEnvelope` answers every retry with
+   * `dispatch: false`, so exactly-once quietly becomes never — the failure mode the whole
+   * record exists to prevent. Past its TTL the claim is RELEASED (deleted), so the next
+   * attempt is a first attempt. It is not reported as a delivery failure because, unlike
+   * the envelope-less case, nothing here says the delivery was observed and lost.
    */
-  expireActivations(now: number): ActivationRecord[] {
+  expireActivations(now: number): { transcriptOnly: ActivationRecord[]; released: number } {
     this.db.exec('BEGIN')
     try {
-      const expired = this.db
+      const transcriptOnly = this.db
         .prepare(
           `SELECT * FROM activation_rendezvous
            WHERE state = 'pending' AND callEnvelope IS NULL AND expiresAt <= ?`
         )
         .all(now) as unknown as ActivationRecord[]
-      if (expired.length > 0) {
+      if (transcriptOnly.length > 0) {
         this.db
           .prepare(
             `UPDATE activation_rendezvous SET state = 'transcript-only'
@@ -3924,13 +3936,21 @@ export class LocalStore {
           )
           .run(now)
       }
+      // The crash-recovery arm. Deleting rather than marking terminal is the point: the
+      // key must become claimable again.
+      const released = this.db
+        .prepare(
+          `DELETE FROM activation_rendezvous
+           WHERE state = 'pending' AND callEnvelope IS NOT NULL AND expiresAt <= ?`
+        )
+        .run(now).changes
       // Terminal records are pure history once they are well past expiry; drop them so
       // the table stays bounded in a busy channel.
       this.db
         .prepare(`DELETE FROM activation_rendezvous WHERE state != 'pending' AND expiresAt <= ?`)
         .run(now - ACTIVATION_RETENTION_MS)
       this.db.exec('COMMIT')
-      return expired
+      return { transcriptOnly, released: Number(released) }
     } catch (err) {
       this.db.exec('ROLLBACK')
       throw err

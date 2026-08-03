@@ -1392,9 +1392,9 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
       { agentCallDeliveryId: 'd-1', platformMessageId: 'ts-1', transcriptCoordinates: 'C1 T1' },
       1000
     )
-    expect(s.expireActivations(999)).toEqual([])
+    expect(s.expireActivations(999).transcriptOnly).toEqual([])
     const expired = s.expireActivations(1000)
-    expect(expired.map((r) => r.agentCallDeliveryId)).toEqual(['d-1'])
+    expect(expired.transcriptOnly.map((r) => r.agentCallDeliveryId)).toEqual(['d-1'])
     expect(s.getActivation(KEY)?.state).toBe('transcript-only')
 
     // A very late wake must not resurrect a delivery already reported failed — otherwise
@@ -1408,8 +1408,26 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
   it('never expires a record that already has its envelope', () => {
     const s = store()
     s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
-    expect(s.expireActivations(9999)).toEqual([])
+    expect(s.expireActivations(999).transcriptOnly).toEqual([])
     expect(s.getActivation(KEY)?.state).toBe('pending')
+    s.close()
+  })
+
+  it('releases — not reports — a claim left pending WITH an envelope past its TTL', () => {
+    // The crash case. In-process, a dispatch that never admits is repaired by the
+    // admission callback; a hard crash in that window leaves the row with nobody to run
+    // it. Left alone the key is claimed forever and every retry after restart is
+    // deduplicated against a child that does not exist — exactly-once becoming never.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    const sweep = s.expireActivations(1000)
+    // Not a delivery FAILURE report: unlike the envelope-less case, nothing here says the
+    // delivery was observed and lost — only that this attempt did not finish.
+    expect(sweep.transcriptOnly).toEqual([])
+    expect(sweep.released).toBe(1)
+    expect(s.getActivation(KEY)).toBeUndefined()
+    // …and the key is claimable again, which is the whole point.
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 5000).dispatch).toBe(true)
     s.close()
   })
 

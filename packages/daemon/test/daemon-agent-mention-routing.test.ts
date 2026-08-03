@@ -271,6 +271,35 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
+  it('activates EVERY admissible recipient of one finalized response', async () => {
+    // One response can address several agents ("<@A> <@B> please both look"). Stopping at
+    // the first would wake one of them with nothing to tell the sender the others were
+    // dropped — the sender saw a single message go out.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
+    const outcome = route(daemon, agentMessage({}, { mentionedAgentIds: ['bot-b', 'bot-c'] }))
+    expect(outcome.kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId).sort()).toEqual(['bot-b', 'bot-c'])
+    // Each is its own delivery at the same depth — one edge from the author, not a chain.
+    expect(calls.every((c) => c.callMeta?.hopCount === 1)).toBe(true)
+    await daemon.stop()
+  })
+
+  it('does not wake a recipient in a channel the operator switched Off', async () => {
+    // product-conventions "Per-channel trigger": Off means no response there at all,
+    // explicitly including an @-mention. This ladder bypasses `routeRules`, where the
+    // human path gets that fence, so it has to apply it itself — otherwise an agent
+    // mention becomes the one way into a silenced channel.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    // `mergedRules` recomputes per call, so the mute is injected at that source rather
+    // than mutated onto a snapshot the daemon will discard.
+    const original = (daemon as any).mergedRules.bind(daemon)
+    ;(daemon as any).mergedRules = () =>
+      original().map((rule: any) => (rule.agentId === 'bot-b' ? { ...rule, mutedChannels: ['C1'] } : rule))
+    expect(route(daemon, agentMessage()).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
   it('holds the visible half of a paired agent call for its internal wake', async () => {
     // §3.2: a post carrying an `agent_call_delivery_id` is one half of a paired delivery.
     // Its trusted envelope — lineage, correlation, needsReply, privacy — travels on the

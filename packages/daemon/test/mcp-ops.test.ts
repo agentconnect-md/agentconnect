@@ -39,9 +39,12 @@ const pairedAuthorIdentity = {
     responseId: expect.any(String),
     deliveryState: 'final',
     hopCount: 0,
-    // Empty on purpose: the peer is woken by the internal wake's authoritative envelope,
-    // and listing it here would invite a second, envelope-less activation of the same peer.
-    mentionedAgentIds: [],
+    // NAMES THE TARGET, and must: ingress selects targets from this field, so an empty set
+    // would make the echo unroutable — the platform-first rendezvous unreachable, and a
+    // lost wake silent instead of the delivery failure §8.6 promises. It cannot
+    // double-activate: ingress checks the pairing id first and routes to the
+    // claim-an-observation branch, never to dispatch.
+    mentionedAgentIds: ['peer-1'],
     agentCallDeliveryId: expect.any(String)
   }
 }
