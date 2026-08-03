@@ -704,7 +704,9 @@ describe('continue-the-topic hint delivery', () => {
       transcriptChannel: '-100',
       statusThread: 'tg:100',
       thread: 'tg:100',
-      tgReplyTo: 100,
+      // §7.3: Telegram's per-turn state lives in the opaque slot, seeded by its
+      // output surface at dispatch (here, by hand).
+      turnState: { replyTo: 100 } as { replyTo?: number; lastBody?: { id: string; text: string } },
       approvalSurfaceSuppressed: false,
       conn
     }
@@ -724,7 +726,7 @@ describe('continue-the-topic hint delivery', () => {
     const rows = (daemon as any).store.threadTranscript('-100', 'tg:100')
     expect(rows.at(-1)).toMatchObject({ text: 'answer', ts: 'out-9' })
     expect((daemon as any).store.telegramThreadForMessage('-100', 'out-9')).toBe('tg:100')
-    expect(p).toMatchObject({ tgLastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
+    expect(p.turnState).toMatchObject({ lastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
     await daemon.stop()
   })
 

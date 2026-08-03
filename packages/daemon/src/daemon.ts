@@ -121,7 +121,6 @@ import {
   slackSharedKey,
   SlackConnection,
   type InteractionActor,
-  type SlackPostOptions,
   type SlackStatusOptions
 } from './slack/connection.js'
 import {
@@ -134,14 +133,23 @@ import {
 } from './telegram/connection.js'
 import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord/connection.js'
 import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
-import { consolidateFeishu, feishuConnKey, FeishuConnection, type FeishuStreamingCard } from './feishu/connection.js'
+import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
-import { splitIntoSections } from './slack/formatter.js'
 import {
   resolveSlackMentionedAgents,
   slackMentionAddress,
   SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX
 } from '@agentconnect.md/message'
+import {
+  applySlackAction as applySlackActionExternal,
+  clearStaleSlackReplyFooters as clearStaleSlackReplyFootersExternal,
+  finalizeSlackResponse,
+  isSlackStatusBarText,
+  slackAgentPostOptions,
+  slackPostOptions,
+  slackStatusOptions,
+  type SlackTurnState
+} from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
@@ -173,7 +181,7 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './slack/render.js'
-import { TelegramConverger, renderStatusReply, TELEGRAM_MESSAGE_LIMIT, type TelegramAction } from './telegram/render.js'
+import { TelegramConverger, renderStatusReply, type TelegramAction } from './telegram/render.js'
 import {
   DiscordConverger,
   renderStatusText,
@@ -188,6 +196,12 @@ import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from './messages/hook-message.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './github/poster.js'
+import {
+  finalizeGithubTurn,
+  isGithubFinalChunk,
+  onGithubUpdate,
+  type GithubTurnState
+} from './platforms/github/turn-output.js'
 import {
   GithubReviewClient,
   type GithubReviewEffect,
@@ -312,6 +326,17 @@ import {
   type NormalizedMessage
 } from './messages/normalized.js'
 import { ConnectionPool, type ConnectionKey } from './platforms/registry.js'
+import {
+  applyTelegramAction as applyTelegramActionExternal,
+  type TelegramTurnState
+} from './platforms/telegram/turn-output.js'
+import { applyDiscordAction as applyDiscordActionExternal } from './platforms/discord/turn-output.js'
+import { applyFeishuAction as applyFeishuActionExternal, type FeishuTurnState } from './platforms/feishu/turn-output.js'
+import {
+  canonicalizeTelegramThread as canonicalizeTelegramThreadExternal,
+  telegramMessageId as telegramMessageIdExternal,
+  telegramReplyTarget as telegramReplyTargetExternal
+} from './platforms/telegram/threading.js'
 import { TurnOutputRegistry, type TurnOutputContext } from './platforms/turn-output.js'
 import type {
   RegisterReq,
@@ -1206,10 +1231,6 @@ interface MemoryExtractionCollector {
   transcript?: { channel: string; thread: string; recorder: TranscriptRecorder }
 }
 
-function isSlackStatusBarText(text: string): boolean {
-  return text.startsWith(':bar_chart:') || text.startsWith('\uD83D\uDCCA')
-}
-
 /** The union of every platform's renderer action, and of every platform's
  *  converger. Each surface narrows to its own arm; the unions exist because the
  *  turn record is still core-owned (they dissolve when the convergers move with
@@ -1224,30 +1245,6 @@ type DaemonConverger = OutputConverger | TelegramConverger | DiscordConverger | 
  * platform-named fields on the turn record itself, which is precisely the
  * accretion the opaque slot exists to stop.
  */
-interface SlackTurnState {
-  /** Older reply sections whose footer-removal update failed. Retried on the next
-   *  body section and once more at finalization, so a transient Slack error cannot
-   *  leave two footers standing. */
-  staleReplyFooters?: { ts: string; text: string }[]
-}
-
-interface TelegramTurnState {
-  /** The message id every post this turn replies to (the triggering message —
-   *  "the last message in the session" at turn start), so the bot's answer threads
-   *  under it and a human reply-to-bot stitches back to this session. */
-  replyTo?: number
-}
-
-interface FeishuTurnState {
-  /** Feishu/Lark's one CardKit reply entity for this turn. Undefined until
-   *  `card-start` succeeds; `cardAttempted` prevents duplicate initial cards. */
-  card?: FeishuStreamingCard
-  cardAttempted?: boolean
-  /** Periodic cumulative CardKit element flush (separate from the transcript idle
-   *  flush core owns). */
-  streamTimer?: NodeJS.Timeout
-}
-
 /** Read a turn's opaque platform state as the owning surface's shape. Only that
  *  surface's applier (and the platform-scoped timers it arms) calls this.
  *
@@ -1334,7 +1331,7 @@ interface Pending {
    *  GitHub issue/PR. Commentary stays transcript-local; final is awaited at turn end.
    *  For a headless hook, explicit final chunks are withheld from OutputConverger and
    *  persisted once from the collector so transport flushes cannot split one answer. */
-  github?: { poster: GithubFinalPoster; collector: GithubReplyCollector; deferredFinalTranscript: boolean }
+  github?: GithubTurnState
   conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
   /** §7.3 OPAQUE per-turn platform state, seeded by this turn's output surface and
    *  read only by that surface (see {@link turnState}). Core carries the slot and
@@ -1367,7 +1364,6 @@ interface Pending {
   /** Telegram: the id and exact sent text of the LAST body message posted this turn, so a
    *  turn-end `continue-hint` action can append the continue-the-topic line to it in place
    *  (the body may have been flushed long before the turn ended). */
-  tgLastBody?: { id: string; text: string }
   /** ts of the single in-place agent reply message (minimal mode's `live-reply`), once posted. */
   liveReplyTs?: string
   /** Whether the live-reply's first post was attempted (see progressAttempted). */
@@ -1398,6 +1394,12 @@ interface Pending {
    *  Undefined when the turn posted no conversational body (chrome-only, `none` mode, or
    *  a headless turn): there is then no response event to close. */
   lastResponse?: { ts: string; text: string }
+  /** send-message-routing-rework.md §4.1: this turn's own trusted depth, stamped on every
+   *  body it posts so the NEXT routing edge advances from it. A human/root turn is 0. */
+  sourceHopCount: number
+  /** §5.3: compound shared-bot addresses this conversation can contain, which the
+   *  splitter must never cut in half. Empty off Slack, or with no collaboration snapshot. */
+  protectedAddresses: readonly string[]
   /** ts of the session's interactive status-bar message, once known. Persisted in the
    *  session row so later turns update the first line instead of posting duplicates. */
   statusBarTs?: string
@@ -5519,73 +5521,23 @@ export class Daemon {
   /** The bare Telegram message id from a normalized `telegram:<chatId>:<messageId>`
    *  msgId (the last segment; chat ids may be negative, so split, don't parse). */
   private telegramMessageId(msg: NormalizedMessage): string {
-    const parts = msg.msgId.split(':')
-    return parts[parts.length - 1] ?? ''
+    return telegramMessageIdExternal(msg)
   }
 
-  /**
-   * Resolve the session thread for a Telegram message and set it on `msg.thread` in
-   * place (normalize leaves it unset for Telegram). Ladder:
-   *   - forum topic       → the topic id (a real native thread; numeric, so it also
-   *                          drives the post's `message_thread_id`)
-   *   - native reply-root → `tg:<root>` from Telegram's own `message_thread_id` in a
-   *                          plain supergroup (Telegram auto-threads replies to the root)
-   *   - DM                → one continuous session per chat (`dm`)
-   *   - reply that maps   → the session the replied-to message belongs to, resolved from
-   *                          the transcript (basic groups carry no `message_thread_id`)
-   *   - otherwise         → a fresh session rooted at this message (`tg:<msgId>`) — a new
-   *                          @mention, or a reply we can't place
-   * A fresh @mention (message N, no thread root) keys `tg:N`; every later reply in that
-   * thread carries `message_thread_id = N`, so it keys `tg:N` too — the two meet with no
-   * lookup. The non-topic keys are deliberately NON-numeric so posting never mistakes
-   * them for a forum `message_thread_id` (see TelegramConnection.postMessage). No-op for
-   * other platforms or when the thread is already set.
-   */
+  /** Telegram thread canonicalization — the platform's own conversation model
+   *  ({@link canonicalizeTelegramThreadExternal}); core only supplies the
+   *  transcript lookup a reply needs to be placed. */
   private canonicalizeTelegramThread(msg: NormalizedMessage): void {
-    if (msg.platform !== 'telegram' || msg.thread !== undefined) return
-    // §6.5 dual-shape reader: prefer the generic coordinates; the named per-platform
-    // fields stop being emitted once the fleet reads the generic ones.
-    const topicId = msg.topicId ?? msg.telegramTopicId
-    if (topicId !== undefined) {
-      msg.thread = topicId
-      return
-    }
-    const threadRoot = msg.threadRoot ?? msg.telegramThreadRoot
-    if (threadRoot !== undefined) {
-      msg.thread = `tg:${threadRoot}`
-      return
-    }
-    if (msg.isDm) {
-      msg.thread = 'dm'
-      return
-    }
-    if (msg.replyTo) {
-      const owner = this.store.telegramThreadForMessage(
-        transcriptChannelKey(msg.channel, msg.transportScope),
-        msg.replyTo
-      )
-      msg.thread = owner ?? `tg:${msg.replyTo}`
-      return
-    }
-    msg.thread = `tg:${this.telegramMessageId(msg)}`
+    canonicalizeTelegramThreadExternal(
+      { threadForMessage: (channel, id) => this.store.telegramThreadForMessage(channel, id) },
+      msg,
+      transcriptChannelKey(msg.channel, msg.transportScope)
+    )
   }
 
-  /** Telegram reply target for a turn/command triggered by `msg`: the triggering
-   *  message's own id, so the bot's posts reply to it (req: reply to the last message
-   *  in the session, and keep the reply chain resolvable). An agent-call turn
-   *  (`replyToSession` / a peer wake) synthesizes its msgId (`agentcall:<channel>:<uuid>`)
-   *  so no platform id can be recovered — without a fallback its answer posts to the
-   *  chat root, visually outside the reply chain the session lives in. Those turns
-   *  anchor to the session's thread root instead (`tg:<root>`, see
-   *  {@link canonicalizeTelegramThread}); `dm` and numeric forum-topic threads carry no
-   *  reply anchor. Undefined off Telegram or when neither id resolves. */
+  /** Telegram's reply anchor for a turn ({@link telegramReplyTargetExternal}). */
   private telegramReplyTarget(msg: NormalizedMessage): number | undefined {
-    if (msg.platform !== 'telegram') return undefined
-    const n = Number(this.telegramMessageId(msg))
-    if (Number.isInteger(n) && n > 0) return n
-    const root = msg.thread !== undefined ? /^tg:(\d+)$/.exec(msg.thread) : null
-    const r = root ? Number(root[1]) : NaN
-    return Number.isInteger(r) && r > 0 ? r : undefined
+    return telegramReplyTargetExternal(msg)
   }
 
   // route an inbound Slack message
@@ -10567,7 +10519,7 @@ export class Daemon {
         void slack.setStatus(ctx.channel, ctx.statusThread, '')
       if (ctx.platform === 'slack')
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
-          ...(this.slackPostOptions(ctx) ?? {}),
+          ...(slackPostOptions(ctx) ?? {}),
           chrome: true
         })
       else void ctx.replyConn.postMessage(ctx.channel, notice, ctx.thread)
@@ -11652,13 +11604,13 @@ export class Daemon {
       protectedAddresses: this.compoundMentionAddresses(agentId, msg)
     }
     const conv = turnSurface.createConverger(turnCtx)
-    const slackStatusOptions = this.slackStatusOptions(msg.platform, agentName, iconUrl)
+    const statusOptions = slackStatusOptions(msg.platform, agentName, iconUrl)
     this.showActivity(
       replyConn,
       msg.channel,
       statusThread,
       wasRunning ? 'is thinking…' : 'is starting up…',
-      slackStatusOptions
+      statusOptions
     )
     // handle() writes the row to `prompting` before returning; if it throws after
     // that (workspace/attachment failure), the try/finally below is never entered,
@@ -11960,6 +11912,12 @@ export class Daemon {
       // One id for this turn's complete logical response (§5.1), minted before any
       // output can be produced so every physical section of it agrees.
       responseId: randomUUID(),
+      // §4.1: the author's OWN turn depth, stamped on every body it posts so the next
+      // routing edge advances from it. A human/root turn carries none and is depth 0; the
+      // model can neither read nor set this.
+      sourceHopCount: callMeta?.hopCount ?? 0,
+      // §5.3: compound shared-bot addresses a split must never cut in half.
+      protectedAddresses: turnCtx.protectedAddresses ?? [],
       agentId,
       agentName,
       requesterId: msg.sender.id,
@@ -12125,7 +12083,7 @@ export class Daemon {
       if (conv instanceof FeishuConverger) {
         for (const action of conv.onStart()) this.enqueueApply(p, action)
       }
-      if (!wasRunning) this.showActivity(replyConn, msg.channel, statusThread, 'is thinking…', slackStatusOptions)
+      if (!wasRunning) this.showActivity(replyConn, msg.channel, statusThread, 'is thinking…', statusOptions)
       // Post/refresh the session status bar up front — with the model now known (session
       // created) plus any usage carried over from prior turns — so it sits at the top of
       // the thread before the reply streams in.
@@ -12507,7 +12465,20 @@ export class Daemon {
       // Every section has now been delivered, so the complete logical response exists and
       // exactly one of its messages can be marked final (§5.5). Must run AFTER applyChain:
       // before it, the message being closed might not be the last one posted.
-      await this.finalizeSlackResponse(p)
+      // §5.5: close the response with one content-preserving edit. Recipients come from
+      // the COMPLETE response and are resolved against the CONVERSATION's directory — the
+      // same bidirectional mapping the target will use — so author and target cannot
+      // disagree about who was addressed.
+      if (p.platform === 'slack' && p.conn) {
+        const orgId = this.cpCollab.orgForAgent(p.agentId)
+        const recipients = orgId
+          ? resolveSlackMentionedAgents(
+              p.replyText,
+              this.cpCollab.mentionDirectory(orgId, p.platform, p.channel)
+            ).filter((id) => id !== p.agentId)
+          : []
+        await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, (m) => this.log.debug(m))
+      }
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable
       // capture outbox. Webchat carries the canonical per-turn id separately from
@@ -12659,7 +12630,12 @@ export class Daemon {
       // action. Failure/suppression can bypass that action, so give any retained rows
       // the same terminal retry before releasing the Slack transport.
       if (p.platform === 'slack' && p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
-        await this.clearStaleSlackReplyFooters(p.conn as SlackConnection, p)
+        await clearStaleSlackReplyFootersExternal(
+          { debug: (message) => this.log.debug(message) },
+          p.conn as SlackConnection,
+          p,
+          turnState<SlackTurnState>(p)
+        )
       }
       // The reply transport is no longer used after the final apply chain / failure
       // notice. Release before local metadata cleanup so even a cleanup exception
@@ -12676,25 +12652,10 @@ export class Daemon {
       // the map is keyed by sessionKey and the gate guarantees one active turn per key.
       if (callMeta) this.activeTurnCallMeta.delete(key)
       if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
-      // A headless GitHub hook has no platform-send boundary. Explicit final chunks
-      // were withheld from OutputConverger above, so persist the collector's one
-      // logical final now instead of one row per idle/size flush.
-      const githubFinal =
-        p.github && !p.outputSuppressed && finalPhase === 'end' ? p.github.collector.finalText(true) : undefined
-      if (p.github?.deferredFinalTranscript && githubFinal?.trim()) {
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: monotonicTs(),
-          sender: p.agentId,
-          kind: 'text',
-          text: githubFinal
-        })
-      }
-      const fallbackAllowed = githubFallbackAllowed(hookContext)
       // Anything other than no attempt or a correlated definite no-effect
       // result is fail-closed: GitHub may already own the public response.
-      if (githubReply && !fallbackAllowed) {
+      const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
+      if (formalReviewOwnsResponse) {
         try {
           this.persistHookState(entry, 'settled', true)
         } catch (err) {
@@ -12703,24 +12664,37 @@ export class Daemon {
           // unredacted inbox row if local persistence is still unavailable.
           this.log.warn(`github poster: formal-review settlement failed (${formatErr(err)})`)
         }
-      } else if (p.github && !p.outputSuppressed) {
-        // With no formal effect (or a proved not_submitted effect), the ordinary
-        // final remains the fallback. publish() is time-bounded and degrading.
-        let recordedInFlight = false
-        try {
-          // A replay of `in_flight` suppresses another comment. If this write
-          // cannot be made durable, fail closed and do not perform the POST.
-          this.persistHookState(entry, 'in_flight', true)
-          recordedInFlight = true
-        } catch (err) {
-          this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
-        }
-        if (recordedInFlight) {
-          await p.github.poster
-            .publish(githubFinal)
-            .catch((err) => this.log.warn(`github poster: final publish failed (${formatErr(err)})`))
-          this.persistHookState(entry, 'settled')
-        }
+      }
+      // GitHub's turn output lives in its platform module (§7.6) — a turn-FINAL
+      // surface, not a streaming one. Core keeps the hook durability barrier
+      // (§12) and hands the surface only the verdicts it must obey.
+      if (p.github) {
+        await finalizeGithubTurn(
+          {
+            appendTranscript: (row) => this.store.appendTranscript(row),
+            monotonicTs: () => monotonicTs(),
+            beginPublish: () => {
+              try {
+                // A replay of `in_flight` suppresses another comment. If this write
+                // cannot be made durable, fail closed and do not perform the POST.
+                this.persistHookState(entry, 'in_flight', true)
+                return true
+              } catch (err) {
+                this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
+                return false
+              }
+            },
+            endPublish: () => this.persistHookState(entry, 'settled'),
+            warn: (message) => this.log.warn(message)
+          },
+          p,
+          p.github,
+          {
+            suppressed: !!p.outputSuppressed,
+            atEnd: finalPhase === 'end',
+            formalReviewOwnsResponse
+          }
+        )
       }
       // Pending ownership and the non-idle session state are the final safety
       // fence, so release them only after the exact selected cleanup.
@@ -12973,72 +12947,6 @@ export class Daemon {
     this.coldCancelTimers.delete(key)
   }
 
-  /**
-   * Apply one converger action against the session's Slack connection:
-   *  - set-status → assistant.threads.setStatus (best-effort; '' clears)
-   *  - set-title  → assistant.threads.setTitle (best-effort; app DMs only)
-   *  - post       → a new thread message born with the linked footer; ALSO recorded
-   *    to the transcript as the agent's reply text (sender = agentId), so other agents
-   *    replaying the thread see what it said. Keyed on `statusThread` (§8.5).
-   *  - notice     → posted to the thread but NOT recorded (system chrome).
-   *  - attribution → closes the footer lifecycle and retries stale-section cleanup.
-   *  - progress / plan → the single in-place message of that kind, posted once
-   *    then chat.update-ed (§9.1 in-place update). The first post's ts is remembered on `p`.
-   */
-  private slackPostOptions(
-    p: Pick<Pending, 'platform' | 'isDm' | 'agentName' | 'iconUrl'>
-  ): SlackPostOptions | undefined {
-    if (p.platform !== 'slack' || p.isDm) return undefined
-    return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
-  }
-
-  /** Visual identity for Slack rows owned by the selected agent. Kept separate from
-   *  conversational authorship because status/chrome rows must retain their chrome
-   *  metadata marker instead of masquerading as transcript messages. */
-  private slackAgentIdentityOptions(
-    p: Pick<Pending, 'platform' | 'agentName' | 'iconUrl'>
-  ): SlackPostOptions | undefined {
-    if (p.platform !== 'slack') return undefined
-    return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
-  }
-
-  /** Agent-authored conversation messages add a stable author id to Slack metadata.
-   *  Peer daemons use it during thread backfill, so shared/custom bot ids never replace
-   *  the Agent's name and icon in the Console transcript.
-   *
-   *  They also carry this turn's STREAMING response block (send-message-routing-rework.md
-   *  §5.4): the logical response id, the author's trusted turn depth, and an explicitly
-   *  `streaming` lifecycle position. A streaming event never enters recipient routing —
-   *  its text may still be a prefix — so the recipient set is deliberately empty until
-   *  finalization resolves it from the complete response. */
-  private slackAgentPostOptions(
-    p: Pick<Pending, 'platform' | 'agentId' | 'agentName' | 'iconUrl'> &
-      Partial<Pick<Pending, 'responseId' | 'callMeta'>>
-  ): SlackPostOptions | undefined {
-    const identity = this.slackAgentIdentityOptions(p)
-    if (!identity) return undefined
-    return {
-      ...identity,
-      agentAuthorId: p.agentId,
-      // No `responseId` ⇒ this post is not part of an agent's logical response at all
-      // (the cron/hook trigger ANCHOR takes this path): it carries authorship for the
-      // transcript, but it closes no response and must never be routed as one.
-      ...(p.responseId
-        ? {
-            response: {
-              responseId: p.responseId,
-              deliveryState: 'streaming' as const,
-              // The SOURCE depth: this turn's own trusted depth, BEFORE the delivery this
-              // post may become. A human/root turn carries none and is depth 0; each
-              // routing edge adds exactly one (§4.1). The model can neither set nor reset it.
-              hopCount: p.callMeta?.hopCount ?? 0,
-              mentionedAgentIds: []
-            }
-          }
-        : {})
-    }
-  }
-
   /** Opaque routing target attached to daemon-rendered interactive Slack blocks when
    * inbound actions belong to the relay instead of this process's Socket Mode edge. */
   private httpSlackSessionTarget(p: Pick<Pending, 'agentId' | 'integrationId' | 'sessionKey'>): string | undefined {
@@ -13049,45 +12957,6 @@ export class Daemon {
           sessionKey: p.sessionKey
         })
       : undefined
-  }
-
-  /** Keep Slack's transient loading state visually owned by the same agent as its reply. */
-  private slackStatusOptions(platform: string, agentName: string, iconUrl?: string): SlackStatusOptions | undefined {
-    if (platform !== 'slack') return undefined
-    return { username: agentName, ...(iconUrl ? { icon_url: iconUrl } : {}) }
-  }
-
-  /** Remove attribution blocks from older body sections. Slack edits are best-effort,
-   *  so retain failed rows for the next body post and the finalization retry. Test fakes
-   *  historically return void; only an explicit `false` means the update failed. */
-  private async clearStaleSlackReplyFooters(
-    conn: SlackConnection,
-    p: Pending,
-    additional: { ts: string; text: string }[] = []
-  ): Promise<void> {
-    const pending = [...(turnState<SlackTurnState>(p).staleReplyFooters ?? []), ...additional]
-    if (pending.length === 0) return
-    delete turnState<SlackTurnState>(p).staleReplyFooters
-    const failed: { ts: string; text: string }[] = []
-    for (const reply of new Map(pending.map((item) => [item.ts, item])).values()) {
-      try {
-        const updated = await conn.updateBlocks(
-          p.channel,
-          reply.ts,
-          [{ type: 'markdown', text: reply.text }],
-          undefined,
-          false,
-          p.agentId
-        )
-        if (updated === false) failed.push(reply)
-      } catch (err) {
-        // Real SlackConnection normalizes API/queue failures to false. Keep this guard
-        // for duck-typed test/adaptor connections so turn cleanup can never be stranded.
-        failed.push(reply)
-        this.log.debug(`slack: stale footer cleanup failed (${reply.ts}): ${formatErr(err)}`)
-      }
-    }
-    if (failed.length > 0) turnState<SlackTurnState>(p).staleReplyFooters = failed
   }
 
   /** Append a reply segment to the transcript WITHOUT sending it. Minimal mode keeps
@@ -13105,377 +12974,25 @@ export class Daemon {
     })
   }
 
-  /** Shared reply-message boundary for every output mode. The new message is born with
-   *  the current footer; only after that post succeeds do we strip the footer from the
-   *  previous reply owner and move the pointer. */
-  private async postSlackReply(
-    conn: SlackConnection,
-    p: Pending,
-    text: string,
-    trackReply = true
-  ): Promise<string | undefined> {
-    const previous = trackReply ? p.lastReply : undefined
-    const attribution = trackReply ? p.attribution : undefined
-    const agentPostOptions = this.slackAgentPostOptions(p)
-    const options = attribution ? { ...agentPostOptions, trailingBlocks: attribution.blocks } : agentPostOptions
-    const ts = await conn.postMessage(p.channel, text, p.thread, options)
-    // Remember the newest conversational body so finalization knows which message closes
-    // the response (§5.5). Tracked for every agent-authored body, including the
-    // `attributed:false` sections, because "last posted" is a fact about ordering, not
-    // about footer ownership.
-    if (ts) p.lastResponse = { ts, text }
-    if (ts && trackReply) {
-      if (attribution)
-        await this.clearStaleSlackReplyFooters(
-          conn,
-          p,
-          previous?.footerKey ? [{ ts: previous.ts, text: previous.text }] : []
-        )
-      p.lastReply = {
-        ts,
-        text,
-        ...(attribution ? { footerKey: attribution.key } : {})
-      }
-    }
-    return ts
-  }
-
-  /** Update minimal mode's live body without dropping its born-in footer. Only record a
-   *  footer-key transition after Slack accepts the edit so finalization can retry a failed
-   *  metadata refresh. */
-  private async updateSlackLiveReply(conn: SlackConnection, p: Pending, text: string): Promise<void> {
-    if (!p.liveReplyTs) return
-    // minimal mode edits ONE message as the answer streams, so the text finalization must
-    // re-send is the latest edit, not the text this message was born with (§5.5).
-    if (p.lastResponse?.ts === p.liveReplyTs) p.lastResponse.text = text
-    const attribution = p.attribution
-    if (!attribution) {
-      await conn.updateMessage(p.channel, p.liveReplyTs, text, false, p.agentId)
-      if (p.lastReply?.ts === p.liveReplyTs) {
-        p.lastReply.text = text
-        delete p.lastReply.footerKey
-      }
-      return
-    }
-    const updated = await conn.updateBlocks(
-      p.channel,
-      p.liveReplyTs,
-      [{ type: 'markdown', text }, ...attribution.blocks],
-      text,
-      false,
-      p.agentId
-    )
-    if (updated !== false && p.lastReply?.ts === p.liveReplyTs) {
-      p.lastReply.text = text
-      p.lastReply.footerKey = attribution.key
-    }
-  }
-
-  /**
-   * Close this turn's logical response (send-message-routing-rework.md §5.5): resolve
-   * the recipient set from the COMPLETE response and re-stamp the last delivered message
-   * as the single `final` event.
-   *
-   * Why the recipient set is computed here rather than per post: a streamed answer may
-   * put its `@mention` in section one and finish in section three. Reparsing only the
-   * last physical message would lose the mention entirely; carrying the whole set on the
-   * final event is what lets a peer be selected once, with complete context, no matter
-   * where in the answer it was addressed (§5.2/§5.7).
-   *
-   * The set is resolved against the CONVERSATION's directory — the same bidirectional
-   * mapping the target will use — so author and target cannot disagree about who was
-   * addressed. Self-mentions are dropped here as well as at ingress: §2.3 says an author
-   * cannot activate itself, and stating that in the metadata is clearer than shipping a
-   * recipient the reader must know to discard.
-   *
-   * Best-effort throughout. A turn with no conversational body has no response to close;
-   * a failed edit leaves the message `streaming`, which means unrouted — the safe
-   * direction, since the alternative is routing an answer never confirmed complete.
-   */
-  private async finalizeSlackResponse(p: Pending): Promise<void> {
-    if (p.platform !== 'slack') return
-    const body = p.lastResponse
-    const conn = p.conn as SlackConnection | undefined
-    if (!body || !conn) return
-    // Duck-typed adaptor/test connections implement only the subset they need. Closing
-    // the response is additive metadata, not delivery — a connection that cannot do it
-    // must not fail the turn whose answer was already delivered.
-    if (typeof conn.finalizeResponse !== 'function') return
-    const orgId = this.cpCollab.orgForAgent(p.agentId)
-    const mentionedAgentIds = orgId
-      ? resolveSlackMentionedAgents(p.replyText, this.cpCollab.mentionDirectory(orgId, 'slack', p.channel)).filter(
-          (id) => id !== p.agentId
-        )
-      : []
-    // Re-supply exactly what the message already shows: chat.update replaces content, and
-    // the footer belongs to this message only while `lastReply` still points at it.
-    const ownsFooter = p.lastReply?.ts === body.ts && p.lastReply.footerKey !== undefined
-    const blocks = [{ type: 'markdown', text: body.text }, ...(ownsFooter && p.attribution ? p.attribution.blocks : [])]
-    try {
-      await conn.finalizeResponse(p.channel, body.ts, blocks, body.text, p.agentId, {
-        responseId: p.responseId,
-        deliveryState: 'final',
-        hopCount: p.callMeta?.hopCount ?? 0,
-        mentionedAgentIds
-      })
-    } catch (err) {
-      // The real connection normalizes API failures to `false`; this guard covers a
-      // throwing adaptor. Leaving the message `streaming` means unrouted, never
-      // mis-routed, so a failure here degrades in the safe direction.
-      this.log.debug(`slack: response finalization failed (${formatErr(err)})`)
-    }
-  }
-
+  /** Slack's turn output lives in its platform module (§7.3) — and doubles as the
+   *  CORE surface every non-platform origin (webchat / hook / dream) renders through.
+   *  Core supplies the transcript + status-bar-anchor capabilities and the opaque
+   *  state slot Slack owns. */
   private async applySlackAction(p: Pending, action: SlackAction): Promise<void> {
-    if (action.kind === 'post' && action.recordOnly) {
-      this.recordReplySegment(p, action.text)
-      return
-    }
-    // enqueueApply routes here only for non-telegram platforms, so p.conn is a Slack
-    // connection (or a test fake with the same shape) — cast rather than instanceof so
-    // duck-typed fakes work. Headless (no conn) no-ops.
-    const conn = p.conn as SlackConnection | undefined
-    if (!conn) {
-      // Headless fires have no platform-send boundary, but their agent reply should
-      // still be readable in the session transcript.
-      if (action.kind === 'post') {
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: monotonicTs(),
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-      }
-      return
-    }
-    const postOptions = this.slackPostOptions(p)
-    const statusBarPostOptions = this.slackAgentIdentityOptions(p)
-    // Chrome variant of the post options: marks status/progress/plan/reasoning/notice/card
-    // messages so a peer daemon's thread backfill skips them (they are not conversation).
-    const chromeOptions: SlackPostOptions = { ...(postOptions ?? {}), chrome: true }
-    switch (action.kind) {
-      case 'set-status':
-        if (p.statusThread)
-          await conn.setStatus(
-            p.channel,
-            p.statusThread,
-            action.text,
-            action.loadingMessages,
-            this.slackStatusOptions(p.platform, p.agentName, p.iconUrl)
-          )
-        return
-      case 'set-title':
-        if (p.statusThread) await conn.setTitle(p.channel, p.statusThread, action.text)
-        return
-      case 'post': {
-        const trackReply = action.attributed !== false
-        // The latest reply is born with its linked context footer, so unfurls are
-        // disabled at the supported chat.postMessage boundary. Once that succeeds,
-        // strip the footer from this turn's previous section and move the pointer.
-        const ts = await this.postSlackReply(conn, p, action.text, trackReply)
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: ts ?? `local-${Date.now()}`,
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-        return
-      }
-      case 'notice':
-      case 'tool-output':
-        // Both post to the thread but are NOT recorded into the transcript — notices are
-        // system chrome, and tool output is captured independently by the recorder.
-        await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
-        return
-      case 'attribution':
-        // Final metadata normally matches the footer already included in the initial post.
-        // Minimal mode also keeps that footer through its live updates, so finalization is
-        // a no-op unless the runtime published different session metadata during prompt.
-        p.attribution = { blocks: action.blocks, key: JSON.stringify(action.blocks) }
-        if (action.standalone) {
-          if (
-            p.liveReplyTs &&
-            p.liveReplyText !== undefined &&
-            p.lastReply?.ts === p.liveReplyTs &&
-            p.lastReply.footerKey !== p.attribution.key
-          ) {
-            const updated = await conn.updateBlocks(
-              p.channel,
-              p.liveReplyTs,
-              [{ type: 'markdown', text: p.liveReplyText }, ...action.blocks],
-              p.liveReplyText,
-              false,
-              p.agentId
-            )
-            if (updated !== false) {
-              p.lastReply.text = p.liveReplyText
-              p.lastReply.footerKey = p.attribution.key
-            }
-          }
-        } else {
-          await this.clearStaleSlackReplyFooters(conn, p)
-        }
-        return
-      case 'progress':
-        // Post the single progress message exactly once; thereafter edit it in
-        // place. If the first post rejects or returns no ts, we mark it attempted
-        // and skip subsequent edits rather than posting a duplicate message.
-        if (p.progressTs) await conn.updateMessage(p.channel, p.progressTs, action.text, true)
-        else if (!p.progressAttempted) {
-          p.progressAttempted = true
-          p.progressTs = await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
-        }
-        return
-      case 'plan':
-        if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text, true)
-        else if (!p.planAttempted) {
-          p.planAttempted = true
-          p.planTs = await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
-        }
-        return
-      case 'reasoning':
-        // The single in-place reasoning block (high mode): post once, then edit — same
-        // post-once/edit-thereafter contract as `progress`. Not recorded into the
-        // transcript; the TranscriptRecorder captures reasoning rows independently.
-        if (p.reasoningTs) await conn.updateMessage(p.channel, p.reasoningTs, action.text, true)
-        else if (!p.reasoningAttempted) {
-          p.reasoningAttempted = true
-          p.reasoningTs = await conn.postMessage(p.channel, action.text, p.thread, chromeOptions)
-        }
-        return
-      case 'live-reply': {
-        // minimal mode's single agent reply: post once with its attribution footer, then
-        // update body + footer together as the turn streams. Skip an update when the text
-        // is unchanged; the paired `recordOnly` posts carry the transcript content.
-        if (p.liveReplyReanchor) {
-          // A human-input card was posted above this reply; start a FRESH reply below it so
-          // the post-answer stream reads after the question (the old reply stays frozen above).
-          p.liveReplyReanchor = false
-          p.liveReplyTs = undefined
-          p.liveReplyAttempted = false
-          p.liveReplyText = undefined
-        }
-        if (p.liveReplyText === action.text) return
-        p.liveReplyText = action.text
-        if (p.liveReplyTs) await this.updateSlackLiveReply(conn, p, action.text)
-        else if (!p.liveReplyAttempted) {
-          p.liveReplyAttempted = true
-          p.liveReplyTs = await this.postSlackReply(conn, p, action.text)
-        }
-        return
-      }
-      case 'final-live-reply': {
-        // Slack caps one markdown block at 12k characters. Settle the existing live reply
-        // with the first section, then post every overflow section as a continuation so
-        // minimal mode never drops the tail of a long final answer. Every successful next
-        // section is born with the footer before the prior section loses it, keeping the
-        // footer anchored to the last delivered response throughout the handoff.
-        const sections = splitIntoSections(action.text, undefined, this.compoundMentionAddresses(p.agentId, p))
-        const [first, ...rest] = sections
-        if (!first) return
-        if (p.liveReplyReanchor) {
-          p.liveReplyReanchor = false
-          p.liveReplyTs = undefined
-          p.liveReplyAttempted = false
-          p.liveReplyText = undefined
-        }
-        if (p.liveReplyText !== first) {
-          p.liveReplyText = first
-          if (p.liveReplyTs) await this.updateSlackLiveReply(conn, p, first)
-          else if (!p.liveReplyAttempted) {
-            p.liveReplyAttempted = true
-            p.liveReplyTs = await this.postSlackReply(conn, p, first)
-          }
-        }
-        for (const section of rest) {
-          const ts = await this.postSlackReply(conn, p, section)
-          if (ts) {
-            p.liveReplyTs = ts
-            p.liveReplyText = section
-          }
-        }
-        return
-      }
-      case 'clear-status-bar': {
-        const ts = p.statusBarTs ?? this.store.getStatusBarTs(p.sessionKey)
-        if (!ts) return
-        p.statusBarTs = ts
-        const deleted = await conn.deleteMessage(p.channel, ts)
-        // Duck-typed test connections historically return void; only an explicit false
-        // means Slack rejected the cleanup and the persisted ts should be retried later.
-        if (deleted !== false) {
-          p.statusBarTs = undefined
-          this.store.clearStatusBarTs(p.sessionKey)
-        }
-        return
-      }
-      case 'status-bar': {
-        // Session-scoped interactive status line: the first post's ts is stored on the
-        // session, and every later turn updates that topmost line in place. Serialized by
-        // applyChain; not recorded into the transcript (live chrome).
-        let ts = p.statusBarTs ?? this.store.getStatusBarTs(p.sessionKey)
-        if (!ts && !p.statusBarAttempted) {
-          ts = await this.findExistingSlackStatusBarTs(conn, p)
-          if (ts) {
-            p.statusBarTs = ts
-            this.store.setStatusBarTs(p.sessionKey, ts)
-          }
-        }
-        if (ts) {
-          p.statusBarTs = ts
-          const updated = await conn.updateBlocks(p.channel, ts, action.blocks, action.text, true, undefined, p.agentId)
-          // Duck-typed test connections historically return void; only an explicit
-          // false means Slack rejected the edit — typically cant_update_message on a
-          // bar another Slack app authored (a foreign ts persisted by the
-          // pre-provenance adoption path). Drop the dead ts so the next status emit
-          // re-resolves — provenance-filtered adoption or a fresh own post — instead
-          // of hammering an uneditable message on every usage tick. A transient
-          // failure costs at most one duplicate bar; a foreign ts never heals.
-          if (updated === false) {
-            p.statusBarTs = undefined
-            this.store.clearStatusBarTs(p.sessionKey)
-          }
-        } else if (!p.statusBarAttempted) {
-          p.statusBarAttempted = true
-          // The session status line represents the selected agent, so keep its author
-          // identity aligned with the native loading state and the eventual reply.
-          const posted = await conn.postBlocks(p.channel, action.blocks, action.text, p.thread, {
-            ...(statusBarPostOptions ?? {}),
-            chrome: true,
-            chromeOwnerAgentId: p.agentId
-          })
-          if (posted) {
-            p.statusBarTs = posted
-            this.store.setStatusBarTs(p.sessionKey, posted)
-          }
-        }
-        return
-      }
-    }
-  }
-
-  /** Best-effort adoption path for sessions that already have an older status bar in
-   *  Slack before `statusBarTs` was persisted locally. We scan in Slack's thread order
-   *  and pick the first status line both this connection's Slack app AND this Agent
-   *  authored, so future turns update the topmost existing line instead of adding one
-   *  more duplicate. Both provenance dimensions are mandatory: another app's bar is not
-   *  editable, while another Agent behind the same shared Slack app is editable but its
-   *  numbers and controls belong to a different session. Reply rows keep `sender` =
-   *  bot_id ?? user, so match either Slack identity plus the AgentConnect chrome owner. */
-  private async findExistingSlackStatusBarTs(conn: SlackConnection, p: Pending): Promise<string | undefined> {
-    const getThreadReplies = (conn as { getThreadReplies?: SlackConnection['getThreadReplies'] }).getThreadReplies
-    if (!getThreadReplies) return undefined
-    const own = new Set([conn.botId, conn.botUserId].filter(Boolean))
-    if (own.size === 0) return undefined
-    const replies = await getThreadReplies.call(conn, p.channel, p.statusThread)
-    return replies.find(
-      (m) =>
-        m.isBot && own.has(m.sender) && m.chrome && m.chromeOwnerAgentId === p.agentId && isSlackStatusBarText(m.text)
-    )?.ts
+    await applySlackActionExternal(
+      {
+        recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
+        appendTranscript: (row) => this.store.appendTranscript(row),
+        getStatusBarTs: (sessionKey) => this.store.getStatusBarTs(sessionKey),
+        setStatusBarTs: (sessionKey, ts) => this.store.setStatusBarTs(sessionKey, ts),
+        clearStatusBarTs: (sessionKey) => this.store.clearStatusBarTs(sessionKey),
+        monotonicTs: () => monotonicTs(),
+        debug: (message) => this.log.debug(message)
+      },
+      p,
+      turnState<SlackTurnState>(p),
+      action
+    )
   }
 
   /**
@@ -13489,113 +13006,18 @@ export class Daemon {
    *  - typing      → a transient chat-action ("typing…").
    *  - progress / plan / reasoning → the single in-place message of that kind.
    */
+  /** Telegram's turn output lives in its platform module (§7.3); core supplies the
+   *  two host capabilities it needs and the opaque state slot it owns. */
   private async applyTelegramAction(p: Pending, action: TelegramAction): Promise<void> {
-    // minimal mode records each reply segment WITHOUT sending it — the chat shows only the
-    // single `live-reply` (see applySlackAction / recordReplySegment).
-    if (action.kind === 'post' && action.recordOnly) {
-      this.recordReplySegment(p, action.text)
-      return
-    }
-    // Routed here only for the telegram platform (see enqueueApply), so p.conn is a
-    // Telegram connection (or a test fake) — cast, not instanceof. Headless no-ops.
-    const conn = p.conn as TelegramConnection | undefined
-    if (!conn) return
-    switch (action.kind) {
-      case 'typing':
-        await conn.sendChatAction(p.channel)
-        return
-      case 'post': {
-        // The continue-the-topic hint is chrome: sent with the reply (so it lands on the very
-        // message users are told to reply to) but kept out of the recorded text below.
-        const sent = action.hint ? `${action.text}\n\n${action.hint}` : action.text
-        const id = await conn.postMessage(p.channel, sent, p.thread, {
-          replyTo: turnState<TelegramTurnState>(p).replyTo
-        })
-        // Remember the newest body message so a turn-end `continue-hint` can annotate it.
-        if (id) p.tgLastBody = { id, text: sent }
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: id ?? `local-${Date.now()}`,
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-        return
-      }
-      case 'continue-hint': {
-        // The turn's last body went out earlier (idle flush / tool boundary), so the hint
-        // lands by editing that message. Skipped when its id is unknown (a failed send) or
-        // when the suffix would not fit — the converger reserves room for it in the body
-        // budget, so this guard only fires for text that predates the reservation.
-        const last = p.tgLastBody
-        if (!last || last.text.endsWith(action.hint)) return
-        const sent = `${last.text}\n\n${action.hint}`
-        if (sent.length > TELEGRAM_MESSAGE_LIMIT) return
-        p.tgLastBody = { id: last.id, text: sent }
-        await conn.updateMessage(p.channel, last.id, sent)
-        return
-      }
-      case 'live-reply': {
-        // minimal mode's single agent reply: send once (plain text) then edit in place as the
-        // turn streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
-        if (p.liveReplyText === action.text) return
-        p.liveReplyText = action.text
-        if (p.liveReplyTs) await conn.updateMessage(p.channel, p.liveReplyTs, action.text)
-        else if (!p.liveReplyAttempted) {
-          p.liveReplyAttempted = true
-          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread, {
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-      }
-      case 'notice':
-      case 'tool-output':
-        // Posted to the chat but NOT recorded — the done footer is chrome, and tool
-        // output is captured independently by the recorder.
-        await conn.postChrome(p.channel, action.text, {
-          parseMode: action.parseMode,
-          threadTs: p.thread,
-          replyTo: turnState<TelegramTurnState>(p).replyTo
-        })
-        return
-      case 'progress':
-        if (p.progressTs)
-          await conn.updateMessage(p.channel, p.progressTs, action.text, { parseMode: action.parseMode })
-        else if (!p.progressAttempted) {
-          p.progressAttempted = true
-          p.progressTs = await conn.postChrome(p.channel, action.text, {
-            parseMode: action.parseMode,
-            threadTs: p.thread,
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-      case 'plan':
-        if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text, { parseMode: action.parseMode })
-        else if (!p.planAttempted) {
-          p.planAttempted = true
-          p.planTs = await conn.postChrome(p.channel, action.text, {
-            parseMode: action.parseMode,
-            threadTs: p.thread,
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-      case 'reasoning':
-        if (p.reasoningTs)
-          await conn.updateMessage(p.channel, p.reasoningTs, action.text, { parseMode: action.parseMode })
-        else if (!p.reasoningAttempted) {
-          p.reasoningAttempted = true
-          p.reasoningTs = await conn.postChrome(p.channel, action.text, {
-            parseMode: action.parseMode,
-            threadTs: p.thread,
-            replyTo: turnState<TelegramTurnState>(p).replyTo
-          })
-        }
-        return
-    }
+    await applyTelegramActionExternal(
+      {
+        recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
+        appendTranscript: (row) => this.store.appendTranscript(row)
+      },
+      p,
+      turnState<TelegramTurnState>(p),
+      action
+    )
   }
 
   /**
@@ -13609,174 +13031,37 @@ export class Daemon {
    *  - progress / plan / reasoning → the single in-place message of that kind.
    *  - status-bar  → the per-turn status line + button row (Cancel / Fast / View).
    */
+  /** Discord's turn output lives in its platform module (§7.3); core supplies the
+   *  same two host capabilities Telegram's applier needs. */
   private async applyDiscordAction(p: Pending, action: DiscordAction): Promise<void> {
-    // minimal mode records each reply segment WITHOUT sending it — the channel shows only the
-    // single `live-reply` (see applySlackAction / recordReplySegment).
-    if (action.kind === 'post' && action.recordOnly) {
-      this.recordReplySegment(p, action.text)
-      return
-    }
-    // Routed here only for the discord platform (see enqueueApply), so p.conn is a
-    // Discord connection (or a test fake) — cast, not instanceof. Headless no-ops.
-    const conn = p.conn as DiscordConnection | undefined
-    if (!conn) return
-    switch (action.kind) {
-      case 'typing':
-        await conn.sendChatAction(p.channel)
-        return
-      case 'post': {
-        const id = await conn.postMessage(p.channel, action.text, p.thread)
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: id ?? `local-${Date.now()}`,
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-        return
-      }
-      case 'live-reply': {
-        // minimal mode's single agent reply: send once then edit in place as the turn
-        // streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
-        if (p.liveReplyText === action.text) return
-        p.liveReplyText = action.text
-        if (p.liveReplyTs) await conn.updateMessage(p.channel, p.liveReplyTs, action.text)
-        else if (!p.liveReplyAttempted) {
-          p.liveReplyAttempted = true
-          p.liveReplyTs = await conn.postMessage(p.channel, action.text, p.thread)
-        }
-        return
-      }
-      case 'notice':
-      case 'tool-output':
-        // Posted to the channel but NOT recorded — the done footer is chrome, and tool
-        // output is captured independently by the recorder.
-        await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        return
-      case 'progress':
-        if (p.progressTs) await conn.updateMessage(p.channel, p.progressTs, action.text)
-        else if (!p.progressAttempted) {
-          p.progressAttempted = true
-          p.progressTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'plan':
-        if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text)
-        else if (!p.planAttempted) {
-          p.planAttempted = true
-          p.planTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'reasoning':
-        if (p.reasoningTs) await conn.updateMessage(p.channel, p.reasoningTs, action.text)
-        else if (!p.reasoningAttempted) {
-          p.reasoningAttempted = true
-          p.reasoningTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'status-bar':
-        // Per-turn status line + button row: post once (registering the message →
-        // sessionKey so its button interactions resolve), then edit in place.
-        if (p.statusBarTs)
-          await conn.updateMessage(p.channel, p.statusBarTs, action.text, { keyboard: action.keyboard })
-        else if (!p.statusBarAttempted) {
-          p.statusBarAttempted = true
-          p.statusBarTs = await conn.postChrome(p.channel, action.text, {
-            threadTs: p.thread,
-            keyboard: action.keyboard,
-            sessionKey: p.sessionKey
-          })
-        }
-        return
-    }
+    await applyDiscordActionExternal(
+      {
+        recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
+        appendTranscript: (row) => this.store.appendTranscript(row)
+      },
+      p,
+      action
+    )
   }
 
   /** Apply one Feishu action. Agent body delivery is one CardKit entity for the whole
    * turn; `post(recordOnly)` retains transcript boundaries without duplicate chat
    * messages. Progress/plan/reasoning remain short text chrome edited in place. */
+  /** Feishu's turn output lives in its platform module (§7.3), which owns the
+   *  CardKit state the core turn record used to carry. Core supplies the two
+   *  shared host capabilities plus session-link construction. */
   private async applyFeishuAction(p: Pending, action: FeishuAction): Promise<void> {
-    // CardKit owns visible body delivery, so these actions are persistence-only.
-    if (action.kind === 'post' && action.recordOnly) {
-      this.recordReplySegment(p, action.text)
-      return
-    }
-    // Routed here only for the feishu platform (see enqueueApply), so p.conn is a Feishu
-    // connection (or a test fake) — cast, not instanceof. Headless no-ops.
-    const conn = p.conn as FeishuConnection | undefined
-    if (!conn) return
-    // The turn's Feishu state, read once through the opaque slot (§7.3).
-    const state = turnState<FeishuTurnState>(p)
-    switch (action.kind) {
-      case 'card-start':
-        if (state.cardAttempted) return
-        state.cardAttempted = true
-        state.card = await conn.startStreamingCard(p.channel, p.thread, {
-          sessionKey: p.sessionKey,
-          sessionUrl: this.sessionLink(p.acpSessionId, this.sessionLinkSource(p.platform, p.integrationId)),
-          ...(p.integrationId ? { target: { v: 1, agentId: p.agentId, integrationId: p.integrationId } as const } : {})
-        })
-        return
-      case 'card-stream':
-        if (state.card) await conn.updateStreamingCard(p.channel, state.card, action.text)
-        return
-      case 'card-final': {
-        if (state.card) {
-          const delivered = await conn.finishStreamingCard(p.channel, state.card, action.text, action.attribution)
-          if (delivered) return
-          // A final CardKit update failure must not lose the answer. Remove the stale
-          // partial card where possible, then fall back to ordinary text.
-          await conn.cancelStreamingCard(p.channel, state.card)
-        }
-        await conn.postMessage(p.channel, action.text, p.thread)
-        return
-      }
-      case 'card-cancel':
-        if (state.card) await conn.cancelStreamingCard(p.channel, state.card)
-        return
-      case 'typing':
-        await conn.sendChatAction(p.channel)
-        return
-      case 'post': {
-        const id = await conn.postMessage(p.channel, action.text, p.thread)
-        this.store.appendTranscript({
-          channel: p.transcriptChannel,
-          thread: p.statusThread,
-          ts: id ?? `local-${Date.now()}`,
-          sender: p.agentId,
-          kind: 'text',
-          text: action.text
-        })
-        return
-      }
-      case 'notice':
-      case 'tool-output':
-        // Posted to the chat but NOT recorded — the done footer is chrome, and tool
-        // output is captured independently by the recorder.
-        await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        return
-      case 'progress':
-        if (p.progressTs) await conn.updateMessage(p.channel, p.progressTs, action.text)
-        else if (!p.progressAttempted) {
-          p.progressAttempted = true
-          p.progressTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'plan':
-        if (p.planTs) await conn.updateMessage(p.channel, p.planTs, action.text)
-        else if (!p.planAttempted) {
-          p.planAttempted = true
-          p.planTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-      case 'reasoning':
-        if (p.reasoningTs) await conn.updateMessage(p.channel, p.reasoningTs, action.text)
-        else if (!p.reasoningAttempted) {
-          p.reasoningAttempted = true
-          p.reasoningTs = await conn.postChrome(p.channel, action.text, { threadTs: p.thread })
-        }
-        return
-    }
+    await applyFeishuActionExternal(
+      {
+        recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
+        appendTranscript: (row) => this.store.appendTranscript(row),
+        sessionUrl: (turn) =>
+          this.sessionLink(turn.acpSessionId, this.sessionLinkSource(turn.platform, turn.integrationId))
+      },
+      p,
+      turnState<FeishuTurnState>(p),
+      action
+    )
   }
 
   /** Web App console base URL the CP sent on `auth/ok` (its own console origin). A local
@@ -14514,7 +13799,7 @@ export class Daemon {
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
     const ts = await this.postCardSerialized(p, (slack) =>
       slack.postBlocks(p.channel, blocks, fallback, p.statusThread, {
-        ...(this.slackPostOptions(p) ?? {}),
+        ...(slackPostOptions(p) ?? {}),
         chrome: true
       })
     )
@@ -14951,7 +14236,7 @@ export class Daemon {
     })
     const ts = await this.postCardSerialized(p, (sc) =>
       sc.postBlocks(p.channel, blocks, fallback, p.statusThread, {
-        ...(this.slackPostOptions(p) ?? {}),
+        ...(slackPostOptions(p) ?? {}),
         chrome: true
       })
     )
@@ -15340,15 +14625,8 @@ export class Daemon {
     // Select the complete GitHub final in memory. Do not write any GitHub comment here:
     // the prompt (and every agent-side tool call) must finish before publish() performs
     // the first and only public POST.
-    const isHeadlessGithubFinal =
-      p.github !== undefined &&
-      p.platform === 'hook' &&
-      update?.sessionUpdate === 'agent_message_chunk' &&
-      update?._meta?.codex?.phase === 'final_answer'
-    if (p.github) {
-      p.github.collector.onUpdate(update)
-      if (isHeadlessGithubFinal) p.github.deferredFinalTranscript = true
-    }
+    const isHeadlessGithubFinal = p.github !== undefined && isGithubFinalChunk(p, update)
+    if (p.github) onGithubUpdate(p.github, update, isHeadlessGithubFinal)
     // webchat streams its reply through the sink (→ relay `rd/chat`), one WebchatOutput
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
@@ -18413,7 +17691,7 @@ export class Daemon {
           if (msg.platform === 'slack') {
             const agent = this.agents.get(agentId)
             const options = agent
-              ? this.slackAgentPostOptions({
+              ? slackAgentPostOptions({
                   platform: msg.platform,
                   agentId,
                   agentName: agent.displayName?.trim() || agent.name,
