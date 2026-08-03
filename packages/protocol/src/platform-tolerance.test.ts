@@ -263,6 +263,50 @@ describe('§6.5 generic thread coordinates + adapterExt', () => {
   })
 })
 
+describe('§6.6 platform_action envelope', () => {
+  const pa = (over: Record<string, unknown> = {}) =>
+    decodeRelayDaemonFrame(
+      envelope('rd/msg', {
+        source: 'platform_action',
+        platformId: 'slack',
+        agentId: AGENT_ID,
+        sessionKey: 'slack:C1:T1',
+        msgId: 'pa-1',
+        botId: BOT_ID,
+        integrationId: INTEGRATION_ID,
+        payload: { kind: 'open-config', triggerId: 'trig-1' },
+        ...over
+      })
+    )
+
+  it('decodes with a core-typed envelope and an OPAQUE payload for any platform id', () => {
+    const slack = pa()
+    expectOk(slack)
+    if (slack.ok && slack.frame.type === 'rd/msg' && slack.frame.payload.source === 'platform_action') {
+      expect(slack.frame.payload.platformId).toBe('slack')
+      expect(slack.frame.payload.payload).toEqual({ kind: 'open-config', triggerId: 'trig-1' })
+    }
+    // A platform id this build predates decodes too — refusal is the daemon's
+    // per-item verdict, never the schema's.
+    expectOk(pa({ platformId: UNKNOWN, payload: { anything: true } }))
+  })
+
+  it('rd/ack carries the generic opaque response beside the deprecated Feishu slot', () => {
+    const r = decodeRelayDaemonFrame(
+      envelope('rd/ack', {
+        msgId: 'pa-1',
+        accepted: true,
+        feishuCardAction: { toast: { type: 'info', content: 'ok' } },
+        response: { toast: { type: 'info', content: 'ok' } }
+      })
+    )
+    expectOk(r)
+    if (r.ok && r.frame.type === 'rd/ack') {
+      expect(r.frame.payload.response).toEqual({ toast: { type: 'info', content: 'ok' } })
+    }
+  })
+})
+
 describe('§6.7 rc/bot-assign opaque secrets + ingress', () => {
   it('decodes an opaque secret bag for a platform this build predates + the ingress bag', () => {
     const r = decodeRelayCpFrame(
