@@ -136,6 +136,7 @@ import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channe
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { manifestFor } from './platforms/manifest.js'
+import { loopGuardScopesFor } from './platforms/loop-guard.js'
 import {
   applySlackAction as applySlackActionExternal,
   clearStaleSlackReplyFooters as clearStaleSlackReplyFootersExternal,
@@ -903,19 +904,13 @@ function loopGuardScopeFromCoords(
   return transportScope ? `${base}:${transportScope}` : base
 }
 
-function slackTopLevelLoopGuardScope(channel: string): string {
-  return `slack:${channel}:top-level`
-}
-
 function loopGuardScope(msg: NormalizedMessage): string {
-  if (msg.platform === 'slack' && !msg.isDm) {
-    const prefix = `slack:${msg.channel}:`
-    const eventTs = msg.msgId.startsWith(prefix) ? msg.msgId.slice(prefix.length) : undefined
-    // Slack normalizes a top-level event with thread=its own ts. Those roots must
-    // share one channel-level circuit: otherwise two bots can alternate fresh roots
-    // forever and every message gets a brand-new guard scope.
-    if (eventTs !== undefined && msg.thread === eventTs) return slackTopLevelLoopGuardScope(msg.channel)
-  }
+  // A platform whose top-level posts mint a fresh thread root per message needs
+  // those roots to share one channel-level circuit — otherwise two bots can
+  // alternate fresh roots forever and every message gets a virgin guard scope.
+  // Which platforms those are, and how a root is recognized, is theirs to say.
+  const { coarse, isRoot } = loopGuardScopesFor(msg)
+  if (coarse && isRoot) return coarse
   return loopGuardScopeFromCoords(msg.platform, msg.channel, msg.thread ?? msg.msgId, msg.isDm, msg.transportScope)
 }
 
@@ -9291,9 +9286,8 @@ export class Daemon {
     msg: NormalizedMessage,
     srcIntegrationIds?: readonly string[]
   ): { agentId: string; integrationId: string; via: RouteVia } | null {
-    if (msg.platform !== 'slack' || msg.isDm || !this.store.isLoopGuardOpen(slackTopLevelLoopGuardScope(msg.channel))) {
-      return null
-    }
+    const coarseScope = loopGuardScopesFor(msg).coarse
+    if (!coarseScope || !this.store.isLoopGuardOpen(coarseScope)) return null
     const candidates: Array<{
       agentId: string
       integrationId: string
@@ -9430,7 +9424,7 @@ export class Daemon {
         thread === replyThread
           ? loopGuardScope(msg)
           : loopGuardScopeFromCoords(msg.platform, msg.channel, thread, msg.isDm, msg.transportScope)
-      const topLevelScope = msg.platform === 'slack' && !msg.isDm ? slackTopLevelLoopGuardScope(msg.channel) : undefined
+      const topLevelScope = loopGuardScopesFor(msg).coarse
       // A top-level feedback loop posts its warning into the triggering root. A
       // trusted !resume from that warning thread (or elsewhere in the channel)
       // must reset the shared channel circuit, not a never-open per-thread key.
