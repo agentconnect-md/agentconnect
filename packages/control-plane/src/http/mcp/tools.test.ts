@@ -9,6 +9,7 @@
  * annotations are well-formed tool contracts.
  */
 import { describe, it, expect } from 'vitest'
+import { Platform } from '@agentconnect.md/protocol'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
 
 const ORG_ID = 'org-123'
@@ -190,6 +191,14 @@ describe('MCP tool registry — §6.2 invariants', () => {
     const usage = recordingCtx()
     await findTool('getUsage')!.call(usage.ctx, {})
     expect(usage.calls[0]).toEqual({ method: 'GET', path: `/orgs/${ORG_ID}/usage`, query: { range: 'd7' } })
+  })
+
+  it('listSessions filters by every canonical platform — the /sessions route accepts the same set', () => {
+    const schema = findTool('listSessions')!.schema
+    for (const platform of Platform.options) {
+      expect(schema.safeParse({ platform }).success, `platform=${platform} must be filterable`).toBe(true)
+    }
+    expect(schema.safeParse({ platform: 'irc' }).success).toBe(false)
   })
 
   it('whoami merges /me and the org view, and surfaces the first failure', async () => {
