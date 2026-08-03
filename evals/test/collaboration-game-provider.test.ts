@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import CollaborationGameProvider, { parseGameCase } from '../providers/collaboration-game.js'
 import type { runSameRoomCounting } from '../games/engine.js'
@@ -144,6 +144,23 @@ describe('collaboration game Promptfoo provider (§12)', () => {
     const configured = await provider.callApi(CASE)
     expect(configured.error).toBeUndefined()
     expect(runGame.mock.calls[0]![0].subject).toMatchObject({ kind: 'real', templateAgentIds: ['template-agent'] })
+  })
+
+  it('keeps artifact writes under the configured root even for hostile case ids', async () => {
+    const artifactRoot = scratch()
+    const runGame = vi.fn(async (_options: Parameters<typeof runSameRoomCounting>[0]) => fakeResult())
+    const provider = new CollaborationGameProvider({ config: { artifactRoot } }, { runGame })
+    for (const hostileId of ['../../../outside', '/absolute/escape', '..', 'nested/../..']) {
+      runGame.mockClear()
+      const response = await provider.callApi(
+        JSON.stringify({ kind: 'game', id: hostileId, game: 'counting', scenario: 'same-room' })
+      )
+      expect(response.error).toBeUndefined()
+      const artifactDir = runGame.mock.calls[0]![0].artifactDir
+      expect(artifactDir.startsWith(join(artifactRoot, 'games') + '/')).toBe(true)
+      // The hostile id collapsed to ONE literal segment under the root.
+      expect(relative(artifactRoot, artifactDir).split('/')[0]).toBe('games')
+    }
   })
 
   it('rejects malformed and unsupported cases as invalid_case', async () => {

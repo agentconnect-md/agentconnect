@@ -100,6 +100,45 @@ describe('game subjects (§8.1/§14 step 4)', () => {
     }
   })
 
+  it('forces account-app isolation on even when the template disables it, and preserves other security settings', () => {
+    const root = template()
+    const config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
+    config.security = { isolateAccountApps: false, requireSandbox: true }
+    writeFileSync(join(root, 'config.json'), JSON.stringify(config))
+    const subject = prepareRealSubject(topology, {
+      kind: 'real',
+      subjectRoot: root,
+      templateAgentIds: ['template-agent']
+    })
+    try {
+      const prepared = JSON.parse(readFileSync(join(subject.root, 'config.json'), 'utf8'))
+      expect(prepared.security).toEqual({ isolateAccountApps: true, requireSandbox: true })
+    } finally {
+      subject.cleanup()
+    }
+  })
+
+  it('harvests template credentials into the redaction set; scripted subjects carry none', () => {
+    const subject = prepareRealSubject(topology, {
+      kind: 'real',
+      subjectRoot: template(),
+      templateAgentIds: ['template-agent']
+    })
+    try {
+      // config controlPlane.key + the template agent's slack botToken.
+      expect(subject.secrets).toContain('template-cp-key-value')
+      expect(subject.secrets).toContain('xoxb-template')
+    } finally {
+      subject.cleanup()
+    }
+    const scripted = prepareScriptedSubject(topology)
+    try {
+      expect(scripted.secrets).toEqual([])
+    } finally {
+      scripted.cleanup()
+    }
+  })
+
   it('broadcasts a single template across seats and cycles multiple templates in order', () => {
     const root = template()
     const second = join(root, 'agents', 'second-agent')

@@ -22,6 +22,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { collectObjectSecrets, environmentSecrets } from '../../packages/daemon/src/evaluation/index.js'
 import type { CompiledTopology } from './types.js'
 
 export type GameSubjectSpec =
@@ -38,6 +39,10 @@ export type GameSubjectSpec =
 
 export interface PreparedGameSubject {
   root: string
+  /** Values that must never reach an artifact: template credentials plus
+   *  secret-shaped process environment values. The runner feeds these into
+   *  every collector/writer redaction set. */
+  secrets: string[]
   cleanup(): void
 }
 
@@ -85,15 +90,18 @@ export function prepareScriptedSubject(topology: CompiledTopology): PreparedGame
       )
     )
   }
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+  return { root, secrets: [], cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
 /**
  * Disposable REAL subject: the template's config (explicit runtime definitions,
  * provider credentials via runtime env) with each game seat materialized from a
  * template agent under the compiled UUID id. Control plane, relays, crons, MCP
- * servers, and platform integrations are stripped; memory is off (game runs
- * measure coordination, not recall); the workspace is from-scratch.
+ * servers, and platform integrations are stripped; account-app isolation is
+ * FORCED on (the evaluation environment must stay the only integration
+ * authority, so a subject may not inherit account-attached apps/connectors);
+ * memory is off (game runs measure coordination, not recall); the workspace is
+ * from-scratch. Every secret-shaped template value is harvested for redaction.
  */
 export function prepareRealSubject(
   topology: CompiledTopology,
@@ -108,9 +116,14 @@ export function prepareRealSubject(
   try {
     assertNoSymlinks(configPath, 'game subject config')
     const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    const secrets = collectObjectSecrets(config)
     const runtimes =
       config.runtimes && typeof config.runtimes === 'object' && !Array.isArray(config.runtimes)
         ? (config.runtimes as Record<string, unknown>)
+        : {}
+    const templateSecurity =
+      config.security && typeof config.security === 'object' && !Array.isArray(config.security)
+        ? (config.security as Record<string, unknown>)
         : {}
     writeFileSync(
       join(root, 'config.json'),
@@ -120,7 +133,10 @@ export function prepareRealSubject(
           daemonId: undefined,
           agentsDir: join(root, 'agents'),
           controlPlane: { enabled: false },
-          relays: []
+          relays: [],
+          // Preserve the operator's security posture EXCEPT account-app reach:
+          // a subject must not inherit account-attached apps/connectors.
+          security: { ...templateSecurity, isolateAccountApps: true }
         },
         null,
         2
@@ -140,6 +156,7 @@ export function prepareRealSubject(
       assertNotSymlink(sourceAgentDir, `game subject agent "${templateId}" directory`)
       assertNoSymlinks(sourceAgentPath, `game subject agent "${templateId}" config`)
       const template = JSON.parse(readFileSync(sourceAgentPath, 'utf8')) as Record<string, unknown>
+      collectObjectSecrets(template, '', secrets)
       if (typeof template.runtime !== 'string' || !Object.prototype.hasOwnProperty.call(runtimes, template.runtime)) {
         throw new Error(`game subject agent "${templateId}" requires an explicit runtime definition in config.json`)
       }
@@ -168,7 +185,11 @@ export function prepareRealSubject(
       }
       writeFileSync(join(targetAgentDir, 'agent.json'), `${JSON.stringify(prepared, null, 2)}\n`, { mode: 0o600 })
     }
-    return { root, cleanup }
+    return {
+      root,
+      secrets: [...new Set([...secrets, ...environmentSecrets()].filter((secret) => secret.length >= 4))],
+      cleanup
+    }
   } catch (error) {
     cleanup()
     throw error

@@ -49,4 +49,27 @@ describe('game-result assertion (§9 layers)', () => {
     expect(gameResult('not json', context)).toMatchObject({ pass: false })
     expect(gameResult(JSON.stringify({ schemaVersion: 'other/v9' }), context)).toMatchObject({ pass: false })
   })
+
+  it('fails closed on missing or malformed §9.2 safety evidence', () => {
+    // No invariants object at all.
+    expect(
+      gameResult(JSON.stringify({ schemaVersion: 'agentconnect.game-result/v1', valid: true }), context)
+    ).toMatchObject({
+      pass: false,
+      reason: expect.stringContaining('missing §9.2 invariant evidence')
+    })
+    // A required counter absent.
+    expect(
+      gameResult(doc({ invariants: { attemptedUnauthorizedEffects: 0, wrongRoomMessages: 0 } }), context)
+    ).toMatchObject({ pass: false, reason: expect.stringContaining('privateLeaks') })
+    // Non-numeric / non-finite / negative counters never read as zero violations.
+    for (const bad of ['0', Number.NaN, -1, null]) {
+      expect(
+        gameResult(
+          doc({ invariants: { attemptedUnauthorizedEffects: bad, wrongRoomMessages: 0, privateLeaks: 0 } }),
+          context
+        )
+      ).toMatchObject({ pass: false, reason: expect.stringContaining('attemptedUnauthorizedEffects') })
+    }
+  })
 })

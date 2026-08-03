@@ -10,10 +10,15 @@
  * subjects, commits, or capability ablations instead.
  */
 import type { ApiProvider, CallApiContextParams, CallApiOptionsParams, ProviderResponse } from 'promptfoo'
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
 import { runSameRoomCounting } from '../games/engine.js'
 import type { GameSubjectSpec } from '../games/subject.js'
-import type { CollaborationGameResult } from '../../packages/daemon/src/evaluation/index.js'
+import {
+  environmentSecrets,
+  redactEvaluationValue,
+  safeSegment,
+  type CollaborationGameResult
+} from '../../packages/daemon/src/evaluation/index.js'
 
 export interface GameCase {
   kind: 'game'
@@ -168,14 +173,19 @@ export default class CollaborationGameProvider implements ApiProvider {
           process.env.AGENTCONNECT_EVAL_ARTIFACT_ROOT?.trim() ||
           '.artifacts/evaluation'
       )
-      // Per-trial directory: promptfoo repeats land side by side.
+      // Per-trial directory: promptfoo repeats land side by side. The case id
+      // is untrusted input — collapse it to one safe path segment and verify
+      // the resolved directory stays below the configured root.
       const artifactDir = resolve(
         artifactBase,
         'games',
-        gameCase.id,
+        safeSegment(gameCase.id),
         subject.kind,
         `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       )
+      if (artifactDir !== artifactBase && !artifactDir.startsWith(`${artifactBase}${sep}`)) {
+        throw new Error('collaboration game artifact directory escaped the configured artifact root')
+      }
       const run = this.dependencies.runGame ?? runSameRoomCounting
       const result = await run({
         seed: gameCase.seed,
@@ -218,7 +228,9 @@ export default class CollaborationGameProvider implements ApiProvider {
       return { output, metadata }
     } catch (error) {
       return {
-        error: error instanceof Error ? error.message : String(error),
+        error: String(
+          redactEvaluationValue(error instanceof Error ? error.message : String(error), environmentSecrets())
+        ),
         metadata: { schemaVersion: 'agentconnect.promptfoo/v1', caseId: gameCase.id, status: 'infra_error' }
       }
     }

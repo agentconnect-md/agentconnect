@@ -119,13 +119,17 @@ const SECRET_KEY =
 const SECRET_FLAG =
   /^--?(?:token|secret|password|api[-_]?key|access[-_]?key|private[-_]?key|credential|auth|cookie|connection[-_]?string|database[-_]?(?:url|uri)|dsn)(?:=|$)/i
 
-function environmentSecrets(): string[] {
+/** Secret-shaped values found in the process environment — shared by every
+ *  evaluation runner's redaction set (exported for the game runners). */
+export function environmentSecrets(): string[] {
   return Object.entries(process.env)
     .filter(([key, value]) => SECRET_KEY.test(key) && typeof value === 'string' && value.length >= 4)
     .map(([, value]) => value!)
 }
 
-function collectObjectSecrets(value: unknown, keyPath = '', output: string[] = []): string[] {
+/** Recursively harvest secret-shaped values from a parsed config/agent object
+ *  (exported for the game subject preparation). */
+export function collectObjectSecrets(value: unknown, keyPath = '', output: string[] = []): string[] {
   if (typeof value === 'string') {
     if ((SECRET_KEY.test(keyPath) || /^controlPlane\.key$/i.test(keyPath)) && value.length >= 4) output.push(value)
     return output
@@ -160,7 +164,9 @@ function collectObjectSecrets(value: unknown, keyPath = '', output: string[] = [
   return output
 }
 
-function safeSegment(value: string): string {
+/** Collapse an untrusted id into a safe single path segment (exported for the
+ *  Promptfoo adapters' artifact directories). */
+export function safeSegment(value: string): string {
   let safe = value
     .trim()
     .replace(/[^A-Za-z0-9._-]+/g, '-')

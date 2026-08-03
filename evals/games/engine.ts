@@ -106,7 +106,9 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
         maxSteps: options.maxSteps ?? (options.target ?? 12) * 3 + 4,
         timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 120_000 : 15 * 60_000)
       },
-      agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
+      agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias })),
+      // Real subjects carry template credentials; every artifact writer redacts them.
+      secrets: subject.secrets
     })
     return await runner.run()
   } finally {
