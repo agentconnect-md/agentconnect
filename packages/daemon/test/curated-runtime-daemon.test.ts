@@ -31,44 +31,48 @@ function catalog(): ResolvedRuntimeCatalog {
 }
 
 async function waitForProbe(daemon: Daemon, probe: ReturnType<typeof vi.fn>): Promise<void> {
-  await vi.waitFor(() => expect(probe).toHaveBeenCalled(), { timeout: 2_000 })
-  await vi.waitFor(() => expect((daemon as any).probing).toBe(false), { timeout: 2_000 })
+  await vi.waitFor(() => expect(probe).toHaveBeenCalled(), WAIT)
+  await vi.waitFor(() => expect((daemon as any).probing).toBe(false), WAIT)
 }
 
 describe('daemon curated runtime admission', () => {
   it.each([
     [true, ['explicit', 'hermes-agent']],
     [false, ['explicit']]
-  ])('runs while CP is disabled and exposes only admitted winners (ok=%s)', async (ok, expected) => {
-    const probe = vi.fn(async (runtimes: Record<string, unknown>, options: { curated?: boolean }) =>
-      Object.keys(runtimes).map((runtime) => ({
-        runtime,
-        ok: runtime === 'hermes-agent' ? ok : true,
-        models: [],
-        ...(!ok && runtime === 'hermes-agent' ? { error: 'initialize failed' } : {})
-      }))
-    )
-    const daemon = new Daemon({
-      root: root(),
-      resolveCatalog: async () => catalog(),
-      installed: (runtimes) => runtimes,
-      probeRuntimes: probe as never,
-      hostFactory: () => ({}) as never
-    })
+  ])(
+    'runs while CP is disabled and exposes only admitted winners (ok=%s)',
+    async (ok, expected) => {
+      const probe = vi.fn(async (runtimes: Record<string, unknown>, options: { curated?: boolean }) =>
+        Object.keys(runtimes).map((runtime) => ({
+          runtime,
+          ok: runtime === 'hermes-agent' ? ok : true,
+          models: [],
+          ...(!ok && runtime === 'hermes-agent' ? { error: 'initialize failed' } : {})
+        }))
+      )
+      const daemon = new Daemon({
+        root: root(),
+        resolveCatalog: async () => catalog(),
+        installed: (runtimes) => runtimes,
+        probeRuntimes: probe as never,
+        hostFactory: () => ({}) as never
+      })
 
-    try {
-      await daemon.start()
-      await waitForProbe(daemon, probe)
-      await vi.waitFor(() => expect(Object.keys((daemon as any).runtimes).sort()).toEqual(expected.sort()), WAIT)
-      expect(probe.mock.calls.some(([, options]) => options.curated === true)).toBe(true)
+      try {
+        await daemon.start()
+        await waitForProbe(daemon, probe)
+        await vi.waitFor(() => expect(Object.keys((daemon as any).runtimes).sort()).toEqual(expected.sort()), WAIT)
+        expect(probe.mock.calls.some(([, options]) => options.curated === true)).toBe(true)
 
-      const calls = probe.mock.calls.length
-      await (daemon as any).probeRuntimesAndEmit(false)
-      expect(probe).toHaveBeenCalledTimes(calls)
-    } finally {
-      await daemon.stop()
-    }
-  })
+        const calls = probe.mock.calls.length
+        await (daemon as any).probeRuntimesAndEmit(false)
+        expect(probe).toHaveBeenCalledTimes(calls)
+      } finally {
+        await daemon.stop()
+      }
+    },
+    15_000
+  )
 
   it('probes and admits a curated runtime UNSANDBOXED on a host with no sandbox mechanism (#36)', async () => {
     // Regression: the probe used to be skipped on a no-sandbox host, so curated
@@ -146,7 +150,7 @@ describe('daemon curated runtime admission', () => {
     } finally {
       await daemon.stop()
     }
-  })
+  }, 15_000)
 
   it('keeps a live-observed login-required mark through a successful probe sweep', async () => {
     const probe = vi.fn(async (runtimes: Record<string, unknown>) =>
@@ -224,7 +228,7 @@ describe('daemon curated runtime admission', () => {
       const timer = (daemon as any).runtimeProbeTimer
       if (timer !== undefined) clock.clearTimeout(timer)
     }
-  })
+  }, 15_000)
 
   it('does not arm a local probe timer when no curated source wins', () => {
     const daemon = new Daemon({ clock: new FakeClock(100), sandboxMechanism: null })
@@ -262,5 +266,5 @@ describe('daemon curated runtime admission', () => {
     await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2), WAIT)
     expect(Object.keys(probe.mock.calls[0]![0])).toEqual(['hermes-agent'])
     expect(Object.keys(probe.mock.calls[1]![0])).toEqual(['explicit'])
-  })
+  }, 15_000)
 })

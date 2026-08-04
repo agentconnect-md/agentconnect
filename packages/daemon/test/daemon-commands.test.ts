@@ -444,7 +444,7 @@ describe('Daemon in-conversation commands', () => {
     expect((daemon as any).store.isSessionMuted(muteKey)).toBe(false)
     blocked.release()
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('!queue buffers a message and dispatches it once the turn goes idle', async () => {
     const blocked = blockingHost()

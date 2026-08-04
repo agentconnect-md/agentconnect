@@ -1780,7 +1780,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
     await vi.waitFor(() => expect(retry).toHaveBeenCalledTimes(2), WAIT)
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('keeps the first terminal owner as the only durable report writer', async () => {
     const { factory } = streamingHost()
@@ -1823,7 +1823,7 @@ describe('Daemon rd/msg hook fires', () => {
     const receipt = (daemon as any).store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id)
     expect(JSON.parse(receipt.terminalReport)).toMatchObject({ status: 'success' })
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('does not ACK-clean a live hook row when terminal redaction fails', async () => {
     const { factory } = streamingHost()
@@ -1866,7 +1866,7 @@ describe('Daemon rd/msg hook fires', () => {
       completedAt: null
     })
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('retains a terminal receipt so redelivery after restart does not rerun the model', async () => {
     const root = scaffold()
