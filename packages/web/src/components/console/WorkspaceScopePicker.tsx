@@ -67,7 +67,7 @@ export function WorkspaceScopePicker({
       : worktrees
   const selectedIdentity = selectedSessionId ? worktreeIdentity(selectedWorktree, selectedSessionId) : undefined
   const primaryBranchLabel = primaryBranch.trim() || 'HEAD'
-  const canChooseCheckout = selectedSessionId !== null || menuWorktrees.length > 0
+  const canChooseCheckout = selectedSessionId !== null || menuWorktrees.length > 0 || hasMore
 
   useEffect(() => {
     if (!open) return

@@ -140,4 +140,30 @@ describe('WorkspaceScopePicker', () => {
     expect(container.querySelector('[aria-haspopup="menu"]')).toBeNull()
     expect(container.querySelector('button')).toBeNull()
   })
+
+  it('keeps older worktrees reachable when the current page has none', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () =>
+      root?.render(
+        <WorkspaceScopePicker
+          primaryBranch="main"
+          sessions={[]}
+          selectedSessionId={null}
+          loading={false}
+          hasMore
+          loadingMore={false}
+          onChange={vi.fn()}
+          onLoadMore={vi.fn()}
+          orgPath={(path) => `/agentconnect${path}`}
+        />
+      )
+    )
+
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Workspace checkout: main"]')!
+    await act(async () => trigger.click())
+
+    expect(container.querySelector('[role="menu"]')?.textContent).toContain('Load older')
+  })
 })
