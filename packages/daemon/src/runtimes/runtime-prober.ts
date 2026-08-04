@@ -166,16 +166,20 @@ export interface ProbeOptions {
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_CONCURRENCY = 3
 
-/** Probe temp roots are `ac-probe-<random>` directly under the OS temp dir. */
-const PROBE_ROOT_PREFIX = 'ac-probe-'
+/** Probe temp roots are `ac-probe-<daemon-pid>-<random>` directly under the OS
+ *  temp dir. The PID lets a sweeper distinguish a live concurrent daemon from
+ *  a root whose owner has exited, without waiting for the legacy age cutoff. */
+const LEGACY_PROBE_ROOT_PREFIX = 'ac-probe-'
+const PROBE_ROOT_PREFIX = `${LEGACY_PROBE_ROOT_PREFIX}${process.pid}-`
+const PID_PROBE_ROOT_PATTERN = /^ac-probe-(\d+)-/
 /** Gaps between the observation points that follow a probe root's initial removal
  *  (see removeProbeRoot) — cumulatively 250ms, 1.25s and 4.25s after teardown. Every
  *  point is observed, but in the background, so none of it delays a probe result. */
 const PROBE_ROOT_RECHECK_MS = [250, 1_000, 3_000]
-/** How long a FOREIGN probe root may linger before {@link sweepStaleProbeRoots} treats
- *  it as abandoned. Comfortably above one sweep's worst case (per-runtime timeout plus
- *  the AcpHost stop escalation), so another daemon's live root is never touched. Roots
- *  owned by THIS process are excluded outright via {@link liveProbeRoots}. */
+/** How long a legacy root (created before PID-tagged names) may linger before
+ *  {@link sweepStaleProbeRoots} treats it as abandoned. PID-tagged roots use
+ *  process liveness instead, so they can be reclaimed promptly and without an
+ *  arbitrary assumption about another daemon's maximum probe duration. */
 const STALE_PROBE_ROOT_MS = 60 * 60_000
 
 /** Probe roots this process is actively using. The recurring sweep skips them
@@ -183,6 +187,25 @@ const STALE_PROBE_ROOT_MS = 60 * 60_000
 const liveProbeRoots = new Set<string>()
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+function probeRootOwnerPid(name: string): number | undefined {
+  const raw = PID_PROBE_ROOT_PATTERN.exec(name)?.[1]
+  if (!raw) return undefined
+  const pid = Number(raw)
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
+}
+
+/** `kill(pid, 0)` performs an existence/permission check without sending a
+ *  signal. EPERM still means the process exists (usually under another user). */
+function processIsAlive(pid: number): boolean {
+  if (pid === process.pid) return true
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
 
 /**
  * Remove one probe root, then keep watching so it STAYS removed.
@@ -240,8 +263,10 @@ function removeProbeRoot(root: string, log?: Logger): Promise<void> {
  *
  * Called at daemon startup AND on the recurring idle sweep: a root re-created after the
  * last observation point must be reclaimable within the SAME long-lived process, not
- * only by the next restart. Roots this process is still using are skipped outright (see
- * {@link liveProbeRoots}), so the cadence carries no risk to a live sweep.
+ * only by the next restart. PID-tagged roots are removed as soon as their owner is this
+ * process (but no longer live) or has exited. Roots this process is still using are
+ * skipped outright (see {@link liveProbeRoots}), and roots owned by another live daemon
+ * are preserved regardless of age.
  *
  * Best effort and never throws: a root owned by another user, or removed by a
  * concurrent daemon between the stat and the unlink, is skipped. Returns the number
@@ -260,14 +285,24 @@ export function sweepStaleProbeRoots(opts: { log?: Logger; maxAgeMs?: number; tm
 
   let removed = 0
   for (const name of entries) {
-    if (!name.startsWith(PROBE_ROOT_PREFIX)) continue
+    if (!name.startsWith(LEGACY_PROBE_ROOT_PREFIX)) continue
     const path = join(tmpRoot, name)
     if (liveProbeRoots.has(path)) continue // a sweep in this process still owns it
     try {
       // lstat, never stat: the OS temp dir is world-writable, so a symlink planted
       // under our prefix must be skipped rather than followed out of the temp root.
       const stat = lstatSync(path)
-      if (!stat.isDirectory() || stat.mtimeMs > cutoff) continue
+      if (!stat.isDirectory()) continue
+      const ownerPid = probeRootOwnerPid(name)
+      if (ownerPid !== undefined) {
+        // A current-process root not present in liveProbeRoots has completed and can
+        // be removed immediately. A foreign root is safe to remove once its daemon
+        // exits; while that daemon lives, never guess from directory timestamps.
+        if (ownerPid !== process.pid && processIsAlive(ownerPid)) continue
+      } else if (stat.mtimeMs > cutoff) {
+        // Backward compatibility for roots created by versions without a PID tag.
+        continue
+      }
       rmSync(path, { recursive: true, force: true })
       removed++
     } catch (err) {

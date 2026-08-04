@@ -698,10 +698,10 @@ const MAX_TURN_CONTEXT_REGENERATION_MS = 120_000
  *  window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
 const DREAM_CANCEL_FORCE_MS = 15_000
 
-/** How often the idle sweep also reclaims abandoned probe temp roots. Much slower than
- *  the idle cadence: the scan reads the whole OS temp dir, and a leaked root only costs
- *  disk, so a lazy reclaim is enough. */
-const PROBE_ROOT_SWEEP_INTERVAL_MS = 15 * 60_000
+/** How often the idle sweep also reclaims abandoned probe temp roots. One disposable
+ *  probe can materialize gigabytes of package caches, so PID-tagged roots whose owner
+ *  has finished or exited should not wait behind the slower maintenance cadences. */
+const PROBE_ROOT_SWEEP_INTERVAL_MS = 60_000
 
 /** How often the idle sweep also runs session-retention GC (#485). The retention
  *  window is measured in days, so an hourly pass is plenty — each pass walks the

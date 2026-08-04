@@ -467,6 +467,22 @@ describe('sweepStaleProbeRoots', () => {
     expect(existsSync(unrelated)).toBe(true)
   })
 
+  it('removes a fresh PID-tagged root once its owning probe is no longer live', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'ac-probe-sweeptest-'))
+    const completed = probeRootAged(tmpRoot, `ac-probe-${process.pid}-completed`, 30_000)
+
+    expect(sweepStaleProbeRoots({ tmpRoot })).toBe(1)
+    expect(existsSync(completed)).toBe(false)
+  })
+
+  it('preserves a PID-tagged root owned by another live process regardless of age', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'ac-probe-sweeptest-'))
+    const concurrent = probeRootAged(tmpRoot, `ac-probe-${process.ppid}-concurrent`, 2 * 60 * 60_000)
+
+    expect(sweepStaleProbeRoots({ tmpRoot })).toBe(0)
+    expect(existsSync(concurrent)).toBe(true)
+  })
+
   it('skips a symlink planted under the probe prefix instead of following it', () => {
     const tmpRoot = mkdtempSync(join(tmpdir(), 'ac-probe-sweeptest-'))
     const victim = mkdtempSync(join(tmpdir(), 'ac-probe-sweepvictim-'))
