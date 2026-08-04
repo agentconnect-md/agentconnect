@@ -880,9 +880,10 @@ export async function executeTool(
   // Unified outbound send (session-concept §3). One tool merges the old `sendPlatformMessage`
   // (post to a platform channel/user) and `messageAgent` (wake a peer agent), plus SessionTarget
   // replies. Universal (any agent — a memory-only agent can still wake a peer / reply), handled
-  // before the platform-gateway gate. The tool takes exactly TWO addressing modes — `toAgent`
-  // (wake a peer agent) and `toUser` (reach humans) — each with THREE delivery forms: dm,
-  // channel root, and in thread. `sessionId` stays a separate reply branch.
+  // before the platform-gateway gate. A MessageTarget uses `toAgent` (wake a peer), `toUser`
+  // (reach humans), or a bare `channel`. Omitting `channel` selects a postless peer wake or a
+  // user DM; providing it always selects a channel-root post. `sessionId` is a separate reply
+  // branch for an existing session.
   // SECURITY: the caller identity + coords come from the trusted session context, never tool input.
   if (name === 'sendMessage') {
     const message = requireString(args, 'message')
@@ -906,10 +907,10 @@ export async function executeTool(
 
     // MessageTarget — exactly ONE target mode: `toAgent` wakes a peer agent, `toUser` reaches
     // platform users, and `channel` alone posts a bare visible message without addressing
-    // anyone. For the two recipient modes the delivery form is selected by the coords: no
-    // `channel` ⇒ dm, `channel` without `thread` ⇒ channel root, `channel` + `thread` ⇒ in
-    // thread. Branch-specific validation below keeps ignored/mixed fields out even when a
-    // caller bypasses the advertised JSON Schema (as unit tests and older clients can).
+    // anyone. For the two recipient modes, omitting `channel` selects a postless peer wake or
+    // user DM; providing `channel` selects a channel-root post. Branch-specific validation
+    // below keeps ignored/mixed fields out even when a caller bypasses the advertised JSON
+    // Schema (as unit tests and older clients can).
     const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
     const toUsers = parseUserTargets(args.toUser)
     const channel = optionalString(args, 'channel')
