@@ -624,8 +624,10 @@ export class RelayIngressManager {
    * recipient set is a response that DID name someone — that one activates the named
    * agents or nobody, never a substitute.
    *
-   * Note that a bare shared-bot mention resolves to nobody on the author's side, so it
-   * arrives here as an unnamed response and continues through the implicit ladder.
+   * "Named someone" is wider than the resolved agent set. A bare shared-bot mention, a
+   * human, or another app all resolve to no agent yet are still deliberate addressing, so
+   * they stop here rather than continuing — the same place the direct ladder stops
+   * (`routeRules`: an unmatched mention in a channel routes to nobody).
    *
    * Anything not routable is dropped rather than forwarded. The relay holds no transcript
    * — "transcript only" is a daemon-side state — and §5.7 already has the target
