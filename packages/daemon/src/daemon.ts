@@ -163,7 +163,7 @@ import {
   resolveSlackMentionedAgents,
   slackTextAddressesAnyone,
   slackMentionAddress,
-  SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX
+  SLACK_RESPONSE_FINAL_EVENT_TAG
 } from '@agentconnect.md/message'
 import {
   applySlackAction as applySlackActionExternal,
@@ -848,14 +848,12 @@ function activationKey(
   return [platform, transportScope ?? '', platformMessageId, targetAgentId].join('\u0000')
 }
 
-/** The platform `ts` inside a Slack `msgId` (`slack:<channel>:<ts>`, optionally suffixed
- *  for a response finalization). The ts — not the msgId — is the visible message's
- *  identity, which is what the activation key and the paired wake both name. */
+/** The platform `ts` inside a Slack `msgId` (`slack:<channel>:<ts>`). The ts — not the
+ *  msgId — is the visible message's identity, which is what the activation key and the
+ *  paired wake both name. A response finalization carries the ORIGINAL post's msgId and
+ *  marks itself with `ingressEventTag`, so nothing has to be stripped here. */
 function slackTsFromMsgId(msgId: string): string {
-  const base = msgId.endsWith(SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX)
-    ? msgId.slice(0, -SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX.length)
-    : msgId
-  return base.split(':')[2] ?? base
+  return msgId.split(':')[2] ?? msgId
 }
 
 /** Poll interval for the deferred background-task wake (background-task-aware-reclaim.md
@@ -6039,7 +6037,10 @@ export class Daemon {
     const sourceKey =
       msg.transportScope ??
       (srcIntegrationIds === undefined ? '' : [...srcIntegrationIds].sort((a, b) => a.localeCompare(b)).join(','))
-    const seenMsgId = `${sourceKey}|${msg.msgId}`
+    // The tag is the SECOND dedup dimension: a streamed reply's post and its closing edit
+    // share one `msgId` (they are one Slack message) and must not collapse — the closing
+    // edit is the only routable arrival.
+    const seenMsgId = `${sourceKey}|${msg.msgId}|${msg.ingressEventTag ?? ''}`
     if (this.seenMsgIds.has(seenMsgId)) {
       this.log.debug(`routing: duplicate ${msg.msgId} ignored`)
       return { kind: 'rejected', reason: 'deduplicated' }
@@ -9793,6 +9794,9 @@ export class Daemon {
       // write or non-chronological-id platforms (Telegram/Feishu) keep the
       // broken derived axis.
       ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
+      // The closing edit of a streamed reply shares its post's coordinates, so it
+      // refreshes that row to the completed text instead of being ignored as a duplicate.
+      ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
@@ -12662,6 +12666,15 @@ export class Daemon {
         // have put the only mention in section one. Without this the same answer would
         // wake a peer or not depending on where the cut landed.
         const addressedAnyone = slackTextAddressesAnyone(p.replyText)
+        // What this response RESOLVED to, at the one place the author still knows it.
+        // Everything downstream (relay arbitration, the target's ladder) sees only the
+        // outcome, so without this a response that addressed a peer but resolved to no
+        // agent — a stale or unpopulated mention directory — is indistinguishable from
+        // one that addressed nobody, on either side of the wire.
+        this.log.debug(
+          `slack: finalizing response ${p.responseId} for "${p.agentId}" — recipients=[${recipients.join(',')}] ` +
+            `addressedAnyone=${addressedAnyone} directory=${orgId ? this.cpCollab.mentionDirectory(orgId, p.platform, p.channel).length : 0}`
+        )
         await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
       }
       // The user-visible reply is now delivered. Enqueue provider work without

@@ -1,6 +1,7 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
 import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
+import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
 import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
@@ -479,6 +480,9 @@ export class SessionManager {
       // This message was delivered TO this agent (handle() runs for `agentId`), so tag the
       // recipient — the console session view scopes to what THIS agent received + produced.
       recipient: agentId,
+      // A response finalization is the same Slack message as the post that opened it, so
+      // it lands on that row and refreshes it to the completed text.
+      ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: transcriptText,
       ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
