@@ -9,6 +9,7 @@ describe('my social identities routes', () => {
   it('resolves a connector id and unlinks under the OIDC subject', async () => {
     const identity = {
       socialConnectorIdFor: vi.fn(async () => 'google-connector'),
+      linkSocialIdentity: vi.fn(async () => undefined),
       unlinkSocialIdentity: vi.fn(async () => undefined)
     }
     const deps = {
@@ -28,14 +29,22 @@ describe('my social identities routes', () => {
       expect(connector.json()).toEqual({ connectorId: 'google-connector' })
       expect(identity.socialConnectorIdFor).toHaveBeenCalledWith('google')
 
-      // Linking is not a CP operation any more: the browser drives it against
-      // the Account API, which is the only side with a connector session.
-      const removedLinkRoute = await app.inject({
+      // The `direct` link runs server-side, and the callback URI comes from
+      // config — never from the caller, who could otherwise point the provider
+      // response somewhere else.
+      const linked = await app.inject({
         method: 'POST',
         url: '/me/social-identities',
-        payload: { connectorId: 'google-connector', connectorData: { code: 'c' } }
+        payload: {
+          connectorId: 'google-connector',
+          connectorData: { code: 'c', redirectUri: 'https://attacker.example.test/callback' }
+        }
       })
-      expect(removedLinkRoute.statusCode).toBe(404)
+      expect(linked.statusCode).toBe(200)
+      expect(identity.linkSocialIdentity).toHaveBeenCalledWith('logto-user', 'google-connector', {
+        code: 'c',
+        redirectUri: 'https://app.example.test/auth/social/callback'
+      })
 
       const unlinked = await app.inject({ method: 'DELETE', url: '/me/social-identities/google' })
       expect(unlinked.statusCode).toBe(204)

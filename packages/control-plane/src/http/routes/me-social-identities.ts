@@ -20,6 +20,7 @@
  */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
+import { resolveWebAppUrl } from '../../config/env.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
@@ -28,6 +29,19 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 
 const ConnectorId = z.string().trim().min(1).max(128)
 const ConnectorDto = z.object({ connectorId: ConnectorId })
+const State = z.string().min(32).max(256)
+const ConnectorData = z
+  .record(z.string().max(64), z.string().max(4096))
+  .refine((value) => Object.keys(value).length <= 32, 'too many connector response fields')
+
+/** `direct` carries the URI Logto built; `verified` says the browser has to
+ *  drive this connector itself, and hands it the id it needs to do so. */
+const AuthorizationDto = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('direct'), connectorId: ConnectorId, authorizationUri: z.url() }),
+  z.object({ mode: z.literal('verified'), connectorId: ConnectorId })
+])
+const LinkBody = z.object({ connectorId: ConnectorId, connectorData: ConnectorData }).strict()
+const LinkDto = z.object({ linked: z.literal(true) })
 /** Unlink takes any stored target, including one this deployment has since
  *  stopped offering — you must always be able to remove what you linked. */
 const TargetParam = z.object({ target: z.string().trim().min(1).max(128) })
@@ -81,7 +95,12 @@ const SocialAccountDto = z.object({
 
 // No 'link': that runs in the browser against the Account API, so its provider
 // errors (422 "already in use" and friends) are mapped there, not here.
-type Operation = 'authorize' | 'unlink' | 'read'
+type Operation = 'authorize' | 'link' | 'unlink' | 'read'
+
+function socialCallbackUrl(deps: HttpDeps): string | undefined {
+  const webUrl = resolveWebAppUrl(deps.config)
+  return webUrl ? new URL('/auth/social/callback', webUrl).toString() : undefined
+}
 
 function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation) {
   if (!(error instanceof LogtoApiError)) throw error
@@ -146,6 +165,7 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
       .max(64)
       .regex(/^[a-z0-9_-]+$/, 'not a connector target')
     const TargetParamStrict = z.object({ target: SocialTarget })
+    const AuthorizationBody = z.object({ target: SocialTarget, state: State }).strict()
     const unavailable = {
       error: 'Service Unavailable',
       statusCode: 503,
@@ -173,6 +193,77 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
         if (!identity) return reply.code(503).send(unavailable)
         identity.forgetUser(req.oidcSubject!)
         return reply.code(204).send(null)
+      }
+    )
+
+    // Where a link begins. The reply says which of the two ways this provider
+    // has to be linked; the console does not decide, and does not keep a list.
+    r.post(
+      '/me/social-identities/authorization-uri',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Start linking a social sign-in method',
+          description:
+            'Resolve the provider and report how it must be linked. `direct` returns an authorization URI Logto built, and the link completes server-side. `verified` means the connector cannot be driven without a session, so the browser drives it against the Account API and Logto requires an ownership proof.',
+          operationId: 'createMySocialIdentityAuthorization',
+          body: AuthorizationBody,
+          response: { 200: AuthorizationDto, 400: ErrorDto, 404: ErrorDto, 429: ErrorDto, 502: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const identity = deps.logtoIdentity
+        const redirectUri = socialCallbackUrl(deps)
+        if (!identity || !redirectUri) return reply.code(503).send(unavailable)
+        try {
+          return await identity.socialAuthorizationFor(req.body.target, redirectUri, req.body.state)
+        } catch (error) {
+          return logtoFailure(reply, error, 'authorize')
+        }
+      }
+    )
+
+    // The `direct` half of the link. Deliberately no ownership proof: the M2M
+    // credential is the authority on this path, which is the whole reason it
+    // spares the user a code.
+    r.post(
+      '/me/social-identities',
+      {
+        preHandler: app.oidcAuth,
+        schema: {
+          tags: [Tag.Profile],
+          summary: 'Link a social sign-in method',
+          description:
+            'Link the identity the provider just authenticated to the signed-in user. Only for providers that reported `direct`; existing accounts are not merged.',
+          operationId: 'linkMySocialIdentity',
+          body: LinkBody,
+          response: {
+            200: LinkDto,
+            400: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const identity = deps.logtoIdentity
+        const redirectUri = socialCallbackUrl(deps)
+        if (!identity || !redirectUri) return reply.code(503).send(unavailable)
+        try {
+          // redirectUri last: Logto exchanges the code against the URI it
+          // authorized with, and only the server knows that one.
+          await identity.linkSocialIdentity(req.oidcSubject!, req.body.connectorId, {
+            ...req.body.connectorData,
+            redirectUri
+          })
+          return { linked: true as const }
+        } catch (error) {
+          return logtoFailure(reply, error, 'link')
+        }
       }
     )
 

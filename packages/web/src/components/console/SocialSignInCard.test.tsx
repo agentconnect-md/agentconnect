@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
 // or the import itself throws before render.
 vi.mock('@/lib/api', () => ({
   fetchMySocialAccount: vi.fn(),
+  createMySocialIdentityAuthorization: vi.fn(),
   resolveMySocialConnectorId: vi.fn(),
+  linkMySocialIdentity: vi.fn(),
   unlinkMySocialIdentity: vi.fn()
 }))
 
@@ -30,7 +32,7 @@ vi.mock('@/lib/logto-account', async (importOriginal) => {
 
 import SocialSignInCard from './SocialSignInCard'
 import { LogtoAccountError } from '@/lib/logto-account'
-import { fetchMySocialAccount, resolveMySocialConnectorId } from '@/lib/api'
+import { createMySocialIdentityAuthorization, fetchMySocialAccount, resolveMySocialConnectorId } from '@/lib/api'
 
 const ACCOUNT_KEY = 'logto-account-sign-in-methods'
 let root: Root | undefined
@@ -100,6 +102,10 @@ beforeEach(() => {
   mocks.requestEmailVerification.mockReset()
   vi.mocked(resolveMySocialConnectorId).mockReset()
   vi.mocked(resolveMySocialConnectorId).mockResolvedValue({ connectorId: 'connector' })
+  vi.mocked(createMySocialIdentityAuthorization).mockReset()
+  // Default to the path that needs the browser, so the existing expectations
+  // about the code dialog keep describing that path.
+  vi.mocked(createMySocialIdentityAuthorization).mockResolvedValue({ mode: 'verified', connectorId: 'connector' })
 })
 
 afterEach(async () => {
@@ -211,9 +217,10 @@ describe('SocialSignInCard account state', () => {
     await waitUntil(() => container?.textContent?.includes('Not linked') === true)
 
     await act(async () => button('Link')?.click())
+    await waitUntil(() => vi.mocked(createMySocialIdentityAuthorization).mock.calls.length === 1)
 
     expect(container?.querySelector('[role="dialog"]')).toBeNull()
-    expect(resolveMySocialConnectorId).toHaveBeenCalled()
+    expect(createMySocialIdentityAuthorization).toHaveBeenCalled()
   })
 
   it('continues a verified install through linking only when GitHub is unlinked', async () => {
@@ -221,7 +228,7 @@ describe('SocialSignInCard account state', () => {
     const onAutoAuthorizeHandled = vi.fn()
 
     await renderCard({ autoAuthorize: { target: 'github', purpose: 'link' }, onAutoAuthorizeHandled })
-    await waitUntil(() => vi.mocked(resolveMySocialConnectorId).mock.calls.length === 1)
+    await waitUntil(() => vi.mocked(createMySocialIdentityAuthorization).mock.calls.length === 1)
 
     expect(onAutoAuthorizeHandled).toHaveBeenCalledOnce()
   })
@@ -236,7 +243,7 @@ describe('SocialSignInCard account state', () => {
     await renderCard({ autoAuthorize: { target: 'github', purpose: 'link' }, onAutoAuthorizeHandled })
     await waitUntil(() => onAutoAuthorizeHandled.mock.calls.length === 1)
 
-    expect(resolveMySocialConnectorId).not.toHaveBeenCalled()
+    expect(createMySocialIdentityAuthorization).not.toHaveBeenCalled()
   })
 
   it('skips the code dialog for a second link while the ownership proof is fresh', async () => {
@@ -255,8 +262,34 @@ describe('SocialSignInCard account state', () => {
     await waitUntil(() => container?.textContent?.includes('Not linked') === true)
 
     await act(async () => button('Link')?.click())
+    await waitUntil(() => vi.mocked(createMySocialIdentityAuthorization).mock.calls.length === 1)
 
     expect(container?.querySelector('[role="dialog"]')).toBeNull()
-    expect(resolveMySocialConnectorId).toHaveBeenCalled()
+  })
+
+  it('asks for no code at all when the CP can complete the link itself', async () => {
+    // The account HAS a security verification method — under the browser-driven
+    // path that alone forces a code. It must not here: the CP finishes this
+    // link on its own credential, so there is nothing for the user to re-prove.
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [],
+      hasSecurityVerificationMethod: true,
+      primaryEmail: 'phil@example.test'
+    })
+    vi.mocked(createMySocialIdentityAuthorization).mockResolvedValue({
+      mode: 'direct',
+      connectorId: 'google-connector',
+      authorizationUri: 'https://accounts.example.test/authorize'
+    })
+
+    await renderCard()
+    await waitUntil(() => container?.textContent?.includes('Not linked') === true)
+
+    await act(async () => button('Link')?.click())
+    await waitUntil(() => vi.mocked(createMySocialIdentityAuthorization).mock.calls.length === 1)
+
+    expect(container?.querySelector('[role="dialog"]')).toBeNull()
+    // No Account API detour either — the CP owns both legs on this path.
+    expect(resolveMySocialConnectorId).not.toHaveBeenCalled()
   })
 })

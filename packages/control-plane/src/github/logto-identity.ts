@@ -78,6 +78,10 @@ const NEGATIVE_TTL_MS = 60_000
 // this hard lease.
 const PROVIDER_IDENTITY_TTL_MS = 120_000
 const TIMEOUT_MS = 10_000
+// How long a target's link mode is trusted. Short enough that a Logto upgrade
+// which fixes a connector is picked up the same day, long enough that the probe
+// is not per click.
+const LINK_MODE_TTL_MS = 60 * 60_000
 
 interface CachedLogin {
   login: string | null
@@ -177,6 +181,31 @@ interface LogtoUser {
   >
 }
 
+/**
+ * How a link must be driven for one provider.
+ *
+ *  - `direct`  — Logto built the authorization URI for us, so the whole link
+ *    runs server-side on the Management API. Nothing needs the end user to
+ *    re-prove anything: the M2M credential is the authority.
+ *  - `verified` — that connector cannot be driven without a session (it stores
+ *    state while building the URI), so the browser must drive it against the
+ *    Account API, where the user's own token is the authority and Logto demands
+ *    an ownership proof.
+ *
+ * Decided by ASKING Logto rather than from a list of provider names: Logto's
+ * own published list omitted Slack, and a wrong guess here is the 502 that
+ * linking Slack used to be.
+ */
+export type SocialLinkMode = 'direct' | 'verified'
+
+export type SocialAuthorization =
+  { mode: 'direct'; connectorId: string; authorizationUri: string } | { mode: 'verified'; connectorId: string }
+
+interface CachedLinkMode {
+  mode: SocialLinkMode
+  expiresAt: number
+}
+
 export class LogtoIdentityService {
   private token?: { value: string; expiresAt: number }
   private tokenInFlight?: Promise<string>
@@ -186,6 +215,9 @@ export class LogtoIdentityService {
   // fetch rather than one per projection. Kept separate from the login cache on
   // purpose: githubLoginFor sits on a live authorization gate, and display reads
   // must not be able to shift what that gate sees (or when it re-asks).
+  // Which way each target must be linked. Cached because the answer is a
+  // property of the connector, not of the user, and probing costs a round trip.
+  private readonly linkModes = new Map<string, CachedLinkMode>()
   private readonly users = new Map<string, CachedUser>()
   private readonly userInFlight = new Map<string, Promise<LogtoUser | null>>()
   // Invalidation fence. `slackIdentityFor` feeds an authorization decision
@@ -332,6 +364,54 @@ export class LogtoIdentityService {
       connector && typeof (connector as { id?: unknown }).id === 'string' ? (connector as { id: string }).id : undefined
     if (!connectorId) throw new LogtoApiError('social connector not found', 404, false)
     return connectorId
+  }
+
+  /**
+   * Start a link: resolve the connector, then find out whether Logto will build
+   * its authorization URI for us.
+   *
+   * A failure here is NOT reported as one. Every connector that cannot be
+   * driven server-side is still linkable through the browser, so the answer to
+   * "Logto refused" is `verified` — the caller falls back and the user gets a
+   * working link, just with an ownership check in front of it.
+   */
+  async socialAuthorizationFor(target: string, redirectUri: string, state: string): Promise<SocialAuthorization> {
+    const connectorId = await this.socialConnectorIdFor(target)
+    const cached = this.linkModes.get(target)
+    if (cached && cached.expiresAt > this.clock.now() && cached.mode === 'verified') {
+      return { mode: 'verified', connectorId }
+    }
+
+    let authorizationUri: string | undefined
+    try {
+      const res = await this.request(`/api/connectors/${encodeURIComponent(connectorId)}/authorization-uri`, {
+        method: 'POST',
+        body: JSON.stringify({ redirectUri, state })
+      })
+      if (res.ok) {
+        const body = (await res.json()) as { redirectTo?: unknown }
+        if (typeof body.redirectTo === 'string' && body.redirectTo.length > 0) authorizationUri = body.redirectTo
+      }
+    } catch {
+      // Unreachable upstream is indistinguishable from an unsupported connector
+      // here, and both have the same safe answer: drive it from the browser.
+    }
+
+    const mode: SocialLinkMode = authorizationUri ? 'direct' : 'verified'
+    this.linkModes.set(target, { mode, expiresAt: this.clock.now() + LINK_MODE_TTL_MS })
+    return authorizationUri ? { mode: 'direct', connectorId, authorizationUri } : { mode: 'verified', connectorId }
+  }
+
+  /** Link the provider identity proved by `connectorData`, server-side. Only
+   *  valid for a target that answered `direct`; a session-bound connector fails
+   *  here for the same reason it could not build its URI. */
+  async linkSocialIdentity(sub: string, connectorId: string, connectorData: Record<string, string>): Promise<void> {
+    const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities`, {
+      method: 'POST',
+      body: JSON.stringify({ connectorId, connectorData })
+    })
+    if (!res.ok) throw await this.responseError('logto social identity link', res)
+    this.invalidate(sub)
   }
 
   /** Remove one provider identity from this Logto user. */
