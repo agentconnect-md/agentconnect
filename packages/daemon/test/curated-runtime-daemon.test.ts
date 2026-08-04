@@ -7,6 +7,11 @@ import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { FakeClock } from './cp/fake-clock.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 function root(): string {
   const path = mkdtempSync(join(tmpdir(), 'ac-curated-daemon-'))
   writeFileSync(join(path, 'config.json'), JSON.stringify({ version: 1, controlPlane: { enabled: false } }))
@@ -54,7 +59,7 @@ describe('daemon curated runtime admission', () => {
     try {
       await daemon.start()
       await waitForProbe(daemon, probe)
-      await vi.waitFor(() => expect(Object.keys((daemon as any).runtimes).sort()).toEqual(expected.sort()))
+      await vi.waitFor(() => expect(Object.keys((daemon as any).runtimes).sort()).toEqual(expected.sort()), WAIT)
       expect(probe.mock.calls.some(([, options]) => options.curated === true)).toBe(true)
 
       const calls = probe.mock.calls.length
@@ -113,7 +118,7 @@ describe('daemon curated runtime admission', () => {
       await daemon.start()
       await waitForProbe(daemon, probe)
       // Not admitted: launch and placement still refuse it…
-      await vi.waitFor(() => expect(Object.keys((daemon as any).runtimes)).toEqual(['explicit']))
+      await vi.waitFor(() => expect(Object.keys((daemon as any).runtimes)).toEqual(['explicit']), WAIT)
       expect(() => (daemon as any).curatedRuntimeAdmission.assertLaunch('hermes-agent', 'curated')).toThrow(
         /Authentication required/
       )
@@ -210,8 +215,8 @@ describe('daemon curated runtime admission', () => {
       ;(daemon as any).armRuntimeProbeRefresh()
 
       clock.advance(5 * 60_000)
-      await vi.waitFor(() => expect(probe).toHaveBeenCalled())
-      await vi.waitFor(() => expect((daemon as any).probing).toBe(false))
+      await vi.waitFor(() => expect(probe).toHaveBeenCalled(), WAIT)
+      await vi.waitFor(() => expect((daemon as any).probing).toBe(false), WAIT)
       expect(Object.keys((daemon as any).runtimes).sort()).toEqual(['explicit', 'hermes-agent'])
       expect(Object.keys(probe.mock.calls[0]![0])).toEqual(['hermes-agent'])
     } finally {
@@ -249,12 +254,12 @@ describe('daemon curated runtime admission', () => {
     ;(daemon as any).refreshAdmittedRuntimes()
 
     const curated = (daemon as any).probeRuntimesAndEmit(false)
-    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1), WAIT)
     await (daemon as any).probeRuntimesAndEmit(true)
     releaseFirst()
     await curated
 
-    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2), WAIT)
     expect(Object.keys(probe.mock.calls[0]![0])).toEqual(['hermes-agent'])
     expect(Object.keys(probe.mock.calls[1]![0])).toEqual(['explicit'])
   })

@@ -7,6 +7,11 @@ import { executeTool, type SessionContext } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 const AGENT_ID = 'bot-a'
 const CONV_1 = '11111111-1111-4111-8111-111111111111'
 const CONV_2 = '22222222-2222-4222-8222-222222222222'
@@ -116,14 +121,14 @@ describe('Daemon interrupt safety gates', () => {
       })
       ;(daemon as any).store.setModelOverride(key, 'blocked-model')
       const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'first', 'alice', stream.sink)
-      await vi.waitFor(() => expect(host.setSessionModel).toHaveBeenCalled())
+      await vi.waitFor(() => expect(host.setSessionModel).toHaveBeenCalled(), WAIT)
       expect(hasPending(daemon, 'acp-pre-prompt')).toBe(true)
 
       ;(daemon as any).handleWebchatCancel(CONV_1)
       expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
       releaseOverride()
 
-      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
+      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
       expect(stream.dones).toHaveLength(1)
       expect(host.prompt).not.toHaveBeenCalled()
     } finally {
@@ -156,7 +161,7 @@ describe('Daemon interrupt safety gates', () => {
     try {
       const first = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'first', 'alice', stream.sink)
       expect(first.accepted).toBe(true)
-      await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+      await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
       ;(daemon as any).handleWebchatCancel(CONV_1)
       expect(host.cancel).toHaveBeenCalledWith('acp-1')
@@ -168,14 +173,16 @@ describe('Daemon interrupt safety gates', () => {
       expect(host.newSession).toHaveBeenCalledTimes(1)
 
       releaseFirst()
-      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
+      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
 
       const fresh = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_2, 'fresh', 'alice', stream.sink)
       expect(fresh.accepted).toBe(true)
-      await vi.waitFor(() =>
-        expect(stream.dones).toContainEqual(
-          expect.objectContaining({ conversationId: CONV_2, turnId: fresh.turnId, stopReason: 'end_turn' })
-        )
+      await vi.waitFor(
+        () =>
+          expect(stream.dones).toContainEqual(
+            expect.objectContaining({ conversationId: CONV_2, turnId: fresh.turnId, stopReason: 'end_turn' })
+          ),
+        WAIT
       )
       expect(host.prompt).toHaveBeenCalledTimes(2)
     } finally {
@@ -215,9 +222,9 @@ describe('Daemon interrupt safety gates', () => {
     let t2Queued: Promise<unknown> | undefined
 
     try {
-      await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+      await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
       t2 = (daemon as any).dispatch(AGENT_ID, t2Msg)
-      await vi.waitFor(() => expect(hasPending(daemon, 'acp-2')).toBe(true))
+      await vi.waitFor(() => expect(hasPending(daemon, 'acp-2')).toBe(true), WAIT)
       // DMs start private. Model the CP publishing this unrelated session so
       // the memory assertion below tests cancellation isolation, not privacy.
       expect((daemon as any).store.applyCpCaptureGate('acp-2', false, 1)).toBe('applied')
@@ -287,7 +294,7 @@ describe('Daemon interrupt safety gates', () => {
     try {
       const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
       expect(ack.accepted).toBe(true)
-      await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
       expect((daemon as any).pending.size).toBe(0)
 
       ;(daemon as any).handleWebchatCancel(CONV_1)
@@ -295,8 +302,8 @@ describe('Daemon interrupt safety gates', () => {
       expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
 
       clock.advance(30_000)
-      await vi.waitFor(() => expect(host.stop).toHaveBeenCalled())
-      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
+      await vi.waitFor(() => expect(host.stop).toHaveBeenCalled(), WAIT)
+      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
       expect(host.prompt).not.toHaveBeenCalled()
       expect(stream.dones).toHaveLength(1)
     } finally {
@@ -338,13 +345,13 @@ describe('Daemon interrupt safety gates', () => {
     expect((daemon as any).store.applyCpCaptureGate('acp-memory', false, 1)).toBe('applied')
 
     const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold memory', 'alice', stream.sink)
-    await vi.waitFor(() => expect(standingContext).toHaveBeenCalled())
+    await vi.waitFor(() => expect(standingContext).toHaveBeenCalled(), WAIT)
     ;(daemon as any).handleWebchatCancel(CONV_1)
     expect(stream.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
 
     clock.advance(30_000)
-    await vi.waitFor(() => expect(host.stop).toHaveBeenCalled())
-    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
+    await vi.waitFor(() => expect(host.stop).toHaveBeenCalled(), WAIT)
+    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(host.newSession).not.toHaveBeenCalled()
     expect(host.prompt).not.toHaveBeenCalled()
 
@@ -376,11 +383,11 @@ describe('Daemon interrupt safety gates', () => {
     try {
       const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold', 'alice', stream.sink)
       expect(ack.accepted).toBe(true)
-      await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
 
       ;(daemon as any).handleWebchatCancel(CONV_1)
       clock.advance(30_000)
-      await vi.waitFor(() => expect(host.stop).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(host.stop).toHaveBeenCalledTimes(1), WAIT)
       expect((daemon as any).inflight.size).toBe(1)
 
       expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
@@ -429,7 +436,7 @@ describe('Daemon interrupt safety gates', () => {
     try {
       await expect((daemon as any).dispatch(AGENT_ID, dm('C1', 'T1', '100', 'warm'))).resolves.toBe('acp-old')
       priorStop = (daemon as any).stopHost(AGENT_ID)
-      await vi.waitFor(() => expect(host1.stop).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(host1.stop).toHaveBeenCalledTimes(1), WAIT)
       // This already-admitted resource request is waiting on the first teardown
       // before reconcile installs its agent gate.
       staleEnsure = (daemon as any).ensureHostAsync(AGENT_ID)
@@ -438,7 +445,7 @@ describe('Daemon interrupt safety gates', () => {
         workspace: { mode: 'from-scratch', path: join(root, 'agents', AGENT_ID, 'workspace-new') }
       })
       reconciling = daemon.reconcile()
-      await vi.waitFor(() => expect((daemon as any).drainingAgents.has(AGENT_ID)).toBe(true))
+      await vi.waitFor(() => expect((daemon as any).drainingAgents.has(AGENT_ID)).toBe(true), WAIT)
 
       await expect((daemon as any).dispatch(AGENT_ID, dm('C2', 'T2', '200', 'during stop'))).resolves.toBeNull()
       await expect((daemon as any).ensureHostAsync(AGENT_ID)).rejects.toThrow(/draining/)
@@ -487,7 +494,7 @@ describe('Daemon interrupt safety gates', () => {
       await expect((daemon as any).dispatch(AGENT_ID, dm('C1', 'T1', '100', 'warm'))).resolves.toBe('acp-old')
       updateAgent(root, { status: 'inactive' })
       reconciling = daemon.reconcile()
-      await vi.waitFor(() => expect(host.stop).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(host.stop).toHaveBeenCalledTimes(1), WAIT)
 
       expect((daemon as any).agents.has(AGENT_ID)).toBe(false)
       expect((daemon as any).drainingAgents.has(AGENT_ID)).toBe(true)
@@ -736,8 +743,8 @@ describe('Daemon interrupt safety gates', () => {
     let stopped = false
 
     try {
-      await vi.waitFor(() => expect(failedHost.start).toHaveBeenCalledTimes(1))
-      await vi.waitFor(() => expect(clock.pending()).toContain(60_000))
+      await vi.waitFor(() => expect(failedHost.start).toHaveBeenCalledTimes(1), WAIT)
+      await vi.waitFor(() => expect(clock.pending()).toContain(60_000), WAIT)
       await expect(daemon.stop()).resolves.toBeUndefined()
       stopped = true
       await expect(turn).resolves.toBeNull()
@@ -766,7 +773,7 @@ describe('Daemon interrupt safety gates', () => {
     await daemon.start()
 
     const ack = (daemon as any).dispatchWebchatTurn(AGENT_ID, CONV_1, 'cold shutdown', 'alice', stream.sink)
-    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
     await daemon.stop()
 
     expect(stream.dones).toEqual([

@@ -6,6 +6,11 @@ import { ORGANIZATION_SUGGESTION_REVIEW_FEATURE } from '@agentconnect.md/protoco
 import { Daemon } from '../src/daemon.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 const AGENT_ID = 'evaluation-agent'
 
 function scaffold(opts: { runtimeCommand?: string; model?: string; autoAdopt?: boolean } = {}): string {
@@ -107,19 +112,21 @@ describe('Daemon evaluation surface', () => {
       usage: { used: 12 }
     })
     expect(host.prompt).toHaveBeenCalledOnce()
-    await vi.waitFor(() =>
-      expect(collector.events().map((event) => event.type)).toEqual(
-        expect.arrayContaining([
-          'turn.accepted',
-          'memory.recall.requested',
-          'memory.recall.completed',
-          'turn.started',
-          'acp.update',
-          'memory.capture.requested',
-          'memory.capture.completed',
-          'turn.completed'
-        ])
-      )
+    await vi.waitFor(
+      () =>
+        expect(collector.events().map((event) => event.type)).toEqual(
+          expect.arrayContaining([
+            'turn.accepted',
+            'memory.recall.requested',
+            'memory.recall.completed',
+            'turn.started',
+            'acp.update',
+            'memory.capture.requested',
+            'memory.capture.completed',
+            'turn.completed'
+          ])
+        ),
+      WAIT
     )
     const events = collector.events()
     expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1))
@@ -213,7 +220,7 @@ describe('Daemon evaluation surface', () => {
     await vi.waitFor(() => {
       dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
-    })
+    }, WAIT)
 
     expect(dream).toMatchObject({
       executionSessionId: 'dream-session-1',
@@ -336,7 +343,7 @@ describe('Daemon evaluation surface', () => {
     await vi.waitFor(() => {
       dream = (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
-    })
+    }, WAIT)
 
     expect(dream).not.toHaveProperty('model')
     expect(dream?.usage).not.toHaveProperty('costAmount')
@@ -551,7 +558,7 @@ describe('Daemon evaluation surface', () => {
     }
 
     await (allowed as any).syncOrganizationSuggestions()
-    await vi.waitFor(() => expect(syncOrganizationSuggestions).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(syncOrganizationSuggestions).toHaveBeenCalledTimes(3), WAIT)
 
     expect(allowedReview).toHaveBeenCalledOnce()
     expect(allowedReview).toHaveBeenCalledWith(decision)

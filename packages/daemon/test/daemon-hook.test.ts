@@ -30,6 +30,11 @@ import { transcriptCoords } from '../src/session/session-manager.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { sessionWorktreePath } from '../src/workspace/workspace-manager.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 const AGENT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const HOOK_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
@@ -144,7 +149,7 @@ describe('Daemon rd/msg hook fires', () => {
     const ack = await (daemon as any).handleRelayMsg(fire(), () => {})
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
 
-    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
+    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
     expect(cp.hookReports[0]).toMatchObject({
       hookId: HOOK_ID,
       agentId: AGENT_ID,
@@ -196,7 +201,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
 
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
-    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect((daemon as any).store.getSessionByAcpId('acp-hook-1')).toMatchObject({
       title: 'PR #144: perf(github): speed up review delivery',
       transportScope: 'github:123'
@@ -256,7 +261,7 @@ describe('Daemon rd/msg hook fires', () => {
         accepted: true
       })
 
-      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
       expect(cp.hookReports[0]).toMatchObject({
         hookId: HOOK_ID,
         deliveryKey: 'd-1',
@@ -368,7 +373,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
 
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
-    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect(cp.startHook).toHaveBeenCalledOnce()
     expect(activeReviewAuthorities).toBe(0)
     expect(submitError?.message).toContain('only available during the active PR hook turn')
@@ -780,7 +785,7 @@ describe('Daemon rd/msg hook fires', () => {
       const ack = await (daemon as any).handleRelayMsg(msg, () => {})
       expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
 
-      await vi.waitFor(() => expect(poster.publish).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(poster.publish).toHaveBeenCalledTimes(1), WAIT)
       expect(makeGithubReply).toHaveBeenCalledWith(
         AGENT_ID,
         { hookId: HOOK_ID, repo: 'acme/infra', number },
@@ -818,7 +823,7 @@ describe('Daemon rd/msg hook fires', () => {
       // merely that the ACP prompt ended while its comment is still in flight.
       expect(cp.hookReports).toHaveLength(0)
       releasePublish()
-      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
       expect(cp.hookReports[0]).toMatchObject({
         hookId: HOOK_ID,
         deliveryKey: 'd-1',
@@ -931,7 +936,7 @@ describe('Daemon rd/msg hook fires', () => {
         () => {}
       )
 
-      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
       expect(poster.publish).toHaveBeenCalledTimes(publishes ? 1 : 0)
       if (publishes) expect(poster.publish).toHaveBeenCalledWith('Self-contained final.')
       else expect(hookState.mock.calls.some((call) => call[2] === 'settled')).toBe(true)
@@ -1164,7 +1169,7 @@ describe('Daemon rd/msg hook fires', () => {
     ;(restarted as any).makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
 
     await restarted.start()
-    await vi.waitFor(() => expect(hookReports).toHaveLength(1))
+    await vi.waitFor(() => expect(hookReports).toHaveLength(1), WAIT)
     expect(reconcile).toHaveBeenCalledOnce()
     expect(reviewStateDuringPrompt).toBe('idle')
     expect(cp.reportGithubReviewResult).toHaveBeenCalledWith(
@@ -1250,7 +1255,7 @@ describe('Daemon rd/msg hook fires', () => {
 
     await restarted.start()
 
-    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect(makeGithubReply).toHaveBeenCalledWith(
       AGENT_ID,
       {
@@ -1383,7 +1388,7 @@ describe('Daemon rd/msg hook fires', () => {
       )
 
       expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
-      await vi.waitFor(() => expect((daemon as any).workspaceDispatchFences.has(AGENT_ID)).toBe(true))
+      await vi.waitFor(() => expect((daemon as any).workspaceDispatchFences.has(AGENT_ID)).toBe(true), WAIT)
       let admitted = false
       const admission = (daemon as any).admitActiveDispatch(AGENT_ID, key).then((release: () => void) => {
         admitted = true
@@ -1395,7 +1400,7 @@ describe('Daemon rd/msg hook fires', () => {
 
       releaseWorkspaceMutation()
       await blockingMutation
-      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
       const releaseDispatch = await admission
       releaseDispatch()
       expect(cp.hookReports[0]).toMatchObject({ status: 'success', event })
@@ -1428,7 +1433,7 @@ describe('Daemon rd/msg hook fires', () => {
     ;(restarted as never as { cpClient: unknown }).cpClient = cp
     await restarted.start()
 
-    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
+    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
     expect(cp.hookReports[0]).toMatchObject({ status: 'success', reason: 'deleted_event_ignored' })
     expect(cp.hookReports[0]!.sessionId).toBeUndefined()
     expect(restartedHost.host.newSession).not.toHaveBeenCalled()
@@ -1449,12 +1454,12 @@ describe('Daemon rd/msg hook fires', () => {
 
     // 1) An `opened` fire creates the session for acme/infra#42.
     await (daemon as any).handleRelayMsg(ghFire('issues', 'opened', 'd-open'), () => {})
-    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
+    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
 
     // 2) Removing a comment is lifecycle noise even though the thread session exists.
     await (daemon as any).handleRelayMsg(ghFire('issue_comment', 'deleted', 'd-del'), () => {})
-    await vi.waitFor(() => expect(cp.hookReports.length).toBe(2))
+    await vi.waitFor(() => expect(cp.hookReports.length).toBe(2), WAIT)
     expect(host.prompt).toHaveBeenCalledTimes(1)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     expect(cp.hookReports[1]).toMatchObject({ status: 'success', reason: 'deleted_event_ignored' })
@@ -1532,7 +1537,7 @@ describe('Daemon rd/msg hook fires', () => {
       () => {}
     )
     expect(ack.accepted).toBe(true)
-    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
+    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
     expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
     // The anchor uses the selected agent identity; the reply posted after it
     // threads under the anchor's ts.
@@ -1585,7 +1590,7 @@ describe('Daemon rd/msg hook fires', () => {
     const p2 = (daemon as any).handleRelayMsg(fire(), () => {}) // redelivery before admission settles
     const [a1, a2] = await Promise.all([p1, p2])
     expect(a2).toEqual(a1)
-    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
+    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
     expect(host.prompt.mock.calls.length).toBe(1) // ONE turn, not two
     await daemon.stop()
   }, 15_000)
@@ -1621,7 +1626,7 @@ describe('Daemon rd/msg hook fires', () => {
     const first = fire({ sessionKey: HOOK_ID })
     const second = fire({ sessionKey: HOOK_ID, msgId: `${HOOK_ID}:d-2`, deliveryKey: 'd-2' })
     await expect((daemon as any).handleRelayMsg(first, () => {})).resolves.toMatchObject({ accepted: true })
-    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
     expect([...(daemon as any).inflight]).toHaveLength(1)
     await expect((daemon as any).handleRelayMsg(second, () => {})).resolves.toMatchObject({ accepted: true })
 
@@ -1633,7 +1638,7 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as any).drainingAgents.add(AGENT_ID)
     expect((daemon as any).drainingAgents.has(AGENT_ID)).toBe(true)
     releasePrompt()
-    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(2))
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(2), WAIT)
     expect(cp.hookReports.filter((report) => report.deliveryKey === 'd-2')).toEqual([
       expect.objectContaining({ status: 'failed', reason: 'dropped' })
     ])
@@ -1689,12 +1694,12 @@ describe('Daemon rd/msg hook fires', () => {
       const first = fire({ sessionKey: HOOK_ID })
       const second = fire({ sessionKey: HOOK_ID, msgId: `${HOOK_ID}:d-2`, deliveryKey: 'd-2' })
       await expect((daemon as any).handleRelayMsg(first, () => {})).resolves.toMatchObject({ accepted: true })
-      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
       await expect((daemon as any).handleRelayMsg(second, () => {})).resolves.toMatchObject({ accepted: true })
 
       mutate(root)
       const reconciling = daemon.reconcile()
-      await vi.waitFor(() => expect(host.cancel).toHaveBeenCalled())
+      await vi.waitFor(() => expect(host.cancel).toHaveBeenCalled(), WAIT)
 
       const interrupted = (daemon as any).store.listInboxBySessionKeyFifo() as Array<{
         id: string
@@ -1719,7 +1724,7 @@ describe('Daemon rd/msg hook fires', () => {
         }>
         expect(rows).toHaveLength(2)
         expect(rows.every((row) => row.hookContext === null && row.terminalReport !== null)).toBe(true)
-      })
+      }, WAIT)
       expect(emitHookReport).toHaveBeenCalledTimes(2)
       await daemon.stop()
     },
@@ -1773,7 +1778,7 @@ describe('Daemon rd/msg hook fires', () => {
       { hookId: HOOK_ID, agentId: AGENT_ID, deliveryKey: 'cleanup', status: 'success' },
       `${HOOK_ID}:cleanup`
     )
-    await vi.waitFor(() => expect(retry).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(retry).toHaveBeenCalledTimes(2), WAIT)
     await daemon.stop()
   })
 
@@ -1813,7 +1818,7 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as any).emitHookCompletion(hook, 'success', {}, owner)
     ;(daemon as any).emitHookCompletion(hook, 'failed', { reason: 'late loser' }, owner)
 
-    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'double-terminal', status: 'success' })
     const receipt = (daemon as any).store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id)
     expect(JSON.parse(receipt.terminalReport)).toMatchObject({ status: 'success' })
@@ -1852,7 +1857,7 @@ describe('Daemon rd/msg hook fires', () => {
 
     ;(daemon as any).emitHookCompletion(hook, 'success', {}, { inboxId: id })
 
-    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     await Promise.resolve()
     expect(acknowledge).not.toHaveBeenCalled()
     expect(store.listInboxBySessionKeyFifo().find((row: { id: string }) => row.id === id)).toMatchObject({
@@ -1879,8 +1884,8 @@ describe('Daemon rd/msg hook fires', () => {
     ;(first as any).connByIntegration.set('int-a', firstAnchor)
     const targeted = fire({ target: { platform: 'slack', channel: 'C-alerts', integrationId: 'int-a' } })
     await expect((first as any).handleRelayMsg(targeted, () => {})).resolves.toMatchObject({ accepted: true })
-    await vi.waitFor(() => expect(firstHost.host.prompt).toHaveBeenCalledOnce())
-    await vi.waitFor(() => expect(firstCp.hookReports).toHaveLength(1))
+    await vi.waitFor(() => expect(firstHost.host.prompt).toHaveBeenCalledOnce(), WAIT)
+    await vi.waitFor(() => expect(firstCp.hookReports).toHaveLength(1), WAIT)
     expect(firstAnchor.postMessage.mock.calls.filter(([, text]) => text === '🪝 Webhook delivery d-1')).toHaveLength(1)
     await first.stop()
 
