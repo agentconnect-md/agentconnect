@@ -39,40 +39,19 @@ describe('dream exploration prompt + materialized inputs', () => {
   it('bounds the exploration prompt no matter how large the trusted context is', () => {
     const prompt = buildDreamExplorationPrompt({
       sessionIds: Array.from({ length: 200 }, (_, i) => `sess-${i}`),
-      organizationKnowledge: [
-        {
-          id: '11111111-1111-4111-8111-111111111111',
-          title: 'big',
-          revision: 1,
-          summary: null,
-          tags: [],
-          content: 'x'.repeat(400_000)
-        }
-      ]
+      instructions: 'x'.repeat(400_000)
     })
     expect(Buffer.byteLength(prompt)).toBeLessThan(120_000)
   })
 
-  it('delimits accepted organization knowledge and managed-skill targets', () => {
-    const prompt = buildDreamExplorationPrompt({
-      sessionIds: [],
-      organizationKnowledge: [
-        {
-          id: '11111111-1111-4111-8111-111111111111',
-          title: 'Release process',
-          revision: 3,
-          summary: 'How releases work',
-          tags: ['release'],
-          content: '# Release\nUse the promotion gate.'
-        }
-      ],
-      managedSkills: [{ id: '22222222-2222-4222-8222-222222222222', name: 'release-service', revision: 4 }]
-    })
-    expect(prompt).toContain('<accepted-organization-knowledge>')
-    expect(prompt).toContain('revision="3"')
-    expect(prompt).toContain('Use the promotion gate.')
-    expect(prompt).toContain('<accepted-managed-skills>')
-    expect(prompt).toContain('name="release-service"')
+  it('points at the org knowledge/skill tools instead of inlining existing entries', () => {
+    const prompt = buildDreamExplorationPrompt({ sessionIds: [] })
+    // Existing org context is no longer pre-stuffed; the model fetches it on demand.
+    expect(prompt).not.toContain('<accepted-organization-knowledge>')
+    expect(prompt).not.toContain('<accepted-managed-skills>')
+    expect(prompt).toContain('listKnowledge')
+    expect(prompt).toContain('listOrgSkills')
+    expect(prompt).toContain('update')
   })
 
   it('renders a session file with a citable header, text, and tool titles (no raw bodies)', () => {
@@ -568,7 +547,7 @@ describe('mined skill candidates', () => {
     expect(dreamSystemPrompt(true)).toContain('extract procedures')
     expect(dreamSystemPrompt(true)).toContain('organizationSkills')
     expect(dreamSystemPrompt(true)).toContain('complete Agent Skills file tree')
-    expect(dreamSystemPrompt(true)).toContain('<accepted-managed-skills>')
+    expect(dreamSystemPrompt(true)).toContain('listOrgSkills')
     expect(dreamSystemPrompt(true)).toContain('never "groundedSessionIds"')
     expect(dreamSystemPrompt(true)).toContain('agentMemory.index is always the complete, non-empty MEMORY.md text')
     expect(dreamSystemPrompt(true).startsWith(MEMORY_DREAM_SYSTEM_PROMPT)).toBe(true)

@@ -96,8 +96,8 @@ async function setup(opts: {
   cancelGraceMs?: number
   extractionResult?: DreamExtractionResult
   onEvent?: (event: DreamLifecycleEvent) => void
-  findOrganizationKnowledge?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['findOrganizationKnowledge']>
-  managedSkillsFor?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['managedSkillsFor']>
+  listOrganizationKnowledge?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['listOrganizationKnowledge']>
+  listOrganizationSkills?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['listOrganizationSkills']>
   onOrganizationSuggestions?: () => void | Promise<void>
   withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   operationPolicy?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['operationPolicy']>
@@ -119,8 +119,8 @@ async function setup(opts: {
       return { output }
     },
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
-    ...(opts.findOrganizationKnowledge ? { findOrganizationKnowledge: opts.findOrganizationKnowledge } : {}),
-    ...(opts.managedSkillsFor ? { managedSkillsFor: opts.managedSkillsFor } : {}),
+    ...(opts.listOrganizationKnowledge ? { listOrganizationKnowledge: opts.listOrganizationKnowledge } : {}),
+    ...(opts.listOrganizationSkills ? { listOrganizationSkills: opts.listOrganizationSkills } : {}),
     ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
     ...(opts.withSkillAcceptance ? { withSkillAcceptance: opts.withSkillAcceptance } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
@@ -1294,18 +1294,7 @@ describe('DreamRunner organization suggestions', () => {
     })
     const trusted = await setup({
       extract: async () => updateOutput,
-      findOrganizationKnowledge: async () => [
-        {
-          id: targetId,
-          title: 'Release policy',
-          summary: null,
-          tags: ['release'],
-          revision: 4,
-          updatedAt: '2026-07-24T00:00:00.000Z',
-          content: '# Release',
-          truncated: false
-        }
-      ]
+      listOrganizationKnowledge: async () => [{ id: targetId, revision: 4 }]
     })
     const trustedStart = await trusted.runner.start('a1', { trigger: 'manual' })
     expect((await settle(trusted.store, trustedStart.dreamId)).organizationSuggestions?.[0]).toMatchObject({
@@ -1316,7 +1305,7 @@ describe('DreamRunner organization suggestions', () => {
 
     const offline = await setup({
       extract: async () => updateOutput,
-      findOrganizationKnowledge: async () => {
+      listOrganizationKnowledge: async () => {
         throw new Error('offline')
       }
     })
@@ -1350,7 +1339,7 @@ describe('DreamRunner organization suggestions', () => {
     const trusted = await setup({
       policy: { enabled: true, mineSkills: true },
       extract: async () => updateOutput,
-      managedSkillsFor: () => [{ id: targetId, name: 'release-service', revision: 2 }]
+      listOrganizationSkills: async () => [{ id: targetId, name: 'release-service', revision: 2 }]
     })
     trusted.store.sources.push({ sessionId: 'sess-2', channel: 'C2', thread: 'T2' })
     const started = await trusted.runner.start('a1', { trigger: 'manual' })
@@ -1361,12 +1350,14 @@ describe('DreamRunner organization suggestions', () => {
       targetRevision: 2,
       title: 'release-service'
     })
-    expect(trusted.prompts[0]?.prompt).toContain(`<managed-skill id="${targetId}" revision="2"`)
+    // Existing skills are discovered via the tool, not pre-stuffed; the prompt
+    // points the model at it.
+    expect(trusted.prompts[0]?.prompt).toContain('listOrgSkills')
 
     const unfenced = await setup({
       policy: { enabled: true, mineSkills: true },
       extract: async () => updateOutput,
-      managedSkillsFor: () => []
+      listOrganizationSkills: async () => []
     })
     unfenced.store.sources.push({ sessionId: 'sess-2', channel: 'C2', thread: 'T2' })
     const unfencedStart = await unfenced.runner.start('a1', { trigger: 'manual' })
