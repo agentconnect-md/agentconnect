@@ -147,6 +147,8 @@ import {
   type ObservedChannelsHost
 } from './platforms/observed-channels.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
+import { connectionIdentityFor, tenantScopeFor, type TenantScopeHost } from './platforms/transport-identity.js'
+import { conversationAudienceFor } from './platforms/session-audience.js'
 import { CommandChromeRegistry, type SelectKind } from './platforms/command-chrome.js'
 import { slackCommandChrome } from './platforms/slack/command-chrome.js'
 import {
@@ -14220,34 +14222,12 @@ export class Daemon {
   }
 
   /** Stable opaque identity for one physical platform connection. Integrations
-   * consolidated onto the same credential receive the same scope, while no raw
-   * credential is ever persisted or logged. */
+   * consolidated onto the same credential receive the same scope (§7.4
+   * transport-identity strategy names the credential), while no raw credential
+   * is ever persisted or logged. */
   private transportScopeForIntegration(integration: Integration): string {
-    let connectionIdentity: string
-    switch (integration.platform) {
-      case 'slack':
-        connectionIdentity =
-          integration.slack.mode === 'shared'
-            ? integration.slack.botToken
-            : (integration.slack.appToken ?? integration.slack.botToken)
-        break
-      case 'telegram': {
-        // BotFather tokens start with the stable public bot id, which survives a
-        // secret rotation. Non-standard test/config tokens fall back to the full
-        // high-entropy credential before hashing.
-        const botId = integration.telegram.botToken.split(':', 1)[0]
-        connectionIdentity = /^\d+$/.test(botId ?? '') ? botId! : integration.telegram.botToken
-        break
-      }
-      case 'discord':
-        connectionIdentity = integration.discord.botToken
-        break
-      case 'feishu':
-        connectionIdentity = `${integration.feishu.region}:${integration.feishu.appId}`
-        break
-    }
     const digest = createHash('sha256')
-      .update(`${integration.platform}\0${connectionIdentity}`)
+      .update(`${integration.platform}\0${connectionIdentityFor(integration)}`)
       .digest('hex')
       .slice(0, 24)
     return `${integration.platform}:${digest}`
@@ -14265,27 +14245,17 @@ export class Daemon {
    * never a guessed one.
    */
   private tenantScopeForIntegration(integration: Integration): string | undefined {
-    switch (integration.platform) {
-      case 'slack': {
-        // The workspace id from auth.test, surfaced by the live connection.
-        // Optional-call: the connection map holds live SlackConnections in
-        // production, but a not-yet-authenticated (or test-substituted) one may
-        // not expose the accessor — fall back to a minted scope rather than throw.
-        const teamId = this.connByIntegration.get(integration.id)?.workspaceId?.()
-        return teamId || this.mintedTenantScope(integration.id)
-      }
-      case 'telegram': {
-        // The public bot id prefix survives a BotFather token rotation.
-        const botId = integration.telegram.botToken.split(':', 1)[0]
-        return /^\d+$/.test(botId ?? '') ? `bot${botId}` : this.mintedTenantScope(integration.id)
-      }
-      case 'feishu':
-        // App id + region is the tenant anchor Feishu/Lark exposes to us.
-        return `${integration.feishu.region}:${integration.feishu.appId}`
-      default:
-        // Discord (and anything new) exposes no durable tenant id here.
-        return this.mintedTenantScope(integration.id)
-    }
+    return tenantScopeFor(this.tenantScopeHost, integration)
+  }
+
+  /** Core-owned inputs of the tenant-scope strategies (§7.4): the live
+   *  connection's workspace id and the minted-once persisted fallback. */
+  private readonly tenantScopeHost: TenantScopeHost = {
+    // Optional-call: the connection map holds live SlackConnections in
+    // production, but a not-yet-authenticated (or test-substituted) one may not
+    // expose the accessor — the strategy falls back to a minted scope.
+    liveWorkspaceId: (integrationId) => this.connByIntegration.get(integrationId)?.workspaceId?.(),
+    minted: (integrationId) => this.mintedTenantScope(integrationId)
   }
 
   /**
@@ -14385,30 +14355,31 @@ export class Daemon {
     isA2aChild: boolean
   ):
     | {
-        externalProvider: 'slack' | 'feishu'
+        externalProvider: string
         externalRealmKey?: string
         externalResourceKind: 'conversation'
         externalResourceKey: string
         externalIntegrationId?: string
       }
     | undefined {
-    if (
-      (msg.platform !== 'slack' && msg.platform !== 'feishu') ||
-      (msg.platform === 'slack' && msg.isDm) ||
-      isA2aChild
-    ) {
+    // Which platforms bind sessions to a conversation audience, which of their
+    // conversations qualify, and what identifies the realm are platform facts
+    // (§7.4 conversation-audience strategy). No registered audience — Telegram,
+    // Discord, webchat — means local classification rules alone, as before.
+    const audience = conversationAudienceFor(msg.platform)
+    if (!audience || !audience.applies(msg) || isA2aChild) {
       return undefined
     }
     const integrationId = this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
     const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
-    const realmKey =
-      msg.platform === 'slack'
-        ? integrationId
-          ? this.connByIntegration.get(integrationId)?.workspaceId?.()
-          : undefined
-        : integration?.platform === 'feishu'
-          ? this.tenantScopeForIntegration(integration)
-          : undefined
+    const realmKey = audience.realmKey(
+      {
+        liveWorkspaceId: (id) => this.connByIntegration.get(id)?.workspaceId?.(),
+        tenantScope: (int) => this.tenantScopeForIntegration(int as Integration)
+      },
+      integrationId,
+      integration
+    )
     // Cron and daemon-owned continuation turns can create or resume a real shared
     // conversation, while synthetic/headless callers may use platform-shaped
     // coordinates with no connection. Bind those trusted system turns only when
@@ -14438,8 +14409,12 @@ export class Daemon {
   ): 'unchanged' | 'mismatch' | 'unavailable' {
     const direct =
       this.githubExternalSource(hookContext) ?? this.conversationExternalSource(agentId, msg, callMeta !== undefined)
+    // A CONVERSATION audience is only bindable when fully attributed (realm +
+    // integration); a repository audience (GitHub) has its own completeness rule.
+    // Keyed on the resource kind, so a new platform's audience gets the same
+    // guard without this growing a provider list.
     if (
-      (direct?.externalProvider === 'slack' || direct?.externalProvider === 'feishu') &&
+      direct?.externalResourceKind === 'conversation' &&
       (!direct.externalRealmKey || !direct.externalIntegrationId)
     ) {
       return 'unavailable'
