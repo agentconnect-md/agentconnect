@@ -4,10 +4,11 @@
 // rows stay in their tree even when pinned and are removed from the ordinary list
 // below, so lineage never appears twice. Rows only appear when there is another
 // session to navigate to. ≥1240px (`wide:`) draws the inline column; 769–1239px
-// collapses it to a floating top-right button whose hover popover holds the same
-// list; ≤768px moves that trigger INTO the shell's app bar (MobileActionSlot) and
-// taps it open, since touch has no hover and a fixed overlay would cover the
-// session title. The relation card in SessionDetailView still carries lineage.
+// collapses it to a floating top-right button; ≤768px moves that trigger INTO the
+// shell's app bar (MobileActionSlot), because a fixed overlay would cover the
+// session title. Both collapsed bands open the SAME popover, and both open it on
+// click — pointer capability does not follow width, so hover is only ever an extra
+// path. The relation card in SessionDetailView still carries lineage.
 //
 // The COLUMN, though, is unconditional above `wide` (SessionRailSlot). The
 // detail body is centred in whatever horizontal space the rail leaves it, so any
@@ -156,9 +157,12 @@ export function SessionRail({
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
 
   const { register: registerMobileAction } = useMobileActionSlot()
-  // ≤768px only: whether the app-bar-triggered list panel is showing. Touch has no
-  // hover, so this one is a latch rather than the tablet button's CSS hover.
-  const [mobileOpen, setMobileOpen] = useState(false)
+  // Below `wide`, where the list has no column: whether a TAP has latched the panel
+  // open. Both collapsed triggers share it, because pointer capability does not
+  // follow width — a 1024px iPad lands in the 769–1239px band with no hover and no
+  // reliable focus-on-tap (Safari), so a hover-only affordance there is unopenable.
+  // The tablet button keeps its CSS hover as a second, mouse-only opening path.
+  const [listOpen, setListOpen] = useState(false)
 
   // Hydration: the server has no localStorage, so the first client paint must match
   // the SSR markup (every row unpinned) and the stored pins land in an effect.
@@ -284,20 +288,21 @@ export function SessionRail({
   // button (see MobileActionSlot) whose panel is rendered below. Registration has
   // to happen before the empty early-return, or the hook order would depend on
   // whether the rail found rows.
-  const onMobileToggle = useCallback(() => setMobileOpen((v) => !v), [])
+  const toggleList = useCallback(() => setListOpen((v) => !v), [])
+  const closeList = useCallback(() => setListOpen(false), [])
   useEffect(() => {
     if (empty) return
     registerMobileAction({
       icon: 'panel-right',
       label: 'Sessions list',
-      active: mobileOpen,
-      onClick: onMobileToggle
+      active: listOpen,
+      onClick: toggleList
     })
     return () => registerMobileAction(null)
-  }, [empty, mobileOpen, onMobileToggle, registerMobileAction])
+  }, [empty, listOpen, toggleList, registerMobileAction])
   // The detail view survives navigation, so a tapped row would otherwise leave the
   // panel open over the session it just opened.
-  useEffect(() => setMobileOpen(false), [currentId])
+  useEffect(() => setListOpen(false), [currentId])
 
   if (empty) return <SessionRailSlot />
 
@@ -489,19 +494,34 @@ export function SessionRail({
           {body}
         </div>
       </div>
-      {/* 769–1239px: the rail collapses to a floating top-right button; hovering or
-          focusing it reveals the list in a popover. The pt-[6px] spacer keeps the
-          hover area contiguous between button and panel. */}
-      <div className="group fixed top-[10px] right-[14px] z-40 hidden desktop:max-wide:block">
+      {/* 769–1239px: the rail collapses to a floating top-right button. A CLICK
+          latches the panel open (`listOpen`) and hover/focus opens it too — this band
+          is not mouse-only, so hover cannot be the sole path (a 1024px iPad has no
+          hover, and Safari does not focus a button on tap). The pt-[6px] spacer keeps
+          the hover area contiguous between button and panel. */}
+      <div className="group fixed top-[10px] right-[14px] z-50 hidden desktop:max-wide:block">
         <button
           type="button"
           aria-label="Sessions list"
           aria-haspopup="true"
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-(--border-default) bg-(--surface-card) text-(--text-secondary) shadow-(--shadow-sm) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
+          aria-expanded={listOpen}
+          onClick={toggleList}
+          className={`flex h-9 w-9 items-center justify-center rounded-full border bg-(--surface-card) shadow-(--shadow-sm) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
+            listOpen ? 'border-(--brand) text-(--brand)' : 'border-(--border-default) text-(--text-secondary)'
+          }`}
         >
           <Icon name="panel-right" size={16} />
         </button>
-        <div className="absolute top-full right-0 hidden w-[264px] pt-[6px] group-focus-within:block group-hover:block">
+        {/* Two complete literals rather than toggling `hidden`/`block` (STYLE.md §8):
+            the latched state must not depend on which display utility Tailwind emits
+            last. Closed still carries the hover/focus reveal. */}
+        <div
+          className={
+            listOpen
+              ? 'absolute top-full right-0 block w-[264px] pt-[6px]'
+              : 'absolute top-full right-0 hidden w-[264px] pt-[6px] group-focus-within:block group-hover:block'
+          }
+        >
           <div className="flex max-h-[75vh] flex-col rounded-lg border border-(--border-default) bg-(--surface-card) p-[10px] shadow-(--shadow-lg)">
             {body}
           </div>
@@ -516,10 +536,13 @@ export function SessionRail({
           wrapper div here — zero-width, but still a flex ITEM — would spend that gap
           as 26px of dead space on the transcript's right edge. Positioned children
           are out of flow, so they are not flex items and contribute no gap. */}
-      {mobileOpen && (
-        <div className="fixed inset-0 z-50 desktop:hidden" onClick={() => setMobileOpen(false)} aria-hidden="true" />
-      )}
-      {mobileOpen && (
+      {/* Tap-away close for BOTH collapsed bands (`wide:hidden`), so a latched panel
+          is never a trap on a device that cannot hover. It sits under the triggers
+          (z-40 vs their z-50) so the tablet button still toggles itself shut; the
+          mobile trigger lives in the un-layered app bar, so there the scrim takes
+          that tap instead — which closes the panel just the same. */}
+      {listOpen && <div className="fixed inset-0 z-40 wide:hidden" onClick={closeList} aria-hidden="true" />}
+      {listOpen && (
         <div
           role="dialog"
           aria-label="Sessions list"
