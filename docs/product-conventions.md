@@ -17,6 +17,25 @@ Visibility controls use audience language: show **Everyone** for the internal `o
 value, never **Org** or "org-visible". Keep **Organization** only when the copy is
 actually about organization management, membership, or ownership.
 
+## Team visibility always has an audience
+
+Every Agent, Daemon, scheduled task, MCP provider, and skill source set to
+**Selected** has at least one current organization member who can see it. The
+current resource owner is always included and cannot be removed; selected members
+only add to that audience. An empty selected-member list therefore means
+owner-only, not nobody.
+
+The server intersects selected IDs with current organization membership and must
+reject a change to **Selected** when the resource has no current-member owner. This
+is a transaction-time invariant, not merely a disabled Console control: a stale
+page or a concurrent membership removal must not commit a resource that nobody can
+reach. Ownerless resources remain **Everyone** until an explicit ownership workflow
+assigns a current member.
+
+This convention governs human Console access only. The independently configured
+agent-to-agent inbound and outbound policies may intentionally use **Selected**
+with an empty peer list to deny peer discovery or calls.
+
 ## Public platform app descriptions
 
 Slack, Feishu/Lark, and Discord app or bot profiles use the fixed public description

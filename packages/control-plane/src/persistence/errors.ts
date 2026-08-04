@@ -155,15 +155,17 @@ export class OrgOwnerRequired extends Error {
 }
 
 /**
- * Restricted visibility requires a durable owner. Ownerless org-visible rows
- * remain editable, but cannot be made restricted until an explicit,
- * provenance-aware ownership workflow assigns one.
+ * Restricted visibility requires a durable owner who is a current organization
+ * member. Ownerless org-visible rows remain editable, but cannot be made
+ * restricted until an explicit, provenance-aware ownership workflow assigns
+ * one. A stale owner is rejected for the same reason: Selected must never commit
+ * with no current member able to reach the resource.
  */
 export class ResourceOwnerMissing extends Error {
   readonly code = 'RESOURCE_OWNER_MISSING' as const
 
   constructor() {
-    super('ownerless resource cannot be restricted')
+    super('Selected access requires a current organization member as resource owner')
     this.name = 'ResourceOwnerMissing'
   }
 }

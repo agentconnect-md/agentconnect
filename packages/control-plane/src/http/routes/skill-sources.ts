@@ -424,7 +424,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Set skill source sharing',
           description:
-            'Set an owned source’s visibility (org-wide vs restricted) and share set. Requires edit rights; ownerless sources stay org-visible, and sharedWith is intersected with current org members.',
+            'Set an owned source’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
           operationId: 'setSkillSourceSharing',
           params: IdParam,
           body: SetSharingBody,

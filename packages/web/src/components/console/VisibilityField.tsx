@@ -136,7 +136,7 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
   return (
     <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
       {tile('org', 'globe', 'Everyone', 'All members can see it.')}
-      {tile('restricted', 'lock', 'Selected', 'Only people you choose.')}
+      {tile('restricted', 'lock', 'Selected', 'The owner and people you choose.')}
     </div>
   )
 }

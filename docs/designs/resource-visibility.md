@@ -147,9 +147,12 @@ Persistence records additionally retain raw `createdByUserId` for audit and
 the joined creator used by Console DTOs. Creation defaults ownership to the
 creator when one exists; system-created rows may remain ownerless and are
 organization-visible by default. Ownerless rows cannot be changed to
-restricted visibility. Assigning ownership later requires a separate,
-provenance-aware workflow; the sharing endpoint never lets an arbitrary editor
-claim one.
+restricted visibility. A restricted write also rechecks that the recorded owner
+is still a current organization member after taking membership locks. The write
+is rejected rather than allowing share filtering or a concurrent removal to
+leave no current member able to reach the resource. Assigning ownership later
+requires a separate, provenance-aware workflow; the sharing endpoint never lets
+an arbitrary editor claim one.
 
 After the schema change, run
 `pnpm --filter @agentconnect.md/control-plane prisma:generate` to regenerate the
@@ -665,7 +668,9 @@ handler.
   `data-context.tsx:69-70,:209`. Follow the role-tile interaction in
   `InviteMembersModal`.
 - **Visibility control:** radio options are Everyone and Selected. Selecting
-  Selected expands member multi-selection.
+  Selected expands member multi-selection. The current owner is pinned and
+  cannot be removed; an empty selectable-member list is owner-only, never an
+  empty audience.
 - **Locations:** agent creation in `AddAgentModal`; agent edit and detail in
   `EditAgentModal` and the General card; cron in `AddCronModal`, which is also
   the edit modal through its `cron?` prop and is opened by `ScheduleDetailView`;
