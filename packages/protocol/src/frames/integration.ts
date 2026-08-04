@@ -173,13 +173,15 @@ export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
  * long-poll, a Discord Gateway, or a Feishu long-connection from whichever variant
  * is delivered.
  *
- * DUAL-SHAPE (§6.4): each variant carries the legacy nested block (`slack` /
- * `telegram` / `discord` / `feishu`) AND the `core` + `config` envelope. Readers
- * prefer the legacy block while it is emitted and fall back to `config` (validated
- * against the same per-platform schema); `core` overrides the routing knobs wherever
- * present. A variant carrying NEITHER payload is rejected by the reader, not the
- * schema (tolerant-reader rule). The union itself opens to a flat `platformId`
- * object when legacy emission drops.
+ * DUAL-SHAPE (§6.4) — EMISSION FLIPPED: the CP now emits the `core` + `config`
+ * envelope only; the legacy nested block (`slack` / `telegram` / `discord` /
+ * `feishu`) stays OPTIONAL here so readers keep accepting frames from an older
+ * CP until the legacy readers retire. Readers prefer the legacy block when one
+ * rides and fall back to `config` (validated against the same per-platform
+ * schema); `core` overrides the routing knobs wherever present. A variant
+ * carrying NEITHER payload is rejected by the reader, not the schema
+ * (tolerant-reader rule). The union itself opens to a flat `platformId` object
+ * when the legacy members retire.
  */
 export const IntegrationSpec = z.discriminatedUnion('platform', [
   z.object({

@@ -244,18 +244,20 @@ export function integrationToSpec(
     .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
   const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
   const mutedChannels = mutedChannelIds(channels, gated)
-  // §6.4 dual-shape emission: the legacy nested block AND the core+config envelope
-  // carry the same data (readers prefer the envelope's core knobs); legacy emission
-  // drops once the fleet reads the envelope.
+  // §6.4 emission flip (gate 2 closed): the legacy nested block is no longer
+  // emitted — the fleet's dual-shape reader (write-integration.ts) validates the
+  // opaque `config` against the same wire schema and takes the routing knobs
+  // from `core`. The nested members stay OPTIONAL in the wire schema until the
+  // legacy readers retire.
   const core = { mode: 'direct' as const, bindRules, mutedChannels, gated }
   if (i.platform === 'telegram') {
     const telegram = { botToken: secret.botToken, bindRules, mutedChannels, gated }
-    return { integrationId: i.id, agentId: i.agentId, platform: 'telegram', telegram, core, config: telegram }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'telegram', core, config: telegram }
   }
   if (i.platform === 'discord') {
     // Discord authenticates the Gateway with the single bot token (no appToken).
     const discord = { botToken: secret.botToken, bindRules, mutedChannels, gated }
-    return { integrationId: i.id, agentId: i.agentId, platform: 'discord', discord, core, config: discord }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'discord', core, config: discord }
   }
   if (i.platform === 'feishu') {
     // Feishu authenticates the WSClient with an appId + appSecret pair, stored in the
@@ -270,7 +272,7 @@ export function integrationToSpec(
       mutedChannels,
       gated
     }
-    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', feishu, core, config: feishu }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', core, config: feishu }
   }
   // 'direct' (transport==='socket') — this daemon owns the Socket Mode connection.
   // The 'shared' wire variant (transport==='http', xoxb-only, no appToken/bindRules)
@@ -286,7 +288,7 @@ export function integrationToSpec(
     mutedChannels,
     gated
   }
-  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', slack, core, config: slack }
+  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', core, config: slack }
 }
 
 /**
@@ -313,7 +315,7 @@ export function httpIntegrationToSpec(
   providerAppId?: string,
   botUserId?: string
 ): IntegrationSpec {
-  // §6.4 dual-shape emission (see integrationToSpec).
+  // §6.4 emission flip (see integrationToSpec): envelope + opaque config only.
   const httpCore = {
     mode: 'shared' as const,
     bindRules: gated ? gatedBindRules(channels) : [],
@@ -331,7 +333,7 @@ export function httpIntegrationToSpec(
       mutedChannels: httpCore.mutedChannels,
       gated
     }
-    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', feishu, core: httpCore, config: feishu }
+    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', core: httpCore, config: feishu }
   }
   // `shareable` gates the daemon's in-thread "Switch agent" control: an HTTP bot
   // routes through the relay either way, but only a multi-agent (shareable) bot has
@@ -345,7 +347,7 @@ export function httpIntegrationToSpec(
     mutedChannels: httpCore.mutedChannels,
     gated
   }
-  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', slack, core: httpCore, config: slack }
+  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', core: httpCore, config: slack }
 }
 
 /** A session to re-home: its key + the agent/workspace that should own it. */

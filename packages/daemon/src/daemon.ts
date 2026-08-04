@@ -6978,7 +6978,7 @@ export class Daemon {
       (msg) => {
         const payload = WireFeishuCardActionEvent.safeParse(msg.payload)
         if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
-        const ack = this.handleRelayFeishuAction({
+        const { feishuCardAction, ...ack } = this.handleRelayFeishuAction({
           source: 'feishu_action',
           agentId: msg.agentId,
           sessionKey: msg.sessionKey,
@@ -6987,7 +6987,11 @@ export class Daemon {
           integrationId: msg.integrationId,
           payload: payload.data
         })
-        return ack.feishuCardAction !== undefined ? { ...ack, response: ack.feishuCardAction } : ack
+        // §6.6 emission flip: a platform_action is answered through the generic
+        // opaque `response` only. The deprecated Feishu-named slot still rides
+        // acks of the legacy feishu_action member (the handler above), and both
+        // retire together with the legacy readers.
+        return feishuCardAction !== undefined ? { ...ack, response: feishuCardAction } : ack
       }
     ]
   ])

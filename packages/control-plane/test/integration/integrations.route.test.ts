@@ -122,7 +122,8 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       integrationId: dto.id,
       agentId,
       platform: 'slack',
-      slack: { botToken: SLACK.botToken, appToken: SLACK.appToken }
+      // §6.4 emission flip: credentials ride the opaque config envelope.
+      config: { botToken: SLACK.botToken, appToken: SLACK.appToken }
     })
   })
 
@@ -258,7 +259,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       integrationId: dto.id,
       agentId,
       platform: 'telegram',
-      telegram: { botToken: '123456:AAE-xyz' }
+      config: { botToken: '123456:AAE-xyz' }
     })
     // Cosmetic profile updates are attempted after the durable install, but a
     // Telegram failure never rolls back or blocks the functional integration.
@@ -313,7 +314,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       integrationId: dto.id,
       agentId,
       platform: 'discord',
-      discord: { botToken: DISCORD_TOKEN }
+      config: { botToken: DISCORD_TOKEN }
     })
     // Cosmetic profile updates are attempted after the durable install, but a
     // Discord failure never rolls back or blocks the functional integration.
@@ -458,7 +459,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       agentId,
       platform: 'feishu',
       // New installs default to the international Lark gateway when region is omitted.
-      feishu: { appId: FEISHU.appId, appSecret: FEISHU.appSecret, region: 'lark' }
+      config: { appId: FEISHU.appId, appSecret: FEISHU.appSecret, region: 'lark' }
     })
     expect(dto.region).toBe('lark')
   })
@@ -576,7 +577,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(spy.upserts).toHaveLength(1)
     const upsert = spy.upserts[0]!.u
     if (upsert.platform !== 'feishu') throw new Error('expected Feishu upsert')
-    expect(upsert.feishu).toMatchObject({
+    expect(upsert.config).toMatchObject({
       mode: 'shared',
       appId: 'cli_http_app',
       appSecret: 'app-secret',
@@ -610,7 +611,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // The daemon's spec carries region 'feishu' so its SDK dials open.feishu.cn.
     const u = spy.upserts[0]!.u
     if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
-    expect(u.feishu).toMatchObject({ appId: FEISHU.appId, region: 'feishu' })
+    expect(u.config).toMatchObject({ appId: FEISHU.appId, region: 'feishu' })
 
     // Persisted on the integration row so a reconnect reconstructs the same region.
     const row = await prisma.integration.findUnique({ where: { id: dto.id as string } })
@@ -898,7 +899,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(await prisma.bot.count()).toBe(1) // reused, not re-created
     // The daemon still gets the tokens (from the bot's stored secret).
     expect(spy.upserts).toHaveLength(2)
-    expect(spy.upserts[1]!.u).toMatchObject({ slack: { botToken: SLACK.botToken, appToken: SLACK.appToken } })
+    expect(spy.upserts[1]!.u).toMatchObject({ config: { botToken: SLACK.botToken, appToken: SLACK.appToken } })
   })
 
   it("reinstalling a freed Lark bot by botId preserves region 'lark' (retained creds keep their gateway)", async () => {
@@ -936,7 +937,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // The daemon's spec dials the Lark gateway for the reinstalled bot.
     const u = spy.upserts[1]!.u
     if (u.platform !== 'feishu') throw new Error('expected feishu upsert')
-    expect(u.feishu!.region).toBe('lark')
+    expect((u.config as { region?: string }).region).toBe('lark')
   })
 
   it('reusing a bot that is STILL installed is refused with 409', async () => {

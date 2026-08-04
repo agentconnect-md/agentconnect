@@ -144,7 +144,7 @@ describe('PUT /agents/:id/daemon', () => {
     expect(control.activations[0]?.agentId).toBe(agentId)
     expect(
       control.activations[0]?.integrations
-        .flatMap((integration) => (integration.platform === 'slack' ? [integration.slack!.mode] : []))
+        .flatMap((integration) => (integration.platform === 'slack' ? [integration.core!.mode] : []))
         .sort()
     ).toEqual(['direct', 'shared'])
     expect(control.activations[0]?.crons.map((cron) => cron.cronId)).toEqual([cronId])

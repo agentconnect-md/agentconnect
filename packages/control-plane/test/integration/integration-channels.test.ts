@@ -305,9 +305,9 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(put.statusCode).toBe(200)
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u0.slack!.gated).toBe(true)
+    expect(u0.core!.gated).toBe(true)
     // No dm rule for D1: the private agent answers that DM only once enabled.
-    expect(u0.slack!.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+    expect(u0.core!.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
   })
 
   it('resets the trigger when a row misclassified as a channel converts to a DM (§14.3)', async () => {
@@ -337,7 +337,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     })
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u0.slack!.bindRules).toEqual([])
+    expect(u0.core!.bindRules).toEqual([])
   })
 
   it('stores a group DM OFF and keeps a channel→group-DM conversion fail-closed (§14.3)', async () => {
@@ -436,7 +436,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     })
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u0.slack!.bindRules).toEqual([])
+    expect(u0.core!.bindRules).toEqual([])
   })
 
   it('enabling conversations on a GATED integration pushes conversation-scoped rules ONLY (§14)', async () => {
@@ -460,8 +460,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(res.statusCode).toBe(200)
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u0.slack!.gated).toBe(true)
-    expect(u0.slack!.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+    expect(u0.core!.gated).toBe(true)
+    expect(u0.core!.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
 
     await running.app.inject({
       method: 'PATCH',
@@ -470,8 +470,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     })
     const u1 = spy.upserts[1]!.u
     if (u1.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u1.slack!.bindRules).toHaveLength(2)
-    expect(u1.slack!.bindRules).toEqual(
+    expect(u1.core!.bindRules).toHaveLength(2)
+    expect(u1.core!.bindRules).toEqual(
       expect.arrayContaining([
         { channel: 'C1', match: { kind: 'mention' } },
         { channel: 'D1', match: { kind: 'dm' } }
@@ -497,9 +497,9 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(spy.upserts).toHaveLength(1)
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u0.slack!.gated).toBe(true)
+    expect(u0.core!.gated).toBe(true)
     // The pre-flip channel row keeps its 'mention' trigger — grandfathered enabled.
-    expect(u0.slack!.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+    expect(u0.core!.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
 
     const back = await running.app.inject({
       method: 'PUT',
@@ -509,8 +509,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(back.statusCode).toBe(200)
     const u1 = spy.upserts[1]!.u
     if (u1.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u1.slack!.gated).toBe(false)
-    expect(u1.slack!.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(u1.core!.gated).toBe(false)
+    expect(u1.core!.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
   })
 
   it('a re-report preserves the trigger, refreshes names, and drops left channels', async () => {
@@ -985,7 +985,7 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
     expect(spy.upserts[0]!.daemonId).toBe(DAEMON)
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u0.slack!.bindRules).toEqual([
+    expect(u0.core!.bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
       { channel: 'C2', match: { kind: 'auto' } }
@@ -999,7 +999,7 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
     })
     const u1 = spy.upserts[1]!.u
     if (u1.platform !== 'slack') throw new Error('expected slack integration')
-    expect(u1.slack!.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(u1.core!.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
   })
 
   it('404s on an unknown channel or integration', async () => {

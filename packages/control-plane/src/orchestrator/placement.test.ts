@@ -10,6 +10,19 @@ import { integrationToSpec } from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
 import type { AgentRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
 import { AgentId, IntegrationId, OrgId } from '../domain/ids.js'
+import {
+  IntegrationSlackConfig,
+  IntegrationTelegramConfig,
+  IntegrationDiscordConfig,
+  IntegrationFeishuConfig
+} from '@agentconnect.md/protocol'
+
+// §6.4 emission flip: the spec carries envelope (`core`) + opaque `config` only.
+// Tests validate the payload through the SAME wire schema the daemon reader uses.
+const slackCfg = (spec: { config?: unknown }) => IntegrationSlackConfig.parse(spec.config)
+const telegramCfg = (spec: { config?: unknown }) => IntegrationTelegramConfig.parse(spec.config)
+const discordCfg = (spec: { config?: unknown }) => IntegrationDiscordConfig.parse(spec.config)
+const feishuCfg = (spec: { config?: unknown }) => IntegrationFeishuConfig.parse(spec.config)
 
 const INTEGRATION: IntegrationRecord = {
   id: IntegrationId('66666666-6666-4666-8666-666666666666'),
@@ -39,8 +52,8 @@ const channel = (
 describe('integrationToSpec bindRules', () => {
   it('defaults to mention + dm with no channels', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET)
-    expect(spec.slack.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
-    expect(spec.slack.botToken).toBe(SECRET.botToken)
+    expect(slackCfg(spec).bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(slackCfg(spec).botToken).toBe(SECRET.botToken)
   })
 
   it("adds one channel-scoped 'auto' rule per 'any message' channel; 'mention' channels add none", () => {
@@ -49,7 +62,7 @@ describe('integrationToSpec bindRules', () => {
       channel('C2', 'any'),
       channel('C3', 'any')
     ])
-    expect(spec.slack.bindRules).toEqual([
+    expect(slackCfg(spec).bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
       { channel: 'C2', match: { kind: 'auto' } },
@@ -66,7 +79,7 @@ describe('integrationToSpec bindRules', () => {
       channel('D1', 'any', 'im'),
       channel('G1', 'any', 'mpim')
     ])
-    expect(spec.slack.bindRules).toEqual([
+    expect(slackCfg(spec).bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
       { channel: 'C1', match: { kind: 'auto' } }
@@ -78,9 +91,9 @@ describe('integrationToSpec bindRules', () => {
       channel('-100', 'any')
     ])
     if (spec.platform !== 'telegram') throw new Error('expected telegram spec')
-    expect(spec.telegram.botToken).toBe('123:abc')
+    expect(telegramCfg(spec).botToken).toBe('123:abc')
     expect(spec).not.toHaveProperty('slack')
-    expect(spec.telegram.bindRules).toEqual([
+    expect(telegramCfg(spec).bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
       { channel: '-100', match: { kind: 'auto' } }
@@ -97,8 +110,8 @@ describe('integrationToSpec conversation gating (§14)', () => {
       true
     )
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(spec.slack.gated).toBe(true)
-    expect(spec.slack.bindRules).toEqual([
+    expect(slackCfg(spec).gated).toBe(true)
+    expect(slackCfg(spec).bindRules).toEqual([
       { channel: 'C1', match: { kind: 'mention' } },
       { channel: 'C2', match: { kind: 'auto' } },
       { channel: 'D1', match: { kind: 'dm' } }
@@ -108,19 +121,19 @@ describe('integrationToSpec conversation gating (§14)', () => {
   it('gated with no enabled conversations ships an EMPTY rule set (fail-closed)', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'off', 'im')], true)
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(spec.slack.bindRules).toEqual([])
-    expect(spec.slack.gated).toBe(true)
+    expect(slackCfg(spec).bindRules).toEqual([])
+    expect(slackCfg(spec).gated).toBe(true)
   })
 
   it("non-gated: an 'off' channel keeps the defaults but is muted; gated is false", () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'any', 'im')])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(spec.slack.gated).toBe(false)
+    expect(slackCfg(spec).gated).toBe(false)
     // The defaults are unscoped, so Off cannot be expressed by withholding a rule —
     // the fence is what silences C1. The im row adds no auto rule either; DMs are
     // covered by the unscoped dm default.
-    expect(spec.slack.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
-    expect(spec.slack.mutedChannels).toEqual(['C1'])
+    expect(slackCfg(spec).bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(slackCfg(spec).mutedChannels).toEqual(['C1'])
   })
 })
 
@@ -133,7 +146,7 @@ describe('integrationToSpec mutedChannels', () => {
       channel('C4', 'off')
     ])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(spec.slack.mutedChannels).toEqual(['C1', 'C4'])
+    expect(spec.core?.mutedChannels).toEqual(['C1', 'C4'])
   })
 
   // §14.4: the console hides a preserved direct row once its owner is org-visible, so
@@ -141,7 +154,7 @@ describe('integrationToSpec mutedChannels', () => {
   it('never mutes a direct row on a non-gated integration', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('D1', 'off', 'im'), channel('G1', 'off', 'mpim')])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(spec.slack.mutedChannels).toEqual([])
+    expect(spec.core?.mutedChannels).toEqual([])
   })
 
   // A gated integration says Off by having no rule for the conversation; stating it
@@ -149,8 +162,8 @@ describe('integrationToSpec mutedChannels', () => {
   it('stays empty for a gated integration, whose Off is the missing rule', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('C2', 'mention')], true)
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(spec.slack.mutedChannels).toEqual([])
-    expect(spec.slack.bindRules).toEqual([{ channel: 'C2', match: { kind: 'mention' } }])
+    expect(spec.core?.mutedChannels).toEqual([])
+    expect(spec.core?.bindRules).toEqual([{ channel: 'C2', match: { kind: 'mention' } }])
   })
 
   it('rides every platform variant', () => {
@@ -158,17 +171,17 @@ describe('integrationToSpec mutedChannels', () => {
       channel('-100', 'off')
     ])
     if (tg.platform !== 'telegram') throw new Error('expected telegram spec')
-    expect(tg.telegram.mutedChannels).toEqual(['-100'])
+    expect(tg.core?.mutedChannels).toEqual(['-100'])
     const dc = integrationToSpec({ ...INTEGRATION, platform: 'discord' }, { botToken: 'bot', appToken: null }, [
       channel('999', 'off')
     ])
     if (dc.platform !== 'discord') throw new Error('expected discord spec')
-    expect(dc.discord.mutedChannels).toEqual(['999'])
+    expect(dc.core?.mutedChannels).toEqual(['999'])
     const fs = integrationToSpec({ ...INTEGRATION, platform: 'feishu' }, { botToken: 'sec', appToken: 'cli_x' }, [
       channel('oc_1', 'off')
     ])
     if (fs.platform !== 'feishu') throw new Error('expected feishu spec')
-    expect(fs.feishu.mutedChannels).toEqual(['oc_1'])
+    expect(fs.core?.mutedChannels).toEqual(['oc_1'])
   })
 })
 

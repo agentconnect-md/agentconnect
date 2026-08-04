@@ -99,6 +99,7 @@ export function normalizeDiscordMessage(
     isDm,
     ...(message.isThread && message.parentChannelId ? { parentChannel: message.parentChannelId } : {}),
     // §6.5 dual-shape: the generic promote flag alongside the deprecated named one.
-    ...(!isDm && !message.isThread ? { discordTopLevel: true, promoteToThread: true } : {})
+    // §6.5 emission flip: the generic coordinate only — `discordTopLevel` retired.
+    ...(!isDm && !message.isThread ? { promoteToThread: true } : {})
   }
 }

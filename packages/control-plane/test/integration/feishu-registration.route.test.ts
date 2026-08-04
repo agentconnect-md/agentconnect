@@ -218,7 +218,8 @@ describe('Feishu/Lark one-click app registration', () => {
       spec: {
         agentId,
         platform: 'feishu',
-        feishu: { appId: 'cli_oneclick', appSecret: 'one-click-secret', region: 'lark' }
+        // §6.4 emission flip: credentials ride the opaque config envelope.
+        config: { appId: 'cli_oneclick', appSecret: 'one-click-secret', region: 'lark' }
       }
     })
   }, 15_000)
@@ -532,7 +533,7 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     expect(control.upserts[0]?.spec).toMatchObject({
       platform: 'feishu',
-      feishu: { mode: 'shared', botOpenId: 'ou_http_bot' }
+      config: { mode: 'shared', botOpenId: 'ou_http_bot' }
     })
   })
 
