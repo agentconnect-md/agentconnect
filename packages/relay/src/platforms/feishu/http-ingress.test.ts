@@ -3,7 +3,8 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WireFeishuCardActionEvent, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { FeishuHttpIngest, type FeishuCallbackHeaders } from './http-ingest.js'
-import { registerFeishuHttpIngress, type FeishuIngestResolver, type FeishuVerifiedDelivery } from './http-ingress.js'
+import { feishuIngressPlugin } from './ingress-plugin.js'
+import { registerFeishuHttpIngress, type FeishuIngestResolver } from './http-ingress.js'
 
 const NOW = 1_720_000_000_000
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
@@ -62,10 +63,25 @@ function makeApp(secrets: { verificationToken: string; encryptKey?: string } = {
     },
     now: () => NOW
   })
+  // Drive the REAL plugin (verify → handle) through the seam: token check /
+  // AES decrypt, the encrypted challenge, per-bot dedup, and the card-action
+  // response window all run exactly as production does.
+  const host = {
+    log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    dedupSeen: () => false,
+    clock: { now: () => NOW }
+  } as unknown as import('../contract.js').RelayIngressHost
   const resolver: FeishuIngestResolver = {
-    resolveFeishuVerified(args): FeishuVerifiedDelivery | undefined {
-      const callback = ingest.decode(args.rawBody, args.body, args.headers)
-      return callback ? { ingest, callback } : undefined
+    handleInbound: async (_platformId, rawBody, body, headers) => {
+      const verified = feishuIngressPlugin.verify(
+        ingest,
+        rawBody,
+        body,
+        headers as Record<string, string | string[] | undefined>,
+        NOW
+      )
+      if (verified === undefined) return undefined
+      return feishuIngressPlugin.handle(ingest, verified, host)
     }
   }
   const app = Fastify()

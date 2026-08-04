@@ -30,12 +30,11 @@ import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
 import { SlackHttpIngest } from './platforms/slack/http-ingest.js'
 import { FeishuHttpIngest } from './platforms/feishu/http-ingest.js'
-import type { FeishuVerifiedDelivery } from './platforms/feishu/http-ingress.js'
 import { DemuxIndex, IngressPool } from './platforms/registry.js'
-import type { RelayIngressHost, RelayPlatformIngressPlugin } from './platforms/contract.js'
+import type { HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from './platforms/contract.js'
+import { SlackEventDedup } from './slack-event-dedup.js'
 import { slackIngressPlugin } from './platforms/slack/ingress-plugin.js'
 import { feishuIngressPlugin } from './platforms/feishu/ingress-plugin.js'
-import { verifySlackSignature } from './hooks/signature.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
@@ -204,6 +203,7 @@ export class RelayIngressManager {
           this.router.integrationTarget(botId, agentId, integrationId),
         soleTarget: (botId) => this.router.soleTarget(botId)
       },
+      dedupSeen: (identity) => this.eventDedup.seen(identity),
       canDeliver: (route) => this.deps.getDaemon(route.daemonId) !== undefined,
       setChannelAgent: (botId, channelId, agentId) => this.deps.setChannelAgent(botId, channelId, agentId),
       selectThreadAgent: (botId, channelId, threadTs, agentId) =>
@@ -213,6 +213,14 @@ export class RelayIngressManager {
       log: this.deps.log
     }
   }
+
+  /** Event-identity dedup — the CORE-owned table of §8's split (the plugin
+   *  mints the identity). One table serves every platform's pool; identities
+   *  are platform-prefixed by construction (their envelope fields differ). */
+  private get eventDedup(): SlackEventDedup {
+    return (this.eventDedupMemo ??= new SlackEventDedup(this.deps.clock))
+  }
+  private eventDedupMemo?: SlackEventDedup
 
   /** Bounded-loss counters (per bot) — messages dropped because no daemon connection. */
   private readonly dropped = new Map<string, number>()
@@ -421,71 +429,55 @@ export class RelayIngressManager {
   }
 
   /**
-   * Demux + authenticate one inbound Slack HTTP POST to its bot's ingest. Slack's
-   * HMAC (over the raw body, keyed by the bot's signing secret) authenticates, but
-   * it can only DISCRIMINATE while signing secrets differ — every install of a
-   * distributed app shares one secret, so those bots resolve exclusively on the
-   * composite `(api_app_id, team_id)` index and are skipped by the verify-scan
-   * (a scan hit against a sibling install would leak one workspace's messages
-   * into another tenant's bot). Legacy bots keep the learned app-only fast path
-   * with the verify-scan fallback. `undefined` ⇒ the route answers 401.
+   * §8 verify → handle: demux one inbound HTTP delivery to its bot,
+   * authenticate through the platform plugin, and hand the TYPED verified
+   * product to the plugin's handler. `undefined` ⇒ no assigned bot owns the
+   * delivery (the route answers 401).
+   *
+   * Core drives the ladder — assignment-derived index fast paths (composite
+   * exact first, then app-only), then the bounded scan the assignment's
+   * identity scope permits: a tenant-scoped bot may only serve its own tenant,
+   * because same-secret siblings would all verify and the envelope tenant id
+   * is the ONLY discriminator. The plugin owns the cryptography and everything
+   * after authentication.
    */
-  resolveVerified(args: {
-    apiAppId?: string
-    teamId?: string
-    timestamp: string | undefined
-    rawBody: Buffer
-    signature: string | undefined
-  }): SlackHttpIngest | undefined {
+  async handleInbound(
+    platformId: string,
+    rawBody: Buffer,
+    body: unknown,
+    headers: Record<string, string | string[] | undefined>
+  ): Promise<HandledDelivery | undefined> {
+    const entry = this.ingressPlugins.get(platformId)
+    if (!entry) return undefined
+    const { plugin, pool, demux } = entry
     const now = this.deps.clock.now()
-    const { apiAppId, teamId, timestamp, rawBody, signature } = args
-    // Composite fast path — assign-derived, so a hit is exact (still HMAC-verified).
-    if (apiAppId && teamId) {
-      const botId = this.slackDemux.resolve({ appId: apiAppId, tenantId: teamId })
-      const ingest = botId ? this.slackPool.get(botId) : undefined
-      if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
+    const hints = plugin.extractDemuxHints(rawBody, body, headers)
+    const tryCandidate = (botId: string | undefined) => {
+      const ingest = botId ? pool.get(botId) : undefined
+      if (!ingest) return undefined
+      const verified = plugin.verify(ingest, rawBody, body, headers, now)
+      return verified === undefined ? undefined : { ingest, verified }
     }
-    if (apiAppId) {
-      const botId = this.slackDemux.resolve({ appId: apiAppId })
-      const ingest = botId ? this.slackPool.get(botId) : undefined
-      if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
-    }
-    for (const [botId, ingest] of this.slackPool.entries()) {
-      // A team-scoped bot may only serve its own workspace: same-secret siblings
-      // would all verify, so the envelope team id is the ONLY discriminator.
-      const assignedTeam = this.router.get(botId)?.teamId
-      if (assignedTeam !== undefined && assignedTeam !== teamId) continue
-      if (verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) {
-        // Learn only the app-only mapping; the index itself refuses a
-        // tenant-scoped bot (registry.test.ts), keeping the invariant even if a
-        // future call site forgets this router check.
-        if (apiAppId && assignedTeam === undefined) this.slackDemux.learn(apiAppId, botId)
-        return ingest
+    // Composite fast path — assign-derived, so a hit is exact (still verified).
+    let hit = hints.appId && hints.tenantId ? tryCandidate(demux.resolve(hints)) : undefined
+    hit ??= hints.appId ? tryCandidate(demux.resolve({ appId: hints.appId })) : undefined
+    if (!hit) {
+      for (const [botId, ingest] of pool.entries()) {
+        const assignedTenant = this.router.get(botId)?.teamId
+        if (assignedTenant !== undefined && assignedTenant !== hints.tenantId) continue
+        const verified = plugin.verify(ingest, rawBody, body, headers, now)
+        if (verified !== undefined) {
+          // Learn only the app-only mapping; the index itself refuses a
+          // tenant-scoped bot (registry.test.ts), keeping the invariant even if
+          // a future call site forgets this assignment check.
+          if (hints.appId && assignedTenant === undefined) demux.learn(hints.appId, botId)
+          hit = { ingest, verified }
+          break
+        }
       }
     }
-    return undefined
-  }
-
-  /** Demux + authenticate one Feishu callback. Unencrypted v2 callbacks carry
-   *  `header.app_id` for O(1) lookup; encrypted callbacks are verified/decrypted
-   *  against the bounded active assignment set because the outer body has no id. */
-  resolveFeishuVerified(args: {
-    appId?: string
-    rawBody: Buffer
-    body: unknown
-    headers: import('./platforms/feishu/http-ingest.js').FeishuCallbackHeaders
-  }): FeishuVerifiedDelivery | undefined {
-    if (args.appId) {
-      const botId = this.feishuDemux.resolve({ appId: args.appId })
-      const ingest = botId ? this.feishuPool.get(botId) : undefined
-      const callback = ingest?.decode(args.rawBody, args.body, args.headers)
-      if (ingest && callback) return { ingest, callback }
-    }
-    for (const ingest of this.feishuPool.values()) {
-      const callback = ingest.decode(args.rawBody, args.body, args.headers)
-      if (callback) return { ingest, callback }
-    }
-    return undefined
+    if (!hit) return undefined
+    return entry.plugin.handle(hit.ingest, hit.verified, this.ingressHost)
   }
 
   /** Test/inspection view of the demux indexes (no secret material). */

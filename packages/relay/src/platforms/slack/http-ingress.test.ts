@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
-import { FakeClock } from '@agentconnect.md/connection'
 import { SHARED_AGENT_SELECT_ACTION_ID } from '@agentconnect.md/protocol'
-import { registerSlackHttpIngress, type SlackIngestHandlers, type SlackIngestResolver } from './http-ingress.js'
-import { SlackEventDedup } from '../../slack-event-dedup.js'
+import { registerSlackHttpIngress, type SlackIngestResolver } from './http-ingress.js'
 
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 
@@ -11,44 +9,59 @@ interface Harness {
   app: FastifyInstance
   events: unknown[]
   interactions: unknown[]
-  /** resolveVerified attributes a POST to the stub ingest only for this signature. */
+  /** the seam attributes a POST to the stub only for this signature. */
   goodSignature: string
-  resolveCalls: Array<{ apiAppId?: string; teamId?: string }>
+  inboundCalls: Array<{ platformId: string; hints: { apiAppId?: string; teamId?: string } }>
 }
 
-/** A stub ingest whose `resolveVerified` stands in for the HMAC demux: it returns the
- *  handlers only when the request carried the "good" signature (verification passed). */
+/** A stub of the §8 seam: verification-by-signature stands in for the HMAC
+ *  demux; handling mirrors the slack plugin's split (events fire async and
+ *  return no sync body; interactions return their result as the syncResponse;
+ *  event_id dedup runs inside, on a set-backed stand-in for the core table). */
 function makeHarness(): Harness {
   const h: Harness = {
     app: Fastify(),
     events: [],
     interactions: [],
     goodSignature: 'good-sig',
-    resolveCalls: []
+    inboundCalls: []
   }
-  const ingest: SlackIngestHandlers = {
-    handleEvent: async (event) => {
-      h.events.push(event)
-    },
-    handleInteraction: async (body) => {
-      h.interactions.push(body)
-      if (body.type === 'block_suggestion' && body.action_id === SHARED_AGENT_SELECT_ACTION_ID) {
-        return { options: [{ text: { type: 'plain_text', text: 'Deploy' }, value: 'a1' }] }
-      }
-      return ''
-    }
-  }
+  const seenEventIds = new Set<string>()
   const resolver: SlackIngestResolver = {
-    resolveVerified: (args) => {
-      h.resolveCalls.push({ apiAppId: args.apiAppId, teamId: args.teamId })
-      return args.signature === h.goodSignature ? ingest : undefined
+    handleInbound: async (platformId, _rawBody, body, headers) => {
+      const b = body as {
+        type?: string
+        api_app_id?: string
+        team_id?: string
+        team?: { id?: string }
+        event_id?: string
+        event?: unknown
+        action_id?: string
+      }
+      h.inboundCalls.push({
+        platformId,
+        hints: {
+          ...(b.api_app_id ? { apiAppId: b.api_app_id } : {}),
+          ...((b.team_id ?? b.team?.id) ? { teamId: b.team_id ?? b.team?.id } : {})
+        }
+      })
+      if (headers['x-slack-signature'] !== h.goodSignature) return undefined
+      if (b.type === 'event_callback') {
+        // Plugin-minted composite dedup identity, core-owned table.
+        const key = b.event_id ? `${b.api_app_id ?? ''}\0${b.team_id ?? ''}\0${b.event_id}` : undefined
+        if (key && seenEventIds.has(key)) return {}
+        if (key) seenEventIds.add(key)
+        h.events.push(b.event)
+        return {}
+      }
+      h.interactions.push(b)
+      if (b.type === 'block_suggestion' && b.action_id === SHARED_AGENT_SELECT_ACTION_ID) {
+        return { syncResponse: { options: [{ text: { type: 'plain_text', text: 'Deploy' }, value: 'a1' }] } }
+      }
+      return { syncResponse: '' }
     }
   }
-  registerSlackHttpIngress(h.app, {
-    manager: () => resolver,
-    dedup: new SlackEventDedup(new FakeClock()),
-    log
-  })
+  registerSlackHttpIngress(h.app, { manager: () => resolver, log })
   return h
 }
 
@@ -93,7 +106,7 @@ describe('slack http ingress', () => {
     const res = await postEvent({ type: 'url_verification', token: 't', challenge: 'c-42' }, { signature: 'anything' })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ challenge: 'c-42' })
-    expect(h.resolveCalls).toHaveLength(0) // never demuxed
+    expect(h.inboundCalls).toHaveLength(0) // never demuxed
   })
 
   it('401s when no assigned bot verifies the signature', async () => {
@@ -116,7 +129,7 @@ describe('slack http ingress', () => {
     expect(res.statusCode).toBe(200)
     await flush()
     expect(h.events).toHaveLength(1)
-    expect(h.resolveCalls[0]).toEqual({ apiAppId: 'A1', teamId: 'T9' })
+    expect(h.inboundCalls[0]).toEqual({ platformId: 'slack', hints: { apiAppId: 'A1', teamId: 'T9' } })
   })
 
   it('dedups a redelivered event_id (forwards once)', async () => {

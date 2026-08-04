@@ -116,9 +116,21 @@ export const feishuIngressPlugin: RelayPlatformIngressPlugin<FeishuHttpIngest, V
   },
 
   verify(ingest, rawBody, body, headers): VerifiedFeishuCallback | undefined {
+    // The seam hands RAW HTTP headers; extracting Lark's signature triple is
+    // the plugin's job (the route used to do it before the seam existed).
+    const header = (v: string | string[] | undefined): string | undefined =>
+      typeof v === 'string' && v.length > 0 ? v : undefined
+    const timestamp = header(headers['x-lark-request-timestamp'])
+    const nonce = header(headers['x-lark-request-nonce'])
+    const signature = header(headers['x-lark-signature'])
+    const callbackHeaders: FeishuCallbackHeaders = {
+      ...(timestamp ? { timestamp } : {}),
+      ...(nonce ? { nonce } : {}),
+      ...(signature ? { signature } : {})
+    }
     // Token compare / AES decrypt — the typed decrypted product derives exactly
     // once and flows into handle (the #560 review's first blocking finding).
-    return ingest.decode(rawBody, body, headers as FeishuCallbackHeaders) ?? undefined
+    return ingest.decode(rawBody, body, callbackHeaders) ?? undefined
   },
 
   async handle(ingest, verified, host): Promise<HandledDelivery> {

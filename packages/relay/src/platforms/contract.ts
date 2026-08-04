@@ -159,6 +159,11 @@ export interface RelayIngressHost {
    *  assignment is NOT guaranteed to carry `botUserId` (a manual-paste bot's
    *  CP row learns it from this very report). */
   reportBotUserId(botId: string, botUserId: string): void
+  /** Event-identity dedup — CORE owns the bounded, TTL'd table; the PLUGIN
+   *  mints the identity (it derives from parsed envelope semantics, §8) and
+   *  carries it on its verified product into `handle`. True ⇒ already seen
+   *  (drop); false ⇒ marked now. An absent identity is never deduped. */
+  dedupSeen(identity: string | undefined): boolean
   /** Whether `route`'s daemon is connected RIGHT NOW. For interactions whose
    *  platform affordance is one-shot (a Slack shortcut consumes its trigger
    *  id), the plugin must know synchronously that delivery is possible, so it
