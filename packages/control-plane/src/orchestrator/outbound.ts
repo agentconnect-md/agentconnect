@@ -179,6 +179,18 @@ export class ControlSender {
     }
   }
 
+  /**
+   * Push whitelisted non-secret config keys to a connected daemon (`config/push`
+   * EVT). Fire-and-forget: the daemon merges them into its running config
+   * (`mergeConfigPush` whitelist) without persisting; a durable setting must also
+   * ride the `register/ok` snapshot, which is the reconnect backstop for a push
+   * the daemon never saw. Throws {@link NoConnection} when the daemon is offline.
+   */
+  configPush(daemonId: string, keys: Record<string, unknown>): void {
+    const c = this.must(daemonId)
+    c.conn.send('config/push', { keys }, { epoch: c.sessionEpoch })
+  }
+
   /** Assign a session to a daemon (epoch-fenced REQ → ack). */
   async routeAssign(daemonId: string, a: RouteAssign): Promise<RouteAssignAck> {
     const c = this.must(daemonId)

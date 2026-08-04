@@ -38,10 +38,14 @@ describe('loadConfig', () => {
       '1month'
     )
     expect(() => loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '3d' } }) })).toThrow()
+    expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '90d' } }) }).sessions.retention).toBe('90d')
     expect(sessionRetentionMs('never')).toBeNull()
     expect(sessionRetentionMs('7d')).toBe(7 * 24 * 3_600_000)
     expect(sessionRetentionMs('2weeks')).toBe(14 * 24 * 3_600_000)
     expect(sessionRetentionMs('1month')).toBe(30 * 24 * 3_600_000)
+    // The console-facing windows (CP-set via register/ok + config/push).
+    expect(sessionRetentionMs('30d')).toBe(30 * 24 * 3_600_000)
+    expect(sessionRetentionMs('90d')).toBe(90 * 24 * 3_600_000)
   })
 
   it.skipIf(process.platform === 'win32')('repairs an existing config file to owner-only permissions', () => {

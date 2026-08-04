@@ -24,7 +24,7 @@ import {
   DaemonListDto,
   DaemonViewDto,
   DaemonLifecycleOpDto,
-  RenameDaemonBody,
+  UpdateDaemonBody,
   DaemonUpgradeBody,
   SetSharingBody,
   DaemonConnectDto,
@@ -111,6 +111,9 @@ function liveStatus(view: DaemonView, liveness: DaemonLiveness, graceMs: number,
   return 'connecting' // CONNECTING / AUTHENTICATING / REGISTERING
 }
 
+// The DTO's accepted retention values — mirrors UpdateDaemonBody.sessionRetention.
+const SESSION_RETENTIONS = new Set(['never', '7d', '30d', '90d'])
+
 function toDto(
   view: DaemonView,
   liveness: DaemonLiveness,
@@ -160,6 +163,12 @@ function toDto(
     lastModifiedAt: view.lastModifiedAt.toISOString(),
     lastModifiedBy:
       view.lastModifiedBy && !isSyntheticEmail(view.lastModifiedBy.email) ? view.lastModifiedBy.userId : null,
+    // Defensive read-time normalization: the PATCH route only writes enum values,
+    // so a fallback here just keeps an unexpected stored value from failing the
+    // whole response's schema serialization.
+    sessionRetention: SESSION_RETENTIONS.has(view.sessionRetention)
+      ? (view.sessionRetention as DaemonViewDtoT['sessionRetention'])
+      : '7d',
     visibility: view.visibility,
     sharedWith: view.sharedWith,
     canEdit: canEdit(view, ctx),
@@ -228,18 +237,20 @@ export function daemonRoutes(deps: HttpDeps) {
       return canView(view, ctxOf(req)) ? view : null
     }
 
-    // Assign a human-friendly display name. The row materializes on the WS `auth`
-    // handshake, so a missing id (Prisma P2025) maps to 404 via the error handler.
+    // Update console daemon settings (name / session retention). The row
+    // materializes on the WS `auth` handshake, so a missing id (Prisma P2025)
+    // maps to 404 via the error handler.
     r.patch(
       '/daemons/:id',
       {
         schema: {
           tags: [Tag.Daemons],
-          summary: 'Rename a daemon',
-          description: 'Assign a human-friendly console display name to a daemon.',
+          summary: 'Update a daemon',
+          description:
+            'Update console daemon settings: the human-friendly display name and/or the finished-session retention window ("Expire sessions"). A retention change is hot-pushed to a connected daemon and re-issued in the register/ok snapshot on reconnect.',
           operationId: 'updateDaemon',
           params: IdParam,
-          body: RenameDaemonBody,
+          body: UpdateDaemonBody,
           response: { 200: DaemonViewDto, 403: ErrorDto, 404: ErrorDto }
         }
       },
@@ -252,7 +263,21 @@ export function daemonRoutes(deps: HttpDeps) {
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this daemon' })
         }
-        const view = await deps.registry.rename(DaemonId(req.params.id), req.body.name, req.principal?.userId)
+        const { name, sessionRetention } = req.body
+        const did = DaemonId(req.params.id)
+        let view = existing
+        if (name !== undefined) view = await deps.registry.rename(did, name, req.principal?.userId)
+        if (sessionRetention !== undefined) {
+          view = await deps.registry.setSessionRetention(did, sessionRetention, req.principal?.userId)
+          // Hot-push the new window to the connected daemon (config/push EVT).
+          // Best-effort: an offline daemon converges from the register/ok
+          // snapshot on its next connect.
+          try {
+            deps.control.configPush(req.params.id, { 'sessions.retention': sessionRetention })
+          } catch {
+            // NoConnection — the reconnect snapshot is the backstop
+          }
+        }
         return dto(view, ctxOf(req))
       }
     )

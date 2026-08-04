@@ -87,7 +87,8 @@ function toView(d: DaemonRecord, profiles: RuntimeProfileRecord[]): DaemonView {
     lastModifiedBy: d.lastModifiedBy,
     createdByUserId: d.createdByUserId,
     visibility: d.visibility,
-    sharedWith: d.sharedWith
+    sharedWith: d.sharedWith,
+    sessionRetention: d.sessionRetention
   }
 }
 
@@ -176,6 +177,11 @@ export class DaemonRegistryService implements DaemonRegistry {
 
   async rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonView> {
     const d = await this.daemons.rename(daemonId, name, byUserId)
+    return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
+  }
+
+  async setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonView> {
+    const d = await this.daemons.setSessionRetention(daemonId, sessionRetention, byUserId)
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }
 

@@ -213,6 +213,8 @@ export interface DaemonView {
   visibility: ResourceVisibility
   /** Complete app_user.id audience when `visibility === 'restricted'`. */
   sharedWith: string[]
+  /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
+  sessionRetention: string
 }
 
 /**
@@ -258,6 +260,9 @@ export interface DaemonRegistry {
   /** Set the console-assigned display name; returns the updated read-model row.
    *  `byUserId` is the editing WebUI principal → stamps last-modified audit. */
   rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonView>
+  /** Set the console's finished-session retention window ("Expire sessions");
+   *  returns the updated read-model row. `byUserId` stamps the last-modified audit. */
+  setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonView>
   /** Set the daemon's visibility + share set (the dedicated `/sharing` write path);
    *  returns the updated read-model row. `byUserId` stamps the last-modified audit. */
   setSharing(

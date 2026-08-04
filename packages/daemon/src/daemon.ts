@@ -17282,6 +17282,9 @@ export class Daemon {
       },
       applyReconcileSnapshot: async (snap: RegisterOk) => {
         this.gitCommitIdentity = snap.gitCommitIdentity
+        // Console-set finished-session retention — the reconnect baseline for the
+        // `config/push` hot update. Absent (older CP) ⇒ keep the local config value.
+        if (snap.sessionRetention) this.cfg.sessions.retention = snap.sessionRetention
         // Reserve every agent drop before ANY fallible snapshot convergence.
         // Otherwise an unrelated integration/memory write could abort the frame
         // while a CP-removed agent remains live with no gate or durable marker.

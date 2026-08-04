@@ -180,7 +180,9 @@ export const ConfigSchema = z.object({
       // dirty/untracked files or commits unreachable from any remote ref is never
       // auto-deleted — the sweep reports it and keeps the session instead.
       // 'never' disables the sweep entirely.
-      retention: z.enum(['never', '7d', '2weeks', '1month']).default('7d')
+      // '30d'/'90d' are the console-facing windows (CP-set via register/ok +
+      // config/push); '2weeks'/'1month' are kept for existing local config files.
+      retention: z.enum(['never', '7d', '2weeks', '1month', '30d', '90d']).default('7d')
     })
     .default({ retention: '7d' }),
   limits: z
@@ -264,6 +266,9 @@ export function sessionRetentionMs(retention: SessionRetention): number | null {
     case '2weeks':
       return 14 * 24 * 3_600_000
     case '1month':
+    case '30d':
       return 30 * 24 * 3_600_000
+    case '90d':
+      return 90 * 24 * 3_600_000
   }
 }

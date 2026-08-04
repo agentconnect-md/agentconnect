@@ -36,7 +36,7 @@ import type {
   MemoryConnectionSpec,
   RelayRosterEntry
 } from '@agentconnect.md/protocol'
-import { RESERVED_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
+import { RESERVED_MCP_SERVER_NAME, SessionRetentionSetting } from '@agentconnect.md/protocol'
 import type {
   AgentRepo,
   AgentRecord,
@@ -503,8 +503,15 @@ export class Placement implements ReconcileService {
       .filter((local) => local.origin === 'cp' || orgIntegrationIds.has(local.integrationId))
       .map((local) => local.integrationId)
 
+    // Console-set finished-session retention — the daemon's reconnect baseline for
+    // the config/push hot update. Parsed defensively: an unexpected stored value
+    // (never written by the validated PATCH route) is simply omitted, which the
+    // daemon reads as "keep local config".
+    const sessionRetention = SessionRetentionSetting.safeParse(daemon.sessionRetention)
+
     return {
       routingEpoch: Number(daemon.routingEpoch), // re-issue same — convergence, not bump
+      ...(sessionRetention.success ? { sessionRetention: sessionRetention.data } : {}),
       // Transport capabilities are connection-level and register.ts replaces
       // this neutral snapshot value immediately before register/ok is sent.
       serverFeatures: [],

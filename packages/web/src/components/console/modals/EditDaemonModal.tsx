@@ -5,13 +5,16 @@ import type { DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
+import { SessionRetentionField } from '@/components/console/SessionRetentionField'
 
-// The daemon's rename + sharing editor (replaces the old inline rename + the
-// standalone sharing dialog). Name goes through renameDaemon; visibility rides the
-// separate /sharing endpoint (canManageSharing gate), only written when it changed.
+// The daemon's rename + retention + sharing editor (replaces the old inline rename
+// + the standalone sharing dialog). Name and session retention go through the PATCH
+// endpoint (canEdit gate); visibility rides the separate /sharing endpoint
+// (canManageSharing gate). Each write is skipped when its field is unchanged.
 export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow; onClose: () => void }) {
-  const { renameDaemon, saveSharing } = useConsoleData()
+  const { renameDaemon, setDaemonSessionRetention, saveSharing } = useConsoleData()
   const [name, setName] = useState(daemon.name)
+  const [retention, setRetention] = useState(daemon.sessionRetention)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: daemon.visibility, sharedWith: daemon.sharedWith })
   const initialSharing = useRef<SharingValue>({ visibility: daemon.visibility, sharedWith: daemon.sharedWith })
   const [saving, setSaving] = useState(false)
@@ -24,6 +27,8 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
     try {
       const next = name.trim()
       if (daemon.canEdit && next && next !== daemon.name) await renameDaemon(daemon.daemonId, next)
+      if (daemon.canEdit && retention !== daemon.sessionRetention)
+        await setDaemonSessionRetention(daemon.daemonId, retention)
       if (daemon.canManageSharing && !sameSharing(sharing, initialSharing.current))
         await saveSharing('daemons', daemon.daemonId, sharing)
       onClose()
@@ -61,6 +66,7 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
             }}
           />
         </div>
+        <SessionRetentionField value={retention} onChange={setRetention} disabled={!daemon.canEdit} />
         <VisibilityField value={sharing} onChange={setSharing} disabled={!daemon.canManageSharing} />
         {err && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
