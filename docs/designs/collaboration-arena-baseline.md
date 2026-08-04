@@ -19,21 +19,28 @@ The arena runs multi-agent games through the **real daemon routing path**. There
 is no synthetic relay, no `if (evaluation)` branch in policy code, and no
 preselected recipient anywhere on the ingress path.
 
-A game turn travels the same road a production Slack message travels:
+A game turn travels the same road a production Slack message travels, **from the
+normalized-ingress boundary onward**:
 
-| Stage             | What actually runs                                                                                                 |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Transport         | `VirtualPlatformConnection` installed into the **production** connection maps — the real `SlackConnection` surface |
-| Ingress           | `injectPlatformEvent(...)` — the real inbound path, with no preselected agent                                      |
-| Normalization     | The real `@agentconnect.md/message` normalizers                                                                    |
-| Suppression/dedup | The real per-connection, transport-scoped dedup and bot-message suppression                                        |
-| Routing           | The real routing table, arbitration ladder, mention resolution, and authorship-claim verification                  |
-| Gating            | The real hop cap, durable loop guard, and serial turn gate                                                         |
-| Sessions          | The real `SessionManager`, session keys, epochs, and turn-final context refresh                                    |
-| Tools             | The real MCP control socket — `sendMessage` and the §6 evaluation registry go through the daemon's actual executor |
-| Egress            | The real outbound authorization (`recordOutbound`): ownership, membership, visibility, and thread checks           |
+| Stage             | What actually runs                                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Transport         | `VirtualPlatformConnection` installed into the **production** connection maps — the real `SlackConnection` surface                |
+| Ingress           | `injectPlatformEvent(...)` — enters `onInboundOutcome` with no preselected agent, exactly where a live connection callback enters |
+| Suppression/dedup | The real per-connection, transport-scoped dedup and bot-message suppression                                                       |
+| Routing           | The real routing table, arbitration ladder, mention resolution, and authorship-claim verification                                 |
+| Gating            | The real hop cap, durable loop guard, and serial turn gate                                                                        |
+| Sessions          | The real `SessionManager`, session keys, epochs, and turn-final context refresh                                                   |
+| Tools             | The real MCP control socket — `sendMessage` and the §6 evaluation registry go through the daemon's actual executor                |
+| Egress            | The real outbound authorization (`recordOutbound`): ownership, membership, visibility, and thread checks                          |
 
-Only two things are substituted, both at the edges:
+**Platform normalization is _not_ exercised.** `injectPlatformEvent` builds a
+`NormalizedMessage` directly from the evaluation payload; it does not run the
+Slack/Discord normalizers in `@agentconnect.md/message`. The arena's ingress
+boundary is the normalized message, so normalizer bugs — mention parsing, event
+shape, edit detection — are outside what these games can catch. Those are
+covered by the `@agentconnect.md/message` package's own tests.
+
+Beyond that boundary, two things are substituted, both at the edges:
 
 - **The platform** is a virtual connection rather than a live Slack workspace.
   The `connection-surface` guard test asserts that the virtual Slack connection
@@ -44,13 +51,23 @@ Only two things are substituted, both at the edges:
   model credentials**. The identical game runs against a real ACP runtime by
   passing a subject template; the engine seam is the same either way.
 
-The platform echo is production-shaped: every delivered agent post fans back to
-the other members' connections under the author's **real managed bot identity**,
-as a streaming post under its own message id plus a response-closing
-`message_changed` edit under the same msgId, distinguished by `ingressEventTag`
-and carrying the daemon-stamped authorship claim. Whether an echo activates
-anyone is the **daemon's** decision; the harness never editorializes, and chatter
-echoes exactly like a valid move, because production echoes everything.
+### 1.1 The platform echo (peer-driven counting and quota counting only)
+
+In the **echo-enabled** games — peer-driven counting and quota counting — every
+delivered agent post fans back to the other members' connections under the
+author's **real managed bot identity**, as a streaming post under its own message
+id plus a response-closing `message_changed` edit under the same msgId,
+distinguished by `ingressEventTag` and carrying the daemon-stamped authorship
+claim. Whether an echo activates anyone is the **daemon's** decision; the harness
+never editorializes, and chatter echoes exactly like a valid move, because
+production echoes everything.
+
+**Werewolf and cross-room counting do not install the echo.** Their phases are
+referee-driven: waves come from human-sourced referee broadcasts and
+`deliverRefereeEvent`, so a delivered agent post there does not fan back as a
+production-style inbound event. That is why those two games do not exercise
+implicit continuation, and why their conversations are bounded by the referee's
+cadence rather than by the hop cap.
 
 ## 2. The four routing acceptance cases
 
@@ -104,15 +121,24 @@ discussion is ordinary natural-language speech; game-state mutations
 as structured actions over the real MCP socket.
 
 The registry enforces at the daemon: startup name-collision rejection (an
-evaluation tool may never shadow a product tool), per-agent visibility (only
-living players see `vote`), and dispatch on the **trusted token-bound**
-`SessionContext` — never tool-input-supplied identity. Role-appropriate
-authorization and idempotence per `(round, action)` are the game's job in the
+evaluation tool may never shadow a product tool), a per-agent visibility
+predicate, and dispatch on the **trusted token-bound** `SessionContext` — never
+tool-input-supplied identity. Role-appropriate authorization, aliveness, phase
+correctness, and idempotence per `(round, action)` are the game's job in the
 handler.
 
+**Aliveness is enforced in the handler, not in visibility.** The current
+`visibleTo` predicate admits every configured player, and dead players remain in
+the public-room and wolf-den broadcast membership, so they still receive prompts
+and can still attempt actions — which the handler then rejects. Authoritative
+game state is never corrupted, but the measured conversation is **not**
+living-player-only, and the action counts include rejected attempts by the dead.
+Anyone reading participation metrics off this game should account for that.
+
 The strongest deterministic measure is **secret leakage**: unique canaries in
-private role information. Any public-room effect containing one — attempted or
-delivered — is an isolation failure. Measured leaks: **0**.
+private role information, checked against exact private-channel membership. Any
+public-room effect containing one — attempted or delivered — is an isolation
+failure. Measured leaks: **0**.
 
 ### 3.4 Cross-room counting (§10.2) — blocked, and pinned as such
 
@@ -305,6 +331,12 @@ the capability lands.
 - **The platform is virtual.** Real Slack rate limits, retries, event ordering
   under load, and partial outages are not exercised. The connection-surface guard
   bounds the drift but cannot eliminate it.
+- **Normalization is above the boundary** (§1). The arena starts at the
+  normalized message, so it cannot catch a normalizer defect.
+- **Only two games install the echo** (§1.1). Werewolf and cross-room counting
+  are referee-driven and therefore say nothing about implicit continuation.
+- **Werewolf's dead players still participate in the conversation** (§3.3);
+  only authoritative state is protected.
 - **Scripted hosts are not models.** They make the engine's outcome a
   reproducible CI gate; they say nothing about whether a real model coordinates
   well. Only the real-subject runs speak to that, and only as repeated trials —
@@ -324,6 +356,9 @@ Stated explicitly, since several claims above are structural rather than observe
 | The 99 contract tests pass, credential-free                 | **Measured**, this branch                                                                                     |
 | The four acceptance cases behave as tabulated               | **Measured**, this branch                                                                                     |
 | Werewolf plays to a winner with 0 canary leaks              | **Measured**, this branch                                                                                     |
+| Normalization is not exercised                              | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                      |
+| Only counting/quota install the echo                        | **Measured** — `PlatformEcho` is constructed in `counting.ts` and `quota-counting.ts` only                    |
+| Werewolf visibility admits dead players                     | **Measured** — the `visibleTo` predicate tests configured membership, not aliveness                           |
 | Cross-room handoff is refused, naming `thread`              | **Measured**, this branch (assertion on the product's own error text)                                         |
 | Leaderless rooms overshoot the target                       | **Measured**, this branch (scripted, 3 × 6)                                                                   |
 | 4-bot quota counting stalls 0/8 at 29 accepted / 10 started | **Measured**, this branch (scripted)                                                                          |

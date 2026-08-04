@@ -2223,22 +2223,20 @@ export class Daemon {
     // may not carry duplicates.
     const registryTools = environment.tools ?? []
     if (registryTools.length > 0) {
-      const productNames = new Set<string>()
+      // The COMPLETE stable product namespace, not just what this composition
+      // happens to request: `executeTool` dispatches evaluation tools BEFORE the
+      // product handlers, so a name it never composes (e.g. `setSessionTitle`,
+      // which `executeTool` handles directly) would still be shadowed. Only a
+      // full-registry check makes "never shadow a product tool" exact.
+      const productNames = new Set<string>(ALL_TOOL_NAMES)
       for (const agent of this.agents.values()) {
-        for (const tool of toolsForIntegrations(agent.integrations, {
-          collaboration: true,
-          organizationKnowledge: true
-        })) {
-          productNames.add(tool.name)
-        }
+        // Memory PROVIDER tools are dynamic, so they are not in the static list.
         try {
           for (const tool of this.memory.toolsForAgent(agent.id)) productNames.add(tool.name)
         } catch {
           /* a memory provider that cannot enumerate pre-start never shadows */
         }
       }
-      for (const tool of GITHUB_REVIEW_TOOLS) productNames.add(tool.name)
-      for (const name of MEMORY_TOOL_NAMES) productNames.add(name)
       const seen = new Set<string>()
       for (const definition of registryTools) {
         const name = definition.descriptor.name
