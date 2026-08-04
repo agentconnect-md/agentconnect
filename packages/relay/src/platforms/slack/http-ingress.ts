@@ -23,9 +23,9 @@
  * Signing secrets + tokens are NEVER logged.
  */
 import type { FastifyInstance } from 'fastify'
-import type { Logger } from './log.js'
-import type { SlackEventDedup } from './slack-event-dedup.js'
-import type { SlackInteractiveBody, SlackMessageEvent } from './slack-http-ingest.js'
+import type { Logger } from '../../log.js'
+import type { SlackEventDedup } from '../../slack-event-dedup.js'
+import type { SlackInteractiveBody, SlackMessageEvent } from './http-ingest.js'
 
 /** Raw-body cap for the Slack endpoints (Slack payloads are well under 1 MiB). */
 export const SLACK_BODY_LIMIT = 1024 * 1024

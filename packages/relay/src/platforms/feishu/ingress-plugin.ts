@@ -28,7 +28,7 @@ import {
   type RdMsgPlatformAction,
   type WireFeishuCardActionEvent
 } from '@agentconnect.md/protocol'
-import { FeishuHttpIngest, type FeishuCallbackHeaders, type VerifiedFeishuCallback } from '../../feishu-http-ingest.js'
+import { FeishuHttpIngest, type FeishuCallbackHeaders, type VerifiedFeishuCallback } from './http-ingest.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
 

@@ -21,7 +21,7 @@ import {
 import { forwardSessionAction, forwardSessionShortcut } from './platforms/slack/ingress-plugin.js'
 import { forwardFeishuCardAction } from './platforms/feishu/ingress-plugin.js'
 import { BotArbitrationRouter, mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
-import type { HttpSlackSessionAction, HttpSlackSessionShortcut } from './slack-http-ingest.js'
+import type { HttpSlackSessionAction, HttpSlackSessionShortcut } from './platforms/slack/http-ingest.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 

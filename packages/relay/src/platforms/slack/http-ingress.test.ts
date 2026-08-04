@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { FakeClock } from '@agentconnect.md/connection'
 import { SHARED_AGENT_SELECT_ACTION_ID } from '@agentconnect.md/protocol'
-import { registerSlackHttpIngress, type SlackIngestHandlers, type SlackIngestResolver } from './slack-http-ingress.js'
-import { SlackEventDedup } from './slack-event-dedup.js'
+import { registerSlackHttpIngress, type SlackIngestHandlers, type SlackIngestResolver } from './http-ingress.js'
+import { SlackEventDedup } from '../../slack-event-dedup.js'
 
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 

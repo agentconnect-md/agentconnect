@@ -28,9 +28,9 @@ import type {
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
-import { SlackHttpIngest } from './slack-http-ingest.js'
-import { FeishuHttpIngest } from './feishu-http-ingest.js'
-import type { FeishuVerifiedDelivery } from './feishu-http-ingress.js'
+import { SlackHttpIngest } from './platforms/slack/http-ingest.js'
+import { FeishuHttpIngest } from './platforms/feishu/http-ingest.js'
+import type { FeishuVerifiedDelivery } from './platforms/feishu/http-ingress.js'
 import { DemuxIndex, IngressPool } from './platforms/registry.js'
 import type { RelayIngressHost, RelayPlatformIngressPlugin } from './platforms/contract.js'
 import { slackIngressPlugin } from './platforms/slack/ingress-plugin.js'
@@ -473,7 +473,7 @@ export class RelayIngressManager {
     appId?: string
     rawBody: Buffer
     body: unknown
-    headers: import('./feishu-http-ingest.js').FeishuCallbackHeaders
+    headers: import('./platforms/feishu/http-ingest.js').FeishuCallbackHeaders
   }): FeishuVerifiedDelivery | undefined {
     if (args.appId) {
       const botId = this.feishuDemux.resolve({ appId: args.appId })

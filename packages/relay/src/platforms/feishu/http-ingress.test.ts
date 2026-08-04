@@ -2,12 +2,8 @@ import { createCipheriv, createHash } from 'node:crypto'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WireFeishuCardActionEvent, WireNormalizedMessage } from '@agentconnect.md/protocol'
-import { FeishuHttpIngest, type FeishuCallbackHeaders } from './feishu-http-ingest.js'
-import {
-  registerFeishuHttpIngress,
-  type FeishuIngestResolver,
-  type FeishuVerifiedDelivery
-} from './feishu-http-ingress.js'
+import { FeishuHttpIngest, type FeishuCallbackHeaders } from './http-ingest.js'
+import { registerFeishuHttpIngress, type FeishuIngestResolver, type FeishuVerifiedDelivery } from './http-ingress.js'
 
 const NOW = 1_720_000_000_000
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
