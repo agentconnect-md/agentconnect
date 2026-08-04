@@ -3214,10 +3214,10 @@ export default function SessionDetailView() {
                           .filter((agent): agent is Agent => agent !== undefined)
                       : []
                   const rows = busyAgents.length > 0 ? busyAgents : [owner]
-                  // 26px mark + 9px gap, same geometry as an agent turn's row, so the
+                  // 26px mark + 10px gap, same geometry as an agent turn's row, so the
                   // dots start on the same left edge as that agent's bubbles above.
                   return rows.map((agent, i) => (
-                    <div key={agent?.id ?? i} className="flex items-center gap-[9px] desktop:mt-[14px]">
+                    <div key={agent?.id ?? i} className="flex items-center gap-[10px] desktop:mt-[14px]">
                       <span className="av h-[26px] w-[26px] flex-none rounded-md">
                         <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={26} />
                       </span>
