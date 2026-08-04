@@ -56,14 +56,27 @@ describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
     }
   })
 
-  it('installs a canonical selection whose SKILL.md name is display-style (#371)', async () => {
+  it('installs a display-style-named selection plus its slash-referenced dependency (#371)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skills-cli-golden-'))
     roots.push(root)
+    // The mattpocock/skills shape: two-level nesting, a thin alias skill whose
+    // body invokes a sibling, and a frontmatter name differing from the
+    // directory name.
     const source = join(root, 'grill-source')
-    await mkdir(join(source, 'skills/grill-me'), { recursive: true })
+    await mkdir(join(source, 'skills/productivity/grill-me'), { recursive: true })
+    await mkdir(join(source, 'skills/productivity/grilling'), { recursive: true })
+    await mkdir(join(source, 'skills/productivity/unrelated'), { recursive: true })
     await writeFile(
-      join(source, 'skills/grill-me/SKILL.md'),
-      '---\nname: Grill Me\ndescription: Display-style frontmatter name golden fixture\n---\n# Grill me\n'
+      join(source, 'skills/productivity/grill-me/SKILL.md'),
+      '---\nname: Grill Me\ndescription: Alias with a display-style name\n---\nRun a `/grilling` session.\n'
+    )
+    await writeFile(
+      join(source, 'skills/productivity/grilling/SKILL.md'),
+      '---\nname: grilling\ndescription: The referenced interview skill\n---\n# Interview relentlessly\n'
+    )
+    await writeFile(
+      join(source, 'skills/productivity/unrelated/SKILL.md'),
+      '---\nname: unrelated\ndescription: Must not install\n---\n# unrelated\n'
     )
     const cwd = join(root, 'workspace')
     await mkdir(cwd)
@@ -82,8 +95,12 @@ describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
     )
 
     expect(result.errors).toEqual([])
-    expect(result.installed).toContain('.claude/skills/grill-me')
-    expect(await readFile(join(cwd, '.claude/skills/grill-me/SKILL.md'), 'utf8')).toContain('# Grill me')
+    expect(result.installed.sort()).toEqual(['.claude/skills/grill-me', '.claude/skills/grilling'])
+    expect(await readFile(join(cwd, '.claude/skills/grill-me/SKILL.md'), 'utf8')).toContain('/grilling')
+    expect(await readFile(join(cwd, '.claude/skills/grilling/SKILL.md'), 'utf8')).toContain('# Interview relentlessly')
+    await expect(readFile(join(cwd, '.claude/skills/unrelated/SKILL.md'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
   })
 
   it('uses that same local-source CLI path after Git acquisition and publishes only receipt-derived bundles', async () => {

@@ -11,18 +11,29 @@
  * name through verbatim makes the CLI answer "No matching skills found".
  *
  * Resolve every canonical selection against the daemon's private source
- * snapshot to the frontmatter name the CLI will actually match, and return the
- * exact leaf set that invocation must produce so the installer keeps its
- * exact-output receipt check.
+ * snapshot to the frontmatter name the CLI will actually match, then expand
+ * the set with same-source skills the selected bodies invoke by slash
+ * reference (skill collections publish thin alias skills whose whole body is
+ * e.g. "Run a `/grilling` session." — installing the alias without its target
+ * yields a broken skill). Return the exact leaf set that invocation must
+ * produce so the installer keeps its exact-output receipt check.
  */
 import { promises as fsp } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { parseSkillManifest } from './local-skill-inventory.js'
 
-// Frontmatter lives at the head of SKILL.md; reading more cannot change the
-// parsed name and only inflates work on an oversized manifest.
+// Frontmatter and the short prompt body live at the head of SKILL.md; reading
+// more cannot change the parsed name and only inflates work on an oversized
+// manifest. Slash references beyond this window are not resolved.
 const MAX_MANIFEST_HEAD_BYTES = 64 * 1024
 const MAX_LISTED_AVAILABLE = 32
+// Matches the wire-level cap on explicit selections per source.
+const MAX_RESOLVED_SELECTIONS = 64
+// A dependency reference is a slash-invocation token at a word boundary, e.g.
+// "Run a `/grilling` session." Only tokens naming another skill in the SAME
+// source count; anything else (URL paths, /tmp, ...) is plain text.
+const SLASH_REFERENCE = /(?:^|[\s`'"(])\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/g
+const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/
 
 /** The leaf directory skills@1.5.21 installs a matched skill into — an exact
  * mirror of its `sanitizeName`. Revalidate against the pinned CLI source when
@@ -50,10 +61,11 @@ export interface SnapshotFileRef {
 }
 
 export interface ResolvedSkillSelections {
-  /** Frontmatter names to pass as `-s`, ordered like the input selections. */
+  /** Frontmatter names to pass as `-s`: the explicit selections first (input
+   * order), then any slash-referenced same-source dependencies. */
   cliSelections: string[]
   /** The exact CLI-derived leaf directory names those selections must
-   * produce, ordered like the input selections. */
+   * produce, ordered like `cliSelections`. */
   expectedLeaves: string[]
 }
 
@@ -61,15 +73,18 @@ interface SelectionCandidate {
   name: string
   leaf: string
   directoryLeaf?: string
+  /** Prompt body (head-bounded, frontmatter stripped) for slash references. */
+  body: string
 }
 
 /**
  * Map wire-canonical selections onto the snapshot's skills. A selection
  * matches a skill when it equals the skill's install leaf (the sanitized
  * frontmatter name) or the sanitized name of the directory holding SKILL.md
- * (what the console's source scan offers). Throws when a selection matches
- * nothing, matches more than one distinct skill name, collides with another
- * selection, or resolves to a name that cannot ride the CLI argv safely.
+ * (what the console's source scan offers); the matched set is then closed
+ * over same-source slash references. Throws when a selection matches nothing,
+ * a selection or reference matches more than one distinct skill name, two
+ * selections collide, or a resolved name cannot ride the CLI argv safely.
  */
 export async function resolveSkillSelections(
   sourceName: string,
@@ -89,17 +104,33 @@ export async function resolveSkillSelections(
     candidates.push({
       name,
       leaf: skillInstallLeaf(name),
-      ...(directory === '.' ? {} : { directoryLeaf: skillInstallLeaf(basename(directory)) })
+      ...(directory === '.' ? {} : { directoryLeaf: skillInstallLeaf(basename(directory)) }),
+      body: head.replace(FRONTMATTER, '')
     })
   }
+
+  const matchCandidates = (token: string): SelectionCandidate[] =>
+    candidates.filter((candidate) => candidate.leaf === token || candidate.directoryLeaf === token)
 
   const cliSelections: string[] = []
   const expectedLeaves: string[] = []
   const selectionByName = new Map<string, string>()
+  const pendingBodies: SelectionCandidate[] = []
+  const admit = (candidate: SelectionCandidate, label: string): void => {
+    if (selectionByName.size >= MAX_RESOLVED_SELECTIONS) {
+      throw new Error(`source "${sourceName}" resolves to too many skills after dependency expansion`)
+    }
+    if (!isSafeCliSelection(candidate.name)) {
+      throw new Error(`skill ${label} in source "${sourceName}" has a name the skills CLI cannot select safely`)
+    }
+    selectionByName.set(candidate.name, label)
+    cliSelections.push(candidate.name)
+    expectedLeaves.push(candidate.leaf)
+    pendingBodies.push(candidate)
+  }
+
   for (const selection of selections) {
-    const matched = candidates.filter(
-      (candidate) => candidate.leaf === selection || candidate.directoryLeaf === selection
-    )
+    const matched = matchCandidates(selection)
     const names = [...new Set(matched.map((candidate) => candidate.name))]
     if (names.length === 0) {
       const available = [...new Set(candidates.map((candidate) => candidate.leaf))].sort()
@@ -111,20 +142,36 @@ export async function resolveSkillSelections(
     if (names.length > 1) {
       throw new Error(`skill selection "${selection}" matches more than one skill in source "${sourceName}"`)
     }
-    const name = names[0]!
-    const previous = selectionByName.get(name)
+    const previous = selectionByName.get(names[0]!)
     if (previous !== undefined) {
       throw new Error(
-        `skill selections "${previous}" and "${selection}" resolve to the same skill in source "${sourceName}"`
+        `skill selections ${previous} and "${selection}" resolve to the same skill in source "${sourceName}"`
       )
     }
-    if (!isSafeCliSelection(name)) {
-      throw new Error(`skill "${selection}" in source "${sourceName}" has a name the skills CLI cannot select safely`)
-    }
-    selectionByName.set(name, selection)
-    cliSelections.push(name)
-    expectedLeaves.push(matched[0]!.leaf)
+    admit(matched[0]!, `"${selection}"`)
   }
+
+  // Close the selection over same-source slash references, e.g. grill-me's
+  // whole body being "Run a `/grilling` session." (#371). A token matching
+  // nothing in this source is plain text and ignored; a token matching more
+  // than one skill stays fail-closed like an explicit selection would.
+  while (pendingBodies.length > 0) {
+    const referrer = pendingBodies.shift()!
+    for (const match of referrer.body.matchAll(SLASH_REFERENCE)) {
+      const token = match[1]!.toLowerCase()
+      const matched = matchCandidates(token)
+      const names = [...new Set(matched.map((candidate) => candidate.name))]
+      if (names.length === 0) continue // plain text, not a same-source skill
+      if (names.some((name) => selectionByName.has(name))) continue // already satisfied
+      if (names.length > 1) {
+        throw new Error(
+          `skill "${referrer.name}" reference "/${token}" matches more than one skill in source "${sourceName}"`
+        )
+      }
+      admit(matched[0]!, `"/${token}" (referenced by "${referrer.name}")`)
+    }
+  }
+
   return { cliSelections, expectedLeaves }
 }
 

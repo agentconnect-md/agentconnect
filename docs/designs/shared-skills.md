@@ -125,8 +125,11 @@ through its hardened Git path and gives the CLI only a private local snapshot:
   CLI matches `-s` against SKILL.md frontmatter names (which may differ from
   the directory name, e.g. `name: Grill Me` inside `skills/grill-me/`), the
   daemon first resolves each canonical selection against its private snapshot
-  to the frontmatter name the CLI matches, and then requires the CLI output to
-  be exactly the resolved leaf set.
+  to the frontmatter name the CLI matches. The resolved set is then closed
+  over same-source slash references — a selected body like
+  ``Run a `/grilling` session.`` pulls the referenced sibling skill in too,
+  transitively, since installing such an alias alone yields a broken skill —
+  and the CLI output must be exactly the resolved leaf set.
 - `https://github.com/owner/repo/tree/<ref>/<subdir>` points directly to a
   directory or ref inside the repository.
 - Accepted remote spellings are `owner/repo`, canonical
