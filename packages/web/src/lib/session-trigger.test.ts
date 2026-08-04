@@ -133,17 +133,17 @@ describe('sessionTriggerKind', () => {
     })
   })
 
-  it('hydrates token and cost usage from a direct session-detail response', () => {
+  it('hydrates hook source identity and usage from a direct session-detail response', () => {
     const detail: SessionDetailDto = {
-      id: 'dream-session-1',
+      id: 'github-session-1',
       parentSession: null,
       siblingSessions: [],
       childSessions: [],
       agentId: 'target-agent',
-      platform: 'dream',
-      channel: 'memory',
-      thread: 'drm-1',
-      title: 'Memory dream',
+      platform: 'hook',
+      channel: 'github-hook-1',
+      thread: 'delivery-1',
+      title: 'Review pull request',
       status: 'completed',
       lastActivityAt: '2026-07-27T00:00:00.000Z',
       usage: {
@@ -154,9 +154,10 @@ describe('sessionTriggerKind', () => {
         costAmount: 0.12,
         costCurrency: 'USD'
       },
-      triggeredBy: 'manual',
-      channelName: null,
-      triggeredByName: null,
+      triggeredBy: 'hook:github-hook-1',
+      hookKind: 'github',
+      channelName: 'owner/repo',
+      triggeredByName: 'owner/repo',
       threadUrl: null,
       runtime: 'codex',
       model: 'gpt-5.6',
@@ -169,16 +170,21 @@ describe('sessionTriggerKind', () => {
 
     const hydrated = sessionFromDetailDto(detail)
     expect(hydrated).toMatchObject({
-      platform: 'dream',
+      platform: 'hook',
+      hookKind: 'github',
+      channel: 'owner/repo',
       tokens: '12K',
       cost: '$0.12',
       usage: { inputTokens: 10_000, outputTokens: 2_400 }
     })
+    expect(sessionPlatform(hydrated)).toBe('github')
 
     const staleListRow = sessionFromDto(
       sessionDto({
         sessionId: detail.id,
-        sessionKey: { platform: 'dream', channel: 'memory' },
+        sessionKey: { platform: 'hook', channel: 'github-hook-1' },
+        hookKind: 'github',
+        channelName: 'owner/repo',
         usage: {
           reportedAt: '2026-07-27T00:03:00.000Z',
           totalTokens: 20_000,
@@ -213,7 +219,9 @@ describe('sessionTriggerKind', () => {
     const unmeteredListRow = sessionFromDto(
       sessionDto({
         sessionId: detail.id,
-        sessionKey: { platform: 'dream', channel: 'memory' },
+        sessionKey: { platform: 'hook', channel: 'github-hook-1' },
+        hookKind: 'github',
+        channelName: 'owner/repo',
         usage: null
       })
     )
