@@ -363,7 +363,13 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     )
     const admitted = finalizedAdmissions.filter((record) => record.admission.admitted)
     expect(admitted).toHaveLength(CHAIN_EDGES)
-    expect(finalizedAdmissions.at(-1)!.admission).toMatchObject({ admitted: false })
+    // Cause-specific: the refusal must be the dispatch GATE, not some other
+    // failure mode that happens to also stop the chain. `gated` is §7.1's
+    // bucket for a gate verdict (`deliveryRejectionReason` maps anything that
+    // is not a duplicate/queue-full/durability failure onto it), so this
+    // excludes `suppressed`, `unrouted`, `deduplicated`, `queue_full` and
+    // `error` — a routing regression can no longer satisfy this test.
+    expect(finalizedAdmissions.at(-1)!.admission).toMatchObject({ admitted: false, reason: 'gated' })
   }, 120_000)
 
   // Landed with #503 (§2.3/§5): the ordinary reply's FINALIZED response event
