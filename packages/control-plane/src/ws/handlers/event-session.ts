@@ -50,6 +50,10 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
 
 async function externalCandidate(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
   const origin = p.externalOrigin
+  // New daemons pin source provenance in their local session row. An explicit
+  // local binding is authoritative for synthetic/platform-shaped coordinates;
+  // absence still takes the conservative mixed-version fallback below.
+  if (p.sourceBindingKind === 'local' && !origin) return undefined
   if (!origin) {
     const triggerId = p.triggeredBy?.startsWith('hook:')
       ? p.triggeredBy.slice('hook:'.length)

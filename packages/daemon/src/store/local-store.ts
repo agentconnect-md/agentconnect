@@ -1925,13 +1925,15 @@ export class LocalStore {
         externalResourceKey?: string
         externalIntegrationId?: string
         externalOrigin?: ExternalSessionOrigin
+        sourceBindingKind?: 'local' | 'external'
       }
     | undefined {
     const row = this.db
       .prepare(
         `SELECT conversationKind, tenantScope, launchCorrelationId,
                 externalProvider, externalRealmKey, externalResourceKind,
-                externalResourceKey, externalIntegrationId, externalOriginJson
+                externalResourceKey, externalIntegrationId, externalOriginJson,
+                sourceBindingKind
          FROM sessions WHERE agentId = ? AND acpSessionId = ?`
       )
       .get(agentId, acpSessionId) as
@@ -1945,6 +1947,7 @@ export class LocalStore {
           externalResourceKey: string | null
           externalIntegrationId: string | null
           externalOriginJson: string | null
+          sourceBindingKind: 'local' | 'external' | null
         }
       | undefined
     if (!row) return undefined
@@ -1957,7 +1960,10 @@ export class LocalStore {
       ...(row.externalResourceKind ? { externalResourceKind: row.externalResourceKind } : {}),
       ...(row.externalResourceKey ? { externalResourceKey: row.externalResourceKey } : {}),
       ...(row.externalIntegrationId ? { externalIntegrationId: row.externalIntegrationId } : {}),
-      ...(row.externalOriginJson ? { externalOrigin: JSON.parse(row.externalOriginJson) as ExternalSessionOrigin } : {})
+      ...(row.externalOriginJson
+        ? { externalOrigin: JSON.parse(row.externalOriginJson) as ExternalSessionOrigin }
+        : {}),
+      ...(row.sourceBindingKind ? { sourceBindingKind: row.sourceBindingKind } : {})
     }
   }
 

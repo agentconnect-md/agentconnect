@@ -85,7 +85,8 @@ describe('capture gate — local state', () => {
     expect(store.getSessionClassification('bot-a', 'acp-external')).toMatchObject({
       externalRealmKey: 'W1',
       externalResourceKey: 'C1',
-      externalIntegrationId: 'integration-new'
+      externalIntegrationId: 'integration-new',
+      sourceBindingKind: 'external'
     })
   })
 })

@@ -103,20 +103,24 @@ describe('EventSession visibility-classification fields (session-visibility.md Â
     expect(parsed.conversationKind).toBeUndefined()
     expect(parsed.transportScope).toBeUndefined()
     expect(parsed.launchCorrelationId).toBeUndefined()
+    expect(parsed.sourceBindingKind).toBeUndefined()
   })
 
-  it('carries conversationKind + durable transportScope + launchCorrelationId', () => {
+  it('carries conversationKind + durable transportScope + launchCorrelationId + source provenance', () => {
     const parsed = EventSession.parse({
       ...legacyMilestone,
       conversationKind: 'dm',
       transportScope: 'T024BE7LD',
-      launchCorrelationId: CORRELATION_ID
+      launchCorrelationId: CORRELATION_ID,
+      sourceBindingKind: 'local'
     })
     expect(parsed.conversationKind).toBe('dm')
     expect(parsed.transportScope).toBe('T024BE7LD')
     expect(parsed.launchCorrelationId).toBe(CORRELATION_ID)
+    expect(parsed.sourceBindingKind).toBe('local')
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'group_dm' }).success).toBe(true)
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'channel' }).success).toBe(true)
+    expect(EventSession.safeParse({ ...legacyMilestone, sourceBindingKind: 'external' }).success).toBe(true)
   })
 
   it('carries the exact accepted GitHub delivery as repository-scope proof', () => {
@@ -157,6 +161,7 @@ describe('EventSession visibility-classification fields (session-visibility.md Â
     expect(EventSession.safeParse({ ...legacyMilestone, transportScope: '' }).success).toBe(false)
     expect(EventSession.safeParse({ ...legacyMilestone, transportScope: 'x'.repeat(201) }).success).toBe(false)
     expect(EventSession.safeParse({ ...legacyMilestone, launchCorrelationId: 'not-a-uuid' }).success).toBe(false)
+    expect(EventSession.safeParse({ ...legacyMilestone, sourceBindingKind: 'unknown' }).success).toBe(false)
   })
 })
 

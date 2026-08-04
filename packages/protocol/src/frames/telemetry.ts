@@ -109,6 +109,11 @@ export const EventSession = z.object({
   // `agent/launch`, echoed back so ingest can attribute the session to the
   // launching console user. NOT the launchId fence above.
   launchCorrelationId: z.string().uuid().optional(),
+  // Durable daemon-local source provenance. `local` distinguishes synthetic or
+  // otherwise non-provider sessions that retain platform-shaped coordinates
+  // for session-key compatibility. Absent keeps mixed-version ingest on the
+  // conservative legacy path.
+  sourceBindingKind: z.enum(['local', 'external']).optional(),
   // Immutable audience candidate for a supported shared input. This is
   // metadata-only: the CP validates the integration before binding a scope and
   // resolves current provider membership only on authorized read paths.

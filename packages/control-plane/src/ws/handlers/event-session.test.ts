@@ -304,6 +304,28 @@ describe('handleEventSession', () => {
     )
   })
 
+  it('does not treat an explicitly local platform-shaped session as a Slack candidate', async () => {
+    const recordMilestone = vi.fn().mockResolvedValue(
+      recorded({
+        visibility: 'org',
+        externalProvider: null,
+        visibilityRev: 1,
+        visibilityAckedRev: 0
+      })
+    )
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, { sourceBindingKind: 'local' })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    const milestone = recordMilestone.mock.calls[0]![0]
+    expect(milestone).not.toHaveProperty('externalCandidate')
+  })
+
   it('marks a forged Slack workspace binding invalid', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({

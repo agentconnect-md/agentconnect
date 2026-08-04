@@ -12474,6 +12474,9 @@ export class Daemon {
     if (classification?.launchCorrelationId !== undefined) {
       event.launchCorrelationId = classification.launchCorrelationId
     }
+    if (classification?.sourceBindingKind !== undefined) {
+      event.sourceBindingKind = classification.sourceBindingKind
+    }
     // Only a direct trusted ingress reports a credential locator. A2A children
     // persist the same source tuple for the local gate but let the CP inherit
     // the already-validated parent scope instead of presenting the parent's bot
