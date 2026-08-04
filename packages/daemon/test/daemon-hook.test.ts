@@ -1266,12 +1266,13 @@ describe('Daemon rd/msg hook fires', () => {
     await restarted.stop()
   }, 15_000)
 
-  /** A github fire on the acme/infra#42 thread, action-parameterized. */
-  const ghFire = (action: string, deliveryKey = 'd-1'): RdMsgHook =>
+  /** A github fire on the acme/infra#42 thread, family/action-parameterized. */
+  const ghFire = (event: 'issues' | 'issue_comment', action: string, deliveryKey = 'd-1'): RdMsgHook =>
     fire({
       sessionKey: 'acme/infra#42',
       msgId: `${HOOK_ID}:${deliveryKey}`,
       deliveryKey,
+      event: `${event}:${action}`,
       github: {
         repoId: '123',
         repoFullName: 'acme/infra',
@@ -1280,7 +1281,7 @@ describe('Daemon rd/msg hook fires', () => {
       },
       context: {
         source: 'github',
-        event: 'issues',
+        event,
         action,
         repo: 'acme/infra',
         number: 42,
@@ -1294,11 +1295,12 @@ describe('Daemon rd/msg hook fires', () => {
     })
 
   it.each([
-    { event: 'pull_request:merged', subjectKind: 'pull_request' as const },
-    { event: 'issues:closed', subjectKind: 'issue' as const }
+    { event: 'pull_request:merged', action: 'closed', subjectKind: 'pull_request' as const },
+    { event: 'issues:closed', action: 'closed', subjectKind: 'issue' as const },
+    { event: 'issues:deleted', action: 'deleted', subjectKind: 'issue' as const }
   ])(
     'removes the isolated worktree without starting a model turn on $event even while paused',
-    async ({ event, subjectKind }) => {
+    async ({ event, action, subjectKind }) => {
       const root = scaffold()
       const agentDir = join(root, 'agents', AGENT_ID)
       const workspace = join(agentDir, 'workspace')
@@ -1371,7 +1373,7 @@ describe('Daemon rd/msg hook fires', () => {
           context: {
             source: 'github',
             event: subjectKind === 'pull_request' ? 'pull_request' : 'issues',
-            action: 'closed',
+            action,
             repo: 'acme/infra',
             number: 42,
             truncated: false
@@ -1407,27 +1409,34 @@ describe('Daemon rd/msg hook fires', () => {
     15_000
   )
 
-  it('skips a GitHub deleted fire when the thread has no existing session — no session created, no turn', async () => {
-    const { factory, host } = streamingHost()
-    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+  it('replays a retained GitHub deleted event as a maintenance no-op after restart', async () => {
+    const root = scaffold()
+    const seedHost = streamingHost()
+    const daemon = new Daemon({ root, hostFactory: seedHost.factory })
     await daemon.start()
-    const cp = fakeCpClient()
-    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    vi.spyOn(daemon as any, 'emitHookCompletion').mockImplementationOnce(() => {})
 
-    const ack = await (daemon as any).handleRelayMsg(ghFire('deleted'), () => {})
+    const ack = await (daemon as any).handleRelayMsg(ghFire('issue_comment', 'deleted'), () => {})
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
-
-    // The relay-opened HookRun row is closed as a no-op success — but nothing ran:
-    // no ACP session was minted and no turn was prompted.
-    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
-    expect(cp.hookReports[0]).toMatchObject({ status: 'success', reason: 'deleted: no existing session' })
-    expect(cp.hookReports[0]!.sessionId).toBeUndefined()
-    expect(host.newSession).not.toHaveBeenCalled()
-    expect(host.prompt).not.toHaveBeenCalled()
+    expect(seedHost.host.newSession).not.toHaveBeenCalled()
+    expect(seedHost.host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
+
+    const restartedHost = streamingHost()
+    const restarted = new Daemon({ root, hostFactory: restartedHost.factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
+    expect(cp.hookReports[0]).toMatchObject({ status: 'success', reason: 'deleted_event_ignored' })
+    expect(cp.hookReports[0]!.sessionId).toBeUndefined()
+    expect(restartedHost.host.newSession).not.toHaveBeenCalled()
+    expect(restartedHost.host.prompt).not.toHaveBeenCalled()
+    await restarted.stop()
   }, 15_000)
 
-  it('a GitHub deleted fire still runs when a session already exists for the thread', async () => {
+  it('keeps a deleted GitHub comment silent when the thread already has a session', async () => {
     const { factory, host } = streamingHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
@@ -1439,17 +1448,17 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as never as { makeGithubReply: typeof makeGithubReply }).makeGithubReply = makeGithubReply
 
     // 1) An `opened` fire creates the session for acme/infra#42.
-    await (daemon as any).handleRelayMsg(ghFire('opened', 'd-open'), () => {})
+    await (daemon as any).handleRelayMsg(ghFire('issues', 'opened', 'd-open'), () => {})
     await vi.waitFor(() => expect(cp.hookReports.length).toBe(1))
     expect(host.newSession).toHaveBeenCalledTimes(1)
 
-    // 2) A later `deleted` fire on the same thread finds that session and runs —
-    //    it is NOT gated, because a session already existed.
-    await (daemon as any).handleRelayMsg(ghFire('deleted', 'd-del'), () => {})
+    // 2) Removing a comment is lifecycle noise even though the thread session exists.
+    await (daemon as any).handleRelayMsg(ghFire('issue_comment', 'deleted', 'd-del'), () => {})
     await vi.waitFor(() => expect(cp.hookReports.length).toBe(2))
-    expect(host.prompt).toHaveBeenCalledTimes(2) // both turns ran
-    expect(host.newSession).toHaveBeenCalledTimes(1) // resumed the existing session, not re-created
-    expect(cp.hookReports[1]).toMatchObject({ status: 'success', sessionId: 'acp-hook-1' })
+    expect(host.prompt).toHaveBeenCalledTimes(1)
+    expect(host.newSession).toHaveBeenCalledTimes(1)
+    expect(cp.hookReports[1]).toMatchObject({ status: 'success', reason: 'deleted_event_ignored' })
+    expect(cp.hookReports[1]!.sessionId).toBeUndefined()
     await daemon.stop()
   }, 15_000)
 

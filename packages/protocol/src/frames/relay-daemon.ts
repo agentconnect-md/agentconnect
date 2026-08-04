@@ -84,6 +84,14 @@ export const RD_AGENT_IMPLICIT_ROUTING_V1 = 'agent-implicit-routing-v1'
  */
 export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1 = 'github-thread-worktree-cleanup-v1'
 
+/**
+ * `github-thread-worktree-cleanup-v2`: this daemon additionally treats
+ * `issues:deleted` as maintenance-only worktree cleanup. V1 daemons do not
+ * recognize that event and could start a model turn, so relays must require
+ * this distinct capability before forwarding it.
+ */
+export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2 = 'github-thread-worktree-cleanup-v2'
+
 // D→R REQ → rd/hello/ok. The daemon presents its EXISTING daemon API key; the
 // relay holds no database, so it delegates to the CP via `rc/verify` and caches
 // the verdict until this connection closes. Secret material — NEVER log.

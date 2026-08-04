@@ -1061,7 +1061,18 @@ interface HookDispatchContext {
   reviewReportResult?: HookReviewResult
 }
 
-type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed'
+type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
+
+const GITHUB_DELETED_HOOK_EVENTS = new Set([
+  'issues:deleted',
+  'pull_request:deleted',
+  'issue_comment:deleted',
+  'pull_request_review_comment:deleted'
+])
+
+function githubDeletedHookEvent(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
+  return hook?.event !== undefined && GITHUB_DELETED_HOOK_EVENTS.has(hook.event)
+}
 
 /** Relay-authored lifecycle events that remove the isolated checkout without
  * opening a model turn. Pair the normalized event with trusted subject metadata
@@ -1073,6 +1084,7 @@ function githubThreadWorktreeCleanup(
     return 'pull_request_merged'
   }
   if (hook?.event === 'issues:closed' && hook.github?.subjectKind === 'issue') return 'issue_closed'
+  if (hook?.event === 'issues:deleted' && hook.github?.subjectKind === 'issue') return 'issue_deleted'
   return undefined
 }
 
@@ -9126,15 +9138,16 @@ export class Daemon {
    */
   private async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
     const cleanup = githubThreadWorktreeCleanup(msg)
+    const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
     if (!this.agents.has(msg.agentId)) {
       this.log.warn(`hook: no agent "${msg.agentId}" on this daemon — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
     }
-    if (!cleanup && this.paused(msg.agentId)) {
+    if (!maintenance && this.paused(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'paused' }
     }
-    if (!cleanup && this.safetyDrainingAgents.has(msg.agentId)) {
+    if (!maintenance && this.safetyDrainingAgents.has(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is stopping an interrupted turn — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'busy' }
     }
@@ -9161,9 +9174,10 @@ export class Daemon {
    */
   private async onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
     const cleanup = githubThreadWorktreeCleanup(msg)
+    const deleted = githubDeletedHookEvent(msg)
     // A lifecycle cleanup always addresses the stable GitHub thread session,
     // never an optional IM anchor configured for ordinary hook output.
-    const nmsg = buildHookMessage(cleanup ? { ...msg, target: undefined } : msg, randomUUID())
+    const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID())
     // The in-memory ACK cache closes same-process retransmits. This durable
     // probe closes the restart window *before* anchorTrigger posts externally:
     // a retained live row will replay, and a terminal row is already complete.
@@ -9182,7 +9196,7 @@ export class Daemon {
       ...(snapshot ? { snapshot } : {}),
       ...(msg.github ? { github: msg.github } : {})
     }
-    if (cleanup) {
+    if (cleanup || deleted) {
       const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
       const entry: QueueEntry = {
         agentId: msg.agentId,
@@ -9196,43 +9210,15 @@ export class Daemon {
       // retention's active-session predicate does not mistake this cleanup
       // obligation for a pending model turn.
       const persistence = this.persistInbox(entry, `maintenance:${key}`, { required: true })
-      if (persistence !== 'existing') void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
+      if (persistence !== 'existing') {
+        if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
+        else this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, entry)
+      }
       return { accepted: true }
     }
     // P3 outbound: github fires on a NUMBERED thread publish their completed reply as
     // one comment (always on — design; push fires have no thread and stay silent).
     const c = msg.context
-    // A GitHub `deleted` action (the issue/PR/comment was removed) is a teardown
-    // signal, not a work request: if this thread never had a session, there is
-    // nothing to react to, so don't spin up a brand-new session just to observe
-    // the deletion (it would only orphan a session pointing at a gone thread).
-    // Fire only when a session already exists for the thread's affinity key. A
-    // targeted fire keys a fresh per-delivery session (thread === msgId), so it
-    // has no prior session to gate on and is left alone; deleted github fires run
-    // headless in practice. The relay already opened the HookRun row, so close it
-    // honestly as a no-op success rather than orphaning it.
-    if (c?.source === 'github' && c.action === 'deleted' && !msg.target) {
-      const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
-      if (!this.store.getSession(key)?.acpSessionId) {
-        this.log.info(`hook: skipping github ${c.event ?? 'event'}:deleted fire ${msg.msgId} — no session for ${key}`)
-        // Preserve R2a's admission/outbox guarantee even though this teardown
-        // event deliberately does not enter the turn engine: persist the stable
-        // delivery first, then atomically redact it into a terminal receipt.
-        const entry: QueueEntry = {
-          agentId: msg.agentId,
-          msg: nmsg,
-          initAbort: new AbortController(),
-          hookContext,
-          resolve: () => {},
-          reject: () => {}
-        }
-        const persistence = this.persistInbox(entry, key, { required: true })
-        if (persistence !== 'existing') {
-          this.emitHookCompletion(hookContext, 'success', { reason: 'deleted: no existing session' }, entry)
-        }
-        return { accepted: true }
-      }
-    }
     const trustedInlineTarget =
       c?.source === 'github' &&
       msg.github?.subjectKind === 'pull_request' &&
@@ -17400,11 +17386,13 @@ export class Daemon {
         continue
       }
       const cleanup = githubThreadWorktreeCleanup(hookContext)
-      if (hookContext && cleanup) {
+      const deleted = githubDeletedHookEvent(hookContext)
+      if (hookContext && (cleanup || deleted)) {
         const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, row.agentId, msg.transportScope)
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
-        void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
+        if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
+        else this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, owner)
         replayedMaintenance += 1
         continue
       }
@@ -17474,7 +17462,7 @@ export class Daemon {
     }
     if (replayed) this.log.info(`durable inbox: replayed ${replayed} admitted message(s) through the serial gate`)
     if (replayedMaintenance) {
-      this.log.info(`durable inbox: replayed ${replayedMaintenance} GitHub worktree cleanup(s)`)
+      this.log.info(`durable inbox: replayed ${replayedMaintenance} GitHub maintenance delivery(s)`)
     }
   }
 
