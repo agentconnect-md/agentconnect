@@ -128,8 +128,7 @@ import {
   telegramConnKey,
   TelegramConnection,
   type TelegramCallback,
-  type TelegramObservedChat,
-  type InlineButton
+  type TelegramObservedChat
 } from './telegram/connection.js'
 import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord/connection.js'
 import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
@@ -138,6 +137,15 @@ import { SlackNameResolver } from './slack/name-resolver.js'
 import { manifestFor } from './platforms/manifest.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
 import { isPlatformMemberId } from './platforms/member-id.js'
+import { CommandChromeRegistry, type SelectKind } from './platforms/command-chrome.js'
+import { slackCommandChrome } from './platforms/slack/command-chrome.js'
+import {
+  parseTelegramSelect,
+  telegramCommandChrome,
+  telegramSelectButtons
+} from './platforms/telegram/command-chrome.js'
+import { discordCommandChrome } from './platforms/discord/command-chrome.js'
+import { feishuCommandChrome } from './platforms/feishu/command-chrome.js'
 import {
   applySlackAction as applySlackActionExternal,
   clearStaleSlackReplyFooters as clearStaleSlackReplyFootersExternal,
@@ -178,16 +186,14 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './slack/render.js'
-import { TelegramConverger, renderStatusReply, type TelegramAction } from './telegram/render.js'
+import { TelegramConverger, type TelegramAction } from './telegram/render.js'
 import {
   DiscordConverger,
-  renderStatusText,
   buildDiscordSelectComponents,
-  buildLinkComponents,
   type DiscordAction,
   type DiscordComponents
 } from './discord/render.js'
-import { FeishuConverger, renderStatusReply as renderFeishuStatusReply, type FeishuAction } from './feishu/render.js'
+import { FeishuConverger, type FeishuAction } from './feishu/render.js'
 import { Scheduler, buildSyntheticMessage } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { planChannelIntros, buildIntroMessage } from './agents/channel-intro.js'
@@ -738,10 +744,6 @@ class LifecycleCleanupBlockedError extends Error {
 /** The session-control selectors driven by `/models` `/effort` `/permission` + their
  *  tappable cards. Single-char codes keep the inline-button `callback_data` (≤64 bytes)
  *  compact — `<code>:<optionIndex>`. */
-type SelectKind = 'model' | 'effort' | 'permission'
-const SELECT_KIND_CODE: Record<SelectKind, string> = { model: 'm', effort: 'e', permission: 'p' }
-const SELECT_CODE_KIND = { m: 'model', e: 'effort', p: 'permission' } as const satisfies Record<string, SelectKind>
-
 // Budget for the inline text carried by one WebchatOutput payload. Well under
 // the 256 KiB JSON frame cap so the envelope overhead (conversationId/turnId/index/
 // kind + JSON escaping of control chars, up to a 6× blowup) can never push a chunk
@@ -1647,6 +1649,17 @@ export class Daemon {
    * dream), which is exactly what the `platform === …` ternaries this replaces
    * did with their default arm.
    */
+  /** §7.4 command chrome — how each platform presents control replies, /status,
+   *  and select cards. Core (Slack-shaped) is the rendering fallback; the
+   *  thread-identity fact defaults false (see CommandChromeRegistry). */
+  private readonly commandChrome: CommandChromeRegistry<NormalizedMessage, StatusBarInfo> = (() => {
+    const registry = new CommandChromeRegistry<NormalizedMessage, StatusBarInfo>(slackCommandChrome)
+    registry.register(telegramCommandChrome)
+    registry.register(discordCommandChrome)
+    registry.register(feishuCommandChrome)
+    return registry
+  })()
+
   private readonly turnSurfaces: TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage> =
     (() => {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
@@ -9239,7 +9252,10 @@ export class Daemon {
     srcIntegrationIds?: readonly string[]
   ): { agentId: string; integrationId: string; via: RouteVia } | null {
     const transportScope = msg.transportScope ?? this.transportScopeForIntegrationIds(srcIntegrationIds)
-    const thread = msg.platform === 'slack' ? msg.thread : undefined
+    // Only where the thread coordinate identifies the session (Slack) does it
+    // participate in the lookup; reply-threading platforms mint a fresh thread per
+    // command, so their commands resolve through the channel's latest session.
+    const thread = this.commandChrome.threadIdentifiesSession(msg.platform) ? msg.thread : undefined
     const candidates: Array<{
       agentId: string
       integrationId: string
@@ -9406,15 +9422,15 @@ export class Daemon {
     // owns the key), not just the ACP-id-keyed `pending` — so `!cancel`/`!stop`/`!queue`
     // also see a session that is gate-owned or queued (cold session with no ACP id yet).
     const inflight = directGateActive
-    // Post a short control reply on the right surface: Slack threads on `thread_ts`;
-    // Telegram replies to the command message (reply-based threading), which is also a
-    // non-numeric `tg:`/`dm` thread so it never posts as a forum topic.
-    const tgReplyTo = this.telegramReplyTarget(msg)
+    // Post a short control reply on the platform's own surface (§7.4 command
+    // chrome): Slack threads on `thread_ts`; Telegram replies to the command
+    // message (reply-based threading), which is also a non-numeric `tg:`/`dm`
+    // thread so it never posts as a forum topic.
+    const chrome = this.commandChrome.for(msg.platform)
+    const chromeCtx = { channel: msg.channel, replyThread, sessionKey: key }
     const reply = (text: string): void => {
       if (!conn) return
-      if (msg.platform === 'telegram')
-        void (conn as TelegramConnection).postMessage(msg.channel, text, replyThread, { replyTo: tgReplyTo })
-      else void (conn as SlackConnection).postMessage(msg.channel, text, replyThread)
+      chrome.reply(conn, msg, chromeCtx, text)
     }
 
     if (command.kind === 'resume') {
@@ -9493,28 +9509,10 @@ export class Daemon {
       const link = acpSessionId
         ? this.sessionLink(acpSessionId, this.sessionLinkSource(msg.platform, target.integrationId))
         : undefined
-      if (msg.platform === 'telegram') {
-        // HTML chrome (not recorded) — renders the compact line + a tappable View link.
-        void (conn as TelegramConnection | undefined)?.postChrome(msg.channel, renderStatusReply(info, link), {
-          parseMode: 'HTML',
-          threadTs: replyThread,
-          replyTo: tgReplyTo
-        })
-      } else if (msg.platform === 'discord') {
-        // Discord markdown line + a real "View session" link BUTTON (Slack's `<url|text>`
-        // link syntax renders literally on Discord).
-        void (conn as DiscordConnection | undefined)?.postChrome(
-          msg.channel,
-          renderStatusText(info),
-          link ? { keyboard: buildLinkComponents(link) } : {}
-        )
-      } else if (msg.platform === 'feishu') {
-        // Plain-text status line + a `🔗 <url>` line (v1 has no interactive cards / link buttons).
-        void (conn as FeishuConnection | undefined)?.postChrome(msg.channel, renderFeishuStatusReply(info, link))
-      } else {
-        const text = link ? `${renderStatusBar(info)}  ·  <${link}|View session>` : renderStatusBar(info)
-        reply(text)
-      }
+      // Presentation is the platform's (§7.4): HTML chrome + View link on Telegram,
+      // markdown + a real link button on Discord, plain text + a 🔗 line on Feishu,
+      // the compact pipe-linked status line on Slack.
+      if (conn) chrome.status(conn, msg, chromeCtx, info, link)
       return true
     }
 
@@ -9554,31 +9552,15 @@ export class Daemon {
         reply('No active session here to configure.')
         return true
       }
-      // Telegram + Discord list via a tappable button card, replied under the command;
-      // returns false so handleSelectCommand falls back to a text list (Slack, or when
-      // Discord has too many options to fit its 25-button ceiling).
+      // Platforms with tappable cards render one (§7.4), replied under the command;
+      // false falls back to the numbered text list (Slack, or a Discord select over
+      // its 25-button ceiling).
+      const selectCard = chrome.selectCard?.bind(chrome)
       const renderCard =
-        msg.platform === 'telegram' && conn
-          ? (kind: SelectKind, current: string | undefined, options: string[]) => {
-              const { text, buttons } = this.buildSelectCard(kind, current, options)
-              void (conn as TelegramConnection).postCard(msg.channel, text, buttons, {
-                threadTs: replyThread,
-                replyTo: tgReplyTo
-              })
-              return true
-            }
-          : msg.platform === 'discord' && conn
-            ? (kind: SelectKind, current: string | undefined, options: string[]) => {
-                const components = buildDiscordSelectComponents(kind, current, options)
-                if (!components) return false
-                // sessionKey = the resolved key, so a tapped button resolves back to it.
-                void (conn as DiscordConnection).postChrome(msg.channel, this.selectCardText(kind, current), {
-                  keyboard: components,
-                  sessionKey: key
-                })
-                return true
-              }
-            : undefined
+        selectCard && conn
+          ? (kind: SelectKind, current: string | undefined, options: string[]) =>
+              selectCard(conn, msg, chromeCtx, { kind, current, options, header: this.selectCardText(kind, current) })
+          : undefined
       this.handleSelectCommand(
         command.kind,
         command.value,
@@ -9655,20 +9637,6 @@ export class Daemon {
   private selectCardText(kind: SelectKind, current: string | undefined): string {
     const cur = current ? this.selectDisplay(kind, current) : 'default'
     return `${this.selectLabel(kind)} — tap to switch (current: ${cur}):`
-  }
-
-  /** Build a session-control card: a header line + one tappable button per option (the
-   *  current one flagged), with `callback_data` = `<kindCode>:<optionIndex>`. */
-  private buildSelectCard(
-    kind: SelectKind,
-    current: string | undefined,
-    options: string[]
-  ): { text: string; buttons: InlineButton[][] } {
-    const code = SELECT_KIND_CODE[kind]
-    const buttons = options.map((o, i) => [
-      { text: `${o === current ? '✅ ' : ''}${this.selectDisplay(kind, o)}`, callbackData: `${code}:${i}` }
-    ])
-    return { text: this.selectCardText(kind, current), buttons }
   }
 
   /**
@@ -9752,13 +9720,12 @@ export class Daemon {
    * must never throw out of the update pump.
    */
   private handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): void {
-    const m = /^([mep]):(\d+)$/.exec(cb.data)
-    if (!m) {
+    const tap = parseTelegramSelect(cb.data)
+    if (!tap) {
       void conn.answerCallback(cb.id)
       return
     }
-    const kind = SELECT_CODE_KIND[m[1] as keyof typeof SELECT_CODE_KIND]
-    const idx = Number(m[2])
+    const { kind, index: idx } = tap
     const srcIntegrationIds = this.srcIntegrationIds(conn)
     const session = this.commandSessionForLatest(
       cb.channel,
@@ -9785,8 +9752,37 @@ export class Daemon {
     // change, matching the other funnels.
     this.logSessionAction(`select:${kind}`, session.key, { userId: cb.userId })
     void conn.answerCallback(cb.id, `${this.selectLabel(kind)} → ${value}`)
-    const { text, buttons } = this.buildSelectCard(kind, value, options)
-    void conn.editCard(cb.channel, cb.messageId, text, buttons)
+    void conn.editCard(
+      cb.channel,
+      cb.messageId,
+      this.selectCardText(kind, value),
+      telegramSelectButtons(kind, value, options)
+    )
+  }
+
+  /** The newest addressable session for a platform-scoped interaction (a Telegram
+   *  command/callback, a Slack message shortcut): scan the caller's own-platform
+   *  integrations, retain conversation routing gates, newest first. The caller is
+   *  already platform-specific — it names its platform as data, not as a branch. */
+  private latestAdmittedSession(
+    platform: string,
+    channel: string,
+    srcIntegrationIds: readonly string[],
+    transportScope?: string,
+    thread?: string
+  ): SessionRecord | null {
+    const candidates: SessionRecord[] = []
+    for (const [agentId, agent] of this.agents) {
+      for (const integration of agent.integrations) {
+        if (integration.platform !== platform || !srcIntegrationIds.includes(integration.id)) continue
+        const routing = integrationRouting(integration)
+        if (!conversationAdmitted(routing, channel)) continue
+        const session = this.store.latestSessionForTransport(agentId, channel, transportScope, thread)
+        if (session) candidates.push(session)
+      }
+    }
+    candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.agentId.localeCompare(b.agentId))
+    return candidates[0] ?? null
   }
 
   /** The channel's latest admitted session for a Telegram command/callback. */
@@ -9795,18 +9791,7 @@ export class Daemon {
     srcIntegrationIds: readonly string[],
     transportScope?: string
   ): { agentId: string; key: string; acpSessionId?: string } | null {
-    const candidates: SessionRecord[] = []
-    for (const [agentId, agent] of this.agents) {
-      for (const integration of agent.integrations) {
-        if (integration.platform !== 'telegram' || !srcIntegrationIds.includes(integration.id)) continue
-        const routing = integrationRouting(integration)
-        if (!conversationAdmitted(routing, channel)) continue
-        const session = this.store.latestSessionForTransport(agentId, channel, transportScope)
-        if (session) candidates.push(session)
-      }
-    }
-    candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.agentId.localeCompare(b.agentId))
-    const latest = candidates[0]
+    const latest = this.latestAdmittedSession('telegram', channel, srcIntegrationIds, transportScope)
     return latest ? { agentId: latest.agentId, key: latest.key, acpSessionId: latest.acpSessionId ?? undefined } : null
   }
 
@@ -9817,18 +9802,8 @@ export class Daemon {
     srcIntegrationIds: readonly string[]
   ): string | undefined {
     const transportScope = this.transportScopeForIntegrationIds(srcIntegrationIds)
-    const candidates: SessionRecord[] = []
-    for (const [agentId, agent] of this.agents) {
-      for (const integration of agent.integrations) {
-        if (integration.platform !== 'slack' || !srcIntegrationIds.includes(integration.id)) continue
-        const routing = integrationRouting(integration)
-        if (!conversationAdmitted(routing, shortcut.channel)) continue
-        const session = this.store.latestSessionForTransport(agentId, shortcut.channel, transportScope, shortcut.thread)
-        if (session) candidates.push(session)
-      }
-    }
-    candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.agentId.localeCompare(b.agentId))
-    return candidates[0]?.key
+    return this.latestAdmittedSession('slack', shortcut.channel, srcIntegrationIds, transportScope, shortcut.thread)
+      ?.key
   }
 
   /** Local layer (agent.json) ∪ resolved CP layer; unservable CP rules are dropped + warn-logged. */
