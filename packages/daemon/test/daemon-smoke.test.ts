@@ -1090,7 +1090,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
   )
 
   it('re-emits session metadata when display names are resolved after the turn', async () => {
-    const root = scaffold()
+    const root = scaffold(undefined, undefined, undefined, DREAM_AGENT)
     const fakeHost = {
       __started: true,
       start: vi.fn(async () => {}),
@@ -1100,39 +1100,72 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       cancel: vi.fn(),
       stop: vi.fn()
     }
-    const daemon = new Daemon({ root, hostFactory: () => fakeHost as any })
-    await daemon.start()
-    const emitEventSession = vi.fn()
-    ;(daemon as any).cpClient = { emitEventSession, emitUsageReport: vi.fn(), stop: vi.fn() }
+    const first = new Daemon({ root, hostFactory: () => fakeHost as any })
+    let firstStopped = false
+    let restored: Daemon | undefined
+    try {
+      await first.start()
+      const emitEventSession = vi.fn()
+      ;(first as any).cpClient = { emitEventSession, emitUsageReport: vi.fn(), stop: vi.fn() }
 
-    await (daemon as any).dispatch('bot-a', {
-      msgId: 'slack:C1:300.1',
-      traceId: 'names',
-      source: 'cron',
-      platform: 'slack',
-      channel: 'C1',
-      thread: '300.1',
-      sender: { id: 'U1', isBot: false },
-      text: 'need names',
-      mentionedBots: [],
-      isDm: false
-    })
+      await (first as any).dispatch(DREAM_AGENT, {
+        msgId: 'slack:C1:300.1',
+        traceId: 'names',
+        source: 'cron',
+        platform: 'slack',
+        channel: 'C1',
+        thread: '300.1',
+        sender: { id: 'U1', isBot: false },
+        text: 'need names',
+        mentionedBots: [],
+        isDm: false
+      })
+      const terminal = emitEventSession.mock.calls.at(-1)![0]
+      expect(terminal).toMatchObject({ sessionId: 'acp-name-1', phase: 'end' })
 
-    ;(daemon as any).store.setDisplayName('C1', 'deploys', Date.now())
-    ;(daemon as any).store.setDisplayName('U1', 'Dana Reyes', Date.now())
-    ;(daemon as any).emitSessionMetadataSnapshotsForDisplayName('C1')
+      ;(first as any).store.setDisplayName('C1', 'deploys', Date.now())
+      ;(first as any).store.setDisplayName('U1', 'Dana Reyes', Date.now())
+      ;(first as any).emitSessionMetadataSnapshotsForDisplayName('C1')
 
-    const refresh = emitEventSession.mock.calls.at(-1)![0]
-    expect(refresh).toMatchObject({
-      sessionId: 'acp-name-1',
-      phase: 'plan',
-      title: 'need names',
-      status: 'idle',
-      channelName: 'deploys',
-      triggeredBy: 'U1',
-      triggeredByName: 'Dana Reyes'
-    })
-    await daemon.stop()
+      const refresh = emitEventSession.mock.calls.at(-1)![0]
+      expect(refresh).toMatchObject({
+        sessionId: 'acp-name-1',
+        phase: 'plan',
+        title: 'need names',
+        status: 'idle',
+        channelName: 'deploys',
+        triggeredBy: 'U1',
+        triggeredByName: 'Dana Reyes'
+      })
+      const stored = (first as any).store.getSessionByAcpIdForAgent(DREAM_AGENT, 'acp-name-1')
+      expect(JSON.parse(stored.eventSessionSnapshot)).toMatchObject({
+        phase: 'end',
+        ts: terminal.ts,
+        channelName: 'deploys',
+        triggeredByName: 'Dana Reyes'
+      })
+
+      await first.stop()
+      firstStopped = true
+      restored = new Daemon({ root, probeRuntimes: async () => [] })
+      await restored.start()
+      const replayed = vi.fn()
+      ;(restored as any).cpClient = { emitEventSession: replayed, stop: vi.fn() }
+      ;(restored as any).replaySessionMetadataSnapshots()
+
+      expect(replayed).toHaveBeenCalledTimes(1)
+      expect(replayed.mock.calls[0]![0]).toMatchObject({
+        sessionId: 'acp-name-1',
+        phase: 'end',
+        ts: terminal.ts,
+        channelName: 'deploys',
+        triggeredByName: 'Dana Reyes'
+      })
+    } finally {
+      if (restored) await restored.stop().catch(() => undefined)
+      if (!firstStopped) await first.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
   }, 15_000)
 
   it('pending map is cleaned up when host.prompt throws', async () => {

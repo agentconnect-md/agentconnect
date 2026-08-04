@@ -13832,8 +13832,9 @@ export class Daemon {
       }
     }
 
+    const snapshot = this.convergedEventSessionSnapshot(sessionRecord, event)
     try {
-      this.store.setEventSessionSnapshot(input.agentId, input.sessionId, JSON.stringify(event))
+      this.store.setEventSessionSnapshot(input.agentId, input.sessionId, JSON.stringify(snapshot))
     } catch (err) {
       this.log.debug(`event/session snapshot persist failed (session ${input.sessionId}): ${(err as Error).message}`)
     }
@@ -13843,6 +13844,29 @@ export class Daemon {
     } catch (err) {
       this.log.debug(`event/session emit failed (session ${input.sessionId}): ${(err as Error).message}`)
     }
+  }
+
+  private storedEventSessionSnapshot(session: SessionRecord): EventSession | undefined {
+    if (!session.eventSessionSnapshot) return undefined
+    try {
+      const parsed = EventSessionSchema.safeParse(JSON.parse(session.eventSessionSnapshot))
+      if (parsed.success && parsed.data.agentId === session.agentId && parsed.data.sessionId === session.acpSessionId) {
+        return parsed.data
+      }
+    } catch {
+      // Corrupt/legacy local state is ignored and replaced by the next valid snapshot.
+    }
+    return undefined
+  }
+
+  /** Match the CP's terminal-phase convergence before persisting a replay
+   * snapshot. Metadata enrichment may arrive after a turn ends, but it must not
+   * replace the terminal phase or its endedAt timestamp with a later plan event. */
+  private convergedEventSessionSnapshot(session: SessionRecord | undefined, next: EventSession): EventSession {
+    if (!session) return next
+    const previous = this.storedEventSessionSnapshot(session)
+    if (previous?.phase !== 'end' && previous?.phase !== 'problem') return next
+    return { ...next, phase: previous.phase, ts: previous.ts }
   }
 
   /**
@@ -13858,22 +13882,7 @@ export class Daemon {
     const stored = this.store.listSessions()
     if (stored.length === 0) return
 
-    const replay = stored.map((session) => {
-      if (!session.eventSessionSnapshot) return { session }
-      try {
-        const parsed = EventSessionSchema.safeParse(JSON.parse(session.eventSessionSnapshot))
-        if (
-          parsed.success &&
-          parsed.data.agentId === session.agentId &&
-          parsed.data.sessionId === session.acpSessionId
-        ) {
-          return { session, event: parsed.data }
-        }
-      } catch {
-        // Corrupt/legacy local state falls through to the safe minimal snapshot.
-      }
-      return { session }
-    })
+    const replay = stored.map((session) => ({ session, event: this.storedEventSessionSnapshot(session) }))
     const needsFallback = replay.some((entry) => entry.event === undefined)
     const projectionBySession = needsFallback
       ? new Map(
