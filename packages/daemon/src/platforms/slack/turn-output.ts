@@ -213,6 +213,10 @@ export async function finalizeSlackResponse(
    *  conversation directory and with the author removed (§2.3: an author cannot activate
    *  itself, and stating that here is clearer than shipping a recipient to discard). */
   mentionedAgentIds: string[],
+  /** Did the COMPLETE response mention anyone at all — humans and other apps included?
+   *  The final event's own text cannot answer this once an answer has been split, and
+   *  §2.3 makes any address binding, so it travels with the recipient set. */
+  addressedAnyone: boolean,
   debug: (message: string) => void
 ): Promise<void> {
   const body = p.lastResponse
@@ -230,7 +234,8 @@ export async function finalizeSlackResponse(
       responseId: p.responseId,
       deliveryState: 'final',
       hopCount: p.sourceHopCount ?? 0,
-      mentionedAgentIds
+      mentionedAgentIds,
+      ...(addressedAnyone ? { addressedAnyone } : {})
     })
   } catch (err) {
     // The real connection normalizes API failures to `false`; this guard covers a

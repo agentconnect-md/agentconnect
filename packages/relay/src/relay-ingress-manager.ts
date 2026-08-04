@@ -16,7 +16,12 @@
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
 import { createHash } from 'node:crypto'
-import { MAX_AGENT_CALL_HOPS, WireFeishuCardActionResponse, WireFeishuCardActionValue } from '@agentconnect.md/protocol'
+import {
+  MAX_AGENT_CALL_HOPS,
+  RD_AGENT_IMPLICIT_ROUTING_V1,
+  WireFeishuCardActionResponse,
+  WireFeishuCardActionValue
+} from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
   RdMsgPlatformAction,
@@ -613,12 +618,16 @@ export class RelayIngressManager {
    * The §6 ladder for an AgentConnect-authored platform message, on the relay side
    * (send-message-routing-rework.md §4, §4.1 step 4, §6, §8.2).
    *
-   * It is a separate ladder rather than a rung of `forward`'s because §2.3 requires that
-   * an agent message never activate implicitly: not through thread affinity, DM, keyword,
-   * channel `auto`, or the group's default agent. Selecting exclusively from the VERIFIED
-   * recipient set is what makes that structural — in particular a bare shared-bot mention
-   * resolves to nobody on the author's side, so it can never reach the `defaultAgentId`
-   * rung here (§6, "a bare shared-bot mention from an agent does not select the default").
+   * It is a separate ladder rather than a rung of `forward`'s because the checks differ,
+   * not because the rungs do: §2.3 gives a response that names nobody the SAME arbitration
+   * a human message gets, with the author excluded. What stays exclusive to the verified
+   * recipient set is a response that DID name someone — that one activates the named
+   * agents or nobody, never a substitute.
+   *
+   * "Named someone" is wider than the resolved agent set. A bare shared-bot mention, a
+   * human, or another app all resolve to no agent yet are still deliberate addressing, so
+   * they stop here rather than continuing — the same place the direct ladder stops
+   * (`routeRules`: an unmatched mention in a channel routes to nobody).
    *
    * Anything not routable is dropped rather than forwarded. The relay holds no transcript
    * — "transcript only" is a daemon-side state — and §5.7 already has the target
@@ -652,8 +661,41 @@ export class RelayIngressManager {
     if (trustedDeliveryHopCount > MAX_AGENT_CALL_HOPS) {
       return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
-    const targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
-    if (targets.length === 0) return drop('no verified recipient')
+    // §2.3: an agent message that names nobody still continues the conversation — it goes
+    // through the SAME arbitration a human message does, with the author excluded so it
+    // cannot wake itself. `arbitrate` normally stops bot traffic at the explicit-mention
+    // rung; a VERIFIED author is a known participant with a checked policy, not anonymous
+    // bot traffic, so it is allowed past.
+    //
+    // "Names nobody" is judged BEFORE the author is filtered out. A response that did name
+    // an agent has explicitly addressed the conversation, so it gets an explicit outcome
+    // or none: retargeting it because the named agent is unreachable would substitute a
+    // recipient the author never asked for, and filtering first would make a self-mention
+    // — the one name every response can produce — indistinguishable from naming nobody.
+    const named = claim.mentionedAgentIds.length > 0
+    let targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
+    let routeVia: 'mention' | 'implicit' = 'mention'
+    if (!named) {
+      // Naming a HUMAN (or another app, or a bare shared bot) is still deliberate
+      // addressing even though it resolves to no agent — `mentionedBots` holds every
+      // `<@U…>` token, not only bots. The direct ladder stops there (`routeRules`:
+      // unmatched mention in a channel ⇒ no route), for human senders too, so stopping
+      // here is what keeps one message from waking a peer over the relay and nobody over
+      // a direct connection. A DM is already addressed to its recipient, so it is exempt
+      // on both sides.
+      // `mentionedBots` is reparsed from the FINAL section's text, so it misses a mention
+      // the splitter left in an earlier one; the author's claim covers the complete
+      // response and is the only place that fact survives. Either is enough — an address
+      // is an address wherever in the answer it appeared.
+      if (!msg.isDm && (msg.mentionedBots.length > 0 || claim.addressedAnyone === true)) {
+        return drop('addressed someone this relay cannot resolve')
+      }
+      const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
+      if (!implicit) return drop('no implicit rung matched')
+      targets = [implicit.agentId]
+      routeVia = 'implicit'
+    }
+    if (targets.length === 0) return drop('named only its own author')
 
     for (const targetAgentId of targets) {
       // Every listed author→target edge is checked independently and against the RELAY's
@@ -675,6 +717,15 @@ export class RelayIngressManager {
         this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — dropped (total ${n})`)
         continue
       }
+      // §8.4, fail closed: a daemon that predates `trustedRouteVia` reads every
+      // agent-authored delivery as an explicit mention, which CLEARS a `!stop` mute.
+      // Forwarding an implicit continuation to it during a mixed-version rollout would
+      // silently disable the one control a human has over a runaway exchange. Refusing
+      // degrades to the pre-change behavior instead, which is merely less conversational.
+      if (routeVia === 'implicit' && !daemon.supports(RD_AGENT_IMPLICIT_ROUTING_V1)) {
+        drop(`daemon ${route.daemonId} predates implicit agent routing`)
+        continue
+      }
       const rd: RdMsgIm = {
         source: 'im',
         agentId: route.agentId,
@@ -693,7 +744,11 @@ export class RelayIngressManager {
         trustedResponseId: claim.responseId,
         trustedRecipientAgentIds: [route.agentId],
         ...(claim.agentCallDeliveryId ? { trustedAgentCallDeliveryId: claim.agentCallDeliveryId } : {}),
-        trustedDeliveryHopCount
+        trustedDeliveryHopCount,
+        // The target cannot re-derive this: it sees one pre-addressed agent either way.
+        // Without it every implicit continuation would arrive looking like an explicit
+        // mention and would clear a `!stop` mute.
+        trustedRouteVia: routeVia
       }
       try {
         await daemon.sendMsg(rd)

@@ -65,12 +65,19 @@ const pickRule = (r: RoutingRule, via: RouteVia) => ({ agentId: r.agentId, integ
  * directly to that agent (integrationId '' because webchat ingress arrives over the
  * relay data plane rather than a platform integration). Null if that agentId isn't a
  * servable rule here.
+ *
+ * `verifiedAgentAuthor` opens the implicit rungs to an AgentConnect-authored message
+ * (send-message-routing-rework.md §2.3): the message routes through THIS ladder exactly
+ * as a human's would, with the author removed from the candidate set so it can never
+ * wake itself. Set only after the caller has VERIFIED authorship — an unverified bot,
+ * including a third-party one, still stops at the explicit-mention rung below.
  */
 export function routeRules(
   msg: NormalizedMessage,
   rules: RoutingRule[],
   threadOwner: (channel: string, thread: string) => string | null,
-  explicitAgentId?: string
+  explicitAgentId?: string,
+  verifiedAgentAuthor?: string
 ): { agentId: string; integrationId: string; via: RouteVia } | null {
   if (explicitAgentId !== undefined) {
     // Direct address (webchat): the message names its agent, so bypass mention/thread/
@@ -78,7 +85,12 @@ export function routeRules(
     return { agentId: explicitAgentId, integrationId: '', via: 'mention' }
   }
   // Scope candidates are KIND-AGNOSTIC (used for reachability + thread continuity).
-  const scopeCandidates = rules.filter((r) => scopeMatches(r, msg))
+  // A verified agent author is removed here, once, so EVERY rung below inherits the
+  // exclusion — an agent that could match its own rule would wake itself on its own
+  // reply, which is an unconditional self-loop rather than a conversation.
+  const scopeCandidates = rules.filter(
+    (r) => scopeMatches(r, msg) && (verifiedAgentAuthor === undefined || r.agentId !== verifiedAgentAuthor)
+  )
   // kind-candidates: also match the message kind.
   const kindCandidates = scopeCandidates.filter((r) => kindMatches(r, msg))
 
@@ -88,13 +100,20 @@ export function routeRules(
   // never falls through to DM/thread/keyword/auto; AgentConnect-managed bot apps are
   // removed by the daemon before this pure routing boundary.
   if (mention && (!msg.sender.isBot || msg.platform === 'slack')) return pickRule(mention, 'mention')
-  if (msg.sender.isBot) return null
+  // A VERIFIED AgentConnect author continues into the implicit rungs; every other bot
+  // still stops here. That difference is the whole of §2.3: we know exactly which agent
+  // wrote this and have already checked its policy, so it is treated as a participant
+  // rather than as anonymous bot traffic.
+  if (msg.sender.isBot && verifiedAgentAuthor === undefined) return null
   // An unmatched mention in a channel belongs to another bot (or a human). Do not let
   // local thread affinity claim it: dedicated Slack apps each see the channel event,
   // and every daemon otherwise believes its own agent is the sole local thread owner.
   // A one-to-one DM is already addressed to this bot, though, so mentioning the bot (or
   // another participant) must not suppress its dm rule. Group DMs are channel-like and
   // normalize with isDm=false, so they remain mention-gated here.
+  // …but an agent message that names SOMEONE (a human, another app) is deliberate
+  // addressing, and letting thread affinity claim it would route it to whoever happens
+  // to own the thread instead of to nobody. Verified agents follow the same rule.
   if (!msg.isDm && msg.mentionedBots.length > 0) return null
 
   // 2. thread affinity (§8.2 step 2 — highest after explicit @; bypasses kind filter).

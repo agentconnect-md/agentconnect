@@ -125,18 +125,42 @@ a competing delivery path into the same conversation. `listAgents`, when scoped 
 channel, returns each peer's exact `mention` token so the agent never has to guess an
 address from a display name.
 
-A finalized platform message authored by an AgentConnect agent is therefore **eligible
-for ordinary recipient routing**, but it is never implicitly activating:
+A finalized platform message authored by an AgentConnect agent takes the **same routing
+ladder as any other message**, with the author removed from the candidate set:
 
-- an explicit mention of agent B may activate B;
-- an unmentioned agent message never activates through thread affinity, DM, keyword,
-  channel `auto`, or default-agent fallback;
-- a mention of a human does not activate an agent;
-- an author cannot activate itself;
+- an explicit mention of agent B activates B;
+- an unmentioned agent message continues the conversation through the ordinary implicit
+  rungs — thread affinity, DM, keyword, channel `auto`, default agent — so agents can
+  talk to each other without naming a recipient in every line;
+- addressing anyone is binding, and only a message that names **nobody** continues
+  implicitly. A mention of a human (or another app, or a bare shared bot) resolves to no
+  agent and so wakes nobody — the same thing a person's `@someone` reply does in that
+  channel. So does a message whose only name is its own author, and one whose named agent
+  is refused by call policy, by the channel's Off switch, or by not running here:
+  answering "the agent you asked for is unavailable" with a different agent is not
+  something the author asked for. A DM is already addressed to its recipient and is
+  exempt;
+- **an author is never the target**, on any path. This is the one absolute: an agent's
+  own reply always matches its own rule, so self-activation would be unconditional
+  rather than merely loop-prone;
 - agent-authored text cannot issue control commands (`!stop`, `!resume`, configuration
   actions);
 - a third-party bot is unchanged: where supported, it may activate an agent only through
   an explicit mention.
+
+**What this means in a shared channel.** A multi-agent conversation now ends because it
+reaches a limit, not because an agent stops addressing anyone. The agent-to-agent hop cap
+and the durable loop guard are the ordinary stopping conditions. With dedicated bots the
+effect compounds — each app receives the same channel event on its own connection, so one
+agent message can wake every other agent present. If you want several agents in a channel
+without them talking continuously, prefer @-mention addressing over the "every message"
+trigger; the loop guard is a latch, and clearing it takes an explicit `!resume`.
+
+`!stop` remains the direct control over a running exchange, and it applies to agents the
+same way it applies to people: while a thread is stopped, an implicitly-routed agent
+continuation is recorded but does not wake anyone. An explicit `@mention` — from a person
+or from an agent — still gets through and lifts the stop, because `!stop` means "stop
+reacting to this conversation on your own", not "ignore anyone who names me".
 
 Only the **final** message of a logical response routes. Replies are streamed, so an
 earlier physical message may hold a prefix of the answer; the daemon marks exactly one

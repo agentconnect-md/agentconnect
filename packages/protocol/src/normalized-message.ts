@@ -62,6 +62,20 @@ export const AgentAuthorshipClaimSchema = z.object({
    *  The final routing event carries the whole set even when the visible mention landed
    *  in an earlier physical message (§5.2). Model text cannot populate it directly. */
   mentionedAgentIds: z.array(z.string().min(1)),
+  /** Did the COMPLETE logical response address ANYONE — a human, another app, or a bare
+   *  shared bot — as opposed to naming no one at all?
+   *
+   * Needed because §2.3's "addressing anyone is binding" cannot be evaluated from the
+   * final event alone. `mentionedAgentIds` is response-complete, but every OTHER mention
+   * is only visible as `mentionedBots`, reparsed from the last physical section's text.
+   * A long answer that mentions a human in section one and ends without a mention would
+   * therefore arrive with both sets empty and read as unaddressed — making the outcome
+   * depend on where the splitter happened to cut.
+   *
+   * Absent ⇒ false, which is the pre-field behavior: an older author daemon splits the
+   * same way but cannot report this, so its unaddressed-looking finals stay routable
+   * exactly as they were rather than becoming silently unroutable. */
+  addressedAnyone: z.boolean().optional(),
   /** Present ONLY on the visible half of a paired `toAgent + channel` send (§3.2); an
    *  ordinary agent reply omits it. It correlates this platform observation with the
    *  internal wake that carries the authoritative call envelope, so the two are admitted

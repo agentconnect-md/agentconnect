@@ -10,17 +10,27 @@ import { sessionKey } from '../src/store/local-store.js'
  * platform message authored by an AgentConnect agent.
  *
  * The behavior under test is a reversal: an agent-authored Slack message used to be
- * dropped outright, and is now routable — but only through its own ladder. These tests
- * are mostly about what still must NOT happen. Activation may come only from an explicit,
- * verified recipient; every implicit rung a human message could take (thread affinity,
- * DM, keyword, channel `auto`, default-agent fallback) must stay unreachable, and every
- * unverifiable claim must fail closed.
+ * dropped outright, and now routes through the SAME ladder a human message takes — named
+ * recipients first, then the implicit rungs — so agents converse without having to name
+ * each other in every line.
+ *
+ * What remains absolute, and is most of what these tests pin: the author is never the
+ * target (self-activation is unconditional, not merely loop-prone), every edge still
+ * spends from the shared hop budget and passes call policy and the conversation Off
+ * fence, only FINAL events route, agent text can never issue control commands, and any
+ * unverifiable claim fails closed.
  */
 
 const TEST_ORG = 'org_test0000000000000000000'
 const APP_ID = 'AAGENTCONNECT'
 
-function scaffold(agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[]): string {
+function scaffold(
+  agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
+  // Give each agent its OWN Slack credential, i.e. genuinely separate apps. The transport
+  // scope hashes the live credential, so the shared-token default collapses every agent
+  // onto one scope — which hides any bug in which scope a lookup is keyed under.
+  distinctTokens = false
+): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-agent-mention-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -41,13 +51,19 @@ function scaffold(agents: { id: string; callPolicy?: string; allowedCallerAgentI
         status: 'active',
         runtime: 'claude',
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
-        // An `auto` channel rule: every HUMAN message in C1 routes here. Agent-authored
-        // traffic must never reach it — that is the sharpest form of "no implicit rung".
+        // An `auto` channel rule: every message in C1 routes here, agent-authored included
+        // — that rung is exactly what carries an unaddressed agent reply to the next agent.
         integrations: [
           {
             id: `int-${a.id}`,
             platform: 'slack',
-            slack: { botToken: 'xoxb', appToken: 'xapp', bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }] }
+            slack: {
+              botToken: distinctTokens ? `xoxb-${a.id}` : 'xoxb',
+              // Socket-mode Slack keys its connection identity on the APP token, so this
+              // is what actually separates two dedicated apps into two transport scopes.
+              appToken: distinctTokens ? `xapp-${a.id}` : 'xapp',
+              bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }]
+            }
           }
         ],
         output: { mode: 'low' },
@@ -72,9 +88,17 @@ const fakeHost = () => ({
  *  behind ONE AgentConnect Slack app, each with its own bot user id. */
 async function boot(
   agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
-  over: { botUserIds?: Record<string, string>; botShared?: boolean; realDispatch?: boolean } = {}
+  over: {
+    botUserIds?: Record<string, string>
+    botShared?: boolean
+    realDispatch?: boolean
+    distinctTokens?: boolean
+  } = {}
 ) {
-  const daemon = new Daemon({ root: scaffold(agents), hostFactory: () => fakeHost() as any })
+  const daemon = new Daemon({
+    root: scaffold(agents, over.distinctTokens),
+    hostFactory: () => fakeHost() as any
+  })
   await daemon.start()
   const placements = agents.map((a) => ({
     agentId: a.id,
@@ -178,17 +202,25 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
-  it('never activates implicitly, even in an `auto` channel', async () => {
-    // §10 case 8 / §2.3. C1 has an `auto` rule: EVERY human message routes there. An
-    // agent message with no verified recipient must still activate nobody — this is the
-    // test that would catch the ladder being wired as a rung of the human one.
+  it('continues implicitly on a PEER connection, and never on the author’s own', async () => {
+    // §2.3 after the implicit-wake change. Each dedicated Slack app receives the same
+    // channel event on its OWN connection, and rules are scoped to the receiving
+    // connection — so the author's copy has only the author in scope (excluded ⇒ nothing)
+    // while the peer's copy resolves to the peer. That asymmetry is the whole mechanism:
+    // an agent never wakes itself, and every OTHER agent's connection wakes its agent.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage({}, { mentionedAgentIds: [] })).kind).toBe('rejected')
-    // …and a DM from an agent is no different: a DM rung is still an implicit rung.
-    expect(route(daemon, agentMessage({ msgId: 'slack:C1:2:final', isDm: true }, { mentionedAgentIds: [] })).kind).toBe(
-      'rejected'
-    )
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+
+    // The author's own connection: the only candidate is the author, so nothing happens.
+    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-a']).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
+
+    // bot-b's connection sees the same post and continues the conversation.
+    const peerCopy = agentMessage({ msgId: 'slack:C1:1720000000.000201:final' }, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(peerCopy, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+    // Still a genuine agent CALL: the hop advances, so the chain stays budgeted.
+    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
     await daemon.stop()
   })
 
@@ -209,6 +241,136 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
     expect(route(daemon, agentMessage({}, { mentionedAgentIds: ['bot-a'] })).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('does not hand a self-mention to the implicit rungs on a peer connection', async () => {
+    // §2.3. The author-exclusion filter cannot be what decides whether the message was
+    // addressed: a response naming ONLY its author would come out of that filter looking
+    // identical to one that named nobody, and would then continue to an unrelated peer.
+    // Emptiness is therefore judged BEFORE the author is removed.
+    //
+    // The author's own connection cannot show this — nothing happens there either way.
+    // bot-b's connection is where the difference is visible.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const selfNamed = agentMessage({}, { mentionedAgentIds: ['bot-a'] })
+    expect((daemon as any).onInboundOutcome(selfNamed, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('does not substitute an implicit recipient when every named one is refused', async () => {
+    // §2.3. Having named someone is binding. bot-b is named but its call policy excludes
+    // the author; bot-c would be the implicit pick on its own connection. Falling through
+    // would answer "the agent you asked for is unavailable" with "so here is a different
+    // one" — and the commonest refusal is the conversation's own Off fence, which must not
+    // become a redirect. The relay applies the same rule.
+    const { daemon, calls } = await boot([
+      { id: 'bot-a' },
+      { id: 'bot-b', callPolicy: 'selected', allowedCallerAgentIds: ['somebody-else'] },
+      { id: 'bot-c' }
+    ])
+    const named = agentMessage({}, { mentionedAgentIds: ['bot-b'] })
+    expect((daemon as any).onInboundOutcome(named, ['int-bot-c']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('obeys a `!stop` mute when it continues implicitly, and clears it on an explicit mention', async () => {
+    // §2.3. An implicitly selected agent continuation IS implicit routing — the fact that
+    // an agent rather than a human produced the message does not exempt it from the mute.
+    // Without this `!stop` would silence a conversation's humans while its agents kept
+    // waking each other, which is the one case the command now exists for.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+    const muteKey = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', scope)
+    ;(daemon as any).setSessionMuted(muteKey, true)
+
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    expect((daemon as any).isSessionMuted(muteKey)).toBe(true)
+
+    // An explicit mention is an address, so it wakes bot-b and lifts the mute — exactly
+    // what a human's `@mention` does. `!stop` means "stop reacting implicitly", never
+    // "ignore anyone who names me".
+    const addressed = agentMessage({ msgId: 'slack:C1:1720000000.000202:final' }, { mentionedAgentIds: ['bot-b'] })
+    expect((daemon as any).onInboundOutcome(addressed, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+    expect((daemon as any).isSessionMuted(muteKey)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('does not continue when the response addressed a human', async () => {
+    // Direct/relay parity. `mentionedBots` holds every `<@U…>` token, humans included, so
+    // an `@human` reply is an unmatched mention and the ladder stops there — the same
+    // outcome a PERSON's `@human` reply gets in this channel. Waking an unrelated `auto`
+    // agent instead would answer a question that was put to someone else.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const toHuman = agentMessage(
+      { text: '<@UHUMAN> can you confirm the rollout?', mentionedBots: ['UHUMAN'] },
+      { mentionedAgentIds: [] }
+    )
+    expect((daemon as any).onInboundOutcome(toHuman, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('does not continue when the mention landed in an EARLIER split section', async () => {
+    // §5.5 marks only the last physical section `final`, and `mentionedBots` is reparsed
+    // from that section's text. A long answer that addresses a human in section one and
+    // ends without a mention therefore arrives with BOTH mention sets empty — so whether
+    // the address binds would depend on where the splitter happened to cut. The author's
+    // claim covers the complete response and is the only place that fact still exists.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const tailSection = agentMessage(
+      { text: '…and that is the last part of the answer.', mentionedBots: [] },
+      { mentionedAgentIds: [], addressedAnyone: true }
+    )
+    expect((daemon as any).onInboundOutcome(tailSection, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+
+    // The same tail from an author that never claimed an address still continues — an
+    // older daemon cannot report the fact, and its finals must not become unroutable.
+    const unclaimed = agentMessage(
+      { msgId: 'slack:C1:1720000000.000203:final', text: 'no mention anywhere', mentionedBots: [] },
+      { mentionedAgentIds: [] }
+    )
+    expect((daemon as any).onInboundOutcome(unclaimed, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+    await daemon.stop()
+  })
+
+  it('reads the `!stop` mute in the TARGET’s scope, not the observing connection’s', async () => {
+    // Every dedicated app sees the same channel post, so the author's connection can be
+    // the one that wins the target's activation rendezvous. If it looked the mute up under
+    // its OWN scope it would find nothing, dispatch the target, and leave the real
+    // tombstone standing — and the target's own copy then deduplicates before it can clear
+    // it. The rendezvous key is already target-scoped for the same reason.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }], { distinctTokens: true })
+    // An ingress that watches both installs: it can still resolve bot-b, but its own
+    // transport scope is NOT bot-b's. That gap is the whole finding — an observer that
+    // could not reach the target would prove nothing, since it routes to nobody anyway.
+    const observed = ['int-bot-a', 'int-bot-b']
+    const targetScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+    const observerScope = (daemon as any).transportScopeForIntegrationIds(observed)
+    expect(observerScope).not.toBe(targetScope)
+    ;(daemon as any).setSessionMuted(sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', targetScope), true)
+
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(unaddressed, observed).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('stamps `trigger` only for an explicit address, never for an implicit continuation', async () => {
+    // `trigger === 'mention'` is a trusted routing cause downstream: it drives the prompt
+    // reminder that an opaque `<@U…>` token is this agent, and the un-mute rule. Stamping
+    // it on an implicitly selected target asserts an address the message does not contain.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls[0]!.msg.trigger).toBeUndefined()
     await daemon.stop()
   })
 
@@ -430,6 +592,38 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 9 })).accepted).toBe(true)
       expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 0 })).accepted).toBe(true)
       expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
+
+    it('obeys a `!stop` mute for a relay-forwarded implicit continuation, not for a mention', async () => {
+      // The relay is the only party that knows which rung it used — this frame is
+      // pre-addressed to one agent either way — so it says so, and the target applies its
+      // `!stop` gate accordingly. `handleRelayIm`'s own mute gate sits BELOW the branch
+      // this path returns from, so without the check here a muted conversation would
+      // silence its humans and none of its agents.
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+      const muteKey = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', scope)
+      ;(daemon as any).setSessionMuted(muteKey, true)
+
+      expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'implicit' })).accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      expect((daemon as any).isSessionMuted(muteKey)).toBe(true)
+
+      // An explicit mention wakes it and lifts the mute, as a human's would.
+      expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'mention' })).accepted).toBe(true)
+      expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+      expect((daemon as any).isSessionMuted(muteKey)).toBe(false)
+      await daemon.stop()
+    })
+
+    it('reads an absent `trustedRouteVia` as an explicit mention', async () => {
+      // A relay old enough to omit the field only ever forwarded explicit mentions, so
+      // that is the reading which preserves its behavior rather than silently demoting
+      // every one of its deliveries to mute-able implicit traffic.
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      expect((daemon as any).handleRelayIm(imFrame()).accepted).toBe(true)
+      expect(calls[0]!.msg.trigger).toBe('mention')
       await daemon.stop()
     })
 

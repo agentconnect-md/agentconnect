@@ -161,6 +161,7 @@ import { discordCommandChrome } from './platforms/discord/command-chrome.js'
 import { feishuCommandChrome } from './platforms/feishu/command-chrome.js'
 import {
   resolveSlackMentionedAgents,
+  slackTextAddressesAnyone,
   slackMentionAddress,
   SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX
 } from '@agentconnect.md/message'
@@ -5610,6 +5611,7 @@ export class Daemon {
     sourceHopCount: number
     responseId: string
     recipients: string[]
+    addressedAnyone: boolean
     agentCallDeliveryId?: string
   } | null {
     if (msg.platform !== 'slack') return null
@@ -5634,6 +5636,9 @@ export class Daemon {
       sourceHopCount: claim.hopCount,
       responseId: claim.responseId,
       recipients: claim.mentionedAgentIds,
+      // The author's own statement about the COMPLETE response, which the final event's
+      // text cannot reproduce once the answer was split (§2.3).
+      addressedAnyone: claim.addressedAnyone === true,
       ...(claim.agentCallDeliveryId ? { agentCallDeliveryId: claim.agentCallDeliveryId } : {})
     }
   }
@@ -5641,11 +5646,12 @@ export class Daemon {
   /**
    * The §6 routing ladder for a message this daemon has verified as agent-authored.
    *
-   * Deliberately a SEPARATE ladder, not a rung of the human one. §2.3 says an agent
-   * message is mention-routable but never implicitly activating: it must not reach
-   * thread affinity, DM, keyword, channel `auto`, or default-agent fallback, and it can
-   * never issue control commands. Selecting exclusively from the verified recipient set
-   * is what makes that structural rather than a series of negative checks.
+   * A SEPARATE ladder from the human one because the checks differ, not the rungs: an
+   * agent message carries a hop budget, a directional call policy, and an exactly-once
+   * rendezvous that a human message has none of, and it can never issue control commands.
+   * A response that names nobody still ends up in the same rungs a human message would
+   * (`routeAgentMessageImplicitly`); a response that names somebody activates exactly the
+   * named agents or nobody.
    *
    * Every outcome that is not a dispatch records the message and returns — "transcript
    * only" in the design's terms. The conversation still SEES what the agent said; it
@@ -5653,7 +5659,8 @@ export class Daemon {
    */
   private routeVerifiedAgentMessage(
     msg: NormalizedMessage,
-    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>
+    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
+    srcIntegrationIds?: string[]
   ): { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } {
     const transcriptOnly = (why: string): { kind: 'rejected'; reason: DeliveryRejectionReason } => {
       this.recordUnrouted(msg)
@@ -5667,10 +5674,24 @@ export class Daemon {
     if (deliveryHopCount > MAX_AGENT_CALL_HOPS) {
       return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
-    // The author cannot activate itself (§2.3), and an empty set is the ordinary case:
-    // most agent messages address nobody.
+    // Naming NOBODY is the ordinary case — most agent messages do — and it is no longer
+    // the end of the road: the message falls through to the SAME implicit ladder a human
+    // message takes. Naming somebody is an explicit address, and gets an explicit outcome
+    // or none. The test therefore runs BEFORE the author is filtered out: a response whose
+    // only name is its own author has still addressed the conversation explicitly, and
+    // must not be handed to an unrelated peer.
+    if (verified.recipients.length === 0) {
+      // The response named no AGENT — but it may still have addressed a human or another
+      // app, and §2.3 makes any address binding. `routeRules` catches that from
+      // `mentionedBots` when the mention is in this physical message; the author's claim
+      // catches it when the splitter left the mention in an earlier section, which is the
+      // only place that fact still exists by now.
+      if (verified.addressedAnyone && !msg.isDm) return transcriptOnly('addressed someone who is not an agent')
+      return this.routeAgentMessageImplicitly(msg, verified, deliveryHopCount, srcIntegrationIds)
+    }
+    // The author can never activate itself (§2.3).
     const targets = verified.recipients.filter((id) => id !== verified.authorAgentId)
-    if (targets.length === 0) return transcriptOnly('no verified recipient')
+    if (targets.length === 0) return transcriptOnly('named only its own author')
 
     // EVERY admissible recipient is activated. One finalized response can address several
     // agents ("<@A> <@B> please both look"), and stopping at the first would silently drop
@@ -5702,7 +5723,7 @@ export class Daemon {
         this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" is off in this conversation`)
         continue
       }
-      const outcome = this.activateVerifiedAgentTarget(msg, verified, targetAgentId, deliveryHopCount)
+      const outcome = this.activateVerifiedAgentTarget(msg, verified, targetAgentId, deliveryHopCount, 'mention')
       if (outcome?.kind === 'dispatched') {
         dispatched += 1
         first ??= outcome
@@ -5714,7 +5735,64 @@ export class Daemon {
       }
       return first
     }
-    return transcriptOnly('no admissible local target in the verified recipient set')
+    // Every named recipient was refused (policy, gate, not local). This stays transcript-
+    // only rather than falling through: the implicit ladder would pick a DIFFERENT agent,
+    // and "the one you asked for is off here, so here is someone else" is not a
+    // substitution the author consented to — least of all when the refusal was the
+    // conversation's own Off fence. Same rule the relay applies (`forwardVerifiedAgentMessage`).
+    return transcriptOnly('every named recipient was refused')
+  }
+
+  /**
+   * §2.3: an agent message that names nobody routes through the SAME ladder a human
+   * message takes — thread affinity, DM, keyword, channel `auto`, default agent — with
+   * the author excluded.
+   *
+   * This is what makes agents conversational participants rather than things that only
+   * respond when addressed by name. It also means a multi-agent conversation is bounded
+   * by the loop protections rather than by anyone choosing to stop: the hop cap
+   * (`MAX_AGENT_CALL_HOPS`) and the durable loop guard are now the ordinary terminating
+   * conditions for an agent-to-agent exchange, not exceptional ones.
+   *
+   * Everything the explicit path checks still applies — call policy, the conversation
+   * Off/gated fence, the hop transition, and exactly-once admission — because those are
+   * properties of the EDGE, and an implicitly-selected edge is still an agent call.
+   */
+  private routeAgentMessageImplicitly(
+    msg: NormalizedMessage,
+    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
+    deliveryHopCount: number,
+    srcIntegrationIds?: string[]
+  ): { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } {
+    const transcriptOnly = (why: string): { kind: 'rejected'; reason: DeliveryRejectionReason } => {
+      this.recordUnrouted(msg)
+      this.log.debug(`routing: agent-authored ${msg.msgId} is transcript-only (${why})`)
+      return { kind: 'rejected', reason: 'unrouted' }
+    }
+    const routed = routeRules(
+      msg,
+      this.mergedRulesForSource(srcIntegrationIds),
+      (c, t) => this.sessions.threadOwner(c, t, msg.transportScope),
+      undefined,
+      verified.authorAgentId
+    )
+    if (!routed) return transcriptOnly('no implicit rung matched')
+    if (!this.agents.has(routed.agentId)) return transcriptOnly(`${routed.agentId} is not local`)
+    if (!this.cpCollab.admits(verified.authorAgentId, routed.agentId)) {
+      return transcriptOnly(`call policy excludes ${verified.authorAgentId} -> ${routed.agentId}`)
+    }
+    if (!this.agentConversationAdmits(routed.agentId, msg)) {
+      return transcriptOnly(`${routed.agentId} is off in this conversation`)
+    }
+    const outcome = this.activateVerifiedAgentTarget(msg, verified, routed.agentId, deliveryHopCount, 'implicit')
+    if (outcome) {
+      this.log.info(
+        `routing: agent-authored ${msg.msgId} continued the conversation "${verified.authorAgentId}" → ` +
+          `"${routed.agentId}" via ${routed.via} (hop ${deliveryHopCount})`
+      )
+      return outcome
+    }
+    return transcriptOnly(`${routed.agentId} produced no activation`)
   }
 
   /**
@@ -5785,9 +5863,16 @@ export class Daemon {
     msg: NormalizedMessage,
     verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
     targetAgentId: string,
-    deliveryHopCount: number
+    deliveryHopCount: number,
+    via: 'mention' | 'implicit'
   ):
     { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } | undefined {
+    // `!stop` means "stop reacting to this conversation implicitly", and an implicitly
+    // selected agent continuation is exactly that — the fact that another AGENT rather
+    // than a human produced the message does not exempt it. Checked here because this
+    // ladder returns before `onInboundOutcome`'s own mute gate; without it `!stop` would
+    // silence humans while agents kept waking each other, which is the one situation the
+    // command exists for now that the loop protections are the ordinary terminator.
     const platformMessageId = slackTsFromMsgId(msg.msgId)
     const integrationId = this.resolveCpAgent(targetAgentId, 'slack')?.integrationId
     // The key's transport component is the TARGET's own reply scope — NOT the scope of
@@ -5798,6 +5883,27 @@ export class Daemon {
     // turning one logical delivery into several — the opposite of what this record is for.
     const targetScope = integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
     const key = activationKey(msg.platform, targetScope, platformMessageId, targetAgentId)
+    // `!stop` means "stop reacting to this conversation implicitly", and an implicitly
+    // selected agent continuation is exactly that — the fact that another AGENT rather
+    // than a human produced the message does not exempt it. Checked here because this
+    // ladder returns before `onInboundOutcome`'s own mute gate; without it `!stop` would
+    // silence humans while agents kept waking each other, which is the one situation the
+    // command exists for now that the loop protections are the ordinary terminator.
+    //
+    // Scoped to the TARGET, for the same reason the rendezvous key above is: the mute was
+    // written under the target's own connection scope (its `!stop` arrived there and
+    // `routeRules` picked it there), while every dedicated app in the channel observes
+    // this post. Keying on the observer would let the author's connection read an
+    // unrelated scope's mute, dispatch the target anyway, and leave the real tombstone
+    // standing — after which the target's own copy deduplicates before it can clear it.
+    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, targetAgentId, targetScope)
+    if (via === 'implicit' && this.isSessionMuted(muteKey)) {
+      this.recordUnrouted(msg)
+      this.log.debug(
+        `routing: agent-authored ${msg.msgId} → "${targetAgentId}" dropped (muted by !stop; awaiting @mention)`
+      )
+      return { kind: 'rejected', reason: 'gated' }
+    }
     const expiresAt = this.clock.now() + ACTIVATION_PAIRING_TTL_MS
     if (verified.agentCallDeliveryId) {
       const record = this.store.claimActivationObservation(
@@ -5837,10 +5943,21 @@ export class Daemon {
       )
       return { kind: 'rejected', reason: 'deduplicated' }
     }
-    // An explicit mention is the one EXPLICIT address in this ladder, so it clears a
-    // `!stop` mute exactly like a human's would — the mute means "stop reacting to this
-    // conversation implicitly", not "ignore anyone who names me".
-    msg.trigger = 'mention'
+    // Only an explicit address is stamped as one. `trigger === 'mention'` is a trusted
+    // routing cause downstream (the prompt reminder that an opaque `<@U…>` token is this
+    // agent, and the un-mute rule); stamping it on an implicitly selected target would
+    // assert an address that the message does not contain.
+    if (via === 'mention') {
+      msg.trigger = 'mention'
+      // …and, being explicit, it clears a `!stop` mute exactly like a human's would: the
+      // mute means "stop reacting to this conversation implicitly", not "ignore anyone
+      // who names me". Done only once the delivery is committed, so a deduplicated or
+      // paired observation never lifts a mute without waking anyone.
+      if (this.isSessionMuted(muteKey)) {
+        this.setSessionMuted(muteKey, false)
+        this.log.info(`routing: agent "${targetAgentId}" un-muted in ch=${msg.channel} (explicit agent mention)`)
+      }
+    }
     const callMeta: CallMeta = {
       callFrom: verified.authorAgentId,
       // §4.1 step 3/5: install the computed depth as trusted active-turn metadata. Every
@@ -5916,11 +6033,13 @@ export class Daemon {
     this.canonicalizeTelegramThread(msg)
 
     // send-message-routing-rework.md §2.3/§6: an AgentConnect-authored platform message
-    // takes its OWN ladder and never continues into the human one. That placement is the
-    // enforcement: everything below — control commands, gated-conversation discovery,
-    // thread affinity, DM, keyword, channel `auto`, default-agent fallback — is
-    // structurally unreachable for agent traffic, so activation can only ever come from
-    // an explicit, verified recipient.
+    // takes its OWN ladder rather than continuing into the human one below. That
+    // placement is what keeps control commands and gated-conversation discovery
+    // structurally unreachable for agent traffic. The implicit RUNGS (thread affinity,
+    // DM, keyword, channel `auto`, default agent) are reachable — the ladder calls
+    // `routeRules` itself — but only after the author is excluded, the hop budget is
+    // charged, call policy is checked, and the `!stop` gate is re-applied there, since
+    // this branch returns before the one below.
     if (agentAuthored) {
       const verified = this.verifyAgentAuthor(msg)
       if (!verified) {
@@ -5931,7 +6050,7 @@ export class Daemon {
         this.log.debug(`routing: unverified AgentConnect message ${msg.msgId} is transcript-only`)
         return { kind: 'rejected', reason: 'suppressed' }
       }
-      return this.routeVerifiedAgentMessage(msg, verified)
+      return this.routeVerifiedAgentMessage(msg, verified, srcIntegrationIds)
     }
 
     // §14.3: gated-conversation discovery must precede command interception AND
@@ -6792,6 +6911,25 @@ export class Daemon {
       this.log.debug(`relay: agent mention ${msg.msgId} is off in this conversation`)
       return false
     }
+    // Which rung the RELAY used. It is the only party that knows: this frame is
+    // pre-addressed to one agent either way. Absent ⇒ 'mention', because a relay old
+    // enough to omit the field only ever forwarded explicit mentions.
+    const via = msg.trustedRouteVia ?? 'mention'
+    // `handleRelayIm` applies the `!stop` gate only on the path this branch returns
+    // before, so an implicit continuation is checked against it here — otherwise a muted
+    // conversation would silence its humans and none of its agents.
+    const muteKey = sessionKey(
+      normalized.platform,
+      normalized.channel,
+      normalized.thread ?? normalized.msgId,
+      msg.agentId,
+      normalized.transportScope
+    )
+    if (via === 'implicit' && this.isSessionMuted(muteKey)) {
+      this.recordUnrouted(normalized)
+      this.log.debug(`relay: dropping agent-authored ${msg.msgId} for "${msg.agentId}" (muted by !stop)`)
+      return false
+    }
     const platformMessageId = slackTsFromMsgId(normalized.msgId)
     const key = activationKey(normalized.platform, normalized.transportScope, platformMessageId, msg.agentId)
     // The visible half of a PAIRED call only ever claims — its authoritative envelope
@@ -6816,7 +6954,16 @@ export class Daemon {
       msg.msgId
     )
     if (!claimed.dispatch) return false
-    normalized.trigger = 'mention'
+    // See the direct path: an implicit continuation must not assert an address the
+    // message does not contain, and an explicit one clears the mute only once the
+    // delivery is committed.
+    if (via === 'mention') {
+      normalized.trigger = 'mention'
+      if (this.isSessionMuted(muteKey)) {
+        this.setSessionMuted(muteKey, false)
+        this.log.info(`relay: agent "${msg.agentId}" un-muted in ch=${normalized.channel} (explicit agent mention)`)
+      }
+    }
     const callMeta: CallMeta = {
       callFrom: authorAgentId,
       hopCount: deliveryHopCount,
@@ -12486,7 +12633,12 @@ export class Daemon {
               this.cpCollab.mentionDirectory(orgId, p.platform, p.channel)
             ).filter((id) => id !== p.agentId)
           : []
-        await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, (m) => this.log.debug(m))
+        // Whether the answer addressed ANYONE is read from the complete reply text, not
+        // from the final section: §2.3 makes any address binding, and the splitter may
+        // have put the only mention in section one. Without this the same answer would
+        // wake a peer or not depending on where the cut landed.
+        const addressedAnyone = slackTextAddressesAnyone(p.replyText)
+        await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
       }
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable

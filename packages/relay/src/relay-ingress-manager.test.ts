@@ -509,12 +509,15 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     const isOurApp = (appId: string) => appId === 'AMANAGED'
 
     /** A finalized agent response addressing AGENT_ID, from an app we back. */
-    const agentFinal = (claim: Partial<NonNullable<WireNormalizedMessage['agentAuthorship']>> = {}) =>
+    const agentFinal = (
+      claim: Partial<NonNullable<WireNormalizedMessage['agentAuthorship']>> = {},
+      over: { text?: string; mentionedBots?: string[] } = {}
+    ) =>
       followUp({
         msgId: 'slack:C123:agentpost',
         sender: { id: 'UMANAGED', isBot: true, appId: 'AMANAGED' },
-        text: '<@UBOT> please verify the rollout',
-        mentionedBots: ['UBOT'],
+        text: over.text ?? '<@UBOT> please verify the rollout',
+        mentionedBots: over.mentionedBots ?? ['UBOT'],
         agentAuthorship: {
           authorAgentId: AUTHOR_ID,
           responseId: 'r-1',
@@ -527,9 +530,12 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
 
     const managerWith = (
       over: Partial<RelayIngressManagerDeps> = {},
-      sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true })),
+      // A current-build daemon advertises every rd/* capability. `supports` is what the
+      // implicit path is gated on, so a test can pass `() => false` to model an older one.
+      supports: (c: string) => boolean = () => true
     ) => {
-      const daemon = { sendMsg } as unknown as RelayDaemonConnection
+      const daemon = { sendMsg, supports } as unknown as RelayDaemonConnection
       const manager = new RelayIngressManager(
         deps({
           getDaemon: () => daemon,
@@ -566,18 +572,42 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sendMsg).not.toHaveBeenCalled()
     })
 
-    it('does not route an agent message that addresses nobody', async () => {
-      // §2.3: an unmentioned agent message never activates through the `auto` channel
-      // rung this bot has — which is exactly the rung a human message would take here.
+    it('continues the conversation implicitly when the message addresses nobody', async () => {
+      // §2.3: an agent message that names nobody takes the SAME ladder a human message
+      // would — here the channel's `auto` rung. This is what lets agents converse without
+      // having to name each other in every line.
       const { internals, sendMsg } = managerWith()
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
-      expect(sendMsg).not.toHaveBeenCalled()
+      await internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, trustedFromAgentId: AUTHOR_ID })
     })
 
-    it('does not let an author activate itself', async () => {
-      const { internals, sendMsg } = managerWith()
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
-      expect(sendMsg).not.toHaveBeenCalled()
+    it('never selects the author as the target, on either path', async () => {
+      // The one absolute in §2.3. Self-activation is not a loop that the hop cap slows
+      // down — it is unconditional, since the agent's own reply always matches its own
+      // rule. Holds for an explicit self-mention AND for the implicit fallback.
+      // A response naming ONLY its author has still addressed the conversation, so it
+      // activates nobody rather than continuing to whoever the `auto` rung would pick.
+      // Judging emptiness after the author filter would make these two indistinguishable.
+      const explicit = managerWith()
+      await explicit.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
+      expect(explicit.sendMsg).not.toHaveBeenCalled()
+
+      // With the author as the channel's ONLY route, the implicit rung has nobody left to
+      // pick — and must resolve to nothing rather than back to the author.
+      const alone = managerWith()
+      const selfOnly = channelAutoOwned()
+      selfOnly.routes = selfOnly.routes.map((r) => ({ ...r, agentId: AUTHOR_ID }))
+      selfOnly.defaultAgentId = AUTHOR_ID
+      alone.internals.router.upsert(selfOnly)
+      await alone.internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
+      expect(alone.sendMsg).not.toHaveBeenCalled()
     })
 
     it('refuses a claimed author the sending app does not back', async () => {
@@ -607,6 +637,87 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
       await internals.forward(BOT_ID, agentFinal())
       expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('does not fall back to the implicit rung when a named recipient is refused', async () => {
+      // The named target is also the channel's `auto` route, so a fallthrough would
+      // "recover" by re-selecting the very agent whose policy just refused the edge. More
+      // generally: an author that named someone gets that someone or nobody, never a
+      // substitute it never asked for.
+      const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
+      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AGENT_ID] }))
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('does not continue when the response addressed a human', async () => {
+      // Parity with the direct ladder, which stops at any unmatched mention in a channel
+      // (`routeRules`) — for human senders too. `mentionedBots` holds every `<@U…>` token,
+      // so an `@human` reply resolves to no agent yet is still deliberate addressing.
+      // Without this the same event wakes an `auto` peer over the relay and nobody over a
+      // direct connection.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(
+        BOT_ID,
+        followUp({
+          msgId: 'slack:C123:agenttohuman',
+          sender: { id: 'UMANAGED', isBot: true, appId: 'AMANAGED' },
+          text: '<@UHUMAN> can you confirm?',
+          mentionedBots: ['UHUMAN'],
+          agentAuthorship: {
+            authorAgentId: AUTHOR_ID,
+            responseId: 'r-1',
+            deliveryState: 'final',
+            hopCount: 3,
+            mentionedAgentIds: []
+          }
+        })
+      )
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('does not continue when the mention landed in an EARLIER split section', async () => {
+      // Same gap as the direct ladder: `mentionedBots` comes from the FINAL section only,
+      // so an address in section one leaves both mention sets empty here. The author's
+      // complete-response claim is what still carries it.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [], addressedAnyone: true }, { text: '…the last part', mentionedBots: [] })
+      )
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('refuses to forward an implicit continuation to a daemon that predates the field', async () => {
+      // §8.4 fail-closed. An older daemon ignores `trustedRouteVia` and reads every
+      // agent-authored delivery as an explicit mention, which CLEARS a `!stop` mute — so
+      // during a mixed-version rollout the human's stop control would silently stop
+      // working. Refusing degrades to the pre-change behavior instead.
+      const older = managerWith({}, undefined, () => false)
+      await older.internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
+      expect(older.sendMsg).not.toHaveBeenCalled()
+
+      // An EXPLICIT mention is unaffected: it means the same thing to both builds.
+      const explicit = managerWith({}, undefined, () => false)
+      await explicit.internals.forward(BOT_ID, agentFinal())
+      expect(explicit.sendMsg).toHaveBeenCalledTimes(1)
+    })
+
+    it('tells the target which rung selected it', async () => {
+      // The frame is pre-addressed to one agent either way, so the target cannot re-derive
+      // this — and it decides whether the delivery clears or obeys a `!stop` mute.
+      const mention = managerWith()
+      await mention.internals.forward(BOT_ID, agentFinal())
+      expect(mention.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'mention' })
+
+      const implicit = managerWith()
+      await implicit.internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
+      expect(implicit.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'implicit' })
     })
 
     it('admits source depth 7 as delivery depth 8 and rejects 8 because the next hop is 9', async () => {

@@ -4,6 +4,7 @@ import {
   normalizeSlackMessage,
   normalizeSlackResponseFinalization,
   readAgentAuthorshipClaim,
+  slackTextAddressesAnyone,
   SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX
 } from '../src/index.js'
 
@@ -35,6 +36,39 @@ describe('readAgentAuthorshipClaim (§4/§8.1)', () => {
       hopCount: 2,
       mentionedAgentIds: [PEER]
     })
+  })
+
+  it('round-trips `addressed anyone` from the complete reply text through the claim', () => {
+    // The whole producer → metadata → parser path for the one fact the final event cannot
+    // otherwise carry (§2.3/§5.5): only the LAST section is marked final, so a mention the
+    // splitter left in an earlier section exists nowhere else by the time this is read.
+    const wholeReply = '<@UHUMAN> here is the summary.\n\n…and this is the tail section.'
+    const tailSection = '…and this is the tail section.'
+
+    // The producer reads the COMPLETE reply; the tail on its own addresses nobody, which
+    // is exactly why the author has to state it.
+    expect(slackTextAddressesAnyone(wholeReply)).toBe(true)
+    expect(slackTextAddressesAnyone(tailSection)).toBe(false)
+
+    expect(readAgentAuthorshipClaim(claim({ addressed_anyone: true }))?.addressedAnyone).toBe(true)
+
+    // Absent ⇒ omitted, not `false`: an older author cannot report it, and its finals must
+    // stay routable exactly as before. A non-boolean is not an assertion either, so a
+    // malformed value degrades to "named nobody" rather than blocking every continuation.
+    expect(readAgentAuthorshipClaim(claim())).not.toHaveProperty('addressedAnyone')
+    expect(readAgentAuthorshipClaim(claim({ addressed_anyone: 'yes' }))).not.toHaveProperty('addressedAnyone')
+    expect(readAgentAuthorshipClaim(claim({ addressed_anyone: false }))).not.toHaveProperty('addressedAnyone')
+  })
+
+  it('matches every mention form `mentionedBots` is built from', () => {
+    // The producer and the reader must agree on what counts as an address, so this uses
+    // the same pattern rather than a second opinion about it.
+    expect(slackTextAddressesAnyone('plain prose with no address')).toBe(false)
+    expect(slackTextAddressesAnyone('<@U012ABC> please look')).toBe(true)
+    expect(slackTextAddressesAnyone('trailing address <@W99XYZ>')).toBe(true)
+    // Stateful `/g` regexes give alternating answers when reused; this must not.
+    expect(slackTextAddressesAnyone('<@U012ABC> one')).toBe(true)
+    expect(slackTextAddressesAnyone('<@U012ABC> two')).toBe(true)
   })
 
   it('carries the paired agent-call delivery id when present', () => {
