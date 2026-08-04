@@ -74,16 +74,17 @@ export const RD_HEADLESS_AGENT_DELIVERY_V1 = 'headless-agent-delivery-v1'
 export const RD_AGENT_IMPLICIT_ROUTING_V1 = 'agent-implicit-routing-v1'
 
 /**
- * `github-thread-worktree-cleanup-v1`: this daemon treats the relay-authored
+ * `github-thread-worktree-cleanup-v2`: this daemon treats the relay-authored
  * `pull_request:merged`, `issues:closed`, and `issues:deleted` hook events as
  * maintenance only. It never opens a model turn and applies the existing safe
  * retention deletion.
  *
  * A relay must not send those synthetic events to a daemon without this
  * capability: an older daemon would otherwise interpret them as ordinary hook
- * prompts during a mixed-version rollout.
+ * prompts during a mixed-version rollout. V1 is not equivalent because it did
+ * not cover `issues:deleted`.
  */
-export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1 = 'github-thread-worktree-cleanup-v1'
+export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2 = 'github-thread-worktree-cleanup-v2'
 
 // D→R REQ → rd/hello/ok. The daemon presents its EXISTING daemon API key; the
 // relay holds no database, so it delegates to the CP via `rc/verify` and caches

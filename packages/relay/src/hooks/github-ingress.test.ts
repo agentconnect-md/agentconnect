@@ -5,7 +5,7 @@ import { FakeClock } from '@agentconnect.md/connection'
 import {
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
-  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1,
+  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   type RcGithubCommentAuthz,
   type RcGithubInstallation,
   type RcGithubRerequest,
@@ -199,7 +199,7 @@ function makeHarness(authzCapacity = 20): Harness {
         if (h.offline || !h.onlineDaemons.has(daemonId)) return undefined
         return {
           supports: (capability: string) => {
-            if (capability === RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1) return h.cleanupSupported === true
+            if (capability === RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2) return h.cleanupSupported === true
             return true
           },
           sendMsg: async (msg: RdMsg) => {
