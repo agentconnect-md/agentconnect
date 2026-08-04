@@ -56,6 +56,7 @@ import type { GithubUserAuthzService } from '../github/user-authz.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
 import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness } from '../ports.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
 import type { WebchatTokenService } from '../registry/webchatToken.js'
 import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
@@ -231,6 +232,12 @@ export interface HttpDeps {
     oauth: OAuthRepo
   }
   registry: DaemonRegistry
+  /** §9 platform-provider registry — the single platform-set authority. The
+   *  create route folds each provider's `credentialBodySchema` /
+   *  `refineCreateBody` into its request schema and dispatches the live
+   *  credential check through `validateConfig`, so no route file names a
+   *  platform to validate one. */
+  platforms: CpPlatformRegistry
   /** The ONE assembler of CP→daemon AgentSpecs (owns secret loading + icon bases) —
    *  every spec emission (upsert replicate, icon refresh, move activation) uses it. */
   agentSpecs: AgentSpecAssembler

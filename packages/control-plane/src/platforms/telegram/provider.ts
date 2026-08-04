@@ -12,11 +12,11 @@
  * `deps.syncTelegramBotIcon`), injected through {@link TelegramCpProviderDeps}
  * so tests fake the provider round-trips exactly like the route tests do.
  *
- * ADOPTION SEQUENCING: nothing consumes this provider yet beyond registry
- * construction in `container.ts` — the create route and `placement.ts` remain
- * the live paths. To keep ONE implementation while both exist, the pieces that
- * can be shared ARE shared: the create-DTO credential block is defined here
- * and imported by `http/dto/index.ts`, and the §6.4 wire projection body is
+ * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
+ * registry — its {@link TelegramCreateCredentials} block is folded into the
+ * create body and {@link CpPlatformProvider.validateConfig} IS the route's live
+ * token check. `placement.ts` remains a live path; to keep ONE implementation
+ * while both exist, the §6.4 wire projection body is
  * {@link telegramIntegrationConfig}, called by BOTH `integrationToSpec`'s
  * telegram arm and {@link CpPlatformProvider.projectIntegrationConfig}.
  */

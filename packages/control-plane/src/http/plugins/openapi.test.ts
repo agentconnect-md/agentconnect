@@ -9,13 +9,26 @@ import { describe, it, expect } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildHttpServer } from '../server.js'
 import type { HttpDeps } from '../deps.js'
+import { buildCpPlatformRegistry } from '../../platforms/registry.js'
+import { createTelegramCpProvider } from '../../platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../../platforms/discord/provider.js'
+import { createSlackCpProvider } from '../../platforms/slack/provider.js'
+import { createFeishuCpProvider } from '../../platforms/feishu/provider.js'
 
-/** Minimal stub deps: only `config` is read at build time; repos stay untouched
- *  because the tests hit only the docs/spec routes (no DB-backed handler). */
+/** Minimal stub deps: `config` plus the platform registry, which the create
+ *  route folds into its documented request body at registration time. Repos
+ *  stay untouched because the tests hit only the docs/spec routes (no DB-backed
+ *  handler), so the providers' offline seams are never called. */
 function stubDeps(): HttpDeps {
   return {
     repos: { user: { provisionOidcUser: async () => ({ userId: 'u' }) } },
-    config: { NODE_ENV: 'test', DEFAULT_OWNER_ID: '00000000-0000-4000-8000-000000000000' }
+    config: { NODE_ENV: 'test', DEFAULT_OWNER_ID: '00000000-0000-4000-8000-000000000000' },
+    platforms: buildCpPlatformRegistry([
+      createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+      createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+      createSlackCpProvider({}),
+      createFeishuCpProvider({})
+    ])
   } as unknown as HttpDeps
 }
 

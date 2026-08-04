@@ -26,7 +26,8 @@ import {
 import { integrationToSpec, httpIntegrationToSpec } from '../../orchestrator/placement.js'
 import { HttpBotOrchestrator } from '../../orchestrator/httpBot.js'
 import { RelayRegistry, type RelayChannel } from '../../ws/relay-registry.js'
-import { CreateIntegrationBody } from '../../http/dto/index.js'
+import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
+import { buildCpPlatformRegistry } from '../registry.js'
 import { AppConfigSchema } from '../../config/env.js'
 import type { SlackBotVerification } from '../../http/slack-identity.js'
 import type { SlackUserConfigDeps } from '../../http/slack-user-config.js'
@@ -242,6 +243,9 @@ describe('slack refineCreateBody (DTO parity: the create body superRefine slack 
   })
 
   it('is the same rule the live create DTO enforces (one implementation)', () => {
+    // The live body is COMPOSED from the registry (§9), so the rule reaches the
+    // DTO through the provider's `refineCreateBody` — no second copy anywhere.
+    const CreateIntegrationBody = buildCreateIntegrationBody(buildCpPlatformRegistry([createSlackCpProvider({})]))
     const base = { platform: 'slack', agentId: AGENT_ID as string }
     const http = CreateIntegrationBody.safeParse({ ...base, transport: 'http', slack: { botToken: 'xoxb-1' } })
     expect(http.success).toBe(false)

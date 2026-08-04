@@ -15,19 +15,20 @@
  *    user-facing copy verbatim, including the http-transport `openId`
  *    resolution the relay needs for @-mention demux;
  *  - `installRoutes` → the registration funnel plugin, injected PRE-BOUND to
- *    the route deps by the composition root (not imported here: the route
- *    module consumes the create-DTO module, which imports this provider's
- *    credential block — binding the factory here would close a runtime import
- *    cycle);
+ *    the route deps by the composition root (not imported here: provider
+ *    construction stays one-directional, which is what keeps the create route
+ *    free to fold this provider's credential block into its body schema);
  *  - the wire projections → {@link feishuIntegrationConfig} /
  *    {@link feishuSharedIntegrationConfig} / {@link feishuBotAssignBags},
  *    called by BOTH the live paths (`orchestrator/placement.ts`,
  *    `orchestrator/httpBot.ts`) and the provider (one implementation).
  *
- * ADOPTION SEQUENCING: nothing consumes this provider yet beyond registry
- * construction in `container.ts` — the create route, `placement.ts`,
- * `httpBot.ts`, `server.ts` mounting, and `loadConfig`'s schema fold remain
- * the live paths, sharing the implementations above.
+ * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
+ * registry — its {@link FeishuCreateCredentials} block + {@link
+ * refineFeishuCreateBody} are folded into the create body, and {@link
+ * CpPlatformProvider.validateConfig} IS the route's live credential check.
+ * `placement.ts`, `httpBot.ts`, `server.ts` mounting, and `loadConfig`'s schema
+ * fold remain live paths, sharing the implementations above.
  */
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
