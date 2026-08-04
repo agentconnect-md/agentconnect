@@ -17,7 +17,7 @@
  *    an echo activates anyone is the daemon's decision — the thing under test.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { RoutingFixture } from './routing-fixture.js'
+import { RoutingFixture, type RoutingScriptContext } from './routing-fixture.js'
 
 /** Mirrors the daemon's MAX_AGENT_CALL_HOPS (packages/daemon/src/daemon.ts). */
 const MAX_AGENT_CALL_HOPS = 8
@@ -113,11 +113,56 @@ describe('case 1 — sendMessage {toAgent, channel}: one visible root post, one 
 })
 
 describe('case 1b — sendMessage {sessionId: parent}: session-only parent resume', () => {
+  function case1bScripts(resume: (ctx: RoutingScriptContext) => Promise<void> | void) {
+    return {
+      agent1: async (ctx: RoutingScriptContext) => {
+        const wake = /WAKE ([0-9a-f-]{36})/.exec(ctx.text)
+        if (wake) {
+          const result = await ctx.callTool('sendMessage', {
+            toAgent: { agentId: wake[1]!, needsReply: true },
+            channel: fixture!.room.channel,
+            message: 'please handle task T-1'
+          })
+          ctx.reply(result.ok ? 'delegated' : `delegation failed: ${result.error ?? 'unknown'}`)
+          return
+        }
+        if (/RESULT R-42/.test(ctx.text)) {
+          await resume(ctx)
+          return
+        }
+        ctx.reply('noted')
+      },
+      agent2: async (ctx: RoutingScriptContext) => {
+        const parent = /Parent session: (\S+)/.exec(ctx.text)
+        if (parent && /task T-1/.test(ctx.text)) {
+          const result = await ctx.callTool('sendMessage', {
+            sessionId: parent[1]!,
+            message: 'RESULT R-42: task complete'
+          })
+          ctx.reply(result.ok ? 'reported to parent' : `report failed: ${result.error ?? 'unknown'}`)
+          return
+        }
+        ctx.reply('agent2 heard you')
+      }
+    }
+  }
+
+  /** Every world outbound effect attributable to agent1's RESUMED turn: the
+   *  parent's first turn ends with its 'delegated' reply, so anything agent1's
+   *  integration attempts AFTER that sequence — body, chrome, typing, status,
+   *  delivered or rejected — belongs to the resume. */
+  function parentResumeEffects() {
+    const agent1Effects = fixture!.effectsOf('agent1')
+    const delegated = agent1Effects.find((effect) => effect.kind === 'reply' && /delegated/.test(effect.text))
+    expect(delegated, "agent1's first turn should have posted its 'delegated' reply").toBeDefined()
+    return agent1Effects.filter((effect) => effect.sequence > delegated!.sequence)
+  }
+
   // #503 §7: the parent session is resumed with headless: true — the injected
   // input and the resumed turn's ORDINARY output stay in the session; no IM
-  // body, typing indicator, status chrome, or completion notification is
-  // emitted for that turn. Under the CURRENT architecture the resumed parent
-  // turn still owns an ordinary IM reply connection, so its reply posts
+  // body, typing indicator, status chrome, footer, or completion notification
+  // is emitted for that turn. Under the CURRENT architecture the resumed
+  // parent turn still owns an ordinary IM reply connection, so its reply posts
   // visibly — this test pins the target invariant and passes-as-failing until
   // the rework lands.
   it.fails(
@@ -125,37 +170,9 @@ describe('case 1b — sendMessage {sessionId: parent}: session-only parent resum
     async () => {
       fixture = await RoutingFixture.start({
         agents: ['agent1', 'agent2'],
-        scripts: {
-          agent1: async (ctx) => {
-            const wake = /WAKE ([0-9a-f-]{36})/.exec(ctx.text)
-            if (wake) {
-              const result = await ctx.callTool('sendMessage', {
-                toAgent: { agentId: wake[1]!, needsReply: true },
-                channel: fixture!.room.channel,
-                message: 'please handle task T-1'
-              })
-              ctx.reply(result.ok ? 'delegated' : `delegation failed: ${result.error ?? 'unknown'}`)
-              return
-            }
-            if (/RESULT R-42/.test(ctx.text)) {
-              ctx.reply('thanks, result noted')
-              return
-            }
-            ctx.reply('noted')
-          },
-          agent2: async (ctx) => {
-            const parent = /Parent session: (\S+)/.exec(ctx.text)
-            if (parent && /task T-1/.test(ctx.text)) {
-              const result = await ctx.callTool('sendMessage', {
-                sessionId: parent[1]!,
-                message: 'RESULT R-42: task complete'
-              })
-              ctx.reply(result.ok ? 'reported to parent' : `report failed: ${result.error ?? 'unknown'}`)
-              return
-            }
-            ctx.reply('agent2 heard you')
-          }
-        }
+        scripts: case1bScripts((ctx) => {
+          ctx.reply('thanks, result noted')
+        })
       })
       const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> WAKE ${fixture.agentId('agent2')}`, {
         mentions: [fixture.botUserId('agent1')]
@@ -167,18 +184,45 @@ describe('case 1b — sendMessage {sessionId: parent}: session-only parent resum
       const resumeInput = fixture.turnInputs('agent1')[1] ?? ''
       expect(resumeInput).toContain('RESULT R-42')
 
-      // INVARIANT UNDER #503 §7: the resumed parent turn emits nothing to IM —
-      // no ordinary reply body and no delivery chrome. (Today the resumed turn
-      // posts 'thanks, result noted' into the origin thread, violating this.)
-      const parentResumeOutput = fixture
-        .deliveredEffects()
-        .filter(
-          (effect) => effect.agentId === fixture!.agentId('agent1') && effect.text.includes('thanks, result noted')
-        )
-      expect(parentResumeOutput).toHaveLength(0)
+      // INVARIANT UNDER #503 §7 — FULL accounting, not a body-string probe:
+      // the COMPLETE set of world effects attributable to the resumed turn is
+      // empty. Any body text, typing indicator, status message, footer, or
+      // other chrome — delivered OR merely attempted — fails this.
+      const resumeEffects = parentResumeEffects()
+      expect(resumeEffects.map((effect) => ({ kind: effect.kind, status: effect.status, text: effect.text }))).toEqual(
+        []
+      )
     },
     120_000
   )
+
+  // #503 §7: "An explicit visible sendMessage from the resumed parent remains
+  // allowed and uses its normal authorization and delivery semantics" —
+  // headless is not a turn-wide egress prohibition. This already holds today
+  // and must keep holding after the flip.
+  it('an EXPLICIT visible sendMessage from the resumed parent is delivered', async () => {
+    fixture = await RoutingFixture.start({
+      agents: ['agent1', 'agent2'],
+      scripts: case1bScripts(async (ctx) => {
+        const result = await ctx.callTool('sendMessage', {
+          channel: fixture!.room.channel,
+          message: 'ESCALATION E-9: needs human review'
+        })
+        ctx.reply(result.ok ? 'escalated' : `escalation failed: ${result.error ?? 'unknown'}`)
+      })
+    })
+    const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> WAKE ${fixture.agentId('agent2')}`, {
+      mentions: [fixture.botUserId('agent1')]
+    })
+    await fixture.settle(trigger.handles)
+    expect(fixture.activations('agent1')).toBe(2)
+    const escalations = fixture
+      .deliveredPosts()
+      .filter((post) => fixture!.aliasOf(post.agentId!) === 'agent1' && /ESCALATION E-9/.test(post.text))
+    expect(escalations).toHaveLength(1)
+    // The intentional outbound is a channel-root post per the §2.2 target table.
+    expect(escalations[0]!.thread).toBeUndefined()
+  }, 120_000)
 })
 
 describe('case 2 — sendMessage {channel}: bare root post, no activation; author owns the thread', () => {
@@ -268,14 +312,24 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
       })
       await fixture.settle(trigger.handles)
 
-      // The mentioned peer is activated exactly once per finalized reply edge.
-      expect(fixture.activations('agent2')).toBeGreaterThanOrEqual(1)
-      expect(fixture.turnInputs('agent2')[0]).toContain('your turn 1')
-      // The counter-mention re-activates the original author.
-      expect(fixture.activations('agent1')).toBeGreaterThanOrEqual(2)
-      // The chain terminates at the shared cap: hop count increments once per
-      // edge, so the total number of agent-authored activations across the chain
-      // never exceeds MAX_AGENT_CALL_HOPS...
+      // EXACTLY-ONCE per finalized response, proven by the exact alternating
+      // input sequence — a duplicated activation on any edge cannot hide under
+      // the aggregate cap. The human trigger is depth 0, so edges 1..cap are
+      // admitted and edge cap+1 is rejected: agent2 receives the odd turns,
+      // agent1 (after its human trigger) the even ones.
+      const agent2Turns = fixture.turnInputs('agent2').map((input) => /your turn (\d+)/.exec(input)?.[1])
+      const agent1ChainTurns = fixture
+        .turnInputs('agent1')
+        .slice(1) // drop the human START CHAIN trigger
+        .map((input) => /your turn (\d+)/.exec(input)?.[1])
+      const expectedAgent2: string[] = []
+      const expectedAgent1: string[] = []
+      for (let edge = 1; edge <= MAX_AGENT_CALL_HOPS; edge++) {
+        ;(edge % 2 === 1 ? expectedAgent2 : expectedAgent1).push(String(edge))
+      }
+      expect(agent2Turns).toEqual(expectedAgent2)
+      expect(agent1ChainTurns).toEqual(expectedAgent1)
+      // Aggregate bound stays as a belt-and-braces check on the same property.
       const agentActivations = fixture.activations('agent1') + fixture.activations('agent2') - 1 // minus the human trigger
       expect(agentActivations).toBeLessThanOrEqual(MAX_AGENT_CALL_HOPS)
       // ...and the terminating edge records a hop_limit rejection with no dispatch.

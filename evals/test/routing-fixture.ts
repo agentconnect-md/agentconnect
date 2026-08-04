@@ -273,6 +273,14 @@ export class RoutingFixture {
     return this.world.allEffects().filter((effect) => effect.status === 'delivered')
   }
 
+  /** EVERY outbound effect an agent's integration attempted — delivered or
+   *  rejected, reply or chrome. The full-accounting input for
+   *  "zero implicit IM outbound" invariants. */
+  effectsOf(alias: string): RecordedOutboundEffect[] {
+    const agentId = this.agentId(alias)
+    return this.world.allEffects().filter((effect) => effect.agentId === agentId)
+  }
+
   aliasOf(agentId: string): string {
     return this.aliasByAgentId.get(agentId) ?? agentId
   }

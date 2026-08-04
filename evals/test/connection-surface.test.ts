@@ -10,7 +10,13 @@
  */
 import { describe, expect, it } from 'vitest'
 import { SlackConnection } from '../../packages/daemon/src/slack/connection.js'
-import { VirtualSlackConnection } from '../../packages/daemon/src/evaluation/index.js'
+import {
+  VirtualSlackConnection,
+  type OutboundEffectInput,
+  type OutboundEffectResult,
+  type VirtualConnectionWorldPort,
+  type VirtualThreadMessage
+} from '../../packages/daemon/src/evaluation/index.js'
 
 /**
  * Members of the real SlackConnection the daemon does NOT consume through the
@@ -34,6 +40,36 @@ const EXEMPT: Record<string, string> = {
   openStatusModal: 'interactivity-only (status modal from a Bolt action)'
 }
 
+function recordingConnection() {
+  const effects: OutboundEffectInput[] = []
+  const history: VirtualThreadMessage[] = []
+  let sequence = 0
+  const port: VirtualConnectionWorldPort = {
+    recordOutbound: async (effect): Promise<OutboundEffectResult> => {
+      effects.push(effect)
+      sequence += 1
+      const messageId = `1700000000.${String(sequence).padStart(6, '0')}`
+      history.push({
+        ts: messageId,
+        text: effect.text,
+        sender: 'UB11111111',
+        isBot: true,
+        ...(effect.identity?.agentAuthorId !== undefined ? { agentAuthorId: effect.identity.agentAuthorId } : {})
+      })
+      return { status: 'delivered', messageId, sequence }
+    },
+    channelInfo: () => ({ id: 'C-META', name: 'meta' }),
+    members: () => [],
+    channels: () => [{ id: 'C-META', name: 'meta' }],
+    profile: () => undefined,
+    threadHistory: () => history
+  }
+  const connection = new VirtualSlackConnection('meta-int', { workspaceId: 'TMETA' }, port, {
+    botUserId: 'UB11111111'
+  })
+  return { connection, effects, history, port }
+}
+
 describe('virtual connection surface guard', () => {
   it('VirtualSlackConnection implements every consumed member of the real SlackConnection', () => {
     const real = Object.getOwnPropertyNames(SlackConnection.prototype)
@@ -52,6 +88,63 @@ describe('virtual connection surface guard', () => {
     const stale = Object.keys(EXEMPT).filter((name) => name !== 'constructor' && !real.has(name))
     expect(stale, `stale EXEMPT entries (removed from SlackConnection): ${stale.join(', ')}`).toEqual([])
   })
+
+  it('round-trips the CURRENT per-message metadata contract through the sink and provider history', async () => {
+    const { connection, effects, port } = recordingConnection()
+    const ts = await connection.postMessage('C-META', 'hello', undefined, {
+      username: 'Agent One',
+      icon_url: 'https://icons.example.test/agent-one.png',
+      agentAuthorId: 'agent-1-id'
+    })
+    expect(ts).toBeDefined()
+    // The sink preserves the per-message identity the real connection persists
+    // into Slack message metadata today.
+    expect(effects[0]!.identity).toEqual({
+      username: 'Agent One',
+      icon_url: 'https://icons.example.test/agent-one.png',
+      agentAuthorId: 'agent-1-id'
+    })
+    // And the provider history — what getThreadReplies/finalThreadSnapshot
+    // read — carries the trusted author id, like conversations.replies with
+    // include_all_metadata does.
+    const replies = await connection.getThreadReplies('C-META', ts!)
+    void port
+    expect(replies.find((reply) => reply.text === 'hello')).toMatchObject({ agentAuthorId: 'agent-1-id' })
+  })
+
+  // Behavioral metadata round-trip scaffold (PR #520 review, comment on this
+  // file): prototype reflection cannot catch NEW FIELDS added to existing
+  // postMessage options. #503 §4 extends the daemon-owned per-message metadata
+  // with response/recipient/pairing/hop fields; when the real connection
+  // starts persisting them, the virtual transport must carry them into the
+  // world sink and provider history too — otherwise the arena silently drops
+  // exactly the metadata the rework routes on. This pins that requirement:
+  // it passes-as-failing today (the virtual's identity projection ignores the
+  // fields) and must be flipped to `it` when #503's driver metadata lands,
+  // with the carrier shape adjusted to the implementation if needed.
+  it.fails(
+    'round-trips #503 response/recipient/pairing/hop metadata [pending #503 §4 — flip with the driver change]',
+    async () => {
+      const { connection, effects } = recordingConnection()
+      const rework = {
+        response_id: 'resp-1',
+        delivery_state: 'final',
+        hop_count: 2,
+        mentioned_agent_ids: ['agent-2-id'],
+        agent_call_delivery_id: 'acd-1'
+      }
+      await connection.postMessage('C-META', '<@UB22222222> over to you', undefined, {
+        agentAuthorId: 'agent-1-id',
+        ...rework
+      } as never)
+      const identity = (effects[0]!.identity ?? {}) as Record<string, unknown>
+      for (const [field, value] of Object.entries(rework)) {
+        expect(identity[field], `postMessage options.${field} was silently dropped by the virtual transport`).toEqual(
+          value
+        )
+      }
+    }
+  )
 
   it('the virtual transport carries the identity fields the daemon reads off live connections', () => {
     const connection = new VirtualSlackConnection(
