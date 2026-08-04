@@ -30,13 +30,14 @@ import { findAgentFileById } from './write-agent.js'
 /**
  * Map the wire spec to the daemon's `Integration` shape (agent-schema).
  *
- * §6.4 DUAL-SHAPE reader: the platform payload comes from the legacy nested block
- * while the CP still emits it, else from the opaque `config` validated against the
- * SAME per-platform schema (the S2 platform module takes validation over later).
- * `core` overrides the routing knobs wherever present — it is the envelope that
- * survives once legacy emission drops. The wire envelope is folded back into
- * today's on-disk shape, so everything downstream of agent.json is unchanged.
- * Returns null (reader-side rejection) for a spec carrying neither payload.
+ * §6.4 ENVELOPE reader (legacy RETIRED): the platform payload is the opaque
+ * `config`, validated against the per-platform wire schema (the S2 platform
+ * module takes validation over later). `core` overrides the routing knobs
+ * wherever present. An older CP's legacy nested block is stripped at the frame
+ * layer; that CP dual-emitted `config` since §6.4 landed, so nothing is lost.
+ * The wire envelope is folded back into today's on-disk shape, so everything
+ * downstream of agent.json is unchanged. Returns null (reader-side rejection)
+ * for a spec carrying no usable config.
  */
 function toIntegration(spec: IntegrationSpec): Integration | null {
   const core = spec.core
@@ -46,7 +47,7 @@ function toIntegration(spec: IntegrationSpec): Integration | null {
     gated: core?.gated ?? legacy.gated
   })
   if (spec.platform === 'telegram') {
-    const cfg = spec.telegram ?? parseConfig(IntegrationTelegramConfig, spec.config)
+    const cfg = parseConfig(IntegrationTelegramConfig, spec.config)
     if (!cfg) return null
     return {
       id: spec.integrationId,
@@ -56,7 +57,7 @@ function toIntegration(spec: IntegrationSpec): Integration | null {
     }
   }
   if (spec.platform === 'discord') {
-    const cfg = spec.discord ?? parseConfig(IntegrationDiscordConfig, spec.config)
+    const cfg = parseConfig(IntegrationDiscordConfig, spec.config)
     if (!cfg) return null
     return {
       id: spec.integrationId,
@@ -70,7 +71,7 @@ function toIntegration(spec: IntegrationSpec): Integration | null {
     }
   }
   if (spec.platform === 'feishu') {
-    const cfg = spec.feishu ?? parseConfig(IntegrationFeishuConfig, spec.config)
+    const cfg = parseConfig(IntegrationFeishuConfig, spec.config)
     if (!cfg) return null
     return {
       id: spec.integrationId,
@@ -86,7 +87,7 @@ function toIntegration(spec: IntegrationSpec): Integration | null {
       }
     }
   }
-  const cfg = spec.slack ?? parseConfig(IntegrationSlackConfig, spec.config)
+  const cfg = parseConfig(IntegrationSlackConfig, spec.config)
   if (!cfg) return null
   return {
     id: spec.integrationId,

@@ -253,7 +253,7 @@ describe('canonicalizeTelegramThread', () => {
   it('uses the forum-topic id as the thread', async () => {
     const daemon = new Daemon({ root: scaffold() })
     await daemon.start()
-    const m = tg(101, { telegramTopicId: '555', mentionedBots: ['mybot'] })
+    const m = tg(101, { topicId: '555', mentionedBots: ['mybot'] })
     ;(daemon as any).canonicalizeTelegramThread(m)
     expect(m.thread).toBe('555')
   })
@@ -268,7 +268,7 @@ describe('canonicalizeTelegramThread', () => {
     ;(daemon as any).canonicalizeTelegramThread(reply)
     expect(reply.thread).toBe('tg:6')
     // The generic field wins when both are present (dual-shape window).
-    const both = tg(105, { topicId: '7', telegramTopicId: '8' })
+    const both = tg(105, { topicId: '7' })
     ;(daemon as any).canonicalizeTelegramThread(both)
     expect(both.thread).toBe('7')
   })
@@ -291,7 +291,7 @@ describe('canonicalizeTelegramThread', () => {
     // A later reply in that thread carries Telegram's native message_thread_id = 6
     // (the root) — even though it directly replies to the bot's message 7. It must key
     // to the SAME session as the mention (regression: was mis-keyed to the bare id).
-    const reply = tg(8, { telegramThreadRoot: '6', replyTo: '7' })
+    const reply = tg(8, { threadRoot: '6', replyTo: '7' })
     ;(daemon as any).canonicalizeTelegramThread(reply)
     expect(reply.thread).toBe('tg:6')
   })
@@ -301,10 +301,10 @@ describe('canonicalizeTelegramThread', () => {
     await daemon.start()
     // Only a real forum topic yields the bare numeric thread (postable as
     // message_thread_id); a reply-thread root is prefixed so it never is.
-    const forum = tg(9, { telegramTopicId: '6' })
+    const forum = tg(9, { topicId: '6' })
     ;(daemon as any).canonicalizeTelegramThread(forum)
     expect(forum.thread).toBe('6')
-    const replyThread = tg(10, { telegramThreadRoot: '6' })
+    const replyThread = tg(10, { threadRoot: '6' })
     ;(daemon as any).canonicalizeTelegramThread(replyThread)
     expect(replyThread.thread).toBe('tg:6')
   })
@@ -387,8 +387,8 @@ describe('reply-based session continuity (routing)', () => {
     seedSession(daemon, '-100', 'tg:77', { agentId: 'bot-b', integrationId: 'i-b' })
     const dispatch = vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
 
-    ;(daemon as any).onInbound(tg(78, { telegramThreadRoot: '77', text: 'follow up A' }), ['i-a'])
-    ;(daemon as any).onInbound(tg(78, { telegramThreadRoot: '77', text: 'follow up B' }), ['i-b'])
+    ;(daemon as any).onInbound(tg(78, { threadRoot: '77', text: 'follow up A' }), ['i-a'])
+    ;(daemon as any).onInbound(tg(78, { threadRoot: '77', text: 'follow up B' }), ['i-b'])
 
     expect(dispatch.mock.calls.map(([agentId, , integrationId]) => [agentId, integrationId])).toEqual([
       ['bot-a', 'i-a'],

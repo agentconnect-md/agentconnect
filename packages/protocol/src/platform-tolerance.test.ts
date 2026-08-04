@@ -244,12 +244,14 @@ describe('§6.5 generic thread coordinates + adapterExt', () => {
       })
     )
 
-  it('decodes dual-shape (named + generic) and generic-only coordinates', () => {
+  it('decodes generic coordinates; a legacy named twin from an older peer is stripped', () => {
+    // §6.5 legacy RETIRED: named twins are unknown keys now — stripped by the
+    // non-strict object, never a decode failure, and the generic field carries.
     const dual = im({ telegramTopicId: '55', topicId: '55' })
     expectOk(dual)
     if (dual.ok && dual.frame.type === 'rd/msg' && dual.frame.payload.source === 'im') {
       expect(dual.frame.payload.payload.topicId).toBe('55')
-      expect(dual.frame.payload.payload.telegramTopicId).toBe('55')
+      expect('telegramTopicId' in dual.frame.payload.payload).toBe(false)
     }
     expectOk(im({ threadRoot: '6', promoteToThread: true }))
   })
@@ -291,7 +293,9 @@ describe('§6.6 platform_action envelope', () => {
     expectOk(pa({ platformId: UNKNOWN, payload: { anything: true } }))
   })
 
-  it('rd/ack carries the generic opaque response beside the deprecated Feishu slot', () => {
+  it('rd/ack carries the generic opaque response; the retired Feishu slot is stripped', () => {
+    // A pre-flip daemon still dual-fills; the named slot is an unknown key now and
+    // strips cleanly while the generic response carries.
     const r = decodeRelayDaemonFrame(
       envelope('rd/ack', {
         msgId: 'pa-1',
@@ -303,6 +307,7 @@ describe('§6.6 platform_action envelope', () => {
     expectOk(r)
     if (r.ok && r.frame.type === 'rd/ack') {
       expect(r.frame.payload.response).toEqual({ toast: { type: 'info', content: 'ok' } })
+      expect('feishuCardAction' in r.frame.payload).toBe(false)
     }
   })
 })

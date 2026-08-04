@@ -665,7 +665,7 @@ describe('writeAgentSpec — create (no agent.json)', () => {
           integrationId: 'int-a',
           agentId: 'bot-a',
           platform: 'slack',
-          slack: {
+          config: {
             mode: 'direct',
             shareable: false,
             botToken: 'xoxb-secret',
@@ -813,7 +813,7 @@ describe('cold-move archive', () => {
       integrationId: 'int-current',
       agentId: 'bot-a',
       platform: 'slack',
-      slack: {
+      config: {
         mode: 'direct',
         botToken: 'new-secret',
         appToken: 'new-app',
@@ -874,10 +874,15 @@ describe('cold-move archive', () => {
         platform: 'slack',
         slack: {
           mode: 'direct',
+          // The per-platform wire schema fills the defaulted knobs at the
+          // consumer parse (envelope reader) — they now always reach disk.
+          shareable: false,
           botToken: 'new-secret',
           appToken: 'new-app',
           appId: 'A123',
-          bindRules: []
+          bindRules: [],
+          mutedChannels: [],
+          gated: false
         }
       }
     ])
@@ -932,7 +937,7 @@ describe('cold-move archive', () => {
   })
 })
 
-describe('writeIntegrationSpec §6.4 dual-shape reader', () => {
+describe('writeIntegrationSpec §6.4 envelope reader (legacy retired)', () => {
   const AGENT = '33333333-3333-4333-8333-333333333333'
   const INT = '66666666-6666-4666-8666-666666666666'
   const seeded = () => {
@@ -951,12 +956,10 @@ describe('writeIntegrationSpec §6.4 dual-shape reader', () => {
   const disk = (dir: string) =>
     (readJson(join(dir, 'bot-a', 'agent.json')).integrations as Record<string, unknown>[])[0]
 
-  it('envelope-only and legacy-only specs fold to the SAME on-disk shape', () => {
-    const a = seeded()
-    writeIntegrationSpec(a, { integrationId: INT, agentId: AGENT, platform: 'telegram', telegram } as never, {})
-    const b = seeded()
+  it('an envelope spec folds to the pre-envelope on-disk shape (agent.json unchanged)', () => {
+    const dir = seeded()
     writeIntegrationSpec(
-      b,
+      dir,
       {
         integrationId: INT,
         agentId: AGENT,
@@ -966,10 +969,12 @@ describe('writeIntegrationSpec §6.4 dual-shape reader', () => {
       } as never,
       {}
     )
-    expect(disk(b)).toEqual(disk(a))
+    // The DISK shape is frozen (#516): the wire envelope folds back into the
+    // nested per-platform block everything downstream of agent.json reads.
+    expect(disk(dir)).toMatchObject({ id: INT, platform: 'telegram', telegram: { botToken: telegram.botToken } })
   })
 
-  it('core overrides the legacy routing knobs wherever present', () => {
+  it('core overrides the routing knobs wherever present', () => {
     const dir = seeded()
     writeIntegrationSpec(
       dir,
@@ -977,7 +982,6 @@ describe('writeIntegrationSpec §6.4 dual-shape reader', () => {
         integrationId: INT,
         agentId: AGENT,
         platform: 'telegram',
-        telegram: { ...telegram, gated: false, mutedChannels: [] },
         core: { mode: 'direct', bindRules: [], mutedChannels: ['C_OFF'], gated: true },
         config: telegram
       } as never,
@@ -986,7 +990,22 @@ describe('writeIntegrationSpec §6.4 dual-shape reader', () => {
     expect(disk(dir)).toMatchObject({ telegram: { gated: true, mutedChannels: ['C_OFF'] } })
   })
 
-  it('a spec with neither payload is refused (warn + not persisted)', () => {
+  it('a LEGACY-only spec (retired nested block, no config) is refused, not read', () => {
+    // An emitter this old predates §6.4's dual emission entirely — the reader
+    // refuses (warn + skip) and the CP re-sends on its next push.
+    const dir = seeded()
+    const warns: string[] = []
+    const ok = writeIntegrationSpec(
+      dir,
+      { integrationId: INT, agentId: AGENT, platform: 'telegram', telegram } as never,
+      { warn: (m) => warns.push(m) }
+    )
+    expect(ok).toBe(false)
+    expect(warns[0]).toContain('no usable platform payload')
+    expect(readJson(join(dir, 'bot-a', 'agent.json')).integrations).toEqual([])
+  })
+
+  it('a spec with no payload at all is refused (warn + not persisted)', () => {
     const dir = seeded()
     const warns: string[] = []
     const ok = writeIntegrationSpec(dir, { integrationId: INT, agentId: AGENT, platform: 'telegram' } as never, {

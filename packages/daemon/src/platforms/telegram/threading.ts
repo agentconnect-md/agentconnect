@@ -50,12 +50,12 @@ export function canonicalizeTelegramThread(
   if (msg.platform !== 'telegram' || msg.thread !== undefined) return
   // §6.5 dual-shape reader: prefer the generic coordinates; the named per-platform
   // fields stop being emitted once the fleet reads the generic ones.
-  const topicId = msg.topicId ?? msg.telegramTopicId
+  const topicId = msg.topicId
   if (topicId !== undefined) {
     msg.thread = topicId
     return
   }
-  const threadRoot = msg.threadRoot ?? msg.telegramThreadRoot
+  const threadRoot = msg.threadRoot
   if (threadRoot !== undefined) {
     msg.thread = `tg:${threadRoot}`
     return

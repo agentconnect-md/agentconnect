@@ -251,25 +251,6 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
 ])
 export type RdSlackAction = z.infer<typeof RdSlackAction>
 
-/** R→D REQ → rd/ack. The relay has validated either an opaque rendered-control
- *  target or a message shortcut's current conversation owner against its shared-bot
- *  assignment, and names the canonical agent + integration. Coordinate shortcuts
- *  are resolved to an exact bot-scoped session again by the daemon. */
-export const RdMsgSlackAction = z.object({
-  source: z.literal('slack_action'),
-  agentId: z.string().uuid(),
-  sessionKey: z.string().min(1),
-  msgId: z.string().min(1),
-  botId: z.string().uuid(),
-  integrationId: z.string().uuid(),
-  // The platform user who tapped it, so a shared-bot session change is attributable
-  // the way a direct connection's already is. Optional for rolling compatibility with
-  // an older relay: absent records as an unknown actor, never a fabricated one.
-  userId: z.string().min(1).optional(),
-  payload: RdSlackAction
-})
-export type RdMsgSlackAction = z.infer<typeof RdMsgSlackAction>
-
 /** The provider-authenticated body of one Lark / Feishu `card.action.trigger`.
  * The daemon deliberately resolves the opaque message id against its local active-card
  * map instead of trusting relay-supplied session coordinates. */
@@ -323,20 +304,6 @@ export const WireFeishuCardActionResponse = z.object({
     .optional()
 })
 export type WireFeishuCardActionResponse = z.infer<typeof WireFeishuCardActionResponse>
-
-/** R→D REQ → rd/ack. The relay validates the card's rendered target against its
- * current assignment; the daemon then validates the message id and action value
- * against local active-card state before applying the control. */
-export const RdMsgFeishuAction = z.object({
-  source: z.literal('feishu_action'),
-  agentId: z.string().uuid(),
-  sessionKey: z.string().min(1),
-  msgId: z.string().min(1),
-  botId: z.string().uuid(),
-  integrationId: z.string().uuid(),
-  payload: WireFeishuCardActionEvent
-})
-export type RdMsgFeishuAction = z.infer<typeof RdMsgFeishuAction>
 
 /**
  * R→D REQ → rd/ack (§6.6). The ONE platform-interaction envelope replacing the
@@ -398,14 +365,12 @@ export const RdMsgHook = z.object({
 export type RdMsgHook = z.infer<typeof RdMsgHook>
 
 // Shared-bot IM + status actions and webhook fires join the webchat union.
-export const RdMsg = z.discriminatedUnion('source', [
-  RdMsgWebchat,
-  RdMsgIm,
-  RdMsgSlackAction,
-  RdMsgFeishuAction,
-  RdMsgPlatformAction,
-  RdMsgHook
-])
+// The platform-named interaction members (`slack_action` / `feishu_action`)
+// RETIRED here (S1b cleanup): nothing has emitted them since the relay's §6.6
+// flip shipped a release earlier, so the union now carries the one
+// platform_action envelope. A frame from an older relay fails the decode and is
+// dropped with a log — never crashing the pipe.
+export const RdMsg = z.discriminatedUnion('source', [RdMsgWebchat, RdMsgIm, RdMsgPlatformAction, RdMsgHook])
 export type RdMsg = z.infer<typeof RdMsg>
 
 // D→R REP (corr = rd/msg id). Receipt for dedup/ack bookkeeping; for a webchat
@@ -416,12 +381,11 @@ export const RdAck = z.object({
   accepted: z.boolean(),
   turnId: z.string().uuid().optional(),
   reason: z.string().optional(),
-  /** DEPRECATED (§6.6): read `response`. The Feishu-named sync-toast slot. */
-  feishuCardAction: WireFeishuCardActionResponse.optional(),
   /** §6.6 opaque interaction response for a `platform_action` — the payload the
    *  relay-side platform module surfaces on the synchronous HTTP body (Feishu
-   *  toast, Slack block_suggestion options). Dual-emitted with the deprecated
-   *  slot above during the window; decoded only by the platform module. */
+   *  toast, Slack block_suggestion options). Decoded only by the platform
+   *  module. (The Feishu-named `feishuCardAction` slot retired with the legacy
+   *  interaction members.) */
   response: z.unknown().optional()
 })
 export type RdAck = z.infer<typeof RdAck>

@@ -13,7 +13,8 @@ const spec = (over: Partial<IntegrationSpec> = {}): IntegrationSpec => ({
   integrationId: I1,
   agentId: A1,
   platform: 'slack',
-  slack: {
+  core: { mode: 'direct', bindRules: [{ match: { kind: 'mention' } }], mutedChannels: [], gated: false },
+  config: {
     botToken: 'xoxb-secret',
     appToken: 'xapp-secret',
     bindRules: [{ match: { kind: 'mention' } }]
@@ -72,7 +73,7 @@ describe('CpIntegrationRegistry (filesystem-backed)', () => {
       ]
     })
     const { reg } = makeReg(dir)
-    reg.upsert(spec({ slack: { botToken: 'xoxb-new', appToken: 'xapp-new', bindRules: [] } }))
+    reg.upsert(spec({ config: { botToken: 'xoxb-new', appToken: 'xapp-new', bindRules: [] } }))
     const a = readAgent(dir, 'helper')
     expect(a.integrations).toHaveLength(2)
     const [cp, local] = a.integrations as any[]
@@ -134,7 +135,7 @@ describe('CpIntegrationRegistry (filesystem-backed)', () => {
       integrations: [{ id: I1, platform: 'slack', slack: { botToken: 'xoxb-a', appToken: 'xapp-a' } }]
     })
     const { reg, onChange } = makeReg(dir)
-    reg.converge([spec({ integrationId: I2, slack: { botToken: 'xoxb-b', appToken: 'xapp-b', bindRules: [] } })])
+    reg.converge([spec({ integrationId: I2, config: { botToken: 'xoxb-b', appToken: 'xapp-b', bindRules: [] } })])
     const a = readAgent(dir, 'helper')
     // I2 created from the roster; I1 NOT pruned (deletion only via integration/remove)
     expect((a.integrations as any[]).map((i) => i.id).sort()).toEqual([I1, I2].sort())

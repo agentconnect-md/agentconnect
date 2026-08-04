@@ -975,11 +975,11 @@ export class RelayIngressManager {
       if (!ack.accepted) {
         this.deps.log.warn(`relay-ingress(${botId}): daemon rejected Feishu card action (${ack.reason ?? 'unknown'})`)
       }
-      // §6.6: a fleet daemon answers a platform_action with the generic opaque
-      // `response`; the Feishu-named slot is read as a tolerance fallback until
-      // the deprecated rd/ack member retires with the legacy readers.
+      // §6.6: the generic opaque `response` is the ONE answer slot — the
+      // Feishu-named rd/ack member retired with the legacy interaction members
+      // (every fleet daemon has filled `response` since #521).
       const generic = WireFeishuCardActionResponse.safeParse(ack.response)
-      return generic.success && ack.response !== undefined ? generic.data : ack.feishuCardAction
+      return generic.success && ack.response !== undefined ? generic.data : undefined
     } catch (err) {
       this.deps.log.warn(`relay-ingress(${botId}): Feishu card action forward failed: ${(err as Error).message}`)
       return undefined

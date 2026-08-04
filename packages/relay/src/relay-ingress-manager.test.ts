@@ -351,9 +351,10 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
     })
   })
 
-  it('still reads the deprecated Feishu-named ack slot from a pre-flip daemon', async () => {
-    // Tolerance window: a daemon that has not yet learned to fill `response`
-    // answers through the deprecated slot; the callback must still reach Feishu.
+  it('ignores the RETIRED Feishu-named ack slot — the generic response is the one answer', async () => {
+    // S1b cleanup: the named slot left RdAck one release after every fleet daemon
+    // began filling `response` (#521). An ack carrying only the stale key (which
+    // the schema now strips) yields no callback body rather than resurrecting it.
     const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
     const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({
       msgId: msg.msgId,
@@ -379,7 +380,7 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
       operator: { open_id: 'ou_human' },
       action: { tag: 'overflow', option: 'cancel' }
     }
-    await expect(internals.forwardFeishuAction(BOT_ID, action, 'evt-action')).resolves.toEqual(response)
+    await expect(internals.forwardFeishuAction(BOT_ID, action, 'evt-action')).resolves.toBeUndefined()
   })
 })
 

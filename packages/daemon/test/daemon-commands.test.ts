@@ -7,9 +7,8 @@ import {
   SLACK_STATUS_ACTION,
   decodeSharedSlackStatusTarget,
   decodeSlackStatusOverflowValue,
-  type RdMsgFeishuAction,
   type RdMsgIm,
-  type RdMsgSlackAction
+  type RdMsgPlatformAction
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
@@ -1591,8 +1590,9 @@ describe('Slack interactive status bar', () => {
       updatedAt: Date.now()
     })
 
-    const action = (over: Partial<RdMsgSlackAction> = {}): RdMsgSlackAction => ({
-      source: 'slack_action',
+    const action = (over: Partial<RdMsgPlatformAction> = {}): RdMsgPlatformAction => ({
+      source: 'platform_action',
+      platformId: 'slack',
       agentId: 'bot-a',
       sessionKey: KEY,
       msgId: 'action-ok',
@@ -1744,8 +1744,9 @@ describe('Slack interactive status bar', () => {
     const handleCardAction = vi.fn(() => response)
     ;(daemon as any).fsConnByIntegration.set('int-a', { handleCardAction })
 
-    const action: RdMsgFeishuAction = {
-      source: 'feishu_action',
+    const action: RdMsgPlatformAction = {
+      source: 'platform_action',
+      platformId: 'feishu',
       agentId: 'bot-a',
       sessionKey: 'feishu-action:om_card',
       msgId: 'feishu-action:one',
@@ -1761,7 +1762,8 @@ describe('Slack interactive status bar', () => {
     expect((daemon as any).handleRelayMsg(action, () => {})).toEqual({
       msgId: action.msgId,
       accepted: true,
-      feishuCardAction: response
+      // §6.6: the generic opaque slot is the one answer (named slot retired).
+      response
     })
     expect(handleCardAction).toHaveBeenCalledWith(action.payload)
     expect(

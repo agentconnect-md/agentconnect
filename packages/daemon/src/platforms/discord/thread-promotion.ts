@@ -8,9 +8,8 @@
  * three coordinates, and the original message id — whose ts equals the thread
  * id — makes the session treat that message as the thread root.
  *
- * WANT is a dual-shape read: the generic `promoteToThread` coordinate (§6.5)
- * first, Discord's legacy `discordTopLevel` named field as the fallback until
- * the legacy emission flip retires it.
+ * WANT reads the generic `promoteToThread` coordinate (§6.5); Discord's legacy
+ * `discordTopLevel` named twin retired with the S1b cleanup.
  */
 import type { DiscordConnection } from '../../discord/connection.js'
 import type { ThreadPromotion, ThreadPromotionHost, ThreadPromotionMessage } from '../thread-promotion.js'
@@ -27,7 +26,7 @@ export const discordThreadPromotion: ThreadPromotion<ThreadPromotionMessage> = {
   platform: 'discord',
 
   wants(msg: ThreadPromotionMessage): boolean {
-    return (msg.promoteToThread ?? (msg as { discordTopLevel?: boolean }).discordTopLevel) === true
+    return msg.promoteToThread === true
   },
 
   async promote(host: ThreadPromotionHost, conn: unknown, msg: ThreadPromotionMessage): Promise<void> {

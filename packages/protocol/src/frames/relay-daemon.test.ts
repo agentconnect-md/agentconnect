@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  WireFeishuCardActionEvent,
   RdMsg,
   RdMsgWebchat,
   RdAck,
@@ -161,13 +162,15 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
   it('rd/ack carries a rejection verdict (reason, no turn stream)', () => {
     expect(RdAck.safeParse({ msgId: 'm-1', accepted: false, reason: 'no_agent' }).success).toBe(true)
     expect(RdAck.safeParse({ msgId: 'm-1', accepted: true }).success).toBe(true)
-    expect(
-      RdAck.safeParse({
-        msgId: 'm-1',
-        accepted: true,
-        feishuCardAction: { toast: { type: 'info', content: 'Cancellation requested.' } }
-      }).success
-    ).toBe(true)
+    // The retired Feishu-named slot from a pre-flip daemon strips cleanly.
+    const dual = RdAck.safeParse({
+      msgId: 'm-1',
+      accepted: true,
+      feishuCardAction: { toast: { type: 'info', content: 'Cancellation requested.' } },
+      response: { toast: { type: 'info', content: 'Cancellation requested.' } }
+    })
+    expect(dual.success).toBe(true)
+    if (dual.success) expect('feishuCardAction' in dual.data).toBe(false)
     expect(RdAck.safeParse({ msgId: 'm-1' }).success).toBe(false) // verdict is required
   })
 
@@ -417,9 +420,10 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RdAgentMsgAck.safeParse({ deliveryId: 'd-1', delivered: false, reason: 'unsupported' }).success).toBe(true)
   })
 
-  it('decodes every shared Slack session action inside rd/msg and rejects malformed controls', () => {
+  it('decodes every shared Slack session action inside a platform_action rd/msg; RdSlackAction rejects malformed controls', () => {
     const base = {
-      source: 'slack_action' as const,
+      source: 'platform_action' as const,
+      platformId: 'slack',
       agentId: AGENT_ID,
       sessionKey: 'slack:C123:1720000000.000100:agent',
       msgId: 'slack-action:abc123',
@@ -448,20 +452,43 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       expect(RdSlackAction.safeParse(payload).success).toBe(true)
       expect(decodeRelayDaemonFrame(envelope('rd/msg', { ...base, payload })).ok).toBe(true)
     }
-    expect(RdMsg.safeParse({ ...base, payload: { kind: 'set-output', outputMode: 'verbose' } }).success).toBe(false)
-    expect(RdMsg.safeParse({ ...base, payload: { kind: 'open-config', triggerId: '' } }).success).toBe(false)
+    // The envelope's payload is opaque — malformed CONTROLS are the per-platform
+    // decoder's verdict (NAK unsupported_action), enforced by RdSlackAction.
+    expect(RdSlackAction.safeParse({ kind: 'set-output', outputMode: 'verbose' }).success).toBe(false)
+    expect(RdSlackAction.safeParse({ kind: 'open-config', triggerId: '' }).success).toBe(false)
     expect(
-      RdMsg.safeParse({
-        ...base,
-        payload: { kind: 'open-config-for-thread', triggerId: 'trigger-2', channelId: 'C123', threadTs: '' }
+      RdSlackAction.safeParse({
+        kind: 'open-config-for-thread',
+        triggerId: 'trigger-2',
+        channelId: 'C123',
+        threadTs: ''
       }).success
     ).toBe(false)
+    // Envelope-level identity stays schema-enforced.
     expect(RdMsg.safeParse({ ...base, integrationId: 'not-a-uuid', payload: { kind: 'cancel' } }).success).toBe(false)
   })
 
-  it('decodes a Lark / Feishu HTTP card action inside rd/msg', () => {
+  it('REJECTS the retired platform-named interaction members (nothing emits them)', () => {
+    // S1b cleanup: `slack_action` / `feishu_action` retired one release after the
+    // relay's §6.6 emission flip. A frame from an older relay fails the decode and
+    // is dropped with a log — the discriminated union no longer carries the members.
+    const legacy = {
+      source: 'slack_action',
+      agentId: AGENT_ID,
+      sessionKey: 'slack:C123:1720000000.000100:agent',
+      msgId: 'slack-action:abc123',
+      botId: DAEMON_ID,
+      integrationId: CONV_ID,
+      payload: { kind: 'cancel' }
+    }
+    expect(decodeRelayDaemonFrame(envelope('rd/msg', legacy)).ok).toBe(false)
+    expect(RdMsg.safeParse({ ...legacy, source: 'feishu_action' }).success).toBe(false)
+  })
+
+  it('decodes a Lark / Feishu HTTP card action inside a platform_action rd/msg', () => {
     const action = {
-      source: 'feishu_action',
+      source: 'platform_action',
+      platformId: 'feishu',
       agentId: AGENT_ID,
       sessionKey: 'feishu-action:om_card',
       msgId: 'feishu-action:abc123',
@@ -482,10 +509,12 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     }
     const decoded = decodeRelayDaemonFrame(envelope('rd/msg', action))
     expect(decoded.ok).toBe(true)
-    if (!decoded.ok || decoded.frame.type !== 'rd/msg' || decoded.frame.payload.source !== 'feishu_action') {
-      throw new Error('expected Feishu action')
+    if (!decoded.ok || decoded.frame.type !== 'rd/msg' || decoded.frame.payload.source !== 'platform_action') {
+      throw new Error('expected platform action')
     }
-    expect(decoded.frame.payload.payload.context?.open_message_id).toBe('om_card')
+    // The envelope payload is opaque at the frame layer; the daemon's feishu
+    // decoder validates it against WireFeishuCardActionEvent.
+    expect(WireFeishuCardActionEvent.parse(decoded.frame.payload.payload).context?.open_message_id).toBe('om_card')
   })
 
   it('decodes an rd/msg hook fire (B-github) and enforces its required fields', () => {
