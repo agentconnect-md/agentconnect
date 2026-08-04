@@ -413,6 +413,63 @@ describe('PATCH /daemons/:id — rename', () => {
     const res = await running.app.inject({ method: 'PATCH', url: `${ORG}/daemons/${DAEMON}`, payload: { name: '   ' } })
     expect(res.statusCode).toBe(400)
   })
+
+  it('400s on an empty body (nothing to update)', async () => {
+    await seedDaemon()
+    running = buildHttpApp(prisma)
+    const res = await running.app.inject({ method: 'PATCH', url: `${ORG}/daemons/${DAEMON}`, payload: {} })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('persists sessionRetention and hot-pushes it to the connected daemon (config/push)', async () => {
+    await seedDaemon()
+    const pushes: { id: string; keys: Record<string, unknown> }[] = []
+    const control = {
+      configPush: (id: string, keys: Record<string, unknown>) => {
+        pushes.push({ id, keys })
+      }
+    } as unknown as ControlSender
+    running = buildHttpApp(prisma, undefined, liveness({ [DAEMON]: { state: 'READY', reachable: true } }), control)
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { sessionRetention: '90d' }
+    })
+    expect(res.statusCode).toBe(200)
+    const updated = res.json() as DaemonDto & { sessionRetention: string }
+    expect(updated.sessionRetention).toBe('90d')
+    // A retention change is a human edit — the last-modified audit advances.
+    expect(updated.lastModifiedBy).toBeTruthy()
+
+    // Durable (the register/ok baseline reads this column) + hot-pushed.
+    const row = await prisma.daemon.findUnique({ where: { id: DAEMON } })
+    expect(row?.sessionRetention).toBe('90d')
+    expect(pushes).toEqual([{ id: DAEMON, keys: { 'sessions.retention': '90d' } }])
+  })
+
+  it('still 200s a retention change when the daemon is offline (push is best-effort)', async () => {
+    await seedDaemon()
+    running = buildHttpApp(prisma) // empty liveness ⇒ configPush throws NoConnection internally
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { sessionRetention: 'never' }
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as { sessionRetention: string }).sessionRetention).toBe('never')
+  })
+
+  it('400s an unknown retention window', async () => {
+    await seedDaemon()
+    running = buildHttpApp(prisma)
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { sessionRetention: '3d' }
+    })
+    expect(res.statusCode).toBe(400)
+  })
 })
 
 describe('DELETE /daemons/:id — remove from fleet', () => {

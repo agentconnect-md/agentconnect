@@ -111,6 +111,7 @@ export interface ConfigApply {
 }
 
 const LOG_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error'])
+const SESSION_RETENTIONS = new Set(['never', '7d', '2weeks', '1month', '30d', '90d'])
 
 /**
  * Merge a `config/push` payload into the running config — whitelist only, no
@@ -144,6 +145,12 @@ export function mergeConfigPush(cfg: Config, keys: Record<string, unknown>): { a
       case 'limits.agentIdleTimeoutMs':
         if (typeof value === 'number' && Number.isInteger(value)) {
           cfg.limits.agentIdleTimeoutMs = value
+          ok = true
+        }
+        break
+      case 'sessions.retention':
+        if (typeof value === 'string' && SESSION_RETENTIONS.has(value)) {
+          cfg.sessions.retention = value as Config['sessions']['retention']
           ok = true
         }
         break

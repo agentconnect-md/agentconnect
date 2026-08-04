@@ -54,6 +54,7 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     createdByUserId: d.createdByUserId,
     visibility: d.visibility,
     sharedWith: d.sharedWith,
+    sessionRetention: d.sessionRetention,
     lastModifiedAt: d.lastModifiedAt,
     lastModifiedBy: d.lastModifiedBy
       ? { userId: d.lastModifiedBy.id, displayName: d.lastModifiedBy.displayName, email: d.lastModifiedBy.email }
@@ -177,6 +178,17 @@ export class PgDaemonRepo implements DaemonRepo {
     const daemon = await this.db.daemon.update({
       where: { id: daemonId },
       data: { name, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
+      include: withUsers
+    })
+    return toRecord(daemon)
+  }
+
+  async setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonRecord> {
+    // A retention change is a human edit — advance the last-modified audit
+    // (editor stamped when known; absent under devAuth ⇒ leave the prior editor).
+    const daemon = await this.db.daemon.update({
+      where: { id: daemonId },
+      data: { sessionRetention, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
       include: withUsers
     })
     return toRecord(daemon)

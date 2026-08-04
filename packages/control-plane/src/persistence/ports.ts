@@ -169,6 +169,8 @@ export interface DaemonRecord {
   createdByUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[] // complete app_user.id audience when visibility='restricted'
+  /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
+  sessionRetention: string
   lastModifiedAt: Date // last human edit (provision/rename); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
 }
@@ -198,6 +200,9 @@ export interface DaemonRepo {
    *  audit). `byUserId` is the editing WebUI principal (absent under devAuth).
    *  Throws if the daemon row is absent. */
   rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonRecord>
+  /** Set the console's finished-session retention window (a human edit — stamps
+   *  last-modified audit). Throws if the daemon row is absent. */
+  setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonRecord>
   /** Set the visibility + share set (the dedicated `/sharing` write path). Stamps
    *  the last-modified audit; `byUserId` is the editing WebUI principal (absent
    *  under devAuth). Throws if the daemon row is absent. */

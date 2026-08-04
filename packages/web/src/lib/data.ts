@@ -2,7 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { MemoryDreamingConfig } from '@/lib/api'
+import type { DaemonSessionRetention, MemoryDreamingConfig } from '@/lib/api'
 
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
 export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
@@ -1855,6 +1855,9 @@ export interface DaemonRow {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */
   lastModifiedBy: string
   lastModifiedAt: string
+  /** How long the daemon keeps finished sessions before deleting them ("Expire
+   *  sessions"); 'never' disables the retention sweep. */
+  sessionRetention: DaemonSessionRetention
   /** 'org' = visible to all members; 'restricted' = the complete sharedWith audience. */
   visibility: ResourceVisibility
   /** Complete app_user.id audience when restricted. */

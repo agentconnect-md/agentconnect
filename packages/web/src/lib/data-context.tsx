@@ -68,6 +68,8 @@ import {
   type ReconnectConnectorConnectionResult,
   provisionDaemon as apiProvisionDaemon,
   renameDaemon as apiRenameDaemon,
+  updateDaemonSessionRetention as apiUpdateDaemonSessionRetention,
+  type DaemonSessionRetention,
   deleteDaemon as apiDeleteDaemon,
   restartDaemon as apiRestartDaemon,
   upgradeDaemon as apiUpgradeDaemon,
@@ -222,6 +224,8 @@ interface ConsoleData {
   deleteCron: (id: string) => Promise<void>
   provisionDaemon: () => Promise<DaemonConnectDto>
   renameDaemon: (daemonId: string, name: string) => Promise<void>
+  /** Set the daemon's finished-session retention window ("Expire sessions"), then re-pull. */
+  setDaemonSessionRetention: (daemonId: string, retention: DaemonSessionRetention) => Promise<void>
   /** Mint a fresh key for an existing (offline) daemon — the reconnect command. */
   reconnectDaemon: (daemonId: string) => Promise<MintedKeyDto>
   /** Remove an offline daemon from the fleet, then re-pull. */
@@ -1355,6 +1359,15 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateDaemons]
   )
 
+  // Set the finished-session retention window ("Expire sessions"), then re-pull.
+  const setDaemonSessionRetention = useCallback(
+    async (daemonId: string, retention: DaemonSessionRetention) => {
+      await apiUpdateDaemonSessionRetention(daemonId, retention)
+      settleInBackground(mutateDaemons())
+    },
+    [mutateDaemons]
+  )
+
   // Reconnect: mint a new key + start command for an existing daemon. Like
   // provision, the row flips back to `online` via `refresh()` once it re-auths, so
   // the caller polls rather than this refreshing eagerly.
@@ -1468,6 +1481,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       deleteCron,
       provisionDaemon,
       renameDaemon,
+      setDaemonSessionRetention,
       reconnectDaemon,
       deleteDaemon,
       restartDaemon,
@@ -1535,6 +1549,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       deleteCron,
       provisionDaemon,
       renameDaemon,
+      setDaemonSessionRetention,
       reconnectDaemon,
       deleteDaemon,
       restartDaemon,

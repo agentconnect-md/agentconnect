@@ -207,6 +207,10 @@ export const DaemonViewDto = z.object({
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/self-registered
   lastModifiedAt: z.string(), // ISO-8601; last human edit, defaults to createdAt
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for system rows
+  /** Console-set finished-session retention window on the daemon's local store
+   *  ("Expire sessions"): how long finished sessions are kept before the daemon's
+   *  retention sweep deletes them; 'never' disables the sweep. */
+  sessionRetention: z.enum(['never', '7d', '30d', '90d']),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
@@ -218,8 +222,18 @@ export const DaemonViewDto = z.object({
 })
 export const DaemonListDto = z.array(DaemonViewDto)
 
-/** `PATCH /daemons/:id` — assign a human-friendly display name. */
-export const RenameDaemonBody = z.object({ name: z.string().trim().min(1).max(64) })
+/** `PATCH /daemons/:id` — console daemon settings: a human-friendly display name
+ *  and/or the finished-session retention window ("Expire sessions"). */
+export const UpdateDaemonBody = z
+  .object({
+    name: z.string().trim().min(1).max(64).optional(),
+    /** How long the daemon keeps FINISHED sessions in its local store before its
+     *  retention sweep deletes them; 'never' disables the sweep. */
+    sessionRetention: z.enum(['never', '7d', '30d', '90d']).optional()
+  })
+  .refine((b) => b.name !== undefined || b.sessionRetention !== undefined, {
+    message: 'nothing to update'
+  })
 
 /** `POST /daemons/:id/upgrade` — the version the daemon should install + relaunch on. */
 // The version is forwarded to the daemon, which spawns the CLI with it as the

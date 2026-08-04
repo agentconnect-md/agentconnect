@@ -23,6 +23,18 @@ describe('mergeConfigPush', () => {
     expect(r.ignored.sort()).toEqual(['controlPlane.key', 'logging.level'])
   })
 
+  it('applies sessions.retention (the console "Expire sessions" hot update) and rejects bad values', () => {
+    const cfg = baseCfg()
+    const r = mergeConfigPush(cfg, { 'sessions.retention': '90d' })
+    expect(cfg.sessions.retention).toBe('90d')
+    expect(r.applied).toEqual(['sessions.retention'])
+
+    const bad = mergeConfigPush(cfg, { 'sessions.retention': '3d' })
+    expect(cfg.sessions.retention).toBe('90d') // unchanged — not a known window
+    expect(bad.applied).toEqual([])
+    expect(bad.ignored).toEqual(['sessions.retention'])
+  })
+
   it('ignores controlPlane.heartbeatMs (CP-authoritative via auth/ok, not config/push)', () => {
     const cfg = baseCfg()
     const defaultMs = cfg.controlPlane.heartbeatMs

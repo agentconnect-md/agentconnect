@@ -8,6 +8,7 @@ import { daemonCommands } from '@/lib/daemon-commands'
 import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
+import { SessionRetentionField, SESSION_RETENTION_DEFAULT } from '@/components/console/SessionRetentionField'
 
 /** What the CP already gave the provisioned row — skip the /sharing write when the
  *  operator leaves it alone. */
@@ -95,14 +96,16 @@ export default function AddDaemonModal({
   onDone?: () => void
   registerDismiss: (handler: () => void) => () => void
 }) {
-  const { provisionDaemon, daemons, refresh, deleteDaemon, renameDaemon, saveSharing } = useConsoleData()
+  const { provisionDaemon, daemons, refresh, deleteDaemon, renameDaemon, setDaemonSessionRetention, saveSharing } =
+    useConsoleData()
   const { me } = useProfile()
   const [connect, setConnect] = useState<DaemonConnectDto | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState(false)
   // Optional overrides applied on Done: an empty name keeps the daemon's own
-  // reported one, and the default sharing skips the /sharing write entirely.
+  // reported one, and the default sharing/retention skip their writes entirely.
   const [name, setName] = useState('')
+  const [retention, setRetention] = useState(SESSION_RETENTION_DEFAULT)
   const [sharing, setSharing] = useState<SharingValue>(DEFAULT_SHARING)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
@@ -172,6 +175,7 @@ export default function AddDaemonModal({
     try {
       const next = name.trim()
       if (next && next !== row?.name) await renameDaemon(connect.daemonId, next)
+      if (retention !== SESSION_RETENTION_DEFAULT) await setDaemonSessionRetention(connect.daemonId, retention)
       if (!sameSharing(sharing, DEFAULT_SHARING)) await saveSharing('daemons', connect.daemonId, sharing)
       // A dialog dismissed while this was in flight must stay dismissed — closing
       // again is harmless, but chaining into Edit agent would reopen a surface the
@@ -256,6 +260,7 @@ export default function AddDaemonModal({
             }}
           />
         </div>
+        <SessionRetentionField value={retention} onChange={setRetention} />
         <VisibilityField value={sharing} onChange={setSharing} />
         {saveErr && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">

@@ -96,6 +96,8 @@ describe('ws gateway — real socket handshake over agentconnect.v1', () => {
       expect(regOk.corr).toBe(regId)
       expect(regOk.payload.assignments).toEqual([])
       expect(regOk.payload.drop).toEqual({ assignments: [], crons: [], agents: [], integrations: [] })
+      // The console-set finished-session retention rides the snapshot (column default).
+      expect(regOk.payload.sessionRetention).toBe('7d')
 
       // The daemon row was persisted at READY with the registered capabilities.
       const row = await prisma.daemon.findUnique({ where: { id: DAEMON } })

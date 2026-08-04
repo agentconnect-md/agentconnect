@@ -980,6 +980,9 @@ export interface DaemonViewDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
+  /** How long the daemon keeps FINISHED sessions in its local store before its
+   *  retention sweep deletes them ("Expire sessions"); 'never' disables the sweep. */
+  sessionRetention: DaemonSessionRetention
   visibility: ResourceVisibility
   sharedWith: string[]
   canEdit: boolean
@@ -987,6 +990,9 @@ export interface DaemonViewDto {
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
 }
+
+/** The console-settable "Expire sessions" windows (PATCH /daemons/:id). */
+export type DaemonSessionRetention = 'never' | '7d' | '30d' | '90d'
 
 /** A CP-commanded daemon restart/upgrade (cli-daemon-split.md §7). Returned by the
  *  upgrade/restart POSTs and embedded in each daemon's read model as its latest op. */
@@ -1950,6 +1956,7 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     createdAt: fmtDate(d.createdAt),
     lastModifiedBy: d.lastModifiedBy ?? '', // editor userId; creatorLabel resolves it to a name / "You" at render
     lastModifiedAt: fmtDate(d.lastModifiedAt),
+    sessionRetention: d.sessionRetention ?? '7d', // absent from an older CP ⇒ the daemon-side default
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     canEdit: d.canEdit,
@@ -2950,6 +2957,17 @@ export async function fetchDaemons(orgId?: string): Promise<DaemonRow[]> {
 // Assign a human-friendly display name to a connected daemon.
 export async function renameDaemon(daemonId: string, name: string): Promise<DaemonRow> {
   return daemonFromDto(await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { name }))
+}
+
+// Set how long the daemon keeps finished sessions before deleting them ("Expire
+// sessions"). The CP hot-pushes the window to a connected daemon.
+export async function updateDaemonSessionRetention(
+  daemonId: string,
+  sessionRetention: DaemonSessionRetention
+): Promise<DaemonRow> {
+  return daemonFromDto(
+    await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { sessionRetention })
+  )
 }
 
 // Set a daemon's visibility + share set (PUT /daemons/:id/sharing).

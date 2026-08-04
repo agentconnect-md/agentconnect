@@ -325,6 +325,13 @@ model Daemon {
   visibility ResourceVisibility @default(org) // 'org' = all members; 'restricted' = the complete sharedWith audience
   sharedWith String[]           @default([]) // complete app_user.id audience when visibility='restricted'
 
+  // ── console-set daemon settings ──
+  // Retention window for FINISHED sessions on the daemon's LOCAL store (the console's
+  // "Expire sessions" option): 'never' | '7d' | '30d' | '90d'. The CP only stores and
+  // delivers it (register/ok baseline + config/push hot update); the daemon's hourly
+  // retention sweep is what actually deletes expired sessions.
+  sessionRetention String @default("7d")
+
   // ── fencing root ──
   sessionEpoch BigInt @default(0) @db.BigInt // bumped each successful (re)auth
   routingEpoch BigInt @default(0) @db.BigInt // version of THIS daemon's assignment set

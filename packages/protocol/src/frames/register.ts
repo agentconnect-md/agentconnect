@@ -87,6 +87,15 @@ export const RelayRosterUpdate = z.object({
 })
 export type RelayRosterUpdate = z.infer<typeof RelayRosterUpdate>
 
+/**
+ * Console-set retention window for FINISHED sessions on the daemon's LOCAL
+ * store (the daemon settings' "Expire sessions" option). CP-durable; the
+ * register/ok snapshot is the reconnect baseline and a `config/push` with
+ * `sessions.retention` is the hot update.
+ */
+export const SessionRetentionSetting = z.enum(['never', '7d', '30d', '90d'])
+export type SessionRetentionSetting = z.infer<typeof SessionRetentionSetting>
+
 export const RegisterOk = z.object({
   routingEpoch: z.number().int(), // version of the routing table this snapshot reflects
   // CP protocol capabilities. Default keeps a new daemon compatible with an
@@ -95,6 +104,9 @@ export const RegisterOk = z.object({
   // Public attribution for github-app workspace commits. Derived from this
   // deployment's App slug; optional so new daemons still accept an older CP.
   gitCommitIdentity: GitCommitIdentity.optional(),
+  // Console-set finished-session retention for this daemon's local store —
+  // optional so new daemons still accept an older CP (absent ⇒ keep local config).
+  sessionRetention: SessionRetentionSetting.optional(),
   // Authoritative reconcile snapshot — daemon converges its local cache to this:
   assignments: z.array(RouteAssign), // the route/assign set the daemon SHOULD own
   agents: z.array(AgentSpec.extend({ agentId: z.string().uuid() })).default([]), // spec set CP wants present; daemon converges
