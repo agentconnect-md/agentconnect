@@ -792,7 +792,7 @@ export const TelegramBotCheckDto = z.object({
  *  `off` = conversation gating (resource-visibility.md §14): the agent does not
  *  activate there — the default for every conversation of a restricted agent.
  *  `kind: 'im'` rows are DM conversations and `kind: 'mpim'` rows are Slack group
- *  DMs (both gated integrations only — neither is ever enumerated). */
+ *  DMs. Both are observed rather than enumerated, for every agent visibility. */
 export const IntegrationChannelDto = z.object({
   channelId: z.string(),
   name: z.string().nullable(), // "#deploys" without the hash (or DM counterpart); null if lookup failed

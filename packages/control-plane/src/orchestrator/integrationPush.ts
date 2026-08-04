@@ -34,6 +34,7 @@ export async function convergeIntegrationGating(
   log?: { warn(obj: unknown, msg?: string): void }
 ): Promise<void> {
   const integrations = await deps.repos.integration.listForAgent(AgentId(agent.id))
+  const gated = isGatedAgent(agent)
   const syncedBots = new Set<string>()
   for (const i of integrations) {
     try {
@@ -51,7 +52,7 @@ export async function convergeIntegrationGating(
         deps.repos.integrationChannel.listForIntegration(i.id)
       ])
       if (!secret) continue
-      await deps.control.integrationUpsert(agent.daemonId, integrationToSpec(i, secret, channels, isGatedAgent(agent)))
+      await deps.control.integrationUpsert(agent.daemonId, integrationToSpec(i, secret, channels, gated))
     } catch (err) {
       if (err instanceof NoConnection) continue // offline daemon → reconcile roster carries it
       log?.warn({ integrationId: i.id, err: (err as Error).message }, 'gating converge: integration push failed')

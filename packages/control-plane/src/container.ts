@@ -1348,8 +1348,8 @@ export function buildContainer(
         http.log.error({ err, botId: m.botId }, 'relay: notice-posted record failed')
       }
     },
-    // Incremental DM-conversation report (§14.3): surface a kind:'im' row (Off) on
-    // the bot's gated installs so console editors can enable the DM. Swallow+log.
+    // Incremental direct-conversation report: surface a configurable row on every
+    // install, with its visibility-appropriate default. Swallow+log.
     onBotConversation: async (m) => {
       try {
         await httpBot.reportConversation(m.botId, m.conversation)

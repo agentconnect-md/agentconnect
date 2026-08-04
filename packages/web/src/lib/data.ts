@@ -1693,8 +1693,7 @@ export interface IntegrationChannelRow {
    *  implicit container per bot, on DM rows, and until the daemon resolves them. */
   spaceId?: string
   space?: string
-  /** 'im' = a DM conversation row, 'mpim' = a Slack group DM (both gated/restricted
-   *  agents only); absent = channel. */
+  /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
   trigger: 'off' | 'mention' | 'any'
   /** Effective per-channel owner for a shared bot. */

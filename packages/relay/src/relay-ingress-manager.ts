@@ -86,7 +86,7 @@ export interface RelayIngressManagerDeps {
   /** Report the authoritative HTTP Slack channel-membership snapshot to the CP.
    *  Returns false when the CP link is down so the latest snapshot can be retried. */
   reportBotChannels: (m: RcBotChannels) => boolean
-  /** Report one gated-DM conversation to the CP (§14.3, → `rc/bot-conversation`).
+  /** Report one observed direct conversation to the CP (→ `rc/bot-conversation`).
    *  Best-effort: loss self-heals on the counterpart's next DM. */
   reportBotConversation: (m: RcBotConversation) => boolean
   /** Report one DELIVERED §14.3 DM gating notice (→ `rc/notice-posted`) so the CP
@@ -247,14 +247,15 @@ export class RelayIngressManager {
   /** §14 one-time gating-notice latch (`botId:channel`) on the AUTHORITY pod —
    *  correct because only one pod ever posts (deterministic per-bot authority). */
   private readonly gatedNoticesSent = new Set<string>()
-  /** §14.3 per-conversation DM-report latch (`botId:channel`) — scoped to the
-   *  CURRENT bot assignment: cleared on assign/unassign and whenever the gated
-   *  member set changes, since rows belong to the installs of that moment. */
-  private readonly gatedDmReported = new Set<string>()
+  /** Per-conversation direct-report latch (`botId:channel`) — scoped to the CURRENT
+   *  bot assignment. Rows belong to the installs of that moment. */
+  private readonly observedConversationsReported = new Set<string>()
 
-  private clearGatedDmLatches(botId: string): void {
+  private clearConversationReportLatches(botId: string): void {
     const prefix = `${botId}:`
-    for (const k of [...this.gatedDmReported]) if (k.startsWith(prefix)) this.gatedDmReported.delete(k)
+    for (const k of [...this.observedConversationsReported]) {
+      if (k.startsWith(prefix)) this.observedConversationsReported.delete(k)
+    }
   }
 
   constructor(private readonly deps: RelayIngressManagerDeps) {}
@@ -355,9 +356,9 @@ export class RelayIngressManager {
 
   /** `rc/bot-assign` — (re)load the routing table + (re)build the bot's HTTP ingest. */
   async assign(a: BotAssignment): Promise<void> {
-    // A full (re)assignment can mean new installs / a changed gated set — stale
-    // DM-report latches would starve a later gated install of its pending row.
-    this.clearGatedDmLatches(a.botId)
+    // A full (re)assignment can mean new installs. Stale report latches would starve
+    // a later install of its own configurable direct row.
+    this.clearConversationReportLatches(a.botId)
     this.router.upsert(a)
     // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
     await this.stopIngest(a.botId)
@@ -400,11 +401,12 @@ export class RelayIngressManager {
       | 'noticedDmConversations'
     >
   ): void {
-    // A changed gated member set may require a fresh DM fan-out (§14.3) — e.g. a
-    // newly restricted or newly installed member needs its own pending Off row.
-    const prev = this.router.get(botId)?.gatedAgentIds ?? []
-    const next = patch.gatedAgentIds ?? []
-    if (prev.length !== next.length || !prev.every((id) => next.includes(id))) this.clearGatedDmLatches(botId)
+    // A changed install set needs a fresh fan-out so every member gets the row.
+    const prev = (this.router.get(botId)?.agents ?? []).map((agent) => agent.integrationId ?? agent.agentId).sort()
+    const next = (patch.agents ?? []).map((agent) => agent.integrationId ?? agent.agentId).sort()
+    if (prev.length !== next.length || !prev.every((id, index) => id === next[index])) {
+      this.clearConversationReportLatches(botId)
+    }
     this.router.updateRoutes(botId, patch)
   }
 
@@ -421,7 +423,7 @@ export class RelayIngressManager {
       this.deps.log.warn(`relay-ingress(${botId}): ignoring stale unassign (rev ${credentialRevision} < held ${held})`)
       return
     }
-    this.clearGatedDmLatches(botId)
+    this.clearConversationReportLatches(botId)
     this.slackDemux.forget(botId)
     this.feishuDemux.forget(botId)
     this.router.remove(botId)
@@ -723,16 +725,15 @@ export class RelayIngressManager {
     const sessionKey = sessionKeyOf(msg)
     const assignment = this.router.get(botId)
     const hasGatedMembers = (assignment?.gatedAgentIds?.length ?? 0) > 0
-    // §14.3 DM discovery must NOT depend on the arbitration outcome: on a
-    // mixed-visibility bot the public default agent wins every unslugged DM, yet
-    // the gated installs still need their pending Off row to ever be enableable.
+    // Direct-conversation discovery must NOT depend on arbitration: every install
+    // needs its own visible trigger row, whether the message routes or not.
     // A group DM is discovered the same way — Slack never lists one as membership, so
     // an unreported one could never be enabled. It is only ever *addressed* by mention,
     // so unlike a DM it is reported only when it names THIS bot: `mentionedBots` also
     // holds the humans and other apps named in the same message.
     const namesThisBot = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
     const addressesBot = msg.isDm || (msg.isGroupDm === true && namesThisBot)
-    if (addressesBot && !msg.sender.isBot && hasGatedMembers) await this.reportGatedConversation(botId, msg)
+    if (addressesBot && !msg.sender.isBot) await this.reportObservedConversation(botId, msg)
     const prior = this.router.peekAffinity(botId, sessionKey)
     let tgt = this.router.route(botId, msg)
     if (tgt) {
@@ -748,8 +749,8 @@ export class RelayIngressManager {
       // Conversation gating (resource-visibility §14.3): an explicitly-addressed
       // message (DM, or @bot mention) that arbitration could not place, on a bot
       // that backs ≥1 gated agent, must not look silently dead — answer once per
-      // conversation (the DM row itself was already reported above, un-gated on
-      // the routing outcome).
+      // conversation (the DM row itself was already reported above, independently
+      // of the routing outcome).
       //
       // Every Off channel arrives here unroutable, and the two kinds answer
       // differently. A channel an OPERATOR silenced says nothing: they already
@@ -824,17 +825,17 @@ export class RelayIngressManager {
   }
 
   /**
-   * §14.3: surface one human direct conversation to the CP as an incremental
-   * `kind:'im'` / `kind:'mpim'` report (fanned to gated installs as pending Off rows —
-   * the console enablement path). Fires for EVERY human DM on a bot with gated members,
-   * routed or not, and for an addressed group DM; latched per conversation per relay
+   * Surface one human direct conversation to the CP as an incremental
+   * `kind:'im'` / `kind:'mpim'` report, fanned to every install with its visibility-
+   * appropriate default. Fires for every human DM, routed or not, and for an addressed
+   * group DM; latched per conversation per relay
    * lifetime (the CP upsert is idempotent, this only bounds chatter — a relay restart
    * re-reports harmlessly). Channel rows need no report here — membership snapshots
    * already carry them, and neither of these kinds appears in one.
    */
-  private async reportGatedConversation(botId: string, msg: WireNormalizedMessage): Promise<void> {
+  private async reportObservedConversation(botId: string, msg: WireNormalizedMessage): Promise<void> {
     const latch = `${botId}:${msg.channel}`
-    if (this.gatedDmReported.has(latch)) return
+    if (this.observedConversationsReported.has(latch)) return
     // A group DM's counterpart is the room, not the sender, so it carries no name here.
     const name = msg.isDm ? await this.ingestFor(botId)?.egress?.lookupUserName(msg.sender.id) : undefined
     const sent = this.deps.reportBotConversation({
@@ -842,7 +843,7 @@ export class RelayIngressManager {
       conversation: { id: msg.channel, ...(name ? { name } : {}), kind: msg.isDm ? 'im' : 'mpim' }
     })
     // Latch only a delivered report — a CP-link-down drop retries on the next DM.
-    if (sent) this.gatedDmReported.add(latch)
+    if (sent) this.observedConversationsReported.add(latch)
   }
 
   /** §14.3: the ONE-TIME per-conversation notice for an explicitly-addressed,

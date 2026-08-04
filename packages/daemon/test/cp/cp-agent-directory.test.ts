@@ -176,10 +176,9 @@ describe('CpCollabRoutes: org-scoped directory', () => {
     // The over-block guard. A DM or group DM is an ORDINARY channel row wherever one exists —
     // `IntegrationChannel.kind` is `channel | im | mpim` and `channelPlacements` selects with
     // no `kind` filter — so branch 1 covers it and fail-closed does not strand a caller whose
-    // session lives in a recorded DM. (Such a row is only written for a GATED integration's
-    // not-yet-enabled conversations; an ungated integration's DM has none and takes branch 2,
-    // which is what the channel-membership check this replaced did too — §2.7 item 5.) This
-    // case therefore only goes red if that premise breaks, which is exactly what it guards.
+    // session lives in a recorded DM. Every visibility reports the row after observation; a
+    // wake racing ahead of that still takes branch 2. This case therefore only goes red if
+    // the recorded-row premise breaks, which is exactly what it guards.
     const r = new CpCollabRoutes()
     r.replace({
       generation: 1,

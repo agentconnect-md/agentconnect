@@ -107,7 +107,25 @@ function tg(id: number, over: Partial<NormalizedMessage> = {}): NormalizedMessag
 
 const owner = (daemon: Daemon) => (c: string, t: string) => (daemon as any).sessions.threadOwner(c, t)
 
-describe('gated Telegram conversation discovery', () => {
+describe('Telegram conversation discovery', () => {
+  it('reports a public DM as a configurable direct row', async () => {
+    const daemon = new Daemon({ root: scaffold() })
+    await daemon.start()
+    makeTelegramRoutable(daemon)
+    vi.spyOn(daemon as any, 'dispatch').mockResolvedValue('acp')
+    const emitIntegrationChannels = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels, stop: vi.fn().mockResolvedValue(undefined) }
+
+    ;(daemon as any).onInbound(tg(91, { channel: '424242', isDm: true }), ['i-tg'])
+
+    expect(emitIntegrationChannels).toHaveBeenCalledWith({
+      integrationId: 'i-tg',
+      channels: [{ id: '424242', kind: 'im' }],
+      authoritative: false
+    })
+    await daemon.stop()
+  })
+
   it('reports an explicitly mentioned Off group before routing drops the message', async () => {
     const daemon = new Daemon({ root: scaffold() })
     await daemon.start()

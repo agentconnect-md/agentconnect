@@ -268,7 +268,7 @@ export class RelayCpClient {
     return true
   }
 
-  /** Emit one incremental gated-DM conversation report (§14.3). Best-effort: a drop
+  /** Emit one incremental direct-conversation report. Best-effort: a drop
    *  self-heals on the counterpart's next DM, so there is no pending-retry queue. */
   emitBotConversation(m: RcBotConversation): boolean {
     if (this.state !== 'READY' || !this.transport) {

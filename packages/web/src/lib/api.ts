@@ -772,8 +772,8 @@ export interface SlackConfigInput {
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
 // One conversation the integration's bot is in (daemon-reported) + its trigger
-// choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs
-// (both gated/restricted agents only — neither is enumerable).
+// choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs;
+// both are observed rather than enumerable and appear for every agent visibility.
 export interface IntegrationChannelDto {
   channelId: string
   name: string | null // "deploys" without the hash (or DM counterpart); null if lookup failed

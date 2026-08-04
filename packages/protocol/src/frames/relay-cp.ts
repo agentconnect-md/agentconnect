@@ -772,10 +772,9 @@ export const RcBotRevokedOk = z.object({
 export type RcBotRevokedOk = z.infer<typeof RcBotRevokedOk>
 
 // R→C EVT (fire-and-forget) — INCREMENTAL conversation report (resource-visibility
-// §14.3): the relay saw an inbound DM to a shared bot that backs ≥1 gated
-// (restricted-visibility) agent and arbitration found no route. The CP fans a
-// `kind:'im'` row (default Off) across the bot's GATED installs so console editors
-// can enable it. Incremental on purpose — unlike `rc/bot-channels` this must never
+// §14.3): the relay saw an inbound direct conversation to a shared bot. The CP fans
+// a per-install row across every member, using each agent's visibility-appropriate
+// default. Incremental on purpose — unlike `rc/bot-channels` this must never
 // carry full-set semantics (DM rows are never dropped by snapshots). Conversation
 // id/name are control metadata; no message content crosses this wire. Loss is
 // self-healing: the counterpart's next DM re-reports.

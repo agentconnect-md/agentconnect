@@ -10,9 +10,8 @@ import type { AgentIcon } from '@/lib/agent-icon'
 
 /** The per-conversation trigger toggle: a ⚡ marker followed by the segmented
  *  bar. Channels: "off" / "any message" / "@-mention" (the default, so it sits
- *  last). DM rows are binary off/on, and only a gated (restricted-agent)
- *  integration has any — resource-visibility.md §14. Every segment carries
- *  hover copy. */
+ *  last). DM rows are binary off/on for every agent — resource-visibility.md
+ *  §14. Every segment carries hover copy. */
 function TriggerToggle({
   channel,
   platform,
@@ -584,7 +583,7 @@ function DefaultAgentPicker({
 
 /**
  * The conversation rows of one integration — one row per channel the bot is in
- * (plus, on a gated/restricted agent, one row per reported DM conversation), each
+ * (plus one row per reported direct conversation), each
  * with its trigger toggle (and, for a SHARED bot, the per-channel default-dispatch
  * popover ahead of it), closed by the "invite the bot" hint. Render inside a
  * padding-less card whose header row sits above. Demo rows (no `integrationId`)
@@ -612,7 +611,7 @@ export function IntegrationChannelList({
   /** When true (shared bot), show the per-channel default-agent picker. */
   shareable?: boolean
   /** Restricted-agent integration (resource-visibility.md §14): conversations are
-   *  gated — new ones start off, DM rows appear, the banner explains the gate. */
+   *  gated — new ones start off and the banner explains the gate. */
   gated?: boolean
   /** Horizontal row padding, to line up with the host card (18 list / 14 detail). */
   padX?: number
@@ -649,12 +648,9 @@ export function IntegrationChannelList({
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
   }
   const channelRows = channels.filter((c) => !isDirectConversation(c.kind))
-  // A direct conversation is not a place the bot can be invited to and has no
-  // per-conversation choice to make unless the agent is gated (resource-visibility.md
-  // §14.3) — a non-gated bot always answers its DMs, and answers a group DM whenever
-  // it is @-mentioned. The daemon still REPORTS them (that is how a conversation
-  // previously mistaken for a channel converts), so hide them here, not at the source.
-  const dmRows = gated ? channels.filter((c) => isDirectConversation(c.kind)) : []
+  // Direct conversations are independently configurable for every agent. A 1:1 DM
+  // gets the binary Off/On control above; a group DM keeps the channel-style trigger.
+  const dmRows = channels.filter((c) => isDirectConversation(c.kind))
   const grouped = groupBySpace(channelRows)
   /**
    * Leaving, for a platform that has no per-conversation membership to leave. A
@@ -784,7 +780,7 @@ export function IntegrationChannelList({
               menu's own items: those explain themselves on screen, and repeating them
               here in different words was most of what made this card read oddly. */}
           {`A ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per ${roomNoun(platform)}.`}
-          {gated && ' Direct messages appear when someone writes to the bot.'}
+          {' Direct messages appear when someone writes to the bot.'}
           {shareable && ' Default dispatch is the agent who handles unmatched messages.'}
           {platform === 'discord' && ' A Discord bot joins servers, not channels, so it can only leave a whole server.'}
           {platform === 'slack' && ' To remove the bot from a channel, do it in Slack — this list updates by itself.'}

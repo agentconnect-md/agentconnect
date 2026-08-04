@@ -623,18 +623,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
 
   // Converge to a daemon channel report: refresh supplied metadata on known
   // conversations (PRESERVING the operator's trigger), insert new ones (trigger =
-  // `defaultTrigger`, 'mention' unless the integration is gated), and, for an
+  // `defaultTrigger`, otherwise On for a 1:1 DM and Mention for a room), and, for an
   // authoritative membership snapshot, drop channel rows that are no longer present.
   // DM rows and rows omitted from a non-authoritative observed-conversation report
   // are retained.
-  //
-  // A DM row is the one exception to `defaultTrigger`, and it is a SECURITY boundary
-  // (resource-visibility.md §14.3). Discovery reports DMs whether or not the owning
-  // agent is gated today, and visibility can flip to restricted later — at which point
-  // `gatedBindRules` enables every non-Off IM row. Storing a discovered DM with the
-  // ordinary 'mention' default would therefore let a newly-private agent keep answering
-  // a DM that no operator ever enabled. Created DM rows, and channel rows converting to
-  // DM, are pinned Off; an operator's later choice is untouched.
   //
   // The channel→DM transition is decided INSIDE the write, off the row's committed kind,
   // never off a prior read. Channel reports are fire-and-forget and their handlers run
@@ -666,12 +658,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       // downgrade an established 'im' row.
       const setName = authoritative || c.name !== undefined
       const setPrivate = authoritative || c.isPrivate !== undefined
-      // Direct conversations (a DM, or a Slack group DM) are only ever reported by
-      // observation, never enumerated — so they are pinned Off on creation and on
-      // conversion for the same fail-closed reason, and an authoritative channel
-      // snapshot (which cannot contain them) must not delete them.
+      // Direct conversations are observed rather than enumerated. Restricted installs
+      // pass `defaultTrigger:'off'`; Everyone installs default a 1:1 DM On and a group
+      // DM to Mention. An authoritative channel snapshot cannot delete either kind.
       const direct = c.kind === 'im' || c.kind === 'mpim'
-      const createTrigger = direct ? 'off' : (opts?.defaultTrigger ?? 'mention')
+      const createTrigger: ChannelTrigger = opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "isPrivate", "kind", "trigger",
@@ -705,14 +696,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
               THEN EXCLUDED."kind"
             ELSE "integration_channel"."kind"
           END,
-          -- The fail-closed conversion, resolved against the COMMITTED kind: a row that
-          -- was a channel carried a channel's trigger, which is not an operator's choice
-          -- for a direct conversation. A row already of the reported kind keeps whatever
-          -- the operator set. (Slack classifies a group DM late — an app_mention payload
-          -- carries no channel_type — so channel to mpim is a real transition, not a race.)
+          -- Resolve a late channel→direct classification against the COMMITTED kind.
+          -- The row receives this installation's direct-conversation default; a row
+          -- already of the reported kind keeps whatever the operator set.
           "trigger" = CASE
             WHEN ${direct}::boolean AND "integration_channel"."kind" <> EXCLUDED."kind"
-              THEN 'off'::"ChannelTrigger"
+              THEN ${createTrigger}::"ChannelTrigger"
             ELSE "integration_channel"."trigger"
           END,
           "updatedAt" = NOW()
@@ -747,14 +736,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         space: conversation.space ?? null,
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
-        // Same fail-closed rule as replaceSnapshot: a created direct-conversation row
-        // (DM or group DM) starts Off however it was discovered, so a later flip to
-        // restricted cannot grandfather it in.
-        ...(conversation.kind === 'im' || conversation.kind === 'mpim'
-          ? { trigger: 'off' as const }
-          : opts?.defaultTrigger
-            ? { trigger: opts.defaultTrigger }
-            : {}),
+        // Restricted installs supply Off. Otherwise 1:1 DMs start On and rooms use
+        // Mention, matching replaceSnapshot and the controls shown in the Console.
+        trigger: opts?.defaultTrigger ?? (conversation.kind === 'im' ? 'any' : 'mention'),
         ...(opts?.agentId !== undefined ? { agentId: opts.agentId } : {})
       },
       // Refresh only a KNOWN name — a nameless re-report must not clobber a
@@ -762,7 +746,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       update: {
         ...(conversation.name ? { name: conversation.name } : {}),
         ...(conversation.spaceId ? { spaceId: conversation.spaceId } : {}),
-        ...(conversation.space ? { space: conversation.space } : {})
+        ...(conversation.space ? { space: conversation.space } : {}),
+        ...(opts?.agentId !== undefined ? { agentId: opts.agentId } : {})
       }
     })
     return toChannelRecord(row)

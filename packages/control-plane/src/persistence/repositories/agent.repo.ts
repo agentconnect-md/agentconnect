@@ -731,7 +731,7 @@ export class PgAgentRepo implements AgentRepo {
     return this.transaction(async (tx) => {
       const existing = await tx.agent.findUniqueOrThrow({
         where: { id: agentId },
-        select: { orgId: true }
+        select: { orgId: true, visibility: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
@@ -739,6 +739,22 @@ export class PgAgentRepo implements AgentRepo {
         actorUserId: byUserId,
         sharedWith: sharing.sharedWith
       })
+      // Everyone DMs may be On. Crossing into Restricted is a trust-boundary
+      // change, so close every known direct row in the SAME transaction as the
+      // visibility write. A persistence failure rolls the whole transition back;
+      // route/spec convergence can never compile a restricted agent from
+      // still-enabled rows. Do not repeat this for restricted share-set edits — an
+      // editor may have deliberately re-enabled a DM after the initial transition.
+      if (existing.visibility !== 'restricted' && sharing.visibility === 'restricted') {
+        await tx.integrationChannel.updateMany({
+          where: {
+            integration: { agentId },
+            kind: { in: ['im', 'mpim'] },
+            trigger: { not: 'off' }
+          },
+          data: { trigger: 'off' }
+        })
+      }
       // A sharing change is a human edit — advance the last-modified audit
       // (editor stamped when known; absent under devAuth ⇒ leave it unchanged).
       const a = await tx.agent.update({

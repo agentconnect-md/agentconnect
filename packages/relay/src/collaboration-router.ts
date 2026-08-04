@@ -170,15 +170,12 @@ export class CollaborationRouter {
    *     snapshot lag can therefore transiently reject a genuine wake — the correct
    *     direction for a security boundary, and the caller retries.
    *     ACCEPTED RECALL LOSS (agent-collaboration §2.5 "what the fail-closed branch actually
-   *     covers", §2.7 item 5): a direct-conversation row is only WRITTEN where something
-   *     observed it — Slack's authoritative membership snapshot enumerates
-   *     `public_channel,private_channel` only, and the two paths that DO emit `im`/`mpim`
-   *     (the daemon's `reportGatedConversation` and the CP's shared-bot
-   *     `reportConversation`) both fire only for a GATED integration/install's
-   *     not-yet-enabled conversations — so an ordinary integration's DM has no row and a
-   *     wake asserting it is refused here.
-   *     Deliberate, and not a regression: the `hasMembers(caller, target)` check this
-   *     replaced refused the identical wake.
+   *     covers", §2.7 item 5): a direct-conversation row is written only after something
+   *     observes it. The daemon and shared-bot report paths now emit rows for every
+   *     visibility, so an ordinary DM becomes known after its first inbound message; a
+   *     wake that races ahead of observation is still refused here. Deliberate, and not a
+   *     regression: the `hasMembers(caller, target)` check this replaced refused the
+   *     identical wake.
    *
    * (3) UNKNOWN and channel-free (exactly the session-identity platforms: `webchat`, and
    *     — since the S1a fleet gate passed — a `hook`/`dream` session's raw platform on a

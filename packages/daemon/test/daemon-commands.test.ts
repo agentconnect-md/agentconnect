@@ -370,7 +370,7 @@ describe('Daemon in-conversation commands', () => {
     const notice = vi.fn()
     const dispatch = vi.fn(async () => {})
     ;(daemon as any).agents.set('bot-a', {})
-    ;(daemon as any).discoverGatedConversations = discover
+    ;(daemon as any).discoverConversations = discover
     ;(daemon as any).gatedAdmission = () => false
     ;(daemon as any).maybeGatedNotice = notice
     ;(daemon as any).dispatch = dispatch

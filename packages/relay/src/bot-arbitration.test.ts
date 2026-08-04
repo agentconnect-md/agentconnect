@@ -139,11 +139,10 @@ describe('HTTP-bot arbitration (§10)', () => {
       expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
     })
 
-    it('a conversation-scoped keyword (DM slug) outranks the scoped auto route', () => {
+    it('a public DM slug selects a non-first agent before the scoped auto route', () => {
       const a = assignment()
-      a.gatedAgentIds = [ALICE, BOB]
       a.routes = [
-        // Both gated agents enabled the same DM: one auto + one slug route each.
+        // Both public agents enabled the same DM: one auto + one slug route each.
         { agentId: ALICE, daemonId: D1, integrationId: 'iA', scope: { channel: 'D9' }, match: { kind: 'auto' } },
         {
           agentId: ALICE,
@@ -165,6 +164,15 @@ describe('HTTP-bot arbitration (§10)', () => {
       expect(slugged).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
       const bare = arbitrate(a, msg({ channel: 'D9', isDm: true, text: 'hello' }), empty())
       expect(bare).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+    })
+
+    it('refuses public DM continuity after that agent loses its scoped route', () => {
+      const a = assignment()
+      a.routes = []
+      a.defaultAgentId = undefined
+      a.defaultDaemonId = undefined
+      const aff = new Map<string, RouteTarget>([['D9/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
+      expect(arbitrate(a, msg({ channel: 'D9', thread: 'ts1', isDm: true, text: 'continue' }), aff)).toBeNull()
     })
 
     it('thread continuity to a NON-gated agent is unaffected by gatedAgentIds on others', () => {

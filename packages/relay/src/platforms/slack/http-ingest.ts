@@ -361,7 +361,7 @@ export class SlackHttpIngest {
   private slackBotId = ''
   private channelRefresh?: Promise<void>
   private channelRefreshQueued = false
-  /** users.info label cache for gated-DM counterpart names (null = lookup failed). */
+  /** users.info label cache for DM counterpart names (null = lookup failed). */
   private readonly userNames = new Map<string, string | null>()
 
   constructor(
@@ -397,7 +397,7 @@ export class SlackHttpIngest {
     })
   }
 
-  /** Cached best-effort users.info lookup → "@Display Name" label for a gated-DM
+  /** Cached best-effort users.info lookup → "@Display Name" label for a DM
    *  conversation row. Undefined when the lookup fails (the row lands nameless). */
   async lookupUserName(userId: string): Promise<string | undefined> {
     if (this.userNames.has(userId)) return this.userNames.get(userId) ?? undefined

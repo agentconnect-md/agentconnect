@@ -61,7 +61,6 @@ import type {
   ExternalMemoryGrantRepo,
   MemoryPluginInstallationRepo
 } from '../persistence/ports.js'
-import { isDirectConversationKind } from '../persistence/ports.js'
 import { telegramIntegrationConfig } from '../platforms/telegram/provider.js'
 import { discordIntegrationConfig } from '../platforms/discord/provider.js'
 import { slackIntegrationConfig, slackSharedIntegrationConfig } from '../platforms/slack/provider.js'
@@ -201,7 +200,7 @@ function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRu
 }
 
 /**
- * The Off channels of an UNGATED integration — its `mutedChannels` fence.
+ * The Off conversations of an UNGATED integration — its `mutedChannels` fence.
  *
  * An ungated integration reaches every conversation through unscoped defaults
  * (@-mention anywhere + DMs), which no channel-scoped rule can subtract from, so Off
@@ -210,13 +209,12 @@ function gatedBindRules(channels: IntegrationChannelRecord[]): IntegrationBindRu
  * naming the channel here would only give the same fact two representations that can
  * disagree — hence the empty list.
  *
- * DIRECT rows never mute. A preserved one is inert on an ungated integration (§14.4 —
- * the console hides it), and a gated integration expresses its Off DMs the same way it
- * expresses every other Off conversation.
+ * Direct rows use the same fence: their Off/On control is visible and effective for
+ * every agent. A gated integration still expresses Off by omitting its scoped rule.
  */
 function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): string[] {
   if (gated) return []
-  return channels.filter((c) => c.trigger === 'off' && !isDirectConversationKind(c.kind)).map((c) => c.channelId)
+  return channels.filter((c) => c.trigger === 'off').map((c) => c.channelId)
 }
 
 /**
@@ -238,13 +236,10 @@ export function integrationToSpec(
   channels: IntegrationChannelRecord[] = [],
   gated = false
 ): IntegrationSpec {
-  // A preserved DIRECT row (§14.4) is inert here. Its "any message" was an editor's
-  // choice while the agent was restricted, and the console hides the row once it is
-  // not — honouring it would leave an org-visible agent answering every message in a
-  // conversation with no visible control to turn it off. Such an agent reaches its DMs
-  // through the unscoped dm default and a group DM through the unscoped mention default.
+  // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
+  // set to Any needs its own auto rule; Mention is covered by the default mention rule.
   const channelRules: IntegrationBindRule[] = channels
-    .filter((c) => c.trigger === 'any' && !isDirectConversationKind(c.kind))
+    .filter((c) => c.trigger === 'any' && c.kind !== 'im')
     .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
   const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
   const mutedChannels = mutedChannelIds(channels, gated)

@@ -221,7 +221,10 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
             agentId: opts?.agentId ?? null
           })
           channels.push(row)
-        } else if (conversation.name) row.name = conversation.name
+        } else {
+          if (conversation.name) row.name = conversation.name
+          if (opts?.agentId !== undefined) row.agentId = opts.agentId
+        }
         return row
       },
       upsertAgent: async (integrationId, channelId, agentId, opts) => {
@@ -560,24 +563,29 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(bobRow?.trigger).toBe('off')
     })
 
-    it('reportConversation fans a kind:im row (Off, agent-owned) to GATED installs only, idempotently', async () => {
+    it('reportConversation fans an owned DM row to every install with visibility-aware defaults', async () => {
       gatedAgents = new Set([ALICE])
       channels = []
       const orch = makeOrch()
       await orch.reportConversation(BOT, { id: 'D42', name: '@Alice' })
       const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'D42')
+      const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'D42')
       expect(aliceRow).toMatchObject({ kind: 'im', trigger: 'off', agentId: ALICE, name: '@Alice' })
-      // BOB is org-visible — his DMs already route via defaultAgentId; no row.
-      expect(channels.some((c) => c.integrationId === INT_B && c.channelId === 'D42')).toBe(false)
+      expect(bobRow).toMatchObject({ kind: 'im', trigger: 'any', agentId: BOB, name: '@Alice' })
 
       // Editor enables it; a re-report must keep the trigger (name refresh only).
       aliceRow!.trigger = 'any'
       await orch.reportConversation(BOT, { id: 'D42', name: '@Alice Smith' })
       expect(aliceRow).toMatchObject({ trigger: 'any', name: '@Alice Smith' })
+      expect(bobRow).toMatchObject({ trigger: 'any', name: '@Alice Smith' })
 
-      // Discovery alone must NOT latch the notice: the report triggers no route
-      // re-stamp, and only rc/notice-posted (actual delivery) does.
-      expect(ch.sends.filter((s) => s.type === 'rc/routes')).toHaveLength(0)
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.routes.filter((route) => route.scope?.channel === 'D42')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } }),
+          expect.objectContaining({ agentId: BOB, match: { kind: 'auto' } })
+        ])
+      )
     })
 
     // A group DM must survive the fan-out as itself. Stamping it 'im' would compile an
@@ -588,11 +596,14 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       channels = []
       const orch = makeOrch()
       await orch.reportConversation(BOT, { id: 'G42', name: 'mpim-alice--bob-1', kind: 'mpim' })
-      const row = channels.find((c) => c.integrationId === INT_A && c.channelId === 'G42')
-      expect(row).toMatchObject({ kind: 'mpim', trigger: 'off', agentId: ALICE })
+      const aliceRow = channels.find((c) => c.integrationId === INT_A && c.channelId === 'G42')
+      const bobRow = channels.find((c) => c.integrationId === INT_B && c.channelId === 'G42')
+      expect(aliceRow).toMatchObject({ kind: 'mpim', trigger: 'off', agentId: ALICE })
+      expect(bobRow).toMatchObject({ kind: 'mpim', trigger: 'mention', agentId: BOB })
 
       ch.sends.length = 0
-      row!.trigger = 'mention'
+      aliceRow!.trigger = 'mention'
+      bobRow!.trigger = 'off'
       await orch.syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       const compiled = assign.routes.filter((r) => r.scope?.channel === 'G42')
@@ -617,10 +628,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(g42).toEqual([expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })])
     })
 
-    // The two rules meet here: an INERT row must not win the convergence it is excluded
-    // from. Alice's preserved row is earlier, but she is org-visible and compiles
-    // nothing — electing her would leave the conversation served by nobody.
-    it('skips an org-visible agent when electing the group DM owner', async () => {
+    it('lets an enabled org-visible agent own a group DM', async () => {
       gatedAgents = new Set([BOB])
       channels = [
         channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'any' }),
@@ -629,18 +637,18 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'G42')).toEqual([
-        expect.objectContaining({ agentId: BOB, match: { kind: 'mention' } })
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
       ])
     })
 
-    // §14.4: the console hides a preserved direct row once its owner is org-visible, so
-    // compiling it would be behaviour the operator cannot see or stop.
-    it('makes a preserved group-DM row inert once its owner is no longer gated', async () => {
+    it('compiles an org-visible group-DM trigger', async () => {
       gatedAgents = new Set()
       channels = [channel({ integrationId: INT_A, channelId: 'G42', kind: 'mpim', agentId: ALICE, trigger: 'any' })]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
-      expect(assign.routes.filter((r) => r.scope?.channel === 'G42')).toEqual([])
+      expect(assign.routes.filter((r) => r.scope?.channel === 'G42')).toEqual([
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
+      ])
     })
 
     it('recordNoticePosted re-stamps the pool with the DELIVERED conversation', async () => {
@@ -671,12 +679,31 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       )
     })
 
-    it('an enabled im row of a NON-gated owner is inert: no scoped route (DMs stay on defaultAgentId)', async () => {
-      // ALICE flipped restricted → org with an enabled DM row left behind (§14.4).
+    it('an enabled public DM compiles scoped auto and slug routes for every target', async () => {
       channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } }),
+          expect.objectContaining({ agentId: ALICE, match: { kind: 'keyword', value: 'alice' } }),
+          // BOB has not observed the row yet, so his public default remains On.
+          expect.objectContaining({ agentId: BOB, match: { kind: 'auto' } }),
+          expect.objectContaining({ agentId: BOB, match: { kind: 'keyword', value: 'bob' } })
+        ])
+      )
+    })
+
+    it('mutes a public DM when every placed install switched it Off', async () => {
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'off' }),
+        channel({ integrationId: INT_B, channelId: 'D42', kind: 'im', agentId: BOB, trigger: 'off' })
+      ]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual([])
+      expect(assign.mutedChannels).toContain('D42')
+      expect(assign.gatedOffChannels).not.toContain('D42')
     })
 
     it('stamps a deterministic notice authority from the connected relay roster', async () => {

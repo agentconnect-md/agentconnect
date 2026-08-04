@@ -1052,7 +1052,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     secrets: { botToken: 'xoxb', signingSecret: 'ssecret' },
     botUserId: 'UBOT',
     members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
-    agents: [{ agentId: AGENT_ID, name: 'Agent' }],
+    agents: [{ agentId: AGENT_ID, name: 'Agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }],
     routes: [], // everything gated ⇒ no keyword rung, no default
     gatedAgentIds: [AGENT_ID],
     noticeAuthority: SELF_RELAY
@@ -1202,7 +1202,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText).not.toHaveBeenCalled()
   })
 
-  it('resets the DM-report latch when the gated member set changes (new install needs its row)', async () => {
+  it('resets the DM-report latch when the install set changes (new install needs its row)', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
@@ -1213,23 +1213,32 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).toHaveBeenCalledTimes(1) // latched for this assignment
 
-    // A routes update with a CHANGED gated set (e.g. a newly restricted install)
-    // must invalidate the latch so the next DM fans out the new install's row.
+    const changedAgents = [
+      ...a.agents,
+      {
+        agentId: OTHER_AGENT_ID,
+        name: 'Public',
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID
+      }
+    ]
+    // A routes update with a changed install set invalidates the latch so the next
+    // DM fans out the new install's row, regardless of visibility.
     manager.updateRoutes(BOT_ID, {
       members: a.members,
-      agents: a.agents,
+      agents: changedAgents,
       routes: a.routes,
-      gatedAgentIds: [AGENT_ID, OTHER_AGENT_ID]
+      gatedAgentIds: [AGENT_ID]
     })
     await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
     expect(reportBotConversation).toHaveBeenCalledTimes(2)
 
-    // An unchanged gated set keeps the latch.
+    // An unchanged install set keeps the latch.
     manager.updateRoutes(BOT_ID, {
       members: a.members,
-      agents: a.agents,
+      agents: changedAgents,
       routes: a.routes,
-      gatedAgentIds: [AGENT_ID, OTHER_AGENT_ID]
+      gatedAgentIds: []
     })
     await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
     expect(reportBotConversation).toHaveBeenCalledTimes(2)
@@ -1464,12 +1473,12 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
 
     await internals.forward(BOT_ID, mention(M1, '1.1'))
     expect(ingest.postText).not.toHaveBeenCalled()
-    // An authority-less (or non-authority) pod still fans out gated-DM rows.
+    // An authority-less (or non-authority) pod still reports direct rows.
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).toHaveBeenCalledTimes(1)
   })
 
-  it('does nothing gated-related for a bot with no gated members', async () => {
+  it('reports a public DM even when the bot has no gated members, without a notice', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
@@ -1480,7 +1489,10 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
-    expect(reportBotConversation).not.toHaveBeenCalled()
+    expect(reportBotConversation).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      conversation: { id: 'D42', name: '@Alice', kind: 'im' }
+    })
     expect(ingest.postText).not.toHaveBeenCalled()
   })
 })

@@ -1,9 +1,9 @@
 /**
  * `integrationToSpec` — the per-channel trigger → wire bindRules fold (unit, no I/O).
  *
- * The delivered rule set is always: the defaults (@-mention anywhere + DMs) plus
- * one channel-scoped `auto` rule per channel switched to "any message". A channel
- * left on '@-mention' adds NO extra rule — the unscoped mention default covers it.
+ * The delivered rule set is the defaults (@-mention anywhere + DMs) plus one scoped
+ * `auto` rule per room switched to "any message". A room left on '@-mention' adds no
+ * extra rule; a 1:1 DM's On state uses the unscoped DM default.
  */
 import { describe, it, expect } from 'vitest'
 import { integrationToSpec } from './placement.js'
@@ -70,10 +70,7 @@ describe('integrationToSpec bindRules', () => {
     ])
   })
 
-  // §14.4: a direct row only exists because observation created it while the agent was
-  // restricted, and the console hides it once the agent is org-visible. Compiling its
-  // "any message" would leave the agent answering with no visible control to stop it.
-  it('ignores a preserved DM / group-DM row set to "any" for a non-gated agent', () => {
+  it('uses the DM default for a 1:1 row and scopes a group DM set to "any"', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [
       channel('C1', 'any'),
       channel('D1', 'any', 'im'),
@@ -82,7 +79,8 @@ describe('integrationToSpec bindRules', () => {
     expect(slackCfg(spec).bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
-      { channel: 'C1', match: { kind: 'auto' } }
+      { channel: 'C1', match: { kind: 'auto' } },
+      { channel: 'G1', match: { kind: 'auto' } }
     ])
   })
 
@@ -149,12 +147,10 @@ describe('integrationToSpec mutedChannels', () => {
     expect(spec.core?.mutedChannels).toEqual(['C1', 'C4'])
   })
 
-  // §14.4: the console hides a preserved direct row once its owner is org-visible, so
-  // honouring its Off would silence DMs through a control nobody can see.
-  it('never mutes a direct row on a non-gated integration', () => {
+  it('mutes direct rows on a non-gated integration', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('D1', 'off', 'im'), channel('G1', 'off', 'mpim')])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(spec.core?.mutedChannels).toEqual([])
+    expect(spec.core?.mutedChannels).toEqual(['D1', 'G1'])
   })
 
   // A gated integration says Off by having no rule for the conversation; stating it
