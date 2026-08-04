@@ -15,10 +15,9 @@
  * - `RestrictedLock` — the small lock glyph shown next to a restricted resource's
  *   name in list rows.
  *
- * The current resource owner is pinned as a non-removable locked chip because
- * ownership always grants access. Every other member, including organization
- * owners, is a normal share target. Sharing is gated server-side by
- * canManageSharing.
+ * A resource owner who is still an organization member is pinned as a
+ * non-removable locked chip. Every other member, including organization owners,
+ * is a normal share target. Sharing is gated server-side by canManageSharing.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, Icon } from '@/components/ui'
@@ -57,13 +56,27 @@ function useSharePool(ownerUserId?: string | null): MemberDto[] {
   return useMemo(() => members.filter((m) => m.userId !== ownerUserId), [members, ownerUserId])
 }
 
-/** The resource owner, resolved to a member row for the pinned access entry. */
-function useOwner(ownerUserId?: string | null): MemberDto | undefined {
-  const { members } = useConsoleData()
+/** The resource owner, resolved only after the member directory has loaded. */
+function useOwner(ownerUserId?: string | null): { owner?: MemberDto; membersLoaded: boolean } {
+  const { members, membersLoaded } = useConsoleData()
   return useMemo(
-    () => (ownerUserId ? members.find((m) => m.userId === ownerUserId) : undefined),
-    [members, ownerUserId]
+    () => ({
+      owner: ownerUserId ? members.find((m) => m.userId === ownerUserId) : undefined,
+      membersLoaded
+    }),
+    [members, membersLoaded, ownerUserId]
   )
+}
+
+function ownerAccessNote(
+  owner: MemberDto | undefined,
+  ownerUserId: string | null | undefined,
+  membersLoaded: boolean
+): string {
+  if (!membersLoaded) return 'Owner access will be confirmed when organization members are available.'
+  if (owner) return 'The owner is included while they remain a member — you can’t remove them here.'
+  if (ownerUserId) return 'The recorded owner is no longer a member. Selected access can’t be saved.'
+  return 'Selected access requires an owner who is a current organization member.'
 }
 
 // ── the create/edit control ──────────────────────────────────────────────────
@@ -153,7 +166,8 @@ function ShareWithList({
   ownerUserId?: string | null
 }) {
   const pool = useSharePool(ownerUserId)
-  const owner = useOwner(ownerUserId)
+  const { owner, membersLoaded } = useOwner(ownerUserId)
+  const ownerUnavailable = membersLoaded && !owner
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -196,7 +210,7 @@ function ShareWithList({
         <Icon name="search" size={14} color="var(--text-tertiary)" className="flex-none" />
         {owner && (
           <span
-            title="The resource owner always has access — you can’t remove them"
+            title="Included while they remain a member — you can’t remove them here"
             className="inline-flex items-center gap-[5px] rounded-full bg-(--surface-active) py-[2px] pr-[7px] pl-[3px] font-sans text-[11.5px] font-medium leading-normal"
           >
             <Avatar src={owner.picture} initials={memberInitials(owner)} size={17} fontSize={8} />
@@ -232,6 +246,12 @@ function ShareWithList({
           className="min-w-[110px] flex-1 border-0 bg-transparent py-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none"
         />
       </div>
+      {ownerUnavailable && !open && (
+        <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+          <Icon name="info" size={13} className="mt-[2px] flex-none" />
+          <span>{ownerAccessNote(owner, ownerUserId, membersLoaded)}</span>
+        </div>
+      )}
       {open && (
         <>
           <div className="max-h-[150px] overflow-auto py-1">
@@ -268,7 +288,7 @@ function ShareWithList({
           </div>
           <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             <Icon name="info" size={13} className="mt-[2px] flex-none" />
-            <span>The resource owner (pinned above) always has access — you can’t remove them.</span>
+            <span>{ownerAccessNote(owner, ownerUserId, membersLoaded)}</span>
           </div>
         </>
       )}
@@ -313,13 +333,13 @@ function ShareWithPills({
   ownerUserId?: string | null
 }) {
   const pool = useSharePool(ownerUserId)
-  const owner = useOwner(ownerUserId)
+  const { owner, membersLoaded } = useOwner(ownerUserId)
 
-  // The resource owner's non-removable "always has access" pill.
+  // A current-member resource owner's non-removable access pill.
   const lockedPill = (m: MemberDto) => (
     <span
       key={m.userId}
-      title="Always has access — you can’t remove them"
+      title="Included while they remain a member — you can’t remove them here"
       className="inline-flex h-9 items-center gap-[7px] rounded-full border border-(--border-default) bg-(--surface-sunken) pr-3 pl-[6px] font-sans text-[13px] font-medium leading-normal text-(--text-secondary)"
     >
       <Avatar src={m.picture} initials={memberInitials(m)} size={24} fontSize={9} />
@@ -359,7 +379,7 @@ function ShareWithPills({
       </div>
       <div className="mt-[10px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
         <Icon name="info" size={13} className="mt-[2px] flex-none" />
-        <span>The resource owner always has access — you can’t remove them.</span>
+        <span>{ownerAccessNote(owner, ownerUserId, membersLoaded)}</span>
       </div>
     </>
   )
