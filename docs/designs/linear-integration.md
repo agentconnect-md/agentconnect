@@ -152,20 +152,82 @@ Precedents each leg reuses:
 
 ### 4.1 Platform, not hook
 
-GitHub events are one-shot: one delivery → one turn, one final comment, no
-streaming, no conversational identity — hence `HookDef`, `platform: 'hook'`
-sessions, and the publish-once `GithubFinalPoster`.
+Linear lands on the platform tables because its product hands us that shape
+natively: the OAuth app _is_ the assignable identity users pick in the delegate
+menu (§4.3), so each agent needs its own app — which is precisely a `Bot` row,
+with `Integration` as one workspace installation of it. Those are the same
+tables Slack uses. Linear therefore becomes the sixth persisted `Platform` with
+its own daemon silo and converger, and its sessions render in the console as
+ordinary conversations (`platform: 'linear'`, channel = issue, thread = agent
+session).
 
-Linear's agent sessions are the opposite: a durable conversational thread with
-follow-ups, interrupts, streamed intermediate output, and a persistent bot-like
-identity (the app user in the workspace). That is the `Integration`/`Bot`
-shape, so Linear becomes the sixth persisted `Platform` with its own daemon
-silo and converger. Sessions render in the console as ordinary conversations
-(`platform: 'linear'`, channel = issue, thread = agent session).
+The obvious follow-up — then why is GitHub on `HookDef` and not here? — has a
+less obvious answer than earlier revisions of this section claimed, and it is
+worth recording precisely because every _conceptual_ line once drawn between
+the two seams has failed scrutiny:
 
-What it borrows from hooks anyway: relay-terminated signed ingress, the
+- **Conversation is not the line.** An earlier revision claimed GitHub events
+  are one-shot with no conversational identity; the GitHub-events work
+  falsified that. GitHub hooks are `perThread` — the session key is the hook's
+  immutable prefix plus the issue or pull-request number, later events resume
+  the same ACP session, `@<agent-name>` addresses one agent while
+  `@<app-slug>` broadcasts to the repository's matching hooks. A follow-up
+  question in a thread continues the same conversation.
+- **Streaming is not the line.** "Publishes once" is a point on the existing
+  output-mode axis, which the daemon already reads live per dispatch; Slack
+  streams through an edit loop, and Telegram/Discord differ again. The GitHub
+  poster already implements the narrower Layer-2 output surface
+  ([integration-plugin-architecture.md §7.6](integration-plugin-architecture.md)),
+  so this is a capability difference _inside_ a contract, not a reason for a
+  different seam.
+- **A shared posting identity is not the line.** Every agent posts through the
+  one GitHub App installation, with per-agent identity rendered inside the
+  comment (avatar plus attribution footer) — but that is exactly what a Slack
+  shared bot does, one app fronting many agents disambiguated per message, and
+  Slack is a platform module.
+- **Authorization direction is not the line either.** Both seams share one
+  structure: _installation grants presence; per-event policy decides who may
+  address the agent_. Chat platforms default open (anyone in the conversation)
+  and our gating narrows; GitHub defaults strict (live write/admin check
+  against `comment.user`) and a future policy could widen — "anyone may
+  address" on a repository is the same knob as chat-side conversation gating,
+  currently implemented once per seam. The strict default is threat-surface
+  tuning, not structure: a public repository's audience is the whole internet
+  and the agent holds repository credentials — but a public Discord server
+  poses the same class of exposure and lives inside the platform contract.
+- **Even the resource rows are isomorphic, not alien.** `HookDef` ≈
+  `Integration` plus per-hook event-subscription filters, and one App
+  installation fanning out to many hooks is the same shape as one shared `Bot`
+  row fronting many `Integration` rows with per-message routing. A migration
+  is feasible; it is not conceptually blocked.
+
+What actually keeps GitHub on the hook seam today is discipline and economics,
+not concept. The four platform contracts were settled from four chat
+implementers; reshaping them around a fifth, non-chat implementer would be
+extracting an interface from one example — the failure mode this codebase
+explicitly defers on (the `CodeHostRepository` deferral in
+[gitlab-com-integration.md §8.1](gitlab-com-integration.md)) — and the
+migration's user-visible payoff today is nil. The convergence point is GitLab:
+the §7.6 layering table already admits facet-subset implementers (the GitHub
+poster ships Layer 2 with no Layer 1), so the expected end state is one module
+system in which chat platforms implement the full facet set and code hosts a
+subset plus facets of their own (event subscriptions, check/review
+projections, repository authorization) — designed from two code hosts, not
+asserted from one. GitHub does not "graduate into" a platform; the module
+system learns to express it.
+
+One consequence does not wait for GitLab: the "who may address the agent"
+policy knob exists today as chat-side conversation gating and, separately, as
+GitHub's write/admin gate — one policy family, implemented twice. The next
+change to either should design it as the cross-platform policy it is, not
+deepen it as a per-seam feature.
+
+What Linear borrows from hooks anyway: relay-terminated signed ingress, the
 in-memory assign-rule table with CP replay, delivery retry cadence, and the
-daemon's durable inbox dedup.
+daemon's durable inbox dedup. The second item is itself evidence for the
+convergence above — the hook seam's assign-rule table restates platform
+routing rules, and merging that duplication belongs to the same GitLab-time
+consolidation.
 
 ### 4.2 Relay-terminated ingress is mandatory
 
