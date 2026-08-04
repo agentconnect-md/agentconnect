@@ -109,7 +109,7 @@ describe('case 1 — sendMessage {toAgent, channel}: one visible root post, one 
   }, 120_000)
 })
 
-describe('case 1b — sendMessage {sessionId: parent}: session-only parent resume', () => {
+describe('case 1b — sendMessage {sessionId: parent}: the report is injected, the parent answers', () => {
   function case1bScripts(resume: (ctx: RoutingScriptContext) => Promise<void> | void) {
     return {
       agent1: async (ctx: RoutingScriptContext) => {
@@ -161,13 +161,12 @@ describe('case 1b — sendMessage {sessionId: parent}: session-only parent resum
     return agent1Effects.filter((effect) => effect.sequence > boundary)
   }
 
-  // #503 §7: the parent session is resumed with headless: true — the injected
-  // input and the resumed turn's ORDINARY output stay in the session; no IM
-  // body, typing indicator, status chrome, footer, or completion notification
-  // is emitted for that turn. Flipped green when the rework landed (PR #503
-  // merged): the full accounting below (every effect attributable to the
-  // resumed turn, delivered or attempted) must stay empty.
-  it('parent resume produces ZERO new IM outbound while the parent still processes the reply (#503 §7)', async () => {
+  // §7: what stays invisible is the REPORT — no component publishes the injected
+  // body — while the resumed parent runs an ORDINARY turn and may answer in its own
+  // conversation. The earlier revision muted that turn, which silenced every
+  // report-back whose child had answered elsewhere (its own channel-root thread) or
+  // nowhere at all, leaving the humans who delegated the work with nothing.
+  it('the child’s report is never published, and the resumed parent answers in its own thread (§7)', async () => {
     fixture = await RoutingFixture.start({
       agents: ['agent1', 'agent2'],
       scripts: case1bScripts((ctx) => {
@@ -179,23 +178,28 @@ describe('case 1b — sendMessage {sessionId: parent}: session-only parent resum
     })
     await fixture.settle(trigger.handles)
 
-    // The parent DID process the child's reply (this half holds today too).
+    // The parent processed the child's reply.
     expect(fixture.activations('agent1')).toBe(2)
     const resumeInput = fixture.turnInputs('agent1')[1] ?? ''
     expect(resumeInput).toContain('RESULT R-42')
 
-    // INVARIANT UNDER #503 §7 — FULL accounting, not a body-string probe:
-    // the COMPLETE set of world effects attributable to the resumed turn is
-    // empty. Any body text, typing indicator, status message, footer, or
-    // other chrome — delivered OR merely attempted — fails this.
-    const resumeEffects = parentResumeEffects()
-    expect(resumeEffects.map((effect) => ({ kind: effect.kind, status: effect.status, text: effect.text }))).toEqual([])
+    // HALF ONE — the report itself never became a platform message. Not a body-string
+    // probe of one integration: NOTHING anyone attempted, delivered or rejected, carries
+    // the injected text. `replyToSession` makes no gateway call at all, so this is
+    // structural rather than a flag, and it is the property the design actually promises.
+    const published = fixture.world.allEffects().filter((effect) => /RESULT R-42/.test(effect.text ?? ''))
+    expect(published.map((effect) => ({ kind: effect.kind, status: effect.status, text: effect.text }))).toEqual([])
+
+    // HALF TWO — the resumed turn is ORDINARY: its own answer reaches the parent's
+    // conversation, where the humans who delegated the work are waiting.
+    const resumeReplies = parentResumeEffects().filter((effect) => effect.kind === 'reply')
+    expect(resumeReplies.map((effect) => effect.status)).toContain('delivered')
+    expect(resumeReplies.some((effect) => /thanks, result noted/.test(effect.text ?? ''))).toBe(true)
   }, 120_000)
 
-  // #503 §7: "An explicit visible sendMessage from the resumed parent remains
-  // allowed and uses its normal authorization and delivery semantics" —
-  // headless is not a turn-wide egress prohibition. This already holds today
-  // and must keep holding after the flip.
+  // §7: an explicit visible `sendMessage` from the resumed parent is an intentional
+  // outbound action with its normal authorization and delivery semantics — it was never
+  // gated by how the resumed turn's own reply sink was configured.
   it('an EXPLICIT visible sendMessage from the resumed parent is delivered', async () => {
     fixture = await RoutingFixture.start({
       agents: ['agent1', 'agent2'],
