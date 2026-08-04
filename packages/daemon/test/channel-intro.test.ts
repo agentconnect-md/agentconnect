@@ -157,7 +157,11 @@ describe('Daemon.maybeIntroduceOnJoin: the intro turn carries its own discovery 
       return 'acp-1'
     }
     const introduce = (channels: string[]): void =>
-      (daemon as never as { maybeIntroduceOnJoin: (i: string, c: { id: string }[]) => void }).maybeIntroduceOnJoin(
+      (
+        daemon as never as { maybeIntroduceOnJoin: (p: string, i: string, c: { id: string }[]) => void }
+      ).maybeIntroduceOnJoin(
+        // The caller (Slack's authoritative-snapshot refresh) names its platform as data.
+        'slack',
         'int-1',
         channels.map((id) => ({ id }))
       )
