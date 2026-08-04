@@ -56,6 +56,13 @@ export interface PlatformManifest {
   /** Diagnostic label; never parsed. */
   readonly platform: string
   readonly membershipEnumeration: MembershipEnumeration
+  /** Channel ids syntactically recognizable as DIRECT MESSAGES, for ingress whose
+   *  wire event omits the conversation type (Slack `app_mention` may omit
+   *  `channel_type`, but its DM ids are D-prefixed). A PRE-DISPATCH read: gated-
+   *  conversation discovery consults it before routing resolves any target.
+   *  Absent when the id syntax carries no DM signal — then `msg.isDm` is all
+   *  there is. */
+  readonly dmChannelPattern?: RegExp
 }
 
 /** The conservative arm of every axis — see the fail-closed note above. */
@@ -72,7 +79,7 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
 const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
   // Slack is the only platform with an authoritative membership snapshot — which
   // is why the branches this replaces read "Slack does X, everyone else does Y".
-  ['slack', { membershipEnumeration: 'authoritative' }],
+  ['slack', { membershipEnumeration: 'authoritative', dmChannelPattern: /^D/ }],
   ['telegram', { membershipEnumeration: 'observed' }],
   ['discord', { membershipEnumeration: 'observed' }],
   ['feishu', { membershipEnumeration: 'observed' }]

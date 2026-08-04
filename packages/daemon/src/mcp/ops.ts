@@ -1,6 +1,6 @@
 import type { ToolDescriptor } from './tools.js'
 import type { MemoryProvider } from '../agents/memory-provider.js'
-import { threadKeyForPost } from '../messages/normalized.js'
+import { threadKeyForPost } from '../platforms/thread-keys.js'
 import type { ChannelAgentsReq, ChannelAgentsOk, KnowledgeSearchOk, Platform } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
