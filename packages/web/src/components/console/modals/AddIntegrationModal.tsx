@@ -1,29 +1,36 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GithubPrivateReposNotice } from '@/components/console/WorkspaceFormFields'
+import type {
+  WebWizardTransport,
+  WizardFooterState,
+  WizardHost,
+  WizardIdentityChromeState,
+  WizardReuseContext
+} from '@/components/console/platforms/contract'
+import { useDeploymentConfig } from '@/components/console/platforms/deployment-config'
+import {
+  footerView as toFooterView,
+  identityChromeView as toIdentityChromeView,
+  sameFooterView,
+  sameIdentityChromeView,
+  type FooterView,
+  type IdentityChromeView
+} from '@/components/console/platforms/publish'
+import { platformRegistry } from '@/components/console/platforms/registry'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
-import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
-  ApiError,
   creatorLabel,
-  startFeishuRegistration,
-  getFeishuRegistration,
-  startSlackInstall,
-  startSlackPlatformInstall,
-  getSlackPlatformInstall,
-  getSlackInstall,
-  fetchSlackConfig,
-  saveSlackConfig,
   fetchAgentHooks,
   fetchAgentRepos,
   fetchGithubInstallationRepo,
@@ -33,17 +40,13 @@ import {
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
   updateAgentRepo,
-  checkTelegramBot,
-  type CreateIntegrationInput,
   type CreatedHookDto,
   type GithubInstallationDto,
   type GithubRepoDto,
-  type RepoAccess,
-  type TelegramBotCheckDto
+  type RepoAccess
 } from '@/lib/api'
 import { REPO_ACCESS_BADGE } from '@/components/console/WorkspaceCard'
 import AddAgentRepoModal from './AddAgentRepoModal'
-import { useTelegramPrivacyAutoRefresh } from './telegram-privacy-auto-refresh'
 import {
   GH_DEFAULT_FAMILIES,
   GH_DEFAULT_TRIGGER_MODE,
@@ -67,15 +70,18 @@ import {
   type HookReportingMode,
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
-import {
-  slackAppIdFromAppToken,
-  slackAppOAuthUrl,
-  slackAppSettingsUrl,
-  slackCreateAppUrl,
-  slackManifestJson
-} from '@/lib/slack-manifest'
-import { agentIconBackgroundColor } from '@/lib/agent-icon'
-import { discordApplicationIdFromToken, discordBotInviteUrl } from '@/lib/discord-invite'
+
+// THE HOST CHASSIS (integration-plugin-architecture.md §10). What lives here is
+// everything a platform CANNOT own: the picker tiles and their daemon-capability
+// gate, the existing/create mode cards, the generic free-bot reuse list, the
+// share toggle, the error banner, the footer, and the two CORE trigger
+// sections — webhook and github, which mint an inbound hook rather than a bot
+// identity and are therefore fragments of the chassis, not platform modules.
+//
+// Each chat platform's create pane is a fragment behind `WizardHost`
+// (`components/console/platforms/<id>/`). The chassis knows no platform name
+// except where §5 manifest data has nowhere else to live yet (the picker labels
+// and the Lark/Feishu region switcher — see D2 in the contract).
 
 // `webhook` and `github` are not bot platforms: picking them mints an inbound
 // trigger (a hook) instead of installing a bot identity — webhook is
@@ -88,15 +94,24 @@ export type FeishuRegion = LarkFeishuTarget
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
+// The picker's display names. §5's `displayName` is manifest data shared with
+// the daemon/relay/CP, deliberately NOT a web-module member (contract D2), so
+// the chassis keeps the label projection OVER the registry's id set — the
+// registry stays the single authority for WHICH platforms exist and in what
+// order.
+const BOT_PLATFORM_LABEL: Record<string, string> = {
+  slack: 'Slack',
+  telegram: 'Telegram',
+  discord: 'Discord',
+  feishu: 'Lark / Feishu'
+}
+
 // Bot platforms are gated on the owning daemon's advertised adapters; the agent
 // page's empty-integrations tiles filter this same list so a tile can never
 // promise a platform this modal would refuse.
-export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = [
-  { key: 'slack', label: 'Slack' },
-  { key: 'telegram', label: 'Telegram' },
-  { key: 'discord', label: 'Discord' },
-  { key: 'feishu', label: 'Lark / Feishu' }
-]
+export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = platformRegistry
+  .ids()
+  .map((id) => ({ key: id as BotPlatform, label: BOT_PLATFORM_LABEL[id] ?? id }))
 
 export const PLATFORMS: { key: Platform; label: string }[] = [
   ...BOT_PLATFORMS,
@@ -107,25 +122,6 @@ export const PLATFORMS: { key: Platform; label: string }[] = [
 /** The trigger cadences (design vocabulary: "when created / updated / mention only"
  *  — the stored event patterns + the mentionOnly flag encode the choice).
  *  `desc` stays a one-liner so the design's 3-up tiles keep equal height. */
-// Why a platform "Add to Slack" round trip ended without connecting. Keyed by the
-// CP's short reason code (the same note its close page shows).
-const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
-  denied: 'The install was cancelled in Slack.',
-  expired: 'This install link expired — start again.',
-  workspace_taken: 'That Slack workspace is already connected to another organization.',
-  workspace_mismatch: 'Slack authorized a different workspace. Start again and choose the expected workspace.',
-  agent_taken: 'That Slack workspace is already connected to another agent here. Remove that integration first.',
-  error: 'Slack could not complete the install. Please try again.'
-}
-
-const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
-  denied: 'The Lark/Feishu app setup was cancelled.',
-  expired: 'This setup link expired — start again.',
-  agent_unavailable: 'This agent moved or was removed during setup. Check its daemon, then try again.',
-  invalid_credentials: 'The app was created, but its credentials could not be verified.',
-  setup_failed: 'Lark/Feishu could not complete the app setup. Please try again.'
-}
-
 const GH_TRIGGER_TILES: { mode: GhTriggerMode; label: string; desc: string }[] = [
   { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'When opened, plus later @mentions.' },
   {
@@ -149,147 +145,6 @@ function fmtAgo(iso: string | null): string {
   const h = Math.round(min / 60)
   if (h < 24) return `last used ${h}h ago`
   return `last used ${Math.round(h / 24)}d ago`
-}
-
-function inviteBotHint(
-  target: 'channel' | 'group',
-  platform: 'Slack' | 'Telegram' | 'Discord' | 'Feishu' | 'Lark',
-  nextStep = 'it starts listening there'
-): string {
-  return `invite the bot to any ${target} in ${platform} and ${nextStep}.`
-}
-
-const IM_INVITE_HINT = {
-  slack: inviteBotHint('channel', 'Slack'),
-  telegram: inviteBotHint('group', 'Telegram'),
-  discord: inviteBotHint('channel', 'Discord')
-} as const
-
-// Per-platform "create a new bot" walkthrough for the non-Slack platforms (Slack
-// keeps its richer manifest flow inline below). Each is: an external portal link,
-// a one-line setup instruction, a single bot-token field, and optional setup hints.
-const GUIDE: Record<
-  'telegram' | 'discord',
-  {
-    linkHref: string
-    linkLabel: string
-    step1: string
-    step1Warning?: string
-    tokenPlaceholder: string
-  }
-> = {
-  telegram: {
-    linkHref: 'https://t.me/BotFather',
-    linkLabel: 'Open @BotFather',
-    step1:
-      'Open @BotFather → New bot (or send /newbot), give it a display name and a username ending in “bot” — it hands back the token.',
-    step1Warning:
-      'In @BotFather, send /setprivacy, select this bot and choose Disable. AgentConnect checks it after you paste the token.',
-    tokenPlaceholder: '123456789:AAE…'
-  },
-  discord: {
-    linkHref: 'https://discord.com/developers/applications?new_application=true',
-    linkLabel: 'Create Discord app',
-    step1: 'Name and create the application. In Bot, reset and copy the token.',
-    tokenPlaceholder: 'Bot token from the Developer Portal'
-  }
-}
-
-type TelegramCheckState = 'idle' | 'checking' | TelegramBotCheckDto['status']
-const TELEGRAM_CHECK_DEBOUNCE_MS = 350
-
-function TelegramPrivacyStatus({
-  status,
-  refreshing,
-  onRetry
-}: {
-  status: TelegramCheckState
-  refreshing: boolean
-  onRetry: () => void
-}) {
-  if (status === 'idle') return null
-  const checking = status === 'checking'
-  const ready = status === 'ready'
-  const message =
-    status === 'checking'
-      ? 'Checking the token and Privacy Mode…'
-      : status === 'ready'
-        ? 'Privacy Mode is off. This bot can receive ordinary group messages.'
-        : status === 'privacy_enabled'
-          ? 'Privacy Mode is still on. Disable it in @BotFather. Checking automatically.'
-          : status === 'invalid'
-            ? 'Telegram rejected this token. Copy it again from @BotFather.'
-            : 'AgentConnect could not reach Telegram. Try the check again.'
-  const retryable = status === 'privacy_enabled' || status === 'unreachable'
-
-  return (
-    <div
-      aria-live="polite"
-      className={`mt-2 flex items-start gap-2 rounded-md border px-[10px] py-2 font-sans text-[11.5px] font-normal leading-[1.5] ${
-        ready
-          ? 'border-(--status-online) bg-(--status-online-soft) text-(--text-secondary)'
-          : checking
-            ? 'border-(--border-default) bg-(--status-info-soft) text-(--text-secondary)'
-            : 'border-(--status-error) bg-(--status-error-soft) text-(--status-error)'
-      }`}
-    >
-      <Icon
-        name={checking ? 'loader' : ready ? 'circle-check' : 'triangle-alert'}
-        size={14}
-        color={ready ? 'var(--status-online)' : checking ? 'var(--status-info)' : 'var(--status-error)'}
-        className={`mt-[1px] flex-none ${checking ? 'animate-spin' : ''}`}
-      />
-      <span className="min-w-0 flex-1">{message}</span>
-      {retryable && (
-        <button
-          type="button"
-          disabled={refreshing}
-          className="inline-flex flex-none cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-semibold leading-[1.5] text-(--text-secondary) hover:text-(--text-primary) disabled:cursor-wait"
-          onClick={onRetry}
-        >
-          <Icon name="refresh-cw" size={12} className={refreshing ? 'animate-spin' : ''} />
-          {refreshing ? 'Checking…' : status === 'privacy_enabled' ? 'Check now' : 'Try again'}
-        </button>
-      )}
-    </div>
-  )
-}
-
-// Feishu needs a few app-level settings beyond the credentials that aren't obvious
-// and each fails silently if missed — surfaced as a transport-aware checklist.
-const FEISHU_COMMON_REQS: { icon: string; title: string; desc: string }[] = [
-  {
-    icon: 'bot',
-    title: 'Enable the bot capability',
-    desc: 'In the app’s “Add features”, turn on Bot — otherwise it can’t send or receive messages.'
-  },
-  {
-    icon: 'shield-check',
-    title: 'Grant message and name scopes',
-    desc: 'Request the message, chat and resource scopes plus contact:contact.base:readonly and contact:user.base:readonly so channels and participants have readable names, then publish.'
-  },
-  {
-    icon: 'users',
-    title: 'Add the bot to your group',
-    desc: 'Invite the bot into the target chat — it replies wherever it’s a member and @-mentioned.'
-  }
-]
-
-const FEISHU_DELIVERY_REQS: Record<'socket' | 'http', { icon: string; title: string; desc: string }[]> = {
-  socket: [
-    {
-      icon: 'radio',
-      title: 'Use Long Connection',
-      desc: 'Under Event Subscriptions, choose Long Connection and subscribe to im.message.receive_v1.'
-    }
-  ],
-  http: [
-    {
-      icon: 'radio',
-      title: 'Use HTTP callbacks',
-      desc: 'Connect here first, then add the Request URL shown above under Event Subscriptions and subscribe to im.message.receive_v1.'
-    }
-  ]
 }
 
 // The copy-paste test delivery shown once a webhook is created. The body follows
@@ -325,653 +180,6 @@ function hookTestCurl(url: string, sig: string | null, body: string, requiresSig
   ].join('\n')
 }
 
-const TRANSPORT_LABEL: Record<'slack' | 'feishu', Record<'socket' | 'http', string>> = {
-  slack: { socket: 'Socket Mode', http: 'HTTP (Events API)' },
-  feishu: { socket: 'Long connection', http: 'HTTP callbacks' }
-}
-
-// The one-line delivery-mode note names the current inbound transport and, when
-// possible, offers a subtle underlined switch. HTTP is only offerable when the
-// deployment has public callback delivery; `locked` pins a Slack auto-install
-// once an app has been created for that transport.
-function DeliveryLine({
-  platform,
-  transport,
-  relayAvailable,
-  locked,
-  onSwitch
-}: {
-  platform: 'slack' | 'feishu'
-  transport: 'socket' | 'http'
-  relayAvailable: boolean
-  locked: boolean
-  onSwitch: (next: 'socket' | 'http') => void
-}) {
-  const next = transport === 'http' ? 'socket' : 'http'
-  // Switching TO http needs a connected relay; switching back to socket is always fine.
-  const canSwitch = !locked && (next === 'socket' || relayAvailable)
-  const labels = TRANSPORT_LABEL[platform]
-  return (
-    <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-      Delivery: <span className="text-(--text-secondary)">{labels[transport]}</span>.
-      {canSwitch && (
-        <>
-          {' '}
-          <button
-            type="button"
-            className="cursor-pointer border-0 bg-transparent p-0 font-sans text-[11.5px] leading-normal text-(--text-tertiary) underline underline-offset-2 hover:text-(--text-secondary)"
-            onClick={() => onSwitch(next)}
-          >
-            Switch to {labels[next]}
-          </button>
-        </>
-      )}
-    </div>
-  )
-}
-
-// Hover preview for the "Copy manifest & open Slack" button — a miniature of Slack's
-// "Create new app" dialog cropped to the two "Or start your own way" tiles, with the
-// "From a manifest" tile blinking so the user knows exactly which option to click once the
-// manifest is on their clipboard. Styled like Slack's own (light) dialog; pointer-events-none
-// so it never intercepts the button's click.
-function SlackManifestPreview() {
-  return (
-    <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-[320px] -translate-x-1/2 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-      <div className="rounded-xl border border-[#e0e0e2] bg-white p-3 shadow-(--shadow-xl)">
-        <div className="mb-2 flex items-center gap-1.5 font-sans text-[11px] font-semibold leading-normal text-[#616061]">
-          <Icon name="mouse-pointer-click" size={12} />
-          In Slack, pick &ldquo;From a manifest&rdquo;
-        </div>
-        <div className="mb-1.5 font-sans text-[9.5px] font-semibold uppercase leading-normal tracking-wide text-[#8d8d8d]">
-          Or start your own way
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="relative rounded-lg bg-white p-2.5">
-            <span className="pointer-events-none absolute rounded-lg inset-0 slack-hint-blink rounded-[10px] ring-2 ring-[#1264a3]" />
-            <span className="mb-1.5 flex h-6 w-6 items-center justify-center rounded-md bg-[#f4f4f4] text-[#454545]">
-              <Icon name="scroll-text" size={14} />
-            </span>
-            <div className="font-sans text-[11.5px] font-bold leading-tight text-[#1d1c1d]">From a manifest</div>
-            <div className="mt-0.5 font-sans text-[10px] leading-tight text-[#616061]">Upload JSON or YAML config.</div>
-          </div>
-          <div className="rounded-lg border border-[#e0e0e2] bg-white p-2.5">
-            <span className="mb-1.5 flex h-6 w-6 items-center justify-center rounded-md bg-[#f4f4f4] text-[#454545]">
-              <Icon name="clapperboard" size={14} />
-            </span>
-            <div className="font-sans text-[11.5px] font-bold leading-tight text-[#1d1c1d]">Blank app</div>
-            <div className="mt-0.5 font-sans text-[10px] leading-tight text-[#616061]">
-              Empty app with minimal setup.
-            </div>
-          </div>
-        </div>
-        <div className="mt-2 font-sans text-[10px] leading-snug text-[#616061]">
-          Then paste the copied manifest, choose a workspace, and create the app.
-        </div>
-      </div>
-      <div className="absolute -bottom-1 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-r border-b border-[#e0e0e2] bg-white" />
-    </div>
-  )
-}
-
-// Hover preview for "Open Slack app config tokens" — an animated mock of Slack's apps page
-// scrolling down to the "Your App Configuration Tokens" section and pulsing the access
-// token's Copy button (then the refresh token's), so the user sees exactly where the pair
-// lives. Uses the design's .cfgtok-pop container (above the button, surface-card, downward
-// caret). pointer-events-none.
-function SlackConfigTokenPreview() {
-  return (
-    <div className="cfgtok-pop rounded-xl border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-xl)">
-      <div className="overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-app)">
-        <div className="flex items-center gap-1.5 border-b border-(--border-subtle) px-2.5 py-1.5">
-          <span className="h-2 w-2 flex-none rounded-full bg-[#e0605a]" />
-          <span className="h-2 w-2 flex-none rounded-full bg-[#e8b13a]" />
-          <span className="h-2 w-2 flex-none rounded-full bg-[#4aa564]" />
-          <span className="ml-1 min-w-0 truncate font-mono text-[9px] leading-normal text-(--text-tertiary)">
-            api.slack.com/apps
-          </span>
-        </div>
-        <div className="h-[140px] overflow-hidden bg-(--surface-card)">
-          <div className="cfg-scroll px-2.5 py-2">
-            <div className="mb-1.5 font-sans text-[10px] font-bold leading-tight text-(--text-primary)">Your apps</div>
-            {[0, 1].map((i) => (
-              <div
-                key={i}
-                className="mb-1.5 flex items-center gap-2 rounded-md border border-(--border-subtle) px-2 py-1.5"
-              >
-                <span className="h-4 w-4 flex-none rounded bg-(--surface-active)" />
-                <span className="h-1.5 w-24 rounded-full bg-(--surface-active)" />
-              </div>
-            ))}
-            <div className="mt-2 rounded-md border border-(--border-subtle) bg-(--surface-app) p-2">
-              <div className="mb-1.5 flex items-center justify-between gap-2">
-                <span className="font-sans text-[10px] font-bold leading-tight text-(--text-primary)">
-                  Your App Configuration Tokens
-                </span>
-                <span className="flex-none rounded bg-(--surface-active) px-1.5 py-[3px] font-sans text-[8px] font-semibold leading-normal text-(--text-secondary)">
-                  Generate Token
-                </span>
-              </div>
-              <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-2 gap-y-1">
-                <span className="font-sans text-[8px] font-semibold uppercase leading-normal text-(--text-tertiary)">
-                  Workspace
-                </span>
-                <span className="font-sans text-[8px] font-semibold uppercase leading-normal text-(--text-tertiary)">
-                  Access
-                </span>
-                <span className="font-sans text-[8px] font-semibold uppercase leading-normal text-(--text-tertiary)">
-                  Refresh
-                </span>
-                <span className="font-mono text-[9px] leading-normal text-(--text-secondary)">your-workspace</span>
-                <span className="relative rounded border border-(--border-default) bg-(--surface-card) px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-(--text-secondary)">
-                  Copy
-                  <span className="pointer-events-none absolute -inset-[3px] cfg-click-a rounded ring-2 ring-(--brand)" />
-                </span>
-                <span className="relative rounded border border-(--border-default) bg-(--surface-card) px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-(--text-secondary)">
-                  Copy
-                  <span className="pointer-events-none absolute -inset-[3px] cfg-click-b rounded ring-2 ring-(--brand)" />
-                </span>
-              </div>
-              <div className="mt-1 font-sans text-[8px] leading-normal text-(--text-tertiary)">Expires in 5 hours</div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="mt-1.5 px-1 font-sans text-[10.5px] font-normal leading-[1.45] text-(--text-secondary)">
-        Scroll to the bottom of <span className="mono">Your apps</span> — the token pair lives under &ldquo;App
-        configuration tokens&rdquo;.
-      </div>
-    </div>
-  )
-}
-
-// One step of a bot-setup walkthrough: the chip label, the mini-screen it shows, and the
-// caption under it. Kept together so the three can't drift apart.
-type WalkthroughStep = { label: string; caption: React.ReactNode; screen: React.ReactNode }
-
-// The walkthrough itself: step chips on top, one fixed-size mini-screen, a caption below.
-// Auto-advances every ~3s; hovering or focusing a chip pins that step, leaving the row resumes
-// the loop. Positioning is the caller's job — it is a popover on desktop and an inline panel on
-// mobile, and the interval only runs while it is mounted (i.e. actually on screen).
-function WalkthroughPanel({ steps }: { steps: WalkthroughStep[] }) {
-  const [step, setStep] = useState(0)
-  const [pinned, setPinned] = useState<number | null>(null)
-
-  // Auto-advance only while nothing is pinned and the user hasn't asked for reduced motion.
-  useEffect(() => {
-    if (pinned !== null) return
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
-    const t = setInterval(() => setStep((s) => (s + 1) % steps.length), 3200)
-    return () => clearInterval(t)
-  }, [pinned, steps.length])
-
-  const shown = (pinned ?? step) % steps.length
-  const pin = (i: number) => {
-    setPinned(i)
-    setStep(i)
-  }
-
-  return (
-    <div className="rounded-xl border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-xl)">
-      <div className="mb-2 flex gap-1" onMouseLeave={() => setPinned(null)}>
-        {steps.map((s, i) => (
-          <button
-            key={s.label}
-            type="button"
-            aria-current={i === shown}
-            onMouseEnter={() => pin(i)}
-            onFocus={() => pin(i)}
-            onBlur={() => setPinned(null)}
-            onClick={() => pin(i)}
-            className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1 font-sans text-[10px] font-semibold leading-normal transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
-              i === shown
-                ? 'bg-(--surface-inverse) text-white'
-                : 'bg-(--surface-app) text-(--text-tertiary) hover:text-(--text-secondary)'
-            }`}
-          >
-            <span className={`mono text-[9px] ${i === shown ? 'opacity-70' : 'opacity-60'}`}>{i + 1}</span>
-            <span className="truncate">{s.label}</span>
-          </button>
-        ))}
-      </div>
-      {steps[shown]?.screen}
-      <div className="mt-1.5 px-1 font-sans text-[10.5px] font-normal leading-[1.45] text-(--text-secondary)">
-        {steps[shown]?.caption}
-      </div>
-    </div>
-  )
-}
-
-// The disclosure around the walkthrough, rendered inside the `group relative` wrapper of a
-// platform's portal button. Desktop: a popover above the button, revealed on hover AND on
-// keyboard focus anywhere in the group (the OutputModeHelp pattern) — it stays `invisible`
-// while closed so its chips are out of the tab order and can never eat the button's click.
-// Mobile: hover doesn't exist and the modal body would clip a popover, so it becomes an
-// explicit toggle with the panel expanding inline underneath.
-function BotSetupWalkthrough({ steps, label }: { steps: WalkthroughStep[]; label: string }) {
-  const isMobile = useIsMobile()
-  const [open, setOpen] = useState(false)
-  const panelId = useId()
-
-  if (isMobile) {
-    return (
-      <>
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={panelId}
-          onClick={() => setOpen((v) => !v)}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-(--border-default) bg-(--surface-card) py-[7px] font-sans text-[12px] font-semibold leading-normal text-(--text-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover)"
-        >
-          <Icon name="list-checks" size={13} />
-          {open ? 'Hide' : 'Show'} the {steps.length} setup steps
-          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={13} />
-        </button>
-        {open && (
-          <div id={panelId} className="mt-2">
-            <WalkthroughPanel steps={steps} />
-          </div>
-        )}
-      </>
-    )
-  }
-
-  return (
-    // The bottom padding bridges the gap to the button, so moving up onto the step chips never
-    // drops the hover.
-    <div
-      role="group"
-      aria-label={label}
-      className="pointer-events-none invisible absolute bottom-full left-1/2 z-50 w-[320px] -translate-x-1/2 pb-2 opacity-0 transition-[opacity,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
-    >
-      <WalkthroughPanel steps={steps} />
-      <div className="pointer-events-none absolute bottom-[3px] left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-r border-b border-(--border-default) bg-(--surface-card)" />
-    </div>
-  )
-}
-
-// One mini-screen: a title bar plus a fixed-height body, so every step of a walkthrough is
-// exactly the same size and the popover never jumps as it advances.
-function MiniScreen({
-  frameClass,
-  bar,
-  children
-}: {
-  frameClass: string
-  bar: React.ReactNode
-  children: React.ReactNode
-}) {
-  return (
-    <div className={`overflow-hidden rounded-lg border ${frameClass}`}>
-      {bar}
-      <div className="relative h-[196px]">{children}</div>
-    </div>
-  )
-}
-
-// Telegram's own sheet chrome (fixed light/dark, independent of our theme).
-function TelegramBar({ icon, title }: { icon: string; title: string }) {
-  return (
-    <div className="flex items-center gap-1.5 border-b border-[#2c2c2e] bg-[#f0f0f0] px-2.5 py-1.5">
-      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2f7fd8] text-white">
-        <Icon name={icon} size={9} strokeWidth={2.25} />
-      </span>
-      <span className="font-sans text-[9.5px] font-bold leading-normal text-[#1d1c1d]">{title}</span>
-    </div>
-  )
-}
-
-// A browser chrome strip for previews of web consoles (matches the Slack config-token preview).
-function BrowserBar({ url }: { url: string }) {
-  return (
-    <div className="flex items-center gap-1.5 border-b border-[#e3e5e8] bg-[#f2f3f5] px-2.5 py-1.5">
-      <span className="h-2 w-2 flex-none rounded-full bg-[#e0605a]" />
-      <span className="h-2 w-2 flex-none rounded-full bg-[#e8b13a]" />
-      <span className="h-2 w-2 flex-none rounded-full bg-[#4aa564]" />
-      <span className="ml-1 min-w-0 truncate font-mono text-[9px] leading-normal text-[#5c5e66]">{url}</span>
-    </div>
-  )
-}
-
-const TG_STEPS: WalkthroughStep[] = [
-  {
-    label: 'Find the bot',
-    caption: (
-      <>
-        Search <span className="mono">@BotFather</span> in Telegram (the verified one) and open the chat.
-      </>
-    ),
-    screen: (
-      <MiniScreen
-        frameClass="border-[#2c2c2e] bg-[#1c1c1d]"
-        bar={<TelegramBar icon="search" title="Telegram — search" />}
-      >
-        <div className="absolute inset-0 bg-white px-3 py-2.5">
-          <div className="flex items-center gap-1.5 rounded-md bg-[#f0f0f0] px-2 py-1.5">
-            <Icon name="search" size={10} color="#8e8e93" />
-            <span className="font-sans text-[10px] leading-normal text-[#1d1c1d]">@BotFather</span>
-          </div>
-          <div className="mt-2 mb-1 font-sans text-[8px] font-semibold uppercase leading-normal tracking-wide text-[#8e8e93]">
-            Contacts and chats
-          </div>
-          <div className="relative flex items-center gap-2 rounded-md px-1.5 py-1.5">
-            <span className="pointer-events-none absolute -inset-0.5 step-blink rounded-lg ring-2 ring-[#2f7fd8]" />
-            <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full bg-[#2f7fd8] text-white">
-              <Icon name="bot" size={12} strokeWidth={2.25} />
-            </span>
-            <span className="flex min-w-0 flex-1 items-center gap-1">
-              <span className="truncate font-sans text-[10px] font-semibold leading-normal text-[#1d1c1d]">
-                BotFather
-              </span>
-              <Icon name="badge-check" size={10} color="#2f7fd8" />
-            </span>
-            <span className="flex-none rounded-full bg-[#2f7fd8] px-2 py-[2px] font-sans text-[8.5px] font-bold leading-normal text-white">
-              OPEN
-            </span>
-          </div>
-          <div className="mt-1.5 mb-1 font-sans text-[8px] font-semibold uppercase leading-normal tracking-wide text-[#8e8e93]">
-            Global search
-          </div>
-          {['@Botfagher_bot', '@botfather_tron_bot'].map((u) => (
-            <div key={u} className="flex items-center gap-2 px-1.5 py-1">
-              <span className="h-5 w-5 flex-none rounded-full bg-[#e6e6e6]" />
-              <span className="mono truncate text-[9px] leading-normal text-[#8e8e93]">{u}</span>
-            </div>
-          ))}
-          <div className="mt-1 font-sans text-[8.5px] leading-snug text-[#8e8e93]">
-            Impostors are everywhere — take the verified one.
-          </div>
-        </div>
-      </MiniScreen>
-    )
-  },
-  {
-    label: 'New bot',
-    caption: (
-      <>
-        Tap <span className="font-medium text-(--text-secondary)">Start</span> &rarr;{' '}
-        <span className="font-medium text-(--text-secondary)">New bot</span>, then pick a name and a username ending in{' '}
-        <span className="mono">bot</span>.
-      </>
-    ),
-    screen: (
-      <MiniScreen frameClass="border-[#2c2c2e] bg-[#1c1c1d]" bar={<TelegramBar icon="bot" title="BotFather" />}>
-        <div className="absolute inset-0 px-3 py-2.5">
-          <div className="mb-1.5 flex justify-center">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#2c2c2e] text-[#8e8e93]">
-              <Icon name="camera" size={13} />
-            </span>
-          </div>
-          <div className="text-center font-sans text-[12px] font-bold leading-tight text-white">New bot</div>
-          <div className="mt-0.5 mb-2 text-center font-sans text-[9px] leading-tight text-[#8e8e93]">
-            Enter a name, description and username to create a new bot.
-          </div>
-          <div className="rounded-md bg-[#2c2c2e] px-2 py-1.5 font-sans text-[10px] leading-normal text-white">
-            My Agent
-          </div>
-          <div className="mt-0.5 rounded-md bg-[#2c2c2e] px-2 py-1.5 font-sans text-[10px] leading-normal text-[#8e8e93]">
-            About (Optional)
-          </div>
-          <div className="mt-1.5 rounded-md bg-[#2c2c2e] px-2 py-1.5 font-sans text-[10px] leading-normal text-[#8e8e93]">
-            t.me/<span className="text-white">my_agent_bot</span>
-          </div>
-          <div className="mt-1 font-sans text-[8.5px] leading-normal text-[#4db34d]">my_agent_bot is available.</div>
-        </div>
-      </MiniScreen>
-    )
-  },
-  {
-    label: 'Copy token',
-    caption: <>The bot&rsquo;s screen shows the API token — copy it and paste it below.</>,
-    screen: (
-      <MiniScreen frameClass="border-[#2c2c2e] bg-[#1c1c1d]" bar={<TelegramBar icon="bot" title="BotFather" />}>
-        <div className="absolute inset-0 flex flex-col justify-center px-3 py-2.5">
-          <div className="mb-1.5 flex justify-center">
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#4caf50] font-sans text-[13px] font-bold leading-none text-white">
-              M
-            </span>
-          </div>
-          <div className="text-center font-sans text-[12px] font-bold leading-tight text-white">My Agent</div>
-          <div className="mt-0.5 mb-2 text-center font-sans text-[9px] leading-tight text-[#8e8e93]">@my_agent_bot</div>
-          <div className="rounded-md bg-[#2c2c2e] p-2">
-            <div className="flex items-center gap-1.5">
-              <Icon name="key-round" size={10} color="#8e8e93" />
-              <span className="mono min-w-0 flex-1 truncate text-[9px] leading-normal text-[#8e8e93] blur-[2.5px]">
-                123456789:AAEabcdefghijklmnopqrstuvwxyz
-              </span>
-            </div>
-            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-              <span className="relative rounded bg-[#2f7fd8] py-[3px] text-center font-sans text-[9px] font-semibold leading-normal text-white">
-                Copy
-                <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-white" />
-              </span>
-              <span className="rounded bg-[#e0625a] py-[3px] text-center font-sans text-[9px] font-semibold leading-normal text-white">
-                Revoke
-              </span>
-            </div>
-          </div>
-          <div className="mt-1.5 font-sans text-[8.5px] leading-snug text-[#8e8e93]">
-            Access the API using this token. Keep it secret.
-          </div>
-        </div>
-      </MiniScreen>
-    )
-  }
-]
-
-// Discord's Developer Portal walkthrough stops after token copy. AgentConnect handles
-// Message Content Intent during install.
-const DISCORD_STEPS: WalkthroughStep[] = [
-  {
-    label: 'New app',
-    caption: (
-      <>
-        <span className="font-medium text-(--text-secondary)">New Application</span>&#32;&rarr; name it, accept the
-        developer terms, then Create.
-      </>
-    ),
-    screen: (
-      <MiniScreen
-        frameClass="border-[#e3e5e8] bg-[#f2f3f5]"
-        bar={<BrowserBar url="discord.com/developers/applications" />}
-      >
-        <div className="absolute inset-0 bg-[#f2f3f5] px-3 py-2.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-sans text-[10px] font-bold leading-normal text-[#313338]">Applications</span>
-            <span className="rounded bg-[#5865f2] px-1.5 py-[3px] font-sans text-[8.5px] font-semibold leading-normal text-white">
-              New Application
-            </span>
-          </div>
-          <div className="mt-2 rounded-md border border-[#e3e5e8] bg-white p-2 shadow-(--shadow-md)">
-            <div className="font-sans text-[10.5px] font-bold leading-normal text-[#313338]">Create a new app</div>
-            <div className="mt-1.5 font-sans text-[8px] font-semibold uppercase leading-normal tracking-wide text-[#5c5e66]">
-              Name <span className="text-[#d83c3e]">*</span>
-            </div>
-            <div className="mt-1 rounded border border-[#c4c9ce] bg-white px-2 py-1 font-sans text-[9.5px] leading-normal text-[#313338]">
-              my-agent
-            </div>
-            <div className="mt-1.5 flex items-start gap-1.5">
-              <span className="mt-[1px] flex h-2.5 w-2.5 flex-none items-center justify-center rounded-[3px] bg-[#5865f2] text-white">
-                <Icon name="check" size={8} strokeWidth={3} />
-              </span>
-              <span className="font-sans text-[8px] leading-snug text-[#5c5e66]">
-                By clicking Create, you agree to the Discord Developer Terms of Service.
-              </span>
-            </div>
-            <div className="mt-1.5 flex justify-end gap-1.5">
-              <span className="rounded px-2 py-[3px] font-sans text-[9px] font-semibold leading-normal text-[#4e5058]">
-                Cancel
-              </span>
-              <span className="relative rounded bg-[#5865f2] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
-                Create
-                <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#5865f2]" />
-              </span>
-            </div>
-          </div>
-        </div>
-      </MiniScreen>
-    )
-  },
-  {
-    label: 'Copy token',
-    caption: (
-      <>
-        <span className="font-medium text-(--text-secondary)">Bot</span>&#32;&rarr; Reset Token, then copy it — Discord
-        shows the token only once.
-      </>
-    ),
-    screen: (
-      <MiniScreen
-        frameClass="border-[#e3e5e8] bg-white"
-        bar={<BrowserBar url="discord.com/developers/applications/…/bot" />}
-      >
-        <div className="absolute inset-0 flex bg-white">
-          <div className="w-[74px] flex-none border-r border-[#e3e5e8] bg-[#f2f3f5] px-1.5 py-2">
-            {['General Info', 'Installation', 'OAuth2', 'Bot'].map((n) => (
-              <div
-                key={n}
-                className={`truncate rounded px-1.5 py-1 font-sans text-[8.5px] leading-normal ${
-                  n === 'Bot' ? 'bg-white font-bold text-[#313338]' : 'text-[#5c5e66]'
-                }`}
-              >
-                {n}
-              </div>
-            ))}
-          </div>
-          <div className="min-w-0 flex-1 px-2.5 py-2">
-            <div className="font-sans text-[10.5px] font-bold leading-normal text-[#313338]">Bot</div>
-            <div className="mt-1.5 rounded border border-[#b7e2c4] bg-[#e7f6ec] px-1.5 py-1 font-sans text-[8px] leading-snug text-[#1a7f45]">
-              A new token was generated! Copy it now — it won&rsquo;t be shown again.
-            </div>
-            <div className="mt-2 font-sans text-[9px] font-bold leading-normal text-[#313338]">Token</div>
-            <div className="mono mt-1 truncate text-[9px] leading-normal text-[#5c5e66] blur-[2.5px]">
-              MTIzNDU2Nzg5MDEyMzQ1Njc4.Gabcde.fghijklmnopqrstuvwxyz
-            </div>
-            <div className="mt-1.5 flex gap-1.5">
-              <span className="relative rounded bg-[#5865f2] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
-                Copy
-                <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#5865f2]" />
-              </span>
-              <span className="rounded bg-[#6d6f78] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
-                Reset Token
-              </span>
-            </div>
-          </div>
-        </div>
-      </MiniScreen>
-    )
-  }
-]
-
-// Feishu's console (and Lark's, which is the same product on a different host) walked through
-// the same way: create the self-built app, then copy the credential pair off "Credentials &
-// Basic Info". It stops there on purpose — the remaining app-level settings (bot capability,
-// Long Connection events, scopes, publishing) are the FEISHU_REQS checklist further down this
-// pane, and repeating them here would only duplicate it. Built per region so every label and
-// the address bar say Feishu / open.feishu.cn or Lark / open.larksuite.com.
-function feishuWalkthroughSteps(brand: 'Feishu' | 'Lark', host: string): WalkthroughStep[] {
-  const nav = ['Credentials & Basic Info', 'Collaborators', 'Add Features', 'Bot']
-  const navItem = (name: string, active: string) => (
-    <div
-      key={name}
-      className={`truncate rounded px-1.5 py-1 font-sans text-[8px] leading-normal ${
-        name === active ? 'bg-[#e8f0ff] font-bold text-[#3370ff]' : 'text-[#646a73]'
-      }`}
-    >
-      {name}
-    </div>
-  )
-  return [
-    {
-      label: 'Create app',
-      caption: (
-        <>
-          In the {brand} developer console, create a{' '}
-          <span className="font-medium text-(--text-secondary)">custom app</span> for your workspace.
-        </>
-      ),
-      screen: (
-        <MiniScreen frameClass="border-[#dee0e3] bg-[#f5f6f7]" bar={<BrowserBar url={`${host}/app`} />}>
-          <div className="absolute inset-0 bg-[#f5f6f7] px-3 py-2.5">
-            <div className="font-sans text-[10px] font-bold leading-normal text-[#1f2329]">Create app</div>
-            <div className="mt-2 rounded-md border border-[#dee0e3] bg-white p-2 shadow-(--shadow-md)">
-              <div className="font-sans text-[9.5px] font-bold leading-normal text-[#1f2329]">Custom app</div>
-              <div className="mt-0.5 font-sans text-[8px] leading-snug text-[#646a73]">
-                Only usable inside your own organization — no review needed.
-              </div>
-              <div className="mt-1.5 font-sans text-[8px] font-semibold leading-normal text-[#646a73]">App name</div>
-              <div className="mt-1 rounded border border-[#dee0e3] bg-white px-2 py-1 font-sans text-[9.5px] leading-normal text-[#1f2329]">
-                acp-tester
-              </div>
-              <div className="mt-1.5 flex justify-end gap-1.5">
-                <span className="rounded px-2 py-[3px] font-sans text-[9px] font-semibold leading-normal text-[#646a73]">
-                  Cancel
-                </span>
-                <span className="relative rounded bg-[#3370ff] px-2.5 py-[3px] font-sans text-[9px] font-semibold leading-normal text-white">
-                  Create
-                  <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#3370ff]" />
-                </span>
-              </div>
-            </div>
-          </div>
-        </MiniScreen>
-      )
-    },
-    {
-      label: 'ID & Secret',
-      caption: (
-        <>
-          <span className="font-medium text-(--text-secondary)">Credentials &amp; Basic Info</span>&#32;— copy the App
-          ID and reveal the App Secret; both go in the fields below.
-        </>
-      ),
-      screen: (
-        <MiniScreen frameClass="border-[#dee0e3] bg-white" bar={<BrowserBar url={`${host}/app/…/baseinfo`} />}>
-          <div className="absolute inset-0 flex bg-white">
-            <div className="w-[88px] flex-none border-r border-[#dee0e3] bg-white px-1.5 py-2">
-              <div className="px-1.5 pb-1 font-sans text-[7.5px] font-semibold uppercase leading-normal tracking-wide text-[#8f959e]">
-                Basic Info
-              </div>
-              {nav.slice(0, 2).map((n) => navItem(n, 'Credentials & Basic Info'))}
-              <div className="mt-1 px-1.5 pb-1 font-sans text-[7.5px] font-semibold uppercase leading-normal tracking-wide text-[#8f959e]">
-                Features
-              </div>
-              {nav.slice(2).map((n) => navItem(n, 'Credentials & Basic Info'))}
-            </div>
-            <div className="min-w-0 flex-1 px-2.5 py-2">
-              <div className="font-sans text-[10.5px] font-bold leading-normal text-[#1f2329]">Credentials</div>
-              <div className="mt-2 font-sans text-[8px] font-semibold leading-normal text-[#646a73]">App ID</div>
-              <div className="mt-1 flex items-center gap-1.5">
-                <span className="mono min-w-0 flex-1 truncate text-[9px] leading-normal text-[#1f2329]">
-                  cli_xxxxxxxxxxxxxxxx
-                </span>
-                <span className="relative flex-none text-[#3370ff]">
-                  <Icon name="copy" size={10} />
-                  <span className="pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ring-[#3370ff]" />
-                </span>
-              </div>
-              <div className="mt-2 font-sans text-[8px] font-semibold leading-normal text-[#646a73]">App Secret</div>
-              <div className="mt-1 flex items-center gap-1.5">
-                <span className="min-w-0 flex-1 truncate font-sans text-[9px] leading-normal tracking-tight text-[#1f2329]">
-                  ****************************
-                </span>
-                <span className="flex flex-none items-center gap-1 text-[#3370ff]">
-                  <Icon name="copy" size={10} />
-                  <Icon name="eye" size={10} />
-                  <Icon name="refresh-cw" size={10} />
-                </span>
-              </div>
-              <div className="mt-2 font-sans text-[8px] leading-snug text-[#646a73]">
-                The secret is masked — reveal it once and store it safely.
-              </div>
-            </div>
-          </div>
-        </MiniScreen>
-      )
-    }
-  ]
-}
-
 // The integration is owned by one agent; that agent's daemon opens the connection.
 // The dialog is only reachable from a specific agent (its row / detail page), so the
 // agent is fixed — no picker. `initialPlatform` lets a caller land on a specific
@@ -987,108 +195,20 @@ export default function AddIntegrationModal({
   initialFeishuRegion?: FeishuRegion
   onClose: () => void
 }) {
-  const {
-    createIntegration,
-    finalizeSlackInstall,
-    bots,
-    createHook,
-    createGithubHook,
-    daemons,
-    daemonsLoading,
-    refresh,
-    updateAgent
-  } = useConsoleData()
+  const { createIntegration, bots, createHook, createGithubHook, daemons, daemonsLoading, refresh, updateAgent } =
+    useConsoleData()
   const { me } = useProfile()
   const [platform, setPlatform] = useState<Platform>(initialPlatform ?? 'slack')
-  // Prefilled from the agent's name so the manifest carries a real app name out of
-  // the box; still editable, and empty falls back to `agent.name` for the manifest.
-  const [appName, setAppName] = useState(agent.name)
-  const [botToken, setBotToken] = useState('')
-  const [appToken, setAppToken] = useState('')
-  const [telegramCheckScope] = useState(() => crypto.randomUUID())
-  const telegramCheckSequence = useRef(0)
-  const [telegramCheckRequest, setTelegramCheckRequest] = useState<{
-    token: string
-    sequence: number
-  } | null>(null)
-  // Lark/Feishu gateway: new installs default to international Lark.
+  // Lark/Feishu gateway: new installs default to international Lark. Host state
+  // because the PICKER TILE hosts the switcher and callers preselect it.
   const [feishuRegion, setFeishuRegion] = useState<FeishuRegion>(initialFeishuRegion ?? 'lark')
-  const [feishuVerificationToken, setFeishuVerificationToken] = useState('')
-  const [feishuEncryptKey, setFeishuEncryptKey] = useState('')
-  const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
-  const [feishuMethod, setFeishuMethod] = useState<'deeplink' | 'manual'>('deeplink')
-  const [feishuPhase, setFeishuPhase] = useState<'idle' | 'authorizing'>('idle')
-  const [feishuRegistration, setFeishuRegistration] = useState<{
-    id: string
-    authorizationUrl: string
-    expiresAt: string
-    transport: 'socket' | 'http'
-  } | null>(null)
-  const botIdentityCopy: Record<BotPlatform, { create: string; existing: string }> = {
-    slack: { create: 'Create with a Slack manifest', existing: 'An unused Slack app' },
-    telegram: { create: 'Create a bot with @BotFather', existing: 'An unused Telegram bot' },
-    discord: { create: 'Create a bot in Discord', existing: 'An unused Discord bot' },
-    feishu: { create: `Create with one-click ${feishuBrand} setup`, existing: `An unused ${feishuBrand} bot` }
-  }
   const [saving, setSaving] = useState(false)
-  const [showErrors, setShowErrors] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  // Synchronous re-entry guard for the async actions. `saving` state can't do this —
-  // it commits on the NEXT render, so a fast double-click fires two calls in the same
-  // tick (both see saving=false). A ref flips immediately, so the second click bails —
-  // otherwise a double "Create app & install" spawns two Slack apps / two OAuth tabs
-  // and the modal ends up polling an install the user never approved.
+  // Synchronous re-entry guard for the chassis's own async actions (webhook,
+  // github, reuse). `saving` state can't do this — it commits on the NEXT
+  // render, so a fast double-click fires two calls in the same tick. Each
+  // platform fragment keeps its own guard for its own flows.
   const busyRef = useRef(false)
-
-  // Tier B config-token auto-install (docs/designs/slack-install-smoothing.md §Tier B).
-  // PER-USER: the app is created with the CALLER's own config token, so it belongs to
-  // them and only they can mint its app-level token. `slackFunnel`: null = still
-  // checking, true = this deployment supports auto-install (public callback), false =
-  // manual (create the app yourself). Fetched on open; `autoUsable` (below) tracks whether
-  // the caller's stored config token can one-click right now.
-  const [slackFunnel, setSlackFunnel] = useState<boolean | null>(null)
-  // The caller's stored config token is USABLE for a one-click install right now: it
-  // auto-rotates (durable) or its access token is still fresh. False when they've stored
-  // nothing OR their access-only token expired — either way the config method shows the
-  // inline token entry instead.
-  const [autoUsable, setAutoUsable] = useState(false)
-  // "Create a new bot" method (Slack): 'config' = recommended config-token quick install
-  // (works for socket AND http), 'bot' = manual bot-token flow. Null ⇒ derive the default.
-  const [createMethod, setCreateMethod] = useState<'config' | 'bot' | null>(null)
-  // Inline config-token entry, shown under the config method — saved to the same per-user
-  // store as the Profile card (so it appears there too).
-  const [cfgAccess, setCfgAccess] = useState('')
-  const [cfgRefresh, setCfgRefresh] = useState('')
-  // Slack inbound transport (locked rule): `http` (Events API via relay) is the
-  // default when a relay is available; `socket` (Socket Mode) is the only choice
-  // when none. `transport` null = not yet chosen ⇒ derive the default from
-  // `relayAvailable`. `relayAvailable` / `relayPublicUrl` come off the same
-  // fetchSlackConfig() call as the funnel flags below.
-  const [transport, setTransport] = useState<'socket' | 'http' | null>(null)
-  const [signingSecret, setSigningSecret] = useState('') // http manual credential
-  const [relayAvailable, setRelayAvailable] = useState(false)
-  const [relayPublicUrl, setRelayPublicUrl] = useState<string | null>(null)
-  // config → authorizing (OAuth in the other tab) → appToken (bot ready, paste xapp).
-  const [autoPhase, setAutoPhase] = useState<'config' | 'authorizing' | 'appToken'>('config')
-  const [install, setInstall] = useState<{
-    installId: string
-    appId: string
-    installUrl: string
-    transport: 'socket' | 'http'
-  } | null>(null)
-  // Platform-published "Add to Slack" app (preset-agents.md §5.3): one click, no app
-  // to create and no tokens — the CP finishes the install in the OAuth callback, and
-  // the modal polls THAT install row for its terminal state. This is the DEPLOYMENT
-  // probe only; whether THIS agent may use it is `builtinAppOffered` below.
-  const [platformAvailable, setPlatformAvailable] = useState(false)
-  const [platformPhase, setPlatformPhase] = useState<'idle' | 'authorizing'>('idle')
-  const [platformErr, setPlatformErr] = useState<string | null>(null)
-  // The pending install being polled (its id doubles as the OAuth state).
-  const [platformInstallId, setPlatformInstallId] = useState<string | null>(null)
-  // Which Slack Bot-identity pane shows: the one-click BUILT-IN app (the default
-  // whenever the platform app is configured) or the custom bot flow (create your
-  // own app / reuse a freed bot) behind the "Use a custom bot identity" disclosure.
-  const [slackIdentity, setSlackIdentity] = useState<'builtin' | 'custom'>('builtin')
 
   // Webhook path: the form, then the created row. HMAC is an optional second
   // factor; when selected, the row carries the ONE-TIME signing-secret echo.
@@ -1192,8 +312,36 @@ export default function AddIntegrationModal({
   const [modePick, setModePick] = useState<'existing' | 'create' | null>(null)
   const [botPick, setBotPick] = useState<string | null>(null)
   // Shared-bot opt-in (shared-bot-relay.md §4.1): one bot, many agents, inbound via a
-  // relay. Slack-only for now; the CP rejects a shared Telegram/Discord install.
+  // relay. Only platforms declaring the `share` affordance offer it; the CP rejects
+  // a shared install anywhere else.
   const [shared, setShared] = useState(false)
+  // Explicit transport pick; null ⇒ derive the active module's default rule.
+  const [transportPick, setTransportPick] = useState<WebWizardTransport | null>(null)
+
+  // ── The two publication channels a fragment drives (§10) ────────────────────
+  // Both keep the CALLBACKS in a ref and only the RENDERED fields in state, so a
+  // Body may republish on every commit (see `platforms/publish.ts`) without ever
+  // looping the host: an unchanged publication returns the previous state and
+  // React bails out of the re-render.
+  const footerRef = useRef<WizardFooterState | null>(null)
+  const [footerView, setFooterView] = useState<FooterView | null>(null)
+  const setFooter = useCallback((state: WizardFooterState | null) => {
+    footerRef.current = state
+    const next = toFooterView(state)
+    setFooterView((prev) => (sameFooterView(prev, next) ? prev : next))
+  }, [])
+  const identityRef = useRef<WizardIdentityChromeState | null>(null)
+  const [identityView, setIdentityView] = useState<IdentityChromeView | null>(null)
+  const setIdentityChrome = useCallback((state: WizardIdentityChromeState | null) => {
+    identityRef.current = state
+    const next = toIdentityChromeView(state)
+    setIdentityView((prev) => (sameIdentityChromeView(prev, next) ? prev : next))
+  }, [])
+  // The third publication channel: a fragment with a started, region-bound flow
+  // freezes the region switcher on the picker tile (Feishu's pending device
+  // registration — see `WizardHost.setRegionLocked`).
+  const [regionLocked, setRegionLocked] = useState(false)
+  const setError = useCallback((message: string | null) => setErr(message), [])
 
   // A bot integration is runnable only when the owning daemon has reported its
   // adapter on register. Do not substitute `maxAgents`: it is a concurrency
@@ -1215,29 +363,28 @@ export default function AddIntegrationModal({
     supportedBotPlatforms.some((supported) => supported.key === candidate)
   const selectedBotPlatformSupported = isPlatformAvailable(platform)
 
-  // Switching platform resets the whole bot-identity sub-form: a different platform
-  // has different free bots, a different token shape, and its own default mode.
+  // The active platform module — undefined for the two core trigger sections.
+  const activeModule = platformRegistry.get(platform)
+  const wizard = activeModule?.wizard
+  // §5 `regions` is manifest data the web module deliberately does not carry
+  // (contract D2), so the chassis keeps the one platform with regional clouds.
+  const region = platform === 'feishu' ? feishuRegion : undefined
+
+  // Switching platform resets the shared bot-identity axes. The platform's OWN
+  // sub-form needs no reset list any more: a different platform is a different
+  // Body component, so React unmounts the old fragment and its state goes with
+  // it (§10's reset seam).
   const pickPlatform = (candidate: Platform) => {
     if (createdHook || !isPlatformAvailable(candidate)) return
     setPlatform(candidate)
     setModePick(null)
     setBotPick(null)
     setShared(false)
-    setTransport(null)
-    setSigningSecret('')
-    setFeishuVerificationToken('')
-    setFeishuEncryptKey('')
-    setAppName(agent.name)
-    setBotToken('')
-    setAppToken('')
-    setCreateMethod(null)
-    setFeishuMethod('deeplink')
-    setFeishuPhase('idle')
-    setFeishuRegistration(null)
-    setCfgAccess('')
-    setCfgRefresh('')
-    setShowErrors(false)
+    setTransportPick(null)
     setErr(null)
+    setFooter(null)
+    setIdentityChrome(null)
+    setRegionLocked(false)
   }
 
   // Daemon data arrives asynchronously and can change after the modal opens. If
@@ -1247,177 +394,111 @@ export default function AddIntegrationModal({
     if (daemonsLoading || createdHook || selectedBotPlatformSupported) return
     setPlatform(firstSupportedBotPlatform ?? 'webhook')
     setModePick(null)
-    setSlackIdentity('builtin')
     setBotPick(null)
     setShared(false)
-    setTransport(null)
-    setSigningSecret('')
-    setFeishuVerificationToken('')
-    setFeishuEncryptKey('')
-    setAppName(agent.name)
-    setBotToken('')
-    setAppToken('')
-    setFeishuMethod('deeplink')
-    setFeishuPhase('idle')
-    setFeishuRegistration(null)
-    setShowErrors(false)
+    setTransportPick(null)
     setErr(null)
-  }, [agent.name, createdHook, daemonsLoading, firstSupportedBotPlatform, selectedBotPlatformSupported])
+    setFooter(null)
+    setIdentityChrome(null)
+    setRegionLocked(false)
+  }, [
+    createdHook,
+    daemonsLoading,
+    firstSupportedBotPlatform,
+    selectedBotPlatformSupported,
+    setFooter,
+    setIdentityChrome
+  ])
 
+  // Deployment-level public-callback capability. Probed only for platforms that
+  // actually offer a transport choice — the same two panes that read it today.
+  const probe = useDeploymentConfig(wizard?.affordances.transport !== undefined)
+  const relayCapability = useMemo(
+    () => ({ available: probe.config?.relayAvailable ?? false, publicUrl: probe.config?.relayPublicUrl ?? null }),
+    [probe.config]
+  )
+
+  const mode: 'create' | 'existing' = modePick ?? 'create'
   // A bot serves one agent at a time; freed (or prebuilt, never-installed) bots of
-  // THIS platform (and active Feishu/Lark region) are offered for reuse instead
-  // of forcing a re-create. Two kinds
+  // THIS platform are offered for reuse instead of forcing a re-create. Two kinds
   // look "free" (`inUseByAgentId` clears with the last install) but are not, and the
   // server rejects both — don't offer what cannot be picked:
   //   • revoked — the workspace uninstalled the app, so its token is dead;
-  //   • a platform-app install (`teamId`) that has NOT been flipped shareable —
-  //     one workspace serves one agent by default (preset-agents.md §5.5). Once
-  //     the user enables sharing on it (Settings → Bots) it reuses like any
-  //     shared bot; before that, reuse is the dedicated "Add to Slack" flow or a
-  //     Slack app of this agent's own.
+  //   • whatever the platform itself disqualifies (`freeBotFilter`) — Slack's
+  //     not-yet-shared workspace install, Feishu's other-region bot.
+  // The predicate is evaluated before the EFFECTIVE shared opt-in is known (that
+  // needs the selection this list produces), so it sees the raw toggle; no
+  // platform's eligibility rule reads it.
+  const reuseContext = (sharedOptIn: boolean): WizardReuseContext => ({
+    agentId: agent.id,
+    ...(region !== undefined ? { region } : {}),
+    shared: sharedOptIn
+  })
   const freeBots = bots.filter(
     (b) =>
       b.platform === platform &&
-      (platform !== 'feishu' || (b.feishuRegion ?? 'feishu') === feishuRegion) &&
       !b.inUseByAgentId &&
       !b.revokedAt &&
-      (!b.teamId || b.shareable)
+      (wizard?.freeBotFilter(b, reuseContext(shared)) ?? false)
   )
-  const mode = modePick ?? 'create'
-  // Slack Bot-identity panes (design: builtin-first). While the funnel probe is in
-  // flight the create flow's spinner stands in for the section; once loaded with
-  // the platform app configured, the DEFAULT pane is the one-click built-in
-  // install — the whole custom flow (mode cards, token steps, share toggle, the
-  // footer action) hides behind the "Use a custom bot identity" disclosure.
-  // …and it is offered on the BUILT-IN preset agent only (preset-agents.md §5.3):
-  // the platform app is one deployment-level Slack app whose workspace install
-  // binds to the org's `agentconnect` preset. Clicking it from any other agent
-  // is a dead end — the workspace is already taken by the preset, and the
-  // callback answers `agent_taken`. Every other agent gets its own bot identity
-  // (create an app via quick-install, or reuse a freed / shared one).
-  const builtinAppOffered = platformAvailable && agent.builtin === true
-  const slackChecking = platform === 'slack' && slackFunnel === null
-  const slackBuiltin = platform === 'slack' && slackFunnel !== null && builtinAppOffered && slackIdentity === 'builtin'
-  const hideIdentitySection = slackChecking || slackBuiltin
   const selectedBotId = freeBots.some((b) => b.id === botPick) ? botPick : (freeBots[0]?.id ?? null)
   const selectedBot = freeBots.find((b) => b.id === selectedBotId) ?? null
+
   // The effective callback-capable transport for the CREATE path: an explicit pick,
-  // else the platform default. Slack prefers HTTP when relay delivery is available;
-  // Feishu starts on Long Connection and offers HTTP as an explicit relay-backed choice.
-  // Once an auto-install is pending, PIN the transport to what the app was actually
-  // created as (the server row) — not the still-editable selector — so a post-start
-  // switch can't drive the wrong finalize path. Before that, it's the user's choice.
-  const defaultTransport: 'socket' | 'http' = platform === 'slack' && relayAvailable ? 'http' : 'socket'
-  const effTransport: 'socket' | 'http' = install ? install.transport : (transport ?? defaultTransport)
-  // The inline delivery toggle's switch action: pick the transport, and drop the
-  // Slack shared opt-in when moving to socket (shared bots are http-only).
-  const switchTransport = (next: 'socket' | 'http') => {
-    setTransport(next)
+  // else the module's default rule (Slack prefers HTTP when relay delivery is
+  // available; Feishu starts on Long Connection and offers HTTP as an explicit choice).
+  const transport: WebWizardTransport =
+    transportPick ??
+    (wizard?.affordances.transport?.httpByDefaultWhenRelayAvailable && relayCapability.available ? 'http' : 'socket')
+  // Picking the transport drops the shared opt-in when moving to socket: shared
+  // bots are relay-backed and therefore http-only.
+  const setTransport = useCallback((next: WebWizardTransport) => {
+    setTransportPick(next)
     if (next === 'socket') setShared(false)
-  }
-  // Shared mode is Slack-only AND http-only — a socket bot can never be shared.
-  // Create: gate on the chosen transport. Existing: gate on the reused bot's own
-  // transport (the selector isn't shown for reuse), so a socket bot never offers it.
+  }, [])
+  // Shared mode is http-only — a socket bot can never be shared. Create: gate on
+  // the chosen transport. Existing: gate on the reused bot's own transport (the
+  // selector isn't shown for reuse), so a socket bot never offers it.
   const shareToggleAvailable =
-    platform === 'slack' &&
-    (mode === 'existing' ? (selectedBot?.transport ?? 'socket') === 'http' : effTransport === 'http')
+    wizard?.affordances.share === true &&
+    (mode === 'existing' ? (selectedBot?.transport ?? 'socket') === 'http' : transport === 'http')
   // Reusing an already-shared bot is implicitly a shared install.
   const wantShared = shareToggleAvailable && (shared || (mode === 'existing' && !!selectedBot?.shareable))
-  const feishuDeliveryTransport = mode === 'existing' ? (selectedBot?.transport ?? 'socket') : effTransport
 
-  // Slack: bot token (xoxb-) + either an app-level Socket Mode token (xapp-, socket)
-  // or a signing secret (http). Telegram: one BotFather token (`<id>:<secret>`).
-  // Discord: one bot token (no fixed prefix).
-  const tokenTrim = botToken.trim()
-  const slackBotOk = tokenTrim.startsWith('xoxb-')
-  const slackAppOk = appToken.trim().startsWith('xapp-')
-  // Slack signing secrets are 32 hex chars; keep the guard lenient.
-  const slackSigningOk = signingSecret.trim().length >= 16
-  // Aliases used by the Slack funnel UI (auto-install + manual-manifest branches).
-  const botOk = slackBotOk
-  const appOk = slackAppOk
-  const telegramOk = /^\d+:[A-Za-z0-9_-]{20,}$/.test(tokenTrim)
-  const telegramCheckEnabled = mode === 'create' && platform === 'telegram' && telegramOk
-  useEffect(() => {
-    if (!telegramCheckEnabled || MOCK_MODE) {
-      setTelegramCheckRequest(null)
-      return
+  const host: WizardHost = {
+    createIntegration,
+    relayCapability,
+    mode,
+    selectedBot,
+    ...(region !== undefined ? { region } : {}),
+    transport,
+    setTransport,
+    shared: wantShared,
+    mockMode: MOCK_MODE,
+    setFooter,
+    setIdentityChrome,
+    setRegionLocked,
+    setError,
+    close: onClose,
+    invalidate: refresh
+  }
+
+  // Reuse needs no fragment participation: the host builds the input from the
+  // module's pure `buildReuseInput` and commits it.
+  const submitReuse = async () => {
+    if (busyRef.current || !wizard || !selectedBot) return
+    busyRef.current = true
+    setSaving(true)
+    setErr(null)
+    try {
+      await createIntegration(wizard.buildReuseInput(selectedBot, reuseContext(wantShared)))
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setSaving(false)
+      busyRef.current = false
     }
-    const timer = window.setTimeout(() => {
-      telegramCheckSequence.current += 1
-      setTelegramCheckRequest({ token: tokenTrim, sequence: telegramCheckSequence.current })
-    }, TELEGRAM_CHECK_DEBOUNCE_MS)
-    return () => window.clearTimeout(timer)
-  }, [telegramCheckEnabled, tokenTrim])
-  const telegramCheckKey =
-    telegramCheckEnabled && !MOCK_MODE && telegramCheckRequest?.token === tokenTrim
-      ? ['telegram-bot-check', agent.id, telegramCheckScope, telegramCheckRequest.sequence]
-      : null
-  const {
-    data: telegramCheckData,
-    error: telegramCheckError,
-    isValidating: telegramCheckRefreshing,
-    mutate: refreshTelegramCheck
-  } = useSWR<TelegramBotCheckDto>(telegramCheckKey, () => checkTelegramBot(telegramCheckRequest!.token), {
-    revalidateOnFocus: false,
-    shouldRetryOnError: false
-  })
-  const telegramCheck: TelegramCheckState = !telegramCheckEnabled
-    ? 'idle'
-    : MOCK_MODE
-      ? 'ready'
-      : telegramCheckRequest?.token !== tokenTrim
-        ? 'checking'
-        : telegramCheckError
-          ? 'unreachable'
-          : (telegramCheckData?.status ?? 'checking')
-  useTelegramPrivacyAutoRefresh(telegramCheck === 'privacy_enabled', refreshTelegramCheck)
-  const discordOk = tokenTrim.length >= 24
-  // The application (client) id is base64-encoded in the bot token's first segment, so
-  // once a token is pasted we can offer a ready-made "Add to Discord" invite link with
-  // the right scopes + permissions (mirrors slackAppIdFromAppToken). Null until decodable.
-  const discordAppId = platform === 'discord' ? discordApplicationIdFromToken(tokenTrim) : null
-  const singleTokenOk = platform === 'telegram' ? telegramOk : discordOk
-  // Feishu: App ID (cli_…) in the botToken slot, App Secret in the appToken slot.
-  const feishuAppIdOk = tokenTrim.startsWith('cli_') && tokenTrim.length >= 8
-  const feishuSecretOk = appToken.trim().length >= 8
-  const feishuVerificationOk = feishuVerificationToken.trim().length > 0
-  const feishuOk = feishuAppIdOk && feishuSecretOk && (effTransport === 'socket' || feishuVerificationOk)
-  const feishuCallbackUrl = relayPublicUrl ? `${relayPublicUrl.replace(/\/+$/, '')}/feishu/events` : null
-  // Slack: http needs bot + signing secret; socket needs bot + app-level token.
-  const slackCreateOk = effTransport === 'http' ? slackBotOk && slackSigningOk : slackBotOk && slackAppOk
-  const createValid =
-    platform === 'slack'
-      ? slackCreateOk
-      : platform === 'telegram'
-        ? telegramOk && telegramCheck === 'ready'
-        : platform === 'feishu'
-          ? feishuOk
-          : singleTokenOk
-  const valid = mode === 'existing' ? selectedBotId !== null : createValid
-  // The app-level token embeds the app id (xapp-1-{APP_ID}-…); once it's pasted we can
-  // deep-link straight to THIS app's Slack pages (Slack funnel only) — chiefly the OAuth
-  // & Permissions page where the bot token lives — instead of hunting through menus.
-  const appId = slackAppIdFromAppToken(appToken)
-
-  // Manifest names mirror the agent's naming model (Slack only): the app name is
-  // what the user typed, else the agent's `name` (slug); the channel display name
-  // is the agent's `displayName`, falling back to the app name when unset.
-  const manifestNames = {
-    name: appName.trim() || agent.name,
-    ...(agent.displayName ? { displayName: agent.displayName } : {})
   }
-  // Manifest transport mirrors the create-path choice; the http request_urls point
-  // at the relay's public base (omitted ⇒ buildSlackManifest falls back to socket).
-  const manifestOpts = {
-    mode: effTransport,
-    // Brand the created app with the agent's icon color (matches the CP auto-install
-    // funnel) — Slack has no API to set the app image itself.
-    backgroundColor: agentIconBackgroundColor(agent.icon),
-    ...(relayPublicUrl ? { relayUrl: relayPublicUrl } : {})
-  }
-  const manifestJson = slackManifestJson(manifestNames, manifestOpts)
-  const createUrl = slackCreateAppUrl(manifestNames, manifestOpts)
 
   // Webhook path: create the capability URL, optionally minting an HMAC secret,
   // then flip to the endpoint/reveal step. There is no fixed prompt — the
@@ -1727,456 +808,37 @@ export default function AddIntegrationModal({
     }
   }
 
-  const submit = async () => {
-    if (platform === 'webhook' || platform === 'github') return // those commit via submitHook/submitGithub (narrows for TS too)
-    setShowErrors(true)
-    if (busyRef.current || !valid) return
-    busyRef.current = true
-    setSaving(true)
-    setErr(null)
-    try {
-      let input: CreateIntegrationInput
-      if (mode === 'existing') {
-        // Callback-capable platforms carry the reused bot's own transport; the CP
-        // still treats the durable bot row as authoritative.
-        input =
-          platform === 'slack'
-            ? {
-                platform: 'slack',
-                agentId: agent.id,
-                botId: selectedBotId!,
-                transport: selectedBot?.transport ?? 'socket',
-                ...(wantShared ? { shareable: true } : {})
-              }
-            : platform === 'feishu'
-              ? {
-                  platform: 'feishu',
-                  agentId: agent.id,
-                  botId: selectedBotId!,
-                  transport: selectedBot?.transport ?? 'socket'
-                }
-              : { platform, agentId: agent.id, botId: selectedBotId!, ...(wantShared ? { shareable: true } : {}) }
-      } else if (platform === 'slack') {
-        // shareable is attached ONLY under http (a socket bot can never be shared).
-        input =
-          effTransport === 'http'
-            ? {
-                platform: 'slack',
-                agentId: agent.id,
-                transport: 'http',
-                ...(appName.trim() ? { name: appName.trim() } : {}),
-                ...(wantShared ? { shareable: true } : {}),
-                slack: { botToken: tokenTrim, signingSecret: signingSecret.trim() }
-              }
-            : {
-                platform: 'slack',
-                agentId: agent.id,
-                transport: 'socket',
-                ...(appName.trim() ? { name: appName.trim() } : {}),
-                slack: { botToken: tokenTrim, appToken: appToken.trim() }
-              }
-      } else if (platform === 'telegram') {
-        input = { platform: 'telegram', agentId: agent.id, telegram: { botToken: tokenTrim } }
-      } else if (platform === 'feishu') {
-        input = {
-          platform: 'feishu',
-          agentId: agent.id,
-          transport: effTransport,
-          feishu: {
-            appId: tokenTrim,
-            appSecret: appToken.trim(),
-            region: feishuRegion,
-            ...(effTransport === 'http'
-              ? {
-                  verificationToken: feishuVerificationToken.trim(),
-                  ...(feishuEncryptKey.trim() ? { encryptKey: feishuEncryptKey.trim() } : {})
-                }
-              : {})
-          }
-        }
-      } else {
-        input = { platform: 'discord', agentId: agent.id, discord: { botToken: tokenTrim } }
-      }
-      await createIntegration(input)
-      onClose()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-      setSaving(false)
-      busyRef.current = false
-    }
-  }
-
-  // Config-token method commit: store the pasted configuration token (same per-user store
-  // as the Profile card), then immediately create the Slack app + open OAuth — the CP uses
-  // the stored config token to mint the app. Refresh token optional (access-only lasts ~12h;
-  // a refresh token keeps it from expiring).
-  const saveConfigAndStart = async () => {
-    setShowErrors(true)
-    if (busyRef.current || !cfgAccess.trim() || install) return
-    busyRef.current = true
-    setSaving(true)
-    setErr(null)
-    try {
-      const refreshTrim = cfgRefresh.trim()
-      const s = await saveSlackConfig({
-        accessToken: cfgAccess.trim(),
-        ...(refreshTrim ? { refreshToken: refreshTrim } : {})
-      })
-      setRelayAvailable(s.relayAvailable)
-      setRelayPublicUrl(s.relayPublicUrl)
-      // Create the app BEFORE flipping to the auto flow: this is where Slack first
-      // validates the config token (access-only tokens aren't validated on save). Keeping
-      // the flip until AFTER success means a rejected/typo'd or already-expired token stays
-      // recoverable in the inline entry (fields kept, still on the config-setup branch).
-      const nextTransport = transport ?? (s.relayAvailable ? 'http' : 'socket')
-      const started = await startSlackInstall({
-        agentId: agent.id,
-        transport: nextTransport,
-        ...(appName.trim() ? { name: appName.trim() } : {})
-      })
-      // App + pending install created ⇒ now it's safe to move to the auto flow.
-      setAutoUsable(true)
-      setInstall(started)
-      setAutoPhase('authorizing')
-      setCfgAccess('')
-      setCfgRefresh('')
-      window.open(started.installUrl, '_blank', 'noopener,noreferrer')
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-      // The app wasn't created. Re-read status rather than blindly deleting: the CP drops
-      // only a rejected ACCESS-ONLY token server-side, so autoAvailable now reflects reality
-      // — a rejected access-only token flips false and stays on the inline entry (re-prompt,
-      // fields kept for correction), while a durable config or a transient failure stays
-      // usable so a retry works.
-      try {
-        const c = await fetchSlackConfig()
-        setAutoUsable(c.autoAvailable)
-        setRelayAvailable(c.relayAvailable)
-        setRelayPublicUrl(c.relayPublicUrl)
-      } catch {
-        setAutoUsable(false)
-      }
-    } finally {
-      setSaving(false)
-      busyRef.current = false
-    }
-  }
-
-  // Auto flow — step 1: create the app (with the caller's stored config token) + open
-  // the Slack OAuth install in a new tab.
-  const startAuto = async () => {
-    // `install` guard: once a start has succeeded, never create a second app.
-    if (busyRef.current || install) return
-    busyRef.current = true
-    setSaving(true)
-    setErr(null)
-    try {
-      const started = await startSlackInstall({
-        agentId: agent.id,
-        transport: effTransport,
-        ...(appName.trim() ? { name: appName.trim() } : {})
-      })
-      setInstall(started)
-      setAutoPhase('authorizing')
-      window.open(started.installUrl, '_blank', 'noopener,noreferrer')
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-      // Re-read status: if the CP invalidated a rejected access-only token (incl. one saved
-      // from Profile), autoAvailable flips false and the modal falls back to the inline
-      // config-token entry so the caller can re-enter it; a durable config stays usable so
-      // "Create & install" can retry.
-      try {
-        const c = await fetchSlackConfig()
-        setAutoUsable(c.autoAvailable)
-      } catch {
-        /* keep current state */
-      }
-    } finally {
-      setSaving(false)
-      busyRef.current = false
-    }
-  }
-
-  // Abandon the current pending install and return to the config step — the escape
-  // hatch when the Slack approval was denied / never finished (otherwise the poll sits
-  // on "Waiting for Slack…" forever). The orphaned pending row is reaped by TTL.
-  const restartAuto = () => {
-    if (busyRef.current) return
-    setInstall(null)
-    setAutoPhase('config')
-    setErr(null)
-  }
-
-  // Lark/Feishu's official device flow returns a normal authorization deeplink.
-  // Open a blank tab synchronously so popup blockers preserve the user's click
-  // while the CP asks the provider for that URL.
-  const startFeishuAuto = async () => {
-    if (busyRef.current || feishuRegistration) return
-    busyRef.current = true
-    setSaving(true)
-    setErr(null)
-    const authorizationTab = window.open('about:blank', '_blank')
-    if (authorizationTab) authorizationTab.opener = null
-    try {
-      const started = await startFeishuRegistration({
-        agentId: agent.id,
-        region: feishuRegion,
-        transport: effTransport,
-        ...(appName.trim() ? { name: appName.trim() } : {})
-      })
-      setFeishuRegistration(started)
-      setFeishuPhase('authorizing')
-      if (authorizationTab) authorizationTab.location.replace(started.authorizationUrl)
-      else window.open(started.authorizationUrl, '_blank', 'noopener,noreferrer')
-    } catch (e) {
-      authorizationTab?.close()
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSaving(false)
-      busyRef.current = false
-    }
-  }
-
-  // The App Secret never reaches the browser. Poll only the short-lived session:
-  // once the CP has installed the credentials and pushed the integration, refresh
-  // the two console projections and close.
-  useEffect(() => {
-    if (
-      mode !== 'create' ||
-      platform !== 'feishu' ||
-      feishuMethod !== 'deeplink' ||
-      feishuPhase !== 'authorizing' ||
-      !feishuRegistration
-    )
-      return
-    let alive = true
-    const stop = (message: string) => {
-      setFeishuPhase('idle')
-      setFeishuRegistration(null)
-      setErr(message)
-    }
-    const tick = async () => {
-      try {
-        const status = await getFeishuRegistration(feishuRegistration.id)
-        if (!alive || status.status === 'pending') return
-        if (status.status === 'completed') {
-          refresh()
-          return onClose()
-        }
-        stop(
-          FEISHU_REGISTRATION_FAILURES[status.failureReason ?? ''] ??
-            'Lark/Feishu could not complete the app setup. Please try again.'
-        )
-      } catch (e) {
-        // A missing short-lived session is terminal; ordinary network failures
-        // remain retryable and the next poll keeps the setup moving.
-        if (alive && e instanceof ApiError && e.status === 404) stop(FEISHU_REGISTRATION_FAILURES.expired!)
-      }
-    }
-    const timer = setInterval(() => void tick(), 2000)
-    void tick()
-    return () => {
-      alive = false
-      clearInterval(timer)
-    }
-  }, [feishuMethod, feishuPhase, feishuRegistration, mode, onClose, platform, refresh])
-
-  // Auto flow — final step. Socket: hand the CP the pasted app-level token; it
-  // combines it with the OAuth-obtained bot token to create the bot + integration.
-  // Http: no token — the CP reads the signing secret via the caller's config token,
-  // so finalize is fully automatic.
-  const finalizeAuto = async () => {
-    setShowErrors(true)
-    if (busyRef.current || !install) return
-    if (effTransport === 'socket' && !appOk) return
-    busyRef.current = true
-    setSaving(true)
-    setErr(null)
-    try {
-      await finalizeSlackInstall(install.installId, {
-        // socket: the pasted app-level token; http: none. The shared choice rides here too.
-        ...(effTransport === 'socket' ? { appToken: appToken.trim() } : {}),
-        ...(wantShared ? { shareable: true } : {})
-      })
-      onClose()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-      setSaving(false)
-      busyRef.current = false
-    }
-  }
-
-  // On open (create mode), ask the CP whether auto-install is possible here (the funnel
-  // callback is configured) and whether the CALLER has stored their own config token.
-  // Funnel on + own token ⇒ straight to auto; otherwise ⇒ manual app-token + bot-token
-  // entry. Slack-only: the config-token funnel is a Slack concept, so never probe it
-  // for Telegram / Discord (and never let its result gate their footer — see `isAuto`).
-  useEffect(() => {
-    if (mode !== 'create' || platform !== 'slack' || slackFunnel !== null) return
-    if (MOCK_MODE) {
-      // Design/dev with no CP: pretend the funnel AND the platform app are
-      // configured, so both Slack panes (built-in + custom) are reachable.
-      setSlackFunnel(true)
-      setAutoUsable(true)
-      setRelayAvailable(true)
-      setPlatformAvailable(true)
-      return
-    }
-    let alive = true
-    fetchSlackConfig()
-      .then((c) => {
-        if (!alive) return
-        setSlackFunnel(c.funnelEnabled)
-        setAutoUsable(c.autoAvailable)
-        setRelayAvailable(c.relayAvailable)
-        setRelayPublicUrl(c.relayPublicUrl)
-        setPlatformAvailable(c.platformInstallAvailable === true)
-      })
-      .catch(() => alive && setSlackFunnel(false)) // any error ⇒ fall back to manual
-    return () => {
-      alive = false
-    }
-  }, [mode, platform, slackFunnel])
-
-  // Feishu uses the same deployment capability probe, but has no Slack-specific
-  // auto-install funnel. Long Connection remains the default; a public callback
-  // address makes HTTP available as an explicit choice.
-  useEffect(() => {
-    if (mode !== 'create' || platform !== 'feishu') return
-    let alive = true
-    fetchSlackConfig()
-      .then((c) => {
-        if (!alive) return
-        setRelayAvailable(c.relayAvailable)
-        setRelayPublicUrl(c.relayPublicUrl)
-      })
-      .catch(() => {
-        if (!alive) return
-        setRelayAvailable(false)
-        setRelayPublicUrl(null)
-      })
-    return () => {
-      alive = false
-    }
-  }, [mode, platform])
-
-  // Kick off the platform-app install: mint the state-bound authorize URL and open
-  // it in a popup. The install row's id is what the poll below follows.
-  const startPlatformInstall = async () => {
-    if (busyRef.current) return
-    setPlatformErr(null)
-    try {
-      const r = await startSlackPlatformInstall({ agentId: agent.id })
-      setPlatformInstallId(r.id)
-      window.open(r.installUrl, '_blank', 'noopener,width=680,height=760')
-      setPlatformPhase('authorizing')
-    } catch (e) {
-      setPlatformErr(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  // While the user approves in the Slack tab, poll the INSTALL ROW for its terminal
-  // state. Watching the integration list for a new row would hang on the common
-  // re-authorization path: re-installing a workspace this agent already has only
-  // rotates the token server-side and creates no integration.
-  useEffect(() => {
-    if (mode !== 'create' || platformPhase !== 'authorizing' || !platformInstallId) return
-    let alive = true
-    const stop = (message: string) => {
-      setPlatformPhase('idle')
-      setPlatformInstallId(null)
-      setPlatformErr(message)
-    }
-    const tick = async () => {
-      try {
-        const s = await getSlackPlatformInstall(platformInstallId)
-        if (!alive || s.status === 'pending') return
-        if (s.status === 'completed') return onClose() // lists refetch on close
-        stop(PLATFORM_INSTALL_FAILURES[s.failureReason ?? ''] ?? 'The Slack install did not complete.')
-      } catch (e) {
-        // 404 = the row was TTL-reaped (an abandoned tab), which is terminal —
-        // anything else is transient, so keep polling.
-        if (alive && e instanceof ApiError && e.status === 404) stop(PLATFORM_INSTALL_FAILURES.expired!)
-      }
-    }
-    const h = setInterval(() => void tick(), 2500)
-    void tick()
-    return () => {
-      alive = false
-      clearInterval(h)
-    }
-  }, [mode, platformPhase, platformInstallId, onClose])
-
-  // While the user approves the install in the other tab, poll until the CP has the
-  // bot token, then reveal the app-level-token step. Cleared on close / phase change.
-  useEffect(() => {
-    if (mode !== 'create' || slackFunnel !== true || autoPhase !== 'authorizing' || !install) return
-    let alive = true
-    const tick = async () => {
-      try {
-        const s = await getSlackInstall(install.installId)
-        if (alive && s.status === 'bot_ready') setAutoPhase('appToken')
-      } catch {
-        /* transient — keep polling */
-      }
-    }
-    const h = setInterval(() => void tick(), 2500)
-    void tick()
-    return () => {
-      alive = false
-      clearInterval(h)
-    }
-  }, [mode, slackFunnel, autoPhase, install])
-
-  // The footer primary adapts to the flow. In the auto flow each STEP owns its own
-  // action inline (step ① "Create & install" next to the name; step ② the token field),
-  // so the footer is the final commit — "Connect" (finalize), live only once the app is
-  // installed and a valid app-level token is pasted. The webhook path is two-step:
-  // create (mints a URL and optional secret) → reveal → Done.
-  // Auto-install (config-token funnel) works for BOTH transports: socket ends with the
-  // operator pasting the app-level (xapp) token; http is fully automatic — the CP builds
-  // an Events-API manifest and captures the signing secret from apps.manifest.create, so
-  // there's no paste step. `shareable` is threaded through `startAuto`.
-  // Config token is the recommended method for both transports; `bot` is the manual
-  // fallback the user can switch to. Default to config when the funnel is enabled.
-  const slackMethod: 'config' | 'bot' = createMethod ?? (slackFunnel === true ? 'config' : 'bot')
-  const selectMethod = (m: 'config' | 'bot') => {
-    // Locked once an auto-install has created the app + pending row: switching methods
-    // here would route the footer through the manual `submit()` and orphan that install.
-    if (install) return
-    setCreateMethod(m)
-    setShowErrors(false)
-    setErr(null)
-  }
-  const isAuto =
-    mode === 'create' && platform === 'slack' && slackFunnel === true && slackMethod === 'config' && autoUsable
-  // Config method chosen but nothing usable stored yet ⇒ the inline config-token entry
-  // is shown and the footer commits it (save + create the app).
-  const isConfigSetup =
-    mode === 'create' && platform === 'slack' && slackFunnel === true && slackMethod === 'config' && !autoUsable
-  const isFeishuDeeplink = mode === 'create' && platform === 'feishu' && feishuMethod === 'deeplink'
+  // The footer primary. The webhook path is two-step: create (mints a URL and
+  // optional secret) → reveal → Done. Reuse is platform-free — the label and the
+  // "a bot is selected" enablement are the same everywhere. Everything else is
+  // whatever the active fragment published (`WizardHost.setFooter`), and the
+  // fragment bakes its own busy label / disabled state into that publication.
+  const identityHidden = identityView?.hidden === true
   const footer =
     platform === 'webhook'
       ? createdHook
-        ? { label: 'Done', act: onClose, enabled: true }
-        : { label: 'Create webhook', act: () => void submitHook(), enabled: true }
+        ? { label: 'Done', act: onClose, enabled: true, hidden: false }
+        : { label: 'Create webhook', act: () => void submitHook(), enabled: true, hidden: false }
       : platform === 'github'
         ? {
             label: 'Connect',
             act: () => void submitGithub(),
-            enabled: !!ghRepoPick && !ghRepoAlreadyWatched && ghFams.size > 0 && !ghReviewSettingsBlocked
+            enabled: !!ghRepoPick && !ghRepoAlreadyWatched && ghFams.size > 0 && !ghReviewSettingsBlocked,
+            hidden: false
           }
-        : isAuto
+        : mode === 'existing'
           ? {
-              label: 'Connect',
-              act: () => void finalizeAuto(),
-              // Enabled once the install reaches bot-ready. Socket also needs the pasted
-              // app-level token; http finalizes with none (signing secret already captured).
-              enabled: autoPhase === 'appToken' && (effTransport === 'http' || appOk)
+              label: 'Connect & authorize',
+              act: () => void submitReuse(),
+              enabled: selectedBotId !== null,
+              hidden: false
             }
-          : isConfigSetup
-            ? { label: 'Connect & authorize', act: () => void saveConfigAndStart(), enabled: !!cfgAccess.trim() }
-            : { label: 'Connect & authorize', act: () => void submit(), enabled: valid }
+          : {
+              label: footerView?.label ?? 'Connect & authorize',
+              act: () => footerRef.current?.onSubmit(),
+              enabled: footerView?.enabled === true,
+              hidden: footerView?.hidden === true
+            }
 
   return (
     <>
@@ -2222,10 +884,13 @@ export default function AddIntegrationModal({
                 {candidate.key === 'feishu' ? (
                   <LarkFeishuSwitcher
                     value={feishuRegion}
-                    disabled={!available || !!createdHook || feishuPhase === 'authorizing'}
-                    onSwitch={(region) => {
+                    // `regionLocked`: the active fragment has a started,
+                    // region-bound flow (a pending Feishu registration), which
+                    // a switch here would silently relabel as the other cloud.
+                    disabled={!available || !!createdHook || regionLocked}
+                    onSwitch={(next) => {
                       if (platform !== 'feishu') pickPlatform('feishu')
-                      setFeishuRegion(region)
+                      setFeishuRegion(next)
                     }}
                   />
                 ) : (
@@ -2799,8 +1464,8 @@ export default function AddIntegrationModal({
                       setGhReviewPolicy(policy)
                       setErr(null)
                     }}
-                    onReportingModeChange={(mode) => {
-                      setGhReportingMode(mode)
+                    onReportingModeChange={(m) => {
+                      setGhReportingMode(m)
                       setErr(null)
                     }}
                     repoAccess={ghRepoAccess}
@@ -2819,64 +1484,19 @@ export default function AddIntegrationModal({
             )}
           </>
         )}
-        {/* Built-in Slack app pane (design: builtin-first) — one branded button and a
-            caption; it REPLACES the whole Bot-identity section, which returns via the
-            "Use a custom bot identity" disclosure below. */}
-        {slackBuiltin && (
-          <>
-            <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-card) p-4">
-              {platformPhase === 'authorizing' ? (
-                <div className="flex h-[46px] w-full items-center justify-center gap-[10px] rounded-[10px] bg-(--surface-inverse) font-sans text-[14px] font-semibold leading-normal text-white opacity-85">
-                  <Icon name="loader" size={16} className="flex-none animate-spin" />
-                  Waiting for Slack…
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => void startPlatformInstall()}
-                  className="flex h-[46px] w-full cursor-pointer items-center justify-center gap-[10px] rounded-[10px] border-0 bg-(--surface-inverse) font-sans text-[14px] font-semibold leading-normal text-white"
-                >
-                  <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                    <PlatformMark platform="slack" />
-                  </span>
-                  Add to Slack
-                </button>
-              )}
-              {platformErr && (
-                <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--danger)">
-                  {platformErr}
-                </div>
-              )}
-              <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-                {platformPhase === 'authorizing'
-                  ? 'Approve the install in the Slack tab — this closes automatically once it lands.'
-                  : 'Installs the built-in AgentConnect Slack app.'}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setSlackIdentity('custom')}
-              className="mb-4 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
-            >
-              <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
-              Use a custom bot identity instead
-            </button>
-          </>
-        )}
-        {platform !== 'webhook' && platform !== 'github' && !hideIdentitySection && (
+        {wizard && !identityHidden && (
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="fldlbl">Bot identity</div>
-            {/* Way back to the simple pane — only meaningful when the platform app
-                exists AND this agent is the preset it binds to. */}
-            {platform === 'slack' && builtinAppOffered && (
+            {/* The fragment's way back to its own simpler pane (Slack's built-in
+                app). Presentation is the chassis's; the action is the module's. */}
+            {identityView?.actionLabel && (
               <button
                 type="button"
-                onClick={() => setSlackIdentity('builtin')}
+                onClick={() => identityRef.current?.headerAction?.onSelect()}
                 className="flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[12px] font-semibold leading-normal text-(--brand)"
               >
                 <Icon name="undo-2" size={13} />
-                Use the built-in Slack app
+                {identityView.actionLabel}
               </button>
             )}
           </div>
@@ -2884,7 +1504,7 @@ export default function AddIntegrationModal({
         {/* A bot is installed on one agent at a time and OUTLIVES its integration:
             reuse a freed / builtin one, or create a new bot for this platform.
             (Webhook and GitHub are bot-less — their bodies render above instead.) */}
-        {platform !== 'webhook' && platform !== 'github' && !hideIdentitySection && (
+        {wizard && !identityHidden && (
           <div className="mb-3 grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
             {(
               [
@@ -2892,13 +1512,13 @@ export default function AddIntegrationModal({
                   key: 'create' as const,
                   icon: 'key-round',
                   title: 'Create a new bot',
-                  desc: botIdentityCopy[platform].create
+                  desc: wizard.identityCards(region).create
                 },
                 {
                   key: 'existing' as const,
                   icon: 'bot',
                   title: 'Use an existing bot',
-                  desc: botIdentityCopy[platform].existing
+                  desc: wizard.identityCards(region).existing
                 }
               ] as const
             ).map((t) => {
@@ -2932,7 +1552,7 @@ export default function AddIntegrationModal({
             })}
           </div>
         )}
-        {platform !== 'webhook' && platform !== 'github' && mode === 'existing' && !hideIdentitySection && (
+        {wizard && mode === 'existing' && !identityHidden && (
           <div className="mb-4 overflow-hidden rounded-[9px] border border-(--border-subtle)">
             {freeBots.length === 0 && (
               <div className="px-[14px] py-[18px] text-center font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
@@ -2986,739 +1606,9 @@ export default function AddIntegrationModal({
             </div>
           </div>
         )}
-        {mode === 'create' && platform === 'slack' && !slackBuiltin && (
-          <>
-            {slackFunnel === null ? (
-              <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                <Icon name="loader" size={15} className="flex-none animate-spin" />
-                Checking your Slack setup…
-              </div>
-            ) : (
-              <>
-                {slackFunnel === true && (
-                  <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-[6px]">
-                    <div className="inline-flex flex-none rounded-lg border border-(--border-default) bg-(--surface-card) p-[3px]">
-                      {(['config', 'bot'] as const).map((m) => {
-                        const on = slackMethod === m
-                        return (
-                          <button
-                            key={m}
-                            type="button"
-                            disabled={!!install}
-                            onClick={() => selectMethod(m)}
-                            title={install ? 'Install in progress — “Start over” to switch method' : undefined}
-                            className={`rounded-[6px] px-[11px] py-[5px] font-sans text-[12px] font-semibold leading-normal ${
-                              on ? 'bg-(--brand-soft) text-(--brand)' : 'bg-transparent text-(--text-tertiary)'
-                            } ${install ? 'cursor-not-allowed opacity-50' : ''}`}
-                          >
-                            {m === 'config' ? 'Config token' : 'Bot token'}
-                          </button>
-                        )
-                      })}
-                    </div>
-                    <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                      {slackMethod === 'config'
-                        ? 'Recommended — one-click install, no manifest to copy or tokens to paste.'
-                        : 'Manual — copy our manifest into Slack, install, and paste the tokens back.'}
-                    </span>
-                  </div>
-                )}
-                {slackMethod === 'config' && autoUsable ? (
-                  <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-                    <div className="mb-[14px]">
-                      <DeliveryLine
-                        platform="slack"
-                        transport={effTransport}
-                        relayAvailable={relayAvailable}
-                        locked={!!install}
-                        onSwitch={switchTransport}
-                      />
-                    </div>
-
-                    {/* Step 1 — create & install (content changes by phase). */}
-                    <div className="flex gap-[10px]">
-                      {autoPhase === 'appToken' ? (
-                        <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--brand-soft)">
-                          <Icon name="check" size={12} color="var(--brand)" />
-                        </span>
-                      ) : (
-                        <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                          1
-                        </span>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        {autoPhase === 'config' && (
-                          <>
-                            <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                              Name &amp; create the app (name optional)
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <div className="fld flex-1">
-                                <input
-                                  className="inp mn"
-                                  placeholder={
-                                    manifestNames.name
-                                      ? `${manifestNames.name} — from the agent's name`
-                                      : 'Bot name (optional) — e.g. acme-agent'
-                                  }
-                                  value={appName}
-                                  onChange={(e) => setAppName(e.target.value)}
-                                />
-                              </div>
-                              <Button
-                                onClick={() => void startAuto()}
-                                className={saving ? 'flex-none cursor-default opacity-50' : 'flex-none'}
-                              >
-                                <Icon name="plus" size={14} />
-                                {saving ? 'Creating…' : 'Create & install'}
-                              </Button>
-                            </div>
-                          </>
-                        )}
-                        {autoPhase === 'authorizing' && (
-                          <>
-                            <div className="flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                              <Icon name="loader" size={14} className="flex-none animate-spin" />
-                              Approve the install in Slack
-                            </div>
-                            <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                              We opened Slack in a new tab — click &ldquo;Allow&rdquo;, then come back. This updates
-                              automatically.
-                            </div>
-                            {install && (
-                              <div className="mt-2 flex items-center gap-[14px]">
-                                <a
-                                  href={install.installUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="lnk inline-flex items-center gap-[5px]"
-                                >
-                                  Reopen the Slack install
-                                  <Icon name="external-link" size={12} />
-                                </a>
-                                <button type="button" className="lnk" onClick={restartAuto}>
-                                  Start over
-                                </button>
-                              </div>
-                            )}
-                          </>
-                        )}
-                        {autoPhase === 'appToken' && (
-                          <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                            {effTransport === 'http'
-                              ? 'App created & installed — click Connect to finish'
-                              : 'App created & installed — bot token secured'}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Step 2 — app-level token. Socket only: http needs no xapp paste
-                    (the CP reads the signing secret itself), so the footer Connect
-                    finalizes directly once the install is approved. */}
-                    {effTransport === 'socket' && (
-                      <div
-                        className={`mt-[14px] border-t border-dashed border-(--border-default) pt-[13px] ${
-                          autoPhase === 'appToken' ? '' : 'opacity-55'
-                        }`}
-                      >
-                        <div className="flex gap-[10px]">
-                          <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                            2
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                              Generate the App-Level token &amp; paste it{' '}
-                              <span className="font-normal text-(--text-tertiary)">
-                                (Slack has no API for this one)
-                              </span>
-                            </div>
-                            <div className="fld">
-                              <input
-                                className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
-                                placeholder="xapp-…"
-                                value={appToken}
-                                onChange={(e) => setAppToken(e.target.value)}
-                                disabled={autoPhase !== 'appToken'}
-                              />
-                            </div>
-                            {autoPhase === 'appToken' && install ? (
-                              <a
-                                href={slackAppSettingsUrl(install.appId)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="lnk mt-[10px] inline-flex items-center gap-[5px]"
-                              >
-                                Generate the App-Level token
-                                <Icon name="external-link" size={12} />
-                              </a>
-                            ) : (
-                              <div className="mt-[8px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                                Unlocks once you approve the install in Slack.
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ) : slackMethod === 'config' ? (
-                  <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-                    {/* Step 1 — open Slack's App Configuration Tokens page (hover previews
-                    where it lives: scroll to the bottom of Your apps, then Copy). */}
-                    <div className="flex gap-[10px]">
-                      <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                        1
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="cfgtok relative">
-                          <SlackConfigTokenPreview />
-                          <a
-                            href="https://api.slack.com/apps"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                          >
-                            <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                              <PlatformMark platform="slack" />
-                            </span>
-                            Open Slack app config tokens
-                            <Icon name="external-link" size={14} />
-                          </a>
-                        </div>
-                        <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          Under <span className="mono">Your apps</span> →{' '}
-                          <span className="mono">configuration tokens</span>, pick the workspace and generate a token
-                          pair. The app is created in that workspace.
-                        </div>
-                      </div>
-                    </div>
-                    {/* Step 2 — paste the configuration token pair (one row; hints inline). */}
-                    <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
-                      <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                        2
-                      </span>
-                      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                        Paste your configuration token
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
-                      <div className="fld">
-                        <span className="fldlbl">
-                          Access Token <span className="font-normal text-(--text-tertiary)">· required</span>
-                        </span>
-                        <input
-                          className={`inp mn ${showErrors && !cfgAccess.trim() ? 'border-(--status-error)' : ''}`}
-                          placeholder="xoxe.xoxp-1-…"
-                          value={cfgAccess}
-                          onChange={(e) => setCfgAccess(e.target.value)}
-                        />
-                      </div>
-                      <div className="fld">
-                        <span className="fldlbl">
-                          Refresh Token{' '}
-                          <span className="font-normal text-(--text-tertiary)">· optional, saved for reuse</span>
-                        </span>
-                        <input
-                          className="inp mn"
-                          placeholder="xoxe-1-…"
-                          value={cfgRefresh}
-                          onChange={(e) => setCfgRefresh(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-                    {/* Step 1 — create & install from our manifest. The agent name is
-                    built into the manifest, so no separate name field here. */}
-                    <div className="mb-3 flex gap-[10px]">
-                      <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                        1
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                          Create &amp; install the Slack app from our manifest
-                        </div>
-                        <div className="group relative">
-                          <a
-                            href={createUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={() => void navigator.clipboard?.writeText?.(manifestJson)?.catch?.(() => {})}
-                            className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                          >
-                            <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                              <PlatformMark platform="slack" />
-                            </span>
-                            Copy manifest &amp; open Slack
-                            <Icon name="external-link" size={14} />
-                          </a>
-                          <SlackManifestPreview />
-                        </div>
-                        <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          In Slack, choose <span className="font-medium text-(--text-secondary)">From a manifest</span>,
-                          paste, select a workspace, then create and install the app.
-                        </div>
-                        <DeliveryLine
-                          platform="slack"
-                          transport={effTransport}
-                          relayAvailable={relayAvailable}
-                          locked={false}
-                          onSwitch={switchTransport}
-                        />
-                      </div>
-                    </div>
-                    {/* Step 2 — paste the tokens the install gives back. */}
-                    <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
-                      <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                        2
-                      </span>
-                      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                        Paste the tokens it gives you — required to connect
-                      </span>
-                    </div>
-                    <div className="pl-[30px]">
-                      <div className="grid grid-cols-1 gap-[10px] min-[440px]:grid-cols-2">
-                        <div className="fld">
-                          <span className="fldlbl">Bot token</span>
-                          <input
-                            className={`inp mn ${showErrors && !botOk ? 'border-(--status-error)' : ''}`}
-                            placeholder="xoxb-…"
-                            value={botToken}
-                            onChange={(e) => setBotToken(e.target.value)}
-                          />
-                        </div>
-                        {effTransport === 'http' ? (
-                          <div className="fld">
-                            <span className="fldlbl">Signing secret</span>
-                            <input
-                              className={`inp mn ${showErrors && !slackSigningOk ? 'border-(--status-error)' : ''}`}
-                              placeholder="Signing secret (Basic Information → App Credentials)"
-                              value={signingSecret}
-                              onChange={(e) => setSigningSecret(e.target.value)}
-                            />
-                          </div>
-                        ) : (
-                          <div className="fld">
-                            <span className="fldlbl">App-level token</span>
-                            <input
-                              className={`inp mn ${showErrors && !appOk ? 'border-(--status-error)' : ''}`}
-                              placeholder="xapp-…"
-                              value={appToken}
-                              onChange={(e) => setAppToken(e.target.value)}
-                            />
-                          </div>
-                        )}
-                      </div>
-                      {/* Socket: once the app-level token decodes, deep-link to the app's
-                      Bot-token + settings pages (progressive — hidden until pasted). */}
-                      {effTransport === 'socket' && appId && (
-                        <div className="mt-[10px] flex flex-wrap items-center gap-x-[14px] gap-y-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          <span className="flex items-center gap-[5px]">
-                            <Icon name="corner-down-right" size={12} className="flex-none" />
-                            App&nbsp;<span className="mono">{appId}</span>
-                          </span>
-                          <a
-                            href={slackAppOAuthUrl(appId)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="lnk inline-flex items-center gap-[5px]"
-                          >
-                            Copy the Bot token
-                            <Icon name="external-link" size={12} />
-                          </a>
-                          <a
-                            href={slackAppSettingsUrl(appId)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="lnk inline-flex items-center gap-[5px]"
-                          >
-                            Open app settings
-                            <Icon name="external-link" size={12} />
-                          </a>
-                        </div>
-                      )}
-                      {/* Bot-token path only: getting the Bot User OAuth token means installing
-                      the app, and if Slack flags changed scopes it shows a "reinstall your
-                      app" banner — reinstalling once is what activates the token pasted above. */}
-                      <div className="mt-[11px] flex items-start gap-2 rounded-lg bg-(--status-paused-soft) px-[11px] py-[9px]">
-                        <Icon
-                          name="triangle-alert"
-                          size={14}
-                          color="var(--status-paused)"
-                          className="mt-[1px] flex-none"
-                        />
-                        <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                          If Slack shows{' '}
-                          <span className="font-medium">
-                            “You’ve changed the permission scopes… reinstall your app”
-                          </span>
-                          , click <span className="font-medium">Reinstall</span> once — that’s what activates the Bot
-                          User OAuth token you paste above.
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </>
-        )}
-        {mode === 'create' &&
-          platform !== 'slack' &&
-          platform !== 'feishu' &&
-          platform !== 'webhook' &&
-          platform !== 'github' && (
-            <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-              <div className="mb-3 flex gap-[10px]">
-                <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                  1
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-                    {GUIDE[platform].step1}
-                  </div>
-                  <div className="group relative">
-                    <a
-                      href={GUIDE[platform].linkHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                    >
-                      <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                        <PlatformMark platform={platform} />
-                      </span>
-                      {GUIDE[platform].linkLabel}
-                      <Icon name="external-link" size={14} />
-                    </a>
-                    <BotSetupWalkthrough
-                      steps={platform === 'telegram' ? TG_STEPS : DISCORD_STEPS}
-                      label={platform === 'telegram' ? 'Telegram bot setup steps' : 'Discord bot setup steps'}
-                    />
-                  </div>
-                  {GUIDE[platform].step1Warning && !(platform === 'telegram' && telegramCheck === 'ready') && (
-                    <div className="mt-2 font-sans text-[12px] font-medium leading-[1.5] text-(--status-error)">
-                      {GUIDE[platform].step1Warning}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
-                <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                  2
-                </span>
-                <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                  Paste the bot token — required to connect
-                </span>
-              </div>
-              <div className="pl-[30px]">
-                <div className="fld">
-                  <span className="fldlbl">Bot token</span>
-                  <input
-                    className={`inp mn ${
-                      (showErrors && !singleTokenOk) ||
-                      (platform === 'telegram' &&
-                        (telegramCheck === 'privacy_enabled' ||
-                          telegramCheck === 'invalid' ||
-                          telegramCheck === 'unreachable'))
-                        ? 'border-(--status-error)'
-                        : ''
-                    }`}
-                    placeholder={GUIDE[platform].tokenPlaceholder}
-                    value={botToken}
-                    onChange={(e) => setBotToken(e.target.value)}
-                  />
-                </div>
-                {platform === 'telegram' && (
-                  <TelegramPrivacyStatus
-                    status={telegramCheck}
-                    refreshing={telegramCheck !== 'checking' && telegramCheckRefreshing}
-                    onRetry={() => void refreshTelegramCheck().catch(() => undefined)}
-                  />
-                )}
-                {/* Discord: the invite is the fiddly part (right scopes + permissions), so once
-                  the token decodes to an app id we hand the user a ready-made invite link. */}
-                {platform === 'discord' &&
-                  (discordAppId ? (
-                    <>
-                      <a
-                        href={discordBotInviteUrl(discordAppId)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-[12px] flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                      >
-                        <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                          <PlatformMark platform="discord" />
-                        </span>
-                        Add to Discord
-                        <Icon name="external-link" size={14} />
-                      </a>
-                      <div className="mt-[8px] flex flex-wrap items-center gap-x-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                        <Icon name="corner-down-right" size={12} className="flex-none" />
-                        App&nbsp;<span className="mono">{discordAppId}</span>
-                        <span>
-                          — invites with the bot &amp; applications.commands scopes and the right permissions.
-                        </span>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="mt-[8px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      Paste the bot token and an “Add to Discord” button appears — no need to build the invite URL by
-                      hand.
-                    </div>
-                  ))}
-              </div>
-            </div>
-          )}
-        {/* Lark/Feishu defaults to the official device-registration deeplink. The
-            manual credential pair remains available as an advanced fallback. */}
-        {mode === 'create' && platform === 'feishu' && (
-          <>
-            <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-[6px]">
-              <div className="inline-flex flex-none rounded-lg border border-(--border-default) bg-(--surface-card) p-[3px]">
-                {(['deeplink', 'manual'] as const).map((method) => {
-                  const on = feishuMethod === method
-                  return (
-                    <button
-                      key={method}
-                      type="button"
-                      disabled={feishuPhase === 'authorizing'}
-                      onClick={() => {
-                        setFeishuMethod(method)
-                        setShowErrors(false)
-                        setErr(null)
-                      }}
-                      title={feishuPhase === 'authorizing' ? 'App setup is in progress' : undefined}
-                      className={`rounded-[6px] px-[11px] py-[5px] font-sans text-[12px] font-semibold leading-normal ${
-                        on ? 'bg-(--brand-soft) text-(--brand)' : 'bg-transparent text-(--text-tertiary)'
-                      } ${feishuPhase === 'authorizing' ? 'cursor-not-allowed opacity-50' : ''}`}
-                    >
-                      {method === 'deeplink' ? 'One-click' : 'Manual'}
-                    </button>
-                  )
-                })}
-              </div>
-              <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                {feishuMethod === 'deeplink'
-                  ? `Recommended — approve in ${feishuBrand}; permissions, events and credentials are connected automatically.`
-                  : 'Advanced — configure a self-built app yourself and paste its credentials.'}
-              </span>
-            </div>
-            <div className="mb-3 flex justify-end">
-              <DeliveryLine
-                platform="feishu"
-                transport={feishuRegistration?.transport ?? effTransport}
-                relayAvailable={relayAvailable}
-                locked={feishuPhase === 'authorizing'}
-                onSwitch={switchTransport}
-              />
-            </div>
-            <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-              {feishuMethod === 'deeplink' ? (
-                feishuPhase === 'authorizing' && feishuRegistration ? (
-                  <div className="flex gap-[10px]">
-                    <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--brand-soft)">
-                      <Icon name="loader" size={12} color="var(--brand)" className="animate-spin" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                        Approve the app setup in {feishuBrand}
-                      </div>
-                      <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                        We opened the authorization page in a new tab. Confirm the app and permissions; this dialog
-                        updates automatically.
-                      </div>
-                      <a
-                        href={feishuRegistration.authorizationUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="lnk mt-2 inline-flex items-center gap-[5px]"
-                      >
-                        Reopen {feishuBrand} setup
-                        <Icon name="external-link" size={12} />
-                      </a>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="mb-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                      Name and create the bot
-                    </div>
-                    <div className="flex flex-col gap-2 desktop:flex-row">
-                      <div className="fld flex-1">
-                        <input
-                          className="inp mn"
-                          placeholder="Bot name"
-                          value={appName}
-                          onChange={(e) => setAppName(e.target.value)}
-                        />
-                      </div>
-                      <Button
-                        disabled={saving}
-                        onClick={() => void startFeishuAuto()}
-                        className={saving ? 'flex-none cursor-default opacity-50' : 'flex-none'}
-                      >
-                        <span className="imark h-4 w-4 border-0 bg-transparent">
-                          <PlatformMark platform="feishu" />
-                        </span>
-                        {saving ? 'Creating…' : `Create ${feishuBrand} bot`}
-                      </Button>
-                    </div>
-                    <div className="mt-[9px] flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                      <Icon name="shield-check" size={13} className="mt-[1px] flex-none" />
-                      <span>
-                        You review the requested message, chat, resource and basic-contact permissions before the app is
-                        created. No App ID or Secret is shown here.
-                      </span>
-                    </div>
-                  </>
-                )
-              ) : (
-                <>
-                  <div className="mb-3 flex gap-[10px]">
-                    <span className="mono mt-[1px] flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                      1
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="mb-2 font-sans text-[12.5px] font-medium leading-[1.45] text-(--text-secondary)">
-                        Create a self-built app in the {feishuBrand}&#32;console, enable the bot, then copy its App ID
-                        and App Secret.
-                      </div>
-                      <div className="group relative">
-                        <a
-                          href={
-                            feishuRegion === 'lark'
-                              ? 'https://open.larksuite.com/page/launcher'
-                              : 'https://open.feishu.cn/page/launcher'
-                          }
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) font-sans text-[13px] font-semibold leading-normal text-white no-underline"
-                        >
-                          <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-                            <PlatformMark platform="feishu" />
-                          </span>
-                          Create {feishuBrand} bot
-                          <Icon name="external-link" size={14} />
-                        </a>
-                        <BotSetupWalkthrough
-                          steps={
-                            feishuRegion === 'lark'
-                              ? feishuWalkthroughSteps('Lark', 'open.larksuite.com')
-                              : feishuWalkthroughSteps('Feishu', 'open.feishu.cn')
-                          }
-                          label={feishuRegion === 'lark' ? 'Lark bot setup steps' : 'Feishu bot setup steps'}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-[14px] mb-[11px] flex items-center gap-[10px] border-t border-dashed border-(--border-default) pt-[13px]">
-                    <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                      2
-                    </span>
-                    <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                      Paste the App ID &amp; App Secret
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
-                    <div className="fld">
-                      <span className="fldlbl">App ID</span>
-                      <input
-                        className={`inp mn ${showErrors && !feishuAppIdOk ? 'border-(--status-error)' : ''}`}
-                        placeholder="cli_…"
-                        value={botToken}
-                        onChange={(e) => setBotToken(e.target.value)}
-                      />
-                    </div>
-                    <div className="fld">
-                      <span className="fldlbl">App Secret</span>
-                      <input
-                        className={`inp mn ${showErrors && !feishuSecretOk ? 'border-(--status-error)' : ''}`}
-                        placeholder="App Secret"
-                        value={appToken}
-                        onChange={(e) => setAppToken(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  {effTransport === 'http' && (
-                    <div className="mt-[14px] border-t border-dashed border-(--border-default) pt-[13px]">
-                      <div className="mb-[11px] flex items-center gap-[10px]">
-                        <span className="mono flex h-5 w-5 flex-none items-center justify-center rounded-full bg-(--surface-active) text-[11px] text-(--text-secondary)">
-                          3
-                        </span>
-                        <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                          Configure HTTP callback security
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 gap-[10px] pl-[30px] min-[440px]:grid-cols-2">
-                        <div className="fld">
-                          <span className="fldlbl">Verification Token</span>
-                          <input
-                            className={`inp mn ${showErrors && !feishuVerificationOk ? 'border-(--status-error)' : ''}`}
-                            placeholder="From Event Subscriptions"
-                            value={feishuVerificationToken}
-                            onChange={(e) => setFeishuVerificationToken(e.target.value)}
-                          />
-                        </div>
-                        <div className="fld">
-                          <span className="fldlbl">
-                            Encrypt Key <span className="font-normal text-(--text-tertiary)">· optional</span>
-                          </span>
-                          <input
-                            className="inp mn"
-                            placeholder="From Event Subscriptions"
-                            value={feishuEncryptKey}
-                            onChange={(e) => setFeishuEncryptKey(e.target.value)}
-                          />
-                        </div>
-                      </div>
-                      {feishuCallbackUrl && (
-                        <div className="mt-[10px] pl-[30px]">
-                          <div className="fld">
-                            <span className="fldlbl">Request URL</span>
-                            <input
-                              className="inp mn"
-                              readOnly
-                              value={feishuCallbackUrl}
-                              onFocus={(e) => e.currentTarget.select()}
-                            />
-                          </div>
-                          <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                            Connect here first, then save this Request URL in {feishuBrand}. It starts receiving as soon
-                            as the integration is connected.
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </>
-        )}
-        {platform === 'feishu' && (mode === 'existing' || feishuMethod === 'manual') && (
-          <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-            <div className="mb-[11px] flex items-center gap-2 font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)">
-              <Icon name="shield-check" size={14} color="var(--brand)" className="flex-none" />
-              {feishuBrand} setup checklist
-            </div>
-            <ul className="flex flex-col gap-[10px]">
-              {[
-                ...FEISHU_COMMON_REQS.slice(0, 1),
-                ...FEISHU_DELIVERY_REQS[feishuDeliveryTransport],
-                ...FEISHU_COMMON_REQS.slice(1)
-              ].map((r) => (
-                <li key={r.title} className="flex items-start gap-2">
-                  <Icon name={r.icon} size={14} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-                  <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    <span className="font-medium text-(--text-secondary)">{r.title}</span> — {r.desc}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        {/* The active platform's fragment. Keyed by platform so its whole
+            sub-form resets by construction on a platform switch. */}
+        {wizard && <wizard.Body key={platform} agent={agent} host={host} />}
         <div className="flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="hash" size={14} className="mt-[1px] flex-none" />
           <span>
@@ -3726,14 +1616,10 @@ export default function AddIntegrationModal({
               ? 'Each POST becomes a session, routed to this agent by the endpoint path. Retries are de-duplicated by the X-AC-Delivery-Key header (auto-assigned when absent).'
               : platform === 'github'
                 ? 'Matching events run the agent in a session and reply on the same PR, issue or commit thread.'
-                : platform === 'slack'
-                  ? IM_INVITE_HINT.slack
-                  : platform === 'feishu'
-                    ? inviteBotHint('group', feishuBrand, '@-mention it to start')
-                    : IM_INVITE_HINT[platform]}
+                : wizard?.inviteHint(region)}
           </span>
         </div>
-        {shareToggleAvailable && !hideIdentitySection && (
+        {shareToggleAvailable && !identityHidden && (
           <label className="mt-[14px] flex cursor-pointer items-start gap-2.5 rounded-md border border-(--border) px-3 py-[11px]">
             <input
               type="checkbox"
@@ -3760,12 +1646,12 @@ export default function AddIntegrationModal({
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        {/* The built-in pane's action is its own Add-to-Slack button (the modal closes
-            itself when the install lands), so the custom flow's footer action hides. */}
-        {!hideIdentitySection && !isFeishuDeeplink && (
+        {/* A fragment whose commit is an inline button of its own (Slack's
+            built-in pane, the Feishu deeplink) publishes the primary away. */}
+        {!identityHidden && !footer.hidden && (
           <Button onClick={footer.act} className={footer.enabled && !saving ? undefined : 'cursor-default opacity-50'}>
             <Icon name={platform === 'webhook' && createdHook ? 'check' : 'plug'} size={15} />
-            {saving ? (isAuto && autoPhase === 'config' ? 'Creating…' : 'Connecting…') : footer.label}
+            {saving ? 'Connecting…' : footer.label}
           </Button>
         )}
       </div>

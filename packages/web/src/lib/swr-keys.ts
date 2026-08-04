@@ -20,6 +20,10 @@ export const consoleKeys = {
   managedSkills: (orgId: string | null | undefined, includeArchived: boolean) =>
     consoleKey(orgId, 'managed-skills', includeArchived ? 'include-archived' : 'active'),
   organizationEnvironment: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-environment'),
+  /** The install wizard's deployment-capability probe (`GET /slack/config`) —
+   *  Slack-NAMED but answered per organization AND per caller, so it is
+   *  org-scoped like every other row here. */
+  deploymentConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'deployment-config'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),
   memoryPluginInstallations: (orgId: string | null | undefined) => consoleKey(orgId, 'memory-plugin-installations'),
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),
