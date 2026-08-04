@@ -1439,7 +1439,7 @@ function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: bool
 }
 
 /** Normalize `toUser`: one id works for every delivery form; a non-empty array is reserved
- * for one visible channel-root / in-thread post that @-mentions every listed Slack member. */
+ * for one visible channel-root post that @-mentions every listed Slack member. */
 function parseUserTargets(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined
   const users = typeof value === 'string' ? [value] : value
