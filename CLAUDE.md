@@ -59,16 +59,27 @@ When you change a frame in `protocol`, both daemon and CP consume it — rebuild
 Chat-platform code (Slack, Telegram, Discord, Lark/Feishu) lives in **per-host
 modules behind published contracts**, not in branches spread through each host —
 see [`docs/designs/integration-plugin-architecture.md`](docs/designs/integration-plugin-architecture.md).
-Each host keeps its own `src/platforms/<id>/` directory plus a static
-`registry.ts`; the shared, pre-dispatch capability table is
+Each host keeps its own per-platform directory plus a static `registry.ts` —
+`src/platforms/<id>/` in daemon, relay and control-plane,
+`src/components/console/platforms/<id>/` in web (React code stays under
+`components/`). The shared, pre-dispatch capability table is
 `packages/protocol/src/platform-manifest.ts` (§5).
 
-| Host          | Contract                                                      | What a module owns                                                                                                                              |
-| ------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| daemon        | three-facet adapter (connect/ingress/read port + turn output) | connection, normalization hand-off, renderers, strategy functions                                                                               |
-| relay         | `platforms/contract.ts` — `RelayPlatformIngressPlugin`        | `buildIngest` per bot, demux hints, `verify` → `handle`, optional `egress` facet                                                                |
-| control plane | `platforms/provider.ts` — `CpPlatformProvider`                | install routes at two mount scopes, credential schema + live validation, create tail, reapers, background loops, env keys, both wire projectors |
-| web           | `console/platforms/contract.ts` — `WebPlatformModule`         | wizard body, settings fragments, `Mark`, api bindings, channel semantics, text renderer                                                         |
+| Host          | Contract                                                         | What a module owns                                                                                                                              |
+| ------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | three-facet adapter (connect/ingress/read port + turn output)    | connection, normalization hand-off, renderers, strategy functions                                                                               |
+| relay         | `platforms/contract.ts` — `RelayPlatformIngressPlugin`           | `buildIngest` per bot, demux hints, `verify` → `handle`, optional `egress` facet                                                                |
+| control plane | `platforms/provider.ts` — `CpPlatformProvider`                   | install routes at two mount scopes, credential schema + live validation, create tail, reapers, background loops, env keys, both wire projectors |
+| web           | `components/console/platforms/contract.ts` — `WebPlatformModule` | wizard body, settings fragments, `Mark`, api bindings, channel semantics, text renderer                                                         |
+
+**GitHub and GitLab are deliberately NOT platform modules.** They have no chat
+ingress, so they stay on the webhook / code-host seam (`relay/src/hooks/`,
+`control-plane/src/github/`, the daemon poster) and implement only the narrower
+Layer-2 turn-output surface, which is what removed the hardcoded `github` case
+from the dispatch path. Webchat is core-owned for the same kind of reason: it is
+the console's own surface and shares almost nothing with an external transport.
+Do not "finish the job" by forcing either into `WebPlatformModule` — §2 of the
+design records why that is the wrong shape.
 
 Two rules this refactor exists to enforce: **a platform name is never core
 knowledge** — core reads a capability, a manifest field, or a registry entry
