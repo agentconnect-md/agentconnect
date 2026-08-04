@@ -158,11 +158,11 @@ export function SessionRail({
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
 
   const { register: registerMobileAction } = useMobileActionSlot()
-  // Below `wide`, where the list has no column: whether a TAP has latched the panel
-  // open. Both collapsed triggers share it, because pointer capability does not
-  // follow width — a 1024px iPad lands in the 769–1239px band with no hover and no
-  // reliable focus-on-tap (Safari), so a hover-only affordance there is unopenable.
-  // The tablet button keeps its CSS hover as a second, mouse-only opening path.
+  // Below `wide`, where the list has no column: whether a click has latched the panel
+  // open. Both collapsed triggers share it, and it is the ONLY visibility source in
+  // either band — pointer capability does not follow width (a 1024px iPad lands in
+  // the 769–1239px band with no hover and no reliable focus-on-tap in Safari), so
+  // there is no CSS hover reveal to disagree with `aria-expanded`.
   const [listOpen, setListOpen] = useState(false)
 
   // Hydration: the server has no localStorage, so the first client paint must match
