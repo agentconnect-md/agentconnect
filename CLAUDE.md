@@ -42,16 +42,41 @@ callback endpoint is required; the CP only orchestrates. Concretely:
 
 ## Monorepo (pnpm workspace, `packages/*`)
 
-| Package                          | Stack                              | Role                                                                                                                                                             |
-| -------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@agentconnect.md/message`       | TypeScript                         | Pure Slack, Lark, Telegram, and Discord normalization; depends on protocol types and contains no platform SDKs or I/O.                                           |
-| `@agentconnect.md/protocol`      | zod                                | Shared wire contract — frames, normalized message schemas, and fencing fields (`sessionEpoch`/`seq`/`launchId`). Single source of truth for every wire consumer. |
-| `@agentconnect.md/daemon`        | Node CLI (commander)               | The edge unit. Exposes the `agentconnect` CLI bin. Many CLI subcommands are still stubs (`run` and `chat` are the live ones).                                    |
-| `@agentconnect.md/control-plane` | Fastify + Prisma (Postgres)        | One Fastify process co-hosts the C2 BFF REST surface **and** the daemon WS endpoint on one port / one Postgres connection.                                       |
-| `@agentconnect.md/web`           | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                     |
+| Package                          | Stack                              | Role                                                                                                                                                               |
+| -------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@agentconnect.md/message`       | TypeScript                         | Pure Slack, Lark, Telegram, and Discord normalization; depends on protocol types and contains no platform SDKs or I/O.                                             |
+| `@agentconnect.md/protocol`      | zod                                | Shared wire contract — frames, normalized message schemas, and fencing fields (`sessionEpoch`/`seq`/`launchId`). Single source of truth for every wire consumer.   |
+| `@agentconnect.md/daemon`        | Node CLI (commander)               | The edge unit. Exposes the `agentconnect` CLI bin. Many CLI subcommands are still stubs (`run` and `chat` are the live ones).                                      |
+| `@agentconnect.md/control-plane` | Fastify + Prisma (Postgres)        | One Fastify process co-hosts the C2 BFF REST surface **and** the daemon WS endpoint on one port / one Postgres connection.                                         |
+| `@agentconnect.md/relay`         | Fastify                            | Optional public ingress: Slack/Feishu HTTP callbacks, webhooks, webchat. Verifies, demuxes to the owning bot, forwards to the daemon. Persists no message content. |
+| `@agentconnect.md/web`           | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                       |
 
 When you change a frame in `protocol`, both daemon and CP consume it — rebuild
 `protocol` (or rely on its `development` export → `./src/index.ts`) and check both sides.
+
+## Platform modules
+
+Chat-platform code (Slack, Telegram, Discord, Lark/Feishu) lives in **per-host
+modules behind published contracts**, not in branches spread through each host —
+see [`docs/designs/integration-plugin-architecture.md`](docs/designs/integration-plugin-architecture.md).
+Each host keeps its own `src/platforms/<id>/` directory plus a static
+`registry.ts`; the shared, pre-dispatch capability table is
+`packages/protocol/src/platform-manifest.ts` (§5).
+
+| Host          | Contract                                                      | What a module owns                                                                                                                              |
+| ------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | three-facet adapter (connect/ingress/read port + turn output) | connection, normalization hand-off, renderers, strategy functions                                                                               |
+| relay         | `platforms/contract.ts` — `RelayPlatformIngressPlugin`        | `buildIngest` per bot, demux hints, `verify` → `handle`, optional `egress` facet                                                                |
+| control plane | `platforms/provider.ts` — `CpPlatformProvider`                | install routes at two mount scopes, credential schema + live validation, create tail, reapers, background loops, env keys, both wire projectors |
+| web           | `console/platforms/contract.ts` — `WebPlatformModule`         | wizard body, settings fragments, `Mark`, api bindings, channel semantics, text renderer                                                         |
+
+Two rules this refactor exists to enforce: **a platform name is never core
+knowledge** — core reads a capability, a manifest field, or a registry entry
+instead — and **a manifest field is earned by a pre-dispatch read**, or it is a
+capability flag with better branding and belongs in a host contract. Adding a
+platform should be implementing the four contracts plus one registry line per
+host; if you find yourself editing a `switch` in core, the seam is missing a
+member and that is the bug to fix.
 
 Web styling is Tailwind-utility-first over the CSS-variable design tokens —
 **read [`packages/web/STYLE.md`](packages/web/STYLE.md) before writing console
