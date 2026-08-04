@@ -881,9 +881,19 @@ export class HttpBotOrchestrator {
       // §6.1: a bot assignment is always a CHAT platform; carried so an older
       // relay can classify an id a newer CP introduces.
       originKind: 'chat',
-      // §6.7 dual-shape: the opaque ingress bag mirrors the named demux fields
-      // below; the platform module (S3) takes its validation over and the named
-      // fields stop being emitted once the fleet reads the bag.
+      // §6.7 emission flip (the last S1b dual-shape residue): the opaque ingress
+      // bag is the ONE carrier of the demux identity — the relay's bag-preferring
+      // reader shipped first (#545). The retired named top-level fields stay
+      // OPTIONAL in the wire schema so an older relay's tolerant reader is not
+      // broken by their absence; they leave the schema with the next cleanup.
+      //   apiAppId — Slack "A…" (== Events API api_app_id) or the Feishu app id;
+      //     O(1) inbound demux. Absent on a manual-paste http bot (no xapp to
+      //     parse); the relay verify-scans instead.
+      //   teamId — workspace "T…", present only for a distributed (platform)
+      //     app's install, where the composite (api_app_id, team_id) is the ONLY
+      //     safe demux (all sibling installs share the app id AND the signing
+      //     secret).
+      //   botUserId — persisted at OAuth exchange; spares an auth.test round-trip.
       ingress: {
         ...(bot.platform === 'feishu' && secret.appToken
           ? { apiAppId: secret.appToken }
@@ -893,19 +903,6 @@ export class HttpBotOrchestrator {
         ...(bot.teamId ? { teamId: bot.teamId } : {}),
         ...(bot.botUserId ? { botUserId: bot.botUserId } : {})
       },
-      // Slack app id ("A…", == Events API api_app_id) — O(1) inbound demux. Absent on
-      // a manual-paste http bot (no xapp to parse); the relay verify-scans instead.
-      ...(bot.platform === 'feishu' && secret.appToken
-        ? { apiAppId: secret.appToken }
-        : bot.slackAppId
-          ? { apiAppId: bot.slackAppId }
-          : {}),
-      // Workspace id ("T…") — present only for a distributed (platform) app's
-      // install, where the composite (api_app_id, team_id) is the ONLY safe demux
-      // (all sibling installs share the app id AND the signing secret).
-      ...(bot.teamId ? { teamId: bot.teamId } : {}),
-      // Persisted at OAuth exchange; spares the relay an auth.test round-trip.
-      ...(bot.botUserId ? { botUserId: bot.botUserId } : {}),
       // Generation of the credentials below — echoed back on `rc/bot-revoked` so a
       // revocation observed under a REPLACED credential cannot kill this one.
       credentialRevision: bot.credentialRevision,

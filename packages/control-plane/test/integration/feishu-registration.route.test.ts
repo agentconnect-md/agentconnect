@@ -527,7 +527,7 @@ describe('Feishu/Lark one-click app registration', () => {
       type: 'rc/bot-assign',
       payload: expect.objectContaining({
         platform: 'feishu',
-        apiAppId: 'cli_http_oneclick',
+        ingress: expect.objectContaining({ apiAppId: 'cli_http_oneclick' }),
         secrets: { verificationToken: secret.verificationToken, encryptKey: secret.encryptKey }
       })
     })

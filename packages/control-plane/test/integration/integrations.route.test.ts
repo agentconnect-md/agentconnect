@@ -561,14 +561,13 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
 
     const assign = relaySends.find((send) => send.type === 'rc/bot-assign')?.payload as {
       platform: string
-      apiAppId: string
-      botUserId: string
+      ingress: Record<string, unknown>
       secrets: Record<string, unknown>
     }
+    // §6.7 emission flip: the demux identity rides the opaque ingress bag only.
     expect(assign).toMatchObject({
       platform: 'feishu',
-      apiAppId: 'cli_http_app',
-      botUserId: 'ou_http_bot',
+      ingress: { apiAppId: 'cli_http_app', botUserId: 'ou_http_bot' },
       secrets: { verificationToken: 'verify-token', encryptKey: 'encrypt-key' }
     })
     expect(assign.secrets).not.toHaveProperty('botToken')

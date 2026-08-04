@@ -423,13 +423,13 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
     expect(assign).toMatchObject({
       platform: 'feishu',
-      apiAppId: 'cli_http_app',
-      botUserId: 'ou_bot',
+      ingress: { apiAppId: 'cli_http_app', botUserId: 'ou_bot' },
       secrets: { verificationToken: 'verify-token', encryptKey: 'encrypt-key' },
       defaultAgentId: ALICE,
       defaultDaemonId: D1,
       agents: [{ agentId: ALICE, daemonId: D1, integrationId: INT_A }]
     })
+    expect(assign.apiAppId).toBeUndefined()
     expect('botToken' in assign.secrets).toBe(false)
     expect(upserts).toEqual([
       {
@@ -885,17 +885,21 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(ch.sends).toEqual([]) // nothing broadcast
   })
 
-  it('stamps teamId + botUserId into rc/bot-assign for a platform-app install', async () => {
+  it('stamps teamId + botUserId into the rc/bot-assign ingress bag for a platform-app install', async () => {
     // A distributed app's install: every workspace shares the app id + signing
     // secret, so the relay may only demux this bot on (api_app_id, team_id).
+    // §6.7 emission flip: the opaque ingress bag is the ONE carrier — the named
+    // top-level fields are no longer emitted (the relay's bag reader shipped
+    // first in #545).
     botRow = bot({ slackAppId: 'APLATFORM', teamId: 'T1WORKSPACE', botUserId: 'U0BOT' })
 
     await makeOrch().syncBot(BOT)
 
     const assign = ch.sends.find((send) => send.type === 'rc/bot-assign')?.payload as RcBotAssign
-    expect(assign.apiAppId).toBe('APLATFORM')
-    expect(assign.teamId).toBe('T1WORKSPACE')
-    expect(assign.botUserId).toBe('U0BOT')
+    expect(assign.ingress).toEqual({ apiAppId: 'APLATFORM', teamId: 'T1WORKSPACE', botUserId: 'U0BOT' })
+    expect(assign.apiAppId).toBeUndefined()
+    expect(assign.teamId).toBeUndefined()
+    expect(assign.botUserId).toBeUndefined()
   })
 
   it('revokeBot marks the bot + installs revoked, unassigns, and pulls the daemon specs', async () => {
