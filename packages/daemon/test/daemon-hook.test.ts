@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
@@ -27,6 +27,8 @@ import {
 } from '../src/messages/hook-message.js'
 import { GithubReplyCollector } from '../src/github/poster.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
+import { sessionKey } from '../src/store/local-store.js'
+import { sessionWorktreePath } from '../src/workspace/workspace-manager.js'
 
 const AGENT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const HOOK_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -72,6 +74,7 @@ function streamingHost() {
       return { stopReason: 'end_turn' }
     }),
     cancel: vi.fn(async () => {}),
+    forgetSession: vi.fn(),
     stop: vi.fn(async () => {})
   }
   const factory = (_agent: unknown, cb: (sid: string, u: unknown) => void) => {
@@ -1289,6 +1292,120 @@ describe('Daemon rd/msg hook fires', () => {
         truncated: false
       }
     })
+
+  it.each([
+    { event: 'pull_request:merged', subjectKind: 'pull_request' as const },
+    { event: 'issues:closed', subjectKind: 'issue' as const }
+  ])(
+    'removes the isolated worktree without starting a model turn on $event even while paused',
+    async ({ event, subjectKind }) => {
+      const root = scaffold()
+      const agentDir = join(root, 'agents', AGENT_ID)
+      const workspace = join(agentDir, 'workspace')
+      const agentConfigPath = join(agentDir, 'agent.json')
+      const config = JSON.parse(readFileSync(agentConfigPath, 'utf8')) as Record<string, unknown>
+      config.pause = true
+      config.workspace = {
+        mode: 'git-repo',
+        isolation: 'session',
+        path: workspace,
+        gitBranch: 'main',
+        pullOnNewSession: false
+      }
+      writeFileSync(agentConfigPath, JSON.stringify(config))
+      mkdirSync(workspace, { recursive: true })
+      execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' })
+      execFileSync('git', ['config', 'user.name', 'AgentConnect Test'], { cwd: workspace })
+      execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: workspace })
+      writeFileSync(join(workspace, 'README.md'), 'fixture\n')
+      execFileSync('git', ['add', 'README.md'], { cwd: workspace })
+      execFileSync('git', ['commit', '-m', 'fixture'], { cwd: workspace, stdio: 'ignore' })
+      execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: workspace })
+
+      const { factory, host } = streamingHost()
+      const daemon = new Daemon({ root, hostFactory: factory })
+      await daemon.start()
+      ;(daemon as any).hosts.set(AGENT_ID, host)
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      const agent = (daemon as any).agents.get(AGENT_ID)
+      const key = sessionKey('hook', 'acme/infra', '42', AGENT_ID, 'github:123')
+      const worktree = sessionWorktreePath(agent, key)
+      mkdirSync(join(agentDir, 'worktrees'), { recursive: true })
+      execFileSync('git', ['worktree', 'add', '--detach', worktree, 'HEAD'], { cwd: workspace, stdio: 'ignore' })
+      ;(daemon as any).store.upsertSession({
+        key,
+        agentId: AGENT_ID,
+        platform: 'hook',
+        channel: 'acme/infra',
+        thread: '42',
+        transportScope: 'github:123',
+        acpSessionId: 'acp-existing',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now(),
+        workspaceIsolation: 'session'
+      })
+
+      let releaseWorkspaceMutation!: () => void
+      let markWorkspaceMutationStarted!: () => void
+      const workspaceMutationStarted = new Promise<void>((resolve) => (markWorkspaceMutationStarted = resolve))
+      const workspaceMutationRelease = new Promise<void>((resolve) => (releaseWorkspaceMutation = resolve))
+      const blockingMutation = (daemon as any).enqueueAgentWorkspaceMutation(AGENT_ID, async () => {
+        markWorkspaceMutationStarted()
+        await workspaceMutationRelease
+      })
+      await workspaceMutationStarted
+
+      const ack = await (daemon as any).handleRelayMsg(
+        fire({
+          sessionKey: 'acme/infra#42',
+          event,
+          github: {
+            repoId: '123',
+            repoFullName: 'acme/infra',
+            sourceInstallationId: '456',
+            subjectKind,
+            ...(subjectKind === 'pull_request' ? { pullNumber: 42 } : {})
+          },
+          context: {
+            source: 'github',
+            event: subjectKind === 'pull_request' ? 'pull_request' : 'issues',
+            action: 'closed',
+            repo: 'acme/infra',
+            number: 42,
+            truncated: false
+          }
+        }),
+        () => {}
+      )
+
+      expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+      await vi.waitFor(() => expect((daemon as any).workspaceDispatchFences.has(AGENT_ID)).toBe(true))
+      let admitted = false
+      const admission = (daemon as any).admitActiveDispatch(AGENT_ID, key).then((release: () => void) => {
+        admitted = true
+        return release
+      })
+      await Promise.resolve()
+      expect(admitted).toBe(false)
+      expect(existsSync(worktree)).toBe(true)
+
+      releaseWorkspaceMutation()
+      await blockingMutation
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+      const releaseDispatch = await admission
+      releaseDispatch()
+      expect(cp.hookReports[0]).toMatchObject({ status: 'success', event })
+      expect(existsSync(worktree)).toBe(false)
+      expect((daemon as any).store.getSession(key)).toBeTruthy()
+      expect(host.forgetSession).toHaveBeenCalledWith('acp-existing')
+      expect(host.newSession).not.toHaveBeenCalled()
+      expect(host.prompt).not.toHaveBeenCalled()
+      await daemon.stop()
+    },
+    15_000
+  )
 
   it('skips a GitHub deleted fire when the thread has no existing session — no session created, no turn', async () => {
     const { factory, host } = streamingHost()

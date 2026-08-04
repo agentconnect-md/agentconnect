@@ -5,6 +5,7 @@ import { FakeClock } from '@agentconnect.md/connection'
 import {
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1,
   type RcGithubCommentAuthz,
   type RcGithubInstallation,
   type RcGithubRerequest,
@@ -165,6 +166,7 @@ interface Harness {
   authzResult: boolean | ((request: RcGithubCommentAuthz) => boolean | Promise<boolean>)
   ack: RdAck | (() => Promise<RdAck>)
   offline: boolean
+  cleanupSupported: boolean
   onlineDaemons: Set<string>
 }
 
@@ -185,6 +187,7 @@ function makeHarness(authzCapacity = 20): Harness {
     rerequestResult: { allowed: false },
     ack: { msgId: 'x', accepted: true },
     offline: false,
+    cleanupSupported: true,
     onlineDaemons: new Set([DAEMON])
   }
   const app = Fastify()
@@ -195,6 +198,8 @@ function makeHarness(authzCapacity = 20): Harness {
       get: (daemonId: string) => {
         if (h.offline || !h.onlineDaemons.has(daemonId)) return undefined
         return {
+          supports: (capability: string) =>
+            capability !== RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1 || h.cleanupSupported === true,
           sendMsg: async (msg: RdMsg) => {
             h.sent.push(msg)
             h.dispatches.push({ daemonId, msg })
@@ -1127,10 +1132,60 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(1)
     })
 
-    it('silently ignores issue metadata edits and issue/PR close/reopen noise under family wildcards', async () => {
-      h.table.upsert(rule({}, { events: ['issues:*', 'pull_request:*'] }))
+    it('dispatches issue close and merged PR as workspace-cleanup lifecycle fires', async () => {
+      h.table.upsert(rule({}, { events: [] }))
+      const merged = pullPayload({ action: 'closed' })
+      ;(merged.pull_request as Record<string, unknown>).merged = true
+
+      expect(
+        (
+          await post('issues', issuesPayload({ action: 'closed' }), {
+            headers: { 'x-github-delivery': 'issue-closed' }
+          })
+        ).statusCode
+      ).toBe(202)
+      expect(
+        (
+          await post('pull_request', merged, {
+            headers: { 'x-github-delivery': 'pr-merged' }
+          })
+        ).statusCode
+      ).toBe(202)
+
+      await flush()
+      const hooks = h.sent.filter((msg) => msg.source === 'hook')
+      expect(hooks).toHaveLength(2)
+      expect(hooks[0]).toMatchObject({
+        sessionKey: 'acme/infra#42',
+        event: 'issues:closed',
+        github: { subjectKind: 'issue' },
+        context: { event: 'issues', action: 'closed' }
+      })
+      expect(hooks[1]).toMatchObject({
+        sessionKey: 'acme/infra#77',
+        event: 'pull_request:merged',
+        github: { subjectKind: 'pull_request', pullNumber: 77 },
+        context: { event: 'pull_request', action: 'closed' }
+      })
+      expect(h.authzRequests).toHaveLength(0)
+    })
+
+    it('does not send lifecycle cleanup to an older daemon that could start a model turn', async () => {
+      h.table.upsert(rule({}, { events: [] }))
+      h.cleanupSupported = false
 
       expect((await post('issues', issuesPayload({ action: 'closed' }))).statusCode).toBe(202)
+      await flush()
+
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toContainEqual(
+        expect.objectContaining({ event: 'issues:closed', status: 'failed', reason: 'rejected:unsupported' })
+      )
+    })
+
+    it('silently ignores issue metadata edits/reopen and unmerged PR close/reopen noise', async () => {
+      h.table.upsert(rule({}, { events: ['issues:*', 'pull_request:*'] }))
+
       expect((await post('issues', issuesPayload({ action: 'reopened' }))).statusCode).toBe(202)
       expect(
         (await post('issues', issuesPayload({ action: 'edited', changes: { body: { from: 'old instructions' } } })))
