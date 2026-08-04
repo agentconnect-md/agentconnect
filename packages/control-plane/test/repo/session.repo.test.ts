@@ -147,6 +147,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
         fastMode: false,
         permissionMode: 'acceptEdits',
         outputMode: 'medium',
+        workspaceIsolation: 'session',
         daemonId: DaemonId(DAEMON)
       })
     )
@@ -171,6 +172,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(got?.fastMode).toBe(false) // an explicit false roundtrips (≠ null/unset)
     expect(got?.permissionMode).toBe('acceptEdits')
     expect(got?.outputMode).toBe('medium')
+    expect(got?.workspaceIsolation).toBe('session')
     expect(got?.daemonId).toBe(DAEMON)
   })
 

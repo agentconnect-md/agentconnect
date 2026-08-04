@@ -55,7 +55,7 @@ vi.mock('@/lib/api', () => ({
 vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mobile.value }))
 
 import { WorkspaceFiles, workspaceReadModelKey } from './WorkspaceFiles'
-import { deleteWorkspaceFile, writeWorkspaceFile } from '@/lib/api'
+import { deleteWorkspaceFile, fetchWorkspaceFiles, fetchWorkspaceGitStatus, writeWorkspaceFile } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 
 let container: HTMLDivElement | undefined
@@ -104,6 +104,8 @@ afterEach(async () => {
   workspace.entries = []
   workspace.listings = {}
   vi.mocked(deleteWorkspaceFile).mockClear()
+  vi.mocked(fetchWorkspaceFiles).mockClear()
+  vi.mocked(fetchWorkspaceGitStatus).mockClear()
   vi.mocked(writeWorkspaceFile).mockClear()
 })
 
@@ -152,6 +154,32 @@ describe('workspaceReadModelKey', () => {
   it('separates two agents that share a workspace definition', () => {
     expect(keyOf({ id: 'agent-b' })).not.toBe(workspaceReadModelKey(github))
   })
+
+  it('separates the primary checkout from a session worktree', () => {
+    expect(workspaceReadModelKey(github, 'session-a')).not.toBe(workspaceReadModelKey(github))
+  })
+})
+
+it('scopes file and git reads to the selected session worktree', async () => {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <WorkspaceFiles
+        agentId="agent-a"
+        sessionId="session-a"
+        workdir="/workspace"
+        canEdit={false}
+        renderHeader={() => null}
+      />
+    )
+    await Promise.resolve()
+  })
+
+  expect(fetchWorkspaceFiles).toHaveBeenCalledWith('agent-a', { path: '', sessionId: 'session-a' })
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a')
+  expect(container?.textContent).not.toContain('Add file')
 })
 
 it('keeps an inline new-file draft across the desktop-to-mobile breakpoint', async () => {

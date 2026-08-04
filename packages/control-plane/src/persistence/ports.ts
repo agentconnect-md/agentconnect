@@ -896,6 +896,7 @@ export interface EventSessionInput {
   fastMode?: boolean
   permissionMode?: string
   outputMode?: string
+  workspaceIsolation?: 'shared' | 'session'
   // The daemon that reported the milestone — stamped by the WS handler from the
   // authenticated connection, never taken from the frame payload.
   daemonId?: DaemonId
@@ -1021,6 +1022,7 @@ export interface SessionMetaRecord {
   permissionMode: string | null
   outputMode: string | null
   daemonId: DaemonId | null
+  workspaceIsolation: 'shared' | 'session' | null
   activityState: ActivityState
   // ── session visibility (session-visibility.md §3) ──
   orgId: OrgId // denormalized from agent.orgId at ingest

@@ -131,6 +131,10 @@ export const EventSession = z.object({
   // is the AgentConnect composite value that the daemon decomposes before ACP.
   permissionMode: z.string().optional(),
   outputMode: z.string().optional(), // daemon-side output verbosity (none/minimal/low/medium/high)
+  // Workspace choice pinned when the logical session was created. This is
+  // metadata only; it lets the console offer a link to an isolated worktree
+  // without assuming the Agent's current setting still matches this session.
+  workspaceIsolation: z.enum(['shared', 'session']).optional(),
   ts: z.string().datetime()
 })
 export type EventSession = z.infer<typeof EventSession>

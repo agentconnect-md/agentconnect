@@ -2432,6 +2432,7 @@ export const SessionDto = z.object({
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),
+  workspaceIsolation: z.enum(['shared', 'session']).nullable(),
   visibility: SessionVisibilityEnum,
   externalProvider: z.string().nullable(),
   externalResolution: z.enum(['pending', 'settled', 'invalid']).nullable(),
@@ -2540,6 +2541,7 @@ export const SessionDetailDto = z.object({
   permissionMode: z.string().nullable(),
   outputMode: z.string().nullable(),
   daemonId: z.string().nullable(),
+  workspaceIsolation: z.enum(['shared', 'session']).nullable(),
   activityState: z.string(),
   // ── session visibility (docs/designs/session-visibility.md) ──
   visibility: SessionVisibilityEnum,
@@ -2659,7 +2661,13 @@ export const SessionToolBodyChunkDto = z.object({
 
 // ── workspace files (pulled live from the owning daemon — the CP stores no bodies) ──
 /** `GET /agents/:id/workspace/files` query — one page of a directory listing. */
-export const WorkspaceFilesQueryDto = z.object({
+export const WorkspaceScopeQueryDto = z.object({
+  /** ACP session id selecting an authorized isolated worktree. Omit for the
+   * agent's primary checkout. */
+  sessionId: z.string().min(1).optional()
+})
+
+export const WorkspaceFilesQueryDto = WorkspaceScopeQueryDto.extend({
   path: z.string().optional(), // workspace-relative POSIX path; absent/'' ⇒ workspace root
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(500).optional()
@@ -2679,7 +2687,7 @@ export const WorkspaceFilesDto = z.object({
 })
 
 /** `GET /agents/:id/workspace/file` query — one byte slice of a file. */
-export const WorkspaceFileQueryDto = z.object({
+export const WorkspaceFileQueryDto = WorkspaceScopeQueryDto.extend({
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.coerce.number().int().nonnegative().optional(), // byte offset
   limit: z.coerce.number().int().positive().max(65536).optional() // byte count per slice

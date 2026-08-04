@@ -1222,8 +1222,9 @@ export class CpClient {
       }
       case 'workspace/gitstatus': {
         // git status of a git-repo workspace — a dirty tree / non-repo is DATA, not an error.
+        const req = frame.payload as WorkspaceGitStatusReq
         this.deps.workspaceGit
-          .status((frame.payload as WorkspaceGitStatusReq).agentId)
+          .status(req.agentId, req.sessionId)
           .then((status) => this.reply(frame, 'workspace/gitstatus/result', status))
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitstatus', err))
         return

@@ -188,6 +188,7 @@ import {
   resolvePreparedWorkspaceCwd,
   prefetchWorkspace,
   removeSessionWorktree,
+  sessionWorktreePath,
   sessionWorktreeRoot,
   type PrepareSessionWorkspaceRequest
 } from './workspace/workspace-manager.js'
@@ -273,6 +274,7 @@ import {
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
+  WORKSPACE_SESSION_READ_FEATURE,
   effectiveMemoryDreamingPolicy,
   RdSlackAction,
   WireFeishuCardActionEvent,
@@ -4852,6 +4854,7 @@ export class Daemon {
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
+      WORKSPACE_SESSION_READ_FEATURE,
       ...(this.sandboxMechanism ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
@@ -13380,7 +13383,9 @@ export class Daemon {
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     if (input.runtime !== undefined) event.runtime = input.runtime
     else if (agent?.runtime) event.runtime = agent.runtime
-    const storeKey = this.store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)?.key
+    const sessionRecord = this.store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
+    if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
+    const storeKey = sessionRecord?.key
     const model =
       (allowRuntimeChangesInChat && storeKey ? this.store.getModelOverride(storeKey) : undefined) ??
       agent?.runtimeOverrides?.model
@@ -18220,8 +18225,19 @@ export class Daemon {
     // authoritatively — and prunes any relay the CP has since dropped — once connected.
     if (this.cfg.relays.length) this.relays.converge(this.cfg.relays)
 
+    const workspaceLocation = (id: string, sessionId?: string) => {
+      const agent = this.agents.get(id)
+      if (!agent) return undefined
+      if (!sessionId) {
+        return { root: agent.workspace.path, scratch: agent.workspace.mode === 'from-scratch' }
+      }
+      const session = this.store.getSessionByAcpIdForAgent(id, sessionId)
+      if (agent.workspace.mode !== 'git-repo' || session?.workspaceIsolation !== 'session') return undefined
+      return { root: sessionWorktreePath(agent, session.key), scratch: false }
+    }
+
     const workspaceGit = createWorkspaceGit(
-      (id) => this.agents.get(id)?.workspace.path,
+      (id, sessionId) => workspaceLocation(id, sessionId)?.root,
       (id) => {
         const workspace = this.agents.get(id)?.workspace
         return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app' ? gitCredentialEnv(id) : {}
@@ -18323,15 +18339,9 @@ export class Daemon {
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),
-      workspaceRead: createWorkspaceReader(
-        (id) => {
-          const workspace = this.agents.get(id)?.workspace
-          return workspace ? { root: workspace.path, scratch: workspace.mode === 'from-scratch' } : undefined
-        },
-        (id, write) => this.withWorkspaceFileWrite(id, write)
-      ),
+      workspaceRead: createWorkspaceReader(workspaceLocation, (id, write) => this.withWorkspaceFileWrite(id, write)),
       workspaceGit: {
-        status: (id) => workspaceGit.status(id),
+        status: (id, sessionId) => workspaceGit.status(id, sessionId),
         pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id))
       },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),

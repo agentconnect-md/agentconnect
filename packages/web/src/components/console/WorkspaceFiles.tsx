@@ -76,9 +76,9 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
  * and a GitHub → scratch conversion would additionally flip `canEdit` to true
  * over that stale GitHub preview. Pass this as the instance's React `key`.
  */
-export function workspaceReadModelKey(agent: Pick<Agent, 'id' | 'workspace' | 'workdir'>): string {
+export function workspaceReadModelKey(agent: Pick<Agent, 'id' | 'workspace' | 'workdir'>, sessionId?: string): string {
   const ws = agent.workspace
-  const at = `${agent.id}:${agent.workdir}`
+  const at = `${agent.id}:${agent.workdir}:${sessionId ?? 'primary'}`
   return ws.mode === 'github' ? `${at}:github:${ws.repo}@${ws.branch}:${ws.agentDir}` : `${at}:scratch`
 }
 
@@ -155,11 +155,15 @@ type DeleteDraft = {
 
 export function WorkspaceFiles({
   agentId,
+  sessionId,
   workdir,
   canEdit,
   renderHeader
 }: {
   agentId: string
+  /** ACP session id selecting that session's isolated worktree. Omit for the
+   * agent's primary checkout. */
+  sessionId?: string
   workdir?: string
   canEdit: boolean
   /** Renders the workspace card above the tree from the live git read model.
@@ -196,7 +200,7 @@ export function WorkspaceFiles({
   // Fetch a folder's first page (root on mount, or a folder on first expand).
   const loadDir = (path: string) => {
     patchDir(path, { loading: true, err: null })
-    fetchWorkspaceFiles(agentId, { path }).then(
+    fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
       (page) =>
         setDirs((prev) => ({
           ...prev,
@@ -218,7 +222,7 @@ export function WorkspaceFiles({
     const d = dirs[path]
     if (!d?.nextCursor || d.loadingMore) return
     patchDir(path, { loadingMore: true, moreErr: null })
-    fetchWorkspaceFiles(agentId, { path, cursor: d.nextCursor }).then(
+    fetchWorkspaceFiles(agentId, { path, cursor: d.nextCursor, ...(sessionId ? { sessionId } : {}) }).then(
       (page) =>
         setDirs((prev) => {
           const cur = prev[path]
@@ -265,7 +269,7 @@ export function WorkspaceFiles({
       content: '',
       loadingMore: false
     })
-    fetchWorkspaceFile(agentId, { path: filePath }).then(
+    fetchWorkspaceFile(agentId, { path: filePath, ...(sessionId ? { sessionId } : {}) }).then(
       (f) =>
         setViewer((v) =>
           requestId === viewerRequestRef.current && v && v.path === filePath
@@ -289,7 +293,7 @@ export function WorkspaceFiles({
     let active = true
     setDirs({ '': { ...LOADING_DIR } })
     setExpanded(new Set())
-    fetchWorkspaceFiles(agentId, { path: '' }).then(
+    fetchWorkspaceFiles(agentId, { path: '', ...(sessionId ? { sessionId } : {}) }).then(
       (page) => {
         if (!active) return
         setDirs({
@@ -311,7 +315,7 @@ export function WorkspaceFiles({
     return () => {
       active = false
     }
-  }, [agentId, refreshTick])
+  }, [agentId, refreshTick, sessionId])
 
   // Per-agent view reset (NOT on a refreshTick bump — that would erase the pull
   // message and yank the open file / re-run the one-shot auto-open).
@@ -326,7 +330,7 @@ export function WorkspaceFiles({
     return () => {
       viewerRequestRef.current += 1
     }
-  }, [agentId])
+  }, [agentId, sessionId])
 
   const editorTarget = editor?.target ?? null
 
@@ -373,7 +377,7 @@ export function WorkspaceFiles({
   // agent's configured source with no live status half.
   useEffect(() => {
     let active = true
-    fetchWorkspaceGitStatus(agentId).then(
+    fetchWorkspaceGitStatus(agentId, sessionId).then(
       (s) => {
         if (active) setGit(s.isRepo ? s : null)
       },
@@ -384,7 +388,7 @@ export function WorkspaceFiles({
     return () => {
       active = false
     }
-  }, [agentId, refreshTick])
+  }, [agentId, refreshTick, sessionId])
 
   // On first entry, preload the project guide so the desktop preview isn't empty.
   // Mobile starts unselected on the shared browser's file list.
@@ -426,7 +430,7 @@ export function WorkspaceFiles({
     const offset = v.file.nextOffset
     const requestId = ++viewerRequestRef.current
     setViewer({ ...v, loadingMore: true, moreErr: null })
-    fetchWorkspaceFile(agentId, { path: v.path, offset }).then(
+    fetchWorkspaceFile(agentId, { path: v.path, offset, ...(sessionId ? { sessionId } : {}) }).then(
       (f) =>
         setViewer((cur) =>
           requestId === viewerRequestRef.current && cur && cur.path === v.path
@@ -690,7 +694,7 @@ export function WorkspaceFiles({
       : null,
     repoUrl: remote?.url ?? null,
     remoteLabel: remote ? (/github/i.test(remote.host) ? 'GitHub' : remote.host) : null,
-    ...(git ? { onPull: onGitPull } : {}),
+    ...(git && !sessionId ? { onPull: onGitPull } : {}),
     pulling: gitPulling,
     pullMsg: gitMsg
   }
@@ -796,7 +800,7 @@ export function WorkspaceFiles({
 
         {(editor || (root?.entries && root.exists && root.entries.length > 0)) && (
           <FileBrowserLayout
-            resetKey={`${agentId}:${mobileListSignal}`}
+            resetKey={`${agentId}:${sessionId ?? 'primary'}:${mobileListSignal}`}
             previewOpen={editor !== null || deleteDraft !== null}
             tree={(openPreview) =>
               root?.entries && root.exists && root.entries.length > 0 ? (

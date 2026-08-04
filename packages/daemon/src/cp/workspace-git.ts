@@ -40,7 +40,7 @@ const PULL_TIMEOUT_MS = 20_000
 const MAX_STATUS_FILES = 500
 
 export interface WorkspaceGit {
-  status(agentId: string): Promise<WorkspaceGitStatus>
+  status(agentId: string, sessionId?: string): Promise<WorkspaceGitStatus>
   pull(agentId: string): Promise<WorkspaceGitPullResult>
 }
 
@@ -51,12 +51,12 @@ export interface WorkspaceGitTarget {
 }
 
 export function createWorkspaceGit(
-  workspaceRootByAgent: (agentId: string) => string | undefined,
+  workspaceRootByAgent: (agentId: string, sessionId?: string) => string | undefined,
   credentialEnvByAgent: (agentId: string) => Record<string, string> = () => ({}),
   workspaceTargetByAgent: (agentId: string) => WorkspaceGitTarget | undefined = () => undefined
 ): WorkspaceGit {
-  function rootFor(agentId: string): string {
-    const root = workspaceRootByAgent(agentId)
+  function rootFor(agentId: string, sessionId?: string): string {
+    const root = workspaceRootByAgent(agentId, sessionId)
     if (!root) throw new WorkspaceViolationError(`unknown agent "${agentId}"`)
     return root
   }
@@ -83,8 +83,8 @@ export function createWorkspaceGit(
   }
 
   return {
-    async status(agentId) {
-      const root = rootFor(agentId)
+    async status(agentId, sessionId) {
+      const root = rootFor(agentId, sessionId)
       if (!isRepo(root)) return { agentId, isRepo: false, clean: true }
 
       // Status is read-only and the daemon policy already disables hooks and

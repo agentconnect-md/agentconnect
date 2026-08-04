@@ -32,6 +32,7 @@ import {
   MAX_WORKSPACE_EDIT_BYTES,
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  WORKSPACE_SESSION_READ_FEATURE,
   gitRepoLabel,
   normalizeGitUrl
 } from '@agentconnect.md/protocol'
@@ -45,7 +46,7 @@ import {
   isSyntheticEmail
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
-import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
+import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 import { mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
 import { serializeByProviderNames } from './mcp-providers.js'
 
@@ -58,7 +59,8 @@ class SkillEnableDenied extends Error {}
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
-import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
+import { canView, canViewSession, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
+import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -87,6 +89,7 @@ import {
   ErrorDto,
   IdParam,
   WorkspaceFilesQueryDto,
+  WorkspaceScopeQueryDto,
   WorkspaceFilesDto,
   WorkspaceFileQueryDto,
   WorkspaceFileDto,
@@ -506,6 +509,44 @@ export function agentRoutes(deps: HttpDeps) {
       const agent = await deps.repos.agent.get(AgentId(id))
       if (!agent || agent.orgId !== req.orgCtx!.orgId) return null
       return canView(agent, ctxOf(req)) ? agent : null
+    }
+
+    // A session worktree is part of that session's protected body surface. The
+    // caller must pass both the owning-agent gate above and the session's own
+    // private/external visibility rule before its daemon-local files are read.
+    const sessionAccess = makeSessionAccessResolver(deps)
+    const canReadWorkspaceScope = async (
+      req: FastifyRequest,
+      agentId: string,
+      sessionId: string | undefined
+    ): Promise<boolean> => {
+      if (!sessionId) return true
+      const session = await deps.repos.session.get(SessionId(sessionId))
+      if (
+        !session ||
+        session.agentId !== agentId ||
+        session.workspaceIsolation !== 'session' ||
+        session.contentPurgedAt
+      )
+        return false
+      const access = await sessionAccess.forSessions(req, [session])
+      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)
+    }
+
+    const requireSessionWorkspaceRead = async (
+      reply: FastifyReply,
+      daemonId: DaemonId,
+      sessionId: string | undefined
+    ): Promise<boolean> => {
+      if (!sessionId) return true
+      const daemon = await deps.registry.get(daemonId)
+      if (daemon?.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) return true
+      reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        message: 'this agent version does not support session worktree browsing'
+      })
+      return false
     }
 
     const resolvePolicyAgentIds = async (
@@ -2315,25 +2356,30 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'List workspace files',
           description:
-            'Proxy one directory page live from the owning daemon; a missing directory is data (exists:false), not an error. 503 when unplaced or the daemon is offline.',
+            'Proxy one directory page live from the owning daemon. Pass sessionId to browse an authorized isolated session worktree; a missing directory is data (exists:false), not an error. 503 when unplaced or the daemon is offline.',
           operationId: 'listAgentWorkspaceFiles',
           params: IdParam,
           querystring: WorkspaceFilesQueryDto,
-          response: { 200: WorkspaceFilesDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: WorkspaceFilesDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
         const agent = await getOrgAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        }
         if (!agent.daemonId) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
+        if (!(await requireSessionWorkspaceRead(reply, agent.daemonId, req.query.sessionId))) return
 
         try {
           const page = await deps.control.workspaceList(agent.daemonId, {
             agentId: agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
             path: req.query.path ?? '',
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
             limit: req.query.limit ?? 200
@@ -2396,25 +2442,30 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Read a workspace file',
           description:
-            'Proxy one byte slice of a file live from the owning daemon (64 KiB default; page with offset while truncated). A missing file is data (exists:false); binary files come back encoding:none.',
+            'Proxy one byte slice of a file live from the owning daemon (64 KiB default; page with offset while truncated). Pass sessionId to read an authorized isolated session worktree. A missing file is data (exists:false); binary files come back encoding:none.',
           operationId: 'readAgentWorkspaceFile',
           params: IdParam,
           querystring: WorkspaceFileQueryDto,
-          response: { 200: WorkspaceFileDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: WorkspaceFileDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
         const agent = await getOrgAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        }
         if (!agent.daemonId) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
+        if (!(await requireSessionWorkspaceRead(reply, agent.daemonId, req.query.sessionId))) return
 
         try {
           const rep = await deps.control.workspaceRead(agent.daemonId, {
             agentId: agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
             path: req.query.path,
             offset: req.query.offset ?? 0,
             limit: req.query.limit ?? 65536
@@ -3680,10 +3731,11 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Get workspace git status',
           description:
-            'Report whether the owning daemon’s checkout is clean; a dirty tree or a from-scratch (non-repo) workspace is data (clean/isRepo), not an error.',
+            'Report whether the owning daemon’s checkout is clean. Pass sessionId for an authorized isolated session worktree; a dirty tree or a from-scratch (non-repo) workspace is data (clean/isRepo), not an error.',
           operationId: 'getAgentWorkspaceGitStatus',
           params: IdParam,
-          response: { 200: WorkspaceGitStatusDto, 404: ErrorDto, 503: ErrorDto }
+          querystring: WorkspaceScopeQueryDto,
+          response: { 200: WorkspaceGitStatusDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -3691,14 +3743,21 @@ export function agentRoutes(deps: HttpDeps) {
         // would leak a restricted / cross-org agent's checkout state.
         const agent = await getOrgAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        }
         if (!agent.daemonId) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
+        if (!(await requireSessionWorkspaceRead(reply, agent.daemonId, req.query.sessionId))) return
 
         try {
-          const rep = await deps.control.workspaceGitStatus(agent.daemonId, { agentId: agent.id })
+          const rep = await deps.control.workspaceGitStatus(agent.daemonId, {
+            agentId: agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {})
+          })
           const ws = agent.workspace
           const cfg =
             ws.mode === 'github' ? { repo: ws.gitRepo, ...(ws.agentDir ? { agentDir: ws.agentDir } : {}) } : {}

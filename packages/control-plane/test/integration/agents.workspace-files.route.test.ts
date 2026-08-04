@@ -1,18 +1,20 @@
 /**
- * Scratch workspace file edits stay daemon-local: the CP authorizes the agent
- * manager, verifies scratch mode, and proxies one exclusive create or optimistic
- * whole-file replacement.
+ * Workspace access stays daemon-local: the CP authorizes session-scoped reads,
+ * and keeps scratch edits behind the agent manager and optimistic file fences.
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
 import type {
   WorkspaceDeleteOk,
   WorkspaceDeleteReq,
+  WorkspaceListPage,
+  WorkspaceListReq,
   WorkspaceWriteOk,
   WorkspaceWriteReq
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { DaemonLiveness } from '../../src/ports.js'
@@ -28,7 +30,7 @@ const CAPABILITIES = {
   platforms: ['slack'],
   runtimes: ['claude'],
   acp: true,
-  features: ['workspace-file-edit-v1', 'workspace-file-delete-v1']
+  features: ['workspace-file-edit-v1', 'workspace-file-delete-v1', WORKSPACE_SESSION_READ_FEATURE]
 }
 const LIVE: DaemonLiveness = {
   get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
@@ -40,8 +42,14 @@ afterEach(async () => {
 })
 
 class WorkspaceWriteSpy {
+  listCalls: Array<{ daemonId: string; req: WorkspaceListReq }> = []
   calls: Array<{ daemonId: string; req: WorkspaceWriteReq }> = []
   deleteCalls: Array<{ daemonId: string; req: WorkspaceDeleteReq }> = []
+
+  async workspaceList(daemonId: string, req: WorkspaceListReq): Promise<WorkspaceListPage> {
+    this.listCalls.push({ daemonId, req })
+    return { agentId: req.agentId, path: req.path, exists: true, entries: [] }
+  }
 
   async workspaceWrite(daemonId: string, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
     this.calls.push({ daemonId, req })
@@ -69,6 +77,49 @@ function app(control: WorkspaceWriteSpy, userId?: string): HttpApp {
   opened.push(running)
   return running
 }
+
+describe('GET /agents/:id/workspace/files', () => {
+  it('proxies a visible isolated session and rejects unavailable worktrees before daemon I/O', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: CAPABILITIES })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, gitRepo: 'https://github.com/acme/repo' })
+    const isolated = randomUUID()
+    const shared = randomUUID()
+    const purged = randomUUID()
+    await seedSessionMeta(prisma, isolated, AGENT, { daemonId: DAEMON })
+    await seedSessionMeta(prisma, shared, AGENT, { daemonId: DAEMON })
+    await seedSessionMeta(prisma, purged, AGENT, { daemonId: DAEMON })
+    await prisma.sessionMeta.update({ where: { id: isolated }, data: { workspaceIsolation: 'session' } })
+    await prisma.sessionMeta.update({ where: { id: shared }, data: { workspaceIsolation: 'shared' } })
+    await prisma.sessionMeta.update({
+      where: { id: purged },
+      data: { workspaceIsolation: 'session', contentPurgedAt: new Date(), contentPurgedReason: 'retention' }
+    })
+    const control = new WorkspaceWriteSpy()
+    const running = app(control)
+
+    const visible = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/files?sessionId=${isolated}`
+    })
+    expect(visible.statusCode).toBe(200)
+    expect(control.listCalls).toEqual([
+      { daemonId: DAEMON, req: { agentId: AGENT, sessionId: isolated, path: '', limit: 200 } }
+    ])
+
+    const denied = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/files?sessionId=${shared}`
+    })
+    expect(denied.statusCode).toBe(404)
+
+    const gone = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/files?sessionId=${purged}`
+    })
+    expect(gone.statusCode).toBe(404)
+    expect(control.listCalls).toHaveLength(1)
+  })
+})
 
 describe('PUT /agents/:id/workspace/file', () => {
   it('proxies an optimistic replacement without storing content', async () => {

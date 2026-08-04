@@ -39,6 +39,9 @@ export type WorkspaceEntry = z.infer<typeof WorkspaceEntry>
 /** C→D REQ: list one page of a directory in the agent's workspace. */
 export const WorkspaceListReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. Omit for the
+   * agent's primary checkout. The CP authorizes the session before forwarding. */
+  sessionId: z.string().min(1).optional(),
   path: z.string().default(''), // workspace-relative POSIX path; '' ⇒ workspace root
   cursor: z.string().optional(), // opaque; omit ⇒ first page
   limit: z.number().int().positive().max(500).default(200)
@@ -58,6 +61,8 @@ export type WorkspaceListPage = z.infer<typeof WorkspaceListPage>
 /** C→D REQ: read one byte slice of a file in the agent's workspace. */
 export const WorkspaceReadReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional(),
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.number().int().nonnegative().default(0), // byte offset
   limit: z.number().int().positive().max(65536).default(65536) // byte count per slice (64 KiB, see docblock)
@@ -132,7 +137,9 @@ export type WorkspaceDeleteOk = z.infer<typeof WorkspaceDeleteOk>
 
 /** C→D REQ: report `git status` of the agent's workspace (is it clean?). */
 export const WorkspaceGitStatusReq = z.object({
-  agentId: z.string().min(1) // local agent id (NOT a wire UUID)
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional()
 })
 export type WorkspaceGitStatusReq = z.infer<typeof WorkspaceGitStatusReq>
 

@@ -27,6 +27,8 @@ import {
   fetchAgentRepos,
   fetchGithubInstallations,
   fetchHookRuns,
+  fetchSessionDetail,
+  sessionFromDetailDto,
   updateGithubHook,
   uploadAgentIcon,
   type GithubInstallationDto,
@@ -50,6 +52,7 @@ import { discordBotInviteUrl } from '@/lib/discord-invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
 import { WorkspaceFilesMock } from '@/components/console/WorkspaceFilesMock'
+import { WorkspaceScopePicker } from '@/components/console/WorkspaceScopePicker'
 import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
@@ -132,6 +135,11 @@ export default function AgentDetailView() {
   const { id } = useParams<{ id: string }>()
   const params = useSearchParams()
   const router = useRouter()
+  const rawTab = params.get('tab')
+  // Integrations is the default landing tab (first, no `?tab=`); everything else
+  // is `?tab=<id>`.
+  const tab: DetailTab =
+    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' ? rawTab : 'integrations'
   const { agents, getAgent, getSessions, daemons, daemonsLoading, integrations, agentsLoading, updateAgent, refresh } =
     useConsoleData()
   const { openPlayground } = usePlayground()
@@ -141,6 +149,20 @@ export default function AgentDetailView() {
     total: agentSessionTotal,
     isLoading: agentSessionsLoading
   } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
+  const {
+    sessions: workspaceSessionRows,
+    nextCursor: workspaceSessionsNextCursor,
+    loadingMore: workspaceSessionsLoadingMore,
+    loadMore: loadMoreWorkspaceSessions,
+    isLoading: workspaceSessionsLoading
+  } = useSessionList(MOCK_MODE || tab !== 'workspace' ? null : activeOrg?.id, { agentId: id }, { grouped: false })
+  const selectedWorktreeSessionId = params.get('worktree')?.trim() || null
+  const { data: selectedWorktreeDetail } = useSWR(
+    tab === 'workspace' && selectedWorktreeSessionId
+      ? consoleKeys.sessionDetail(activeOrg?.id, selectedWorktreeSessionId)
+      : null,
+    ([, orgId, , sessionId]) => fetchSessionDetail(sessionId, orgId)
+  )
   // The Recent-sessions card reads the agent-filtered page above, NOT the
   // org-wide loaded window (`getSessions`) — a busy org's newest 50 may not
   // include this agent at all, which would render a false "No sessions yet"
@@ -153,6 +175,17 @@ export default function AgentDetailView() {
         : agentSessionRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
     [agentSessionRows, getAgent, getSessions, id]
   )
+  const workspaceSessions = useMemo(
+    () => workspaceSessionRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
+    [getAgent, workspaceSessionRows]
+  )
+  const selectedWorktreeSession =
+    workspaceSessions.find((session) => session.id === selectedWorktreeSessionId) ??
+    (selectedWorktreeDetail?.agentId === id &&
+    selectedWorktreeDetail.workspaceIsolation === 'session' &&
+    !selectedWorktreeDetail.contentPurgedAt
+      ? sessionFromDetailDto(selectedWorktreeDetail)
+      : undefined)
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
@@ -335,12 +368,6 @@ export default function AgentDetailView() {
     setActionErr(null)
     setActionsOpen((v) => !v)
   }
-
-  const rawTab = params.get('tab')
-  // Integrations is the default landing tab (first, no `?tab=`); everything else
-  // is `?tab=<id>`.
-  const tab: DetailTab =
-    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' ? rawTab : 'integrations'
 
   // Effective agent-call reachability over the whole roster: an A→B edge exists
   // only when A's outbound AND B's inbound both permit it. The read-only Access
@@ -1596,16 +1623,39 @@ export default function AgentDetailView() {
           agents fill it from their static workspace fields. */}
       {tab === 'workspace' &&
         (!da.name.startsWith(MOCK_PREFIX) ? (
-          <div className="p-4 desktop:p-0">
+          <div className="flex flex-col gap-4 p-4 desktop:p-0">
+            {da.workspace.mode === 'github' &&
+              (da.workspace.worktree === true ||
+                selectedWorktreeSessionId !== null ||
+                workspaceSessionsNextCursor !== null ||
+                workspaceSessions.some((session) => session.workspaceIsolation === 'session')) && (
+                <WorkspaceScopePicker
+                  sessions={workspaceSessions}
+                  selectedSessionId={selectedWorktreeSessionId}
+                  selectedSession={selectedWorktreeSession}
+                  loading={workspaceSessionsLoading}
+                  hasMore={workspaceSessionsNextCursor !== null}
+                  loadingMore={workspaceSessionsLoadingMore}
+                  onLoadMore={() => void loadMoreWorkspaceSessions()}
+                  onChange={(sessionId) => {
+                    const next = new URLSearchParams(params)
+                    if (sessionId) next.set('worktree', sessionId)
+                    else next.delete('worktree')
+                    router.replace(`${orgPath(`/agents/${id}`)}?${next.toString()}`, { scroll: false })
+                  }}
+                  orgPath={orgPath}
+                />
+              )}
             {/* Keyed by workspace identity: the editor now lives in the card
                 this instance renders, so a replacement must remount the browser
                 instead of leaving the previous tree/preview/git state beneath a
                 refreshed source card. */}
             <WorkspaceFiles
-              key={workspaceReadModelKey(da)}
+              key={workspaceReadModelKey(da, selectedWorktreeSessionId ?? undefined)}
               agentId={id}
+              {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               workdir={da.workdir}
-              canEdit={da.workspace.mode === 'scratch' && da.canEdit}
+              canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
               renderHeader={(header) => <WorkspaceCard agent={da} header={header} />}
             />
           </div>
