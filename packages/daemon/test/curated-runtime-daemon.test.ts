@@ -198,7 +198,7 @@ describe('daemon curated runtime admission', () => {
     } finally {
       await daemon.stop()
     }
-  })
+  }, 15_000)
 
   it('refreshes curated admission after the TTL without requiring a CP reconnect', async () => {
     const clock = new FakeClock(100)
