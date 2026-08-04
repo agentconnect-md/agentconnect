@@ -3181,181 +3181,185 @@ export default function SessionDetailView() {
         <div className="flex flex-1 flex-col gap-4 p-4 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
           {turns.length > 0 && (
             <div className="flex flex-col gap-4 desktop:gap-[15px]">
-              {turns.map((turn, ti) =>
-                turn.kind === 'user' ? (
-                  // 2b: user turns are right-aligned brand-soft bubbles. A sender label
-                  // sits above the bubble only when it isn't you (platform user / cron).
-                  <div key={`${session.id}:${ti}`} className="flex items-start justify-end gap-[9px]">
-                    <div className="flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
-                      {showsSenderLabel(turn) && (
-                        <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                          {turn.isCron && turn.cronId ? (
-                            <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                              {turn.sp.name}
-                            </Link>
-                          ) : (
-                            <span>{turn.sp.name}</span>
-                          )}
-                          {turn.time && <span className="mono">{turn.time}</span>}
-                        </span>
-                      )}
-                      <div className={SELF_BUBBLE}>
-                        {turn.image && (
-                          <img
-                            src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                            alt={turn.image.name}
-                            className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                          />
-                        )}
-                        {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                      </div>
+              {turns.map((turn, ti) => (
+                // The turn's clock time is its own centred line above the message —
+                // a shared separator for both sides, instead of a label-row tail
+                // that never lines up with the bubble edge on either side.
+                <div key={`${session.id}:${ti}`} className="flex flex-col gap-[5px]">
+                  {turn.time && (
+                    <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
+                      {turn.time}
                     </div>
-                    <ParticipantAvatar
-                      agent={turn.agent}
-                      avatarUrl={turn.avatarUrl}
-                      avatarInitials={turn.avatarInitials}
-                      platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                      sp={turn.sp}
-                      isCron={turn.isCron}
-                      // Optically centre the 26px mark on the bubble's FIRST LINE, not
-                      // on the bubble's top edge: 9px of padding plus half of a 21px
-                      // line puts that centre 19.5px down, while a top-aligned mark
-                      // centres at 13px — the 6px it looked too high by. A labelled row
-                      // keeps the mark level with its label instead, like the bot side.
-                      className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
-                    />
-                  </div>
-                ) : (
-                  (() => {
-                    // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
-                    // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
-                    const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
-                    const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
-                    // Reasoning steps / tool commands / edited FILES (distinct paths across
-                    // EDIT rows, since one EDIT row can touch several files).
-                    const { thinkCount, toolCount, editCount } = workCounts(workSteps)
-                    const summary = workSummary(thinkCount, toolCount, editCount)
-                    // The trailing turn of a running session is the one streaming: its
-                    // work panel defaults open so skill/command/tool calls are visible
-                    // AS THEY RUN, and collapses on its own once the turn completes.
-                    // statusLabel carries the RAW session state — the active-turn
-                    // predicate lives (and is tested) in session-work.ts.
-                    const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
-                    const openWork = workPanelOpen(workOverride.get(ti), streaming)
-                    // Keyed by agent id where there is one so the colour survives a
-                    // rename; a mock/playground row without an id falls back to the
-                    // display name, which is stable for as long as the row is.
-                    const turnTone = agentToneColor(turn.agentId || turn.agentName)
-                    return (
-                      <div
-                        key={`${session.id}:${ti}`}
-                        ref={ti === focusTurnIndex ? focusRef : undefined}
-                        className={`flex items-start gap-[10px] rounded-md transition-colors duration-700 ${
-                          ti === focusTurnIndex && focusFlash ? 'bg-(--surface-active)' : ''
-                        }`}
-                      >
-                        <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                          <AgentIconView
-                            icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
-                            runtime={
-                              (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                              (agentRuntime || turn.model)
-                            }
-                            size={26}
-                          />
-                        </span>
-                        <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
-                          <div className="mb-[5px] flex items-center gap-[7px]">
-                            <span className={AGENT_NAME}>{turn.agentName}</span>
-                            {turn.time && (
-                              <span className="mono ml-auto shrink-0 whitespace-nowrap text-[11px] text-(--text-tertiary)">
-                                {turn.time}
-                              </span>
+                  )}
+                  {turn.kind === 'user' ? (
+                    // 2b: user turns are right-aligned brand-soft bubbles. A sender label
+                    // sits above the bubble only when it isn't you (platform user / cron).
+                    <div key={`${session.id}:${ti}`} className="flex items-start justify-end gap-[9px]">
+                      <div className="flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                        {showsSenderLabel(turn) && (
+                          <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                            {turn.isCron && turn.cronId ? (
+                              <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
+                                {turn.sp.name}
+                              </Link>
+                            ) : (
+                              <span>{turn.sp.name}</span>
                             )}
-                          </div>
-                          {/* One bubble PER text step, not one around the set: each step is
+                          </span>
+                        )}
+                        <div className={SELF_BUBBLE}>
+                          {turn.image && (
+                            <img
+                              src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                              alt={turn.image.name}
+                              className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                            />
+                          )}
+                          {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                        </div>
+                      </div>
+                      <ParticipantAvatar
+                        agent={turn.agent}
+                        avatarUrl={turn.avatarUrl}
+                        avatarInitials={turn.avatarInitials}
+                        platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                        sp={turn.sp}
+                        isCron={turn.isCron}
+                        // Optically centre the 26px mark on the bubble's FIRST LINE, not
+                        // on the bubble's top edge: 9px of padding plus half of a 21px
+                        // line puts that centre 19.5px down, while a top-aligned mark
+                        // centres at 13px — the 6px it looked too high by. A labelled row
+                        // keeps the mark level with its label instead, like the bot side.
+                        className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
+                      />
+                    </div>
+                  ) : (
+                    (() => {
+                      // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
+                      // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
+                      const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
+                      const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
+                      // Reasoning steps / tool commands / edited FILES (distinct paths across
+                      // EDIT rows, since one EDIT row can touch several files).
+                      const { thinkCount, toolCount, editCount } = workCounts(workSteps)
+                      const summary = workSummary(thinkCount, toolCount, editCount)
+                      // The trailing turn of a running session is the one streaming: its
+                      // work panel defaults open so skill/command/tool calls are visible
+                      // AS THEY RUN, and collapses on its own once the turn completes.
+                      // statusLabel carries the RAW session state — the active-turn
+                      // predicate lives (and is tested) in session-work.ts.
+                      const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
+                      const openWork = workPanelOpen(workOverride.get(ti), streaming)
+                      // Keyed by agent id where there is one so the colour survives a
+                      // rename; a mock/playground row without an id falls back to the
+                      // display name, which is stable for as long as the row is.
+                      const turnTone = agentToneColor(turn.agentId || turn.agentName)
+                      return (
+                        <div
+                          key={`${session.id}:${ti}`}
+                          ref={ti === focusTurnIndex ? focusRef : undefined}
+                          className={`flex items-start gap-[10px] rounded-md transition-colors duration-700 ${
+                            ti === focusTurnIndex && focusFlash ? 'bg-(--surface-active)' : ''
+                          }`}
+                        >
+                          <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                            <AgentIconView
+                              icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
+                              runtime={
+                                (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
+                                (agentRuntime || turn.model)
+                              }
+                              size={26}
+                            />
+                          </span>
+                          <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
+                            <div className="mb-[5px] flex items-center gap-[7px]">
+                              <span className={AGENT_NAME}>{turn.agentName}</span>
+                            </div>
+                            {/* One bubble PER text step, not one around the set: each step is
                             its own delivered message (a turn that answers in two chunks
                             arrives as two), so bubbling them together would merge messages
                             the platform kept apart. `w-fit` keeps a short reply from
                             drawing a full-width card. */}
-                          {textSteps.map((st, si) => (
-                            <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
-                              {st.image && (
-                                <img
-                                  src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                  alt={st.image.name}
-                                  className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                                />
-                              )}
-                              {st.text && (
-                                <div className="whitespace-pre-wrap">
-                                  <MessageText text={st.text} platform={st.platform} />
-                                </div>
-                              )}
-                              <StepExtras step={st} sessionId={sid} />
-                            </div>
-                          ))}
-                          {workSteps.length > 0 && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => toggleWork(ti, openWork)}
-                                className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
-                                title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
-                              >
-                                <Icon
-                                  name={openWork ? 'chevron-down' : 'chevron-right'}
-                                  size={13}
-                                  color="var(--text-tertiary)"
-                                />
-                                {summary || 'Details'}
-                              </button>
-                              {openWork && (
-                                <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                  {workSteps.map((st, si) => (
-                                    <div
-                                      key={si}
-                                      className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
-                                        si > 0 ? 'border-t border-(--border-subtle)' : ''
-                                      }`}
-                                    >
-                                      {/* min-h matches the text column's FIRST LINE box
+                            {textSteps.map((st, si) => (
+                              <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
+                                {st.image && (
+                                  <img
+                                    src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                    alt={st.image.name}
+                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+                                  />
+                                )}
+                                {st.text && (
+                                  <div className="whitespace-pre-wrap">
+                                    <MessageText text={st.text} platform={st.platform} />
+                                  </div>
+                                )}
+                                <StepExtras step={st} sessionId={sid} />
+                              </div>
+                            ))}
+                            {workSteps.length > 0 && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleWork(ti, openWork)}
+                                  className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
+                                  title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
+                                >
+                                  <Icon
+                                    name={openWork ? 'chevron-down' : 'chevron-right'}
+                                    size={13}
+                                    color="var(--text-tertiary)"
+                                  />
+                                  {summary || 'Details'}
+                                </button>
+                                {openWork && (
+                                  <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
+                                    {workSteps.map((st, si) => (
+                                      <div
+                                        key={si}
+                                        className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
+                                          si > 0 ? 'border-t border-(--border-subtle)' : ''
+                                        }`}
+                                      >
+                                        {/* min-h matches the text column's FIRST LINE box
                                         (13px × 1.5), so centring inside it puts the dot
                                         and lane label on that line's centre line. The
                                         old `pt-[1px]` guessed at the same thing against
                                         a 15px-tall mono box and read a few px high. */}
-                                      <div className="flex min-h-[20px] w-[52px] flex-none items-center gap-[6px]">
-                                        <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
-                                        <span
-                                          className="mono text-[10px] font-semibold tracking-[.02em]"
-                                          style={{ color: st.laneColor }}
-                                        >
-                                          {st.lane}
-                                        </span>
-                                      </div>
-                                      <div className="min-w-0 flex-1">
-                                        {st.text && (
-                                          <div
-                                            className="font-sans text-[13px] leading-[1.5]"
-                                            style={{ fontWeight: st.weight, color: st.textColor }}
+                                        <div className="flex min-h-[20px] w-[52px] flex-none items-center gap-[6px]">
+                                          <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
+                                          <span
+                                            className="mono text-[10px] font-semibold tracking-[.02em]"
+                                            style={{ color: st.laneColor }}
                                           >
-                                            <MessageText text={st.text} platform={st.platform} />
-                                          </div>
-                                        )}
-                                        <StepExtras step={st} sessionId={sid} />
+                                            {st.lane}
+                                          </span>
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                          {st.text && (
+                                            <div
+                                              className="font-sans text-[13px] leading-[1.5]"
+                                              style={{ fontWeight: st.weight, color: st.textColor }}
+                                            >
+                                              <MessageText text={st.text} platform={st.platform} />
+                                            </div>
+                                          )}
+                                          <StepExtras step={st} sessionId={sid} />
+                                        </div>
                                       </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </>
-                          )}
+                                    ))}
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    )
-                  })()
-                )
-              )}
+                      )
+                    })()
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
