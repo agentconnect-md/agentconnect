@@ -15351,8 +15351,12 @@ export class Daemon {
         : this.integrationIdForTransportScope(agentId, msg.platform, msg.transportScope)
     const integration = integrationId ? this.integrationConfigById(integrationId) : undefined
     const tenantScope = integration ? this.tenantScopeForIntegration(integration) : undefined
+    // Same predicate as `bindSessionSource`: a platform-observed delivery binds the NEW
+    // session it creates, or that session is classified local and every later externally-
+    // attributed wake of it (human or agent) rejects as a cross-source mismatch.
     const directExternalSource =
-      this.githubExternalSource(hookContext) ?? this.conversationExternalSource(agentId, msg, isA2aChild)
+      this.githubExternalSource(hookContext) ??
+      this.conversationExternalSource(agentId, msg, isA2aChild && callMeta.platformOrigin !== true)
     const inheritedExternalSource = callMeta?.externalOrigin
       ? {
           externalProvider: callMeta.externalOrigin.provider,

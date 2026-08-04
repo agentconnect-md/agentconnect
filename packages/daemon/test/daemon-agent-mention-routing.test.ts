@@ -275,6 +275,55 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
+  it('classifies the NEW session a platform-observed delivery creates as externally bound', async () => {
+    // The creation-side half of the same failure: when the target has never spoken in
+    // the thread, the wake CREATES its session. Classified as a postless child, that row
+    // is 'local' — and then every later externally-attributed wake in the thread, the
+    // next HUMAN reply included, rejects as a cross-source mismatch. The agent goes
+    // permanently silent in a conversation it visibly joined.
+    const { daemon } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    ;(daemon as any).connByIntegration.set('int-bot-b', { workspaceId: () => 'T-TEST' })
+    const msg = agentMessage()
+    msg.transportScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+    const seedSession = (key: string) =>
+      (daemon as any).store.upsertSession({
+        key,
+        agentId: 'bot-b',
+        platform: 'slack',
+        channel: 'C1',
+        thread: '1720000000.000100',
+        acpSessionId: 'acp-1',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+
+    const key = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', msg.transportScope)
+    seedSession(key)
+    const platformWake = { callFrom: 'bot-a', platformOrigin: true, hopCount: 1, deliveryId: 'd-1' }
+    ;(daemon as any).classifyNewSessionOrThrow('bot-b', key, 'acp-1', msg, platformWake, undefined, false)
+    expect((daemon as any).store.getSession(key)).toMatchObject({
+      sourceBindingKind: 'external',
+      externalProvider: 'slack',
+      externalRealmKey: 'T-TEST',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-bot-b'
+    })
+    // …so the next wake in the thread — this one human-shaped, no CallMeta — reuses the
+    // row instead of mismatching.
+    expect((daemon as any).bindSessionSource('bot-b', key, msg, undefined, undefined)).toBe('unchanged')
+
+    // A postless child still classifies local: its coordinates are model-influenced, so
+    // the row it creates must not claim the shared conversation.
+    const postlessKey = sessionKey('slack', 'C1', '1720000000.000900', 'bot-b', msg.transportScope)
+    seedSession(postlessKey)
+    const postlessWake = { callFrom: 'bot-a', hopCount: 1, deliveryId: 'd-2' }
+    ;(daemon as any).classifyNewSessionOrThrow('bot-b', postlessKey, 'acp-1', msg, postlessWake, undefined, false)
+    expect((daemon as any).store.getSession(postlessKey)).toMatchObject({ sourceBindingKind: 'local' })
+    await daemon.stop()
+  })
+
   it('does not let an agent issue control commands', async () => {
     // §6: `!stop` from an agent must not act on a running turn. Command interception sits
     // BELOW the agent branch, so agent text can never reach it.
