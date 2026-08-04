@@ -36,8 +36,30 @@ describe('connection identity (transport scope)', () => {
     )
     expect(connectionIdentityFor({ id: 'i3', platform: 'discord', config: { botToken: 'dt' } } as never)).toBe('dt')
     expect(
-      connectionIdentityFor({ id: 'i4', platform: 'feishu', config: { region: 'lark', appId: 'cli_1' } } as never)
+      connectionIdentityFor({
+        id: 'i4',
+        platform: 'feishu',
+        config: { region: 'lark', appId: 'cli_1', appSecret: 's' }
+      } as never)
     ).toBe('lark:cli_1')
+    // The schema default supplies the region a hand-authored payload omitted.
+    expect(
+      connectionIdentityFor({ id: 'i4', platform: 'feishu', config: { appId: 'cli_1', appSecret: 's' } } as never)
+    ).toBe('feishu:cli_1')
+  })
+
+  it('fails CLOSED (integration-id isolation) on a payload the module schema refuses — never a throw', () => {
+    // The payload is opaque `unknown` on the entry: a malformed value must not
+    // reach `.split()` etc. through an unchecked cast (it used to throw here).
+    expect(connectionIdentityFor({ id: 'i2', platform: 'telegram', config: { botToken: 42 } } as never)).toBe('i2')
+    expect(connectionIdentityFor({ id: 'i1', platform: 'slack', config: {} } as never)).toBe('i1')
+    expect(connectionIdentityFor({ id: 'i4', platform: 'feishu', config: { appId: 'cli_1' } } as never)).toBe('i4')
+    // A config-less entry (a pre-S3 nested-shape leftover) isolates the same way.
+    expect(connectionIdentityFor({ id: 'i5', platform: 'discord' } as never)).toBe('i5')
+    // Prototype-name platform ids read as unregistered, not as inherited values.
+    for (const platform of ['constructor', 'toString', '__proto__']) {
+      expect(connectionIdentityFor({ id: 'i6', platform, config: { botToken: 'x' } } as never)).toBe('i6')
+    }
   })
 
   it('over-isolates unknown platforms rather than over-sharing', () => {
@@ -65,9 +87,18 @@ describe('tenant scope (durable owner identity)', () => {
       tenantScopeFor(host(undefined, 'm3'), {
         id: 'i4',
         platform: 'feishu',
-        config: { region: 'lark', appId: 'c1' }
+        config: { region: 'lark', appId: 'c1', appSecret: 's' }
       } as never)
     ).toBe('lark:c1')
+  })
+
+  it('falls back to the minted scope on a payload the module schema refuses — never a throw', () => {
+    expect(
+      tenantScopeFor(host(undefined, 'm6'), { id: 'i2', platform: 'telegram', config: { botToken: 42 } } as never)
+    ).toBe('m6')
+    expect(
+      tenantScopeFor(host(undefined, 'm7'), { id: 'i4', platform: 'feishu', config: { appId: 'c1' } } as never)
+    ).toBe('m7')
   })
 
   it('mints for platforms with no durable tenant id (Discord, unknown)', () => {

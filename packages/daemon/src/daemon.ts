@@ -147,7 +147,7 @@ import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
-import { integrationCore, platformIntegrationConfig } from './platforms/integration-config.js'
+import { integrationConfig, integrationCore, platformIntegrationConfig } from './platforms/integration-config.js'
 import { isPlatformMemberId } from './platforms/member-id.js'
 import { threadKeyForPost } from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
@@ -3235,6 +3235,23 @@ export class Daemon {
       agents = [...activeFleet]
       for (const previous of preserved.values()) {
         if (!agents.some((agent) => agent.dir === previous.dir)) agents.push(previous)
+      }
+    }
+
+    // §6.4: an integration entry whose opaque `config` its platform module
+    // cannot validate — a pre-S3 nested-shape entry (block stripped, no
+    // config), an unregistered platform id, or a malformed payload — is inert
+    // everywhere downstream (no connection, no routing). Say so HERE, once per
+    // load, instead of leaving a silent dead entry the operator discovers by
+    // absence. Ids only — never config/token material.
+    for (const agent of agents) {
+      for (const int of agent.integrations) {
+        if (integrationConfig(int) === undefined) {
+          this.log.warn(
+            `agent "${agent.id}": integration "${int.id}" (platform ${int.platform}) has no usable config payload — ` +
+              `skipped (pre-S3 nested shape, unregistered platform, or invalid; rewrite as { platform, core, config })`
+          )
+        }
       }
     }
 

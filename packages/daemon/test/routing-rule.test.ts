@@ -125,6 +125,19 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
     } as unknown as Integration
     expect(integrationConfig(malformed)).toBeUndefined()
     expect(configuredBotSelfId(malformed)).toBeUndefined()
+    // Prototype names are legal values for an OPEN platform id and must read as
+    // unregistered — never resolve `Object.prototype` members into the schema
+    // lookup (which would throw mid-convergence instead of skipping the spec).
+    for (const platform of ['constructor', 'toString', '__proto__']) {
+      const proto = {
+        id: `i-${platform}`,
+        platform,
+        core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+        config: { botToken: 'x' }
+      } as unknown as Integration
+      expect(integrationConfig(proto)).toBeUndefined()
+      expect(configuredBotSelfId(proto)).toBeUndefined()
+    }
   })
 
   it('normalizes an absent mutedChannels to empty and an unset bot id to undefined', () => {

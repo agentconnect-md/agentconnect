@@ -70,7 +70,13 @@ export interface IntegrationCore {
  * silently ignore an in-place edit to a live entry.
  */
 export function integrationConfig(int: Integration): IntegrationConfig | undefined {
-  const schema: ZodType | undefined = CONFIG_SCHEMAS[int.platform as keyof typeof CONFIG_SCHEMAS]
+  // `platform` is an OPEN string (S1a): guard the plain-object lookup with
+  // hasOwn so a prototype name (`constructor`, `toString`, `__proto__`) reads
+  // as unregistered instead of resolving an inherited non-schema value — the
+  // same fail-closed rule the `ORDERINGS` strategy table pins.
+  const schema: ZodType | undefined = Object.hasOwn(CONFIG_SCHEMAS, int.platform)
+    ? CONFIG_SCHEMAS[int.platform as keyof typeof CONFIG_SCHEMAS]
+    : undefined
   const parsed = int.config !== undefined ? schema?.safeParse(int.config) : undefined
   return parsed?.success ? (parsed.data as IntegrationConfig) : undefined
 }

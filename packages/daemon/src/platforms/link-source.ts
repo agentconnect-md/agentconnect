@@ -7,33 +7,28 @@
  *
  *  - Slack and GitHub brand as themselves;
  *  - Feishu and Lark share ONE protocol platform id, so the visible brand comes
- *    from the integration's region — a read of the integration's own (legacy
- *    disk-shape) config block, which is exactly why it belongs here and not in
- *    core;
+ *    from the integration's region — read through the platform module's
+ *    VALIDATED config (§6.4), which also applies the schema default (`'feishu'`
+ *    when a hand-authored payload omits the field, exactly as the pre-flatten
+ *    parse did);
  *  - everyone else contributes nothing, and the link renders unbranded.
  *
  * Presentation-only by contract: nothing routes on this value, so the open
  * `string` return is safe and the console treats unknown hints as no hint.
  */
+import type { Integration } from '../agents/agent-schema.js'
+import { platformIntegrationConfig } from './integration-config.js'
 
-type LinkSource = (integration: unknown) => string | undefined
+type LinkSource = (integration: Integration | undefined) => string | undefined
 
 const SOURCES = new Map<string, LinkSource>([
   ['slack', () => 'slack'],
   ['github', () => 'github'],
-  [
-    'feishu',
-    (integration) => {
-      // The integration's own opaque config payload (§6.4 flat shape);
-      // structurally read so this file needs no agent-schema import.
-      const feishu = (integration as { config?: { region?: string } } | undefined)?.config
-      return feishu?.region
-    }
-  ]
+  ['feishu', (integration) => (integration ? platformIntegrationConfig('feishu', integration)?.region : undefined)]
 ])
 
 /** The `?source=` hint for a session link delivered via `platform` /
  *  `integration`. Total by construction: no registered source means no hint. */
-export function sessionLinkSourceFor(platform: string, integration?: unknown): string | undefined {
+export function sessionLinkSourceFor(platform: string, integration?: Integration): string | undefined {
   return SOURCES.get(platform)?.(integration)
 }
