@@ -43,10 +43,9 @@ export type TelegramCreateCredentials = z.infer<typeof TelegramCreateCredentials
  * The §6.4 opaque `IntegrationSpec.config` payload for one Telegram
  * integration — the body of `integrationToSpec`'s telegram arm
  * (`orchestrator/placement.ts`), extracted so the live placement path and the
- * provider's projector share ONE implementation. The routing knobs are
- * deliberately DUPLICATED from the core envelope: today's daemon readers still
- * take them from the opaque config (§6.4 tolerant-reader window).
- * Token-bearing — NEVER log the result.
+ * provider's projector share ONE implementation. Platform-private material
+ * ONLY: the routing knobs ride the core ENVELOPE, never this payload (§6.4
+ * final shape). Token-bearing — NEVER log the result.
  */
 export function telegramIntegrationConfig(secret: Pick<BotSecretMaterial, 'botToken'>): IntegrationTelegramConfig {
   return { botToken: secret.botToken }
