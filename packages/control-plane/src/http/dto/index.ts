@@ -2928,6 +2928,9 @@ export const UsageAgentDto = z.object({
   cachedWriteTokens: z.number(),
   costAmount: z.number()
 })
+export const UsageModelDto = UsageAgentDto.omit({ agentId: true }).extend({
+  model: z.string().nullable()
+})
 export const UsageDto = z.object({
   range: UsageRange,
   accessSyncDegraded: z.boolean().optional(),
@@ -2939,6 +2942,7 @@ export const UsageDto = z.object({
     costCurrency: z.string().nullable()
   }),
   agents: z.array(UsageAgentDto),
+  models: z.array(UsageModelDto),
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
   // empty buckets filled to 0. `start` is a UTC-aligned ISO instant.
   series: z.object({

@@ -26,8 +26,13 @@ const AGENT_A = '11111111-1111-4111-8111-111111111111'
 const AGENT_B = '22222222-2222-4222-8222-222222222222'
 const DAY_MS = 24 * 60 * 60 * 1000
 
-async function seedVisibleSession(agentId: string, sessionId: string, lastActivityAt: Date): Promise<void> {
-  await seedSessionMeta(prisma, sessionId, agentId, { lastActivityAt })
+async function seedVisibleSession(
+  agentId: string,
+  sessionId: string,
+  lastActivityAt: Date,
+  model?: string
+): Promise<void> {
+  await seedSessionMeta(prisma, sessionId, agentId, { lastActivityAt, ...(model ? { model } : {}) })
 }
 
 function authPayload(token: string) {
@@ -62,6 +67,7 @@ describe('usage/report handler — persists per-session token usage', () => {
       agentId: AGENT_A,
       platform: 'slack',
       channel: '#deploys',
+      observedModel: 'claude-sonnet-4-5',
       lastActivityAt: new Date().toISOString(),
       usage: { totalTokens: 4820, inputTokens: 3600, outputTokens: 1220, cachedReadTokens: 512, costAmount: 0.41 }
     })
@@ -76,6 +82,9 @@ describe('usage/report handler — persists per-session token usage', () => {
     expect(row!.inputTokens).toBe(3600)
     expect(row!.cachedReadTokens).toBe(512)
     expect(row!.costAmount).toBeCloseTo(0.41)
+    expect(await prisma.sessionSpend.findFirst({ where: { agentId: AGENT_A, sessionId: 'acp-sess-1' } })).toMatchObject(
+      { model: 'claude-sonnet-4-5', cumulativeTotalTokens: 4820 }
+    )
 
     // A later turn reports the NEW cumulative total → overwrite, never sum.
     stub.inject('usage/report', {
@@ -138,6 +147,80 @@ describe('usage/report handler — persists per-session token usage', () => {
     }
   })
 
+  it('attributes cumulative deltas across mid-session model switches', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub } = await connectReady(h)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    const now = Date.now()
+    await seedVisibleSession(AGENT_A, 'switching', new Date(now - 60_000), 'latest-metadata-is-not-the-ledger')
+
+    const reports = [
+      { minutes: 3, observedModel: 'model-a' as string | null, totalTokens: 100, costAmount: 1 },
+      { minutes: 2, observedModel: 'model-b' as string | null, totalTokens: 250, costAmount: 2.5 },
+      { minutes: 1, observedModel: null, totalTokens: 300, costAmount: 3 }
+    ]
+    for (const [index, report] of reports.entries()) {
+      stub.inject('usage/report', {
+        sessionId: 'switching',
+        agentId: AGENT_A,
+        observedModel: report.observedModel,
+        lastActivityAt: new Date(now - report.minutes * 60_000).toISOString(),
+        usage: { totalTokens: report.totalTokens, costAmount: report.costAmount, costCurrency: 'USD' }
+      })
+      await vi.waitFor(async () => {
+        expect(await prisma.sessionSpend.count({ where: { agentId: AGENT_A, sessionId: 'switching' } })).toBe(index + 1)
+      })
+    }
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?range=d1` })
+      expect(res.statusCode).toBe(200)
+      const models = (
+        res.json() as {
+          models: Array<{ model: string | null; sessions: number; totalTokens: number; costAmount: number }>
+        }
+      ).models
+      expect(models).toEqual([
+        {
+          model: 'model-b',
+          sessions: 1,
+          totalTokens: 150,
+          inputTokens: 0,
+          outputTokens: 0,
+          thoughtTokens: 0,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+          costAmount: 1.5
+        },
+        {
+          model: 'model-a',
+          sessions: 1,
+          totalTokens: 100,
+          inputTokens: 0,
+          outputTokens: 0,
+          thoughtTokens: 0,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+          costAmount: 1
+        },
+        {
+          model: null,
+          sessions: 1,
+          totalTokens: 50,
+          inputTokens: 0,
+          outputTokens: 0,
+          thoughtTokens: 0,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+          costAmount: 0.5
+        }
+      ])
+    } finally {
+      await close()
+    }
+  })
+
   it('drops usage for an agent not placed on the reporting daemon', async () => {
     const h = buildWsHarness(prisma)
     const { stub } = await connectReady(h)
@@ -189,10 +272,10 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     const recent = (mins: number) => new Date(now.getTime() - Math.min(mins * 60_000, sinceUtcMidnight))
 
     await Promise.all([
-      seedVisibleSession(AGENT_A, 'a1', recent(10)),
-      seedVisibleSession(AGENT_A, 'a2', recent(20)),
-      seedVisibleSession(AGENT_A, 'a-old', new Date(now.getTime() - 100 * DAY_MS)),
-      seedVisibleSession(AGENT_B, 'b1', recent(30))
+      seedVisibleSession(AGENT_A, 'a1', recent(10), 'claude-sonnet-4-5'),
+      seedVisibleSession(AGENT_A, 'a2', recent(20), 'claude-sonnet-4-5'),
+      seedVisibleSession(AGENT_A, 'a-old', new Date(now.getTime() - 100 * DAY_MS), 'claude-opus-4-1'),
+      seedVisibleSession(AGENT_B, 'b1', recent(30), 'gpt-5.6')
     ])
 
     // Agent A: two in-range sessions + one stale (100 days old, excluded from d30/d90).
@@ -232,16 +315,43 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
         }
       ]
     })
-    // Cost rollups (total, per-agent, series) derive from the spend timeline, not
-    // the snapshot. Each of these is a single-report session, so its cumulative
-    // equals its cost. (Seeded directly; the record() path writes both — see the
-    // per-bucket and boundary regressions below.)
+    // Cost and model rollups derive from the cumulative timeline, not current
+    // session metadata. Each row is a single-report session, so its cumulative
+    // token/cost values belong entirely to the observed model.
     await prisma.sessionSpend.createMany({
       data: [
-        { agentId: AGENT_A, sessionId: 'a1', cumulativeCost: 0.1, at: recent(10) },
-        { agentId: AGENT_A, sessionId: 'a2', cumulativeCost: 0.2, at: recent(20) },
-        { agentId: AGENT_A, sessionId: 'a-old', cumulativeCost: 9.9, at: new Date(now.getTime() - 100 * DAY_MS) },
-        { agentId: AGENT_B, sessionId: 'b1', cumulativeCost: 0.05, at: recent(30) }
+        {
+          agentId: AGENT_A,
+          sessionId: 'a1',
+          model: 'claude-sonnet-4-5',
+          cumulativeTotalTokens: 1000,
+          cumulativeCost: 0.1,
+          at: recent(10)
+        },
+        {
+          agentId: AGENT_A,
+          sessionId: 'a2',
+          model: 'claude-sonnet-4-5',
+          cumulativeTotalTokens: 2000,
+          cumulativeCost: 0.2,
+          at: recent(20)
+        },
+        {
+          agentId: AGENT_A,
+          sessionId: 'a-old',
+          model: 'claude-opus-4-1',
+          cumulativeTotalTokens: 9999,
+          cumulativeCost: 9.9,
+          at: new Date(now.getTime() - 100 * DAY_MS)
+        },
+        {
+          agentId: AGENT_B,
+          sessionId: 'b1',
+          model: 'gpt-5.6',
+          cumulativeTotalTokens: 500,
+          cumulativeCost: 0.05,
+          at: recent(30)
+        }
       ]
     })
 
@@ -253,6 +363,7 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
         range: string
         totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
         agents: { agentId: string; sessions: number; totalTokens: number; costAmount: number }[]
+        models: { model: string | null; sessions: number; totalTokens: number; costAmount: number }[]
         series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: number }[] }
       }
 
@@ -290,6 +401,15 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
       expect(b.sessions).toBe(1)
       expect(b.totalTokens).toBe(500)
       expect(body.agents[0]!.agentId).toBe(AGENT_A)
+
+      // The per-report execution ledger drives Analytics; the stale Opus row
+      // stays outside d30 regardless of current session metadata.
+      expect(body.models.map(({ model, sessions, totalTokens }) => ({ model, sessions, totalTokens }))).toEqual([
+        { model: 'claude-sonnet-4-5', sessions: 2, totalTokens: 3000 },
+        { model: 'gpt-5.6', sessions: 1, totalTokens: 500 }
+      ])
+      expect(body.models[0]!.costAmount).toBeCloseTo(0.3)
+      expect(body.models[1]!.costAmount).toBeCloseTo(0.05)
     } finally {
       await close()
     }
@@ -439,10 +559,11 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/usage` })
       expect(res.statusCode).toBe(200)
-      const body = res.json() as { range: string; totals: { sessions: number }; agents: unknown[] }
+      const body = res.json() as { range: string; totals: { sessions: number }; agents: unknown[]; models: unknown[] }
       expect(body.range).toBe('d30')
       expect(body.totals.sessions).toBe(0)
       expect(body.agents).toEqual([])
+      expect(body.models).toEqual([])
     } finally {
       await close()
     }

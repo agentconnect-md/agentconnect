@@ -573,6 +573,7 @@ export class LocalStore {
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, modelOverride TEXT,
+        observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT, workspaceIsolation TEXT,
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
@@ -1209,6 +1210,10 @@ export class LocalStore {
     if (!cols.some((c) => c.name === 'title')) this.db.exec('ALTER TABLE sessions ADD COLUMN title TEXT')
     if (!cols.some((c) => c.name === 'modelOverride'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN modelOverride TEXT')
+    if (!cols.some((c) => c.name === 'observedModel'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN observedModel TEXT')
+    if (!cols.some((c) => c.name === 'observedModelSet'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN observedModelSet INTEGER NOT NULL DEFAULT 0')
     if (!cols.some((c) => c.name === 'effortOverride'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN effortOverride TEXT')
     if (!cols.some((c) => c.name === 'permissionModeOverride'))
@@ -2123,6 +2128,21 @@ export class LocalStore {
     const row = this.db.prepare('SELECT modelOverride FROM sessions WHERE key = ?').get(key) as
       { modelOverride: string | null } | undefined
     return row?.modelOverride ?? undefined
+  }
+
+  /** Last model the runtime actually exposed for this session. `null` is an
+   *  explicit opaque/default observation; undefined means no turn observed yet. */
+  getObservedModel(key: string): string | null | undefined {
+    const row = this.db.prepare('SELECT observedModel, observedModelSet FROM sessions WHERE key = ?').get(key) as
+      { observedModel: string | null; observedModelSet: number } | undefined
+    if (!row || row.observedModelSet !== 1) return undefined
+    return row.observedModel
+  }
+
+  /** Persist the runtime observation so late usage corrections and metadata
+   *  re-emits retain a named model or an explicit unknown across turn teardown. */
+  setObservedModel(key: string, model: string | null): void {
+    this.db.prepare('UPDATE sessions SET observedModel = ?, observedModelSet = 1 WHERE key = ?').run(model, key)
   }
 
   /** Persist the session-scoped model override. No-op on an unknown key. */

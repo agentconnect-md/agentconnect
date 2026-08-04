@@ -2829,12 +2829,17 @@ export interface UsageAgentDto {
   costAmount: number
 }
 
+export interface UsageModelDto extends Omit<UsageAgentDto, 'agentId'> {
+  model: string | null
+}
+
 export interface UsageDto {
   range: UsageRange
   accessSyncDegraded?: boolean
   accessIssues?: SessionAccessIssue[]
   totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
   agents: UsageAgentDto[]
+  models: UsageModelDto[]
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
   // empty buckets filled to 0. `start` is a UTC-aligned ISO instant.
   series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: number }[] }

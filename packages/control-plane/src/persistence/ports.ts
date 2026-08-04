@@ -886,10 +886,11 @@ export interface EventSessionInput {
   channelName?: string
   triggeredByName?: string
   threadUrl?: string
-  // Effective execution-config snapshot (what the session actually ran with);
-  // an absent value ⇒ the runtime's own default (never overwritten on update).
+  // Effective execution-config snapshot. `model: null` is an explicit runtime
+  // observation of an opaque/default model; absent keeps the prior value for
+  // mixed-version refreshes.
   runtime?: string
-  model?: string
+  model?: string | null
   effort?: string
   fastMode?: boolean
   permissionMode?: string
@@ -1542,6 +1543,8 @@ export interface SessionUsageInput {
   agentId: AgentId
   platform?: string | null
   channel?: string | null
+  /** Model observed for this cumulative report's delta; null/absent ⇒ unknown. */
+  model?: string | null
   lastActivityAt: Date
   usage: SessionUsageCounts
 }
@@ -1559,6 +1562,20 @@ export interface AgentUsageAggregate {
   costAmount: number
 }
 
+/** Per-model rollup over a time window. `null` is usage whose daemon did not
+ *  report an effective model (legacy/runtime-owned default). */
+export interface ModelUsageAggregate {
+  model: string | null
+  sessions: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  thoughtTokens: number
+  cachedReadTokens: number
+  cachedWriteTokens: number
+  costAmount: number
+}
+
 /** One spend-over-time bucket: total cost of sessions whose last activity fell in
  *  `[start, start + one bucket)`. `start` is a UTC-aligned ISO instant. */
 export interface SpendBucket {
@@ -1566,7 +1583,7 @@ export interface SpendBucket {
   costAmount: number
 }
 
-/** Org-wide usage aggregate for a range: workspace totals + the per-agent breakdown.
+/** Org-wide usage aggregate for a range: workspace totals + agent/model breakdowns.
  *  `costCurrency` is the single distinct currency across the range, or null when
  *  none/mixed (amounts are summed as-is).
  *  `series` is the spend-over-time chart data: cost bucketed by hour (d1) or day
@@ -1574,6 +1591,7 @@ export interface SpendBucket {
 export interface UsageAggregate {
   totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
   agents: AgentUsageAggregate[]
+  models: ModelUsageAggregate[]
   series: { bucket: 'hour' | 'day'; points: SpendBucket[] }
 }
 
@@ -1584,7 +1602,7 @@ export interface SessionUsageRepo {
   get(agentId: AgentId, sessionId: string): Promise<SessionUsageCounts | null>
   /** Aggregate usage for an org over sessions active at/after `since` (range window).
    *  When a `viewer` is supplied, sessions of restricted agents they can't see are
-   *  excluded from both the totals and the per-agent breakdown (derived visibility,
+   *  excluded from the totals and every breakdown (derived visibility,
    *  via the `agent` relation — undefined alone is unfiltered).
    *  `tzOffsetMin` (UTC − local, as `getTimezoneOffset()` reports) aligns the spend
    *  `series` buckets to the viewer's local day/hour; 0 (default) ⇒ UTC. */

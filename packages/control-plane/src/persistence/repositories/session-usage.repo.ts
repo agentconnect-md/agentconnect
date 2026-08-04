@@ -3,11 +3,11 @@
  * dashboard (see the `SessionUsage` model + `usage/report` EVT).
  *
  * `record` latest-wins upserts the `(agentId, sessionId)` snapshot AND upserts the
- * session's CUMULATIVE cost at this report time into the `SessionSpend` timeline —
+ * session's cumulative tokens/cost plus its observed model into the timeline —
  * both idempotent, so re-sending or racing the same numbers is a no-op.
  * `aggregate` reports tokens/session-counts from the snapshot but derives every
- * range-scoped COST figure (total, per-agent, and the spend-over-time chart) from
- * the timeline by diffing consecutive cumulatives, so the cards and chart agree
+ * range-scoped COST figure (total, per-agent/model, and the spend-over-time chart)
+ * from the timeline by diffing consecutive cumulatives, so the cards and chart agree
  * and pre-window spend is excluded. It is org-scoped through the `agent` relation.
  * Token columns are `Int` per row
  * (a single session won't exceed 2^31), but Postgres `SUM(int)` returns `bigint`;
@@ -22,6 +22,7 @@ import type {
   SessionUsageCounts,
   UsageAggregate,
   AgentUsageAggregate,
+  ModelUsageAggregate,
   ViewCtx,
   SessionFilterQuery
 } from '../ports.js'
@@ -69,14 +70,19 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       create: { agentId: input.agentId, sessionId: input.sessionId, ...fields },
       update: fields
     })
-    // Spend timeline: record this report's CUMULATIVE cost stamped at its activity
-    // time. Readers derive window/bucket spend by diffing consecutive cumulatives
-    // (aggregate), so storing cumulative — not a computed delta — makes this a pure
-    // idempotent upsert on (agentId, sessionId, at): a duplicate delivery, an
-    // out-of-order report, or two concurrent reports converge to the same rows
-    // with no read-then-write race and no double-count. A downward correction is
-    // just a lower cumulative here; the diff turns it into negative spend in its
-    // own bucket, which nets out correctly against later increases.
+    // Usage timeline: each report carries cumulative counters plus the model for
+    // the interval that just ended. Readers diff consecutive rows, so model
+    // switches retain their own deltas while duplicate deliveries stay idempotent.
+    const sample = {
+      model: input.model ?? null,
+      cumulativeTotalTokens: fields.totalTokens,
+      cumulativeInputTokens: fields.inputTokens,
+      cumulativeOutputTokens: fields.outputTokens,
+      cumulativeThoughtTokens: fields.thoughtTokens,
+      cumulativeCachedReadTokens: fields.cachedReadTokens,
+      cumulativeCachedWriteTokens: fields.cachedWriteTokens,
+      cumulativeCost: fields.costAmount
+    }
     await this.db.sessionSpend.upsert({
       where: {
         agentId_sessionId_at: { agentId: input.agentId, sessionId: input.sessionId, at: input.lastActivityAt }
@@ -85,9 +91,9 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         agentId: input.agentId,
         sessionId: input.sessionId,
         at: input.lastActivityAt,
-        cumulativeCost: fields.costAmount
+        ...sample
       },
-      update: { cumulativeCost: fields.costAmount }
+      update: sample
     })
   }
 
@@ -182,6 +188,57 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
           cachedWriteTokens: BigInt(row._sum.cachedWriteTokens ?? 0)
         }))
 
+    // Attribute lifetime token deltas to the model observed on each report. The
+    // outer session_usage filter preserves the dashboard's established semantics:
+    // a session active in the range contributes its lifetime token totals. One
+    // session can legitimately count under multiple models after a sticky switch.
+    const modelGrouped = await this.db.$queryRaw<
+      Array<{
+        model: string | null
+        sessions: bigint
+        totalTokens: bigint
+        inputTokens: bigint
+        outputTokens: bigint
+        thoughtTokens: bigint
+        cachedReadTokens: bigint
+        cachedWriteTokens: bigint
+      }>
+    >(Prisma.sql`
+      WITH ordered AS (
+        SELECT sp."agentId", sp."sessionId", NULLIF(sp."model", '') AS model,
+               sp."cumulativeTotalTokens"::bigint
+                 - LAG(sp."cumulativeTotalTokens", 1, 0) OVER sample_order AS "totalTokens",
+               sp."cumulativeInputTokens"::bigint
+                 - LAG(sp."cumulativeInputTokens", 1, 0) OVER sample_order AS "inputTokens",
+               sp."cumulativeOutputTokens"::bigint
+                 - LAG(sp."cumulativeOutputTokens", 1, 0) OVER sample_order AS "outputTokens",
+               sp."cumulativeThoughtTokens"::bigint
+                 - LAG(sp."cumulativeThoughtTokens", 1, 0) OVER sample_order AS "thoughtTokens",
+               sp."cumulativeCachedReadTokens"::bigint
+                 - LAG(sp."cumulativeCachedReadTokens", 1, 0) OVER sample_order AS "cachedReadTokens",
+               sp."cumulativeCachedWriteTokens"::bigint
+                 - LAG(sp."cumulativeCachedWriteTokens", 1, 0) OVER sample_order AS "cachedWriteTokens"
+        FROM "session_spend" sp
+        JOIN "session_usage" u ON u."agentId" = sp."agentId" AND u."sessionId" = sp."sessionId"
+        JOIN "agent" a ON a."id" = sp."agentId"
+        LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
+        WHERE ${agentViewerSql(orgId, viewer)}
+          AND u."lastActivityAt" >= ${since}
+          AND ${sessionScope ?? Prisma.sql`TRUE`}
+        WINDOW sample_order AS (PARTITION BY sp."agentId", sp."sessionId" ORDER BY sp."at")
+      )
+      SELECT model,
+             COUNT(DISTINCT ("agentId", "sessionId"))::bigint AS sessions,
+             COALESCE(SUM("totalTokens"), 0)::bigint AS "totalTokens",
+             COALESCE(SUM("inputTokens"), 0)::bigint AS "inputTokens",
+             COALESCE(SUM("outputTokens"), 0)::bigint AS "outputTokens",
+             COALESCE(SUM("thoughtTokens"), 0)::bigint AS "thoughtTokens",
+             COALESCE(SUM("cachedReadTokens"), 0)::bigint AS "cachedReadTokens",
+             COALESCE(SUM("cachedWriteTokens"), 0)::bigint AS "cachedWriteTokens"
+      FROM ordered
+      GROUP BY model
+    `)
+
     // Bucket geometry: d1 buckets hourly, longer ranges daily. Buckets align to the
     // viewer's LOCAL day/hour: we shift into local time (subtract offMs), floor
     // there, shift back — so `start` is the UTC instant of a local boundary and the
@@ -215,43 +272,36 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // baseline row per session — fine for a workspace's report volume; move to a
     // SQL window function (LAG over cumulative) if a range ever returns 100k+ rows.
     const SEP = '\0'
-    const [inRange, baselineRows] = sessionScope
-      ? await Promise.all([
-          this.db.$queryRaw<Array<{ agentId: string; sessionId: string; at: Date; cumulativeCost: number }>>(Prisma.sql`
-            SELECT sp."agentId", sp."sessionId", sp."at", sp."cumulativeCost"
-            FROM "session_spend" sp
-            JOIN "agent" a ON a."id" = sp."agentId"
-            JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
-            WHERE ${agentViewerSql(orgId, viewer)} AND sp."at" >= ${since} AND ${sessionScope}
-            ORDER BY sp."at" ASC
-          `),
-          this.db.$queryRaw<Array<{ agentId: string; sessionId: string; cumulativeCost: number }>>(Prisma.sql`
-            SELECT DISTINCT ON (sp."agentId", sp."sessionId")
-                   sp."agentId", sp."sessionId", sp."cumulativeCost"
-            FROM "session_spend" sp
-            JOIN "agent" a ON a."id" = sp."agentId"
-            JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
-            WHERE ${agentViewerSql(orgId, viewer)} AND sp."at" < ${since} AND ${sessionScope}
-            ORDER BY sp."agentId", sp."sessionId", sp."at" DESC
-          `)
-        ])
-      : await Promise.all([
-          this.db.sessionSpend.findMany({
-            where: { agent: agentScope, at: { gte: since } },
-            select: { agentId: true, sessionId: true, at: true, cumulativeCost: true },
-            orderBy: { at: 'asc' }
-          }),
-          this.db.sessionSpend.findMany({
-            where: { agent: agentScope, at: { lt: since } },
-            distinct: ['agentId', 'sessionId'],
-            orderBy: [{ agentId: 'asc' }, { sessionId: 'asc' }, { at: 'desc' }],
-            select: { agentId: true, sessionId: true, cumulativeCost: true }
-          })
-        ])
+    const [inRange, baselineRows] = await Promise.all([
+      this.db.$queryRaw<
+        Array<{ agentId: string; sessionId: string; at: Date; cumulativeCost: number; model: string | null }>
+      >(Prisma.sql`
+        SELECT sp."agentId", sp."sessionId", sp."at", sp."cumulativeCost", NULLIF(sp."model", '') AS model
+        FROM "session_spend" sp
+        JOIN "agent" a ON a."id" = sp."agentId"
+        LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
+        WHERE ${agentViewerSql(orgId, viewer)}
+          AND sp."at" >= ${since}
+          AND ${sessionScope ?? Prisma.sql`TRUE`}
+        ORDER BY sp."at" ASC
+      `),
+      this.db.$queryRaw<Array<{ agentId: string; sessionId: string; cumulativeCost: number }>>(Prisma.sql`
+        SELECT DISTINCT ON (sp."agentId", sp."sessionId")
+               sp."agentId", sp."sessionId", sp."cumulativeCost"
+        FROM "session_spend" sp
+        JOIN "agent" a ON a."id" = sp."agentId"
+        LEFT JOIN "session_meta" s ON s."id" = sp."sessionId" AND s."agentId" = sp."agentId"
+        WHERE ${agentViewerSql(orgId, viewer)}
+          AND sp."at" < ${since}
+          AND ${sessionScope ?? Prisma.sql`TRUE`}
+        ORDER BY sp."agentId", sp."sessionId", sp."at" DESC
+      `)
+    ])
     // Per-session running cumulative, seeded from the last pre-window report so the
     // first in-window delta counts only spend incurred inside the window.
     const prevCost = new Map<string, number>(baselineRows.map((r) => [r.agentId + SEP + r.sessionId, r.cumulativeCost]))
     const perAgentCost = new Map<string, number>()
+    const perModelCost = new Map<string, number>()
     let totalCost = 0
     // `inRange` is globally at-ascending, so each session's rows are visited in
     // chronological order — exactly what the running diff needs.
@@ -261,6 +311,8 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       prevCost.set(skey, row.cumulativeCost)
       totalCost += delta
       perAgentCost.set(row.agentId, (perAgentCost.get(row.agentId) ?? 0) + delta)
+      const modelKey = row.model ?? ''
+      perModelCost.set(modelKey, (perModelCost.get(modelKey) ?? 0) + delta)
       const idx = Math.floor((row.at.getTime() - floorSince) / stepMs)
       if (idx >= 0 && idx < n) points[idx]!.costAmount += delta
     }
@@ -278,6 +330,19 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     }))
     // Sort by token spend so the console's "top agents" ordering is stable.
     agents.sort((a, b) => b.totalTokens - a.totalTokens)
+
+    const models: ModelUsageAggregate[] = modelGrouped.map((g) => ({
+      model: g.model,
+      sessions: Number(g.sessions),
+      totalTokens: Number(g.totalTokens),
+      inputTokens: Number(g.inputTokens),
+      outputTokens: Number(g.outputTokens),
+      thoughtTokens: Number(g.thoughtTokens),
+      cachedReadTokens: Number(g.cachedReadTokens),
+      cachedWriteTokens: Number(g.cachedWriteTokens),
+      costAmount: perModelCost.get(g.model ?? '') ?? 0
+    }))
+    models.sort((a, b) => b.totalTokens - a.totalTokens)
 
     const totals = agents.reduce(
       (acc, a) => ({
@@ -308,6 +373,6 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         })
     const costCurrency = currencies.length === 1 ? currencies[0]!.costCurrency : null
 
-    return { totals: { ...totals, costAmount: totalCost, costCurrency }, agents, series: { bucket, points } }
+    return { totals: { ...totals, costAmount: totalCost, costCurrency }, agents, models, series: { bucket, points } }
   }
 }

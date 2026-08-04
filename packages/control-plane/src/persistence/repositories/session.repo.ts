@@ -819,7 +819,10 @@ export class PgSessionRepo implements SessionRepo {
         ),
         "threadUrl" = COALESCE(EXCLUDED."threadUrl", "session_meta"."threadUrl"),
         "runtime" = COALESCE(EXCLUDED."runtime", "session_meta"."runtime"),
-        "model" = COALESCE(EXCLUDED."model", "session_meta"."model"),
+        "model" = CASE
+          WHEN ${ev.model !== undefined} THEN EXCLUDED."model"
+          ELSE "session_meta"."model"
+        END,
         "effort" = COALESCE(EXCLUDED."effort", "session_meta"."effort"),
         "fastMode" = COALESCE(EXCLUDED."fastMode", "session_meta"."fastMode"),
         "permissionMode" = COALESCE(

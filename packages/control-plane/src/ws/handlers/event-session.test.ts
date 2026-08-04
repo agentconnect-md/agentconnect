@@ -95,6 +95,7 @@ describe('handleEventSession', () => {
     Object.assign(frame.payload as Record<string, unknown>, {
       runtime: 'claude',
       model: 'opus',
+      observedModel: null,
       effort: 'high',
       fastMode: true,
       permissionMode: 'acceptEdits',
@@ -106,7 +107,9 @@ describe('handleEventSession', () => {
     expect(recordMilestone).toHaveBeenCalledWith(
       expect.objectContaining({
         runtime: 'claude',
-        model: 'opus',
+        // A runtime observation wins over the legacy/config snapshot; null is
+        // preserved so persistence can clear a previously named model.
+        model: null,
         effort: 'high',
         fastMode: true,
         permissionMode: 'acceptEdits',

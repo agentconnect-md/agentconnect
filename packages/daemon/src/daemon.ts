@@ -5430,6 +5430,7 @@ export class Daemon {
       triggeredBy: context.trigger,
       memoryProvider: 'managed'
     })
+    this.store.setObservedModel(executionKey, model ?? null)
     this.store.setSessionTitle(executionKey, 'Memory dream')
     const dream = this.store.getDream(agentId, context.dreamId)
     if (dream) {
@@ -5457,7 +5458,7 @@ export class Daemon {
       thread: context.dreamId,
       status: 'running',
       runtime: agent.runtime,
-      ...(model ? { model } : {})
+      model: model ?? null
     })
     // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
     // stops instead of pinning the dream's one-in-flight reservation.
@@ -5589,7 +5590,7 @@ export class Daemon {
         thread: context.dreamId,
         status: promptCompleted ? 'completed' : signal.aborted ? 'canceled' : 'failed',
         runtime: agent.runtime,
-        ...(model ? { model } : {}),
+        model: model ?? null,
         ...(extractionMode ? { permissionMode: extractionMode } : {})
       })
       host.discardSession(sessionId)
@@ -12586,6 +12587,7 @@ export class Daemon {
           : advertisedModel === 'default'
             ? undefined
             : advertisedModel
+      this.store.setObservedModel(key, turnModel ?? null)
       // Prepare the linked footer before host.prompt can emit its first chunk. Reply
       // sections then include it in their initial chat.postMessage, where Slack's
       // unfurl controls are supported; onFinal normally observes the same footer and
@@ -13671,7 +13673,7 @@ export class Daemon {
     thread?: string
     status?: string
     runtime?: string
-    model?: string
+    model?: string | null
     permissionMode?: string
   }): void {
     if (!this.cpClient) return
@@ -13743,11 +13745,17 @@ export class Daemon {
     const sessionRecord = this.store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
     if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
     const storeKey = sessionRecord?.key
-    const model =
+    const configuredModel =
       (allowRuntimeChangesInChat && storeKey ? this.store.getModelOverride(storeKey) : undefined) ??
       agent?.runtimeOverrides?.model
-    if (input.model !== undefined) event.model = input.model
-    else if (model !== undefined) event.model = model
+    const observedModel =
+      input.model !== undefined ? input.model : storeKey ? this.store.getObservedModel(storeKey) : undefined
+    if (observedModel !== undefined) {
+      event.observedModel = observedModel
+      if (observedModel !== null) event.model = observedModel
+    } else if (configuredModel !== undefined) {
+      event.model = configuredModel
+    }
     const effort =
       (allowRuntimeChangesInChat && storeKey ? this.store.getEffortOverride(storeKey) : undefined) ??
       agent?.reasoningEffort
@@ -14867,12 +14875,14 @@ export class Daemon {
   ): void {
     const usage = this.store.getUsage(key)
     if (Object.keys(usage).length === 0) return
+    const observedModel = this.store.getObservedModel(key)
     try {
       this.cpClient?.emitUsageReport({
         sessionId,
         agentId,
         platform,
         channel,
+        ...(observedModel !== undefined ? { observedModel } : {}),
         lastActivityAt: new Date(this.clock.now()).toISOString(),
         usage
       })

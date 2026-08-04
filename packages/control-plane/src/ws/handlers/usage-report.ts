@@ -24,6 +24,7 @@ export const handleUsageReport: Handler = async (frame, conn, deps) => {
       agentId,
       platform: p.platform ?? null,
       channel: p.channel ?? null,
+      ...(p.observedModel !== undefined ? { model: p.observedModel } : {}),
       lastActivityAt: new Date(p.lastActivityAt),
       usage: p.usage
     })
