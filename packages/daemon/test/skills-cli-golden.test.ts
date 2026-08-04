@@ -103,6 +103,40 @@ describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
     })
   })
 
+  it('ignores a same-named manifest the CLI cannot discover and installs the valid selection (#572 review)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skills-cli-golden-'))
+    roots.push(root)
+    const source = join(root, 'shadow-source')
+    await mkdir(join(source, 'skills/valid'), { recursive: true })
+    await mkdir(join(source, 'examples/fixture'), { recursive: true })
+    await writeFile(join(source, 'skills/valid/SKILL.md'), '---\nname: Shared\ndescription: the real one\n---\n# ok\n')
+    // Valid manifest, but outside the CLI's discovery paths — it must not make
+    // the selection ambiguous.
+    await writeFile(
+      join(source, 'examples/fixture/SKILL.md'),
+      '---\nname: Shared\ndescription: example only\n---\n# fixture\n'
+    )
+    const cwd = join(root, 'workspace')
+    await mkdir(cwd)
+
+    const result = await installSkills(
+      {
+        id: 'agent-shadow',
+        runtime: 'claude',
+        skills: [{ name: 'shadow', source: 'acme/shadow', githubRepoId: '42', skills: ['valid'] }]
+      },
+      cwd,
+      {
+        stateDir: join(root, 'trusted-state'),
+        acquireGit: async () => ({ sourceDir: source, resolvedCommit: 'f'.repeat(40) })
+      }
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.installed).toEqual(['.claude/skills/shared'])
+    expect(await readFile(join(cwd, '.claude/skills/shared/SKILL.md'), 'utf8')).toContain('# ok')
+  })
+
   it('fails closed instead of letting the CLI pick between two directories sharing a frontmatter name', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skills-cli-golden-'))
     roots.push(root)

@@ -91,27 +91,34 @@ async function readSkillManifest(cwdReal: string, skillDir: string): Promise<str
   }
 }
 
-/** Pull `name`/`description` out of a SKILL.md's leading YAML frontmatter.
- *  Tolerant: a repo skill need not match the daemon's stricter install rules.
- *  Also used by selection resolution (skill-cli-selection.ts), which needs the
- *  same name the pinned skills CLI reads from a source's SKILL.md. */
-export function parseSkillManifest(text: string): { name?: string; description: string | null } {
+/** Pull `name`/`description` (and the CLI's `metadata.internal` marker) out of
+ *  a SKILL.md's leading YAML frontmatter. Tolerant: a repo skill need not match
+ *  the daemon's stricter install rules. Also used by selection resolution
+ *  (skill-cli-selection.ts), which needs the same fields the pinned skills CLI
+ *  reads from a source's SKILL.md. */
+export function parseSkillManifest(text: string): { name?: string; description: string | null; internal: boolean } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)
-  if (!match) return { description: null }
+  if (!match) return { description: null, internal: false }
   let value: unknown
   try {
     value = parseYaml(match[1]!, { maxAliasCount: 0 })
   } catch {
-    return { description: null }
+    return { description: null, internal: false }
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return { description: null }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { description: null, internal: false }
   const manifest = value as Record<string, unknown>
   const name = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name.trim() : undefined
   const description =
     typeof manifest.description === 'string' && manifest.description.trim()
       ? manifest.description.trim().slice(0, MAX_DESCRIPTION_CHARS)
       : null
-  return { name, description }
+  const metadata = manifest.metadata
+  const internal =
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    !Array.isArray(metadata) &&
+    (metadata as Record<string, unknown>).internal === true
+  return { name, description, internal }
 }
 
 /**

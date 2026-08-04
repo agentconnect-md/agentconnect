@@ -36,7 +36,11 @@ import { snapshotLocalSkillSource } from './skill-source-snapshot.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell, type SkillsCliCellResult } from './skills-cli-cell.js'
 
 export const SKILLS_CLI_SPEC = `skills@${PINNED_SKILLS_CLI_VERSION}`
-const INSTALLER_SCHEMA = 2
+// v3: selection resolution + slash-reference dependency expansion change the
+// materialized bundle set for unchanged wire inputs; the bump invalidates
+// ready v2 fingerprints so every workspace reconciles once under the new
+// semantics instead of retaining pre-expansion alias-only installs.
+const INSTALLER_SCHEMA = 3
 const LEGACY_MARKER_BYTES = 64 * 1024
 const LEGACY_MARKERS = ['skills-install.json', 'dream-skills-install.json'] as const
 const LEGACY_OWNED = /^(?:\.claude\/skills|\.agents\/skills)\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/

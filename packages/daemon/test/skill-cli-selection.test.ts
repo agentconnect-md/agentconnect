@@ -15,23 +15,31 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-/** Write a snapshot-shaped tree of SKILL.md files and return its file refs.
- * Values are either a frontmatter name (with a default body) or
- * `{ name, body }`; `name: null` writes a nameless manifest. */
+/** Write a snapshot-shaped tree of files and return their receipt refs.
+ * SKILL.md values are a frontmatter name (default body), `{ name, body,
+ * frontmatter? }` for control over both, or `null` for a nameless manifest;
+ * `{ raw }` writes any file verbatim (lockfiles, plugin manifests). */
 async function snapshot(
-  skills: Record<string, string | null | { name: string; body: string }>
+  entries: Record<string, string | null | { name?: string; body?: string; frontmatter?: string; raw?: string }>
 ): Promise<{ dir: string; files: SnapshotFileRef[] }> {
   const dir = await mkdtemp(join(tmpdir(), 'ac-skill-selection-'))
   roots.push(dir)
   const files: SnapshotFileRef[] = []
-  for (const [path, value] of Object.entries(skills)) {
+  for (const [path, value] of Object.entries(entries)) {
     const absolute = join(dir, ...path.split('/'))
     await mkdir(dirname(absolute), { recursive: true })
-    const name = typeof value === 'object' && value !== null ? value.name : value
-    const body = typeof value === 'object' && value !== null ? value.body : '# body\n'
-    const frontmatter = name === null ? 'description: d' : `name: ${name}\ndescription: d`
-    await writeFile(absolute, `---\n${frontmatter}\n---\n${body}`)
-    files.push({ path })
+    let content: string
+    if (typeof value === 'object' && value !== null && value.raw !== undefined) {
+      content = value.raw
+    } else {
+      const name = typeof value === 'object' && value !== null ? value.name : (value ?? undefined)
+      const body = (typeof value === 'object' && value !== null ? value.body : undefined) ?? '# body\n'
+      const extra = (typeof value === 'object' && value !== null ? value.frontmatter : undefined) ?? 'description: d'
+      const frontmatter = name === undefined || name === null ? extra : `name: ${name}\n${extra}`
+      content = `---\n${frontmatter}\n---\n${body}`
+    }
+    await writeFile(absolute, content)
+    files.push({ path, size: Buffer.byteLength(content) })
   }
   return { dir, files }
 }
@@ -115,9 +123,11 @@ describe('resolveSkillSelections', () => {
   })
 
   it('rejects a selection matching two distinct skill names', async () => {
+    // skills/more/grill-me sits one grandchild below the skills container, so
+    // the CLI's discovery (and therefore ours) sees both.
     const { dir, files } = await snapshot({
       'skills/grill-me/SKILL.md': 'Grill Me',
-      'packs/grill-me/SKILL.md': 'grill me'
+      'skills/more/grill-me/SKILL.md': 'grill me'
     })
     await expect(resolveSkillSelections('src', dir, files, ['grill-me'])).rejects.toThrow(/matches more than one/)
   })
@@ -228,10 +238,84 @@ describe('resolveSkillSelections', () => {
     const { dir, files } = await snapshot({
       'skills/grill-me/SKILL.md': { name: 'grill-me', body: 'Run `/grilling`.\n' },
       'skills/grilling/SKILL.md': 'grilling one',
-      'packs/grilling/SKILL.md': 'grilling two'
+      'skills/more/grilling/SKILL.md': 'grilling two'
     })
     await expect(resolveSkillSelections('src', dir, files, ['grill-me'])).rejects.toThrow(
       /reference "\/grilling" matches more than one/
     )
+  })
+
+  it('ignores manifests the pinned CLI cannot discover or refuses to parse (#572 review)', async () => {
+    // The reviewer's reproduction: a same-named manifest that the CLI ignores
+    // (outside its discovery paths, or missing a required field) must not make
+    // a valid selection ambiguous.
+    const { dir, files } = await snapshot({
+      'skills/valid/SKILL.md': 'Shared',
+      'examples/fixture/SKILL.md': 'Shared', // valid manifest, undiscoverable path
+      'skills/incomplete/SKILL.md': { name: 'Shared', frontmatter: '' }, // no description
+      'skills/hidden/SKILL.md': { name: 'Shared', frontmatter: 'description: d\nmetadata:\n  internal: true' },
+      'skills/node_modules/dep/SKILL.md': 'Shared' // SKIP_DIRS-pruned grandchild
+    })
+    await expect(resolveSkillSelections('src', dir, files, ['valid'])).resolves.toEqual({
+      cliSelections: ['Shared'],
+      expectedLeaves: ['shared']
+    })
+  })
+
+  it('mirrors the CLI root-manifest early return: a valid root SKILL.md is the whole source', async () => {
+    const { dir, files } = await snapshot({
+      'SKILL.md': 'root-skill',
+      'skills/nested/SKILL.md': 'nested'
+    })
+    await expect(resolveSkillSelections('src', dir, files, ['nested'])).rejects.toThrow(
+      /"nested" was not found in source "src" \(available: root-skill\)/
+    )
+    await expect(resolveSkillSelections('src', dir, files, ['root-skill'])).resolves.toEqual({
+      cliSelections: ['root-skill'],
+      expectedLeaves: ['root-skill']
+    })
+  })
+
+  it('uses the recursive fallback only when the normal discovery pass finds nothing', async () => {
+    const fallback = await snapshot({ 'examples/fixture/SKILL.md': 'deep-skill' })
+    await expect(resolveSkillSelections('src', fallback.dir, fallback.files, ['deep-skill'])).resolves.toEqual({
+      cliSelections: ['deep-skill'],
+      expectedLeaves: ['deep-skill']
+    })
+    const shadowed = await snapshot({
+      'skills/normal/SKILL.md': 'normal',
+      'examples/fixture/SKILL.md': 'deep-skill'
+    })
+    await expect(resolveSkillSelections('src', shadowed.dir, shadowed.files, ['deep-skill'])).rejects.toThrow(
+      /"deep-skill" was not found in source "src" \(available: normal\)/
+    )
+  })
+
+  it('excludes committed lockfile installs under harness directories like the CLI', async () => {
+    const { dir, files } = await snapshot({
+      'skills/deploy/SKILL.md': 'deploy',
+      '.claude/skills/deploy/SKILL.md': 'deploy',
+      'skills-lock.json': { raw: JSON.stringify({ version: 1, skills: { deploy: {} } }) }
+    })
+    // The committed .claude/skills copy is an "installed project skill" to the
+    // CLI; only the real source under skills/ is a candidate, so the selection
+    // stays unambiguous.
+    await expect(resolveSkillSelections('src', dir, files, ['deploy'])).resolves.toEqual({
+      cliSelections: ['deploy'],
+      expectedLeaves: ['deploy']
+    })
+  })
+
+  it('discovers skills below committed .claude-plugin manifests like the CLI', async () => {
+    // A plugin manifest's `skills` entries are skill DIRECTORY paths; the CLI
+    // searches their dirname as an extra container.
+    const { dir, files } = await snapshot({
+      '.claude-plugin/plugin.json': { raw: JSON.stringify({ skills: ['./tools/grill-me'] }) },
+      'tools/grill-me/SKILL.md': 'grill-me'
+    })
+    await expect(resolveSkillSelections('src', dir, files, ['grill-me'])).resolves.toEqual({
+      cliSelections: ['grill-me'],
+      expectedLeaves: ['grill-me']
+    })
   })
 })
