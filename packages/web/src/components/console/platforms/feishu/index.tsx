@@ -1,25 +1,21 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
-import { PlatformMark } from '@/components/marks'
 import type { WebPlatformModule } from '../contract'
 import { inviteBotHint } from '../wizard-chrome'
 import { feishuApi, type FeishuApi } from './api'
 import { FeishuWizardBody, FEISHU_TRANSPORT_LABEL } from './Body'
-
-/** The region a bot without one belongs to — legacy rows predate the axis. */
-const regionOf = (bot: { feishuRegion?: 'feishu' | 'lark' | null }) => bot.feishuRegion ?? 'feishu'
-
-/** Both clouds share every string except the brand name. */
-const brandOf = (region: string | undefined) => (region === 'feishu' ? 'Feishu' : 'Lark')
+import { FeishuMark } from './mark'
+import { feishuBrand, feishuRegionOf } from './region'
+import { feishuSettingsFragments } from './settings'
 
 export const feishuModule: WebPlatformModule<FeishuApi> = {
   platformId: 'feishu',
-  Mark: ({ fillPct }) => <PlatformMark platform="feishu" {...(fillPct === undefined ? {} : { fillPct })} />,
+  Mark: FeishuMark,
   wizard: {
     Body: FeishuWizardBody,
     // A bot belongs to ONE developer-console cloud; offering a Feishu bot while
     // the wizard is on Lark would mint an integration against the wrong gateway.
-    freeBotFilter: (bot, ctx) => regionOf(bot) === (ctx.region ?? 'lark'),
+    freeBotFilter: (bot, ctx) => feishuRegionOf(bot) === (ctx.region ?? 'lark'),
     buildReuseInput: (bot, ctx) => ({
       platform: 'feishu',
       agentId: ctx.agentId,
@@ -33,10 +29,18 @@ export const feishuModule: WebPlatformModule<FeishuApi> = {
       transport: { labels: FEISHU_TRANSPORT_LABEL, httpByDefaultWhenRelayAvailable: false }
     },
     identityCards: (region) => ({
-      create: `Create with one-click ${brandOf(region)} setup`,
-      existing: `An unused ${brandOf(region)} bot`
+      create: `Create with one-click ${feishuBrand(region)} setup`,
+      existing: `An unused ${feishuBrand(region)} bot`
     }),
-    inviteHint: (region) => inviteBotHint('group', brandOf(region), '@-mention it to start')
+    inviteHint: (region) => inviteBotHint('group', feishuBrand(region), '@-mention it to start')
   },
-  apiBindings: feishuApi
+  settingsFragments: feishuSettingsFragments,
+  apiBindings: feishuApi,
+  channelList: {
+    roomNoun: 'group',
+    // Lark groups have no `#name` convention, so the row shows the bare title.
+    roomGlyph: '',
+    // No console-driven leave: the bot is removed from a group in Lark itself.
+    leave: 'none'
+  }
 }

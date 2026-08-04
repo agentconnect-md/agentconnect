@@ -1,14 +1,16 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
-import { PlatformMark } from '@/components/marks'
 import type { WebPlatformModule } from '../contract'
 import { inviteBotHint } from '../wizard-chrome'
 import { slackApi, type SlackApi } from './api'
 import { SlackWizardBody, SLACK_TRANSPORT_LABEL } from './Body'
+import { SlackMark } from './mark'
+import { slackSettingsFragments } from './settings'
+import { useSlackPlatformInstall } from './use-platform-install'
 
 export const slackModule: WebPlatformModule<SlackApi> = {
   platformId: 'slack',
-  Mark: ({ fillPct }) => <PlatformMark platform="slack" {...(fillPct === undefined ? {} : { fillPct })} />,
+  Mark: SlackMark,
   wizard: {
     Body: SlackWizardBody,
     /**
@@ -35,5 +37,17 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     identityCards: () => ({ create: 'Create with a Slack manifest', existing: 'An unused Slack app' }),
     inviteHint: () => inviteBotHint('channel', 'Slack')
   },
-  apiBindings: slackApi
+  settingsFragments: slackSettingsFragments,
+  apiBindings: slackApi,
+  installPolling: { useInstallPoll: useSlackPlatformInstall },
+  channelList: {
+    roomNoun: 'channel',
+    roomGlyph: '#',
+    // `conversations.leave` would need `channels:manage`, which also grants
+    // create/archive/kick/rename and would force every installed workspace to
+    // re-authorize. Slack re-lists membership authoritatively instead, so
+    // removing the bot IN Slack clears the row by itself — hence the footer note.
+    leave: 'none',
+    footerNote: 'To remove the bot from a channel, do it in Slack — this list updates by itself.'
+  }
 }

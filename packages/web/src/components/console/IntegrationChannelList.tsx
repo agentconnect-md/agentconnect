@@ -6,7 +6,9 @@ import { agentLabel, isDirectConversation, type IntegrationChannelRow, type Inte
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
+import { channelListSemantics } from '@/components/console/platforms/registry'
 import type { AgentIcon } from '@/lib/agent-icon'
+import { chatPlatformName } from '@/lib/platform-labels'
 
 /** The per-conversation trigger toggle: a ⚡ marker followed by the segmented
  *  bar. Channels: "off" / "any message" / "@-mention" (the default, so it sits
@@ -186,10 +188,16 @@ function groupHeader(label: string, padX: number, action?: ReactNode) {
 /** One agent that shares the bot — the shape the default-dispatch popover renders. */
 type MemberAgent = { id: string; label: string; runtime: string; icon?: AgentIcon | null }
 
+// Per-platform display semantics come from the platform modules
+// ({@link WebChannelListSemantics}, §10); the ALGORITHMS below — grouping, the
+// DM/group-DM nouns and glyphs, the leave call itself — stay host-generic,
+// because none of them vary by platform.
+
 /**
  * Can this platform withdraw a bot from a single conversation, here?
  *
- * Only Telegram (`leaveChat`), which needs no extra permission.
+ * Only Telegram (`leaveChat`), which needs no extra permission — the module that
+ * declares `leave: 'conversation'`.
  *
  * Slack CAN do it technically, but `conversations.leave` requires `channels:manage`
  * — a scope that also grants create, archive, kick and rename, and whose addition
@@ -200,20 +208,21 @@ type MemberAgent = { id: string; label: string; runtime: string; icon?: AgentIco
  * on its own app can still call the leave API directly.
  *
  * Discord cannot at all — a bot joins a SERVER and sees its channels through
- * permissions, so the smallest thing it can leave is the whole server, offered
- * per-server instead. Feishu has no bot self-leave in the SDK.
+ * permissions, so the smallest thing it can leave is the whole server
+ * (`leave: 'space'`), offered per-server instead. Feishu has no bot self-leave in
+ * the SDK.
  */
-const canLeaveConversation = (platform?: string): boolean => platform === 'telegram'
+const canLeaveConversation = (platform?: string): boolean => channelListSemantics(platform).leave === 'conversation'
 
 /**
- * What this platform calls the room, and what to call a row of it.
+ * What this platform calls the room.
  *
  * ONE noun per card. Telegram and Lark have groups; Slack and Discord have channels.
  * Mixing them — a "#" row, a "channel" footer and a "Leave group" menu item, all
  * describing the same Telegram row — makes an operator wonder whether they are three
  * different things. A direct conversation is neither, so it keeps its own word.
  */
-const roomNoun = (platform?: string): string => (platform === 'telegram' || platform === 'feishu' ? 'group' : 'channel')
+const roomNoun = (platform?: string): string => channelListSemantics(platform).roomNoun
 
 /** The noun for ONE row: a DM is never a channel or a group, whatever the platform. */
 const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
@@ -221,23 +230,15 @@ const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string
 
 /** The list marker. "#" is the channel convention Slack and Discord share; a Telegram
  *  or Lark group has no such sigil, so it gets none rather than a borrowed one.
- *  Exported because the mobile card header summarises the same row and must not
- *  disagree with it — the two sit one above the other at ≤768px. */
+ *  The DM markers are kind-driven and platform-free. Exported because the mobile card
+ *  header summarises the same row and must not disagree with it — the two sit one
+ *  above the other at ≤768px. */
 export const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
-  kind === 'im' ? '@' : kind === 'mpim' ? '@@' : roomNoun(platform) === 'group' ? '' : '#'
+  kind === 'im' ? '@' : kind === 'mpim' ? '@@' : channelListSemantics(platform).roomGlyph
 
 /** The place, named as the operator knows it. "on the platform" is our word for it,
  *  not theirs — a person deciding whether to remove a bot wants to read "in Telegram". */
-const platformName = (platform?: string): string =>
-  platform === 'telegram'
-    ? 'Telegram'
-    : platform === 'slack'
-      ? 'Slack'
-      : platform === 'discord'
-        ? 'Discord'
-        : platform === 'feishu'
-          ? 'Lark'
-          : 'the chat app'
+const platformName = (platform?: string): string => chatPlatformName(platform, 'the chat app')
 
 /** The row's name as displayed. DM labels are stored as "@Alice" (the name resolvers
  *  write them that way) and the glyph column already renders the marker, so a leading
@@ -282,9 +283,8 @@ export function rowMenuAction(
   }
   const rest = isDirectConversation(row.kind)
     ? `Nobody adds or removes a bot in a ${noun} — the row comes back on the next message.`
-    : platform === 'discord'
-      ? `A Discord bot belongs to a server, not one ${noun} — use Leave on the server heading above to take it out. If it is still in there, the row will come back.`
-      : `The bot stays in the ${noun} — remove it in ${platformName(platform)} for that. If it is still in there, the row will come back.`
+    : (channelListSemantics(platform).cannotLeaveRowHint ??
+      `The bot stays in the ${noun} — remove it in ${platformName(platform)} for that. If it is still in there, the row will come back.`)
   return {
     leave: false,
     name,
@@ -659,17 +659,18 @@ export function IntegrationChannelList({
    * without a server id (the flat lead group of every other platform) get nothing.
    */
   const spaceAction = (g: SpaceGroup): ReactNode => {
-    if (!integrationId || platform !== 'discord' || !g.key) return undefined
+    if (!integrationId || channelListSemantics(platform).leave !== 'space' || !g.key) return undefined
+    const noun = roomNoun(platform)
     return (
       <button
         className="iconbtn h-6 w-6 flex-none"
-        title={`Leave ${g.label ?? 'this server'} — the bot leaves the whole server, with every channel in it`}
+        title={`Leave ${g.label ?? 'this server'} — the bot leaves the whole server, with every ${noun} in it`}
         aria-label={`Leave the server ${g.label ?? g.key}`}
         onClick={() =>
           void act(async () => {
             if (
               !window.confirm(
-                `Leave ${g.label ?? 'this server'}? A Discord bot cannot leave one channel — it leaves the whole server, and every channel of it disappears from this list. Re-invite it to undo.`
+                `Leave ${g.label ?? 'this server'}? A ${platformName(platform)} bot cannot leave one ${noun} — it leaves the whole server, and every ${noun} of it disappears from this list. Re-invite it to undo.`
               )
             ) {
               return
@@ -782,8 +783,10 @@ export function IntegrationChannelList({
           {`A ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per ${roomNoun(platform)}.`}
           {' Direct messages appear when someone writes to the bot.'}
           {shareable && ' Default dispatch is the agent who handles unmatched messages.'}
-          {platform === 'discord' && ' A Discord bot joins servers, not channels, so it can only leave a whole server.'}
-          {platform === 'slack' && ' To remove the bot from a channel, do it in Slack — this list updates by itself.'}
+          {/* The platform's own tail, when it has one: Discord's servers-not-channels
+              note, Slack's remove-it-in-Slack note (which encodes an authoritative
+              membership snapshot — the list updates by itself). */}
+          {channelListSemantics(platform).footerNote && ` ${channelListSemantics(platform).footerNote}`}
         </span>
       </div>
     </>

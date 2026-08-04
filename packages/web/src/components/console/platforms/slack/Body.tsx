@@ -13,7 +13,7 @@ import {
   slackAppSettingsUrl,
   slackCreateAppUrl,
   slackManifestJson
-} from '@/lib/slack-manifest'
+} from './manifest'
 import type { WebWizardTransport, WizardHost } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'

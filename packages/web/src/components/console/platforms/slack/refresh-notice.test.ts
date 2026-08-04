@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SlackBotRefreshDto } from '@/lib/api'
-import { slackRefreshNoticeState } from './slack-refresh-notice'
+import { slackRefreshNoticeState } from './refresh-notice'
 
 const refreshResult = (overrides: Partial<SlackBotRefreshDto> = {}): SlackBotRefreshDto => ({
   manifest: 'synced',

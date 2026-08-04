@@ -6,6 +6,7 @@ import {
   groupBySpace,
   IntegrationChannelList,
   placePopover,
+  roomGlyph,
   rowLabel,
   rowMenuAction
 } from './IntegrationChannelList'
@@ -223,9 +224,74 @@ describe('rowMenuAction', () => {
     }
   })
 
+  // Lark declares `leave: 'none'` with no hint of its own, so it takes the
+  // generic sentence — with the platform NAMED, which is the whole point of the
+  // shared label table (the id is 'feishu', the word is "Lark").
+  it('falls back to the generic sentence, platform named, for a module with no hint', () => {
+    const action = rowMenuAction(row('channel'), 'feishu')
+    expect(action).toMatchObject({ leave: false, label: 'Remove from this list' })
+    expect(action.hint).toContain('The bot stays in the group')
+    expect(action.hint).toContain('remove it in Lark')
+  })
+
+  // An id no module claims must still produce a sentence — the prop is an open
+  // string, and an integration row carries whatever the CP sent.
+  it('degrades to the channel defaults and "the chat app" for an unknown platform', () => {
+    const action = rowMenuAction(row('channel'), 'teams-x')
+    expect(action.leave).toBe(false)
+    expect(action.hint).toContain('The bot stays in the channel')
+    expect(action.hint).toContain('remove it in the chat app')
+  })
+
   // The stored DM label already carries the "@" the glyph column renders.
   it('names a DM in a confirm without doubling its @', () => {
     expect(rowMenuAction(row('im', '@Alice'), 'slack').confirm).toContain('Remove Alice from this list?')
+  })
+})
+
+// The list sigil is the module's `roomGlyph`; the DM markers are kind-driven and
+// platform-free. AgentDetailView's mobile card header renders this same value one
+// line above the row, so the two must not disagree.
+describe('roomGlyph', () => {
+  it('marks a room with the platform convention, and a DM by kind', () => {
+    expect(roomGlyph('channel', 'slack')).toBe('#')
+    expect(roomGlyph('channel', 'discord')).toBe('#')
+    expect(roomGlyph('channel', 'telegram')).toBe('')
+    expect(roomGlyph('channel', 'feishu')).toBe('')
+    // Unknown and absent ids take the host default.
+    expect(roomGlyph('channel', 'teams-x')).toBe('#')
+    expect(roomGlyph('channel', undefined)).toBe('#')
+    for (const platform of ['slack', 'telegram', 'feishu', undefined]) {
+      expect(roomGlyph('im', platform)).toBe('@')
+      expect(roomGlyph('mpim', platform)).toBe('@@')
+    }
+  })
+})
+
+describe('IntegrationChannelList footer', () => {
+  const footer = (platform?: string) =>
+    renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        platform,
+        gated: false,
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
+      })
+    )
+
+  it("appends the platform's own tail, and nothing when it has none", () => {
+    expect(footer('discord')).toContain('A Discord bot joins servers, not channels')
+    expect(footer('slack')).toContain('To remove the bot from a channel, do it in Slack')
+    // Telegram and Lark contribute no tail — and neither may borrow another's.
+    for (const platform of ['telegram', 'feishu', 'teams-x', undefined]) {
+      const html = footer(platform)
+      expect(html, String(platform)).not.toContain('joins servers, not channels')
+      expect(html, String(platform)).not.toContain('do it in Slack')
+    }
+  })
+
+  it('names the room with the platform noun throughout', () => {
+    expect(footer('telegram')).toContain('A group appears here once the bot is added to it')
+    expect(footer('slack')).toContain('A channel appears here once the bot is added to it')
   })
 })
 
