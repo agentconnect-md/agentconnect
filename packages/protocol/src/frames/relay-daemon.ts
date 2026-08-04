@@ -225,7 +225,13 @@ export const RdMsgIm = z.object({
   // source depth + 1 and already cap-checked (§4.1 step 4). The target TERMINAL-verifies
   // its range and installs it as trusted active-turn call metadata WITHOUT incrementing
   // it a second time — double-counting here would halve the effective hop budget.
-  trustedDeliveryHopCount: z.number().int().nonnegative().optional()
+  trustedDeliveryHopCount: z.number().int().nonnegative().optional(),
+  // WHICH rung selected this target, because the two are not interchangeable at the
+  // target's `!stop` gate: an explicit mention clears a mute ("stop reacting to this
+  // conversation implicitly" was never "ignore anyone who names me"), while an implicit
+  // continuation must stay silenced like any other implicit rung. Absent ⇒ 'mention':
+  // a relay old enough to omit it only ever routed explicit mentions.
+  trustedRouteVia: z.enum(['mention', 'implicit']).optional()
 })
 export type RdMsgIm = z.infer<typeof RdMsgIm>
 

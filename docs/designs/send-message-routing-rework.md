@@ -127,7 +127,14 @@ ladder a human message takes, with the author removed from the candidate set:
 - An unmentioned agent message continues the conversation through the ordinary
   implicit rungs — thread affinity, DM, keyword, channel `auto`, default agent.
   This is what lets agents converse without naming each other in every line.
-- A mention of a human does not activate an agent.
+- A mention of a human names no agent, so it selects nobody by itself; the message
+  is then treated as unmentioned and continues through the implicit rungs — which
+  is exactly what a human's `@human` reply does in the same channel.
+- Having named an agent is binding: if every named recipient is refused (policy,
+  the conversation fence, not resident here) the message is transcript-only. It
+  does not fall through to the implicit rungs, because substituting a recipient
+  the author did not ask for is not a continuation — and the commonest such case
+  is a response whose only name is its own author.
 - **The author can never be the target.** This is the one absolute. An agent's own
   reply always matches its own rule, so self-activation is not a loop the hop cap
   slows down — it is unconditional. The author is excluded once, before any rung.
@@ -138,7 +145,11 @@ ladder a human message takes, with the author removed from the candidate set:
 
 Every implicitly-selected edge is still an agent call: it spends from the shared
 hop budget (§4.1), passes directional call policy, and passes the conversation
-Off/gated fence.
+Off/gated fence. It is also still _implicit_, so it obeys the `!stop` thread mute
+exactly like a human's implicitly-routed message — an explicit agent mention
+clears that mute, an implicit continuation stays silenced by it. Without this
+`!stop` would silence a conversation's humans while its agents kept waking each
+other, and `!stop` is the direct control a human has over a running exchange.
 
 **Consequence, stated plainly.** A multi-agent conversation now terminates because
 it hits a limit, not because someone stops addressing anyone. The hop cap and the
@@ -513,7 +524,8 @@ The main implementation surfaces are:
   echoes while retaining structural/chrome filtering.
 - `packages/relay/src/relay-ingress-manager.ts`: replace blanket managed-agent
   suppression with author verification, source-hop transition/cap enforcement,
-  policy checks, and mention-only routing.
+  policy checks, and the verified-author routing ladder (named recipients, or the
+  implicit rungs when the response named nobody).
 - `packages/relay/src/bot-arbitration.ts`: add the verified-agent routing branch
   and shared-bot slug precedence.
 - `packages/daemon/src/daemon.ts`: replace direct and relayed managed-agent
@@ -521,8 +533,9 @@ The main implementation surfaces are:
   rendezvous records, and headless `replyToSession` dispatch.
 - `packages/daemon/src/state-store.ts`: persist activation rendezvous state and
   make admission/retry transitions atomic with the durable inbox fence.
-- `packages/daemon/src/router/routing-table.ts`: keep verified agent traffic out
-  of implicit routing rungs.
+- `packages/daemon/src/router/routing-table.ts`: admit verified agent traffic to
+  the implicit rungs with the author excluded, while unverified bot traffic still
+  stops at the explicit-mention rung.
 - `packages/protocol`: carry authorship, logical recipient, paired-delivery,
   source/delivery hop, delivery-state, headless, capability, and mention-address
   metadata.
@@ -547,9 +560,14 @@ At minimum, cover:
 6. `toUser + channel` posts at root and mentions all listed humans.
 7. A normal current-thread agent reply mentioning another agent activates only
    that agent.
-8. Agent-authored unmentioned, auto-channel, DM, thread-affinity, and command
-   traffic does not activate an agent.
-9. Self mentions and policy-denied mentions do not activate.
+8. Agent-authored unmentioned auto-channel, DM, and thread-affinity traffic
+   continues the conversation through the implicit rungs, never selecting the
+   author; agent-authored command traffic still activates nobody.
+9. Self mentions and policy-denied mentions do not activate, and neither falls
+   through to the implicit rungs — having named someone, they get an explicit
+   outcome or none. An implicitly selected continuation obeys a `!stop` mute on
+   both the direct and relay paths; an explicit agent mention clears it, as a
+   human's does.
 10. Shared-bot slug addressing selects the named agent and never falls back to
     the default for an agent author.
 11. Streaming agent messages do not activate; when a mention is in physical

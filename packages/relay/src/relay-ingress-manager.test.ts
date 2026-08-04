@@ -579,11 +579,12 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       // The one absolute in §2.3. Self-activation is not a loop that the hop cap slows
       // down — it is unconditional, since the agent's own reply always matches its own
       // rule. Holds for an explicit self-mention AND for the implicit fallback.
+      // A response naming ONLY its author has still addressed the conversation, so it
+      // activates nobody rather than continuing to whoever the `auto` rung would pick.
+      // Judging emptiness after the author filter would make these two indistinguishable.
       const explicit = managerWith()
       await explicit.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
-      for (const call of explicit.sendMsg.mock.calls) {
-        expect((call[0] as { agentId: string }).agentId).not.toBe(AUTHOR_ID)
-      }
+      expect(explicit.sendMsg).not.toHaveBeenCalled()
 
       // With the author as the channel's ONLY route, the implicit rung has nobody left to
       // pick — and must resolve to nothing rather than back to the author.
@@ -623,6 +624,28 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
       await internals.forward(BOT_ID, agentFinal())
       expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('does not fall back to the implicit rung when a named recipient is refused', async () => {
+      // The named target is also the channel's `auto` route, so a fallthrough would
+      // "recover" by re-selecting the very agent whose policy just refused the edge. More
+      // generally: an author that named someone gets that someone or nobody, never a
+      // substitute it never asked for.
+      const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
+      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AGENT_ID] }))
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('tells the target which rung selected it', async () => {
+      // The frame is pre-addressed to one agent either way, so the target cannot re-derive
+      // this — and it decides whether the delivery clears or obeys a `!stop` mute.
+      const mention = managerWith()
+      await mention.internals.forward(BOT_ID, agentFinal())
+      expect(mention.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'mention' })
+
+      const implicit = managerWith()
+      await implicit.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
+      expect(implicit.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'implicit' })
     })
 
     it('admits source depth 7 as delivery depth 8 and rejects 8 because the next hop is 9', async () => {

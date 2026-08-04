@@ -224,6 +224,74 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
+  it('does not hand a self-mention to the implicit rungs on a peer connection', async () => {
+    // §2.3. The author-exclusion filter cannot be what decides whether the message was
+    // addressed: a response naming ONLY its author would come out of that filter looking
+    // identical to one that named nobody, and would then continue to an unrelated peer.
+    // Emptiness is therefore judged BEFORE the author is removed.
+    //
+    // The author's own connection cannot show this — nothing happens there either way.
+    // bot-b's connection is where the difference is visible.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const selfNamed = agentMessage({}, { mentionedAgentIds: ['bot-a'] })
+    expect((daemon as any).onInboundOutcome(selfNamed, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('does not substitute an implicit recipient when every named one is refused', async () => {
+    // §2.3. Having named someone is binding. bot-b is named but its call policy excludes
+    // the author; bot-c would be the implicit pick on its own connection. Falling through
+    // would answer "the agent you asked for is unavailable" with "so here is a different
+    // one" — and the commonest refusal is the conversation's own Off fence, which must not
+    // become a redirect. The relay applies the same rule.
+    const { daemon, calls } = await boot([
+      { id: 'bot-a' },
+      { id: 'bot-b', callPolicy: 'selected', allowedCallerAgentIds: ['somebody-else'] },
+      { id: 'bot-c' }
+    ])
+    const named = agentMessage({}, { mentionedAgentIds: ['bot-b'] })
+    expect((daemon as any).onInboundOutcome(named, ['int-bot-c']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('obeys a `!stop` mute when it continues implicitly, and clears it on an explicit mention', async () => {
+    // §2.3. An implicitly selected agent continuation IS implicit routing — the fact that
+    // an agent rather than a human produced the message does not exempt it from the mute.
+    // Without this `!stop` would silence a conversation's humans while its agents kept
+    // waking each other, which is the one case the command now exists for.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+    const muteKey = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', scope)
+    ;(daemon as any).setSessionMuted(muteKey, true)
+
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    expect((daemon as any).isSessionMuted(muteKey)).toBe(true)
+
+    // An explicit mention is an address, so it wakes bot-b and lifts the mute — exactly
+    // what a human's `@mention` does. `!stop` means "stop reacting implicitly", never
+    // "ignore anyone who names me".
+    const addressed = agentMessage({ msgId: 'slack:C1:1720000000.000202:final' }, { mentionedAgentIds: ['bot-b'] })
+    expect((daemon as any).onInboundOutcome(addressed, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+    expect((daemon as any).isSessionMuted(muteKey)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('stamps `trigger` only for an explicit address, never for an implicit continuation', async () => {
+    // `trigger === 'mention'` is a trusted routing cause downstream: it drives the prompt
+    // reminder that an opaque `<@U…>` token is this agent, and the un-mute rule. Stamping
+    // it on an implicitly selected target asserts an address the message does not contain.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls[0]!.msg.trigger).toBeUndefined()
+    await daemon.stop()
+  })
+
   it('does not activate a target whose call policy excludes the author', async () => {
     // §10 case 9. The recipient set is the AUTHOR's claim; the target's daemon still
     // decides, against its own snapshot, whether that edge is allowed.
@@ -442,6 +510,38 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 9 })).accepted).toBe(true)
       expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 0 })).accepted).toBe(true)
       expect(calls).toHaveLength(0)
+      await daemon.stop()
+    })
+
+    it('obeys a `!stop` mute for a relay-forwarded implicit continuation, not for a mention', async () => {
+      // The relay is the only party that knows which rung it used — this frame is
+      // pre-addressed to one agent either way — so it says so, and the target applies its
+      // `!stop` gate accordingly. `handleRelayIm`'s own mute gate sits BELOW the branch
+      // this path returns from, so without the check here a muted conversation would
+      // silence its humans and none of its agents.
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+      const muteKey = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', scope)
+      ;(daemon as any).setSessionMuted(muteKey, true)
+
+      expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'implicit' })).accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      expect((daemon as any).isSessionMuted(muteKey)).toBe(true)
+
+      // An explicit mention wakes it and lifts the mute, as a human's would.
+      expect((daemon as any).handleRelayIm(imFrame({ trustedRouteVia: 'mention' })).accepted).toBe(true)
+      expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+      expect((daemon as any).isSessionMuted(muteKey)).toBe(false)
+      await daemon.stop()
+    })
+
+    it('reads an absent `trustedRouteVia` as an explicit mention', async () => {
+      // A relay old enough to omit the field only ever forwarded explicit mentions, so
+      // that is the reading which preserves its behavior rather than silently demoting
+      // every one of its deliveries to mute-able implicit traffic.
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+      expect((daemon as any).handleRelayIm(imFrame()).accepted).toBe(true)
+      expect(calls[0]!.msg.trigger).toBe('mention')
       await daemon.stop()
     })
 

@@ -113,7 +113,13 @@ ladder as any other message**, with the author removed from the candidate set:
 - an unmentioned agent message continues the conversation through the ordinary implicit
   rungs — thread affinity, DM, keyword, channel `auto`, default agent — so agents can
   talk to each other without naming a recipient in every line;
-- a mention of a human does not activate an agent;
+- a mention of a human names no agent, so it selects nobody on its own — the message is
+  then treated as unmentioned and continues through the implicit rungs, exactly as a
+  person's `@someone` reply does in the same channel;
+- having named an agent is binding: if every named recipient is refused (call policy, the
+  channel's Off switch, not running here) the message is recorded but wakes nobody. It
+  does not fall back to the implicit rungs, because answering "the agent you asked for is
+  unavailable" with a different agent is not something the author asked for;
 - **an author is never the target**, on any path. This is the one absolute: an agent's
   own reply always matches its own rule, so self-activation would be unconditional
   rather than merely loop-prone;
@@ -129,6 +135,12 @@ effect compounds — each app receives the same channel event on its own connect
 agent message can wake every other agent present. If you want several agents in a channel
 without them talking continuously, prefer @-mention addressing over the "every message"
 trigger; the loop guard is a latch, and clearing it takes an explicit `!resume`.
+
+`!stop` remains the direct control over a running exchange, and it applies to agents the
+same way it applies to people: while a thread is stopped, an implicitly-routed agent
+continuation is recorded but does not wake anyone. An explicit `@mention` — from a person
+or from an agent — still gets through and lifts the stop, because `!stop` means "stop
+reacting to this conversation on your own", not "ignore anyone who names me".
 
 Only the **final** message of a logical response routes. Replies are streamed, so an
 earlier physical message may hold a prefix of the answer; the daemon marks exactly one
