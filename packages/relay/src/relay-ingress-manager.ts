@@ -34,17 +34,11 @@ import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarge
 import { SlackHttpIngest, type HttpSlackSessionAction, type HttpSlackSessionShortcut } from './slack-http-ingest.js'
 import { FeishuHttpIngest } from './feishu-http-ingest.js'
 import type { FeishuVerifiedDelivery } from './feishu-http-ingress.js'
+import { DemuxIndex, IngressPool } from './platforms/registry.js'
 import { verifySlackSignature } from './hooks/signature.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
-const MAX_DEMUX_ENTRIES = 10_000
-
-/** Composite demux key for one workspace install of a distributed app. */
-function appTeamKey(apiAppId: string, teamId: string): string {
-  return `${apiAppId}\u0000${teamId}`
-}
-
 /** Cap on the retry buffer for thread-assign reports dropped while the CP link was
  *  down. Bounded so a long CP outage can't grow it without limit; oldest-cleared. */
 const MAX_PENDING_REPORTS = 10_000
@@ -201,20 +195,14 @@ export function httpFeishuActionMsgId(
 
 export class RelayIngressManager {
   private readonly router = new BotArbitrationRouter()
-  private readonly ingests = new Map<string, SlackHttpIngest>()
-  private readonly feishuIngests = new Map<string, FeishuHttpIngest>()
-  private readonly feishuBotByAppId = new Map<string, string>()
-  private readonly feishuAppIdByBot = new Map<string, string>()
-  /** Learned/assigned `api_app_id → botId` index — O(1) HTTP demux (self-populates on
-   *  first verified delivery when the CP didn't stamp `apiAppId`). Bounded flush.
-   *  Team-scoped bots (a distributed app's installs) NEVER enter this map — they
-   *  demux exclusively on the composite index below. */
-  private readonly demuxByApiApp = new Map<string, string>()
-  /** Assigned `(api_app_id, team_id) → botId` composite index — the ONLY demux for
-   *  a distributed app's installs, which all share one app id + signing secret.
-   *  Assign-derived (never learned) and cleaned up on unassign via the reverse map. */
-  private readonly demuxByAppTeam = new Map<string, string>()
-  private readonly appTeamKeyByBot = new Map<string, string>()
+  /** §8 registry (S3): one pool of per-bot ingests per platform, and one demux
+   *  identity index beside each pool. The index owns the composite/app-only
+   *  decision per ASSIGNMENT shape (tenant-scoped ⇒ composite only, never
+   *  learned; app-only ⇒ learnable) — see platforms/registry.ts. */
+  private readonly slackPool = new IngressPool<SlackHttpIngest>('slack')
+  private readonly feishuPool = new IngressPool<FeishuHttpIngest>('feishu')
+  private readonly slackDemux = new DemuxIndex()
+  private readonly feishuDemux = new DemuxIndex()
   /** Bounded-loss counters (per bot) — messages dropped because no daemon connection. */
   private readonly dropped = new Map<string, number>()
   /** Thread-assign reports dropped because the CP link wasn't READY, keyed
@@ -349,8 +337,8 @@ export class RelayIngressManager {
     this.router.upsert(a)
     // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
     await this.stopIngest(a.botId)
-    this.forgetAppTeam(a.botId)
-    this.forgetFeishuApp(a.botId)
+    this.slackDemux.forget(a.botId)
+    this.feishuDemux.forget(a.botId)
 
     if (a.platform === 'feishu') {
       if (!a.apiAppId || !('verificationToken' in a.secrets)) {
@@ -362,9 +350,8 @@ export class RelayIngressManager {
         onCardAction: (action, eventId) => this.forwardFeishuAction(a.botId, action, eventId),
         now: () => this.deps.clock.now()
       })
-      this.feishuIngests.set(a.botId, ingest)
-      this.feishuBotByAppId.set(a.apiAppId, a.botId)
-      this.feishuAppIdByBot.set(a.botId, a.apiAppId)
+      this.feishuPool.set(a.botId, ingest)
+      this.feishuDemux.indexAssign(a.botId, { appId: a.apiAppId })
       return
     }
     if (a.platform !== 'slack') {
@@ -375,18 +362,14 @@ export class RelayIngressManager {
       this.deps.log.warn(`relay-ingress(${a.botId}): incomplete Slack HTTP assignment`)
       return
     }
-    // Deterministic demux when the CP stamped the app id. A team-scoped bot (a
-    // distributed app's install) goes ONLY into the composite index — an app-only
-    // entry would serve every sibling workspace's events to this one bot.
-    if (a.apiAppId && a.teamId) {
-      this.demuxByAppTeam.set(appTeamKey(a.apiAppId, a.teamId), a.botId)
-      this.appTeamKeyByBot.set(a.botId, appTeamKey(a.apiAppId, a.teamId))
-      // A re-assign that GAINED a teamId must also evict any stale app-only entry
-      // still pointing at this bot, or the fast path would keep serving cross-team.
-      if (this.demuxByApiApp.get(a.apiAppId) === a.botId) this.demuxByApiApp.delete(a.apiAppId)
-    } else if (a.apiAppId) {
-      this.rememberApiApp(a.apiAppId, a.botId)
-    }
+    // Deterministic demux when the CP stamped the app id: the index owns the
+    // composite/app-only decision from the assignment's shape (a team-scoped bot
+    // enters ONLY the composite index; gaining a teamId evicts the stale
+    // app-only entry — both invariants are pinned in registry.test.ts).
+    this.slackDemux.indexAssign(a.botId, {
+      ...(a.apiAppId ? { appId: a.apiAppId } : {}),
+      ...(a.teamId ? { tenantId: a.teamId } : {})
+    })
     const ingest = new SlackHttpIngest(
       a.botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
@@ -416,7 +399,7 @@ export class RelayIngressManager {
         log: this.deps.log
       }
     )
-    this.ingests.set(a.botId, ingest)
+    this.slackPool.set(a.botId, ingest)
     await ingest.start()
   }
 
@@ -459,26 +442,10 @@ export class RelayIngressManager {
       return
     }
     this.clearGatedDmLatches(botId)
-    this.forgetAppTeam(botId)
-    this.forgetFeishuApp(botId)
+    this.slackDemux.forget(botId)
+    this.feishuDemux.forget(botId)
     this.router.remove(botId)
     await this.stopIngest(botId)
-  }
-
-  /** Drop the bot's composite demux entry (assign-derived, so eagerly cleaned —
-   *  unlike the learned app-only map, whose stale entries lazily miss). */
-  private forgetAppTeam(botId: string): void {
-    const key = this.appTeamKeyByBot.get(botId)
-    if (key === undefined) return
-    this.appTeamKeyByBot.delete(botId)
-    if (this.demuxByAppTeam.get(key) === botId) this.demuxByAppTeam.delete(key)
-  }
-
-  private forgetFeishuApp(botId: string): void {
-    const appId = this.feishuAppIdByBot.get(botId)
-    if (!appId) return
-    this.feishuAppIdByBot.delete(botId)
-    if (this.feishuBotByAppId.get(appId) === botId) this.feishuBotByAppId.delete(appId)
   }
 
   /** `rc/assign` — durable thread affinity seed. */
@@ -507,23 +474,25 @@ export class RelayIngressManager {
     const { apiAppId, teamId, timestamp, rawBody, signature } = args
     // Composite fast path — assign-derived, so a hit is exact (still HMAC-verified).
     if (apiAppId && teamId) {
-      const botId = this.demuxByAppTeam.get(appTeamKey(apiAppId, teamId))
-      const ingest = botId ? this.ingests.get(botId) : undefined
+      const botId = this.slackDemux.resolve({ appId: apiAppId, tenantId: teamId })
+      const ingest = botId ? this.slackPool.get(botId) : undefined
       if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
     }
     if (apiAppId) {
-      const botId = this.demuxByApiApp.get(apiAppId)
-      const ingest = botId ? this.ingests.get(botId) : undefined
+      const botId = this.slackDemux.resolve({ appId: apiAppId })
+      const ingest = botId ? this.slackPool.get(botId) : undefined
       if (ingest && verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return ingest
     }
-    for (const [botId, ingest] of this.ingests) {
+    for (const [botId, ingest] of this.slackPool.entries()) {
       // A team-scoped bot may only serve its own workspace: same-secret siblings
       // would all verify, so the envelope team id is the ONLY discriminator.
       const assignedTeam = this.router.get(botId)?.teamId
       if (assignedTeam !== undefined && assignedTeam !== teamId) continue
       if (verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) {
-        // Learn only the app-only mapping; composite entries are assign-derived.
-        if (apiAppId && assignedTeam === undefined) this.rememberApiApp(apiAppId, botId)
+        // Learn only the app-only mapping; the index itself refuses a
+        // tenant-scoped bot (registry.test.ts), keeping the invariant even if a
+        // future call site forgets this router check.
+        if (apiAppId && assignedTeam === undefined) this.slackDemux.learn(apiAppId, botId)
         return ingest
       }
     }
@@ -540,26 +509,22 @@ export class RelayIngressManager {
     headers: import('./feishu-http-ingest.js').FeishuCallbackHeaders
   }): FeishuVerifiedDelivery | undefined {
     if (args.appId) {
-      const botId = this.feishuBotByAppId.get(args.appId)
-      const ingest = botId ? this.feishuIngests.get(botId) : undefined
+      const botId = this.feishuDemux.resolve({ appId: args.appId })
+      const ingest = botId ? this.feishuPool.get(botId) : undefined
       const callback = ingest?.decode(args.rawBody, args.body, args.headers)
       if (ingest && callback) return { ingest, callback }
     }
-    for (const ingest of this.feishuIngests.values()) {
+    for (const ingest of this.feishuPool.values()) {
       const callback = ingest.decode(args.rawBody, args.body, args.headers)
       if (callback) return { ingest, callback }
     }
     return undefined
   }
 
-  private rememberApiApp(apiAppId: string, botId: string): void {
-    if (this.demuxByApiApp.size >= MAX_DEMUX_ENTRIES) this.demuxByApiApp.clear()
-    this.demuxByApiApp.set(apiAppId, botId)
-  }
-
   /** Test/inspection view of the demux indexes (no secret material). */
   get demuxIndexes(): { byApiApp: ReadonlyMap<string, string>; byAppTeam: ReadonlyMap<string, string> } {
-    return { byApiApp: this.demuxByApiApp, byAppTeam: this.demuxByAppTeam }
+    const { byApp, byAppTenant } = this.slackDemux.indexes
+    return { byApiApp: byApp, byAppTeam: byAppTenant }
   }
 
   /** Make the inline selector effective for the current Slack thread immediately.
@@ -586,17 +551,23 @@ export class RelayIngressManager {
       this.revokeRetryTimer = undefined
     }
     await Promise.all(
-      [...new Set([...this.ingests.keys(), ...this.feishuIngests.keys()])].map((id) => this.stopIngest(id))
+      [
+        ...new Set([
+          ...[...this.slackPool.entries()].map(([id]) => id),
+          ...[...this.feishuPool.entries()].map(([id]) => id)
+        ])
+      ].map((id) => this.stopIngest(id))
     )
   }
 
   private async stopIngest(botId: string): Promise<void> {
-    const cur = this.ingests.get(botId)
+    const cur = this.slackPool.get(botId)
     if (cur) {
-      this.ingests.delete(botId)
+      this.slackPool.delete(botId)
       await cur.stop()
     }
-    this.feishuIngests.delete(botId)
+    // A Feishu ingest is a pure decoder — nothing to stop, only to drop.
+    this.feishuPool.delete(botId)
   }
 
   private isAgentBotMessage(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): boolean {
@@ -837,7 +808,7 @@ export class RelayIngressManager {
     const latch = `${botId}:${msg.channel}`
     if (this.gatedDmReported.has(latch)) return
     // A group DM's counterpart is the room, not the sender, so it carries no name here.
-    const name = msg.isDm ? await this.ingests.get(botId)?.lookupUserName(msg.sender.id) : undefined
+    const name = msg.isDm ? await this.slackPool.get(botId)?.lookupUserName(msg.sender.id) : undefined
     const sent = this.deps.reportBotConversation({
       botId,
       conversation: { id: msg.channel, ...(name ? { name } : {}), kind: msg.isDm ? 'im' : 'mpim' }
@@ -874,7 +845,7 @@ export class RelayIngressManager {
     }
     const key = `${botId}:${msg.channel}`
     if (this.gatedNoticesSent.has(key)) return
-    const ingest = this.ingests.get(botId)
+    const ingest = this.slackPool.get(botId)
     // Feishu relay ingress is receive-only. Its caller first tries the assignment
     // directory's sole gated daemon target; an old CP that did not include the
     // integration id safely lands here and drops instead of leaking API secrets.
