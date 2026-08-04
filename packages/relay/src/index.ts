@@ -19,7 +19,6 @@ import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter } from './webchat-router.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
-import { SlackEventDedup } from './slack-event-dedup.js'
 import { registerSlackHttpIngress } from './platforms/slack/http-ingress.js'
 import { registerFeishuHttpIngress } from './platforms/feishu/http-ingress.js'
 import { CollaborationRouter } from './collaboration-router.js'
@@ -191,7 +190,7 @@ async function main(): Promise<void> {
 
   // IM HTTP ingress. Each callback is demuxed, authenticated, deduplicated,
   // normalized, arbitrated, and forwarded. Routes must register before listen.
-  registerSlackHttpIngress(server, { manager: () => held.relayIngress, dedup: new SlackEventDedup(systemClock), log })
+  registerSlackHttpIngress(server, { manager: () => held.relayIngress, log })
   registerFeishuHttpIngress(server, { manager: () => held.relayIngress, log })
 
   // Public webhook ingress (POST /webhooks/in/:token). Routes must register

@@ -1496,13 +1496,23 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
   const SHARED_SECRET = 'shared-platform-signing-secret'
   const NOW = 1_720_000_000_000
   const ts = String(Math.floor(NOW / 1000))
-  const body = Buffer.from(JSON.stringify({ type: 'event_callback', event_id: 'Ev1' }))
-  const sig = (secret: string) => `v0=${createHmac('sha256', secret).update(`v0:${ts}:${body}`).digest('hex')}`
+  // Hints ride the ENVELOPE now (extractDemuxHints); each resolve() builds a
+  // body carrying them. No event_id ⇒ the dedup table never interferes.
+  const envelopeFor = (over: { apiAppId?: string; teamId?: string }) => ({
+    type: 'event_callback',
+    ...(over.apiAppId ? { api_app_id: over.apiAppId } : {}),
+    ...(over.teamId ? { team_id: over.teamId } : {})
+  })
+  const sigFor = (secret: string, raw: Buffer) =>
+    `v0=${createHmac('sha256', secret).update(`v0:${ts}:${raw}`).digest('hex')}`
 
   interface DemuxInternals {
     router: BotArbitrationRouter
     slackPool: {
-      set(botId: string, ingest: { signingSecret: string; stop(): Promise<void> }): void
+      set(
+        botId: string,
+        ingest: { signingSecret: string; stop(): Promise<void>; handleEvent(e?: unknown, at?: number): Promise<void> }
+      ): void
       get(botId: string): { signingSecret: string } | undefined
     }
     feishuPool: { get(botId: string): unknown }
@@ -1519,7 +1529,13 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     opts: { apiAppId?: string; teamId?: string; indexed?: boolean } = {}
   ) => {
     const internals = manager as unknown as DemuxInternals
-    internals.slackPool.set(botId, { signingSecret, stop: async () => {} })
+    internals.slackPool.set(botId, {
+      signingSecret,
+      stop: async () => {},
+      handleEvent: async () => {
+        handledBy.push(botId)
+      }
+    })
     internals.router.upsert({
       ...assignment(),
       botId,
@@ -1533,26 +1549,38 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     if (opts.apiAppId && !opts.teamId) internals.slackDemux.indexAssign(botId, { appId: opts.apiAppId })
   }
 
-  const resolve = (manager: RelayIngressManager, over: { apiAppId?: string; teamId?: string; secret?: string }) =>
-    manager.resolveVerified({
-      ...(over.apiAppId ? { apiAppId: over.apiAppId } : {}),
-      ...(over.teamId ? { teamId: over.teamId } : {}),
-      timestamp: ts,
-      rawBody: body,
-      signature: sig(over.secret ?? SHARED_SECRET)
+  /** Drive the §8 seam end to end and report WHICH bot's ingest handled the
+   *  delivery (undefined = 401). The envelope parses as an event with no
+   *  event_id, so dedup never interferes with the demux assertions. */
+  const resolve = async (
+    manager: RelayIngressManager,
+    over: { apiAppId?: string; teamId?: string; secret?: string }
+  ): Promise<string | undefined> => {
+    handledBy.length = 0
+    const envelope = envelopeFor(over)
+    const raw = Buffer.from(JSON.stringify(envelope))
+    const handled = await manager.handleInbound('slack', raw, envelope, {
+      'x-slack-request-timestamp': ts,
+      'x-slack-signature': sigFor(over.secret ?? SHARED_SECRET, raw)
     })
+    if (!handled) return undefined
+    // handleEvent fires async inside the plugin; give the microtask a beat.
+    await new Promise((r) => setTimeout(r, 0))
+    return handledBy[0]
+  }
+  const handledBy: string[] = []
 
-  it('demuxes sibling installs of one distributed app by (api_app_id, team_id)', () => {
+  it('demuxes sibling installs of one distributed app by (api_app_id, team_id)', async () => {
     const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
 
     const internals = manager as unknown as DemuxInternals
-    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBe(internals.slackPool.get(BOT_T1))
-    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.slackPool.get(BOT_T2))
+    await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).resolves.toBe(BOT_T1)
+    await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).resolves.toBe(BOT_T2)
   })
 
-  it('never serves a team-scoped bot to another workspace via the signature scan', () => {
+  it('never serves a team-scoped bot to another workspace via the signature scan', async () => {
     const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     // Composite index deliberately EMPTY (indexed:false) — only the router knows
     // the team ids, so resolution falls through to the verify-scan, where the
@@ -1561,31 +1589,31 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2', indexed: false })
 
     const internals = manager as unknown as DemuxInternals
-    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.slackPool.get(BOT_T2))
+    await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).resolves.toBe(BOT_T2)
     // The scan hit must not poison the app-only learned map for a team-scoped bot.
     expect(internals.slackDemux.indexes.byApp.has(PLATFORM_APP)).toBe(false)
   })
 
-  it('fails closed when a distributed-app envelope carries no team id', () => {
+  it('fails closed when a distributed-app envelope carries no team id', async () => {
     const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
 
     // Both siblings verify the HMAC; without a team id there is no safe pick.
-    expect(resolve(manager, { apiAppId: PLATFORM_APP })).toBeUndefined()
+    await expect(resolve(manager, { apiAppId: PLATFORM_APP })).resolves.toBeUndefined()
   })
 
-  it('keeps the legacy app-only fast path and scan learning for team-less bots', () => {
+  it('keeps the legacy app-only fast path and scan learning for team-less bots', async () => {
     const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_LEGACY, 'legacy-secret', {}) // no app id stamped — scan learns it
 
     const internals = manager as unknown as DemuxInternals
-    expect(resolve(manager, { apiAppId: 'ALEGACY', secret: 'legacy-secret' })).toBe(internals.slackPool.get(BOT_LEGACY))
+    await expect(resolve(manager, { apiAppId: 'ALEGACY', secret: 'legacy-secret' })).resolves.toBe(BOT_LEGACY)
     expect(internals.slackDemux.indexes.byApp.get('ALEGACY')).toBe(BOT_LEGACY)
     // A team-scoped envelope still resolves the legacy bot (guard only skips
     // bots whose ASSIGNMENT carries a different team id).
-    expect(resolve(manager, { apiAppId: 'ALEGACY', teamId: 'T9', secret: 'legacy-secret' })).toBe(
-      internals.slackPool.get(BOT_LEGACY)
+    await expect(resolve(manager, { apiAppId: 'ALEGACY', teamId: 'T9', secret: 'legacy-secret' })).resolves.toBe(
+      BOT_LEGACY
     )
   })
 
@@ -1627,6 +1655,6 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     const internals = manager as unknown as DemuxInternals
     expect(internals.slackDemux.indexes.byAppTenant.size).toBe(0)
     // The reverse map is DemuxIndex-internal now; an empty composite index IS the proof.
-    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBeUndefined()
+    await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).resolves.toBeUndefined()
   })
 })

@@ -24,33 +24,26 @@
  */
 import type { FastifyInstance } from 'fastify'
 import type { Logger } from '../../log.js'
-import type { SlackEventDedup } from '../../slack-event-dedup.js'
 import type { SlackInteractiveBody, SlackMessageEvent } from './http-ingest.js'
 
 /** Raw-body cap for the Slack endpoints (Slack payloads are well under 1 MiB). */
 export const SLACK_BODY_LIMIT = 1024 * 1024
 
-/** The minimum an ingest must expose to the route (satisfied by `SlackHttpIngest`). */
-export interface SlackIngestHandlers {
-  handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number): Promise<void>
-  handleInteraction(body: SlackInteractiveBody): Promise<unknown>
-}
-
-/** Demux + authenticate an inbound POST to a bot's ingest (satisfied by `RelayIngressManager`). */
+/** The §8 inbound seam the route drives (satisfied by `RelayIngressManager`):
+ *  demux + verify + handle in one core-owned ladder; the plugin owns the
+ *  cryptography and everything after authentication. `undefined` ⇒ 401. */
 export interface SlackIngestResolver {
-  resolveVerified(args: {
-    apiAppId?: string
-    teamId?: string
-    timestamp: string | undefined
-    rawBody: Buffer
-    signature: string | undefined
-  }): SlackIngestHandlers | undefined
+  handleInbound(
+    platformId: string,
+    rawBody: Buffer,
+    body: unknown,
+    headers: Record<string, string | string[] | undefined>
+  ): Promise<import('../contract.js').HandledDelivery | undefined>
 }
 
 export interface SlackHttpIngressDeps {
   /** Late-bound — the manager is constructed alongside the rd/* server, after routes register. */
   manager: () => SlackIngestResolver | undefined
-  dedup: SlackEventDedup
   log: Logger
 }
 
@@ -111,25 +104,12 @@ export function registerSlackHttpIngress(app: FastifyInstance, deps: SlackHttpIn
         return reply.code(200).send({ challenge: body.challenge ?? '' })
       }
 
-      const ingest = deps.manager()?.resolveVerified({
-        ...(body.api_app_id ? { apiAppId: body.api_app_id } : {}),
-        ...(body.team_id ? { teamId: body.team_id } : {}),
-        timestamp,
-        rawBody: raw,
-        signature
-      })
-      if (!ingest) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
-
-      // A retry for one app/install reuses this composite identity. Do not dedup on
-      // event_id alone: one Slack message may be delivered to several explicitly
-      // mentioned apps, and those callbacks must each reach their own agent.
-      if (deps.dedup.seen(eventDedupKey(body))) return reply.code(200).send()
-
-      // Ack NOW (Slack's 3s window); forward async. A forward miss is bounded loss.
-      // `event_time` is seconds → ms for the CP's revocation fence.
-      void ingest.handleEvent(body.event, body.event_time ? body.event_time * 1000 : undefined).catch((err) => {
-        deps.log.warn(`slack ingress: event handler error: ${(err as Error).message}`)
-      })
+      // §8 verify → handle: demux/authentication and the dedup check (the plugin
+      // mints the composite identity; core owns the table) run inside the seam.
+      // Event handling is fired async by the plugin — the 200 stays inside
+      // Slack's 3s window, exactly as before.
+      const handled = await deps.manager()?.handleInbound('slack', raw, body, req.headers)
+      if (!handled) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
       return reply.code(200).send()
     })
 
@@ -149,18 +129,11 @@ export function registerSlackHttpIngress(app: FastifyInstance, deps: SlackHttpIn
         return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
       }
 
-      const ingest = deps.manager()?.resolveVerified({
-        ...(body.api_app_id ? { apiAppId: body.api_app_id } : {}),
-        ...(body.team?.id ? { teamId: body.team.id } : {}),
-        timestamp,
-        rawBody: raw,
-        signature
-      })
-      if (!ingest) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
-
-      // block_suggestion needs its options ON the 200 body; every other branch returns ''.
-      const result = await ingest.handleInteraction(body)
-      return reply.code(200).send(result ?? '')
+      // block_suggestion needs its options ON the 200 body — the plugin's
+      // handler returns it as the syncResponse.
+      const handled = await deps.manager()?.handleInbound('slack', raw, body, req.headers)
+      if (!handled) return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
+      return reply.code(200).send(handled.syncResponse ?? '')
     })
   })
 }

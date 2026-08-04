@@ -171,7 +171,8 @@ export function forwardSessionShortcut(
 /** The plugin's typed verified product: one authenticated Slack delivery, as
  *  the two HTTP routes parse it. Opaque to core (§8). */
 export type SlackVerifiedDelivery =
-  { kind: 'event'; event?: SlackMessageEvent; eventAtMs?: number } | { kind: 'interaction'; body: SlackInteractiveBody }
+  | { kind: 'event'; event?: SlackMessageEvent; eventAtMs?: number; dedupKey?: string }
+  | { kind: 'interaction'; body: SlackInteractiveBody }
 
 function headerString(v: string | string[] | undefined): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined
@@ -227,22 +228,32 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
     const timestamp = headerString(headers['x-slack-request-timestamp'])
     if (!verifySlackSignature(ingest.signingSecret, timestamp, rawBody, signature, now)) return undefined
     const b = body as
-      | { event?: SlackMessageEvent; event_time?: number; payload?: SlackInteractiveBody }
-      | SlackInteractiveBody
-      | undefined
-    // Interactions arrive pre-extracted from the urlencoded `payload=` field by
-    // the route; events keep their envelope shape.
-    if (b && typeof b === 'object' && 'type' in b && (b as SlackInteractiveBody).type !== undefined && !('event' in b))
+      { type?: string; event?: SlackMessageEvent; event_time?: number } | SlackInteractiveBody | undefined
+    // POSITIVE discrimination: an Events API envelope is exactly
+    // `type === 'event_callback'` (url_verification never reaches verify — the
+    // route answers it pre-candidate). Everything else on this seam is an
+    // interaction payload, pre-extracted from the urlencoded `payload=` field
+    // by the route.
+    if (b && typeof b === 'object' && (b as { type?: string }).type !== 'event_callback')
       return { kind: 'interaction', body: b as SlackInteractiveBody }
-    const env = b as { event?: SlackMessageEvent; event_time?: number } | undefined
+    const env = b as
+      | { event?: SlackMessageEvent; event_time?: number; event_id?: string; api_app_id?: string; team_id?: string }
+      | undefined
+    // The dedup identity is the (api_app_id, team_id, event_id) composite: a
+    // retry for one app/install reuses it, while one Slack message delivered to
+    // several explicitly mentioned apps must reach each of their agents.
+    const dedupKey = env?.event_id ? `${env.api_app_id ?? ''}\0${env.team_id ?? ''}\0${env.event_id}` : undefined
     return {
       kind: 'event',
       ...(env?.event ? { event: env.event } : {}),
-      ...(env?.event_time ? { eventAtMs: env.event_time * 1000 } : {})
+      ...(env?.event_time ? { eventAtMs: env.event_time * 1000 } : {}),
+      ...(dedupKey ? { dedupKey } : {})
     }
   },
 
   async handle(ingest, verified, host): Promise<HandledDelivery> {
+    // Plugin-minted identity, core-owned table (§8).
+    if (verified.kind === 'event' && host.dedupSeen(verified.dedupKey)) return {}
     if (verified.kind === 'interaction') {
       // block_suggestion needs its options ON the 200 body; every other branch
       // resolves to '' — the same contract the interactions route holds today.
