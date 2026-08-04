@@ -45,8 +45,7 @@ import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { isDirectConversationKind } from '../persistence/ports.js'
 import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
-import { slackBotAssignBags } from '../platforms/slack/provider.js'
-import { feishuBotAssignBags } from '../platforms/feishu/provider.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 
 export interface HttpBotLog {
@@ -107,7 +106,12 @@ export class HttpBotOrchestrator {
     private readonly control: ControlSender,
     private readonly threads: ThreadAffinityStore,
     private readonly sessions: SessionRepo,
-    private readonly log: HttpBotLog
+    private readonly log: HttpBotLog,
+    /** §9 platform providers — the ONLY source of the `rc/bot-assign` credential
+     *  and demux bags, and (through `httpIntegrationToSpec`) of a send-only
+     *  spec's payload. Late-bound in the composition root; every read happens at
+     *  sync/replay time. */
+    private readonly platforms: CpPlatformRegistry
   ) {}
 
   /**
@@ -151,7 +155,13 @@ export class HttpBotOrchestrator {
       return
     }
 
-    const assign = this.buildAssign(bot, compiled, secret)
+    const assign = await this.buildAssign(bot, compiled, secret)
+    if (!assign) {
+      // No `projectBotAssign` ⇒ no relay path for this platform (§9). Nothing to
+      // broadcast, and no send-only spec either: an unassigned bot has no ingress.
+      this.log.warn({ botId, platform: bot.platform }, 'http-bot: platform contributes no relay ingress — skipping')
+      return
+    }
     this.broadcast((ch) => ch.send('rc/bot-assign', assign))
     this.log.info(
       { botId: bot.id, members: compiled.members.length, routes: compiled.routes.length },
@@ -310,8 +320,14 @@ export class HttpBotOrchestrator {
       if (!secret) continue
       if (bot.platform === 'slack' && !secret.signingSecret) continue
       if (bot.platform === 'feishu' && (!secret.verificationToken || !secret.appToken)) continue
+      // Built OUTSIDE the try on purpose: the catch below means "dead socket",
+      // and a projector rejection swallowed there would be a lost error rather
+      // than a dropped send. A null assign is the platform having no relay path
+      // (§9) — nothing to replay for this bot.
+      const assign = await this.buildAssign(bot, compiled, secret)
+      if (!assign) continue
       try {
-        ch.send('rc/bot-assign', this.buildAssign(bot, compiled, secret))
+        ch.send('rc/bot-assign', assign)
         for (const t of await this.threads.listForBot(bot.id)) {
           ch.send('rc/assign', { botId: bot.id, sessionKey: t.sessionKey, agentId: t.agentId, daemonId: t.daemonId })
         }
@@ -896,11 +912,7 @@ export class HttpBotOrchestrator {
 
   /** Deliver the HTTP-transport send-only spec to each member agent's daemon (best-effort).
    *  `shareable` rides each spec so the daemon knows whether to expose "Switch agent". */
-  private async pushSpecs(
-    compiled: Compiled,
-    secret: BotSecretMaterial,
-    bot: Pick<BotRecord, 'shareable' | 'slackAppId' | 'botUserId'>
-  ): Promise<void> {
+  private async pushSpecs(compiled: Compiled, secret: BotSecretMaterial, bot: BotRecord): Promise<void> {
     // A gated install's spec carries its conversation-scoped rules for the daemon's
     // last-hop admission backstop (§14.3), and EVERY install carries its Off channels
     // for the same backstop. The compile already read the bot's rows; they are keyed
@@ -910,15 +922,7 @@ export class HttpBotOrchestrator {
         const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
         await this.control.integrationUpsert(
           daemonId,
-          httpIntegrationToSpec(
-            integration,
-            secret,
-            bot.shareable,
-            channels,
-            gated,
-            bot.slackAppId ?? undefined,
-            bot.botUserId ?? undefined
-          )
+          await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, gated)
         )
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err
@@ -927,23 +931,40 @@ export class HttpBotOrchestrator {
     }
   }
 
-  /** Assemble the `rc/bot-assign` frame (credentials + attributed routing table).
-   *  Secret — NEVER log the result. */
-  private buildAssign(bot: BotRecord, compiled: Compiled, secret: BotSecretMaterial): RcBotAssign {
+  /**
+   * Assemble the `rc/bot-assign` frame (credentials + attributed routing table).
+   * Secret — NEVER log the result.
+   *
+   * `null` ⇒ **this platform has no relay path** and no frame exists to send.
+   * `projectBotAssign` is OPTIONAL by design (§9 erratum): a platform whose
+   * inbound transport is a daemon-owned long-lived connection simply does not
+   * declare it, and the create route already refuses `transport: 'http'` for
+   * exactly those platforms on exactly this signal
+   * (`http/routes/integrations.ts`). So no such bot row can carry the http
+   * transport and this arm is unreachable — which is why absence must neither
+   * fabricate an empty assign (the relay would arm an ingress it cannot verify)
+   * nor throw (a composition-shaped platform set would take down `syncBot` for
+   * every OTHER bot). It joins the two existing "cannot assign" outcomes below:
+   * the caller logs and moves on, and the next reconcile retries.
+   */
+  private async buildAssign(
+    bot: BotRecord,
+    compiled: Compiled,
+    secret: BotSecretMaterial
+  ): Promise<RcBotAssign | null> {
     // §6.7 emission flip (the last S1b dual-shape residue): the opaque ingress
     // bag is the ONE carrier of the demux identity — the relay's bag-preferring
     // reader shipped first (#545). The retired named top-level fields stay
     // OPTIONAL in the wire schema so an older relay's tolerant reader is not
     // broken by their absence; they leave the schema with the next cleanup.
     //
-    // §9 shared projection bodies (S3): the same functions the Slack/Feishu
-    // platform providers' `projectBotAssign` return — one implementation for
-    // the live frame and the provider seam (each helper documents its bag
-    // fields). Telegram/Discord bots never carry the http transport (the
-    // create route refuses it), so the slack-shaped arm is the effective
-    // default, exactly as the previous inline ternaries fell through.
-    const { secrets, ingress } =
-      bot.platform === 'feishu' ? feishuBotAssignBags(bot, secret) : slackBotAssignBags(bot, secret)
+    // §9 projector adoption (S3): the two bags come from the platform provider,
+    // so the four-way platform fork is gone — core assembles everything else on
+    // the frame (the compiled routing table, the member directory, the gating
+    // fences, `credentialRevision`) and merely awaits the provider's output.
+    const bags = await this.platforms.get(bot.platform)?.projectBotAssign?.(bot, secret)
+    if (!bags) return null
+    const { secrets, ingress } = bags
     return {
       botId: bot.id,
       platform: compiled.platform,

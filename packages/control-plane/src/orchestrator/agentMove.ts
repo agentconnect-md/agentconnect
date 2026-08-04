@@ -38,6 +38,7 @@ import type {
 import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { cronToUpsert, integrationToSpec, isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { OrganizationEnvironmentValues } from './organizationEnvironment.js'
 import type { ControlSender } from './outbound.js'
@@ -78,6 +79,9 @@ export interface AgentMoveDeps {
   integrationChannels: IntegrationChannelRepo
   bots: BotRepo
   botSecrets: BotSecretStore
+  /** §9 platform providers — the projector behind every `IntegrationSpec.config`
+   *  in the move bundle (`orchestrator/placement.ts`). */
+  platforms: CpPlatformRegistry
   /** Owns AgentSpec assembly (secret loading + icon bases) for the activation definition. */
   specs: AgentSpecAssembler
   crons: CronRepo
@@ -594,8 +598,8 @@ export class AgentMoveService {
           botId: String(bot.id),
           http: isHttp,
           spec: isHttp
-            ? httpIntegrationToSpec(integration, secret, bot.shareable, channels, gated, bot.slackAppId ?? undefined)
-            : integrationToSpec(integration, secret, channels, gated)
+            ? await httpIntegrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
+            : await integrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
         }
       })
     )

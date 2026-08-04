@@ -18,6 +18,21 @@ import type {
   ThreadAffinityStore,
   SessionRepo
 } from '../persistence/ports.js'
+import type { CpPlatformProvider } from '../platforms/provider.js'
+import { buildCpPlatformRegistry } from '../platforms/registry.js'
+import { createSlackCpProvider } from '../platforms/slack/provider.js'
+import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../platforms/discord/provider.js'
+import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
+
+// §9: both `rc/bot-assign` bags and every send-only spec payload come from the
+// platform provider. Offline stubs — the projectors reach no provider API.
+const PLATFORMS = buildCpPlatformRegistry([
+  createSlackCpProvider({}),
+  createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+  createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+  createFeishuCpProvider({})
+])
 
 // ── ids ──────────────────────────────────────────────────────────────────────
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
@@ -131,7 +146,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   // a re-install landing between revokeBot's commit and its external effects.
   let bumpRevisionAfterFirstGet: boolean
 
-  function makeOrch(): HttpBotOrchestrator {
+  function makeOrch(platforms = PLATFORMS): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
       [ALICE]: agent(ALICE, 'alice', unplacedAgents.has(ALICE) ? null : D1),
       [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
@@ -294,7 +309,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       control as never,
       threads,
       sessions as SessionRepo,
-      { info() {}, warn() {}, debug() {} }
+      { info() {}, warn() {}, debug() {} },
+      platforms
     )
   }
 
@@ -361,6 +377,42 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         target: null,
         participants: [{ agentId: BOB, daemonId: D2 }]
       })
+    })
+  })
+
+  // §9 erratum: `projectBotAssign` is OPTIONAL — a platform whose inbound
+  // transport is a daemon-owned long-lived connection contributes no relay
+  // projection, and its ABSENCE is the "no relay path" signal. Core must neither
+  // fabricate an empty assign (the relay would arm an ingress it cannot verify)
+  // nor throw; it takes the same outcome as the other "cannot assign" guards.
+  describe('a platform with no projectBotAssign (§9 erratum)', () => {
+    /** The slack provider with its relay projection removed — a platform that
+     *  contributes a spec projector but no assign projector, like telegram and
+     *  discord (whose bots the create route refuses `transport: 'http'` for, on
+     *  exactly this signal, so this arm is unreachable in production). */
+    const noRelayPath = (): ReturnType<typeof buildCpPlatformRegistry> => {
+      const { projectBotAssign: _omitted, ...rest } = createSlackCpProvider({})
+      return buildCpPlatformRegistry([rest as CpPlatformProvider])
+    }
+
+    it('broadcasts no rc/bot-assign and does not throw', async () => {
+      await expect(makeOrch(noRelayPath()).syncBot(BOT)).resolves.toBeUndefined()
+      expect(ch.sends.filter((s) => s.type === 'rc/bot-assign')).toEqual([])
+      // Nothing was half-armed: no empty/partial frame of any kind went out.
+      expect(ch.sends).toEqual([])
+      // …and an unassignable bot gets no send-only spec either — it has no ingress.
+      expect(upserts).toEqual([])
+    })
+
+    it('skips the bot on the register replay instead of failing the whole replay', async () => {
+      const fresh = new FakeChannel('66666666-6666-4666-8666-666666666666')
+      await expect(makeOrch(noRelayPath()).replayTo(fresh)).resolves.toBeUndefined()
+      expect(fresh.sends).toEqual([])
+    })
+
+    it('still assigns once the platform DOES contribute a relay projection', async () => {
+      await makeOrch().syncBot(BOT)
+      expect(ch.sends.filter((s) => s.type === 'rc/bot-assign')).toHaveLength(1)
     })
   })
 

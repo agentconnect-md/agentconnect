@@ -15,10 +15,10 @@
  * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
  * registry — its {@link TelegramCreateCredentials} block is folded into the
  * create body and {@link CpPlatformProvider.validateConfig} IS the route's live
- * token check. `placement.ts` remains a live path; to keep ONE implementation
- * while both exist, the §6.4 wire projection body is
- * {@link telegramIntegrationConfig}, called by BOTH `integrationToSpec`'s
- * telegram arm and {@link CpPlatformProvider.projectIntegrationConfig}.
+ * token check, and spec assembly (`placement.ts`) awaits {@link
+ * CpPlatformProvider.projectIntegrationConfig} for the §6.4 payload.
+ * {@link telegramIntegrationConfig} stays exported as the ONE implementation
+ * behind that projector and the equivalence tests.
  */
 import { z } from 'zod'
 import type { IntegrationCoreEnvelope, IntegrationTelegramConfig } from '@agentconnect.md/protocol'

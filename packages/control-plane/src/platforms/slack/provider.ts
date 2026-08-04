@@ -30,10 +30,13 @@
  * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
  * registry — its {@link SlackCreateCredentials} block + {@link
  * refineSlackCreateBody} are folded into the create body, and {@link
- * CpPlatformProvider.validateConfig} IS the route's live token check.
- * `placement.ts`, `httpBot.ts`, `server.ts` mounting, `loadConfig`'s schema
- * fold, and `startBackground()` remain live paths, sharing the implementations
- * above.
+ * CpPlatformProvider.validateConfig} IS the route's live token check. Spec
+ * assembly (`placement.ts`) and `rc/bot-assign` (`httpBot.ts`) now await
+ * {@link CpPlatformProvider.projectIntegrationConfig} / {@link
+ * CpPlatformProvider.projectBotAssign} — the helpers below stay exported as the
+ * ONE implementation both the projectors and the equivalence tests call.
+ * `server.ts` mounting, `loadConfig`'s schema fold, and `startBackground()`
+ * remain live paths, sharing the implementations above.
  */
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'

@@ -1,15 +1,17 @@
 /**
  * Telegram CpPlatformProvider (§9, S3) — unit, no I/O.
  *
- * The load-bearing suite is the PROJECTION EQUIVALENCE block: while the live
- * spec assembly is still `integrationToSpec` (`orchestrator/placement.ts`),
- * the provider's `projectIntegrationConfig` must produce EXACTLY the `config`
- * payload that path emits for the same inputs — that equality is what makes
- * the eventual call-site flip a zero-behavior change.
+ * The load-bearing suite is the PROJECTION EQUIVALENCE block. Now that the live
+ * spec assembly (`integrationToSpec`, `orchestrator/placement.ts`) goes THROUGH
+ * this provider, comparing their output would prove nothing — so the pin is a
+ * GOLDEN LITERAL of the payload the pre-adoption telegram arm emitted, plus,
+ * across the input permutations, equality with the extracted helper body that
+ * arm called (unchanged by the flip).
  */
 import { describe, it, expect, vi } from 'vitest'
 import { createTelegramCpProvider, telegramIntegrationConfig, TelegramCreateCredentials } from './provider.js'
 import { integrationToSpec } from '../../orchestrator/placement.js'
+import { buildCpPlatformRegistry } from '../registry.js'
 import type { TelegramBotVerification } from '../../http/telegram-identity.js'
 import type { BotProfileIconAgent } from '../../http/bot-profile-icon.js'
 import type { BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../../persistence/ports.js'
@@ -79,6 +81,11 @@ const channel = (
   trigger,
   agentId: null
 })
+
+// §9 adoption: the live spec path reaches this provider THROUGH the registry, so
+// the equivalence suite below drives the real registry rather than calling the
+// provider beside the live path.
+const PLATFORMS = buildCpPlatformRegistry([createTelegramCpProvider({ verifyBot: verifierOk() })])
 
 describe('telegram provider identity + declarative facets', () => {
   const provider = createTelegramCpProvider({ verifyBot: verifierOk() })
@@ -185,8 +192,6 @@ describe('telegram sideEffects (icon push delegation)', () => {
 })
 
 describe('telegram projection equivalence with the live integrationToSpec path', () => {
-  const provider = createTelegramCpProvider({ verifyBot: verifierOk() })
-
   const cases: Array<{ label: string; channels: IntegrationChannelRecord[]; gated: boolean }> = [
     { label: 'defaults (no channels)', channels: [], gated: false },
     {
@@ -201,18 +206,54 @@ describe('telegram projection equivalence with the live integrationToSpec path',
     }
   ]
 
+  // GOLDEN: the literal payload the PRE-ADOPTION `integrationToSpec` telegram arm
+  // emitted — one BotFather token, no appToken, no shareable/appId members.
+  it('emits the byte-identical payload the pre-adoption telegram arm produced', async () => {
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      BOT,
+      SECRET,
+      [channel('-100', 'any'), channel('-200', 'mention'), channel('-300', 'off')],
+      false
+    )
+    const bindRules = [
+      { match: { kind: 'mention' } },
+      { match: { kind: 'dm' } },
+      { channel: '-100', match: { kind: 'auto' } }
+    ]
+    expect(spec).toEqual({
+      integrationId: INTEGRATION.id,
+      agentId: INTEGRATION.agentId,
+      platform: 'telegram',
+      core: { mode: 'direct', bindRules, mutedChannels: ['-300'], gated: false },
+      config: {
+        botToken: '123456:ABC-tg-token',
+        bindRules,
+        mutedChannels: ['-300'],
+        gated: false
+      }
+    })
+  })
+
+  // Across the permutations the pin is the EXTRACTED helper — the unchanged body
+  // the pre-adoption arm called.
   for (const { label, channels, gated } of cases) {
-    it(`emits exactly the live path's config — ${label}`, async () => {
-      const spec = integrationToSpec(INTEGRATION, SECRET, channels, gated)
-      const projected = await provider.projectIntegrationConfig(INTEGRATION, BOT, spec.core!, SECRET)
-      expect(projected).toEqual(spec.config)
-      // Both sides satisfy the daemon reader's wire schema (§6.4).
-      expect(IntegrationTelegramConfig.parse(projected)).toEqual(IntegrationTelegramConfig.parse(spec.config))
+    it(`routes the live path through the telegram projector unchanged — ${label}`, async () => {
+      const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, channels, gated)
+      expect(spec.core!.mode).toBe('direct')
+      expect(spec.config).toEqual(telegramIntegrationConfig(spec.core!, SECRET))
+      // The payload satisfies the daemon reader's wire schema (§6.4).
+      expect(() => IntegrationTelegramConfig.parse(spec.config)).not.toThrow()
     })
   }
 
-  it('shares one implementation with placement.ts (the extracted helper)', () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'any')], false)
-    expect(telegramIntegrationConfig(spec.core!, SECRET)).toEqual(spec.config)
+  // §9 erratum: no `projectBotAssign`, so an http-transport telegram bot has no
+  // relay path at all — the create route refuses that transport on exactly this
+  // signal, which is why the assign builder never sees one.
+  it('contributes a spec projector but no relay assign projector', () => {
+    const provider = createTelegramCpProvider({ verifyBot: verifierOk() })
+    expect(typeof provider.projectIntegrationConfig).toBe('function')
+    expect(provider.projectBotAssign).toBeUndefined()
   })
 })

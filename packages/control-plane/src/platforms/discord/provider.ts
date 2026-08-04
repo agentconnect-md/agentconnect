@@ -27,10 +27,10 @@
  * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
  * registry — its {@link DiscordCreateCredentials} block is folded into the
  * create body and {@link CpPlatformProvider.validateConfig} IS the route's live
- * token check + intent enablement. `placement.ts` remains a live path; the §6.4
- * wire projection body is therefore {@link discordIntegrationConfig}, called by
- * BOTH `integrationToSpec`'s discord arm and
- * {@link CpPlatformProvider.projectIntegrationConfig}.
+ * token check + intent enablement, and spec assembly (`placement.ts`) awaits
+ * {@link CpPlatformProvider.projectIntegrationConfig} for the §6.4 payload.
+ * {@link discordIntegrationConfig} stays exported as the ONE implementation
+ * behind that projector and the equivalence tests.
  */
 import { z } from 'zod'
 import type { IntegrationCoreEnvelope, IntegrationDiscordConfig } from '@agentconnect.md/protocol'
