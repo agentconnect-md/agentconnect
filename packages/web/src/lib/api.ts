@@ -264,7 +264,7 @@ export interface AgentDto {
   reasoningEffort: string | null
   outputMode: string | null // platform output verbosity: low | medium | high; null when unset
   showFooter: boolean // render attribution/session footer; defaults true
-  showStatusBar: boolean // render Slack's persistent session status row; defaults true
+  showStatusBar: boolean // render Slack's persistent session status row; defaults false
   fastMode: boolean | null // runtime fast mode; null when never set (runtime default)
   permissionMode: string | null // runtime permission/approval mode; null when never set
   approvalsReviewer: ApprovalsReviewer | null // null when never set (runtime default)
@@ -1670,7 +1670,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // the fetched `/sessions` list, so it's not a field here.
     outputMode: d.outputMode ?? PLACEHOLDER,
     showFooter: d.showFooter ?? true,
-    showStatusBar: d.showStatusBar ?? true,
+    showStatusBar: d.showStatusBar ?? false,
     reasoning: d.reasoningEffort ?? '',
     // Unset (null) reads as "Off" — the runtime default.
     fastMode: d.fastMode ?? false,

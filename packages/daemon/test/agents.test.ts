@@ -206,7 +206,7 @@ describe('AgentSchema defaults', () => {
     })
     expect(parsed.output.mode).toBe('low')
     expect(parsed.output.showFooter).toBe(true)
-    expect(parsed.output.showStatusBar).toBe(true)
+    expect(parsed.output.showStatusBar).toBe(false)
     expect(parsed.allowRuntimeChangesInChat).toBe(false)
     expect(parsed.runInSandbox).toBe(false)
     expect(parsed.callPolicy).toBe('all')

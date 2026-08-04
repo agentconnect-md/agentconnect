@@ -274,9 +274,9 @@ export const AgentSchema = z.object({
     .object({
       mode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).default('low'),
       showFooter: z.boolean().default(true),
-      showStatusBar: z.boolean().default(true)
+      showStatusBar: z.boolean().default(false)
     })
-    .default({ mode: 'low', showFooter: true, showStatusBar: true }),
+    .default({ mode: 'low', showFooter: true, showStatusBar: false }),
   permissions: z
     .object({ policy: z.enum(['ask', 'auto']).default('ask'), autoApprove: z.array(z.string()).default([]) })
     .default({ policy: 'ask', autoApprove: [] }),

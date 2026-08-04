@@ -533,7 +533,7 @@ export interface CreateAgentInput {
   reasoningEffort?: string
   outputMode?: string // platform output verbosity: low | medium | high
   showFooter?: boolean // render platform attribution/session footers (default true)
-  showStatusBar?: boolean // render Slack's persistent session status row (default true)
+  showStatusBar?: boolean // render Slack's persistent session status row (default false)
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
   approvalsReviewer?: ApprovalsReviewer // who reviews eligible Codex approval requests
@@ -630,7 +630,7 @@ export interface AgentRecord {
   reasoningEffort: string | null // from runtimeOverrides.reasoningEffort
   outputMode: string | null // from runtimeOverrides.outputMode
   showFooter: boolean // from runtimeOverrides.showFooter (default true)
-  showStatusBar: boolean // from runtimeOverrides.showStatusBar (default true)
+  showStatusBar: boolean // from runtimeOverrides.showStatusBar (default false)
   fastMode: boolean | null // from runtimeOverrides.fastMode (null ⇒ runtime default)
   permissionMode: string | null // from runtimeOverrides.permissionMode (null ⇒ runtime default)
   approvalsReviewer: ApprovalsReviewer | null // from runtimeOverrides.approvalsReviewer

@@ -104,6 +104,12 @@ last message. If streaming, retries, or later output change which message is las
 or re-anchor the footer so it remains attached to the latest response message without
 leaving a stale footer on an earlier message.
 
+## Slack status bar visibility
+
+The persistent Slack session status bar is off by default. An agent shows it only when
+`showStatusBar` is explicitly enabled; this setting is independent of output mode and
+the attribution footer.
+
 ## Slack multi-agent mention routing
 
 An explicit Slack mention wakes only the AgentConnect agent represented by that bot.
