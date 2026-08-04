@@ -80,6 +80,7 @@ import type {
   KnowledgeSearchReq,
   KnowledgeSearchOk,
   KnowledgeListReq,
+  KnowledgeListOk,
   OrgSkillsReq,
   OrgSkillsOk,
   OrganizationSuggestionsSyncReq,
@@ -774,7 +775,7 @@ export class CpClient {
     return rep.payload as KnowledgeSearchOk
   }
 
-  async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeSearchOk> {
+  async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeListOk> {
     this.requireReady('knowledge/list')
     if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) {
       throw new WireError('INTERNAL', 'control plane does not support organization knowledge', false)
@@ -783,7 +784,7 @@ export class CpClient {
     if (rep.type !== 'knowledge/list/ok') {
       throw new WireError('INTERNAL', `expected knowledge/list/ok, got ${rep.type}`, false)
     }
-    return rep.payload as KnowledgeSearchOk
+    return rep.payload as KnowledgeListOk
   }
 
   async orgSkills(payload: OrgSkillsReq): Promise<OrgSkillsOk> {

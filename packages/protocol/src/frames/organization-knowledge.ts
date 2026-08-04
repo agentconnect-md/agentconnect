@@ -130,6 +130,12 @@ export const KnowledgeListReq = z
   .strict()
 export type KnowledgeListReq = z.infer<typeof KnowledgeListReq>
 
+// Its own response cap: `KnowledgeListReq.limit` allows up to 20, so the reply
+// must not reuse the search response's max of 10 (11+ rows would fail codec
+// validation as BAD_PAYLOAD).
+export const KnowledgeListOk = z.object({ items: z.array(KnowledgeSearchItem).max(20) }).strict()
+export type KnowledgeListOk = z.infer<typeof KnowledgeListOk>
+
 // List or search accepted organization skills (managed skill bundles) the
 // requester's org can see. `query` present ⇒ filter by name/description; absent
 // ⇒ list recent. Metadata only (no bundle bytes), so a dreamer can enumerate
