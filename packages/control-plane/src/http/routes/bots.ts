@@ -18,6 +18,7 @@ import { BotId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
+import { MULTI_AGENT_UNSUPPORTED_MESSAGE, supportsMultiAgentBots } from '../../platforms/sharing.js'
 
 function toDto(b: BotRecord): BotDtoT {
   return {
@@ -124,14 +125,18 @@ export function botRoutes(deps: HttpDeps) {
 
     // Flip the HTTP bot's multi-agent capacity (`Bot.shareable`,
     // shared-bot-relay.md §4.1). Transport is immutable: relay ingress remains in
-    // place either way. Disabling is refused while >1 agent uses the bot.
+    // place either way. Enabling needs BOTH a platform that supports multi-agent
+    // bots (`supportsMultiAgentBots` — the same precondition the shareable
+    // install checks) and the http transport; disabling is refused while >1 agent
+    // uses the bot.
     r.patch(
       '/bots/:id',
       {
         schema: {
           tags: [Tag.Bots],
           summary: 'Update a bot',
-          description: 'Allow or disallow this HTTP bot from serving multiple agents. Relay ingress is unchanged.',
+          description:
+            'Allow or disallow this HTTP bot from serving multiple agents. Allowing requires a platform that supports multi-agent bots (Slack today); relay ingress is unchanged either way.',
           operationId: 'updateBot',
           params: IdParam,
           body: UpdateBotBody,
@@ -145,6 +150,22 @@ export function botRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         if (req.body.shareable === bot.shareable) return toDto(bot) // no-op
+        // Multi-agent bots are a per-PLATFORM capability, and this route used to
+        // check only the transport — so any HTTP-transport bot on a platform the
+        // install path refuses (`validateShareableInstall`) could be flipped
+        // shareable here, leaving the flag on the row as a promise nothing
+        // honors. Only the ENABLE direction is refused: an already-flipped row
+        // from before this guard must stay repairable from the console.
+        //
+        // Checked before the mutation lease, unlike `shareable`/`agentIds`
+        // below: `platform` is immutable, so a locked re-read could not tell us
+        // anything the snapshot does not. 409 rather than the create route's
+        // 400 for the same rule — there the platform is the CLIENT's assertion
+        // in the request body, here it is the stored row's, exactly like the
+        // transport refusal this sits beside.
+        if (req.body.shareable && !supportsMultiAgentBots(bot.platform)) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: MULTI_AGENT_UNSUPPORTED_MESSAGE })
+        }
         const observedAgentIds = [...bot.agentIds].sort()
         const release = deps.agentMutations.tryBeginMutation(observedAgentIds)
         if (!release) {
