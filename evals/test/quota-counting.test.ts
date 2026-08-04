@@ -155,52 +155,94 @@ describe('quota counting referee — leaderless turn-taking with a real endgame 
 })
 
 describe('quota counting end to end — scripted hosts over the real daemon', () => {
-  it('a finalized bare number CONTINUES the conversation (PR #549) until continuations hit human-bound sessions', async () => {
+  it('two participants complete the quota on echo routing alone, with no referee cadence', async () => {
     const result = await runQuotaCounting({
       seed: 5,
-      agents: ['agent-a', 'agent-b', 'agent-c', 'agent-d'],
+      agents: ['agent-a', 'agent-b'],
       quotaPerAgent: 2,
       artifactDir: join(scratch(), 'echo-routed'),
       timeoutMs: 120_000
     })
     expect(result.error).toBeUndefined()
-    // Measured behavior on current main: the referee's start broadcast admits
-    // every member once; each delivered post fans back as the production echo.
-    // Streaming copies are suppressed (final events only); finalized copies
-    // verify and take the ordinary arbitration ladder, ADMITTING every other
-    // member's connection — but an admitted continuation into a session the
-    // HUMAN opened cancels at source binding (`session_source_mismatch`), so
-    // the room advances one ring pass and stalls with quota on record.
+    // Measured behavior on current main (#503 + #549 + #568): the referee's
+    // start broadcast admits every member once and then the referee is silent.
+    // Each delivered post fans back as the production echo — streaming copies
+    // suppressed (final events only), finalized copies verified and routed
+    // through the ordinary arbitration ladder. Since #568 an admitted
+    // continuation binds the conversation audience of the session a HUMAN
+    // opened, so the exchange survives the wrap-around and the pair counts
+    // out its full quota with perfect alternation.
     expect(result.status).toBe('passed')
-    expect(result.verdict.terminalReason).toBe('stalled')
-    const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
-    expect(acceptedPrefix).toBeGreaterThanOrEqual(1)
-    expect(acceptedPrefix).toBeLessThan(8)
-    expect(result.verdict.outcome).toMatchObject({ completed: false, endgame: 'stalled', deadlocked: false })
+    expect(result.verdict.terminalReason).toBe('completed')
+    expect(result.verdict.outcome).toMatchObject({
+      completed: true,
+      endgame: 'completed-clean',
+      deadlocked: false,
+      acceptedPrefix: 4
+    })
+    expect(result.verdict.outcome.contributions).toEqual({ 'agent-a': 2, 'agent-b': 2 })
     const remaining = Object.values(result.verdict.outcome.remainingQuota as Record<string, number>)
-    expect(remaining.reduce((sum, value) => sum + value, 0)).toBe(8 - acceptedPrefix)
+    expect(remaining.reduce((sum, value) => sum + value, 0)).toBe(0)
     const worldEvents = readFileSync(result.paths.worldEvents, 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
-    // One referee message, one ingress wave.
+    // One referee message, one ingress wave: every later turn came from an
+    // agent's own post, through real routing.
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
     expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
     const outcomes = worldEvents.filter((event) => event.type === 'platform.echo.outcome')
-    const streaming = outcomes.filter((event) => !String(event.messageId).endsWith(':final'))
-    const finalized = outcomes.filter((event) => String(event.messageId).endsWith(':final'))
+    const streaming = outcomes.filter((event) => event.ingressEventTag === undefined)
+    const finalized = outcomes.filter((event) => event.ingressEventTag !== undefined)
     expect(streaming.length).toBeGreaterThan(0)
     for (const outcome of streaming) expect(outcome).toMatchObject({ admitted: false, reason: 'suppressed' })
-    expect(finalized.length).toBeGreaterThan(0)
-    for (const outcome of finalized) expect(outcome).toMatchObject({ admitted: true })
-    // What terminated the exchange TODAY: source-binding cancellation, not the
-    // hop cap and not the quota endgame.
+    expect(finalized.filter((outcome) => outcome.admitted === true).length).toBeGreaterThan(0)
+    // The #583 regression pin: no turn was lost to source binding.
     const events = readFileSync(result.paths.events, 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
     expect(
       events.some((event) => event.type === 'turn.cancelled' && event.data?.reason === 'session_source_mismatch')
-    ).toBe(true)
+    ).toBe(false)
+  }, 150_000)
+
+  it('four dedicated bots saturate the automatic-turn budget before the ring can start', async () => {
+    const result = await runQuotaCounting({
+      seed: 5,
+      agents: ['agent-a', 'agent-b', 'agent-c', 'agent-d'],
+      quotaPerAgent: 2,
+      artifactDir: join(scratch(), 'echo-saturated'),
+      timeoutMs: 120_000
+    })
+    expect(result.error).toBeUndefined()
+    // The compounding #549 warns about, measured: each dedicated bot receives
+    // the channel event on its OWN connection, so one post wakes every other
+    // participant. With four members the wake fan-out outruns the durable loop
+    // guard's automatic-turn budget — turns are ADMITTED and then dropped
+    // unstarted once it latches, and participants whose ring position never
+    // came up never speak at all. A valid observed outcome, with the untouched
+    // quota on record; the room is bounded by the protections, not by the game.
+    expect(result.status).toBe('passed')
+    expect(result.verdict.terminalReason).toBe('stalled')
+    expect(result.verdict.outcome).toMatchObject({ completed: false, endgame: 'stalled' })
+    const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
+    const remaining = Object.values(result.verdict.outcome.remainingQuota as Record<string, number>)
+    expect(remaining.reduce((sum, value) => sum + value, 0)).toBe(8 - acceptedPrefix)
+    const events = readFileSync(result.paths.events, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    // Far more turns were admitted than ever ran, and the loop guard is what
+    // stopped them — NOT a routing refusal and NOT source binding (#583).
+    const accepted = events.filter((event) => event.type === 'turn.accepted').length
+    const started = events.filter((event) => event.type === 'turn.started').length
+    expect(accepted).toBeGreaterThan(started)
+    expect(events.some((event) => event.type === 'turn.cancelled' && /loop/i.test(String(event.data?.reason)))).toBe(
+      true
+    )
+    expect(
+      events.some((event) => event.type === 'turn.cancelled' && event.data?.reason === 'session_source_mismatch')
+    ).toBe(false)
   }, 150_000)
 })

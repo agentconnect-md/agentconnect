@@ -89,7 +89,7 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(gameResult.metrics.collisions).toBeGreaterThan(0)
   }, 120_000)
 
-  it('peer-driven variant: a finalized bare-number post CONTINUES the conversation (PR #549) until agent continuations hit human-bound sessions', async () => {
+  it('peer-driven variant: finalized bare-number posts carry the count to completion, then the loop protections stop the room', async () => {
     const artifactDir = join(scratch(), 'peer-run')
     const result = await runSameRoomCounting({
       seed: 11,
@@ -99,26 +99,23 @@ describe('collaboration game runner — same-room counting with scripted hosts',
       timeoutMs: 120_000
     })
     expect(result.error).toBeUndefined()
-    // The measured behavior on current main (#503 + #549):
+    // The measured behavior on current main (#503 + #549 + #568):
     //  1. The referee's start broadcast admits every member once; ONE wave.
     //  2. Each delivered agent post fans back as the production echo. The
     //     STREAMING copy is suppressed (final events only); the FINALIZED copy
     //     carries the daemon-stamped claim, verifies, and — naming nobody —
     //     takes the ordinary arbitration ladder, which ADMITS every other
     //     member's connection (dedicated-bot fan-out).
-    //  3. While a member's initial human-sourced turn is still queued, the
-    //     echo coalesces into it, so the count advances one clean ring pass.
-    //  4. Once a member's initial turn has completed, the echo-driven
-    //     activation dispatches into its HUMAN-BOUND session with agent-call
-    //     metadata that carries no external origin, and the turn cancels with
-    //     `session_source_mismatch` — the chain stalls long before the hop cap
-    //     (`MAX_AGENT_CALL_HOPS`) that #549 names as the ordinary terminator.
+    //  3. Since #568 an admitted continuation can bind the conversation
+    //     audience of the session a HUMAN opened, so the exchange no longer
+    //     dies at the first wrap-around: the room counts all the way to the
+    //     target with no referee cadence at all.
+    //  4. What stops it afterwards is the loop protections #549 names as the
+    //     ordinary terminators — the hop cap and the durable automatic-turn
+    //     loop guard — not a routing refusal.
     expect(result.status).toBe('passed')
-    expect(result.verdict.terminalReason).toBe('stalled')
-    const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
-    expect(acceptedPrefix).toBeGreaterThanOrEqual(1)
-    expect(acceptedPrefix).toBeLessThan(6)
-    expect(result.verdict.outcome).toMatchObject({ completed: false, variant: 'peer-driven' })
+    expect(result.verdict.terminalReason).toBe('completed')
+    expect(result.verdict.outcome).toMatchObject({ completed: true, variant: 'peer-driven', acceptedPrefix: 6 })
     expect(result.verdict.invariants).toMatchObject({
       attemptedUnauthorizedEffects: 0,
       wrongRoomMessages: 0,
@@ -128,67 +125,46 @@ describe('collaboration game runner — same-room counting with scripted hosts',
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
-    // The referee spoke exactly once, and there was exactly ONE ingress wave.
+    // The referee spoke exactly once, and there was exactly ONE ingress wave:
+    // every later activation came from an agent, through real routing.
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
     expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
     // Echoes went out under the REAL managed bot identities with the §4 claim.
     const echoes = worldEvents.filter((event) => event.type === 'platform.echo')
     expect(echoes.length).toBeGreaterThanOrEqual(2)
     const outcomes = worldEvents.filter((event) => event.type === 'platform.echo.outcome')
-    const streaming = outcomes.filter((event) => !String(event.messageId).endsWith(':final'))
-    const finalized = outcomes.filter((event) => String(event.messageId).endsWith(':final'))
+    const streaming = outcomes.filter((event) => event.ingressEventTag === undefined)
+    const finalized = outcomes.filter((event) => event.ingressEventTag !== undefined)
     // Final events only: the streaming copy never routes.
     expect(streaming.length).toBeGreaterThan(0)
     for (const outcome of streaming) expect(outcome).toMatchObject({ admitted: false, reason: 'suppressed' })
     // #549: a finalized post naming NOBODY is admitted on every other member's
-    // connection — one agent message wakes every other agent (fan-out).
-    expect(finalized.length).toBeGreaterThan(0)
-    for (const outcome of finalized) expect(outcome).toMatchObject({ admitted: true })
-    const memberCount = 4
-    const byMessage = new Map<string, number>()
-    for (const outcome of finalized) {
-      byMessage.set(String(outcome.messageId), (byMessage.get(String(outcome.messageId)) ?? 0) + 1)
-    }
-    for (const admissions of byMessage.values()) expect(admissions).toBe(memberCount - 1)
-    // The accepted values are a clean 1..n prefix — one ring pass.
+    // connection — one agent message wakes every other agent (fan-out) — until
+    // a loop protection latches, after which further echoes route to nobody.
+    expect(finalized.filter((outcome) => outcome.admitted === true).length).toBeGreaterThan(0)
+    // The accepted values are a clean 1..target run: no duplicate or skipped slot.
     const accepted = worldEvents.filter((event) => event.type === 'count.candidate' && event.accepted)
-    expect(accepted.map((event) => event.value)).toEqual(
-      Array.from({ length: acceptedPrefix }, (_, index) => index + 1)
-    )
-    // What actually terminated the exchange TODAY: admitted continuations into
-    // human-bound sessions cancel at source binding. Not the hop cap.
+    expect(accepted.map((event) => event.value)).toEqual([1, 2, 3, 4, 5, 6])
+    // The #583 regression pin: not one turn was lost to source binding.
     const events = readFileSync(result.paths.events, 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
-    const cancelled = events.filter(
-      (event) => event.type === 'turn.cancelled' && event.data?.reason === 'session_source_mismatch'
+    expect(
+      events.some((event) => event.type === 'turn.cancelled' && event.data?.reason === 'session_source_mismatch')
+    ).toBe(false)
+    // A leaderless room does NOT stop counting at the target — it runs on until
+    // a loop protection stops it. That is the headline property of the probe:
+    // the exchange is bounded by the protections, never by the game's goal.
+    const overshoot = worldEvents.filter(
+      (event) => event.type === 'count.candidate' && event.reason === 'post_completion'
     )
-    expect(cancelled.length).toBeGreaterThan(0)
-    expect(worldEvents.some((event) => JSON.stringify(event).includes('hop_limit'))).toBe(false)
+    expect(overshoot.length).toBeGreaterThan(0)
+    const stoppedByProtection =
+      events.some((event) => event.type === 'turn.cancelled' && /loop/i.test(String(event.data?.reason))) ||
+      outcomes.some((outcome) => outcome.admitted === false && outcome.reason === 'unrouted')
+    expect(stoppedByProtection).toBe(true)
   }, 180_000)
-
-  // Pending: flips green when an implicit/mention agent continuation can re-enter
-  // a session a human opened (activation carries no external-origin lineage, so
-  // `bindSessionSource` rejects with `session_source_mismatch`). Tracked in
-  // issue #583; also pinned as design test #16 in routing-acceptance.test.ts.
-  it.fails(
-    'peer-driven counting COMPLETES the target once agent continuations can re-enter human-bound sessions [issue #583]',
-    async () => {
-      const artifactDir = join(scratch(), 'peer-complete')
-      const result = await runSameRoomCounting({
-        seed: 13,
-        target: 6,
-        artifactDir,
-        variant: 'peer-driven',
-        timeoutMs: 120_000
-      })
-      expect(result.error).toBeUndefined()
-      expect(result.verdict.terminalReason).toBe('completed')
-      expect(result.verdict.outcome).toMatchObject({ completed: true, acceptedPrefix: 6 })
-    },
-    180_000
-  )
 
   it('a slow in-flight turn REGENERATES when a peer post lands mid-turn, and posts the NEXT number', async () => {
     // Production timing, deterministically: agent-a answers instantly, agent-b

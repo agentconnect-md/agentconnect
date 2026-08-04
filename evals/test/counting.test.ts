@@ -166,7 +166,7 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     expect(game.nextDeliveries().platformEvents).toHaveLength(0)
   })
 
-  it('echoes a FINALIZED response as the distinct `<ts>:final` event carrying the daemon-stamped §4 claim', async () => {
+  it('echoes a FINALIZED response as the response-final tagged event carrying the daemon-stamped §4 claim', async () => {
     const { game, reply, room, integrationOf, world, injected } = fixture(3, 'peer-driven')
     game.nextDeliveries()
     const posted = (await reply('agent-a', '1')) as { status: string; messageId: string }
@@ -183,12 +183,14 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
       text: '1',
       response: { responseId: 'resp-1', deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
     })
-    // The finalized message_changed echo keeps the ORIGINAL coordinates but a
-    // distinct `<ts>:final` msgId (per-connection dedup admits it), and carries
+    // The finalized message_changed echo keeps the ORIGINAL coordinates —
+    // msgId included — and is told apart from the post it edits by
+    // `ingressEventTag` (the extra per-connection dedup dimension), carrying
     // the author's §4 claim for the receiving daemon to verify.
     expect(injected).toHaveLength(3)
     for (const event of injected) {
-      expect(event.payload.messageId).toBe(`${posted.messageId}:final`)
+      expect(event.payload.messageId).toBe(posted.messageId)
+      expect(event.payload.ingressEventTag).toBe('response-final')
       expect(event.payload.thread).toBe(room.thread)
       expect(event.payload.sender.id).toBe(integration.botUserId)
       expect(event.payload.agentAuthorship).toMatchObject({

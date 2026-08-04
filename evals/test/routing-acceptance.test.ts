@@ -280,13 +280,18 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
   function chainScripts(target: () => RoutingFixture) {
     const script = (self: 'agent1' | 'agent2') => (ctx: { text: string; reply: (value: string) => void }) => {
       const other = self === 'agent1' ? 'agent2' : 'agent1'
-      const chain = /your turn (\d+)/.exec(ctx.text)
-      if (/START CHAIN/.test(ctx.text)) {
-        ctx.reply(`<@${target().botUserId(other)}> your turn 1`)
-        return
-      }
+      // LAST turn number in the input, and tested BEFORE the start branch: a
+      // woken peer's prompt can replay thread context that still contains the
+      // original START CHAIN line, and re-matching that branch would restart the
+      // numbering instead of advancing it.
+      const numbers = [...ctx.text.matchAll(/your turn (\d+)/g)]
+      const chain = numbers.length > 0 ? numbers[numbers.length - 1]! : undefined
       if (chain) {
         ctx.reply(`<@${target().botUserId(other)}> your turn ${Number(chain[1]) + 1}`)
+        return
+      }
+      if (/START CHAIN/.test(ctx.text)) {
+        ctx.reply(`<@${target().botUserId(other)}> your turn 1`)
         return
       }
       ctx.reply('nothing to do')
@@ -294,55 +299,58 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     return { agent1: script('agent1'), agent2: script('agent2') }
   }
 
-  // #503 §2.3/§4.1/§6 landed the first edge (see the green single-edge test
-  // below), but the FULL A -> B -> A chain of design test #16 still terminates
-  // early: the verified-mention dispatch installs hop metadata yet carries no
-  // external-origin lineage, so RE-ENTERING the human-bound thread session is
-  // cancelled with `session_source_mismatch` at the audience binding — the
-  // second edge admits and then never runs a turn. This stays expected-fail
-  // until that lineage gap is closed (tracked in issue #583); the expected
-  // sequence below encodes exactly-once per finalized response for the full
-  // chain.
-  it.fails(
-    'an A->B->A ordinary-mention chain advances one hop per edge until the cap [pending #503 design test #16 — blocked on session_source_mismatch, issue #583]',
-    async () => {
-      fixture = await RoutingFixture.start({
-        agents: ['agent1', 'agent2'],
-        scripts: chainScripts(() => fixture!)
-      })
-      const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> START CHAIN`, {
-        mentions: [fixture.botUserId('agent1')]
-      })
-      await fixture.settle(trigger.handles)
+  // Design test #16, GREEN since #568 let a platform-observed agent delivery bind
+  // the conversation audience (issue #583). Before that fix the second edge
+  // admitted and then cancelled with `session_source_mismatch`: the
+  // verified-mention dispatch installed hop metadata but no external-origin
+  // lineage, so re-entering the session a HUMAN opened was refused and the chain
+  // died after one edge. It now advances edge by edge until the shared cap stops
+  // it. The expected sequence encodes exactly-once per finalized response — a
+  // duplicated activation on any edge cannot hide under the aggregate bound.
+  it('an A->B->A ordinary-mention chain advances one hop per edge until the cap (#503 design test #16)', async () => {
+    fixture = await RoutingFixture.start({
+      agents: ['agent1', 'agent2'],
+      scripts: chainScripts(() => fixture!)
+    })
+    const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> START CHAIN`, {
+      mentions: [fixture.botUserId('agent1')]
+    })
+    await fixture.settle(trigger.handles)
 
-      // EXACTLY-ONCE per finalized response, proven by the exact alternating
-      // input sequence — a duplicated activation on any edge cannot hide under
-      // the aggregate cap. The human trigger is depth 0, so edges 1..cap are
-      // admitted and edge cap+1 is rejected: agent2 receives the odd turns,
-      // agent1 (after its human trigger) the even ones.
-      const agent2Turns = fixture.turnInputs('agent2').map((input) => /your turn (\d+)/.exec(input)?.[1])
-      const agent1ChainTurns = fixture
-        .turnInputs('agent1')
-        .slice(1) // drop the human START CHAIN trigger
-        .map((input) => /your turn (\d+)/.exec(input)?.[1])
-      const expectedAgent2: string[] = []
-      const expectedAgent1: string[] = []
-      for (let edge = 1; edge <= MAX_AGENT_CALL_HOPS; edge++) {
-        ;(edge % 2 === 1 ? expectedAgent2 : expectedAgent1).push(String(edge))
-      }
-      expect(agent2Turns).toEqual(expectedAgent2)
-      expect(agent1ChainTurns).toEqual(expectedAgent1)
-      // Aggregate bound stays as a belt-and-braces check on the same property.
-      const agentActivations = fixture.activations('agent1') + fixture.activations('agent2') - 1 // minus the human trigger
-      expect(agentActivations).toBeLessThanOrEqual(MAX_AGENT_CALL_HOPS)
-      // ...and the terminating edge records a hop_limit rejection with no dispatch.
-      const hopLimitRecorded =
-        fixture.events().some((event) => JSON.stringify(event.data).includes('hop_limit')) ||
-        fixture.world.events().some((event) => JSON.stringify(event).includes('hop_limit'))
-      expect(hopLimitRecorded).toBe(true)
-    },
-    120_000
-  )
+    // EXACTLY-ONCE per finalized response, proven by the exact alternating
+    // input sequence — a duplicated activation on any edge cannot hide under
+    // the aggregate cap. The human trigger is depth 0, so edges 1..cap are
+    // admitted and edge cap+1 is rejected: agent2 receives the odd turns,
+    // agent1 (after its human trigger) the even ones.
+    const agent2Turns = fixture.turnInputs('agent2').map((input) => /your turn (\d+)/.exec(input)?.[1])
+    const agent1ChainTurns = fixture
+      .turnInputs('agent1')
+      .slice(1) // drop the human START CHAIN trigger
+      .map((input) => /your turn (\d+)/.exec(input)?.[1])
+    const expectedAgent2: string[] = []
+    const expectedAgent1: string[] = []
+    for (let edge = 1; edge <= MAX_AGENT_CALL_HOPS; edge++) {
+      ;(edge % 2 === 1 ? expectedAgent2 : expectedAgent1).push(String(edge))
+    }
+    expect(agent2Turns).toEqual(expectedAgent2)
+    expect(agent1ChainTurns).toEqual(expectedAgent1)
+    // The chain runs the FULL budget: every edge from 1 to the cap dispatched
+    // exactly once, and the cap is what stops it.
+    const agentActivations = fixture.activations('agent1') + fixture.activations('agent2') - 1 // minus the human trigger
+    expect(agentActivations).toBe(MAX_AGENT_CALL_HOPS)
+    // No turn was lost to source binding — the #583 regression pin.
+    expect(fixture.events().some((event) => JSON.stringify(event).includes('session_source_mismatch'))).toBe(false)
+    // ...and the edge past the cap is REFUSED, with no dispatch behind it: the
+    // finalized echo of the last admitted turn's own reply routes to nobody.
+    // (The hop-limit reason is a daemon debug log; what an observer sees is a
+    // finalized response that activates no one — `unrouted`.)
+    const finalizedAdmissions = (await fixture.echoAdmissions()).filter(
+      (record) => record.ingressEventTag !== undefined
+    )
+    const admitted = finalizedAdmissions.filter((record) => record.admission.admitted)
+    expect(admitted).toHaveLength(MAX_AGENT_CALL_HOPS)
+    expect(finalizedAdmissions.at(-1)!.admission).toMatchObject({ admitted: false, reason: 'unrouted' })
+  }, 120_000)
 
   // Landed with #503 (§2.3/§5): the ordinary reply's FINALIZED response event
   // — not the streaming post — activates exactly the mentioned peer, once.

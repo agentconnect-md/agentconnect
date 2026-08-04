@@ -5,11 +5,12 @@
  * Every DELIVERED agent post fans back to every other member integration as
  * real platform ingress under the author's managed bot identity: the streaming
  * post under its own message id (unroutable — verification only admits
- * `final`), and the response-closing finalize as the `<ts>:final` routable
- * event carrying the daemon-stamped §4 claim. Whether an echo activates anyone
- * is the DAEMON's decision — mention verification, hop transition, policy —
- * never this helper's.
+ * `final`), and the response-closing `message_changed` edit under the SAME
+ * msgId, told apart by `ingressEventTag` and carrying the daemon-stamped §4
+ * claim. Whether an echo activates anyone is the DAEMON's decision — mention
+ * verification, hop transition, policy — never this helper's.
  */
+import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '../../packages/message/src/index.js'
 import type {
   DeliveryHandle,
   EvaluationPlatformEvent,
@@ -48,18 +49,20 @@ export class PlatformEcho {
     if (botUserId === undefined || effect.messageId === undefined) return
     const appId = this.world.botAppIdFor(effect.integrationId)
     // Slack normalizes a top-level message with thread = its own ts; the
-    // finalized message_changed edit keeps the ORIGINAL coordinates but gets a
-    // distinct `<ts>:final` msgId so per-connection dedup admits it.
+    // finalized `message_changed` edit keeps the ORIGINAL coordinates — msgId
+    // included, since that id carries the platform ts — and is told apart from
+    // the post it edits by `ingressEventTag`, the extra per-connection dedup
+    // dimension (packages/message SLACK_RESPONSE_FINAL_EVENT_TAG).
     let thread: string
-    let echoMessageId: string
+    let ingressEventTag: string | undefined
     if (effect.kind === 'reply') {
       thread = effect.thread ?? effect.messageId
       this.threadByMessageId.set(effect.messageId, thread)
-      echoMessageId = effect.messageId
     } else {
       thread = this.threadByMessageId.get(effect.messageId) ?? effect.thread ?? effect.messageId
-      echoMessageId = `${effect.messageId}:final`
+      ingressEventTag = SLACK_RESPONSE_FINAL_EVENT_TAG
     }
+    const echoMessageId = effect.messageId
     const mentions = [...effect.text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!)
     const authorAgentId = effect.identity?.agentAuthorId ?? effect.agentId
     const claim =
@@ -81,6 +84,7 @@ export class PlatformEcho {
       roomId: this.room.alias,
       fromAlias: this.world.aliasOfAgent(effect.agentId),
       messageId: echoMessageId,
+      ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
       deliveryState: effect.response?.deliveryState ?? 'streaming',
       mentions,
       text: effect.text
@@ -93,6 +97,7 @@ export class PlatformEcho {
           channel: this.room.channel,
           thread,
           messageId: echoMessageId,
+          ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
           text: effect.text,
           sender: { id: botUserId, isBot: true, ...(appId !== undefined ? { appId } : {}) },
           ...(mentions.length > 0 ? { mentions } : {}),
@@ -108,6 +113,7 @@ export class PlatformEcho {
               origin: 'agent_effect',
               roomId: this.room.alias,
               messageId: echoMessageId,
+              ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
               integrationId,
               ...(admission.admitted
                 ? { admitted: true, agentAlias: this.world.aliasOfAgent(admission.agentId) }
