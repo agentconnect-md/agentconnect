@@ -538,6 +538,8 @@ and unclassified degradation keep the generic unavailable notice. Feishu versus 
 named from the session scope's verified regional app, never from a URL hint. Diagnostics
 may retain only the provider target, failure stage, HTTP status, and a bounded upstream
 error code — never account ids, bearer tokens, or upstream error messages.
+A reconnect that proves a different provider account must not replace the linked identity;
+the console tells the user to reconnect with the linked account or unlink before switching.
 
 Making a session private hides its transcript immediately, but agent memory is shared
 across the whole agent, so the guarantee about memory is narrower and must be stated
