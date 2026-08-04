@@ -15,6 +15,14 @@ import type {
   WizardReuseContext
 } from '@/components/console/platforms/contract'
 import { useDeploymentConfig } from '@/components/console/platforms/deployment-config'
+import {
+  footerView as toFooterView,
+  identityChromeView as toIdentityChromeView,
+  sameFooterView,
+  sameIdentityChromeView,
+  type FooterView,
+  type IdentityChromeView
+} from '@/components/console/platforms/publish'
 import { platformRegistry } from '@/components/console/platforms/registry'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -172,11 +180,6 @@ function hookTestCurl(url: string, sig: string | null, body: string, requiresSig
   ].join('\n')
 }
 
-/** What the footer bar actually renders — the module's published primary and the
- *  chassis's own (webhook / github / reuse) collapse onto this one shape. */
-type FooterView = { label: string; enabled: boolean; hidden: boolean }
-type IdentityChromeView = { hidden: boolean; actionLabel: string | null }
-
 // The integration is owned by one agent; that agent's daemon opens the connection.
 // The dialog is only reachable from a specific agent (its row / detail page), so the
 // agent is fixed — no picker. `initialPlatform` lets a caller land on a specific
@@ -324,29 +327,15 @@ export default function AddIntegrationModal({
   const [footerView, setFooterView] = useState<FooterView | null>(null)
   const setFooter = useCallback((state: WizardFooterState | null) => {
     footerRef.current = state
-    const next: FooterView | null = state
-      ? { label: state.label, enabled: state.enabled, hidden: state.hidden === true }
-      : null
-    setFooterView((prev) => {
-      if (prev === null && next === null) return prev
-      if (prev && next && prev.label === next.label && prev.enabled === next.enabled && prev.hidden === next.hidden) {
-        return prev
-      }
-      return next
-    })
+    const next = toFooterView(state)
+    setFooterView((prev) => (sameFooterView(prev, next) ? prev : next))
   }, [])
   const identityRef = useRef<WizardIdentityChromeState | null>(null)
   const [identityView, setIdentityView] = useState<IdentityChromeView | null>(null)
   const setIdentityChrome = useCallback((state: WizardIdentityChromeState | null) => {
     identityRef.current = state
-    const next: IdentityChromeView | null = state
-      ? { hidden: state.hidden, actionLabel: state.headerAction?.label ?? null }
-      : null
-    setIdentityView((prev) => {
-      if (prev === null && next === null) return prev
-      if (prev && next && prev.hidden === next.hidden && prev.actionLabel === next.actionLabel) return prev
-      return next
-    })
+    const next = toIdentityChromeView(state)
+    setIdentityView((prev) => (sameIdentityChromeView(prev, next) ? prev : next))
   }, [])
   // The third publication channel: a fragment with a started, region-bound flow
   // freezes the region switcher on the picker tile (Feishu's pending device
