@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { chmodSync, mkdtempSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, isAbsolute } from 'node:path'
-import { loadAgents, discoverAgents, selectAgent } from '../src/agents/load-agents.js'
+import { loadAgents, discoverAgents, discoverAgentsTolerant, selectAgent } from '../src/agents/load-agents.js'
 import { AgentSchema } from '../src/agents/agent-schema.js'
 
 function writeAgent(dir: string, id: string, agent: unknown) {
@@ -87,6 +87,18 @@ describe('loadAgents', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
     writeAgent(dir, 'bad', { id: 'bad' }) // missing required fields
     expect(() => loadAgents(dir)).toThrow(/bad/)
+  })
+
+  it('can isolate a malformed agent while returning the rest of the fleet', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-agents-'))
+    writeAgent(dir, 'bot-a', slackAgent('bot-a'))
+    writeAgent(dir, 'bad', { id: 'bad' })
+
+    const result = discoverAgentsTolerant(dir)
+
+    expect(result.agents.map(({ agent }) => agent.id)).toEqual(['bot-a'])
+    expect(result.failures).toHaveLength(1)
+    expect(result.failures[0]?.error.message).toMatch(/invalid agent\.json.*bad\/agent\.json/)
   })
 
   it.skipIf(process.platform === 'win32')('repairs a legacy detached agent.json without discovering it', () => {

@@ -115,6 +115,36 @@ describe('Daemon agent config watcher', () => {
 })
 
 describe('Daemon.reconcile', () => {
+  it('starts valid agents and skips a malformed agent config', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const badDir = join(root, 'agents', 'bad')
+    mkdirSync(badDir, { recursive: true })
+    writeFileSync(join(badDir, 'agent.json'), '{ "id": "bad"')
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const daemon = new Daemon({
+      root,
+      hostFactory: () =>
+        ({
+          __started: true,
+          start: vi.fn(),
+          newSession: vi.fn(),
+          prompt: vi.fn(),
+          cancel: vi.fn(),
+          stop: vi.fn()
+        }) as any
+    })
+
+    await expect(daemon.start()).resolves.toBeUndefined()
+
+    expect((daemon as any).agents.has('bot-a')).toBe(true)
+    expect((daemon as any).agents.has('bad')).toBe(false)
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/WARN.*invalid agent\.json.*bad.*skipping agent/))
+
+    errorSpy.mockRestore()
+    await daemon.stop()
+  })
+
   it('picks up a newly added agent from disk', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
@@ -279,9 +309,10 @@ describe('Daemon.reconcile per-dimension host eviction', () => {
 })
 
 describe('Daemon watcher resilience: corrupt agent.json', () => {
-  it('direct reconcile() rejects, but watcher-triggered reconcile does not cause unhandled rejection and logs to console.error', async () => {
+  it('keeps the last valid config and still reconciles unrelated agents', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
+    writeAgent(root, 'bot-b')
     const daemon = new Daemon({
       root,
       hostFactory: () =>
@@ -296,25 +327,19 @@ describe('Daemon watcher resilience: corrupt agent.json', () => {
     })
     await daemon.start()
 
-    // Corrupt agent.json so discovery throws
+    const originalAgent = (daemon as any).agents.get('bot-a')
     const agentJsonPath = join(root, 'agents', 'bot-a', 'agent.json')
     writeFileSync(agentJsonPath, '{ this is not valid json')
-
-    // Direct call to reconcile() must still reject (fix must not swallow errors in reconcile itself)
-    await expect(daemon.reconcile()).rejects.toThrow()
-
-    // Spy on console.error before triggering the debounced watcher path
+    writeAgentJson(root, 'bot-b', { output: { mode: 'high' } })
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // Fire the debounced watcher handler (same pattern as existing test)
-    const debounced = (daemon as any).watcher.listeners('add')[0] as () => void
-    debounced()
+    await expect(daemon.reconcile()).resolves.toBeUndefined()
 
-    // Wait longer than the 300ms debounce window
-    await new Promise((resolve) => setTimeout(resolve, 400))
-
-    // The background path must have caught the error and logged it
-    expect(errorSpy).toHaveBeenCalledWith('agentconnect: reconcile failed:', expect.any(Error))
+    expect((daemon as any).agents.get('bot-a')).toBe(originalAgent)
+    expect((daemon as any).agents.get('bot-b').output.mode).toBe('high')
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/WARN.*invalid agent\.json.*bot-a.*keeping last valid config for agent "bot-a"/)
+    )
 
     errorSpy.mockRestore()
     await daemon.stop()

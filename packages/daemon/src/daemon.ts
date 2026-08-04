@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { basename, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
 import { existsSync, readFileSync, type Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { sessionRetentionMs, type RuntimeDef } from './config/config-schema.js'
-import { loadAgents, selectAgent, type LoadedAgent } from './agents/load-agents.js'
+import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
 import { diffAgents } from './reconciler/reconciler.js'
@@ -2492,7 +2492,8 @@ export class Daemon {
       [...this.moveStageMetadata].filter(([, metadata]) => metadata.state === 'staging').map(([agentId]) => agentId)
     )
     for (const agentId of this.moveStagedAgents) this.drainingAgents.add(agentId)
-    const discoveredAgents = this.loadAgentList()
+    const snapshot = this.loadAgentList()
+    const discoveredAgents = snapshot.agents
     const agents = discoveredAgents.filter(
       (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
     )
@@ -2500,7 +2501,7 @@ export class Daemon {
     // workspace that the kernel sandbox would later reject or another local
     // agent could already hold writable.
     if (!this.opts.hostFactory) {
-      const activeFleet = this.opts.agentName ? loadAgents(this.agentsDir) : agents
+      const activeFleet = snapshot.activeFleet
       assertExclusiveAgentWorkspaces(
         mergeAgentWorkspaceAuthorities(
           activeFleet.filter(
@@ -3132,8 +3133,48 @@ export class Daemon {
 
   // Multi-agent: all active agents under agentsDir. Single-agent (--agent): just
   // the selected agent, regardless of status.
-  private loadAgentList(): LoadedAgent[] {
-    return this.opts.agentName ? [selectAgent(this.agentsDir, this.opts.agentName)] : loadAgents(this.agentsDir)
+  private loadAgentList(preserveInvalid = false): { agents: LoadedAgent[]; activeFleet: LoadedAgent[] } {
+    const discovery = discoverAgentsTolerant(this.agentsDir)
+    const validAgents = discovery.agents.map((entry) => entry.agent)
+    const activeFleet = validAgents.filter((agent) => agent.status === 'active')
+    const invalidDirs = new Set(discovery.failures.map((failure) => dirname(failure.file)))
+    const preserved = new Map<string, LoadedAgent>()
+
+    if (preserveInvalid) {
+      for (const agent of this.fileAgents.values()) {
+        if (invalidDirs.has(agent.dir)) preserved.set(agent.dir, agent)
+      }
+    }
+
+    for (const failure of discovery.failures) {
+      const previous = preserved.get(dirname(failure.file))
+      this.log.warn(
+        `${failure.error.message}; ${previous ? `keeping last valid config for agent "${previous.id}"` : 'skipping agent'}`
+      )
+    }
+
+    let agents: LoadedAgent[]
+    if (this.opts.agentName) {
+      const match = validAgents.find((agent) => agent.id === this.opts.agentName)
+      const previous = [...preserved.values()].find((agent) => agent.id === this.opts.agentName)
+      if (match) agents = [match]
+      else if (previous) agents = [previous]
+      else {
+        const available =
+          validAgents
+            .map((agent) => agent.id)
+            .sort()
+            .join(', ') || '(none)'
+        throw new Error(`agent "${this.opts.agentName}" not found in ${this.agentsDir}. Available: ${available}`)
+      }
+    } else {
+      agents = [...activeFleet]
+      for (const previous of preserved.values()) {
+        if (!agents.some((agent) => agent.dir === previous.dir)) agents.push(previous)
+      }
+    }
+
+    return { agents, activeFleet }
   }
 
   /**
@@ -3185,7 +3226,8 @@ export class Daemon {
   }
 
   private async runReconcile(): Promise<void> {
-    const files = this.loadAgentList()
+    const snapshot = this.loadAgentList(true)
+    const files = snapshot.agents
     const nextFileAgents = new Map(files.map((a) => [a.id, a]))
     const desired = [...nextFileAgents.values()].filter(
       (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
@@ -3196,7 +3238,7 @@ export class Daemon {
       // Use the raw discovered list in multi-agent mode: constructing a Map has
       // last-writer-wins semantics and must not hide two directories that claim
       // the same active agent ID from authority validation.
-      const activeFleet = this.opts.agentName ? loadAgents(this.agentsDir) : files
+      const activeFleet = snapshot.activeFleet
       assertExclusiveAgentWorkspaces(
         // Include both old and desired authorities. A batched workspace swap or
         // transfer must not publish A's new config while B's old host still has
