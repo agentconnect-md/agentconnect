@@ -1039,10 +1039,13 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
 })
 
 describe('RelayIngressManager conversation gating (resource-visibility §14.3)', () => {
-  const fakeIngest = () => ({
-    lookupUserName: vi.fn(async () => '@Alice'),
-    postText: vi.fn(async () => {})
-  })
+  const fakeIngest = () => {
+    const lookupUserName = vi.fn(async () => '@Alice')
+    const postText = vi.fn(async () => {})
+    // Mirrors SlackHttpIngest: the contract egress facet delegates to the
+    // platform client methods (the manager only ever sees the facet).
+    return { lookupUserName, postText, egress: { notice: postText, lookupUserName } }
+  }
   const gatedAssignment = (): BotAssignment => ({
     botId: BOT_ID,
     platform: 'slack',
