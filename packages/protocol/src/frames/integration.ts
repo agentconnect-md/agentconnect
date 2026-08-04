@@ -173,22 +173,21 @@ export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
  * long-poll, a Discord Gateway, or a Feishu long-connection from whichever variant
  * is delivered.
  *
- * DUAL-SHAPE (§6.4) — EMISSION FLIPPED: the CP now emits the `core` + `config`
- * envelope only; the legacy nested block (`slack` / `telegram` / `discord` /
- * `feishu`) stays OPTIONAL here so readers keep accepting frames from an older
- * CP until the legacy readers retire. Readers prefer the legacy block when one
- * rides and fall back to `config` (validated against the same per-platform
- * schema); `core` overrides the routing knobs wherever present. A variant
- * carrying NEITHER payload is rejected by the reader, not the schema
- * (tolerant-reader rule). The union itself opens to a flat `platformId` object
- * when the legacy members retire.
+ * ENVELOPE-ONLY (§6.4, legacy RETIRED): each variant is `core` (routing knobs)
+ * + opaque `config`, validated by the consuming platform module against its own
+ * per-platform schema. The legacy nested block (`slack` / `telegram` /
+ * `discord` / `feishu`) retired one release after CP emission stopped; a frame
+ * from an older CP still parses (non-strict objects strip the stale key) and
+ * reads through `config`, which that CP dual-emitted since §6.4 landed. A
+ * variant carrying no usable `config` is rejected by the reader, not the schema
+ * (tolerant-reader rule). Collapsing the union to one flat `platformId` object
+ * is an S3 protocol cleanup — it changes the TYPE for every consumer.
  */
 export const IntegrationSpec = z.discriminatedUnion('platform', [
   z.object({
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('slack'),
-    slack: IntegrationSlackConfig.optional(),
     core: IntegrationCoreEnvelope.optional(),
     config: z.unknown().optional()
   }),
@@ -196,7 +195,6 @@ export const IntegrationSpec = z.discriminatedUnion('platform', [
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('telegram'),
-    telegram: IntegrationTelegramConfig.optional(),
     core: IntegrationCoreEnvelope.optional(),
     config: z.unknown().optional()
   }),
@@ -204,7 +202,6 @@ export const IntegrationSpec = z.discriminatedUnion('platform', [
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('discord'),
-    discord: IntegrationDiscordConfig.optional(),
     core: IntegrationCoreEnvelope.optional(),
     config: z.unknown().optional()
   }),
@@ -212,7 +209,6 @@ export const IntegrationSpec = z.discriminatedUnion('platform', [
     integrationId: z.string().uuid(),
     agentId: z.string().uuid(),
     platform: z.literal('feishu'),
-    feishu: IntegrationFeishuConfig.optional(),
     core: IntegrationCoreEnvelope.optional(),
     config: z.unknown().optional()
   })

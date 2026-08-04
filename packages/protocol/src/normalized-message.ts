@@ -122,12 +122,10 @@ export const NormalizedPlatformMessageSchema = z.object({
    *  (`adapterExt.telegram`, …). Never read by core; round-tripped back to the
    *  platform adapter at render time (S2 renderer seam). */
   adapterExt: z.record(z.string(), z.unknown()).optional(),
-  /** DEPRECATED (§6.5): read `topicId`. Telegram forum topic id, may be used as `message_thread_id` on send. */
-  telegramTopicId: z.string().optional(),
-  /** DEPRECATED (§6.5): read `threadRoot`. Telegram non-forum reply-thread root. */
-  telegramThreadRoot: z.string().optional(),
-  /** DEPRECATED (§6.5): read `promoteToThread`. Discord top-level guild message to move into a thread. */
-  discordTopLevel: z.boolean().optional(),
+  // The platform-named coordinate twins (`telegramTopicId` / `telegramThreadRoot` /
+  // `discordTopLevel`) RETIRED here (S1b cleanup): the generic fields above are the
+  // only emitted shape since the §6.5 flip; an older peer's named fields are simply
+  // stripped by this non-strict object schema.
   /** Enclosing container channel when `channel` is itself a thread channel (Discord
    *  threads). GENERIC and core-read (bind-rule admission spans thread→parent), so it
    *  is part of the coordinate model, not adapterExt (D2: pre-dispatch core read). */

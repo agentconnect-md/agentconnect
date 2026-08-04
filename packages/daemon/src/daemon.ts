@@ -401,8 +401,6 @@ import type {
   RdMsgWebchat,
   WebchatImageAttachment,
   RdMsgIm,
-  RdMsgSlackAction,
-  RdMsgFeishuAction,
   RdMsgPlatformAction,
   RdMsgHook,
   RdAck,
@@ -6733,13 +6731,9 @@ export class Daemon {
     const ack =
       msg.source === 'webchat'
         ? this.dispatchRelayOp(msg, chat, post)
-        : msg.source === 'slack_action'
-          ? this.handleRelaySlackAction(msg)
-          : msg.source === 'feishu_action'
-            ? this.handleRelayFeishuAction(msg)
-            : msg.source === 'platform_action'
-              ? this.handleRelayPlatformAction(msg)
-              : this.handleRelayIm(msg)
+        : msg.source === 'platform_action'
+          ? this.handleRelayPlatformAction(msg)
+          : this.handleRelayIm(msg)
     if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear() // bound the window
     this.relayMsgAcks.set(dedupKey, ack)
     return ack
@@ -6962,7 +6956,6 @@ export class Daemon {
         const payload = RdSlackAction.safeParse(msg.payload)
         if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
         return this.handleRelaySlackAction({
-          source: 'slack_action',
           agentId: msg.agentId,
           sessionKey: msg.sessionKey,
           msgId: msg.msgId,
@@ -6978,8 +6971,7 @@ export class Daemon {
       (msg) => {
         const payload = WireFeishuCardActionEvent.safeParse(msg.payload)
         if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
-        const { feishuCardAction, ...ack } = this.handleRelayFeishuAction({
-          source: 'feishu_action',
+        return this.handleRelayFeishuAction({
           agentId: msg.agentId,
           sessionKey: msg.sessionKey,
           msgId: msg.msgId,
@@ -6987,11 +6979,6 @@ export class Daemon {
           integrationId: msg.integrationId,
           payload: payload.data
         })
-        // §6.6 emission flip: a platform_action is answered through the generic
-        // opaque `response` only. The deprecated Feishu-named slot still rides
-        // acks of the legacy feishu_action member (the handler above), and both
-        // retire together with the legacy readers.
-        return feishuCardAction !== undefined ? { ...ack, response: feishuCardAction } : ack
       }
     ]
   ])
@@ -7001,7 +6988,15 @@ export class Daemon {
     return decode ? decode(msg) : { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
   }
 
-  private handleRelaySlackAction(msg: RdMsgSlackAction): RdAck {
+  private handleRelaySlackAction(msg: {
+    agentId: string
+    sessionKey: string
+    msgId: string
+    botId: string
+    integrationId: string
+    userId?: string
+    payload: RdSlackAction
+  }): RdAck {
     const agent = this.agents.get(msg.agentId)
     if (!agent) {
       this.log.warn(`relay: Slack action for unknown agent ${msg.agentId} — dropping`)
@@ -7102,7 +7097,14 @@ export class Daemon {
    * send-only connection that rendered the card. The connection resolves the
    * message id against daemon-local active-card state, so a stale or forged action
    * cannot name an arbitrary session. */
-  private handleRelayFeishuAction(msg: RdMsgFeishuAction): RdAck {
+  private handleRelayFeishuAction(msg: {
+    agentId: string
+    sessionKey: string
+    msgId: string
+    botId: string
+    integrationId: string
+    payload: WireFeishuCardActionEvent
+  }): RdAck {
     const agent = this.agents.get(msg.agentId)
     if (!agent) {
       this.log.warn(`relay: Feishu action for unknown agent ${msg.agentId} — dropping`)
@@ -7124,10 +7126,12 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
     const response = conn.handleCardAction(msg.payload)
+    // §6.6: answered through the generic opaque slot — the Feishu-named ack
+    // member retired with the legacy interaction members.
     return {
       msgId: msg.msgId,
       accepted: true,
-      ...(response ? { feishuCardAction: response } : {})
+      ...(response ? { response } : {})
     }
   }
 

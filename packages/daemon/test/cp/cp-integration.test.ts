@@ -78,7 +78,9 @@ const INTEGRATION: IntegrationSpec = {
   integrationId: '66666666-6666-4666-8666-666666666666',
   agentId: 'bot-a',
   platform: 'slack',
-  slack: {
+  // §6.4 envelope wire shape; folds back to the frozen nested DISK shape below.
+  core: { mode: 'direct', bindRules: [{ match: { kind: 'mention' } }], mutedChannels: [], gated: false },
+  config: {
     botToken: 'xoxb-secret-abc',
     appToken: 'xapp-1-secret-def',
     bindRules: [{ match: { kind: 'mention' } }]

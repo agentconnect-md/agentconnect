@@ -64,12 +64,12 @@ describe('thread promotion', () => {
     }
   })
 
-  it('wants promotion via the generic coordinate, legacy field as fallback', () => {
+  it('wants promotion via the generic coordinate alone (legacy twin retired)', () => {
     const base = { platform: 'discord', channel: 'c', msgId: 'discord:c:1', text: 'hi' }
     expect(discordThreadPromotion.wants({ ...base, promoteToThread: true })).toBe(true)
-    expect(discordThreadPromotion.wants({ ...base, discordTopLevel: true } as never)).toBe(true)
-    // The generic coordinate, once present, is authoritative — an explicit false
-    // must not fall through to the legacy field.
+    // The retired named twin no longer participates — even if a stale object
+    // carries it, only the generic coordinate decides.
+    expect(discordThreadPromotion.wants({ ...base, discordTopLevel: true } as never)).toBe(false)
     expect(discordThreadPromotion.wants({ ...base, promoteToThread: false, discordTopLevel: true } as never)).toBe(
       false
     )

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
+  IntegrationSlackConfig,
+  IntegrationTelegramConfig,
+  IntegrationDiscordConfig,
+  IntegrationFeishuConfig,
   AuthReq,
   ControlExt,
   isFrame,
@@ -429,74 +433,101 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
 describe('integration frames (CP→daemon platform config distribution)', () => {
   const INTEGRATION_ID = '66666666-6666-4666-8666-666666666666'
 
-  it('integration/upsert carries the slack config incl. tokens; zod defaults fill lists', () => {
+  // §6.4 legacy RETIRED: the wire carries envelope (`core`) + opaque `config`.
+  // The frame layer no longer applies per-platform zod defaults — the CONSUMER
+  // (write-integration.ts) parses `config` through the per-platform schema, so
+  // these tests validate at that layer, exactly as the daemon reader does.
+  it('integration/upsert carries the slack config incl. tokens through the opaque envelope', () => {
     const r = decodeEnvelope(
       envelope('integration/upsert', {
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'slack',
-        slack: { botToken: 'xoxb-abc', appToken: 'xapp-1-def', appId: 'A123' }
+        config: { botToken: 'xoxb-abc', appToken: 'xapp-1-def', appId: 'A123' }
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'slack') throw new Error('expected slack integration')
-    expect(r.frame.payload.slack!.botToken).toBe('xoxb-abc')
-    expect(r.frame.payload.slack!.appToken).toBe('xapp-1-def')
-    expect(r.frame.payload.slack!.appId).toBe('A123')
-    expect(r.frame.payload.slack!.bindRules).toEqual([]) // zod default
+    const cfg = IntegrationSlackConfig.parse(r.frame.payload.config)
+    expect(cfg.botToken).toBe('xoxb-abc')
+    expect(cfg.appToken).toBe('xapp-1-def')
+    expect(cfg.appId).toBe('A123')
+    expect(cfg.bindRules).toEqual([]) // zod default at the consumer parse
   })
 
-  it('integration/upsert carries the telegram config (single botToken, no appToken); zod defaults fill lists', () => {
+  it('integration/upsert STRIPS a legacy nested block from an older CP and reads config', () => {
+    // An older CP dual-emitted the nested block beside config (§6.4 window). The
+    // retired member is now an unknown key — stripped by the non-strict object,
+    // never a decode failure.
+    const r = decodeEnvelope(
+      envelope('integration/upsert', {
+        integrationId: INTEGRATION_ID,
+        agentId: AGENT_ID,
+        platform: 'slack',
+        slack: { botToken: 'xoxb-abc', appToken: 'xapp-1-def' },
+        config: { botToken: 'xoxb-abc', appToken: 'xapp-1-def' }
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
+    expect('slack' in r.frame.payload).toBe(false)
+    expect(IntegrationSlackConfig.parse(r.frame.payload.config).botToken).toBe('xoxb-abc')
+  })
+
+  it('integration/upsert carries the telegram config (single botToken, no appToken)', () => {
     const r = decodeEnvelope(
       envelope('integration/upsert', {
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'telegram',
-        telegram: { botToken: '123456:ABC-def' }
+        config: { botToken: '123456:ABC-def' }
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'telegram') throw new Error('expected telegram integration')
-    expect(r.frame.payload.telegram!.botToken).toBe('123456:ABC-def')
-    expect(r.frame.payload.telegram!.bindRules).toEqual([]) // zod default
+    const cfg = IntegrationTelegramConfig.parse(r.frame.payload.config)
+    expect(cfg.botToken).toBe('123456:ABC-def')
+    expect(cfg.bindRules).toEqual([])
   })
 
-  it('integration/upsert carries the discord config (single botToken, optional applicationId); zod defaults fill lists', () => {
+  it('integration/upsert carries the discord config (single botToken, optional applicationId)', () => {
     const r = decodeEnvelope(
       envelope('integration/upsert', {
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'discord',
-        discord: { botToken: 'MTA-bot-token', applicationId: '112233445566' }
+        config: { botToken: 'MTA-bot-token', applicationId: '112233445566' }
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'discord') throw new Error('expected discord integration')
-    expect(r.frame.payload.discord!.botToken).toBe('MTA-bot-token')
-    expect(r.frame.payload.discord!.applicationId).toBe('112233445566')
-    expect(r.frame.payload.discord!.bindRules).toEqual([]) // zod default
+    const cfg = IntegrationDiscordConfig.parse(r.frame.payload.config)
+    expect(cfg.botToken).toBe('MTA-bot-token')
+    expect(cfg.applicationId).toBe('112233445566')
+    expect(cfg.bindRules).toEqual([])
   })
 
-  it('integration/upsert carries the feishu config (appId + appSecret pair, no appToken); zod defaults fill lists', () => {
+  it('integration/upsert carries the feishu config (appId + appSecret pair, no appToken)', () => {
     const r = decodeEnvelope(
       envelope('integration/upsert', {
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'feishu',
-        feishu: { appId: 'cli_abc123', appSecret: 'secret-xyz' }
+        config: { appId: 'cli_abc123', appSecret: 'secret-xyz' }
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
-    expect(r.frame.payload.feishu!.appId).toBe('cli_abc123')
-    expect(r.frame.payload.feishu!.appSecret).toBe('secret-xyz')
-    expect(r.frame.payload.feishu!.mode).toBe('direct') // backwards-compatible default
-    expect(r.frame.payload.feishu!.region).toBe('feishu') // zod default — China gateway
-    expect(r.frame.payload.feishu!.bindRules).toEqual([]) // zod default
+    const cfg = IntegrationFeishuConfig.parse(r.frame.payload.config)
+    expect(cfg.appId).toBe('cli_abc123')
+    expect(cfg.appSecret).toBe('secret-xyz')
+    expect(cfg.mode).toBe('direct') // backwards-compatible default
+    expect(cfg.region).toBe('feishu') // zod default — China gateway
+    expect(cfg.bindRules).toEqual([])
   })
 
   it('integration/upsert preserves Feishu shared mode for daemon send-only API access', () => {
@@ -505,13 +536,16 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'feishu',
-        feishu: { mode: 'shared', appId: 'cli_abc123', appSecret: 'secret-xyz', botOpenId: 'ou_bot' }
+        config: { mode: 'shared', appId: 'cli_abc123', appSecret: 'secret-xyz', botOpenId: 'ou_bot' }
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
-    expect(r.frame.payload.feishu).toMatchObject({ mode: 'shared', botOpenId: 'ou_bot' })
+    expect(IntegrationFeishuConfig.parse(r.frame.payload.config)).toMatchObject({
+      mode: 'shared',
+      botOpenId: 'ou_bot'
+    })
   })
 
   it("integration/upsert preserves an explicit feishu region 'lark' (international gateway)", () => {
@@ -520,13 +554,13 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'feishu',
-        feishu: { appId: 'cli_abc123', appSecret: 'secret-xyz', region: 'lark' }
+        config: { appId: 'cli_abc123', appSecret: 'secret-xyz', region: 'lark' }
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'feishu') throw new Error('expected feishu integration')
-    expect(r.frame.payload.feishu!.region).toBe('lark')
+    expect(IntegrationFeishuConfig.parse(r.frame.payload.config).region).toBe('lark')
   })
 
   it('integration/upsert rejects an unknown platform', () => {
@@ -547,17 +581,19 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
         integrationId: INTEGRATION_ID,
         agentId: AGENT_ID,
         platform: 'slack',
-        slack: {
-          botToken: 'xoxb-abc',
-          appToken: 'xapp-1-def',
-          bindRules: [{ channel: 'C123', match: { kind: 'keyword', value: 'deploy' } }]
-        }
+        core: {
+          mode: 'direct',
+          bindRules: [{ channel: 'C123', match: { kind: 'keyword', value: 'deploy' } }],
+          mutedChannels: [],
+          gated: false
+        },
+        config: { botToken: 'xoxb-abc', appToken: 'xapp-1-def' }
       })
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
     if (r.frame.payload.platform !== 'slack') throw new Error('expected slack integration')
-    const rule = r.frame.payload.slack!.bindRules[0]!
+    const rule = r.frame.payload.core!.bindRules[0]!
     expect(rule.channel).toBe('C123')
     expect(rule.match).toEqual({ kind: 'keyword', value: 'deploy' })
   })
@@ -624,7 +660,7 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
             integrationId: INTEGRATION_ID,
             agentId: AGENT_ID,
             platform: 'slack',
-            slack: { botToken: 'xoxb-abc', appToken: 'xapp-1-def' }
+            config: { botToken: 'xoxb-abc', appToken: 'xapp-1-def' }
           }
         ],
         drop: { assignments: [], crons: [] }
@@ -634,7 +670,7 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     if (!withInt.ok || !isFrame('register/ok')(withInt.frame)) throw new Error('expected register/ok')
     const int0 = withInt.frame.payload.integrations[0]!
     if (int0.platform !== 'slack') throw new Error('expected slack integration')
-    expect(int0.slack!.appToken).toBe('xapp-1-def')
+    expect(IntegrationSlackConfig.parse(int0.config).appToken).toBe('xapp-1-def')
   })
 })
 
