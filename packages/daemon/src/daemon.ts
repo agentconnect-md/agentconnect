@@ -137,6 +137,10 @@ import { SlackNameResolver } from './slack/name-resolver.js'
 import { manifestFor } from './platforms/manifest.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
 import { isPlatformMemberId } from './platforms/member-id.js'
+import { threadKeyForPost } from './platforms/thread-keys.js'
+import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
+import { registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
+import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { CommandChromeRegistry, type SelectKind } from './platforms/command-chrome.js'
 import { slackCommandChrome } from './platforms/slack/command-chrome.js'
 import {
@@ -321,13 +325,7 @@ import type {
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
-import {
-  fromPlatformMessage,
-  stableMessageId,
-  stableTurnId,
-  threadKeyForPost,
-  type NormalizedMessage
-} from './messages/normalized.js'
+import { fromPlatformMessage, stableMessageId, stableTurnId, type NormalizedMessage } from './messages/normalized.js'
 import { ConnectionPool, type ConnectionKey } from './platforms/registry.js'
 import {
   applyTelegramAction as applyTelegramActionExternal,
@@ -928,20 +926,6 @@ function usesLoopGuard(msg: NormalizedMessage): boolean {
   return msg.source === 'user' && msg.platform !== 'webchat'
 }
 
-/** The exact poison shape produced when a Slack message_changed/assistant metadata
- *  wrapper was normalized as if it were a real message. No supported platform has a
- *  legitimate anonymous, empty, attachment-less user turn, so fail closed and latch. */
-function isMalformedPlatformTurn(msg: NormalizedMessage): boolean {
-  return (
-    msg.platform === 'slack' &&
-    msg.source === 'user' &&
-    !msg.sender.isBot &&
-    msg.sender.id === 'unknown' &&
-    msg.text.trim() === '' &&
-    (msg.attachments?.length ?? 0) === 0
-  )
-}
-
 interface GithubReplyTarget {
   hookId: string
   repo: string
@@ -1484,13 +1468,10 @@ function pendingSessionKey(p: Pending): SessionKey {
   return p.thread !== undefined ? { platform, channel: p.channel, thread: p.thread } : { platform, channel: p.channel }
 }
 
-/** Name for a Discord thread opened off a top-level @mention: the first line of the
- *  prompt, collapsed to one line and clamped to Discord's 100-char thread-name cap
- *  (createThread also clamps). Empty prompts (e.g. attachment-only) get a default. */
-function discordThreadName(text: string): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, 90)
-  return oneLine || 'Agent thread'
-}
+// §7.4 thread promotion: Discord is the one platform that answers a top-level
+// channel @mention in a freshly opened thread. Registered at module scope so
+// every Daemon instance (including test constructions) sees the same registry.
+registerThreadPromotion(discordThreadPromotion)
 
 export class Daemon {
   private readonly evaluation: EvaluationEventEmitter
@@ -5598,14 +5579,16 @@ export class Daemon {
       this.log.info(`routing: agent "${result.agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
     }
     this.log.info(`routing: ch=${msg.channel} → agent "${result.agentId}" (integration ${result.integrationId})`)
-    // A Discord top-level channel @mention: open a thread off it first, then dispatch
-    // into that thread (Slack-parity). Async (a REST call), so it runs on its own path;
-    // dispatch is fire-and-forget either way.
-    if (msg.platform === 'discord' && (msg.promoteToThread ?? msg.discordTopLevel)) {
-      const topLevel = this.dispatchDiscordTopLevel(result.agentId, msg, result.integrationId)
+    // A top-level channel @mention on a platform with thread promotion (§7.4
+    // openThreadForTopLevel — Discord): open a thread off it first, then dispatch
+    // into that thread (Slack-parity). Async (a REST call), so it runs on its own
+    // path; dispatch is fire-and-forget either way.
+    const promotion = threadPromotionFor(msg.platform)
+    if (promotion?.wants(msg)) {
+      const topLevel = this.dispatchPromotedTopLevel(promotion, result.agentId, msg, result.integrationId)
       topLevel.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
       // The re-threaded dispatch owns its own admission; expose a coarse handle
-      // (virtual ingress never produces discordTopLevel messages).
+      // (virtual ingress never produces promotion-seeking messages).
       return {
         kind: 'dispatched',
         handle: {
@@ -5642,29 +5625,25 @@ export class Daemon {
    * continuity. Best-effort: if thread creation fails (e.g. the bot lacks Create Public
    * Threads), we fall back to replying in the channel (the pre-thread behavior).
    */
-  private async dispatchDiscordTopLevel(agentId: string, msg: NormalizedMessage, integrationId: string): Promise<void> {
-    const conn = this.dcConnByIntegration.get(integrationId)
-    const messageId = msg.msgId.split(':').pop() ?? ''
-    const threadId = conn ? await conn.createThread(msg.channel, messageId, discordThreadName(msg.text)) : undefined
-    if (threadId) {
-      this.log.info(`discord: opened thread ${threadId} for ch=${msg.channel} msg=${messageId}`)
-      // The session is about to key on the thread; record the channel it belongs to (and
-      // its space) NOW, while `msg.channel` still names the parent — channel discovery
-      // then reports this one channel instead of a row per thread we open under it.
-      this.store.setChannelScope(threadId, { parentId: msg.channel }, this.clock.now())
-      // Re-key the turn onto the thread channel (channel == thread == session; see
-      // discord/normalize.ts). msgId keeps the original message id → its `ts`, which
-      // equals the thread id, so the session treats this message as the thread root.
-      msg.parentChannel = msg.channel
-      msg.channel = threadId
-      msg.thread = threadId
-      // The session now keys on the thread id, not the parent channel the inbound
-      // resolver already noted — label the thread too so the console shows its name.
-      // `conn` is non-null here (threadId is only set when createThread ran on it).
-      if (conn) this.channelNameResolver?.noteChannel(conn, threadId)
-    } else {
-      this.log.debug(`discord: no thread opened for ch=${msg.channel} — replying in channel`)
-    }
+  /** Run the platform's thread promotion (§7.4), then dispatch onto the re-keyed
+   *  coordinates. The strategy owns everything platform-shaped; core supplies the
+   *  channel-scope/labeling bookkeeping it cannot reach. */
+  private async dispatchPromotedTopLevel(
+    promotion: NonNullable<ReturnType<typeof threadPromotionFor>>,
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId: string
+  ): Promise<void> {
+    await promotion.promote(
+      {
+        setChannelScope: (channel, scope) => this.store.setChannelScope(channel, scope, this.clock.now()),
+        noteChannel: (conn, channel) => this.channelNameResolver?.noteChannel(conn as never, channel),
+        info: (m) => this.log.info(m),
+        debug: (m) => this.log.debug(m)
+      },
+      this.connForIntegration(integrationId),
+      msg
+    )
     await this.dispatch(agentId, msg, integrationId)
   }
 
@@ -14645,7 +14624,7 @@ export class Daemon {
    *  is independent of which sibling integration ultimately handles the message. */
   private discoverGatedConversations(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
     if (msg.sender.isBot || msg.source !== 'user') return
-    const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
+    const isDm = msg.isDm || manifestFor(msg.platform).dmChannelPattern?.test(msg.channel) === true
     for (const integrationId of srcIntegrationIds) {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
@@ -14662,8 +14641,9 @@ export class Daemon {
 
   private maybeGatedNotice(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
     if (msg.sender.isBot || msg.source !== 'user') return
-    // Slack `app_mention` payloads may omit channel_type, so hedge on the D-prefix.
-    const isDm = msg.isDm || (msg.platform === 'slack' && msg.channel.startsWith('D'))
+    // A wire event may omit the conversation type (Slack `app_mention` omits
+    // channel_type) — hedge on the platform's declared DM id syntax (§5).
+    const isDm = msg.isDm || manifestFor(msg.platform).dmChannelPattern?.test(msg.channel) === true
     for (const integrationId of srcIntegrationIds) {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
