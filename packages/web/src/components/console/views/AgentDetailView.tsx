@@ -1634,36 +1634,31 @@ export default function AgentDetailView() {
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
-              renderHeader={(header) => (
-                <WorkspaceCard
-                  agent={da}
-                  header={header}
-                  viewing={
-                    da.workspace.mode === 'github' &&
-                    (da.workspace.worktree === true ||
-                      selectedWorktreeSessionId !== null ||
-                      workspaceSessionsNextCursor !== null ||
-                      workspaceSessions.some((session) => session.workspaceIsolation === 'session')) ? (
-                      <WorkspaceScopePicker
-                        sessions={workspaceSessions}
-                        selectedSessionId={selectedWorktreeSessionId}
-                        selectedSession={selectedWorktreeSession}
-                        loading={workspaceSessionsLoading}
-                        hasMore={workspaceSessionsNextCursor !== null}
-                        loadingMore={workspaceSessionsLoadingMore}
-                        onLoadMore={() => void loadMoreWorkspaceSessions()}
-                        onChange={(sessionId) => {
-                          const next = new URLSearchParams(params)
-                          if (sessionId) next.set('worktree', sessionId)
-                          else next.delete('worktree')
-                          router.replace(`${orgPath(`/agents/${id}`)}?${next.toString()}`, { scroll: false })
-                        }}
-                        orgPath={orgPath}
-                      />
-                    ) : undefined
-                  }
-                />
-              )}
+              workspacePicker={
+                da.workspace.mode === 'github' &&
+                (da.workspace.worktree === true ||
+                  selectedWorktreeSessionId !== null ||
+                  workspaceSessionsNextCursor !== null ||
+                  workspaceSessions.some((session) => session.workspaceIsolation === 'session')) ? (
+                  <WorkspaceScopePicker
+                    sessions={workspaceSessions}
+                    selectedSessionId={selectedWorktreeSessionId}
+                    selectedSession={selectedWorktreeSession}
+                    loading={workspaceSessionsLoading}
+                    hasMore={workspaceSessionsNextCursor !== null}
+                    loadingMore={workspaceSessionsLoadingMore}
+                    onLoadMore={() => void loadMoreWorkspaceSessions()}
+                    onChange={(sessionId) => {
+                      const next = new URLSearchParams(params)
+                      if (sessionId) next.set('worktree', sessionId)
+                      else next.delete('worktree')
+                      router.replace(`${orgPath(`/agents/${id}`)}?${next.toString()}`, { scroll: false })
+                    }}
+                    orgPath={orgPath}
+                  />
+                ) : undefined
+              }
+              renderHeader={(header) => <WorkspaceCard agent={da} header={header} />}
             />
           </div>
         ) : (

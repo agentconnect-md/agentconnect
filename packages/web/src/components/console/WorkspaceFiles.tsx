@@ -158,6 +158,7 @@ export function WorkspaceFiles({
   sessionId,
   workdir,
   canEdit,
+  workspacePicker,
   renderHeader
 }: {
   agentId: string
@@ -166,6 +167,8 @@ export function WorkspaceFiles({
   sessionId?: string
   workdir?: string
   canEdit: boolean
+  /** Checkout selector rendered opposite the current file breadcrumb. */
+  workspacePicker?: ReactNode
   /** Renders the workspace card above the tree from the live git read model.
    *  Called on every render — including before the status lands (empty info) and
    *  for non-repo workspaces — so the card's own controls are never gated on a
@@ -729,7 +732,8 @@ export function WorkspaceFiles({
               }
             />
           ) : (
-            <div className="flex flex-none items-center gap-2">
+            <div className="flex min-w-0 flex-none items-center gap-2">
+              {workspacePicker}
               {deleteDraft ? (
                 <>
                   <Button
