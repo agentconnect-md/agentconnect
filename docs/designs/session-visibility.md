@@ -193,13 +193,14 @@ hidden unresolved candidate after GitHub sync is enabled.
 
 ### 4.1 Protocol: new telemetry fields
 
-`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains three
+`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains four
 optional fields:
 
 ```ts
 conversationKind?: 'dm' | 'group_dm' | 'channel'
 transportScope?: string // trusted workspace/tenant scope for ownerIdentity, §2
 launchCorrelationId?: string // Web API launch provenance, §4.4
+sourceBindingKind?: 'local' | 'external' // daemon-pinned source provenance
 ```
 
 Shared-source sessions additionally report a provider-specific
@@ -241,6 +242,12 @@ is rejected rather than silently reusing the session. A2A descendants carry
 only the audience identity (without Slack integration ids or GitHub delivery
 proof) and inherit the parent's access boundary across daemons.
 
+`sourceBindingKind` distinguishes a provider-bound session from local
+automation that deliberately keeps platform-shaped coordinates for session-key
+compatibility. An explicit `local` binding bypasses the legacy Slack-candidate
+fallback; an absent value still takes that fail-closed path for older daemons.
+Existing classifications are left unchanged.
+
 Headless GitHub messages also namespace the daemon-local session key with the
 numeric repository id. The first post-upgrade delivery therefore starts a clean
 runtime instead of claiming an unscoped legacy runtime whose repository cannot
@@ -252,7 +259,7 @@ The daemon derives this from `NormalizedMessage.isDm` / `isGroupDm`
 to the CP. The `thread === 'dm'` heuristic and an
 `IntegrationChannel.kind` join were both considered and rejected: the former is
 platform-inconsistent, the latter does not cover webhook/generic ingress and
-moves a write-time fact to read time. All three fields are optional ⇒ old
+moves a write-time fact to read time. All four fields are optional ⇒ old
 daemons remain compatible (absent `conversationKind` = `channel` behavior,
 i.e. `org`; absent `transportScope`/`launchCorrelationId` = no owner, fail
 closed).

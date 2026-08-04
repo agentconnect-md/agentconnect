@@ -361,6 +361,10 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       title: 'first',
       status: 'prompting',
       triggeredBy: 'U1',
+      // This platform-shaped cron session is local automation, not a Slack
+      // audience candidate. The CP uses this durable provenance instead of
+      // guessing from the legacy-compatible session key.
+      sourceBindingKind: 'local',
       // Execution-config snapshot: the agent's runtime + schema-defaulted
       // permission/output modes; no explicit model/effort/fast configured ⇒
       // those fields are omitted (runtime default), never fabricated.
