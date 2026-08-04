@@ -24,7 +24,13 @@ import { sessionKey } from '../src/store/local-store.js'
 const TEST_ORG = 'org_test0000000000000000000'
 const APP_ID = 'AAGENTCONNECT'
 
-function scaffold(agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[]): string {
+function scaffold(
+  agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
+  // Give each agent its OWN Slack credential, i.e. genuinely separate apps. The transport
+  // scope hashes the live credential, so the shared-token default collapses every agent
+  // onto one scope — which hides any bug in which scope a lookup is keyed under.
+  distinctTokens = false
+): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-agent-mention-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -51,7 +57,13 @@ function scaffold(agents: { id: string; callPolicy?: string; allowedCallerAgentI
           {
             id: `int-${a.id}`,
             platform: 'slack',
-            slack: { botToken: 'xoxb', appToken: 'xapp', bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }] }
+            slack: {
+              botToken: distinctTokens ? `xoxb-${a.id}` : 'xoxb',
+              // Socket-mode Slack keys its connection identity on the APP token, so this
+              // is what actually separates two dedicated apps into two transport scopes.
+              appToken: distinctTokens ? `xapp-${a.id}` : 'xapp',
+              bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }]
+            }
           }
         ],
         output: { mode: 'low' },
@@ -76,9 +88,17 @@ const fakeHost = () => ({
  *  behind ONE AgentConnect Slack app, each with its own bot user id. */
 async function boot(
   agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
-  over: { botUserIds?: Record<string, string>; botShared?: boolean; realDispatch?: boolean } = {}
+  over: {
+    botUserIds?: Record<string, string>
+    botShared?: boolean
+    realDispatch?: boolean
+    distinctTokens?: boolean
+  } = {}
 ) {
-  const daemon = new Daemon({ root: scaffold(agents), hostFactory: () => fakeHost() as any })
+  const daemon = new Daemon({
+    root: scaffold(agents, over.distinctTokens),
+    hostFactory: () => fakeHost() as any
+  })
   await daemon.start()
   const placements = agents.map((a) => ({
     agentId: a.id,
@@ -278,6 +298,43 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     expect((daemon as any).onInboundOutcome(addressed, ['int-bot-b']).kind).toBe('dispatched')
     expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
     expect((daemon as any).isSessionMuted(muteKey)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('does not continue when the response addressed a human', async () => {
+    // Direct/relay parity. `mentionedBots` holds every `<@U…>` token, humans included, so
+    // an `@human` reply is an unmatched mention and the ladder stops there — the same
+    // outcome a PERSON's `@human` reply gets in this channel. Waking an unrelated `auto`
+    // agent instead would answer a question that was put to someone else.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const toHuman = agentMessage(
+      { text: '<@UHUMAN> can you confirm the rollout?', mentionedBots: ['UHUMAN'] },
+      { mentionedAgentIds: [] }
+    )
+    expect((daemon as any).onInboundOutcome(toHuman, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('reads the `!stop` mute in the TARGET’s scope, not the observing connection’s', async () => {
+    // Every dedicated app sees the same channel post, so the author's connection can be
+    // the one that wins the target's activation rendezvous. If it looked the mute up under
+    // its OWN scope it would find nothing, dispatch the target, and leave the real
+    // tombstone standing — and the target's own copy then deduplicates before it can clear
+    // it. The rendezvous key is already target-scoped for the same reason.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }], { distinctTokens: true })
+    // An ingress that watches both installs: it can still resolve bot-b, but its own
+    // transport scope is NOT bot-b's. That gap is the whole finding — an observer that
+    // could not reach the target would prove nothing, since it routes to nobody anyway.
+    const observed = ['int-bot-a', 'int-bot-b']
+    const targetScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+    const observerScope = (daemon as any).transportScopeForIntegrationIds(observed)
+    expect(observerScope).not.toBe(targetScope)
+    ;(daemon as any).setSessionMuted(sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', targetScope), true)
+
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(unaddressed, observed).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
     await daemon.stop()
   })
 

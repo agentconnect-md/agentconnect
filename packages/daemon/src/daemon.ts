@@ -5862,14 +5862,6 @@ export class Daemon {
     // ladder returns before `onInboundOutcome`'s own mute gate; without it `!stop` would
     // silence humans while agents kept waking each other, which is the one situation the
     // command exists for now that the loop protections are the ordinary terminator.
-    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, targetAgentId, msg.transportScope)
-    if (via === 'implicit' && this.isSessionMuted(muteKey)) {
-      this.recordUnrouted(msg)
-      this.log.debug(
-        `routing: agent-authored ${msg.msgId} → "${targetAgentId}" dropped (muted by !stop; awaiting @mention)`
-      )
-      return { kind: 'rejected', reason: 'gated' }
-    }
     const platformMessageId = slackTsFromMsgId(msg.msgId)
     const integrationId = this.resolveCpAgent(targetAgentId, 'slack')?.integrationId
     // The key's transport component is the TARGET's own reply scope — NOT the scope of
@@ -5880,6 +5872,27 @@ export class Daemon {
     // turning one logical delivery into several — the opposite of what this record is for.
     const targetScope = integrationId !== undefined ? this.transportScopeForIntegrationIds([integrationId]) : undefined
     const key = activationKey(msg.platform, targetScope, platformMessageId, targetAgentId)
+    // `!stop` means "stop reacting to this conversation implicitly", and an implicitly
+    // selected agent continuation is exactly that — the fact that another AGENT rather
+    // than a human produced the message does not exempt it. Checked here because this
+    // ladder returns before `onInboundOutcome`'s own mute gate; without it `!stop` would
+    // silence humans while agents kept waking each other, which is the one situation the
+    // command exists for now that the loop protections are the ordinary terminator.
+    //
+    // Scoped to the TARGET, for the same reason the rendezvous key above is: the mute was
+    // written under the target's own connection scope (its `!stop` arrived there and
+    // `routeRules` picked it there), while every dedicated app in the channel observes
+    // this post. Keying on the observer would let the author's connection read an
+    // unrelated scope's mute, dispatch the target anyway, and leave the real tombstone
+    // standing — after which the target's own copy deduplicates before it can clear it.
+    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, targetAgentId, targetScope)
+    if (via === 'implicit' && this.isSessionMuted(muteKey)) {
+      this.recordUnrouted(msg)
+      this.log.debug(
+        `routing: agent-authored ${msg.msgId} → "${targetAgentId}" dropped (muted by !stop; awaiting @mention)`
+      )
+      return { kind: 'rejected', reason: 'gated' }
+    }
     const expiresAt = this.clock.now() + ACTIVATION_PAIRING_TTL_MS
     if (verified.agentCallDeliveryId) {
       const record = this.store.claimActivationObservation(

@@ -16,7 +16,12 @@
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
 import { createHash } from 'node:crypto'
-import { MAX_AGENT_CALL_HOPS, WireFeishuCardActionResponse, WireFeishuCardActionValue } from '@agentconnect.md/protocol'
+import {
+  MAX_AGENT_CALL_HOPS,
+  RD_AGENT_IMPLICIT_ROUTING_V1,
+  WireFeishuCardActionResponse,
+  WireFeishuCardActionValue
+} from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
   RdMsgPlatformAction,
@@ -669,6 +674,14 @@ export class RelayIngressManager {
     let targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
     let routeVia: 'mention' | 'implicit' = 'mention'
     if (!named) {
+      // Naming a HUMAN (or another app, or a bare shared bot) is still deliberate
+      // addressing even though it resolves to no agent — `mentionedBots` holds every
+      // `<@U…>` token, not only bots. The direct ladder stops there (`routeRules`:
+      // unmatched mention in a channel ⇒ no route), for human senders too, so stopping
+      // here is what keeps one message from waking a peer over the relay and nobody over
+      // a direct connection. A DM is already addressed to its recipient, so it is exempt
+      // on both sides.
+      if (!msg.isDm && msg.mentionedBots.length > 0) return drop('addressed someone this relay cannot resolve')
       const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
       if (!implicit) return drop('no implicit rung matched')
       targets = [implicit.agentId]
@@ -694,6 +707,15 @@ export class RelayIngressManager {
         const n = (this.dropped.get(botId) ?? 0) + 1
         this.dropped.set(botId, n)
         this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — dropped (total ${n})`)
+        continue
+      }
+      // §8.4, fail closed: a daemon that predates `trustedRouteVia` reads every
+      // agent-authored delivery as an explicit mention, which CLEARS a `!stop` mute.
+      // Forwarding an implicit continuation to it during a mixed-version rollout would
+      // silently disable the one control a human has over a runaway exchange. Refusing
+      // degrades to the pre-change behavior instead, which is merely less conversational.
+      if (routeVia === 'implicit' && !daemon.supports(RD_AGENT_IMPLICIT_ROUTING_V1)) {
+        drop(`daemon ${route.daemonId} predates implicit agent routing`)
         continue
       }
       const rd: RdMsgIm = {

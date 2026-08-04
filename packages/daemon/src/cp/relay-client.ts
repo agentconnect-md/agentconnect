@@ -15,6 +15,7 @@ import {
   buildRelayDaemonFrame,
   decodeRelayDaemonFrame,
   RD_HEADLESS_AGENT_DELIVERY_V1,
+  RD_AGENT_IMPLICIT_ROUTING_V1,
   type RelayDaemonFrame,
   type RdHelloOk,
   type RdMsg,
@@ -38,7 +39,7 @@ const CLOSE_AUTH_FAILED = 4401
  * needs a capability the daemon did not list, rather than degrading it — so a
  * capability belongs here only once the corresponding behavior actually ships.
  */
-const DAEMON_RD_CAPABILITIES: readonly string[] = [RD_HEADLESS_AGENT_DELIVERY_V1]
+const DAEMON_RD_CAPABILITIES: readonly string[] = [RD_HEADLESS_AGENT_DELIVERY_V1, RD_AGENT_IMPLICIT_ROUTING_V1]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'
 

@@ -508,12 +508,15 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     const isOurApp = (appId: string) => appId === 'AMANAGED'
 
     /** A finalized agent response addressing AGENT_ID, from an app we back. */
-    const agentFinal = (claim: Partial<NonNullable<WireNormalizedMessage['agentAuthorship']>> = {}) =>
+    const agentFinal = (
+      claim: Partial<NonNullable<WireNormalizedMessage['agentAuthorship']>> = {},
+      over: { text?: string; mentionedBots?: string[] } = {}
+    ) =>
       followUp({
         msgId: 'slack:C123:agentpost',
         sender: { id: 'UMANAGED', isBot: true, appId: 'AMANAGED' },
-        text: '<@UBOT> please verify the rollout',
-        mentionedBots: ['UBOT'],
+        text: over.text ?? '<@UBOT> please verify the rollout',
+        mentionedBots: over.mentionedBots ?? ['UBOT'],
         agentAuthorship: {
           authorAgentId: AUTHOR_ID,
           responseId: 'r-1',
@@ -526,9 +529,12 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
 
     const managerWith = (
       over: Partial<RelayIngressManagerDeps> = {},
-      sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true })),
+      // A current-build daemon advertises every rd/* capability. `supports` is what the
+      // implicit path is gated on, so a test can pass `() => false` to model an older one.
+      supports: (c: string) => boolean = () => true
     ) => {
-      const daemon = { sendMsg } as unknown as RelayDaemonConnection
+      const daemon = { sendMsg, supports } as unknown as RelayDaemonConnection
       const manager = new RelayIngressManager(
         deps({
           getDaemon: () => daemon,
@@ -570,7 +576,10 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       // would — here the channel's `auto` rung. This is what lets agents converse without
       // having to name each other in every line.
       const { internals, sendMsg } = managerWith()
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
+      await internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
       expect(sendMsg).toHaveBeenCalledTimes(1)
       expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, trustedFromAgentId: AUTHOR_ID })
     })
@@ -593,7 +602,10 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       selfOnly.routes = selfOnly.routes.map((r) => ({ ...r, agentId: AUTHOR_ID }))
       selfOnly.defaultAgentId = AUTHOR_ID
       alone.internals.router.upsert(selfOnly)
-      await alone.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
+      await alone.internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
       expect(alone.sendMsg).not.toHaveBeenCalled()
     })
 
@@ -636,6 +648,50 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sendMsg).not.toHaveBeenCalled()
     })
 
+    it('does not continue when the response addressed a human', async () => {
+      // Parity with the direct ladder, which stops at any unmatched mention in a channel
+      // (`routeRules`) — for human senders too. `mentionedBots` holds every `<@U…>` token,
+      // so an `@human` reply resolves to no agent yet is still deliberate addressing.
+      // Without this the same event wakes an `auto` peer over the relay and nobody over a
+      // direct connection.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(
+        BOT_ID,
+        followUp({
+          msgId: 'slack:C123:agenttohuman',
+          sender: { id: 'UMANAGED', isBot: true, appId: 'AMANAGED' },
+          text: '<@UHUMAN> can you confirm?',
+          mentionedBots: ['UHUMAN'],
+          agentAuthorship: {
+            authorAgentId: AUTHOR_ID,
+            responseId: 'r-1',
+            deliveryState: 'final',
+            hopCount: 3,
+            mentionedAgentIds: []
+          }
+        })
+      )
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('refuses to forward an implicit continuation to a daemon that predates the field', async () => {
+      // §8.4 fail-closed. An older daemon ignores `trustedRouteVia` and reads every
+      // agent-authored delivery as an explicit mention, which CLEARS a `!stop` mute — so
+      // during a mixed-version rollout the human's stop control would silently stop
+      // working. Refusing degrades to the pre-change behavior instead.
+      const older = managerWith({}, undefined, () => false)
+      await older.internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
+      expect(older.sendMsg).not.toHaveBeenCalled()
+
+      // An EXPLICIT mention is unaffected: it means the same thing to both builds.
+      const explicit = managerWith({}, undefined, () => false)
+      await explicit.internals.forward(BOT_ID, agentFinal())
+      expect(explicit.sendMsg).toHaveBeenCalledTimes(1)
+    })
+
     it('tells the target which rung selected it', async () => {
       // The frame is pre-addressed to one agent either way, so the target cannot re-derive
       // this — and it decides whether the delivery clears or obeys a `!stop` mute.
@@ -644,7 +700,10 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(mention.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'mention' })
 
       const implicit = managerWith()
-      await implicit.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
+      await implicit.internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
+      )
       expect(implicit.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'implicit' })
     })
 

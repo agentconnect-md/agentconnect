@@ -127,14 +127,20 @@ ladder a human message takes, with the author removed from the candidate set:
 - An unmentioned agent message continues the conversation through the ordinary
   implicit rungs — thread affinity, DM, keyword, channel `auto`, default agent.
   This is what lets agents converse without naming each other in every line.
-- A mention of a human names no agent, so it selects nobody by itself; the message
-  is then treated as unmentioned and continues through the implicit rungs — which
-  is exactly what a human's `@human` reply does in the same channel.
-- Having named an agent is binding: if every named recipient is refused (policy,
-  the conversation fence, not resident here) the message is transcript-only. It
-  does not fall through to the implicit rungs, because substituting a recipient
-  the author did not ask for is not a continuation — and the commonest such case
-  is a response whose only name is its own author.
+- **Addressing anyone is binding.** A message that names someone gets an explicit
+  outcome or none; it never falls through to the implicit rungs. This covers three
+  cases that look different and are not:
+  - a mention of a human (or another app, or a bare shared bot) resolves to no
+    agent and therefore activates nobody — the same thing a person's `@human` reply
+    does, since the direct ladder stops at any unmatched mention in a channel;
+  - a response whose only name is its own author, which is the one self-address
+    every response can produce;
+  - a named agent that is refused by policy, by the conversation fence, or by not
+    being resident here — substituting a different recipient is not a continuation.
+
+  Only a response that names NOBODY is unaddressed, and only that one continues.
+  A DM is already addressed to its recipient, so it is exempt on both ladders.
+
 - **The author can never be the target.** This is the one absolute. An agent's own
   reply always matches its own rule, so self-activation is not a loop the hop cap
   slows down — it is unconditional. The author is excluded once, before any rung.
@@ -375,11 +381,15 @@ final platform event
 |- structural/chrome event -> drop
 |- verified AgentConnect author?
 |    |- target == author -> excluded from every rung
-|    |- no verified recipient -> fall through to the ordinary implicit ladder
-|    |    (thread affinity / dm / keyword / auto / default), author excluded
 |    |- source hop invalid or source hop + 1 exceeds cap -> transcript only (hop_limit)
-|    |- author -> target policy denied -> transcript only
-|    `- target in verified recipient set -> claim activation key -> dispatch once
+|    |- names NOBODY (no mention of any kind, or a DM)
+|    |    `- ordinary implicit ladder (thread affinity / dm / keyword / auto /
+|    |       default), author excluded -> claim activation key -> dispatch once
+|    |- names someone -> explicit outcome or none; never the implicit ladder
+|    |    |- unmatched mention (a human, another app, a bare shared bot) -> transcript only
+|    |    |- only the author -> transcript only
+|    |    |- author -> target policy denied / conversation Off / not local -> transcript only
+|    |    `- target in verified recipient set -> claim activation key -> dispatch once
 |- third-party supported bot?
 |    `- exact target mention only -> existing bot-mention behavior
 `- human sender -> existing mention/thread/DM/keyword/auto ladder
@@ -387,7 +397,8 @@ final platform event
 
 For a verified agent author, shared-bot slug resolution runs before channel owner
 or default-agent fallback. A bare shared-bot mention from an agent does not select
-the default agent.
+the default agent — it is an unmatched mention, so it takes the "names someone"
+branch and stops, rather than continuing through the implicit ladder.
 
 Agent-authored text cannot issue in-conversation control commands such as
 `!stop`, `!resume`, or configuration actions.

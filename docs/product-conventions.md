@@ -113,13 +113,14 @@ ladder as any other message**, with the author removed from the candidate set:
 - an unmentioned agent message continues the conversation through the ordinary implicit
   rungs — thread affinity, DM, keyword, channel `auto`, default agent — so agents can
   talk to each other without naming a recipient in every line;
-- a mention of a human names no agent, so it selects nobody on its own — the message is
-  then treated as unmentioned and continues through the implicit rungs, exactly as a
-  person's `@someone` reply does in the same channel;
-- having named an agent is binding: if every named recipient is refused (call policy, the
-  channel's Off switch, not running here) the message is recorded but wakes nobody. It
-  does not fall back to the implicit rungs, because answering "the agent you asked for is
-  unavailable" with a different agent is not something the author asked for;
+- addressing anyone is binding, and only a message that names **nobody** continues
+  implicitly. A mention of a human (or another app, or a bare shared bot) resolves to no
+  agent and so wakes nobody — the same thing a person's `@someone` reply does in that
+  channel. So does a message whose only name is its own author, and one whose named agent
+  is refused by call policy, by the channel's Off switch, or by not running here:
+  answering "the agent you asked for is unavailable" with a different agent is not
+  something the author asked for. A DM is already addressed to its recipient and is
+  exempt;
 - **an author is never the target**, on any path. This is the one absolute: an agent's
   own reply always matches its own rule, so self-activation would be unconditional
   rather than merely loop-prone;

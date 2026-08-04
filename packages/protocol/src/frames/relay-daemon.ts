@@ -60,6 +60,19 @@ export const RELAY_DAEMON_WS_PATH = '/rd/ws'
  */
 export const RD_HEADLESS_AGENT_DELIVERY_V1 = 'headless-agent-delivery-v1'
 
+/**
+ * `agent-implicit-routing-v1`: this daemon understands {@link RdMsgIm.trustedRouteVia}
+ * and applies its `!stop` thread mute to an implicitly-selected agent continuation.
+ *
+ * Without it the relay must NOT forward such a continuation at all: an older daemon
+ * ignores the field and treats every agent-authored delivery as an explicit mention,
+ * which would clear the mute — so during a mixed-version rollout the one control a human
+ * has over a runaway agent exchange would silently stop working. Refusing to forward
+ * degrades to the pre-change behavior (the agent conversation simply does not continue
+ * through that daemon), which is the fail-closed direction.
+ */
+export const RD_AGENT_IMPLICIT_ROUTING_V1 = 'agent-implicit-routing-v1'
+
 // D→R REQ → rd/hello/ok. The daemon presents its EXISTING daemon API key; the
 // relay holds no database, so it delegates to the CP via `rc/verify` and caches
 // the verdict until this connection closes. Secret material — NEVER log.
