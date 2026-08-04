@@ -46,7 +46,7 @@ import {
   type SessionAccessProvider
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type AgentCallPolicy, type IntegrationRow } from '@/lib/data'
-import { platformRegistry } from '@/components/console/platforms/registry'
+import { botCardCopy, platformRegistry } from '@/components/console/platforms/registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
@@ -985,6 +985,11 @@ function BotsCard({
   const RowActions = fragments?.lifecycleActions?.RowActions
   const CardNotice = fragments?.lifecycleActions?.CardNotice
   const CardProvider = fragments?.lifecycleActions?.CardProvider ?? PassThrough
+  // The two sentences the CARD writes into its own chrome (the revoked badge,
+  // the Sharable cell). Both used to be Slack's model rendered over every
+  // platform's rows; the module supplies the wording, the host still decides
+  // when and which arm to show.
+  const rowCopy = botCardCopy(platformTab.platform)
 
   return (
     <div className="card mt-[18px]">
@@ -1081,23 +1086,23 @@ function BotsCard({
                   <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{b.name}</span>
                   {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>}
                   {/* Workspace uninstalled the app / revoked its tokens (rc/bot-revoked):
-                    the credential is dead until a re-install refreshes it. */}
+                    the credential is dead until a re-install refreshes it. The
+                    sentence is the module's (§10 `settingsFragments.copy`) — only
+                    Slack can name the lifecycle event that put the bot here. */}
                   {b.revokedAt && (
-                    <span
-                      className="badge bg-(--status-error-soft) text-(--danger)"
-                      title="The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect"
-                    >
+                    <span className="badge bg-(--status-error-soft) text-(--danger)" title={rowCopy.revokedHint}>
                       revoked
                     </span>
                   )}
                   {RowBadges && <RowBadges bot={b} />}
                 </div>
+                {/* The host picks the arm by transport; the module owns both
+                    sentences. A platform that declares none gets one sentence for
+                    both arms — its transport is not why sharing is unavailable. */}
                 <span
                   className="flex items-center justify-self-start"
                   title={
-                    (b.transport ?? 'socket') === 'socket'
-                      ? 'HTTP transport required to share'
-                      : 'Allow several agents to share this bot across channels'
+                    (b.transport ?? 'socket') === 'socket' ? rowCopy.shareHint.unavailable : rowCopy.shareHint.available
                   }
                   onClick={(e) => e.stopPropagation()}
                 >

@@ -13,11 +13,17 @@
 // + normalizes on save and never returns them; this card only ever sees status.
 // Org-scoped (keyed by the active org), so the fetch waits for OrgProvider to resolve —
 // mirroring the org-gated pattern the rest of the console uses.
+//
+// The Slack module's `ProfileCredentialCard` (§10). It was the last direct core
+// caller of a platform-named `lib/api` export; the CP calls now go through the
+// module's own `slackApi` bindings, and `ProfileView` reaches it through the
+// registry instead of importing a Slack-named component.
 
 import { useEffect, useState } from 'react'
 import { Button, Icon } from '@/components/ui'
-import { fetchSlackConfig, saveSlackConfig, deleteSlackConfig, fmtDate, type SlackConfigDto } from '@/lib/api'
+import { fmtDate, type SlackConfigDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
+import { slackApi } from './api'
 
 const EMPTY: SlackConfigDto = {
   configured: false,
@@ -30,7 +36,7 @@ const EMPTY: SlackConfigDto = {
   updatedAt: null
 }
 
-export default function SlackConfigCard() {
+export function SlackConfigCard() {
   // Gate the org-scoped fetch on the active org: on a hard refresh `orgBase()` throws
   // "no active organization" until OrgProvider resolves it, so a bare mount-fetch would
   // catch → show "Not configured" even when it IS. Re-fetch when it resolves.
@@ -46,7 +52,8 @@ export default function SlackConfigCard() {
     if (!activeOrg) return
     let alive = true
     setStatus('loading')
-    fetchSlackConfig()
+    slackApi
+      .readConfig()
       .then((s) => alive && setStatus(s))
       .catch(() => alive && setStatus(EMPTY))
     return () => {
@@ -63,7 +70,7 @@ export default function SlackConfigCard() {
     try {
       const refreshTrim = refresh.trim()
       setStatus(
-        await saveSlackConfig({
+        await slackApi.saveConfig({
           accessToken: access.trim(),
           ...(refreshTrim ? { refreshToken: refreshTrim } : {})
         })
@@ -83,7 +90,7 @@ export default function SlackConfigCard() {
     setBusy(true)
     setErr(null)
     try {
-      await deleteSlackConfig()
+      await slackApi.clearConfig()
       setStatus(EMPTY)
       setEditing(false)
     } catch (e) {

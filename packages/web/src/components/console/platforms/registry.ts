@@ -2,7 +2,7 @@
 
 import type { ComponentType } from 'react'
 import type { SessionMessageDto } from '@/lib/api'
-import type { WebChannelListSemantics, WebPlatformModule, WebPlatformRegistry } from './contract'
+import type { WebBotCardCopy, WebChannelListSemantics, WebPlatformModule, WebPlatformRegistry } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
 import { slackModule } from './slack'
@@ -46,6 +46,39 @@ export const DEFAULT_CHANNEL_LIST: WebChannelListSemantics = {
 /** One platform's channel-list display semantics, defaulted. */
 export function channelListSemantics(platformId?: string): WebChannelListSemantics {
   return (platformId ? platformRegistry.get(platformId)?.channelList : undefined) ?? DEFAULT_CHANNEL_LIST
+}
+
+/**
+ * The Settings → Bots row copy every platform gets unless its module says
+ * otherwise — provider-free by construction, because the strings these replace
+ * described Slack's model on every platform's rows.
+ *
+ * `shareHint`'s two arms are the SAME sentence here on purpose. The host picks
+ * an arm by transport, but multi-agent bots are Slack-only at the CP, so for a
+ * platform that declares nothing the transport arm is not the reason sharing is
+ * unavailable and a second sentence would promise a fix that does not exist.
+ */
+export const DEFAULT_BOT_CARD_COPY: Required<WebBotCardCopy> = {
+  revokedHint: 'This bot’s credentials were revoked — re-install to reconnect',
+  shareHint: {
+    available: 'Sharing one bot across several agents isn’t available on this platform',
+    unavailable: 'Sharing one bot across several agents isn’t available on this platform'
+  }
+}
+
+/**
+ * One platform's Settings → Bots row copy, defaulted member by member: a module
+ * may name the revocation it can actually reach without also having to restate
+ * the share sentence, and vice versa. `IntegrationChannelList`'s lookup is total
+ * for the same reason this one is — a bot row carries whatever platform the CP
+ * sent.
+ */
+export function botCardCopy(platformId?: string): Required<WebBotCardCopy> {
+  const copy = platformId ? platformRegistry.get(platformId)?.settingsFragments?.copy : undefined
+  return {
+    revokedHint: copy?.revokedHint ?? DEFAULT_BOT_CARD_COPY.revokedHint,
+    shareHint: copy?.shareHint ?? DEFAULT_BOT_CARD_COPY.shareHint
+  }
 }
 
 /**

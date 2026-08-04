@@ -349,9 +349,51 @@ export interface WebWizardFacet {
 }
 
 /**
+ * Copy the Settings → Bots card writes into chrome the HOST owns — the two
+ * sentences on a bot row that describe a PROVIDER's model rather than
+ * AgentConnect's. Deliberately NOT {@link WebBotSettingsFragments.botCard}
+ * components: the host renders the `revoked` badge and the Sharable cell and
+ * owns the conditions under which each appears, so what a module supplies here
+ * is the wording, not the element.
+ *
+ * Both members are optional and both host defaults are provider-free, because
+ * both strings shipped as Slack's model rendered for EVERY platform: the badge
+ * tooltip named a "Slack workspace" over a Telegram bot, and the toggle told a
+ * Discord bot to switch to a transport Discord does not have.
+ */
+export interface WebBotCardCopy {
+  /**
+   * Tooltip on the `revoked` badge (SettingsView.tsx:1085-1092), rendered
+   * whenever `BotDto.revokedAt` is set.
+   *
+   * Absent ⇒ the host's provider-free sentence, which is the honest answer for
+   * every platform but Slack rather than a placeholder: `revokedAt` is written
+   * by exactly one path, `rc/bot-revoked`, whose reason enum IS Slack's app
+   * lifecycle (`app_uninstalled` / `tokens_revoked`,
+   * protocol/src/frames/relay-cp.ts). No other platform can reach the state
+   * today, so no other module should invent prose about how it got there.
+   */
+  revokedHint?: string
+  /**
+   * Tooltip on the Sharable toggle (:1095-1109), per arm — the HOST picks
+   * which arm by its own predicate (`(bot.transport ?? 'socket') === 'socket'`),
+   * exactly as {@link WebWizardFacet.identityCards} hands over both mode-card
+   * sentences and lets the host choose.
+   *
+   * Absent ⇒ ONE host sentence used for BOTH arms, and the collapse is the
+   * point rather than an economy: multi-agent bots are Slack-only at the
+   * server ("multi-agent bots currently support Slack only",
+   * control-plane http/routes/integrations.ts), so on every other platform the
+   * transport arm the host lands on is not the reason sharing is unavailable
+   * — and two different sentences would promise that switching transport helps.
+   */
+  shareHint?: { available: string; unavailable: string }
+}
+
+/**
  * Settings → Bots fragments (§10 `settingsFragments`), split along the real
- * division in `SettingsView.tsx`: pure per-bot adornments vs the stateful
- * maintenance machinery.
+ * division in `SettingsView.tsx`: pure per-bot adornments, the stateful
+ * maintenance machinery, and the copy the host renders into its own chrome.
  *
  * THE CARD STATE IS THE MODULE'S, NOT A HOST PROP. This interface was published
  * with a `TCardState` type parameter — `useCardState()` returning it and the
@@ -418,6 +460,9 @@ export interface WebBotSettingsFragments {
      *  guard, exactly where both sit today. */
     CardNotice?: ComponentType<{ bot: BotDto }>
   }
+  /** Wording for the two host-rendered row sentences. See
+   *  {@link WebBotCardCopy}; absent ⇒ both provider-free host defaults. */
+  copy?: WebBotCardCopy
 }
 
 /** One install-polling flow's public state — the exact shape of
@@ -526,12 +571,37 @@ export interface WebPlatformModule<TApi = unknown> {
    * `lib/api.ts` from "the typed CP client" to "a request kit any module may
    * build on", which is a bigger contract change than this member is asking
    * for. The seam is what matters: every module-side caller goes through here,
-   * so S4 can move the bodies without touching a call site. One direct caller
-   * remains outside a module — `SlackConfigCard`, which is a PROFILE-page card
-   * (the per-user Slack App Configuration token) and has no member here,
-   * because `settingsFragments` is scoped to Settings → Bots.
+   * so S4 can move the bodies without touching a call site. NO platform-named
+   * caller remains in core: the last one, `SlackConfigCard`, was a Profile-page
+   * card with nowhere to land while `settingsFragments` was the only settings
+   * member and it is scoped to Settings → Bots. It now lives behind
+   * {@link WebPlatformModule.ProfileCredentialCard} and reads the CP through
+   * these bindings like every other surface of its module.
    */
   apiBindings: TApi
+  /**
+   * The signed-in USER's own provider tooling credential, as a card on the
+   * Profile page — today Slack's App Configuration token
+   * (`platforms/slack/profile.tsx`, docs/designs/slack-install-smoothing.md
+   * §Tier B), which is what lets the install wizard create apps as YOU. The
+   * host renders these in registry order (`platforms/profile.tsx`, mounted by
+   * `ProfileView` in both its responsive branches); absent ⇒ the platform
+   * contributes no Profile card, which is every platform but Slack.
+   *
+   * A member of its own rather than a `settingsFragments` sibling because the
+   * two surfaces differ in SCOPE, not just in page: `settingsFragments` adorns
+   * the organization's durable bot identities, while this credential is
+   * per-USER (`GET/PUT/DELETE /slack/config` answers for the calling
+   * principal) and belongs to no bot row at all.
+   *
+   * Deliberately NOT solved by {@link apiBindings}: that member is opaque to
+   * the host by construction, so routing the card's three calls through it
+   * would have made the host the single caller of the one member no host code
+   * may call — and would have left the platform-named component itself sitting
+   * in `components/console/`. What this card was missing was a HOME, not a
+   * client seam.
+   */
+  ProfileCredentialCard?: ComponentType
   /** Out-of-wizard install polling (Slack today). */
   installPolling?: WebInstallPollingFacet
   /** Channel-list display semantics. Absent ⇒ the host defaults: `channel`

@@ -20,7 +20,7 @@ export function SlackManifestPreview() {
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div className="relative rounded-lg bg-white p-2.5">
-            <span className="pointer-events-none absolute rounded-lg inset-0 slack-hint-blink rounded-[10px] ring-2 ring-[#1264a3]" />
+            <span className="pointer-events-none absolute rounded-lg inset-0 step-blink rounded-[10px] ring-2 ring-[#1264a3]" />
             <span className="mb-1.5 flex h-6 w-6 items-center justify-center rounded-md bg-[#f4f4f4] text-[#454545]">
               <Icon name="scroll-text" size={14} />
             </span>

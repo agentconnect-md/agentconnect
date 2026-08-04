@@ -1,6 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
 import {
+  deleteSlackConfig,
   fetchSlackConfig,
   getSlackInstall,
   getSlackPlatformInstall,
@@ -26,6 +27,11 @@ import {
  * `useConsoleData().finalizeSlackInstall`, which also refreshes the console's
  * integration/bot projections — the same reason a create commits through
  * {@link WizardHost.createIntegration}.
+ *
+ * `saveConfig`/`clearConfig` are the Profile card's writes
+ * ({@link WebPlatformModule.ProfileCredentialCard}, `./profile.tsx`): the same
+ * per-user config token the funnel reads, maintained on the page where its
+ * owner lives.
  */
 export const slackApi = {
   startInstall: startSlackInstall,
@@ -34,6 +40,7 @@ export const slackApi = {
   getPlatformInstall: getSlackPlatformInstall,
   readConfig: fetchSlackConfig,
   saveConfig: saveSlackConfig,
+  clearConfig: deleteSlackConfig,
   refreshBot: refreshSlackBot
 }
 

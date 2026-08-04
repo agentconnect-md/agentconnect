@@ -5,6 +5,7 @@ import { inviteBotHint } from '../wizard-chrome'
 import { slackApi, type SlackApi } from './api'
 import { SlackWizardBody, SLACK_TRANSPORT_LABEL } from './Body'
 import { SlackMark } from './mark'
+import { SlackConfigCard } from './profile'
 import { slackSettingsFragments } from './settings'
 import { useSlackPlatformInstall } from './use-platform-install'
 
@@ -44,6 +45,9 @@ export const slackModule: WebPlatformModule<SlackApi> = {
   },
   settingsFragments: slackSettingsFragments,
   apiBindings: slackApi,
+  // The caller's OWN App Configuration token — per-user, so it lives on Profile
+  // rather than on any bot row. Slack is the only platform with one.
+  ProfileCredentialCard: SlackConfigCard,
   installPolling: { useInstallPoll: useSlackPlatformInstall },
   channelList: {
     roomNoun: 'channel',
