@@ -89,6 +89,10 @@ export interface SlackResponseMetadata {
    *  conversation's agent directory before splitting. The final event carries the whole
    *  set even when the visible mention landed in an earlier physical message (§5.2). */
   mentionedAgentIds: string[]
+  /** Did the COMPLETE response address anyone at all (a human or another app included)?
+   *  `mentionedAgentIds` cannot answer that, and the final event's own text may not hold
+   *  the mention when the answer was split — see AgentAuthorshipClaimSchema. */
+  addressedAnyone?: boolean
   /** Only on the visible half of a paired `toAgent + channel` send (§3.2); it correlates
    *  this post with the internal wake that carries the authoritative call envelope. */
   agentCallDeliveryId?: string
@@ -134,6 +138,7 @@ function slackMessageMetadata(
                 delivery_state: response.deliveryState,
                 hop_count: response.hopCount,
                 mentioned_agent_ids: response.mentionedAgentIds,
+                ...(response.addressedAnyone ? { addressed_anyone: true } : {}),
                 ...(response.agentCallDeliveryId ? { agent_call_delivery_id: response.agentCallDeliveryId } : {})
               }
             : {})

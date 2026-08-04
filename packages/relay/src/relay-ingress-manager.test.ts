@@ -674,6 +674,18 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sendMsg).not.toHaveBeenCalled()
     })
 
+    it('does not continue when the mention landed in an EARLIER split section', async () => {
+      // Same gap as the direct ladder: `mentionedBots` comes from the FINAL section only,
+      // so an address in section one leaves both mention sets empty here. The author's
+      // complete-response claim is what still carries it.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(
+        BOT_ID,
+        agentFinal({ mentionedAgentIds: [], addressedAnyone: true }, { text: '…the last part', mentionedBots: [] })
+      )
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
     it('refuses to forward an implicit continuation to a daemon that predates the field', async () => {
       // §8.4 fail-closed. An older daemon ignores `trustedRouteVia` and reads every
       // agent-authored delivery as an explicit mention, which CLEARS a `!stop` mute — so

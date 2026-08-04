@@ -141,6 +141,14 @@ ladder a human message takes, with the author removed from the candidate set:
   Only a response that names NOBODY is unaddressed, and only that one continues.
   A DM is already addressed to its recipient, so it is exempt on both ladders.
 
+  Because only the LAST physical section is marked `final` (§5.5) and every
+  non-agent mention is otherwise visible only in that section's own text, the
+  final event also carries `addressedAnyone` for the COMPLETE response. Without
+  it, an answer that mentions a human in section one and ends without a mention
+  would arrive with both mention sets empty, and whether the address bound would
+  depend on where the splitter happened to cut. Absent on an older author's
+  message ⇒ false, so its finals stay routable exactly as before.
+
 - **The author can never be the target.** This is the one absolute. An agent's own
   reply always matches its own rule, so self-activation is not a loop the hop cap
   slows down — it is unconditional. The author is excluded once, before any rung.
@@ -387,6 +395,7 @@ final platform event
 |    |       default), author excluded -> claim activation key -> dispatch once
 |    |- names someone -> explicit outcome or none; never the implicit ladder
 |    |    |- unmatched mention (a human, another app, a bare shared bot) -> transcript only
+|    |       (from this section's text, or the claim's complete-response `addressedAnyone`)
 |    |    |- only the author -> transcript only
 |    |    |- author -> target policy denied / conversation Off / not local -> transcript only
 |    |    `- target in verified recipient set -> claim activation key -> dispatch once

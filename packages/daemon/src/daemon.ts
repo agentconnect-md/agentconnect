@@ -161,6 +161,7 @@ import { discordCommandChrome } from './platforms/discord/command-chrome.js'
 import { feishuCommandChrome } from './platforms/feishu/command-chrome.js'
 import {
   resolveSlackMentionedAgents,
+  slackTextAddressesAnyone,
   slackMentionAddress,
   SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX
 } from '@agentconnect.md/message'
@@ -5611,6 +5612,7 @@ export class Daemon {
     sourceHopCount: number
     responseId: string
     recipients: string[]
+    addressedAnyone: boolean
     agentCallDeliveryId?: string
   } | null {
     if (msg.platform !== 'slack') return null
@@ -5635,6 +5637,9 @@ export class Daemon {
       sourceHopCount: claim.hopCount,
       responseId: claim.responseId,
       recipients: claim.mentionedAgentIds,
+      // The author's own statement about the COMPLETE response, which the final event's
+      // text cannot reproduce once the answer was split (§2.3).
+      addressedAnyone: claim.addressedAnyone === true,
       ...(claim.agentCallDeliveryId ? { agentCallDeliveryId: claim.agentCallDeliveryId } : {})
     }
   }
@@ -5676,8 +5681,15 @@ export class Daemon {
     // or none. The test therefore runs BEFORE the author is filtered out: a response whose
     // only name is its own author has still addressed the conversation explicitly, and
     // must not be handed to an unrelated peer.
-    if (verified.recipients.length === 0)
+    if (verified.recipients.length === 0) {
+      // The response named no AGENT — but it may still have addressed a human or another
+      // app, and §2.3 makes any address binding. `routeRules` catches that from
+      // `mentionedBots` when the mention is in this physical message; the author's claim
+      // catches it when the splitter left the mention in an earlier section, which is the
+      // only place that fact still exists by now.
+      if (verified.addressedAnyone && !msg.isDm) return transcriptOnly('addressed someone who is not an agent')
       return this.routeAgentMessageImplicitly(msg, verified, deliveryHopCount, srcIntegrationIds)
+    }
     // The author can never activate itself (§2.3).
     const targets = verified.recipients.filter((id) => id !== verified.authorAgentId)
     if (targets.length === 0) return transcriptOnly('named only its own author')
@@ -12612,7 +12624,12 @@ export class Daemon {
               this.cpCollab.mentionDirectory(orgId, p.platform, p.channel)
             ).filter((id) => id !== p.agentId)
           : []
-        await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, (m) => this.log.debug(m))
+        // Whether the answer addressed ANYONE is read from the complete reply text, not
+        // from the final section: §2.3 makes any address binding, and the splitter may
+        // have put the only mention in section one. Without this the same answer would
+        // wake a peer or not depending on where the cut landed.
+        const addressedAnyone = slackTextAddressesAnyone(p.replyText)
+        await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
       }
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable

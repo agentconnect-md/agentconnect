@@ -316,6 +316,31 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
+  it('does not continue when the mention landed in an EARLIER split section', async () => {
+    // §5.5 marks only the last physical section `final`, and `mentionedBots` is reparsed
+    // from that section's text. A long answer that addresses a human in section one and
+    // ends without a mention therefore arrives with BOTH mention sets empty — so whether
+    // the address binds would depend on where the splitter happened to cut. The author's
+    // claim covers the complete response and is the only place that fact still exists.
+    const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const tailSection = agentMessage(
+      { text: '…and that is the last part of the answer.', mentionedBots: [] },
+      { mentionedAgentIds: [], addressedAnyone: true }
+    )
+    expect((daemon as any).onInboundOutcome(tailSection, ['int-bot-b']).kind).toBe('rejected')
+    expect(calls).toHaveLength(0)
+
+    // The same tail from an author that never claimed an address still continues — an
+    // older daemon cannot report the fact, and its finals must not become unroutable.
+    const unclaimed = agentMessage(
+      { msgId: 'slack:C1:1720000000.000203:final', text: 'no mention anywhere', mentionedBots: [] },
+      { mentionedAgentIds: [] }
+    )
+    expect((daemon as any).onInboundOutcome(unclaimed, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+    await daemon.stop()
+  })
+
   it('reads the `!stop` mute in the TARGET’s scope, not the observing connection’s', async () => {
     // Every dedicated app sees the same channel post, so the author's connection can be
     // the one that wins the target's activation rendezvous. If it looked the mute up under

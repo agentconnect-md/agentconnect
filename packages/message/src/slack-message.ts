@@ -86,12 +86,18 @@ export function readAgentAuthorshipClaim(
   if (!Array.isArray(rawMentioned)) return undefined
   const mentionedAgentIds = rawMentioned.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
   const agentCallDeliveryId = optionalString(payload, 'agent_call_delivery_id')
+  // Absent ⇒ false: an older author daemon cannot report it, and its finals must stay
+  // routable exactly as before rather than becoming silently unroutable. Only an explicit
+  // `true` asserts it, so a malformed value degrades to "named nobody" instead of
+  // blocking every continuation.
+  const addressedAnyone = payload.addressed_anyone === true
   return {
     authorAgentId,
     responseId,
     deliveryState,
     hopCount,
     mentionedAgentIds,
+    ...(addressedAnyone ? { addressedAnyone } : {}),
     ...(agentCallDeliveryId ? { agentCallDeliveryId } : {})
   }
 }
@@ -100,6 +106,20 @@ export function readAgentAuthorshipClaim(
 export type SlackMessage = SlackMessageLike & { channel: string; ts: string }
 
 const MENTION_RE = /<@([A-Z0-9]+)>/g
+
+/**
+ * Does this text address ANYONE — an agent, a human, or another app?
+ *
+ * Deliberately the same pattern `mentionedBots` is built from, so the author's
+ * "did I address someone" claim and the reader's own parse can never disagree about what
+ * counts as a mention (send-message-routing-rework.md §2.3, where any address is
+ * binding). Callers pass the COMPLETE logical response: the final physical section alone
+ * cannot answer this once an answer has been split.
+ */
+export function slackTextAddressesAnyone(text: string): boolean {
+  // A fresh lastIndex per call — the shared /g regex is stateful and `test` advances it.
+  return new RegExp(MENTION_RE.source).test(text)
+}
 
 /** Map provider file metadata to a fetchable attachment, dropping malformed or
  * tombstoned files that have no stable id and provider URL. */

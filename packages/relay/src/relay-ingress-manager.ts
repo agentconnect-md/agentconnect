@@ -681,7 +681,13 @@ export class RelayIngressManager {
       // here is what keeps one message from waking a peer over the relay and nobody over
       // a direct connection. A DM is already addressed to its recipient, so it is exempt
       // on both sides.
-      if (!msg.isDm && msg.mentionedBots.length > 0) return drop('addressed someone this relay cannot resolve')
+      // `mentionedBots` is reparsed from the FINAL section's text, so it misses a mention
+      // the splitter left in an earlier one; the author's claim covers the complete
+      // response and is the only place that fact survives. Either is enough — an address
+      // is an address wherever in the answer it appeared.
+      if (!msg.isDm && (msg.mentionedBots.length > 0 || claim.addressedAnyone === true)) {
+        return drop('addressed someone this relay cannot resolve')
+      }
       const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
       if (!implicit) return drop('no implicit rung matched')
       targets = [implicit.agentId]
