@@ -173,6 +173,42 @@ describe('handleKnowledgeList', () => {
     expect(connection.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
     expect(listKnowledge).not.toHaveBeenCalled()
   })
+
+  it('requires ALL requested tags (AND), matching the tool contract', async () => {
+    const listKnowledge = vi.fn(async () => [
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        title: 'Both',
+        summary: null,
+        tags: ['release', 'infra'],
+        currentRevision: 1,
+        updatedAt: new Date('2026-07-31T01:00:00.000Z'),
+        content: 'a'
+      },
+      {
+        id: '22222222-2222-4222-8222-222222222222',
+        title: 'One',
+        summary: null,
+        tags: ['release'],
+        currentRevision: 1,
+        updatedAt: new Date('2026-07-31T01:00:00.000Z'),
+        content: 'b'
+      }
+    ])
+    const deps = {
+      registry: featureRegistry,
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      organizationKnowledge: { listKnowledge }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+    await handleKnowledgeList(
+      frame('knowledge/list', { requesterAgentId: AGENT, limit: 10, maxBytes: 8192, tags: ['release', 'infra'] }),
+      connection,
+      deps
+    )
+    const items = connection.replyTo.mock.calls[0]![2].items as { id: string }[]
+    expect(items.map((i) => i.id)).toEqual(['11111111-1111-4111-8111-111111111111']) // "One" (missing infra) excluded
+  })
 })
 
 describe('handleOrgSkills', () => {

@@ -88,7 +88,7 @@ export const handleKnowledgeList: Handler = async (frame, conn, deps) => {
   }
   const tags = frame.payload.tags
   const rows = (await repo.listKnowledge(requester.orgId, false))
-    .filter((row) => tags === undefined || tags.some((t) => row.tags.includes(t)))
+    .filter((row) => tags === undefined || tags.every((t) => row.tags.includes(t)))
     .slice(0, frame.payload.limit)
   let remaining = frame.payload.maxBytes
   const items = []

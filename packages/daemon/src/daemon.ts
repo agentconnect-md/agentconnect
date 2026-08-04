@@ -2777,15 +2777,7 @@ export class Daemon {
       socketPath: mcpSocketPath(root),
       log: this.log,
       now: () => Date.now(),
-      canRun: (ctx) => {
-        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-        const active = this.activeGateEntries.get(key)
-        // A transient safety drain only gates NEW admissions while an interrupted turn
-        // unwinds. It must not break MCP tools in an unrelated, already-running turn.
-        // Persisted pause is agent-wide; cancellation is latched on the exact active key.
-        // MCP tokens are session-static, so absence of an active turn must fail closed too.
-        return !this.paused(ctx.agentId) && active !== undefined && !active.cancelledReason
-      },
+      canRun: (ctx) => this.toolTurnRunnable(ctx),
       setSessionTitle: (req) => this.setSessionTitleFromTool(req),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
@@ -5180,6 +5172,35 @@ export class Daemon {
    * in {@link runDreamExtractionOnHost}; credential isolation in
    * {@link buildDreamHost}.
    */
+  /**
+   * Whether an MCP tool call bound to `ctx` may run (the shared `canRun` gate).
+   * An ordinary chat turn must have an admitted, non-cancelled gate entry — a
+   * session-static MCP token must fail closed once its turn ends. A DREAM runs
+   * off the chat-turn queue with its own lifecycle (abort signal + one-off host +
+   * the tool bridge token unregistered on teardown), so it never populates
+   * `activeGateEntries`; its read-only org-context tools are gated only on the
+   * agent not being paused. Without this carve-out every dream tool call would
+   * throw "this agent turn has been stopped".
+   */
+  private toolTurnRunnable(ctx: {
+    agentId: string
+    platform: string
+    channel: string
+    thread: string
+    transportScope?: string
+  }): boolean {
+    if (this.paused(ctx.agentId)) return false
+    if (ctx.platform === 'dream') return true
+    const active = this.activeGateEntries.get(
+      sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    )
+    // A transient safety drain only gates NEW admissions while an interrupted
+    // turn unwinds; it must not break MCP tools in an already-running turn.
+    // Cancellation is latched on the exact active key; absence of an active turn
+    // fails closed (the token outlives nothing).
+    return active !== undefined && !active.cancelledReason
+  }
+
   private async runDreamExtraction(
     agentId: string,
     systemPrompt: string,
