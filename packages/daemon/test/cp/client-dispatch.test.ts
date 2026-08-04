@@ -608,7 +608,7 @@ describe('CpClient dispatch', () => {
     const f = JSON.parse(frame('workspace/gitstatus', { agentId: 'a1' }, { epoch: 5 }))
     t.pushInbound(JSON.stringify(f))
     await tick()
-    expect(workspaceGit.status).toHaveBeenCalledWith('a1')
+    expect(workspaceGit.status).toHaveBeenCalledWith('a1', undefined)
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('workspace/gitstatus/result')
     expect(rep.corr).toBe(f.id)
