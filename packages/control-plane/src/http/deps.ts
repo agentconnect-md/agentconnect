@@ -70,17 +70,6 @@ import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.j
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
-import type { SlackBotVerifier, SlackAppTokenVerifier } from './slack-identity.js'
-import type { SlackPlatformAppConfig } from '../config/slack-platform.js'
-import type { SlackConfigApi } from './slack-config-api.js'
-import type { TelegramBotVerifier } from './telegram-identity.js'
-import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
-import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from './discord-identity.js'
-import type { DiscordBotProfileSyncer } from './discord-bot-profile.js'
-import type { FeishuBotVerifier } from './feishu-identity.js'
-import type { FeishuAppIconSyncer } from './feishu-app-icon.js'
-import type { FeishuAppRegistrationService } from './feishu-registration.js'
-import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { SkillRegistrySearcher } from './skills-registry.js'
 import type { Readiness } from './readiness.js'
 import type { McpRateLimiter } from './mcp/rate-limit.js'
@@ -232,13 +221,31 @@ export interface HttpDeps {
     oauth: OAuthRepo
   }
   registry: DaemonRegistry
-  /** §9 platform-provider registry — the single platform-set authority.
-   *  `server.ts` mounts each provider's `installRoutes(scope)` (so no core file
-   *  imports a funnel-route factory), and the create route folds each
-   *  provider's `credentialBodySchema` / `refineCreateBody` into its request
-   *  schema, dispatches the live credential check through `validateConfig`, and
-   *  writes its rows from `buildNewBotInstall` — so no route file names a
-   *  platform. */
+  /**
+   * §9 platform-provider registry — the single platform-set authority, and the
+   * ONLY per-platform member of this bundle. `server.ts` mounts each provider's
+   * `installRoutes(scope)` (so no core file imports a funnel-route factory); the
+   * create route folds each provider's `credentialBodySchema` /
+   * `refineCreateBody` into its request schema, dispatches the live credential
+   * check through `validateConfig`, and writes its rows from
+   * `buildNewBotInstall`; the agent-icon fan-out probes
+   * `sideEffects.syncBotProfileIcon`; the Slack routes read the caller's stored
+   * App Configuration token through `providerToolingCredentials`; and
+   * `orchestrator/httpBot.ts` gates an `rc/bot-assign` on
+   * `secretShape.httpAssignRequires`. So no route file names a platform.
+   *
+   * The twelve platform-named slots this bundle used to carry (`verifySlackBot`,
+   * `slackConfigApi`, `verifyTelegramBot`, `syncTelegramBotIcon`,
+   * `verifyDiscordBot`, `ensureDiscordMessageContentIntent`,
+   * `syncDiscordBotProfile`, `verifyFeishuBot`, `configureFeishuHttpApp`,
+   * `syncFeishuAppIcon`, `feishuAppRegistration`, `verifySlackAppToken`, plus
+   * `slackPlatformApp`) are gone: the CAPABILITY questions they were probed for
+   * are answered here, and the INJECTION they provided moved to
+   * `http/platform-route-seams.ts`, which each provider's route factories take
+   * as a second argument. Everything is read THROUGH this registry at call time
+   * — never captured at construction — because the composition root publishes it
+   * late (a provider is built FROM this very bundle).
+   */
   platforms: CpPlatformRegistry
   /** The ONE assembler of CP→daemon AgentSpecs (owns secret loading + icon bases) —
    *  every spec emission (upsert replicate, icon refresh, move activation) uses it. */
@@ -307,53 +314,11 @@ export interface HttpDeps {
   webchatMcpMetrics?: Pick<WebchatMcpMetrics, 'invocation' | 'requestDuration'>
   /** Process readiness gate for `/readyz` (rolling-update drain, issue #240). */
   readiness: Readiness
-  /** Validates a pasted Slack bot token against `auth.test` (and derives the bot name
-   *  from it when the install omits one). Optional/injectable so tests stay offline
-   *  (absent ⇒ no validation, route falls back to the agent name). */
-  verifySlackBot?: SlackBotVerifier
-  /** Validates a pasted Slack app-level token against `apps.connections.open`.
-   *  Optional/injectable (absent ⇒ no app-token validation). */
-  verifySlackAppToken?: SlackAppTokenVerifier
-  /** Slack App-management + OAuth calls for the config-token auto-install funnel
-   *  (§Tier B). Optional/injectable; absent (with PUBLIC_CP_URL) ⇒ the funnel routes
-   *  404 and the console falls back to the manual manifest flow. */
-  slackConfigApi?: SlackConfigApi
   /** Reads the public skills.sh index for the Skills library's "Install from
    *  skills.sh" search. Optional/injectable so tests stay offline (absent ⇒ the
    *  search route reports the index unreachable and the console offers the GitHub
    *  import path instead). */
   searchSkillRegistry?: SkillRegistrySearcher
-  /** Validates a Telegram token, derives its bot name, and checks that Group Privacy
-   *  Mode is disabled before the integration is installed. */
-  verifyTelegramBot: TelegramBotVerifier
-  /** Applies an Agent icon to a Telegram bot profile.
-   *  Cosmetic and best-effort: install/icon updates survive a sync failure. */
-  syncTelegramBotIcon?: TelegramBotIconSyncer
-  /** Validates a pasted Discord bot token against `GET /users/@me` (and derives the bot
-   *  name from it when the install omits one). Optional/injectable so tests stay offline
-   *  (absent ⇒ no validation, route falls back to the agent name). */
-  verifyDiscordBot?: DiscordBotVerifier
-  /** Ensures the Discord application has Message Content enabled before credentials
-   *  are stored. Test composition injects an offline success stub. */
-  ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer
-  /** Applies an Agent icon and description to the Discord bot/application profile.
-   *  Cosmetic and best-effort: install/icon updates survive a sync failure. */
-  syncDiscordBotProfile?: DiscordBotProfileSyncer
-  /** Validates a pasted Feishu appId + appSecret via the tenant-access-token exchange
-   *  (and derives the bot name from `bot/v3/info` when the install omits one).
-   *  Optional/injectable so tests stay offline (absent ⇒ no validation, route falls
-   *  back to the agent name). */
-  verifyFeishuBot?: FeishuBotVerifier
-  /** Applies the sensitive delivery URL and verification keys that the official
-   *  one-click registration deeplink intentionally cannot carry. */
-  configureFeishuHttpApp: FeishuHttpAppConfigurator
-  /** Applies an Agent icon to a self-built Feishu/Lark app and submits the
-   *  updated application version. Cosmetic and best-effort. */
-  syncFeishuAppIcon?: FeishuAppIconSyncer
-  /** Owns the short-lived official Feishu/Lark device-registration poll. The
-   *  browser sees only a deeplink + opaque id; credentials are finalized through
-   *  BotSecretStore before the session becomes completed. */
-  feishuAppRegistration: FeishuAppRegistrationService
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
@@ -379,9 +344,5 @@ export interface HttpDeps {
   /** open-connector integration client (docs: connectors); absent ⇒ OPEN_CONNECTOR_URL
    *  unset, the connectors routes 404 and the console hides "Add connectors". */
   connectors?: ConnectorsClient
-  /** Platform-published (distributed) Slack app credentials (preset-agents.md §5.3);
-   *  absent ⇒ SLACK_PLATFORM_* unset, the install routes 404 and the console hides
-   *  "Add to Slack". Secret material — NEVER log or DTO. */
-  slackPlatformApp?: SlackPlatformAppConfig
   config: HttpServerConfig
 }

@@ -145,6 +145,10 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   // When set, `bots.get` reports a BUMPED generation from its second call on —
   // a re-install landing between revokeBot's commit and its external effects.
   let bumpRevisionAfterFirstGet: boolean
+  // Operator-facing diagnostics the orchestrator emitted — the completeness
+  // gate's message and its bindings ARE the contract for an operator debugging
+  // "why is my bot not receiving anything".
+  let warns: { bindings: Record<string, unknown>; message: string }[]
 
   function makeOrch(platforms = PLATFORMS): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
@@ -309,7 +313,13 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       control as never,
       threads,
       sessions as SessionRepo,
-      { info() {}, warn() {}, debug() {} },
+      {
+        info() {},
+        warn(bindings: Record<string, unknown>, message: string) {
+          warns.push({ bindings, message })
+        },
+        debug() {}
+      },
       platforms
     )
   }
@@ -333,6 +343,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     bumpRevisionAfterFirstGet = false
     botRevokedAt = null
     removals = []
+    warns = []
   })
 
   describe('lookupThread — SessionMeta fallback on affinity miss (§7.2 case 2a)', () => {
@@ -377,6 +388,108 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         target: null,
         participants: [{ agentId: BOB, daemonId: D2 }]
       })
+    })
+  })
+
+  /**
+   * §9 `secretShape.httpAssignRequires` — the completeness gate core runs before
+   * asking a provider to project the assign bags. It used to be two hand-written
+   * arms in this file (`bot.platform === 'slack' && !secret.signingSecret`,
+   * `bot.platform === 'feishu' && (!secret.verificationToken || !secret.appToken)`);
+   * the slots are now READ OFF the platform that owns them, so a fifth platform's
+   * requirement arrives with its provider and no core edit.
+   */
+  describe('incomplete callback credentials (§9 secretShape.httpAssignRequires)', () => {
+    const cases: {
+      platform: BotRecord['platform']
+      secret: BotSecretMaterial
+      missing: string[]
+    }[] = [
+      // Slack ⇒ signingSecret: an http-mode bot the relay cannot HMAC-verify.
+      {
+        platform: 'slack',
+        secret: { botToken: 'xoxb-x', appToken: 'xapp-x', signingSecret: null },
+        missing: ['signingSecret']
+      },
+      // Feishu ⇒ verificationToken + appToken (the app id lives in the appToken
+      // slot — the two-slot overloading), reported one at a time…
+      {
+        platform: 'feishu',
+        secret: { botToken: 'secret', appToken: 'cli_x', signingSecret: null, verificationToken: null },
+        missing: ['verificationToken']
+      },
+      {
+        platform: 'feishu',
+        secret: { botToken: 'secret', appToken: null, signingSecret: null, verificationToken: 'vt' },
+        missing: ['appToken']
+      },
+      // …and both together, which the old Feishu arm could not say.
+      {
+        platform: 'feishu',
+        secret: { botToken: 'secret', appToken: null, signingSecret: null, verificationToken: null },
+        missing: ['verificationToken', 'appToken']
+      }
+    ]
+
+    for (const { platform, secret, missing } of cases) {
+      it(`syncBot refuses a ${platform} bot missing ${missing.join(' + ')} and says which slots`, async () => {
+        botRow = bot({ platform })
+        for (const int of integrations) int.platform = platform
+        secretMaterial = secret
+
+        await expect(makeOrch().syncBot(BOT)).resolves.toBeUndefined()
+
+        // Nothing armed: no ingress the relay could not verify, and no send-only
+        // spec either (an unassigned bot has no inbound path).
+        expect(ch.sends).toEqual([])
+        expect(upserts).toEqual([])
+        expect(warns).toEqual([
+          {
+            bindings: { botId: BOT, platform, missing },
+            message: 'http-bot: incomplete callback credentials — cannot assign'
+          }
+        ])
+      })
+
+      it(`replayTo skips a ${platform} bot missing ${missing.join(' + ')} without failing the replay`, async () => {
+        botRow = bot({ platform })
+        for (const int of integrations) int.platform = platform
+        secretMaterial = secret
+        const fresh = new FakeChannel('66666666-6666-4666-8666-666666666667')
+
+        await expect(makeOrch().replayTo(fresh)).resolves.toBeUndefined()
+
+        // Silent by design (unchanged): the replay walks every http bot, and one
+        // incomplete row must not turn the seed into a log storm.
+        expect(fresh.sends).toEqual([])
+        expect(warns).toEqual([])
+      })
+    }
+
+    it('a platform declaring no required slots is never gated here', async () => {
+      // Telegram/Discord declare `httpAssignRequires: []`. Their bots cannot take
+      // the http transport at all (the create route refuses it on the missing
+      // `projectBotAssign`), so the absent-projector fence — not this gate — is
+      // what stops them, and it must still be what fires.
+      botRow = bot({ platform: 'telegram' })
+      for (const int of integrations) int.platform = 'telegram'
+      secretMaterial = { botToken: 'tg', appToken: null, signingSecret: null }
+
+      await expect(makeOrch().syncBot(BOT)).resolves.toBeUndefined()
+
+      expect(ch.sends).toEqual([])
+      expect(warns.map((w) => w.message)).toEqual(['http-bot: platform contributes no relay ingress — skipping'])
+    })
+
+    it('a complete Feishu credential assigns', async () => {
+      botRow = bot({ platform: 'feishu' })
+      for (const int of integrations) int.platform = 'feishu'
+      secretMaterial = { botToken: 'secret', appToken: 'cli_x', signingSecret: null, verificationToken: 'vt' }
+
+      await makeOrch().syncBot(BOT)
+
+      expect(ch.sends.filter((send) => send.type === 'rc/bot-assign')).toHaveLength(1)
+      expect(warns).toEqual([])
     })
   })
 

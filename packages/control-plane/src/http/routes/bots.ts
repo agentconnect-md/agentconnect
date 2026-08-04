@@ -16,20 +16,8 @@ import { type BotRecord, isSyntheticEmail } from '../../persistence/ports.js'
 import { BotStillShared } from '../../persistence/errors.js'
 import { BotId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
-import {
-  BotDto,
-  BotListDto,
-  SlackBotRefreshDto,
-  UpdateBotBody,
-  ErrorDto,
-  IdParam,
-  type BotDtoT,
-  type SlackBotRefreshDtoT
-} from '../dto/index.js'
+import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
-import { resolveUserConfigAccessToken } from '../slack-user-config.js'
-import { mergeManagedSlackManifest, slackOAuthRedirectUri, SLACK_BOT_SCOPES } from '../slack-manifest.js'
-import { relayHttpBase } from './slack-install.js'
 
 function toDto(b: BotRecord): BotDtoT {
   return {
@@ -55,34 +43,6 @@ function toDto(b: BotRecord): BotDtoT {
     workspaceName: b.workspaceName,
     revokedAt: b.revokedAt?.toISOString() ?? null,
     createdAt: b.createdAt.toISOString()
-  }
-}
-
-const MANUAL_MANIFEST_ERRORS = new Set([
-  'app_not_eligible',
-  'app_not_found',
-  'app_not_owned_by_manager_app',
-  'invalid_app_id',
-  'no_permission'
-])
-
-export function slackAppLinks(
-  appId: string,
-  teamId: string | null
-): Pick<SlackBotRefreshDtoT, 'settingsUrl' | 'manifestUrl' | 'permissionsUrl' | 'reinstallUrl'> {
-  const encodedAppId = encodeURIComponent(appId)
-  const base = `https://api.slack.com/apps/${encodedAppId}`
-  const workspaceBase = teamId
-    ? `https://app.slack.com/app-settings/${encodeURIComponent(teamId)}/${encodedAppId}`
-    : null
-  return {
-    settingsUrl: base,
-    // Slack's current App Manifest and OAuth & Permissions editors both need the
-    // workspace id (from auth.test) and app id. Reinstall uses Slack's direct
-    // app-scoped install flow and therefore still works when auth.test fails.
-    manifestUrl: workspaceBase ? `${workspaceBase}/app-manifest` : base,
-    permissionsUrl: workspaceBase ? `${workspaceBase}/oauth` : base,
-    reinstallUrl: `${base}/install-on-team?`
   }
 }
 
@@ -126,112 +86,6 @@ export function botRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         return toDto(bot)
-      }
-    )
-
-    r.post(
-      '/bots/:id/slack/refresh',
-      {
-        schema: {
-          tags: [Tag.Bots],
-          summary: 'Refresh a Slack app',
-          description:
-            "Sync AgentConnect's required configuration into an existing Slack app without deleting user-owned manifest fields, then check the workspace installation's granted bot scopes. Returns Slack settings links when manual permission updates or workspace reinstallation are required.",
-          operationId: 'refreshSlackBot',
-          params: IdParam,
-          response: { 200: SlackBotRefreshDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
-        }
-      },
-      async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return
-        const bot = await deps.repos.bot.get(BotId(req.params.id))
-        if (!bot || bot.orgId !== req.orgCtx!.orgId) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
-        }
-        if (bot.platform !== 'slack') {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'only Slack apps can be refreshed' })
-        }
-        if (!bot.slackAppId) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'Slack app id is unavailable — update this app manually in Slack'
-          })
-        }
-        const secret = await deps.repos.botSecret.get(bot.id)
-        if (!secret) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'Slack app credentials are unavailable' })
-        }
-
-        // Verify identity before mutating the manifest. A manually registered
-        // integration stores two independently pasted tokens; if the bot token
-        // belongs to another app, updating the app encoded by the xapp token would
-        // modify the wrong Slack app.
-        const checked = await deps.verifySlackBot?.(secret.botToken)
-        const appIdentityMatches = checked?.status === 'ok' && checked.appId === bot.slackAppId
-        if (appIdentityMatches && checked.teamId) {
-          await deps.repos.bot.setWorkspaceMetadata(bot.id, checked.teamId, checked.teamName)
-        }
-        // A built-in app's manifest is deployment-managed rather than owned by
-        // the signed-in user's Slack config token. Refresh still verifies its
-        // installed scopes so the Console can offer the platform OAuth reinstall.
-        let manifest: SlackBotRefreshDtoT['manifest'] = bot.prebuilt ? 'synced' : 'manual_update_required'
-        const api = deps.slackConfigApi
-        // Manifest sync needs a config token that owns THIS app — i.e. the caller's
-        // own (per-user). If they don't own it (or stored none), Slack rejects the
-        // export/update and `manifest` stays `manual_update_required` — the graceful
-        // fallback the DTO already surfaces via the Slack settings links.
-        if (!bot.prebuilt && api && appIdentityMatches && req.principal) {
-          const config = await resolveUserConfigAccessToken(deps, bot.orgId, req.principal.userId, new Date())
-          if (config.ok) {
-            const exported = await api.exportApp(config.accessToken, bot.slackAppId)
-            if (exported.ok) {
-              const redirectUrl = deps.config.PUBLIC_CP_URL
-                ? slackOAuthRedirectUri(deps.config.PUBLIC_CP_URL)
-                : undefined
-              // An HTTP-mode bot's manifest keeps Socket Mode off + the relay pool's
-              // request_urls (slack-http-mode §6); a socket bot's refresh is unchanged.
-              const httpRelayBase = bot.transport === 'http' ? relayHttpBase(deps.config.PUBLIC_RELAY_URL) : null
-              const updated = await api.updateApp(
-                config.accessToken,
-                bot.slackAppId,
-                mergeManagedSlackManifest(exported.manifest, bot.name, redirectUrl, httpRelayBase ?? undefined)
-              )
-              manifest = updated.ok
-                ? 'synced'
-                : MANUAL_MANIFEST_ERRORS.has(updated.error)
-                  ? 'manual_update_required'
-                  : 'unknown'
-            } else {
-              manifest = MANUAL_MANIFEST_ERRORS.has(exported.error) ? 'manual_update_required' : 'unknown'
-            }
-          } else if (config.reason === 'unreachable') {
-            manifest = 'unknown'
-          }
-        }
-
-        let authorization: SlackBotRefreshDtoT['authorization'] = 'unknown'
-        let missingScopes: string[] = []
-        if (checked?.status === 'invalid') {
-          authorization = 'invalid'
-        } else if (checked?.status === 'ok' && checked.appId && checked.appId !== bot.slackAppId) {
-          authorization = 'app_mismatch'
-        } else if (checked?.status === 'ok' && checked.scopes) {
-          const granted = new Set(checked.scopes)
-          missingScopes = SLACK_BOT_SCOPES.filter((scope) => !granted.has(scope))
-          authorization = missingScopes.length > 0 ? 'reinstall_required' : 'current'
-        }
-
-        return {
-          manifest,
-          authorization,
-          missingScopes,
-          ...slackAppLinks(bot.slackAppId, appIdentityMatches && checked?.status === 'ok' ? checked.teamId : null)
-        }
       }
     )
 

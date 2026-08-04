@@ -22,16 +22,21 @@
  *
  * THE INSTANCE MODEL. A provider is per-platform and constructed once at
  * `buildContainer` time from its env slice + its own API clients. The audit's
- * biggest CP blind spot (integration-plugin-audit.md Appendix C §5.1) is
+ * biggest CP blind spot (integration-plugin-audit.md Appendix C §5.1) was
  * "optional-dependency presence as the branch": twelve per-platform named dep
- * slots on core deps (`http/deps.ts:301-347` — `verifySlackBot`,
- * `verifyTelegramBot`, `syncDiscordBotProfile`, `configureFeishuHttpApp`, …)
- * wired positionally in `container.ts:844-856`, consumed via `if
- * (deps.syncTelegramBotIcon)`-style probes. Those slots dissolve into the
- * provider instances; core keeps ONE registry of providers and asks the
- * registry, never a named field. Test composition keeps its offline stubs by
- * constructing providers with stub clients — the injectability the named
- * slots existed for.
+ * slots on core deps (`verifySlackBot`, `verifyTelegramBot`,
+ * `syncDiscordBotProfile`, `configureFeishuHttpApp`, …) wired positionally in
+ * `container.ts`, consumed via `if (deps.syncTelegramBotIcon)`-style probes.
+ * Those slots are GONE. They conflated two things: the CAPABILITY question,
+ * which core now asks this registry (`sideEffects.syncBotProfileIcon`,
+ * `providerToolingCredentials`, `secretShape`, `projectBotAssign`) and never a
+ * named field; and INJECTION, which is not a core concern at all — each
+ * platform's route factories take their own seams as a second argument
+ * (`http/platform-route-seams.ts`), and the composition root builds the seams,
+ * the routes and the provider from the SAME values. Test composition keeps its
+ * offline stubs by constructing providers and seams with stub clients — the
+ * injectability the named slots existed for — read THROUGH a mutable bag so a
+ * stub swapped after the app is built is still observed.
  *
  * WIRE PROJECTION IS TODAY'S WIRE, not the audit-era one. Since the §6.4
  * emission flip, `IntegrationSpec` is envelope-only — `core` routing knobs +
@@ -226,9 +231,12 @@ export interface CpSecretShape {
   slots: Readonly<Partial<Record<keyof BotSecretMaterial, string>>>
   /** Slots that must be non-empty before an `rc/bot-assign` can be built —
    *  core's completeness gate before it calls {@link
-   *  CpPlatformProvider.projectBotAssign} (today's per-platform guards at
-   *  `orchestrator/httpBot.ts:134-142` and the replay path `:308-309`:
-   *  Slack ⇒ `signingSecret`, Feishu ⇒ `verificationToken` + `appToken`). */
+   *  CpPlatformProvider.projectBotAssign}. `orchestrator/httpBot.ts` reads this
+   *  declaration in `syncBot` and on the register-replay path, replacing the two
+   *  hand-written arms it used to hold (Slack ⇒ `signingSecret`, Feishu ⇒
+   *  `verificationToken` + `appToken`): same slots, now owned by the platform,
+   *  and the operator-facing refusal names the missing ones. A platform
+   *  declaring none is never gated here. */
   httpAssignRequires: readonly (keyof BotSecretMaterial)[]
 }
 
@@ -270,11 +278,17 @@ export type CpToolingTokenResolution =
  * the pattern any platform with programmatic app-minting will reproduce, today
  * realized by Slack's App Configuration token (`SlackUserConfig`). The store,
  * entry/rotation/status routes ride {@link CpPlatformProvider.installRoutes}
- * (`'org'` scope); this facet is the piece OTHER flows call back into: the
- * quick-install funnel start and the Settings→Bots manifest-refresh flow
- * (`http/routes/bots.ts:151-233`, which also carries the provider console
- * deep links — `slackAppLinks`, `bots.ts:69-87` — into the refresh DTO; both
- * migrate into the provider with this facet).
+ * (`'org'` scope); this facet is the piece the platform's OTHER flows call back
+ * into — the quick-install funnel start, the config status projection, and the
+ * Settings→Bots manifest refresh, which moved into the provider WITH this facet
+ * (`http/routes/slack-bot-refresh.ts`, carrying the `slackAppLinks` console
+ * deep links into the refresh DTO).
+ *
+ * ONE INSTANCE, by construction: the composition root builds the facet and hands
+ * the same object to the provider and to those routes' seams, so "which store
+ * answers" and "when is a token stale" cannot drift between them. The facet
+ * answers only the CREDENTIAL question — deployment-level terms (the funnel's
+ * public callback origin, the relay pool) stay with the routes that know them.
  */
 export interface CpProviderToolingCredentials {
   /** Prisma model holding the per-user credential (`SlackUserConfig`). */
@@ -325,12 +339,13 @@ export interface CpInstallSideEffects {
     agent: BotProfileIconAgent
   }): Promise<void>
   /** Ongoing agent-icon convergence: push a CHANGED agent icon to this
-   *  platform's dedicated bot. Presence of the member is the capability —
-   *  today's three-way `supported` test + per-platform dispatch chain in
-   *  `http/agent-bot-icon-sync.ts:57-61,99-115` (Slack has no member here:
-   *  it renders per-message `icon_url` from the public CP endpoint instead).
-   *  Feishu resolves its app id from `secrets.appToken ?? bot.feishuAppId`
-   *  inside (`:106`). */
+   *  platform's dedicated bot. Presence of the member IS the capability —
+   *  `http/agent-bot-icon-sync.ts` probes for it and skips the bot when it is
+   *  absent, which replaced that file's three-way `bot.platform === … &&
+   *  deps.syncX` conjunction (Slack has no member here: it renders per-message
+   *  `icon_url` from the public CP endpoint instead). Which credential the push
+   *  needs is the provider's business — Feishu resolves its app id from
+   *  `secrets.appToken ?? bot.feishuAppId` inside and no-ops without one. */
   syncBotProfileIcon?(bot: BotRecord, secrets: BotSecretMaterial, agent: BotProfileIconAgent): Promise<void>
 }
 

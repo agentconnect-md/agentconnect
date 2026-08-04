@@ -168,11 +168,14 @@ import { buildCpPlatformRegistry } from './platforms/registry.js'
 import { buildPendingInstallReapers, platformBackgroundLoops } from './platforms/lifecycle.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
-import { createSlackCpProvider } from './platforms/slack/provider.js'
+import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
 import { createFeishuCpProvider } from './platforms/feishu/provider.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
+import { slackBotRefreshRoutes } from './http/routes/slack-bot-refresh.js'
+import { telegramCheckRoutes } from './http/routes/telegram-check.js'
+import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './http/platform-route-seams.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
@@ -888,19 +891,7 @@ export function buildContainer(
     sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     webchatMcpMetrics: defaultWebchatMcpMetrics,
     readiness,
-    verifySlackBot,
-    verifySlackAppToken,
-    slackConfigApi,
     searchSkillRegistry,
-    verifyTelegramBot,
-    syncTelegramBotIcon,
-    verifyDiscordBot,
-    ensureDiscordMessageContentIntent,
-    syncDiscordBotProfile,
-    verifyFeishuBot,
-    configureFeishuHttpApp,
-    syncFeishuAppIcon,
-    feishuAppRegistration: new FeishuAppRegistrationService(repos.feishuAppRegistration),
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
@@ -911,7 +902,6 @@ export function buildContainer(
     feishuPlatformApps,
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
-    ...(slackPlatformApp ? { slackPlatformApp } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
   const http = buildHttpServer(httpDeps, opts.fastify)
@@ -1032,6 +1022,33 @@ export function buildContainer(
     http.log
   )
 
+  // The per-platform INJECTION seams the provider-contributed route plugins take
+  // as their second argument (`http/platform-route-seams.ts`) — what used to be
+  // twelve platform-named fields on `httpDeps`. Built here, once, and shared with
+  // the providers below so the routes and the registry cannot hold different
+  // clients. The tooling-credential facet is a single instance for the same
+  // reason: the funnel start, the config status route, the Settings→Bots refresh
+  // and `provider.providerToolingCredentials` are all this one object.
+  const slackSeams: SlackRouteSeams = {
+    configApi: slackConfigApi,
+    verifyBot: verifySlackBot,
+    verifyAppToken: verifySlackAppToken,
+    ...(slackPlatformApp ? { platformApp: slackPlatformApp } : {}),
+    // Named arguments, NOT `httpDeps`: the bundle no longer carries a Slack API
+    // client, and passing it here type-checked while making every production
+    // resolution `unreachable`.
+    toolingCredentials: createSlackToolingCredentials({
+      configApi: slackConfigApi,
+      store: repos.slackUserConfig
+    })
+  }
+  const telegramSeams: TelegramRouteSeams = { verifyBot: verifyTelegramBot }
+  const feishuSeams: FeishuRouteSeams = {
+    verifyBot: verifyFeishuBot,
+    configureHttpApp: configureFeishuHttpApp,
+    registrations: new FeishuAppRegistrationService(repos.feishuAppRegistration)
+  }
+
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
   // functions, route-dep bundle, funnel stores, and background-loop instances
@@ -1047,11 +1064,19 @@ export function buildContainer(
   // `validateConfig` + `buildNewBotInstall` tail, the pending-install reapers and
   // the background loops below, `loadConfig`'s env fold (through the static
   // `platforms/env.ts` declaration — `loadConfig` runs before this registry can
-  // exist, since providers are constructed FROM the parsed config), and (§9) ALL
-  // wire projection: `IntegrationSpec.config` on every spec-assembly path and
-  // both `rc/bot-assign` bags.
+  // exist, since providers are constructed FROM the parsed config), (§9) ALL
+  // wire projection — `IntegrationSpec.config` on every spec-assembly path and
+  // both `rc/bot-assign` bags — the agent-icon fan-out's capability probe, the
+  // `rc/bot-assign` completeness gate, and the per-user tooling credentials. The
+  // twelve platform-named `httpDeps` slots this used to populate are gone: what
+  // core ASKS is answered by the registry, and what tests INJECT is the seams
+  // above.
   composedPlatforms = buildCpPlatformRegistry([
-    createTelegramCpProvider({ verifyBot: verifyTelegramBot, syncBotIcon: syncTelegramBotIcon }),
+    createTelegramCpProvider({
+      verifyBot: verifyTelegramBot,
+      syncBotIcon: syncTelegramBotIcon,
+      funnelRoutes: { org: [telegramCheckRoutes(httpDeps, telegramSeams)], publicCallback: [] }
+    }),
     createDiscordCpProvider({
       verifyBot: verifyDiscordBot,
       ensureMessageContentIntent: ensureDiscordMessageContentIntent,
@@ -1061,10 +1086,18 @@ export function buildContainer(
       verifyBot: verifySlackBot,
       verifyAppToken: verifySlackAppToken,
       funnelRoutes: {
-        org: [slackInstallRoutes(httpDeps), slackPlatformInstallRoutes(httpDeps), slackConfigRoutes(httpDeps)],
-        publicCallback: [slackOauthCallbackRoutes(httpDeps), slackPlatformCallbackRoutes(httpDeps)]
+        org: [
+          slackInstallRoutes(httpDeps, slackSeams),
+          slackPlatformInstallRoutes(httpDeps, slackSeams),
+          slackConfigRoutes(httpDeps, slackSeams),
+          slackBotRefreshRoutes(httpDeps, slackSeams)
+        ],
+        publicCallback: [
+          slackOauthCallbackRoutes(httpDeps, slackSeams),
+          slackPlatformCallbackRoutes(httpDeps, slackSeams)
+        ]
       },
-      userConfigs: httpDeps,
+      ...(slackSeams.toolingCredentials ? { toolingCredentials: slackSeams.toolingCredentials } : {}),
       pendingInstalls: {
         installs: repos.slackInstall,
         platformInstalls: repos.slackPlatformInstall,
@@ -1075,7 +1108,7 @@ export function buildContainer(
     }),
     createFeishuCpProvider({
       verifyBot: verifyFeishuBot,
-      funnelRoutes: { org: [feishuRegistrationRoutes(httpDeps)], publicCallback: [] },
+      funnelRoutes: { org: [feishuRegistrationRoutes(httpDeps, feishuSeams)], publicCallback: [] },
       syncAppIcon: syncFeishuAppIcon,
       pendingInstalls: {
         registrations: repos.feishuAppRegistration,

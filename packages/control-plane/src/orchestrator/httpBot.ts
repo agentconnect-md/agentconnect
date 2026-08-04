@@ -138,13 +138,15 @@ export class HttpBotOrchestrator {
       this.log.warn({ botId }, 'http-bot: no secret for http bot — cannot assign')
       return
     }
-    if (bot.platform === 'slack' && !secret.signingSecret) {
-      // An http-mode Slack bot with no signing secret can't be verified by the relay.
-      this.log.warn({ botId }, 'http-bot: no signing secret for http Slack bot — cannot assign')
-      return
-    }
-    if (bot.platform === 'feishu' && (!secret.verificationToken || !secret.appToken)) {
-      this.log.warn({ botId }, 'http-bot: incomplete Feishu callback credentials — cannot assign')
+    const missing = this.missingAssignSecrets(bot, secret)
+    if (missing.length > 0) {
+      // The relay would arm an ingress it cannot verify. Which slots are load-
+      // bearing is the platform's declaration (§9 `secretShape.httpAssignRequires`),
+      // not core's knowledge.
+      this.log.warn(
+        { botId, platform: bot.platform, missing },
+        'http-bot: incomplete callback credentials — cannot assign'
+      )
       return
     }
 
@@ -318,8 +320,7 @@ export class HttpBotOrchestrator {
       if (!compiled) continue
       const secret = await this.botSecret.get(bot.id)
       if (!secret) continue
-      if (bot.platform === 'slack' && !secret.signingSecret) continue
-      if (bot.platform === 'feishu' && (!secret.verificationToken || !secret.appToken)) continue
+      if (this.missingAssignSecrets(bot, secret).length > 0) continue
       // Built OUTSIDE the try on purpose: the catch below means "dead socket",
       // and a projector rejection swallowed there would be a lost error rather
       // than a dropped send. A null assign is the platform having no relay path
@@ -929,6 +930,24 @@ export class HttpBotOrchestrator {
         this.log.debug?.({ integrationId: integration.id, daemonId }, 'http-bot: spec push skipped — daemon offline')
       }
     }
+  }
+
+  /**
+   * The declared secret slots an `rc/bot-assign` needs that this bot's stored
+   * credential does not have (§9 `secretShape.httpAssignRequires`) — the
+   * completeness gate `syncBot` and `replayTo` run BEFORE asking the provider to
+   * project the bags. It replaces the two hand-written platform arms core used to
+   * hold (Slack ⇒ `signingSecret`, Feishu ⇒ `verificationToken` + `appToken`):
+   * same slots, now read off the platform that owns them, so a fifth platform's
+   * requirement arrives with its provider.
+   *
+   * A platform with no registered provider yields no requirements — exactly as
+   * the old two-arm form did for a foreign row; `buildAssign` is the fence that
+   * refuses it a moment later (no projector ⇒ no assign).
+   */
+  private missingAssignSecrets(bot: BotRecord, secret: BotSecretMaterial): string[] {
+    const required = this.platforms.get(bot.platform)?.secretShape.httpAssignRequires ?? []
+    return required.filter((slot) => !secret[slot])
   }
 
   /**

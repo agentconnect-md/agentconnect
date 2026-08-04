@@ -91,7 +91,7 @@ import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
 import type { CpPlatformRegistry } from '../../src/platforms/provider.js'
 import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
-import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
+import { createSlackCpProvider, createSlackToolingCredentials } from '../../src/platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
 import {
@@ -99,6 +99,19 @@ import {
   slackPlatformCallbackRoutes
 } from '../../src/http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from '../../src/http/routes/feishu-registration.js'
+import { slackBotRefreshRoutes } from '../../src/http/routes/slack-bot-refresh.js'
+import { telegramCheckRoutes } from '../../src/http/routes/telegram-check.js'
+import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from '../../src/http/platform-route-seams.js'
+import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
+import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../src/http/slack-identity.js'
+import type { SlackPlatformAppConfig } from '../../src/config/slack-platform.js'
+import type { TelegramBotVerifier } from '../../src/http/telegram-identity.js'
+import type { TelegramBotIconSyncer } from '../../src/http/telegram-bot-profile.js'
+import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from '../../src/http/discord-identity.js'
+import type { DiscordBotProfileSyncer } from '../../src/http/discord-bot-profile.js'
+import type { FeishuBotVerifier } from '../../src/http/feishu-identity.js'
+import type { FeishuHttpAppConfigurator } from '../../src/http/feishu-app-config.js'
+import type { FeishuAppIconSyncer } from '../../src/http/feishu-app-icon.js'
 import { createReadiness } from '../../src/http/readiness.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from '../../src/http/mcp/remote-grant-authenticator.js'
@@ -112,9 +125,58 @@ import { FeishuAppRegistrationService } from '../../src/http/feishu-registration
 
 export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 
+/**
+ * The per-platform provider seams a suite may stub — the offline injectability
+ * that used to live as twelve platform-named fields on `HttpDeps` before the §9
+ * DI collapse. It is a TEST-COMPOSITION bag, not a production type: prod builds
+ * the same values in `container.ts` and hands them straight to the route
+ * factories and the providers.
+ *
+ * MUTABLE AND READ THROUGH, deliberately. Suites swap members AFTER `buildApp`
+ * (`app.platformStubs.verifySlackBot = …`), so every provider/route seam below
+ * closes over THIS OBJECT and dereferences the member per call — never captures
+ * the function. That is the same late-binding discipline the `platforms`
+ * registry façade uses, and it is what the DI collapse had to preserve.
+ */
+export interface PlatformStubs {
+  verifySlackBot?: SlackBotVerifier
+  verifySlackAppToken?: SlackAppTokenVerifier
+  slackConfigApi?: SlackConfigApi
+  slackPlatformApp?: SlackPlatformAppConfig
+  verifyTelegramBot: TelegramBotVerifier
+  syncTelegramBotIcon?: TelegramBotIconSyncer
+  verifyDiscordBot?: DiscordBotVerifier
+  ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer
+  syncDiscordBotProfile?: DiscordBotProfileSyncer
+  verifyFeishuBot?: FeishuBotVerifier
+  configureFeishuHttpApp: FeishuHttpAppConfigurator
+  syncFeishuAppIcon?: FeishuAppIconSyncer
+  feishuAppRegistration: FeishuAppRegistrationService
+}
+
+/** The keys `buildHttpApp` peels out of its overrides bag into
+ *  {@link PlatformStubs} — everything else stays a core dep override. */
+const PLATFORM_STUB_KEYS = [
+  'verifySlackBot',
+  'verifySlackAppToken',
+  'slackConfigApi',
+  'slackPlatformApp',
+  'verifyTelegramBot',
+  'syncTelegramBotIcon',
+  'verifyDiscordBot',
+  'ensureDiscordMessageContentIntent',
+  'syncDiscordBotProfile',
+  'verifyFeishuBot',
+  'configureFeishuHttpApp',
+  'syncFeishuAppIcon',
+  'feishuAppRegistration'
+] as const satisfies readonly (keyof PlatformStubs)[]
+
 export interface HttpApp {
   app: FastifyInstance
   deps: HttpDeps
+  /** Swap a platform seam here — before or AFTER the app is built. */
+  platformStubs: PlatformStubs
   events: InMemorySessionEventSink
   /** The relay registry — a test can `add` a fake {@link RelayChannel} so
    *  `hasConnectedRelay()` is true (e.g. to exercise the http-transport paths). */
@@ -130,10 +192,11 @@ export function buildHttpApp(
   configOverrides?: Partial<HttpDeps['config']>,
   liveness: DaemonLiveness = NO_LIVENESS,
   control?: ControlSender,
-  // TOP-LEVEL deps only (e.g. slackConfigApi, verifySlack*) — merged last so a
-  // test can register funnel routes that gate on these at plugin-registration time.
-  // Nested config goes through `configOverrides`, not here.
-  depsOverrides?: Partial<HttpDeps>
+  // TOP-LEVEL deps and/or platform stubs (e.g. slackConfigApi, verifySlack*) —
+  // the platform keys are peeled into `platformStubs` and the rest merged last, so
+  // a test can register funnel routes that gate on these at plugin-registration
+  // time. Nested config goes through `configOverrides`, not here.
+  depsOverrides?: Partial<HttpDeps> & Partial<PlatformStubs>
 ): HttpApp {
   const clock = systemClock
   // Mirror the prod graph: WAITLIST_MODE gates JIT personal-org creation and drives
@@ -176,6 +239,7 @@ export function buildHttpApp(
   const botSecretStore = new PgBotSecretStore(prisma, cipher)
   const botCredentialWriter = new PgBotCredentialWriter(prisma, cipher)
   const feishuAppRegistrationStore = new PgFeishuAppRegistrationStore(prisma, cipher)
+  const slackUserConfigStore = new PgSlackUserConfigStore(prisma, cipher)
   const integrationChannelRepo = new PgIntegrationChannelRepo(prisma)
   const agentRepo = new PgAgentRepo(prisma)
   const orgRepo = new PgOrgRepo(prisma)
@@ -225,9 +289,9 @@ export function buildHttpApp(
   // does. `platforms` is the same stable façade the container hands to the
   // orchestrators, which take the registry BY VALUE at construction — every read
   // through it runs at request / reconcile time, long after assignment. The
-  // providers' verify seams READ THROUGH to `deps` on every call instead of
-  // capturing it: suites routinely swap `app.deps.verifySlackBot` (and friends)
-  // AFTER the app is built, and an absent dep is passed through as the
+  // providers' verify seams READ THROUGH to `platformStubs` on every call instead
+  // of capturing it: suites routinely swap `app.platformStubs.verifySlackBot` (and
+  // friends) AFTER the app is built, and an absent stub is passed through as the
   // provider-unreachable outcome — which every provider treats exactly as the
   // old route treated "no verifier injected" (inconclusive: no 400, no derived
   // identity).
@@ -240,6 +304,24 @@ export function buildHttpApp(
     get: (platformId) => requirePlatforms().get(platformId),
     all: () => requirePlatforms().all(),
     ids: () => requirePlatforms().ids()
+  }
+
+  // Peel the platform seams out of the overrides bag: they are no longer core
+  // deps (§9 DI collapse), but suites still hand them in at build time so the
+  // funnel plugins that gate on them register.
+  const coreOverrides: Partial<HttpDeps> = { ...depsOverrides }
+  for (const key of PLATFORM_STUB_KEYS) delete (coreOverrides as Record<string, unknown>)[key]
+  const platformStubs: PlatformStubs = {
+    verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
+    ensureDiscordMessageContentIntent: async () => 'ready',
+    configureFeishuHttpApp: async () => {},
+    feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
+    ...Object.fromEntries(
+      PLATFORM_STUB_KEYS.filter((key) => depsOverrides && key in depsOverrides).map((key) => [
+        key,
+        (depsOverrides as Record<string, unknown>)[key]
+      ])
+    )
   }
 
   const deps: HttpDeps = {
@@ -282,7 +364,7 @@ export function buildHttpApp(
       slackInstall: new PgSlackInstallStore(prisma, cipher),
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       feishuAppRegistration: feishuAppRegistrationStore,
-      slackUserConfig: new PgSlackUserConfigStore(prisma, cipher),
+      slackUserConfig: slackUserConfigStore,
       presetAgent: presetAgentRepo,
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
@@ -341,54 +423,103 @@ export function buildHttpApp(
     mcpRateLimit: new McpRateLimiter(clock),
     sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     readiness: createReadiness(() => pingDb(prisma)),
-    verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
-    ensureDiscordMessageContentIntent: async () => 'ready',
-    configureFeishuHttpApp: async () => {},
-    feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
-    ...depsOverrides,
+    ...coreOverrides,
     remoteGrantAuth,
     internalInvocationAuth
+  }
+
+  // The per-platform route seams, mirroring `buildContainer`'s — but every member
+  // reads THROUGH the mutable `platformStubs` bag rather than capturing its value,
+  // so a suite that swaps a stub after `buildApp` is still observed. `configApi`
+  // and `platformApp` are getters for exactly that reason: the funnel plugins read
+  // them once at plugin-registration time to decide whether to register at all
+  // (that IS the feature flag, so they must be set before the app is built), while
+  // the manifest-refresh handler reads `configApi` per REQUEST — which is what it
+  // did when it was core code reading `deps.slackConfigApi`.
+  //
+  // ANTI-DRIFT (learned the hard way in review): this harness once handed the
+  // tooling facet an API client the container had stopped passing, so every suite
+  // was green against a composition production did not have. Both roots now call
+  // {@link createSlackToolingCredentials} with the SAME two named arguments, and
+  // the API client here comes from ONE source shared with `slackSeams.configApi`
+  // — the harness cannot give the facet a client the routes do not see. The
+  // container graph itself is exercised in
+  // `test/integration/slack-tooling-credentials.route.test.ts`.
+  const slackConfigApiSeam = () => platformStubs.slackConfigApi
+  const slackSeams: SlackRouteSeams = {
+    get configApi() {
+      return slackConfigApiSeam()
+    },
+    get platformApp() {
+      return platformStubs.slackPlatformApp
+    },
+    verifyBot: async (token) =>
+      platformStubs.verifySlackBot ? platformStubs.verifySlackBot(token) : { status: 'unreachable' },
+    verifyAppToken: async (token) =>
+      platformStubs.verifySlackAppToken ? platformStubs.verifySlackAppToken(token) : ('unreachable' as const),
+    toolingCredentials: createSlackToolingCredentials({
+      get configApi() {
+        return slackConfigApiSeam()
+      },
+      store: slackUserConfigStore
+    })
+  }
+  const telegramSeams: TelegramRouteSeams = { verifyBot: (token) => platformStubs.verifyTelegramBot(token) }
+  const feishuSeams: FeishuRouteSeams = {
+    verifyBot: async (appId, appSecret, region) =>
+      platformStubs.verifyFeishuBot
+        ? platformStubs.verifyFeishuBot(appId, appSecret, region)
+        : { status: 'unreachable' },
+    configureHttpApp: (input) => platformStubs.configureFeishuHttpApp(input),
+    registrations: platformStubs.feishuAppRegistration
   }
 
   // The same four providers `buildContainer` registers, so the create route
   // parses/validates exactly the deployed shapes and `server.ts` mounts exactly
   // the deployed funnel routes. Two deliberate test-composition traits:
   //
-  //  - the verify/sync seams READ THROUGH to `deps` on every call instead of
-  //    capturing it — tests routinely swap `app.deps.verifySlackBot` (and
-  //    friends) AFTER the app is built. An absent dep is passed through as the
-  //    provider-unreachable outcome, which every provider treats exactly as
-  //    today's route treated "no verifier injected" (inconclusive: no 400, no
-  //    derived identity);
-  //  - the funnel plugins are pre-bound to `deps`, mirroring prod. Each still
-  //    self-disables on absent config (no `slackConfigApi` / `PUBLIC_CP_URL` ⇒
-  //    those routes 404), so a suite that wants them injects the config.
+  //  - the verify/sync seams READ THROUGH to `platformStubs` on every call
+  //    instead of capturing it — tests routinely swap
+  //    `app.platformStubs.verifySlackBot` (and friends) AFTER the app is built.
+  //    An absent stub is passed through as the provider-unreachable outcome,
+  //    which every provider treats exactly as today's route treated "no verifier
+  //    injected" (inconclusive: no 400, no derived identity);
+  //  - the route plugins are pre-bound to `deps` + the seams above, mirroring
+  //    prod. Each still self-disables on absent config (no `slackConfigApi` /
+  //    `PUBLIC_CP_URL` ⇒ those routes 404), so a suite that wants them injects
+  //    the config.
   platformRegistry = buildCpPlatformRegistry([
     createTelegramCpProvider({
-      verifyBot: (token) => deps.verifyTelegramBot(token),
-      syncBotIcon: async (token, agent) => deps.syncTelegramBotIcon?.(token, agent)
+      verifyBot: (token) => platformStubs.verifyTelegramBot(token),
+      syncBotIcon: async (token, agent) => platformStubs.syncTelegramBotIcon?.(token, agent),
+      funnelRoutes: { org: [telegramCheckRoutes(deps, telegramSeams)], publicCallback: [] }
     }),
     createDiscordCpProvider({
-      verifyBot: async (token) => (deps.verifyDiscordBot ? deps.verifyDiscordBot(token) : { status: 'unreachable' }),
-      ensureMessageContentIntent: (token) => deps.ensureDiscordMessageContentIntent(token),
-      syncBotProfile: async (token, agent) => deps.syncDiscordBotProfile?.(token, agent)
+      verifyBot: async (token) =>
+        platformStubs.verifyDiscordBot ? platformStubs.verifyDiscordBot(token) : { status: 'unreachable' },
+      ensureMessageContentIntent: (token) => platformStubs.ensureDiscordMessageContentIntent(token),
+      syncBotProfile: async (token, agent) => platformStubs.syncDiscordBotProfile?.(token, agent)
     }),
     createSlackCpProvider({
-      verifyBot: async (token) => (deps.verifySlackBot ? deps.verifySlackBot(token) : { status: 'unreachable' }),
-      verifyAppToken: async (token) =>
-        deps.verifySlackAppToken ? deps.verifySlackAppToken(token) : ('unreachable' as const),
+      verifyBot: slackSeams.verifyBot!,
+      verifyAppToken: slackSeams.verifyAppToken!,
       funnelRoutes: {
-        org: [slackInstallRoutes(deps), slackPlatformInstallRoutes(deps), slackConfigRoutes(deps)],
-        publicCallback: [slackOauthCallbackRoutes(deps), slackPlatformCallbackRoutes(deps)]
+        org: [
+          slackInstallRoutes(deps, slackSeams),
+          slackPlatformInstallRoutes(deps, slackSeams),
+          slackConfigRoutes(deps, slackSeams),
+          slackBotRefreshRoutes(deps, slackSeams)
+        ],
+        publicCallback: [slackOauthCallbackRoutes(deps, slackSeams), slackPlatformCallbackRoutes(deps, slackSeams)]
       },
-      userConfigs: deps
+      toolingCredentials: slackSeams.toolingCredentials!
     }),
     createFeishuCpProvider({
-      verifyBot: async (appId, appSecret, region) =>
-        deps.verifyFeishuBot ? deps.verifyFeishuBot(appId, appSecret, region) : { status: 'unreachable' },
-      funnelRoutes: { org: [feishuRegistrationRoutes(deps)], publicCallback: [] },
-      syncAppIcon: async (appId, appSecret, region, agent) => deps.syncFeishuAppIcon?.(appId, appSecret, region, agent)
+      verifyBot: feishuSeams.verifyBot!,
+      funnelRoutes: { org: [feishuRegistrationRoutes(deps, feishuSeams)], publicCallback: [] },
+      syncAppIcon: async (appId, appSecret, region, agent) =>
+        platformStubs.syncFeishuAppIcon?.(appId, appSecret, region, agent)
     })
   ])
 
@@ -397,6 +528,7 @@ export function buildHttpApp(
   return {
     app,
     deps,
+    platformStubs,
     events,
     relayReg,
     close: async () => {

@@ -16,6 +16,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { FastifyPluginAsync } from 'fastify'
 import {
   createSlackCpProvider,
+  createSlackToolingCredentials,
   slackAppIdFromAppToken,
   slackBotAssignBags,
   slackIntegrationConfig,
@@ -355,25 +356,25 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
     updatedAt: NOW,
     ...over
   })
-  const userConfigDeps = (stored: SlackUserConfigRecord | null): SlackUserConfigDeps => ({
-    slackConfigApi: {
+  const userConfigSeams = (stored: SlackUserConfigRecord | null) => ({
+    configApi: {
       createApp: vi.fn(),
       exportApp: vi.fn(),
       updateApp: vi.fn(),
       exchangeOAuth: vi.fn(),
       rotateConfigToken: vi.fn(async () => ({ ok: false as const, error: 'invalid_refresh_token' }))
     } as unknown as NonNullable<SlackUserConfigDeps['slackConfigApi']>,
-    repos: {
-      slackUserConfig: {
-        get: vi.fn(async () => stored),
-        put: vi.fn(async () => {}),
-        delete: vi.fn(async () => {})
-      }
+    store: {
+      get: vi.fn(async () => stored),
+      put: vi.fn(async () => {}),
+      delete: vi.fn(async () => {})
     }
   })
 
   it('resolves a fresh stored access token (resolveUserConfigAccessToken body)', async () => {
-    const provider = createSlackCpProvider({ userConfigs: userConfigDeps(row()) })
+    const provider = createSlackCpProvider({
+      toolingCredentials: createSlackToolingCredentials(userConfigSeams(row()))
+    })
     const tooling = provider.providerToolingCredentials!
     expect(tooling.model).toBe('SlackUserConfig')
     expect(await tooling.resolveAccessToken(ORG, 'user-1', NOW)).toEqual({
@@ -384,7 +385,7 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
   })
 
   it('reports not_configured / unusable when nothing is stored', async () => {
-    const provider = createSlackCpProvider({ userConfigs: userConfigDeps(null) })
+    const provider = createSlackCpProvider({ toolingCredentials: createSlackToolingCredentials(userConfigSeams(null)) })
     const tooling = provider.providerToolingCredentials!
     expect(await tooling.resolveAccessToken(ORG, 'user-1', NOW)).toEqual({ ok: false, reason: 'not_configured' })
     expect(await tooling.usableNow(ORG, 'user-1', NOW)).toBe(false)
@@ -392,7 +393,9 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
 
   it('a lapsed access-only token is expired for installs and unusable for the wizard', async () => {
     const lapsed = row({ accessExpiresAt: new Date(NOW.getTime() - 1000) })
-    const provider = createSlackCpProvider({ userConfigs: userConfigDeps(lapsed) })
+    const provider = createSlackCpProvider({
+      toolingCredentials: createSlackToolingCredentials(userConfigSeams(lapsed))
+    })
     const tooling = provider.providerToolingCredentials!
     expect(await tooling.resolveAccessToken(ORG, 'user-1', NOW)).toEqual({ ok: false, reason: 'expired' })
     expect(await tooling.usableNow(ORG, 'user-1', NOW)).toBe(false)
@@ -400,6 +403,21 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
 
   it('is absent when no user-config seam is composed', () => {
     expect(createSlackCpProvider({}).providerToolingCredentials).toBeUndefined()
+  })
+
+  it('reports unreachable — never a store read — when no config API is composed', async () => {
+    // Absent `configApi` is the funnel-off meaning `resolveUserConfigAccessToken`
+    // has always had. It must be an explicit omission: this facet's argument
+    // takes the client BY NAME precisely because a bundle that merely lacked the
+    // (optional) member used to satisfy the old parameter type silently.
+    const seams = userConfigSeams(row())
+    const tooling = createSlackToolingCredentials({ store: seams.store })
+    expect(await tooling.resolveAccessToken(ORG, 'user-1', NOW)).toEqual({ ok: false, reason: 'unreachable' })
+    expect(seams.store.get).not.toHaveBeenCalled()
+    // `usableNow` never needed the API — it reads the store directly, which is
+    // why the production regression this shape prevents was invisible to it.
+    expect(await tooling.usableNow(ORG, 'user-1', NOW)).toBe(true)
+    expect(seams.store.get).toHaveBeenCalledOnce()
   })
 })
 
