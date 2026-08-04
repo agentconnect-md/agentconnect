@@ -115,6 +115,27 @@ import {
 
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
+// Transcript speech bubbles. Utilities, not globals.css classes (STYLE.md §12) —
+// only the theme-dependent numbers live as tokens (`--bubble-*`, defined in both
+// theme blocks), so nothing here has to branch on the theme.
+//
+// AGENT_BUBBLE is tinted with the SPEAKING agent's accent (`--agent-accent`, set per
+// turn from lib/agent-tone.ts): the accent is mixed INTO the live surface rather than
+// used as a background, which is what lets one hex read correctly in both themes and
+// makes a new hue cost one array entry instead of a second colour table. The `var()`
+// fallback matters — an invalid var() inside color-mix drops the whole declaration,
+// so a turn with no accent gets a brand-tinted bubble, never an invisible one.
+// AGENT_NAME pulls that accent 62% toward the text colour: gold or green at full
+// strength fails contrast on the light surface.
+// SELF_BUBBLE is the reader's own, deliberately neutral, tail corner mirrored.
+// Full literal strings so Tailwind's scanner sees them (STYLE.md §8).
+const AGENT_BUBBLE =
+  'w-fit max-w-full rounded-[12px_12px_12px_4px] border px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) border-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-tint),var(--surface-card))]'
+const AGENT_NAME =
+  'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_62%,var(--text-primary))]'
+const SELF_BUBBLE =
+  'max-w-full rounded-[12px_12px_4px_12px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)'
+
 // Design composer selectors (session composer, mirrors HomeView): the model is a
 // "pill" with a leading mark, effort/permission are plain chips. Full literal
 // strings so Tailwind's scanner sees them (STYLE.md §8).
@@ -2942,7 +2963,7 @@ export default function SessionDetailView() {
                           {turn.time && <span className="mono">{turn.time}</span>}
                         </span>
                       )}
-                      <div className="ubub">
+                      <div className={SELF_BUBBLE}>
                         {turn.image && (
                           <img
                             src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
@@ -3009,9 +3030,7 @@ export default function SessionDetailView() {
                         </span>
                         <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
                           <div className="mb-[5px] flex items-center gap-[7px]">
-                            <span className="abub-name font-sans text-[13px] font-semibold leading-normal">
-                              {turn.agentName}
-                            </span>
+                            <span className={AGENT_NAME}>{turn.agentName}</span>
                             {turn.time && (
                               <span className="mono ml-auto shrink-0 whitespace-nowrap text-[11px] text-(--text-tertiary)">
                                 {turn.time}
@@ -3024,7 +3043,7 @@ export default function SessionDetailView() {
                             the platform kept apart. `w-fit` keeps a short reply from
                             drawing a full-width card. */}
                           {textSteps.map((st, si) => (
-                            <div key={si} className={`abub w-fit ${si > 0 ? 'mt-2' : ''}`}>
+                            <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
                               {st.image && (
                                 <img
                                   src={`data:${st.image.mimeType};base64,${st.image.data}`}

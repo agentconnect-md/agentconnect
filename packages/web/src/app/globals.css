@@ -119,6 +119,21 @@
   --brand-soft-border: rgba(198, 42, 120, 0.18);
   --brand-ring: rgba(198, 42, 120, 0.32);
 
+  /* Transcript bubbles. Tokens rather than a component class (STYLE.md §12) because
+     the ONLY thing that differs between themes is these four values — the boxes
+     themselves are ordinary utilities.
+     `--bubble-tint`/`--bubble-edge`: how much of the speaking agent's accent
+     (lib/agent-tone.ts) is mixed into the surface. Dark needs a heavier hand; the
+     light 7% over near-black is invisible.
+     `--bubble-self`/`--bubble-self-edge`: the reader's own bubble, which carries no
+     agent tone. Light SINKS it below the page; dark must RAISE it, because there
+     --surface-sunken (#120c1a) is darker than --surface-app (#17101f) and the sunken
+     treatment turned the bubble into a hole with a faint outline. */
+  --bubble-tint: 7%;
+  --bubble-edge: 22%;
+  --bubble-self: var(--surface-sunken);
+  --bubble-self-edge: var(--border-subtle);
+
   /* Status — solid + soft pairings */
   --status-online: var(--green-500);
   --status-online-soft: var(--green-50);
@@ -208,6 +223,12 @@
   --brand-soft-text: #f4b8d3;
   --brand-soft-border: rgba(198, 42, 120, 0.32);
   --brand-ring: rgba(198, 42, 120, 0.42);
+
+  /* Transcript bubbles — see the light block for what each of these decides. */
+  --bubble-tint: 15%;
+  --bubble-edge: 34%;
+  --bubble-self: var(--surface-hover);
+  --bubble-self-edge: var(--border-default);
 
   /* Raw scale steps that leak into surfaces/accents */
   --magenta-100: rgba(198, 42, 120, 0.22);
@@ -1198,52 +1219,6 @@
     height: 1px;
     background: var(--border-subtle);
     margin: 5px 0;
-  }
-  /* The reader's own bubble — deliberately NEUTRAL (it carries no agent tone) with
-     the tail corner mirrored against `.abub`. Light sinks it below the page; dark has
-     to RAISE it instead, because there --surface-sunken (#120c1a) is darker than
-     --surface-app (#17101f), so the sunken treatment turned the bubble into a hole
-     with a faint outline instead of a card. */
-  .ubub {
-    max-width: 100%;
-    border-radius: 12px 12px 4px 12px;
-    border: 1px solid var(--border-subtle);
-    background: var(--surface-sunken);
-    padding: 9px 12px;
-    font: 400 13.5px/1.55 var(--font-sans);
-    color: var(--text-primary);
-  }
-  :root[data-theme='dark'] .ubub {
-    border-color: var(--border-default);
-    background: var(--surface-hover);
-  }
-  /* Agent speech bubble — the left-aligned counterpart to the user's bubble (whose
-     tail corner is mirrored), tinted with the SPEAKING agent's accent. The accent
-     arrives as `--agent-accent` on the element (lib/agent-tone.ts, brand if unset —
-     an invalid var() inside color-mix would drop the whole rule) and is mixed INTO
-     the live surface rather than used as a background: one hex then reads correctly
-     in both themes, and adding a hue costs one array entry instead of a second
-     colour table. Dark mode needs a heavier mix — the same 7% over near-black is
-     invisible. Only the agent's SPEECH is bubbled; its work stays in the panel
-     below, which is not something it said. */
-  .abub {
-    max-width: 100%;
-    border-radius: 12px 12px 12px 4px;
-    border: 1px solid color-mix(in oklab, var(--agent-accent, var(--brand)) 22%, var(--surface-card));
-    background: color-mix(in oklab, var(--agent-accent, var(--brand)) 7%, var(--surface-card));
-    padding: 9px 12px;
-    font: 400 13.5px/1.55 var(--font-sans);
-    color: var(--text-primary);
-  }
-  /* Pulled toward --text-primary rather than used raw: gold or green at full
-     strength fails contrast on the light surface. The mix keeps the hue legible as
-     identity while staying readable in both themes. */
-  .abub-name {
-    color: color-mix(in oklab, var(--agent-accent, var(--brand)) 62%, var(--text-primary));
-  }
-  :root[data-theme='dark'] .abub {
-    border-color: color-mix(in oklab, var(--agent-accent, var(--brand)) 34%, var(--surface-card));
-    background: color-mix(in oklab, var(--agent-accent, var(--brand)) 15%, var(--surface-card));
   }
   .codeblk {
     background: var(--surface-sunken);
