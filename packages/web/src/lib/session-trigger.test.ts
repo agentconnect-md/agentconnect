@@ -266,3 +266,75 @@ describe('legacy Slack Agent attribution', () => {
     expect(authors.has('B0UNTRUSTED')).toBe(false)
   })
 })
+
+describe('retention-GC purge mark (#485)', () => {
+  it('carries contentPurgedAt from the list row and the detail response', () => {
+    const purged = sessionFromDto(sessionDto({ contentPurgedAt: '2026-08-04T09:00:00.000Z' }))
+    expect(purged.contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+
+    // A live row must not look purged: the views read presence, not a value.
+    expect(sessionFromDto(sessionDto({})).contentPurgedAt).toBeUndefined()
+    expect(sessionFromDto(sessionDto({ contentPurgedAt: null })).contentPurgedAt).toBeUndefined()
+  })
+
+  it('overlays the detail mark onto a stale local row (30s detail vs 60s list refresh)', () => {
+    // The list row predates the purge. mergeSessionDetailUsage is the path the
+    // detail view takes whenever the list/rail already supplied the session, so
+    // dropping the mark here would keep showing the unexplained empty state.
+    const stale = sessionFromDto(sessionDto({ sessionId: 's1' }))
+    expect(stale.contentPurgedAt).toBeUndefined()
+    const purgedDetail = sessionFromDto(sessionDto({ sessionId: 's1', contentPurgedAt: '2026-08-04T09:00:00.000Z' }))
+
+    // No usage on either side — the early-return path, which is the common one.
+    expect(mergeSessionDetailUsage(stale, purgedDetail).contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+
+    // ...and on the path that does merge usage.
+    const withUsage = sessionFromDto(
+      sessionDto({
+        sessionId: 's1',
+        contentPurgedAt: '2026-08-04T09:00:00.000Z',
+        usage: { reportedAt: '2026-08-04T10:00:00.000Z', totalTokens: 10, costAmount: 0.01, costCurrency: 'USD' }
+      })
+    )
+    expect(mergeSessionDetailUsage(stale, withUsage)).toMatchObject({
+      contentPurgedAt: '2026-08-04T09:00:00.000Z',
+      usage: { totalTokens: 10 }
+    })
+
+    // A detail response with no mark never clears one the local row already has.
+    const purgedLocal = sessionFromDto(sessionDto({ sessionId: 's1', contentPurgedAt: '2026-08-04T09:00:00.000Z' }))
+    expect(mergeSessionDetailUsage(purgedLocal, stale).contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+  })
+
+  it('carries contentPurgedAt through the detail hydration path too', () => {
+    const detail = {
+      id: 'purged-session',
+      parentSession: null,
+      siblingSessions: [],
+      childSessions: [],
+      agentId: 'target-agent',
+      platform: 'slack',
+      channel: 'C123',
+      thread: null,
+      title: 'expired review',
+      status: 'completed',
+      lastActivityAt: '2026-07-01T00:00:00.000Z',
+      usage: null,
+      triggeredBy: null,
+      channelName: null,
+      triggeredByName: null,
+      threadUrl: null,
+      runtime: null,
+      model: null,
+      effort: null,
+      fastMode: null,
+      permissionMode: null,
+      outputMode: null,
+      daemonId: null,
+      contentPurgedAt: '2026-08-04T09:00:00.000Z',
+      contentPurgedReason: 'retention'
+    } satisfies SessionDetailDto
+
+    expect(sessionFromDetailDto(detail).contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+  })
+})

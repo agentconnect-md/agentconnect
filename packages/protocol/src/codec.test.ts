@@ -1308,6 +1308,35 @@ describe('event/session sessionKey (session-metadata sync)', () => {
       throw new Error('expected event/session-activity')
     expect(decoded.frame.payload.revision).toBe('43')
   })
+
+  it('round-trips a retention-GC purge receipt (#485)', () => {
+    const decoded = decodeEnvelope(
+      encode(
+        buildEnvelope('event/session-purged', {
+          agentId: AGENT_ID,
+          sessionIds: ['acp-sess-01H9', 'acp-sess-01HA'],
+          reason: 'retention',
+          ts: '2026-08-04T09:00:00.000Z'
+        })
+      )
+    )
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('event/session-purged')(decoded.frame)) throw new Error('expected event/session-purged')
+    expect(decoded.frame.payload.sessionIds).toEqual(['acp-sess-01H9', 'acp-sess-01HA'])
+    expect(decoded.frame.payload.reason).toBe('retention')
+  })
+
+  it('rejects a purge receipt with no sessions — an empty report is never a valid claim', () => {
+    const decoded = decodeEnvelope(
+      envelope('event/session-purged', {
+        agentId: AGENT_ID,
+        sessionIds: [],
+        reason: 'retention',
+        ts: '2026-08-04T09:00:00.000Z'
+      })
+    )
+    expect(decoded.ok).toBe(false)
+  })
 })
 
 describe('gitcred frames (github-app workspace credentials)', () => {

@@ -1036,6 +1036,11 @@ export interface SessionMetaRecord {
    *  than a live failure, and inherited with the audience by A2A descendants. */
   legacyUnresolved: boolean
   classifiedPolicyRev: bigint | null
+  /** Retention GC (#485): when the owning daemon deleted this session's local
+   *  content. Non-null ⇒ the transcript is gone for good and `/messages` has
+   *  nothing left to proxy; the metadata here is the whole remaining record. */
+  contentPurgedAt: Date | null
+  contentPurgedReason: string | null
   startedAt: Date
   endedAt: Date | null
 }
@@ -1157,6 +1162,19 @@ export interface SessionRepo {
    *  was ingested with (§4.2), and an A2A child resolves its parent under a shared
    *  row lock, settling any `inherited_pending` children of its own (§4.5). */
   recordMilestone(ev: EventSessionInput): Promise<SessionMilestoneResult>
+  /** Stamp the retention-GC receipt (#485) on rows the REPORTING agent owns: the
+   *  daemon deleted their local content, so the metadata row is now all that is
+   *  left of them. Idempotent and first-wins — an at-least-once re-report keeps
+   *  the original `contentPurgedAt`, so the console never shows a moving date.
+   *  Rows bound to another agent are skipped, not rejected: a session id is only
+   *  a purge claim for the agent it is bound to. Returns the ids actually
+   *  stamped by THIS call (already-purged and foreign ids are absent). */
+  markContentPurged(
+    agentId: AgentId,
+    sessionIds: SessionId[],
+    reason: string,
+    at: Date
+  ): Promise<{ marked: SessionId[]; alreadyPurged: number }>
   /** Filter, keyset-page, and order in Postgres; usage is hydrated only for the
    *  returned page. `total` is computed only when explicitly requested. */
   listPage(q: SessionPageQuery): Promise<SessionPageRecord>

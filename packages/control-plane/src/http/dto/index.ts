@@ -2434,7 +2434,11 @@ export const SessionDto = z.object({
   daemonId: z.string().nullable(),
   visibility: SessionVisibilityEnum,
   externalProvider: z.string().nullable(),
-  externalResolution: z.enum(['pending', 'settled', 'invalid']).nullable()
+  externalResolution: z.enum(['pending', 'settled', 'invalid']).nullable(),
+  /** Retention GC (#485): when the owning daemon deleted this session's local
+   *  content. Non-null ⇒ the transcript is gone for good; this metadata is all
+   *  that remains, and the console marks the row instead of offering a replay. */
+  contentPurgedAt: z.string().nullable()
 })
 export const SessionListDto = z.array(SessionDto)
 export const SessionFacetsDto = z.object({
@@ -2562,6 +2566,11 @@ export const SessionDetailDto = z.object({
   /** Durable workspace/tenant scope (merged-conversation-view.md §5.1) — lets the
    *  console compute this session's conversation key without a second lookup. */
   tenantScope: z.string().nullable(),
+  /** Retention GC (#485): when the owning daemon deleted this session's local
+   *  content (and any per-session worktree). Non-null ⇒ `/messages` has nothing
+   *  left to proxy, and the detail view explains the gap instead of replaying. */
+  contentPurgedAt: z.string().nullable(),
+  contentPurgedReason: z.string().nullable(),
   startedAt: z.string(), // ISO-8601
   endedAt: z.string().nullable()
 })

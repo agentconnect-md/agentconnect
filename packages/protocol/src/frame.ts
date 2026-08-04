@@ -126,6 +126,7 @@ import {
   Heartbeat,
   EventSession,
   SessionActivity,
+  SessionPurged,
   UsageReport,
   FactsRuntimeProfile,
   DaemonRuntimes,
@@ -240,6 +241,8 @@ export const FRAME_SCHEMAS = {
   // ── dashboard / facts ──
   'event/session': EventSession,
   'event/session-activity': SessionActivity,
+  // Retention-GC receipt (#485) — D→C REQ, replied with the generic `ack`.
+  'event/session-purged': SessionPurged,
   'usage/report': UsageReport,
   'facts/runtime-profile': FactsRuntimeProfile,
   'facts/daemon-runtimes': DaemonRuntimes,
@@ -450,6 +453,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('webchat/mcp-grant/revoked', FRAME_SCHEMAS['webchat/mcp-grant/revoked']),
   frame('event/session', FRAME_SCHEMAS['event/session']),
   frame('event/session-activity', FRAME_SCHEMAS['event/session-activity']),
+  frame('event/session-purged', FRAME_SCHEMAS['event/session-purged']),
   frame('usage/report', FRAME_SCHEMAS['usage/report']),
   frame('facts/runtime-profile', FRAME_SCHEMAS['facts/runtime-profile']),
   frame('facts/daemon-runtimes', FRAME_SCHEMAS['facts/daemon-runtimes']),

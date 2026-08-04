@@ -424,3 +424,55 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(list[1]!.usage).toBeNull()
   })
 })
+
+describe('SessionRepo.markContentPurged — retention-GC receipt (#485)', () => {
+  const OTHER_SESSION = '66666666-6666-4666-8666-666666666666'
+
+  it("stamps the reporting agent's rows, keeps the metadata, and is first-wins", async () => {
+    await fixtures()
+    await seedAgent(prisma, OTHER_AGENT)
+    const repo = new PgSessionRepo(prisma)
+    await repo.recordMilestone(ev('end', { title: 'nightly review' }))
+    await repo.recordMilestone(ev('end', { sessionId: SessionId(OTHER_SESSION), agentId: AgentId(OTHER_AGENT) }))
+
+    const purgedAt = new Date('2026-08-04T09:00:00.000Z')
+    const first = await repo.markContentPurged(
+      AgentId(AGENT),
+      // The foreign row is claimed too: a session id is only a purge claim for the
+      // agent it is bound to, so it must be skipped rather than stamped.
+      [SessionId(SESSION), SessionId(OTHER_SESSION)],
+      'retention',
+      purgedAt
+    )
+    expect(first.marked).toEqual([SessionId(SESSION)])
+    expect(first.alreadyPurged).toBe(1)
+
+    const row = await repo.get(SessionId(SESSION))
+    expect(row?.contentPurgedAt).toEqual(purgedAt)
+    expect(row?.contentPurgedReason).toBe('retention')
+    // The metadata row survives the purge — it is the whole remaining record.
+    expect(row?.title).toBe('nightly review')
+    expect((await repo.get(SessionId(OTHER_SESSION)))?.contentPurgedAt).toBeNull()
+
+    // At-least-once redelivery must not move the date the content went away.
+    const again = await repo.markContentPurged(
+      AgentId(AGENT),
+      [SessionId(SESSION)],
+      'retention',
+      new Date('2026-09-01T00:00:00.000Z')
+    )
+    expect(again.marked).toEqual([])
+    expect((await repo.get(SessionId(SESSION)))?.contentPurgedAt).toEqual(purgedAt)
+  })
+
+  it('is a no-op for an unknown session and for an empty report', async () => {
+    await fixtures()
+    const repo = new PgSessionRepo(prisma)
+    expect(await repo.markContentPurged(AgentId(AGENT), [], 'retention', new Date())).toEqual({
+      marked: [],
+      alreadyPurged: 0
+    })
+    const unknown = await repo.markContentPurged(AgentId(AGENT), [SessionId(OTHER_SESSION)], 'retention', new Date())
+    expect(unknown.marked).toEqual([])
+  })
+})

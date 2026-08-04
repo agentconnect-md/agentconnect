@@ -378,6 +378,10 @@ export interface SessionDto {
   permissionMode: string | null // effective session preset; Codex Auto is composite
   outputMode: string | null
   daemonId: string | null
+  /** Retention GC (#485): when the owning daemon deleted this session's local
+   *  content. Non-null ⇒ the transcript is gone for good. Absent on a CP that
+   *  predates the field. */
+  contentPurgedAt?: string | null
 }
 
 export interface SessionFacetsDto {
@@ -514,6 +518,11 @@ export interface SessionDetailDto {
   /** Durable workspace/tenant scope (merged-conversation-view.md §5.1) — part of
    *  the conversation key. Absent on a CP that predates the feature. */
   tenantScope?: string | null
+  /** Retention GC (#485): when the owning daemon deleted this session's local
+   *  content (and any per-session worktree), with the reason it reported. Non-null
+   *  ⇒ `/messages` has nothing left to return, ever. Absent on older CPs. */
+  contentPurgedAt?: string | null
+  contentPurgedReason?: string | null
 }
 
 // The full ACP tool body (protocol `ToolBody`), transported as a JSON STRING in
@@ -1818,7 +1827,10 @@ export function sessionFromDto(d: SessionDto): Session {
     ...(d.fastMode !== null && d.fastMode !== undefined ? { fastMode: d.fastMode } : {}),
     ...(d.permissionMode !== null && d.permissionMode !== undefined ? { permissionMode: d.permissionMode } : {}),
     ...(d.outputMode !== null && d.outputMode !== undefined ? { outputMode: d.outputMode } : {}),
-    ...(d.daemonId !== null && d.daemonId !== undefined ? { daemon: d.daemonId } : {})
+    ...(d.daemonId !== null && d.daemonId !== undefined ? { daemon: d.daemonId } : {}),
+    // Retention GC (#485): only ever set, never cleared to a falsy marker — the
+    // views treat "absent" as "content is still there".
+    ...(d.contentPurgedAt ? { contentPurgedAt: d.contentPurgedAt } : {})
   }
 }
 
@@ -1858,31 +1870,43 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     fastMode: d.fastMode,
     permissionMode: d.permissionMode,
     outputMode: d.outputMode,
-    daemonId: d.daemonId
+    daemonId: d.daemonId,
+    contentPurgedAt: d.contentPurgedAt ?? null
   })
   return participants ? { ...base, participants } : base
 }
 
 /** Keep local/live session fields while refreshing usage from the independently
  *  polled detail endpoint. This closes the race where the list row arrived just
- *  before the daemon's final cumulative usage report. */
+ *  before the daemon's final cumulative usage report.
+ *
+ *  The retention-purge mark (#485) rides along on every path, including the early
+ *  returns: the detail endpoint refreshes faster than the list, so a cached
+ *  pre-purge row would otherwise keep the transcript view showing an unexplained
+ *  empty (or "daemon offline") state until a separate list refresh replaced it.
+ *  It is monotonic — the mark is only ever set, never cleared by a detail response
+ *  that predates it. */
 export function mergeSessionDetailUsage(local: Session, detail: Session | null): Session {
-  if (!detail?.usage) return local
+  const withPurge = (session: Session): Session =>
+    detail?.contentPurgedAt && !session.contentPurgedAt
+      ? { ...session, contentPurgedAt: detail.contentPurgedAt }
+      : session
+  if (!detail?.usage) return withPurge(local)
   if (local.usage) {
     const localReportedAt = local.usage.reportedAt ? Date.parse(local.usage.reportedAt) : Number.NaN
     const detailReportedAt = detail.usage.reportedAt ? Date.parse(detail.usage.reportedAt) : Number.NaN
     // A live session can have usage without a persisted timestamp. Preserve that
     // state unless the detail snapshot proves it is newer; never let a cached
     // detail response move cumulative token/cost totals backward.
-    if (!Number.isFinite(detailReportedAt)) return local
-    if (!Number.isFinite(localReportedAt) || detailReportedAt <= localReportedAt) return local
+    if (!Number.isFinite(detailReportedAt)) return withPurge(local)
+    if (!Number.isFinite(localReportedAt) || detailReportedAt <= localReportedAt) return withPurge(local)
   }
-  return {
+  return withPurge({
     ...local,
     usage: detail.usage,
     tokens: detail.tokens,
     cost: detail.cost
-  }
+  })
 }
 
 export function daemonFromDto(d: DaemonViewDto): DaemonRow {
@@ -2006,14 +2030,32 @@ export async function fetchConversations(
     // the filter is what made the row ambiguous. An older CP omits it; its
     // filtered rows are then the best membership on offer.
     const memberSessionIds = conversation.memberSessionIds ?? members.map((member) => member.id)
+    // Retention GC (#485): the purge mark belongs to the MEMBERS, not to the
+    // representative, so projecting only `rep` would hide a purged peer entirely.
+    // Earliest wins — the row states when this conversation's history first started
+    // going away. Visible only for the members the filter returned, the same limit
+    // `participants` carries.
+    const purgedAt = members
+      .map((member) => member.contentPurgedAt)
+      .filter((at): at is string => !!at)
+      .sort()[0]
+    const purge = purgedAt
+      ? {
+          contentPurgedAt: purgedAt,
+          // Whether SOME of the row's history survives decides the wording: a
+          // partial purge must not read as "this whole conversation is gone".
+          ...(members.some((member) => !member.contentPurgedAt) ? { contentPurgedPartial: true } : {})
+        }
+      : {}
     const identity = {
       ...(conversation.key !== null ? { conversationKey: conversation.key } : {}),
       memberSessionIds
     }
-    if (memberSessionIds.length <= 1) return { ...rep, ...identity }
+    if (memberSessionIds.length <= 1) return { ...rep, ...identity, ...purge }
     return {
       ...rep,
       ...identity,
+      ...purge,
       // The members the FILTER returned, which is what the row can name. Names
       // resolve at render time from the org agent list (the DTO carries ids only);
       // the placeholder keeps the field shape valid.

@@ -20,7 +20,7 @@ import {
   type Agent,
   type Session
 } from '@/lib/data'
-import { memberDisplayName, type MemberDto, type SessionListFilters } from '@/lib/api'
+import { fmtDate, memberDisplayName, type MemberDto, type SessionListFilters } from '@/lib/api'
 import {
   githubRepoIdFromSessionTriggerFilter,
   sessionSenderLabel,
@@ -59,6 +59,26 @@ function AvatarFace({ label, member }: { label: string; member?: MemberDto }) {
   return (
     <span className="flex h-full w-full items-center justify-center rounded-full bg-(--surface-active) font-sans text-[8.5px] font-semibold leading-none text-(--text-secondary)">
       {initialsOf(label)}
+    </span>
+  )
+}
+
+/** Retention GC (#485): the owning daemon deleted this session's transcript (and
+ *  any workspace it had), so the row still lists but can never be replayed. Marked
+ *  in the list rather than hidden — the metadata is deliberately kept. */
+function PurgedMark({ session }: { session: Session }) {
+  if (!session.contentPurgedAt) return null
+  const when = fmtDate(session.contentPurgedAt)
+  return (
+    <span
+      title={
+        session.contentPurgedPartial
+          ? `Part of this conversation's history was deleted from ${when} by the session retention policy`
+          : `Transcript deleted ${when} by the session retention policy — only metadata remains`
+      }
+      className="inline-flex flex-none"
+    >
+      <Icon name="trash-2" size={12} color="var(--text-tertiary)" />
     </span>
   )
 }
@@ -617,6 +637,7 @@ export default function SessionsView() {
                   {s.title}
                 </span>
                 <RestrictedLock show={s.visibility === 'private'} title="Private session — visible only to its owner" />
+                <PurgedMark session={s} />
                 {/* Status as a compact pill — the design's badge, driven by the real
                     status (soft bg + saturated text from STATUS_MAP). */}
                 <span
@@ -660,6 +681,7 @@ export default function SessionsView() {
                     show={s.visibility === 'private'}
                     title="Private session — visible only to its owner"
                   />
+                  <PurgedMark session={s} />
                 </div>
                 <div className="mono text-[11px] text-(--text-tertiary)">
                   {s.time} · {renderTrigger(s)}

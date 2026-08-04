@@ -86,6 +86,8 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     externalResolution: (s.externalResolution as ExternalResolution | null) ?? null,
     legacyUnresolved: s.legacyUnresolved,
     classifiedPolicyRev: s.classifiedPolicyRev,
+    contentPurgedAt: s.contentPurgedAt,
+    contentPurgedReason: s.contentPurgedReason,
     startedAt: s.startedAt,
     endedAt: s.endedAt
   }
@@ -1201,6 +1203,31 @@ export class PgSessionRepo implements SessionRepo {
   async get(id: SessionId): Promise<SessionMetaRecord | null> {
     const s = await this.db.sessionMeta.findUnique({ where: { id } })
     return s ? toRecord(s) : null
+  }
+
+  async markContentPurged(
+    agentId: AgentId,
+    sessionIds: SessionId[],
+    reason: string,
+    at: Date
+  ): Promise<{ marked: SessionId[]; alreadyPurged: number }> {
+    if (sessionIds.length === 0) return { marked: [], alreadyPurged: 0 }
+    // `contentPurgedAt: null` in the predicate is what makes the stamp first-wins
+    // under at-least-once delivery: a duplicate report matches nothing and the
+    // console keeps showing the date the content actually went away. RETURNING
+    // (via updateManyAndReturn) reports exactly what this call changed, so the
+    // handler can distinguish "newly purged" from "already known" for its log.
+    const rows = await this.db.sessionMeta.updateManyAndReturn({
+      where: { id: { in: sessionIds }, agentId, contentPurgedAt: null },
+      data: { contentPurgedAt: at, contentPurgedReason: reason },
+      select: { id: true }
+    })
+    const marked = rows.map((row) => SessionId(row.id))
+    // Everything the reporter claimed that this call did not stamp: a row already
+    // purged, or one bound to another agent (a session id is only a purge claim
+    // for the agent it is bound to). Counted together deliberately — the daemon
+    // is told nothing either way, since both outcomes settle the same receipt.
+    return { marked, alreadyPurged: sessionIds.length - marked.length }
   }
 
   async hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean> {

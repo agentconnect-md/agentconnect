@@ -32,6 +32,15 @@ export const CP_WS_PATH = '/daemon/ws'
 export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
 
 /**
+ * CP accepts the `event/session-purged` retention-GC receipt (#485) and marks the
+ * session's stored metadata content-purged. Advertised by the CP in
+ * `register/ok.serverFeatures`; a daemon that does not see it KEEPS its durable
+ * receipts instead of emitting a frame an older CP would reject as
+ * `UNKNOWN_FRAME` — the report is re-tried once the CP is upgraded.
+ */
+export const SESSION_PURGE_FEATURE = 'session-purge-v1'
+
+/**
  * Daemon understands the `session/visibility` gate pushes + register-time
  * snapshot replay (session-visibility.md §5.1). Advertised by the daemon in
  * `RegisterReq.capabilities.features`; the CP gates all visibility pushes on

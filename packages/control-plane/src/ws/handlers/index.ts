@@ -31,6 +31,7 @@ import { handleChannelAgents } from './channel-agents.js'
 import { handleChildSessionStatus } from './child-session-status.js'
 import { handleEventSession } from './event-session.js'
 import { handleSessionActivity } from './event-session-activity.js'
+import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleHookStart } from './hook-start.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
@@ -71,6 +72,7 @@ export class FrameRouter {
       'session/child-status': handleChildSessionStatus,
       'event/session': handleEventSession,
       'event/session-activity': handleSessionActivity,
+      'event/session-purged': handleSessionPurged,
       'gitcred/request': handleGitCredRequest,
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
@@ -108,6 +110,7 @@ export {
   handleChildSessionStatus,
   handleEventSession,
   handleSessionActivity,
+  handleSessionPurged,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantAccept,
   handleWebchatMcpGrantRevoke,

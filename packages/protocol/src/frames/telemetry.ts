@@ -148,6 +148,41 @@ export const SessionActivity = z.object({
 })
 export type SessionActivity = z.infer<typeof SessionActivity>
 
+/** Why a daemon dropped a session's local content. Only the retention sweep
+ *  (#485) purges autonomously today; the vocabulary is an enum so an explicit
+ *  operator-initiated delete can join it without a frame revision. */
+export const SessionPurgeReason = z.enum(['retention'])
+export type SessionPurgeReason = z.infer<typeof SessionPurgeReason>
+
+/**
+ * Retention-GC receipt — D→C REQ, answered with the generic `ack` (#485).
+ *
+ * The daemon deleted these sessions' local rows (and any per-session worktree)
+ * after `sessions.retention` elapsed, so their transcripts can never be pulled
+ * again. The CP keeps the metadata row and MARKS it purged — that is what lets
+ * the console explain an empty transcript instead of rendering it as "this
+ * session said nothing".
+ *
+ * Correlated rather than fire-and-forget precisely because the local row is
+ * already gone: an unacknowledged report cannot be re-derived from daemon state
+ * later, so the daemon holds a durable receipt until this ACKs. Delivery is
+ * therefore at-least-once and the CP applies it idempotently (a re-reported
+ * session keeps its first `contentPurgedAt`).
+ */
+export const SessionPurged = z.object({
+  // One agent per frame: the CP authorizes the report by checking that THIS
+  // agent is placed on the reporting daemon, the same trust boundary as
+  // `event/session`. A sweep spanning several agents sends several frames.
+  agentId: z.string().uuid(),
+  // ACP session ids (agent-assigned strings, NOT wire UUIDs). Batched because a
+  // single sweep commonly expires many sessions at once; capped well under the
+  // frame budget so the daemon chunks instead of overflowing the wire.
+  sessionIds: z.array(z.string().min(1)).min(1).max(200),
+  reason: SessionPurgeReason,
+  ts: z.string().datetime()
+})
+export type SessionPurged = z.infer<typeof SessionPurged>
+
 /**
  * Per-session token-usage report — D→C EVT. The daemon meters usage from the
  * agent's ACP stream and reports the session's CUMULATIVE snapshot (latest-wins)

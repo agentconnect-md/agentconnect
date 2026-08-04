@@ -1080,6 +1080,61 @@ describe('LocalStore session retention GC (#485)', () => {
     expect(s.sessionHasPendingInboxRows('kept')).toBe(true)
     s.close()
   })
+
+  it('deleteSession records the CP-owed purge receipt in the same transaction', () => {
+    const s = store()
+    seed(s, 'gone', 'closed', 100)
+    // A session that never bound an ACP id was never reported to the CP, so there
+    // is no metadata row to mark and no receipt to keep.
+    seed(s, 'unbound', 'closed', 100, null)
+
+    s.deleteSession('gone', { reason: 'retention', at: 1_700 })
+    s.deleteSession('unbound', { reason: 'retention', at: 1_800 })
+
+    expect(s.listSessionPurges(10)).toEqual([
+      { agentId: 'bot-a', sessionId: 'acp-gone', reason: 'retention', purgedAt: 1_700 }
+    ])
+    s.close()
+  })
+
+  it('a purge receipt survives until acknowledged, and only for the reported agent', () => {
+    const s = store()
+    seed(s, 'a', 'closed', 100)
+    s.upsertSession({
+      key: 'b',
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'b',
+      // ACP ids are runtime-local: two agents can each have purged an `acp-1`.
+      acpSessionId: 'acp-a',
+      state: 'closed',
+      lastDeliveredTs: null,
+      updatedAt: 100
+    })
+    s.deleteSession('a', { reason: 'retention', at: 100 })
+    s.deleteSession('b', { reason: 'retention', at: 200 })
+    expect(s.listSessionPurges(10)).toHaveLength(2)
+
+    s.acknowledgeSessionPurges('bot-a', ['acp-a'])
+    expect(s.listSessionPurges(10)).toEqual([
+      { agentId: 'bot-b', sessionId: 'acp-a', reason: 'retention', purgedAt: 200 }
+    ])
+    s.close()
+  })
+
+  it('pruneSessionPurges drops only receipts older than the cutoff and reports the count', () => {
+    const s = store()
+    seed(s, 'old', 'closed', 100)
+    seed(s, 'recent', 'closed', 100)
+    s.deleteSession('old', { reason: 'retention', at: 100 })
+    s.deleteSession('recent', { reason: 'retention', at: 900 })
+
+    expect(s.pruneSessionPurges(500)).toBe(1)
+    expect(s.listSessionPurges(10).map((row) => row.sessionId)).toEqual(['acp-recent'])
+    expect(s.pruneSessionPurges(500)).toBe(0)
+    s.close()
+  })
 })
 
 describe('LocalStore runtime model-catalog cache (runtime-model-catalog.md §4)', () => {
