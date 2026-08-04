@@ -1488,7 +1488,10 @@ export default function SessionDetailView() {
       ]
     })
   }, [agentById, conversationMembers, orgPath, session])
-  const headerFocusScope = conversationKey ?? session?.id ?? id
+  // A client-side history change can update ?focus without remounting this view.
+  // Include that route target in the selection scope so it supersedes the last
+  // explicit menu choice, while ordinary rerenders keep the current selection.
+  const headerFocusScope = `${conversationKey ?? session?.id ?? id}?focus=${focusAgentId ?? ''}`
   const headerFocusOptionIds = headerFocusOptions.map((option) => option.agentId).join('|')
   const defaultHeaderFocusAgentId =
     (focusAgentId && headerFocusOptions.some((option) => option.agentId === focusAgentId)
@@ -2665,11 +2668,13 @@ export default function SessionDetailView() {
   // instead of it, so a partial record is never read as the whole record.
   const transcriptPartiallyPurged = !isPg && purgedMemberCount > 0 && !transcriptPurged
   const prompts = pgPrompts(session.agentId ?? '')
+  // Per-agent activity must use that session's rows before mergeConversation()
+  // deduplicates shared provider/human messages onto one canonical source.
   const focusedMessages =
-    conversationKey && headerFocusSessionId && visibleMsgs
-      ? visibleMsgs.filter(
-          (message) => conversationSourceSessionByMessageRef.current.get(message) === headerFocusSessionId
-        )
+    conversationKey && headerFocusSessionId
+      ? conversationLoadedKey === conversationKey
+        ? (conversationSourcesRef.current.rows.get(headerFocusSessionId) ?? [])
+        : null
       : visibleMsgs
   const stepsForFocusedAgent = (steps: SessionStep[]) =>
     headerFocusOptions.length <= 1
