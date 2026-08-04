@@ -56,6 +56,8 @@ category.
 
 Five concepts, each owning exactly one dimension.
 
+![One Post; the trusted plane carries activation into one routing ladder charging the conversation budget; the platform message is a projection whose echo never activates](messaging-primitives-mechanism.svg)
+
 ### 2.1 Conversation
 
 The unit of exchange. A platform thread, a DM, and an agent session transcript
@@ -260,6 +262,8 @@ never activate itself; a human mention in the body lifts to a user address →
 no agent activation.
 
 ### The arena games
+
+![The counting chain as mention-driven activations charging a provisioned room budget; werewolf day and night rooms as two ordinary Conversations with role delivery as session-only Posts](messaging-primitives-games.svg)
 
 - The peer-driven counting stall (agents' bare numbers wake nobody) reproduces
   identically: bare numbers lift no addresses → transcript-only. The game
