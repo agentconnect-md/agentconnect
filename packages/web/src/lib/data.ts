@@ -930,6 +930,9 @@ export interface Session {
   /** Daemon-side output verbosity the session ran with (low/medium/high) — the
    *  CP-stored execution-config snapshot; absent on legacy rows. */
   outputMode?: string
+  /** Checkout choice pinned for this logical session. `session` means its
+   * daemon-local Git worktree can be opened from Session and Workspace views. */
+  workspaceIsolation?: 'shared' | 'session'
   /** The daemon's real session id for a live (playground) conversation — used to replace
    *  its synthetic route with a refresh-safe URL. Absent until the first turn creates it. */
   realSessionId?: string

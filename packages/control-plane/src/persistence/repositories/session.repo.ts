@@ -74,6 +74,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     permissionMode: s.permissionMode,
     outputMode: s.outputMode,
     daemonId: s.daemonId ? DaemonId(s.daemonId) : null,
+    workspaceIsolation: s.workspaceIsolation as 'shared' | 'session' | null,
     activityState: s.activityState as ActivityState,
     orgId: OrgId(s.orgId),
     visibility: s.visibility as SessionVisibility,
@@ -764,7 +765,7 @@ export class PgSessionRepo implements SessionRepo {
         "thread", "tenantScope", "phase", "link", "summary", "title", "status",
         "lastActivityAt", "triggeredBy", "channelName", "triggeredByName",
         "threadUrl", "runtime", "model", "effort", "fastMode",
-        "permissionMode", "outputMode", "daemonId", "orgId", "visibility",
+        "permissionMode", "outputMode", "daemonId", "workspaceIsolation", "orgId", "visibility",
         "ownerIdentity", "visibilitySource", "externalProvider",
         "externalScopeId", "externalResolution", "legacyUnresolved",
         "classifiedPolicyRev", "startedAt", "endedAt", "updatedAt"
@@ -778,6 +779,7 @@ export class PgSessionRepo implements SessionRepo {
         ${ev.runtime ?? null}, ${ev.model ?? null}, ${ev.effort ?? null},
         ${ev.fastMode ?? null}, ${ev.permissionMode ?? null},
         ${ev.outputMode ?? null}, ${ev.daemonId ?? null},
+        ${ev.workspaceIsolation ?? null}::"WorkspaceIsolation",
         ${orgId},
         ${cls.visibility}::"SessionVisibility", ${cls.ownerIdentity},
         ${cls.source}::"VisibilitySource", ${cls.externalProvider},
@@ -826,6 +828,10 @@ export class PgSessionRepo implements SessionRepo {
         ),
         "outputMode" = COALESCE(EXCLUDED."outputMode", "session_meta"."outputMode"),
         "daemonId" = COALESCE(EXCLUDED."daemonId", "session_meta"."daemonId"),
+        "workspaceIsolation" = COALESCE(
+          EXCLUDED."workspaceIsolation",
+          "session_meta"."workspaceIsolation"
+        ),
         "endedAt" = COALESCE(EXCLUDED."endedAt", "session_meta"."endedAt"),
         "updatedAt" = CURRENT_TIMESTAMP
       WHERE "session_meta"."agentId" = EXCLUDED."agentId"

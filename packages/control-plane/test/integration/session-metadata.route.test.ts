@@ -105,6 +105,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       fastMode: true,
       permissionMode: 'acceptEdits',
       outputMode: 'medium',
+      workspaceIsolation: 'session',
       ts: '2026-07-05T00:00:00.000Z'
     })
     await prisma.sessionUsage.create({
@@ -138,6 +139,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       fastMode: boolean | null
       permissionMode: string | null
       outputMode: string | null
+      workspaceIsolation: 'shared' | 'session' | null
       daemonId: string | null
       usage: {
         reportedAt: string
@@ -161,6 +163,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(body.fastMode).toBe(true)
     expect(body.permissionMode).toBe('acceptEdits')
     expect(body.outputMode).toBe('medium')
+    expect(body.workspaceIsolation).toBe('session')
     expect(body.daemonId).toBe(DAEMON) // CP-stamped from the reporting WS connection
     expect(body.usage).toMatchObject({
       reportedAt: '2026-07-05T00:00:01.000Z',
@@ -185,6 +188,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(stored.fastMode).toBe(true)
     expect(stored.permissionMode).toBe('acceptEdits')
     expect(stored.outputMode).toBe('medium')
+    expect(stored.workspaceIsolation).toBe('session')
     expect(stored.daemonId).toBe(DAEMON)
 
     // The list route carries the same execution-config snapshot.
@@ -198,6 +202,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         fastMode: boolean | null
         permissionMode: string | null
         outputMode: string | null
+        workspaceIsolation: 'shared' | 'session' | null
         daemonId: string | null
         usage: { reportedAt: string; totalTokens: number } | null
       }>
@@ -208,6 +213,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect(listBody.sessions[0]!.fastMode).toBe(true)
     expect(listBody.sessions[0]!.permissionMode).toBe('acceptEdits')
     expect(listBody.sessions[0]!.outputMode).toBe('medium')
+    expect(listBody.sessions[0]!.workspaceIsolation).toBe('session')
     expect(listBody.sessions[0]!.daemonId).toBe(DAEMON)
     expect(listBody.sessions[0]!.usage?.totalTokens).toBe(1_200)
     expect(listBody.sessions[0]!.usage?.reportedAt).toBe('2026-07-05T00:00:01.000Z')

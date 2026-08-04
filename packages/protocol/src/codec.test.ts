@@ -944,13 +944,14 @@ describe('workspace file access frames (console live proxy)', () => {
     const r = decodeEnvelope(
       envelope(
         'workspace/list',
-        { agentId: 'local-agent-1', path: 'src/frames', cursor: 'c-1', limit: 100 },
+        { agentId: 'local-agent-1', sessionId: 'session-a', path: 'src/frames', cursor: 'c-1', limit: 100 },
         { epoch: 3 }
       )
     )
     expect(r.ok).toBe(true)
     if (!r.ok || !isFrame('workspace/list')(r.frame)) throw new Error('expected workspace/list')
     expect(r.frame.payload.agentId).toBe('local-agent-1') // plain string, NOT a uuid
+    expect(r.frame.payload.sessionId).toBe('session-a')
     expect(r.frame.payload.path).toBe('src/frames')
     expect(r.frame.payload.cursor).toBe('c-1')
     expect(r.frame.payload.limit).toBe(100)

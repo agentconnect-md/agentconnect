@@ -781,6 +781,11 @@ existing Agents retain the shared-checkout behavior after upgrade. A fresh manua
 Playground may override `Worktree` before its first turn without changing the Agent;
 automatic triggers use the Agent setting.
 
+The Workspace tab lets an authorized viewer switch between the primary checkout
+and the stable worktree of any visible, unpurged session. Session details link back to that
+session-scoped Workspace view. A session worktree is browse-only in the console:
+file editing and pull remain actions on the primary workspace.
+
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes
 write workspace authority for a repository must be rejected while an enabled GitHub

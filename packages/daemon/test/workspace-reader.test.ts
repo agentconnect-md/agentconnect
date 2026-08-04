@@ -69,6 +69,25 @@ afterEach(() => {
 })
 
 describe('workspace list', () => {
+  it('selects an isolated session worktree without changing the primary checkout', async () => {
+    const worktree = join(base, 'worktree')
+    mkdirSync(worktree)
+    writeFileSync(join(ws, 'primary.txt'), 'primary')
+    writeFileSync(join(worktree, 'session.txt'), 'session')
+    const scoped = createWorkspaceReader(
+      (id, sessionId) =>
+        id === AGENT
+          ? { root: sessionId === 'session-a' ? worktree : ws, scratch: sessionId === undefined }
+          : undefined,
+      directWrite
+    )
+
+    expect((await scoped.list(listReq())).entries.map((entry) => entry.name)).toEqual(['primary.txt'])
+    expect((await scoped.list(listReq({ sessionId: 'session-a' }))).entries.map((entry) => entry.name)).toEqual([
+      'session.txt'
+    ])
+  })
+
   it('lists the root: dirs first, then case-insensitive alphabetical, with size/mtime on files', async () => {
     writeFileSync(join(ws, 'Zebra.txt'), 'zz')
     writeFileSync(join(ws, 'apple.txt'), 'aaaa')

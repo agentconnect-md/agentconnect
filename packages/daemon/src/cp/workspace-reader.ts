@@ -88,11 +88,11 @@ function containsGitInternals(relPath: string): boolean {
 }
 
 export function createWorkspaceReader(
-  workspaceByAgent: (agentId: string) => WorkspaceLocation | undefined,
+  workspaceByAgent: (agentId: string, sessionId?: string) => WorkspaceLocation | undefined,
   coordinateWrite: WorkspaceWriteCoordinator
 ): WorkspaceReader {
-  function locationFor(agentId: string): WorkspaceLocation {
-    const location = workspaceByAgent(agentId)
+  function locationFor(agentId: string, sessionId?: string): WorkspaceLocation {
+    const location = workspaceByAgent(agentId, sessionId)
     if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`)
     return location
   }
@@ -160,7 +160,7 @@ export function createWorkspaceReader(
 
   return {
     async list(req) {
-      const root = locationFor(req.agentId).root
+      const root = locationFor(req.agentId, req.sessionId).root
       const { resolved, realRoot } = await resolveContained(root, req.path)
       const notFound = { agentId: req.agentId, path: req.path, exists: false, entries: [] as WorkspaceEntry[] }
       if (realRoot === null) return notFound // workspace root missing
@@ -232,7 +232,7 @@ export function createWorkspaceReader(
     },
 
     async read(req) {
-      const root = locationFor(req.agentId).root
+      const root = locationFor(req.agentId, req.sessionId).root
       const { resolved, realRoot } = await resolveContained(root, req.path)
       const notFound = { agentId: req.agentId, path: req.path, exists: false }
       if (realRoot === null) return notFound

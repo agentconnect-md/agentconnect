@@ -382,6 +382,7 @@ export interface SessionDto {
    *  content. Non-null ⇒ the transcript is gone for good. Absent on a CP that
    *  predates the field. */
   contentPurgedAt?: string | null
+  workspaceIsolation?: 'shared' | 'session' | null
 }
 
 export interface SessionFacetsDto {
@@ -497,6 +498,7 @@ export interface SessionDetailDto {
   permissionMode: string | null // effective session preset; Codex Auto is composite
   outputMode: string | null
   daemonId: string | null
+  workspaceIsolation?: 'shared' | 'session' | null
   // Session visibility (docs/designs/session-visibility.md §5/§6). All three are
   // absent on a CP that predates the feature. `visibilityState` is the §5.1
   // tighten cutover: 'pending' until every affected daemon acked the change,
@@ -1830,7 +1832,10 @@ export function sessionFromDto(d: SessionDto): Session {
     ...(d.daemonId !== null && d.daemonId !== undefined ? { daemon: d.daemonId } : {}),
     // Retention GC (#485): only ever set, never cleared to a falsy marker — the
     // views treat "absent" as "content is still there".
-    ...(d.contentPurgedAt ? { contentPurgedAt: d.contentPurgedAt } : {})
+    ...(d.contentPurgedAt ? { contentPurgedAt: d.contentPurgedAt } : {}),
+    ...(d.workspaceIsolation !== null && d.workspaceIsolation !== undefined
+      ? { workspaceIsolation: d.workspaceIsolation }
+      : {})
   }
 }
 
@@ -1871,7 +1876,8 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     permissionMode: d.permissionMode,
     outputMode: d.outputMode,
     daemonId: d.daemonId,
-    contentPurgedAt: d.contentPurgedAt ?? null
+    contentPurgedAt: d.contentPurgedAt ?? null,
+    workspaceIsolation: d.workspaceIsolation
   })
   return participants ? { ...base, participants } : base
 }
@@ -2263,9 +2269,10 @@ export const MAX_WORKSPACE_EDIT_BYTES = 180_000
 // bytes (body-locality). 503 when that daemon is offline / the agent is unplaced.
 export async function fetchWorkspaceFiles(
   agentId: string,
-  opts: { path: string; cursor?: string; limit?: number }
+  opts: { path: string; cursor?: string; limit?: number; sessionId?: string }
 ): Promise<WorkspaceListingDto> {
   const q = new URLSearchParams({ path: opts.path })
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
   if (opts.cursor) q.set('cursor', opts.cursor)
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceListingDto>(
@@ -2301,9 +2308,10 @@ export async function fetchAgentLocalSkills(agentId: string): Promise<LocalSkill
 // 503 when the daemon is offline / the agent is unplaced.
 export async function fetchWorkspaceFile(
   agentId: string,
-  opts: { path: string; offset?: number; limit?: number }
+  opts: { path: string; offset?: number; limit?: number; sessionId?: string }
 ): Promise<WorkspaceFileDto> {
   const q = new URLSearchParams({ path: opts.path })
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
   if (opts.offset) q.set('offset', String(opts.offset))
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
@@ -2781,8 +2789,11 @@ export interface WorkspaceGitPullDto {
 
 // Report whether the agent's workspace checkout is clean. Read-only; proxied live
 // from the owning daemon (no CP storage). 503 when the daemon is offline.
-export async function fetchWorkspaceGitStatus(agentId: string): Promise<WorkspaceGitStatusDto> {
-  return apiGet<WorkspaceGitStatusDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitstatus`)
+export async function fetchWorkspaceGitStatus(agentId: string, sessionId?: string): Promise<WorkspaceGitStatusDto> {
+  const q = new URLSearchParams()
+  if (sessionId) q.set('sessionId', sessionId)
+  const query = q.size ? `?${q.toString()}` : ''
+  return apiGet<WorkspaceGitStatusDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitstatus${query}`)
 }
 
 // Force the owning daemon to `git pull` (fast-forward only) the agent's workspace

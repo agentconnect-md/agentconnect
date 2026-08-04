@@ -2094,6 +2094,10 @@ export default function SessionDetailView() {
   const pgImage = getPgImage(session.id)
   const pgQueue = getPgQueue(session.id)
   const agentHref = session.agentId ? `/agents/${session.agentId}` : null
+  const workspaceHref =
+    currentSessionDetail?.workspaceIsolation === 'session' && !currentSessionDetail.contentPurgedAt && session.agentId
+      ? `/agents/${session.agentId}?tab=workspace&worktree=${encodeURIComponent(currentSessionDetail.id)}`
+      : null
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
   // The conversation roster, for EVERY live surface — the synthetic playground and
@@ -2733,6 +2737,16 @@ export default function SessionDetailView() {
               <span className="truncate">{session.agentName}</span>
             </span>
           )}
+          {workspaceHref ? (
+            <Link
+              className="lnk flex-none text-[12.5px] text-(--text-secondary)"
+              href={orgPath(workspaceHref)}
+              title="Open this session’s worktree"
+            >
+              <Icon name="folder-git-2" size={13} />
+              Workspace
+            </Link>
+          ) : null}
           <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
             <span className="imark h-5 w-5 flex-none rounded-xs">
               <PlatformMark platform={channelDisplay.platform} />
@@ -2850,6 +2864,16 @@ export default function SessionDetailView() {
               </span>
             </span>
           )}
+          {workspaceHref ? (
+            <Link
+              href={orgPath(workspaceHref)}
+              className="iconbtn flex h-[26px] w-[26px] flex-none items-center justify-center no-underline"
+              title="Open this session’s worktree"
+              aria-label="Open this session’s worktree"
+            >
+              <Icon name="folder-git-2" size={14} />
+            </Link>
+          ) : null}
           {visibilityControl}
           <button
             type="button"

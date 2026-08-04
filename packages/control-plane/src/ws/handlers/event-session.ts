@@ -182,6 +182,7 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
       ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
       ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),
       ...(p.outputMode !== undefined ? { outputMode: p.outputMode } : {}),
+      ...(p.workspaceIsolation !== undefined ? { workspaceIsolation: p.workspaceIsolation } : {}),
       ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
       ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
       ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),

@@ -31,6 +31,10 @@ export const CP_WS_PATH = '/daemon/ws'
 /** CP accepts metadata-only transcript activity invalidations from current daemons. */
 export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
 
+/** Daemon resolves workspace list/read/git-status requests against the isolated
+ * worktree named by `sessionId` instead of silently falling back to primary. */
+export const WORKSPACE_SESSION_READ_FEATURE = 'workspace-session-read-v1'
+
 /**
  * CP accepts the `event/session-purged` retention-GC receipt (#485) and marks the
  * session's stored metadata content-purged. Advertised by the CP in

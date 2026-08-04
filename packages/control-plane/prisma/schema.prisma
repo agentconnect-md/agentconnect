@@ -914,6 +914,10 @@ model SessionMeta {
   permissionMode      String? // runtime permission/approval mode
   outputMode          String? // daemon-side output verbosity (low/medium/high)
   daemonId            String?             @db.Uuid // daemon that reported the session — stamped by the CP from the authenticated WS conn, never daemon-echoed
+  // Session-pinned checkout choice. Null is a legacy row whose daemon never
+  // reported it; `session` identifies a daemon-local worktree eligible for the
+  // authorized Workspace viewer.
+  workspaceIsolation  WorkspaceIsolation?
   activityState       ActivityState       @default(idle)
   // ── session visibility (docs/designs/session-visibility.md §3) ──
   orgId               String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent
