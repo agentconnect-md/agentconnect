@@ -54,16 +54,16 @@ export const GENERAL_PRESET = {
 
 /** The preset's default skill (§3.1): the platform's own `agentconnect-platform`
  *  skill — platform introduction + admin-over-MCP/REST guidance — acquired from
- *  the public AgentConnect monorepo's `skills/` directory. Registered as an
- *  ordinary org skill source named after the preset, so the console lists and
- *  manages it like any user-registered source. */
+ *  the public `agentconnect-skill` repository's `skills/` directory. Registered
+ *  as an ordinary org skill source named after the preset, so the console lists
+ *  and manages it like any user-registered source. */
 export const PRESET_SKILL_SOURCE = {
   name: 'agentconnect',
-  source: 'agentconnect-md/agentconnect',
-  // Rename-proof numeric identity of agentconnect-md/agentconnect — AgentSkillEntry
-  // requires it, and the daemon re-verifies it against
+  source: 'agentconnect-md/agentconnect-skill',
+  // Rename-proof numeric identity of agentconnect-md/agentconnect-skill —
+  // AgentSkillEntry requires it, and the daemon re-verifies it against
   // api.github.com/repositories/{id} before any name-based fetch.
-  githubRepoId: 1310543401n,
+  githubRepoId: 1322557433n,
   // A subdir source must carry a ref (the skill-sources route invariant); pin the
   // repo's default branch so the skill tracks head like a console-registered source.
   ref: 'main',
