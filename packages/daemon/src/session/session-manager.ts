@@ -772,7 +772,11 @@ export class SessionManager {
         : `# Collaborating with other agents\n` +
           `- To reach a specific agent privately, call \`sendMessage\` with ` +
           `\`{"toAgent":"<agent id>","message":"..."}\` (dm form) — it wakes ONLY that agent, delivered directly to it ` +
-          `(nothing is posted to the channel). Add a \`channel\` ` +
+          `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
+          `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
+          `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
+          `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
+          `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
           `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
           `to ALSO post a visible message there and thread that agent's reply under it; add ` +
           `\`"thread":"<thread id>"\` (in-thread form) to post into a specific thread instead. Use these when the ` +

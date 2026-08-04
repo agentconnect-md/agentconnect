@@ -7,7 +7,8 @@
 > is implemented. Finalized AgentConnect-authored platform mentions are now routable
 > (through their own ladder, never through implicit routing), the visible in-thread
 > `sendMessage` forms are gone while `toAgent + channel` remains as a channel-root
-> send, and parent-session replies are session-only. Agent-to-agent activation is no
+> send, and a parent-session reply is injected into the parent session (never
+> published) while resuming it as an ordinary turn. Agent-to-agent activation is no
 > longer exclusively the internal `messageAgent` path — a verified explicit mention is a
 > second, equally hop-bounded path. Read that document for the verification, hop
 > transition, and activation rendezvous rules.
@@ -270,7 +271,8 @@ resetting chain depth.
   daemon automatically sets outbound `hopCount = current turn hopCount + 1`.
   It ignores any agent-supplied value.
 - Queue replay restores the persisted turn hop; compaction cannot reset it.
-- The daemon rejects delivery above a threshold such as eight hops.
+- The daemon rejects delivery above the shared `MAX_AGENT_CALL_HOPS` threshold
+  (currently 20).
 - **Test:** omitting hop arguments or explicitly passing `hopCount:0` cannot reset chain depth; the daemon uses turn-bound hop + 1.
 
 ### 2.5 Authorization: The Directional Call Policy, Org-Scoped
@@ -743,7 +745,7 @@ For orchestration:
 
 This section lists collaboration-side mechanisms only. See [`loop-breaker-design.md`](loop-breaker-design.md) for unified platform feedback loops, durable latches, restart/replay, and recovery permissions.
 
-- **hopCount:** Increment every agent-to-agent delivery and reject above a threshold such as eight, preventing an A <-> B wake loop.
+- **hopCount:** Increment every agent-to-agent delivery and reject above the shared `MAX_AGENT_CALL_HOPS` threshold, preventing an A <-> B wake loop.
 - **Orchestration depth limit:** Bound nested orchestration when a worker acts as a main agent, preventing exponential fan-out.
 - **Self-delivery protection:** Reject `messageAgent(toAgentId == self)` to avoid self-wake loops.
 
@@ -751,7 +753,7 @@ This section lists collaboration-side mechanisms only. See [`loop-breaker-design
 
 | Layer  | Current behavior                                                                                                                                                                                                        |
 | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daemon | Atomic `sessionKey` admission serializes a conversation, caps its queue at 10, releases or fail-stops queued work on failure/cancel, enforces an eight-hop maximum, and rejects self-delivery.                          |
+| Daemon | Atomic `sessionKey` admission serializes a conversation, caps its queue at 10, releases or fail-stops queued work on failure/cancel, enforces the shared `MAX_AGENT_CALL_HOPS` maximum (20), and rejects self-delivery. |
 | Tool   | Peer delivery reports typed outcomes including offline, queue-full, policy denial, and hop-limit failures.                                                                                                              |
 | Config | `maxAgents` bounds placed agent capacity and `maxConcurrentSessions` is part of daemon config; neither supplies the missing collaboration-specific per-agent turn limit or orchestration fan-out width described above. |
 | Tests  | Cover concurrent cold-session admission, queue ordering and failure, queue-full reporting, hop-limit rejection, and self-delivery rejection.                                                                            |

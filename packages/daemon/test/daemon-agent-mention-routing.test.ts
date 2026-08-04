@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey } from '../src/store/local-store.js'
 
@@ -611,17 +612,18 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
-  it('admits source depth 7 as 8, rejects 8, and rejects an unusable depth', async () => {
+  it('admits the last source depth under the cap, rejects the cap itself, and rejects an unusable depth', async () => {
     // §10 case 15 — the direct-daemon half of the boundary the relay test covers for the
     // relayed half. Both must agree, or a mention chain gets a different budget depending
-    // on which transport carried it.
+    // on which transport carried it. Expressed against MAX_AGENT_CALL_HOPS rather than a
+    // literal so retuning the budget cannot leave one transport pinned to the old number.
     const admitted = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(admitted.daemon, agentMessage({}, { hopCount: 7 })).kind).toBe('dispatched')
-    expect(admitted.calls[0]!.callMeta).toMatchObject({ hopCount: 8 })
+    expect(route(admitted.daemon, agentMessage({}, { hopCount: MAX_AGENT_CALL_HOPS - 1 })).kind).toBe('dispatched')
+    expect(admitted.calls[0]!.callMeta).toMatchObject({ hopCount: MAX_AGENT_CALL_HOPS })
     await admitted.daemon.stop()
 
     const capped = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(capped.daemon, agentMessage({}, { hopCount: 8 })).kind).toBe('rejected')
+    expect(route(capped.daemon, agentMessage({}, { hopCount: MAX_AGENT_CALL_HOPS })).kind).toBe('rejected')
     expect(capped.calls).toHaveLength(0)
     await capped.daemon.stop()
 
@@ -759,7 +761,9 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect((daemon as any).handleRelayIm(imFrame({ trustedFromAgentId: 'bot-b' })).accepted).toBe(true)
       // Already-incremented depth past the cap, and a depth below 1 (which would mean the
       // relay never applied its transition).
-      expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 9 })).accepted).toBe(true)
+      expect(
+        (daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: MAX_AGENT_CALL_HOPS + 1 })).accepted
+      ).toBe(true)
       expect((daemon as any).handleRelayIm(imFrame({ trustedDeliveryHopCount: 0 })).accepted).toBe(true)
       expect(calls).toHaveLength(0)
       await daemon.stop()

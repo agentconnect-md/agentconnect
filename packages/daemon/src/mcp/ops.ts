@@ -191,7 +191,7 @@ export interface MessageAgentReq {
    * caller's channel, which is exactly the interruption the postless form exists to avoid.
    * The child keeps everything that makes it followable — origin lineage, hop count,
    * correlation, `needsReply`, and `viewSessionStatus` — and reports back through the
-   * (equally session-only) parent-session reply.
+   * parent-session reply, whose injected body is likewise never published.
    *
    * Set only by `sendMessage`'s agent target. Other internal callers (orchestration, the
    * intro fan-out) keep their existing visibility, which they express themselves.
@@ -271,10 +271,10 @@ export interface ReplyToSessionReq {
 
 /** The result of a SessionTarget reply. `delivered:false` carries a typed reason
  *  ('not_authorized' when the sessionId isn't the caller's origin; 'unsupported' when a
- *  cross-daemon reply reached a target too old to run the parent turn headlessly, which
- *  is REFUSED rather than downgraded to visible IM output — send-message-routing-rework.md
- *  §7/§8.4; the rest mirror the cross-daemon agent-msg verdicts for a reply that had to
- *  route over the relay). */
+ *  cross-daemon reply reached a target too old to advertise `headless-agent-delivery-v1`,
+ *  which is REFUSED rather than delivered — a legacy fence from when this delivery kind
+ *  muted the parent turn, send-message-routing-rework.md §7/§8.4; the rest mirror the
+ *  cross-daemon agent-msg verdicts for a reply that had to route over the relay). */
 export interface ReplyToSessionResult {
   delivered: boolean
   targetSession?: string

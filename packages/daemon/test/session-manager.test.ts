@@ -1825,6 +1825,24 @@ describe('SessionManager — collaboration preamble', () => {
     store.close()
   })
 
+  it('states the needsReply rule in the standing context, not only in the tool descriptor', async () => {
+    // The descriptor is one input among many; this context is ALWAYS present and used to
+    // present the bare `toAgent` form as the normal way to reach a peer privately, with no
+    // hint that an answer never comes back. A caller reading only that omitted `needsReply`
+    // for a question in production (#628) — so the rule has to be stated in both places, and
+    // in the SAME terms the descriptor uses.
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toContain('{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}')
+    expect(metaArg).toContain('FIRE-AND-FORGET')
+    // The trigger, so the rule is actionable rather than a definition of the flag.
+    expect(metaArg).toMatch(/asks a question or requests a result/)
+    store.close()
+  })
+
   it('routes the collaboration guidance via _meta for Claude, never a user-turn block', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any

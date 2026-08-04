@@ -226,23 +226,26 @@ transcript display. The first real reply in that thread receives the root as pre
 context before the new message. Session initialization itself produces no agent output,
 tool calls, memory recall or capture, turn evaluation, or token usage.
 
-## Parent-session replies are session-only
+## A parent-session reply is injected, and the parent answers normally
 
 `sendMessage({"sessionId":"<parent>", …})` injects an answer into the session that woke
-the caller. That delivery is **session-only by default**: the parent agent processes the
-input and its work is recorded in the session transcript, but the resumed turn emits no
-ordinary IM body, typing indicator, status message, status bar, footer, permission card,
-or completion notification. Relaying an answer upward is a hand-off, not a broadcast —
-publishing it into the parent's channel would usually duplicate what the child already
-delivered.
+the caller. What is invisible is the **report itself**: no component publishes the
+injected body to a platform, so relaying an answer upward is a hand-off rather than a
+broadcast.
 
-The parent may still choose to speak: an explicit visible `sendMessage` from the resumed
-turn is a new, separately authorized outbound action and behaves normally. So the promise
-is "no automatic IM output", not "no IM output at all".
+The parent session is then resumed as an **ordinary turn** — it keeps its reply sink and
+chrome, so what the parent decides to say lands in the parent's own conversation, where
+the humans who delegated the work are waiting. Delegated work that reports back is
+therefore visible to them, which is the point of reporting back at all.
 
-A reply whose parent lives on another daemon carries the same requirement. If that daemon
-is too old to run the turn silently, the reply **fails** rather than being downgraded —
-the alternative would leak the parent's entire ordinary response into its channel.
+The parent should not restate what its conversation already shows; that is the standing
+"be quiet about mechanics" rule, not a transport guarantee. An earlier revision muted the
+resumed turn to enforce it, and that silenced every report whose child had answered
+somewhere else (its own channel-root thread) or nowhere at all (a postless child).
+
+A reply whose parent lives on another daemon behaves identically. If that daemon is too
+old to understand the delivery kind, the reply **fails** rather than being dispatched into
+the wrong session.
 
 ## Per-channel trigger
 

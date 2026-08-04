@@ -362,14 +362,14 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     // points cannot drift — a relay allowing one more hop than the daemon would let a
     // relayed chain outlive the budget an internal chain gets, and no single package's
     // tests would catch that.
-    expect(MAX_AGENT_CALL_HOPS).toBe(8)
+    expect(MAX_AGENT_CALL_HOPS).toBe(20)
     expect(Number.isInteger(MAX_AGENT_CALL_HOPS)).toBe(true)
   })
 
   it('rd/hello advertises optional daemon capabilities, and an older daemon advertises none', () => {
-    // §8.4: the relay must be able to tell "supports headless session replies" from
-    // "never said", because the second one has to REFUSE a required-headless delivery
-    // rather than degrade it into visible IM output.
+    // §8.4: the relay must be able to tell "understands session replies" from "never
+    // said", because the second one has to REFUSE the delivery rather than let the target
+    // key it by coordinates and mint the wrong session.
     const withCaps = buildRelayDaemonFrame('rd/hello', {
       apiKey: 'k'.repeat(49),
       daemonId: DAEMON_ID,
@@ -386,9 +386,9 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(older.frame.payload.capabilities).toBeUndefined()
   })
 
-  it('carries the required-headless delivery kind across both A2A wire legs', () => {
-    // §8.3: a parent-session reply is a distinct delivery KIND, not a flavor of wake —
-    // the target must suppress the resumed parent's automatic IM output for that turn.
+  it('carries the session-reply delivery kind across both A2A wire legs', () => {
+    // §8.3: a parent-session reply is a distinct delivery KIND, not a flavor of wake — the
+    // target dispatches it into the session named by `lineageReplyTo`.
     const base = {
       claimedFromAgentId: AGENT_ID,
       toAgentId: AUTHORITY_ID,

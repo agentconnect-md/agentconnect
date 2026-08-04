@@ -497,7 +497,7 @@ Opening a conversation does not automatically block a new `source:"agent"`
 delivery; agent calls rely on the self/hop guard. Unifying them under one causal
 root is an L3 goal and must not be described as a current capability.
 
-The current `MAX_AGENT_CALL_HOPS = 8`.
+The current `MAX_AGENT_CALL_HOPS = 20`.
 
 ### 7.2 Trusted Turn Context
 
