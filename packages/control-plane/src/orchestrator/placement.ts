@@ -61,7 +61,6 @@ import type {
   ExternalMemoryGrantRepo,
   MemoryPluginInstallationRepo
 } from '../persistence/ports.js'
-import { isDirectConversationKind } from '../persistence/ports.js'
 import { telegramIntegrationConfig } from '../platforms/telegram/provider.js'
 import { discordIntegrationConfig } from '../platforms/discord/provider.js'
 import { slackIntegrationConfig, slackSharedIntegrationConfig } from '../platforms/slack/provider.js'

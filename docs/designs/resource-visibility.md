@@ -931,8 +931,9 @@ agents.
 - **org → restricted:** gating turns on. Existing known channel rows keep
   their current trigger (grandfathered enabled) so running setups are not cut
   mid-conversation; a Console banner prompts the editor to review them. Every
-  known direct row is reset Off before the gated route/spec push; newly observed
-  direct conversations also start Off.
+  known direct row is reset Off in the same transaction as the visibility change,
+  before the gated route/spec push; newly observed direct conversations also start
+  Off.
 - **restricted → org:** gating turns off; unscoped defaults return. Rows and
   their trigger values persist so flipping back restores the previous
   decisions — the same preservation principle as Decision 4. Direct and channel

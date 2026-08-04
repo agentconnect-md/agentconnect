@@ -753,7 +753,11 @@ export class HttpBotOrchestrator {
           scope: { channel: channelId },
           match
         })
-        if (kind === 'im' && p.gated) {
+        // A shared 1:1 DM may have several enabled installs. Emit every target's
+        // scoped slug so arbitration can evaluate it ahead of scoped auto: naming a
+        // non-default public agent still selects that agent, and gated targets use
+        // the same disambiguation.
+        if (kind === 'im') {
           const slug = p.agent.name
           if (slug) {
             routes.push({

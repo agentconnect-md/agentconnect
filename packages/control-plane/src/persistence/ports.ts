@@ -746,8 +746,9 @@ export interface AgentRepo {
    *  live. A concurrently deleted or differently repaired agent is a no-op. */
   setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
-   *  separate from content `update`). Stamps the last-modified audit; `byUserId`
-   *  is the editing WebUI principal (absent under devAuth). */
+   *  separate from content `update`). An org→restricted transition atomically
+   *  closes known direct-conversation rows. Stamps the last-modified audit;
+   *  `byUserId` is the editing WebUI principal (absent under devAuth). */
   setSharing(
     agentId: AgentId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },

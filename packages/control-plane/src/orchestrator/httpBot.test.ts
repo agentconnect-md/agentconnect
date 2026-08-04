@@ -679,15 +679,17 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       )
     })
 
-    it('an enabled im row of a NON-gated owner compiles a scoped route', async () => {
+    it('an enabled public DM compiles scoped auto and slug routes for every target', async () => {
       channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } }),
+          expect.objectContaining({ agentId: ALICE, match: { kind: 'keyword', value: 'alice' } }),
           // BOB has not observed the row yet, so his public default remains On.
-          expect.objectContaining({ agentId: BOB, match: { kind: 'auto' } })
+          expect.objectContaining({ agentId: BOB, match: { kind: 'auto' } }),
+          expect.objectContaining({ agentId: BOB, match: { kind: 'keyword', value: 'bob' } })
         ])
       )
     })

@@ -277,7 +277,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(dto!.channels.find((c) => c.channelId === 'D1')).toMatchObject({ kind: 'im' })
   })
 
-  it('stores a public DM as On, then closes it when the agent becomes restricted (§14.3)', async () => {
+  it('stores a public DM as On, then atomically closes it when the agent becomes restricted (§14.3)', async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
