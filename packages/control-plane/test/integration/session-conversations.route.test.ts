@@ -13,7 +13,7 @@ import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo, PgHookRepo, PgSessionRepo, PgWebchatConversationRepo } from '../../src/persistence/index.js'
-import { AgentId, OrgId } from '../../src/domain/ids.js'
+import { AgentId, OrgId, SessionId } from '../../src/domain/ids.js'
 import { handleEventSession } from '../../src/ws/handlers/index.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
@@ -76,7 +76,7 @@ type ConversationsBody = {
     platform: string | null
     channel: string | null
     thread: string | null
-    sessions: Array<{ sessionId: string; agentId: string }>
+    sessions: Array<{ sessionId: string; agentId: string; contentPurgedAt?: string | null }>
     memberSessionIds: string[]
   }>
   total: number | null
@@ -490,5 +490,36 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     const secondBody = second.json() as ConversationsBody
     expect(secondBody.conversations.map((c) => c.thread)).toEqual(['T-1'])
     expect(secondBody.nextCursor).toBeNull()
+  })
+})
+
+describe('GET /sessions — retention-purge mark on conversation members (#485)', () => {
+  it("reports each member's own mark, so a purged peer is visible to the console", async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON })
+    await slackReport('s-a', AGENT_A, 1_000)
+    await slackReport('s-b', AGENT_B, 2_000)
+
+    // Only the NON-representative member is purged. The console derives its
+    // partial-history notice from these per-member marks, so the route must carry
+    // them rather than the representative's alone.
+    const purgedAt = new Date('2026-08-04T09:00:00.000Z')
+    await new PgSessionRepo(prisma).markContentPurged(AgentId(AGENT_A), [SessionId('s-a')], 'retention', purgedAt)
+
+    running = await buildHttpApp(prisma)
+    const res = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${encodeURIComponent(
+        encodeConversationKey({ platform: 'slack', tenantScope: 'TEAM-1', channel: 'C-OPS', thread: 'T-1' })
+      )}`
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as ConversationsBody
+    const members = body.conversations[0]!.sessions
+    // s-b is the representative (newer activity) and is NOT purged.
+    expect(members[0]!.sessionId).toBe('s-b')
+    expect(members[0]!.contentPurgedAt).toBeNull()
+    expect(members.find((m) => m.sessionId === 's-a')!.contentPurgedAt).toBe(purgedAt.toISOString())
   })
 })
