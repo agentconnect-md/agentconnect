@@ -26,7 +26,8 @@ import {
 import { integrationToSpec, httpIntegrationToSpec } from '../../orchestrator/placement.js'
 import { HttpBotOrchestrator } from '../../orchestrator/httpBot.js'
 import { RelayRegistry, type RelayChannel } from '../../ws/relay-registry.js'
-import { CreateIntegrationBody } from '../../http/dto/index.js'
+import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
+import { buildCpPlatformRegistry } from '../registry.js'
 import { AppConfigSchema } from '../../config/env.js'
 import type { FeishuBotVerification } from '../../http/feishu-identity.js'
 import type { BotProfileIconAgent } from '../../http/bot-profile-icon.js'
@@ -233,6 +234,9 @@ describe('feishu refineCreateBody (DTO parity: the create body superRefine feish
   })
 
   it('is the same rule the live create DTO enforces (one implementation)', () => {
+    // The live body is COMPOSED from the registry (§9), so the rule reaches the
+    // DTO through the provider's `refineCreateBody` — no second copy anywhere.
+    const CreateIntegrationBody = buildCreateIntegrationBody(buildCpPlatformRegistry([createFeishuCpProvider({})]))
     const base = { platform: 'feishu', agentId: AGENT_ID as string }
     const http = CreateIntegrationBody.safeParse({
       ...base,

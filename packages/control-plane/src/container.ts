@@ -782,8 +782,19 @@ export function buildContainer(
   const syncDiscordBotProfile = createDiscordBotProfileSyncer(iconStore)
   const syncFeishuAppIcon = createFeishuAppIconSyncer(iconStore)
 
+  // LATE-BOUND on purpose: the providers below are constructed WITH `httpDeps`
+  // (their funnel plugins are route factories pre-bound to this very bundle), so
+  // the registry cannot exist before this object does. Every reader runs at
+  // Fastify `ready()` time or later — route plugins are registered lazily — by
+  // which point `buildContainer` has assigned it.
+  let platformRegistry: CpPlatformRegistry | undefined = undefined
+
   const httpDeps: HttpDeps = {
     clock,
+    get platforms(): CpPlatformRegistry {
+      if (!platformRegistry) throw new Error('platform registry read before composition')
+      return platformRegistry
+    },
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
@@ -1033,13 +1044,15 @@ export function buildContainer(
   // functions, route-dep bundle, funnel stores, and background-loop instances
   // the live paths use (one implementation; the providers add no second code
   // path). The Slack/Feishu funnel plugins are handed in PRE-BOUND to
-  // `httpDeps` — the very factories `server.ts` mounts — because the route
-  // modules consume the create-DTO module, which imports the providers'
-  // credential blocks (importing the factories from the provider modules would
-  // close a runtime import cycle). Nothing consumes the registry yet beyond
-  // construction — the create route, spec assembly, rc/bot-assign, route
-  // mounting, `loadConfig`'s schema fold, and `startBackground()` adopt it in
-  // follow-up PRs.
+  // `httpDeps` — the very factories `server.ts` mounts — keeping provider
+  // construction one-directional (a provider never reaches back for a route
+  // factory). That is also why the registry is published to `httpDeps` through
+  // the late-bound getter above rather than as a plain field.
+  //
+  // ADOPTED SO FAR: the `POST /integrations` create body + its live
+  // `validateConfig` dispatch read the registry through `httpDeps.platforms`.
+  // Spec assembly, rc/bot-assign, route mounting, `loadConfig`'s schema fold,
+  // and `startBackground()` adopt it in follow-up PRs.
   const platforms = buildCpPlatformRegistry([
     createTelegramCpProvider({ verifyBot: verifyTelegramBot, syncBotIcon: syncTelegramBotIcon }),
     createDiscordCpProvider({
@@ -1073,6 +1086,7 @@ export function buildContainer(
       }
     })
   ])
+  platformRegistry = platforms
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {

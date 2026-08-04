@@ -87,6 +87,11 @@ import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { HookService } from '../../src/hooks/hook.service.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
+import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
+import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
+import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
+import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createReadiness } from '../../src/http/readiness.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from '../../src/http/mcp/remote-grant-authenticator.js'
@@ -255,6 +260,32 @@ export function buildHttpApp(
       oauth: oauthRepo
     },
     registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
+    // §9 platform-provider registry — the same four providers `buildContainer`
+    // registers, so the create route parses and validates exactly the deployed
+    // shapes. Their verify seams READ THROUGH to `deps` on every call instead of
+    // capturing it: tests routinely swap `app.deps.verifySlackBot` (and friends)
+    // AFTER the app is built, and an absent dep is passed through as the
+    // provider-unreachable outcome — which every provider treats exactly as
+    // today's route treated "no verifier injected" (inconclusive: no 400, no
+    // derived identity). Only the seams the create route now reaches through the
+    // provider are wired here; the icon/profile pushes remain live `deps` calls
+    // until §9 moves the create tails too.
+    platforms: buildCpPlatformRegistry([
+      createTelegramCpProvider({ verifyBot: (token) => deps.verifyTelegramBot(token) }),
+      createDiscordCpProvider({
+        verifyBot: async (token) => (deps.verifyDiscordBot ? deps.verifyDiscordBot(token) : { status: 'unreachable' }),
+        ensureMessageContentIntent: (token) => deps.ensureDiscordMessageContentIntent(token)
+      }),
+      createSlackCpProvider({
+        verifyBot: async (token) => (deps.verifySlackBot ? deps.verifySlackBot(token) : { status: 'unreachable' }),
+        verifyAppToken: async (token) =>
+          deps.verifySlackAppToken ? deps.verifySlackAppToken(token) : ('unreachable' as const)
+      }),
+      createFeishuCpProvider({
+        verifyBot: async (appId, appSecret, region) =>
+          deps.verifyFeishuBot ? deps.verifyFeishuBot(appId, appSecret, region) : { status: 'unreachable' }
+      })
+    ]),
     agentSpecs: new AgentSpecAssembler(
       agentSecretStore,
       {},

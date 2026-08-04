@@ -29,10 +29,6 @@ import {
   normalizeRepoSubdir
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
-import { TelegramCreateCredentials } from '../../platforms/telegram/provider.js'
-import { DiscordCreateCredentials } from '../../platforms/discord/provider.js'
-import { SlackCreateCredentials, refineSlackCreateBody } from '../../platforms/slack/provider.js'
-import { FeishuCreateCredentials, refineFeishuCreateBody } from '../../platforms/feishu/provider.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
 /** 'org' = visible to every org member (default); 'restricted' = the complete
@@ -715,85 +711,10 @@ export const AgentCreatedDto = AgentDto.extend({
 })
 
 // ── bots + integrations ─────────────────────────────────────────────────────
-/**
- * `POST /integrations` — install a bot on an agent. Two shapes for the bot
- * identity: reuse an existing free bot (`botId`), or register a new one from
- * pasted Slack tokens (`slack`). Tokens go in, never come back.
- */
-export const CreateIntegrationBody = z
-  .object({
-    // Optional — the app already has a name; when omitted the CP derives it from the
-    // platform (Slack auth.test / Telegram getMe), falling back to the owning agent's
-    // name. Ignored when reusing an existing bot (the bot keeps its name).
-    name: z.string().min(1).optional(),
-    platform: z.enum(['slack', 'telegram', 'discord', 'feishu']),
-    agentId: z.string().min(1), // owner ⇒ delivery daemon; must be placed on a daemon
-    /** Reuse an existing bot. A CLASSIC bot must be free; a SHAREABLE bot may
-     *  already serve other agents (this adds one more, shared-bot-relay.md §4.1). */
-    botId: z.string().min(1).optional(),
-    /** Opt the (new or reused) bot into multi-agent shared mode (default false).
-     *  Requires `transport: 'http'` (a socket bot is single-agent). */
-    shareable: z.boolean().optional(),
-    /** Inbound transport for Slack and Feishu. `socket` uses the platform's
-     *  daemon-owned long connection; `http` uses callback ingress. */
-    transport: z.enum(['socket', 'http']).optional(),
-    /** Register a new Slack bot from its tokens. Socket transport needs the
-     *  app-level token (Socket Mode); http transport needs the signing secret
-     *  (Events API request verification — enforced in the superRefine below).
-     *  Schema relocated to the platform provider (§9 `credentialBodySchema`). */
-    slack: SlackCreateCredentials.optional(),
-    /** Register a new Telegram bot from its BotFather token (single token).
-     *  Schema relocated to the platform provider (§9 `credentialBodySchema`) —
-     *  one implementation for the live route and the registry. */
-    telegram: TelegramCreateCredentials.optional(),
-    /** Register a new Discord bot from its Gateway bot token (single token). The
-     *  optional applicationId is the public client id for the invite URL.
-     *  Schema relocated to the platform provider (§9 `credentialBodySchema`). */
-    discord: DiscordCreateCredentials.optional(),
-    /** Register a new Feishu / Lark self-built app from its appId + appSecret pair.
-     *  `region` picks the open-platform gateway (feishu.cn vs larksuite.com); it
-     *  defaults to international Lark for new create requests.
-     *  Schema relocated to the platform provider (§9 `credentialBodySchema`). */
-    feishu: FeishuCreateCredentials.optional()
-  })
-  .superRefine((b, ctx) => {
-    // The credential object for the chosen platform (else reuse an existing bot).
-    const creds =
-      b.platform === 'slack'
-        ? b.slack
-        : b.platform === 'telegram'
-          ? b.telegram
-          : b.platform === 'discord'
-            ? b.discord
-            : b.feishu
-    if ((b.botId !== undefined) === (creds !== undefined)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `exactly one of botId or ${b.platform} must be provided`
-      })
-    }
-    // Guard against a mismatched credential block (e.g. platform:'telegram' + slack:{…}).
-    const wrong: Array<'slack' | 'telegram' | 'discord' | 'feishu'> = (
-      ['slack', 'telegram', 'discord', 'feishu'] as const
-    ).filter((p) => p !== b.platform && b[p] !== undefined)
-    for (const p of wrong)
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${p} credentials given for a ${b.platform} integration` })
-    // `shareable` is an http-only sub-flag, but it degrades gracefully rather than
-    // erroring: the console hides the toggle for socket, and `installNewSlackBot`
-    // coerces it off for a non-http bot (so a socket bot can never become shareable).
-    // No validation needed here.
-    // Per-transport credential requirements (only when registering a NEW bot) —
-    // the providers' §9 `refineCreateBody` bodies, called here so the live DTO
-    // and the registry share ONE implementation (an omitted transport is the
-    // create route's socket default).
-    const addIssue = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message })
-    if (b.platform === 'slack' && b.botId === undefined && b.slack) {
-      refineSlackCreateBody({ credentials: b.slack, transport: b.transport ?? 'socket' }, addIssue)
-    }
-    if (b.platform === 'feishu' && b.botId === undefined && b.feishu) {
-      refineFeishuCreateBody({ credentials: b.feishu, transport: b.transport ?? 'socket' }, addIssue)
-    }
-  })
+/** The `POST /integrations` create body is COMPOSED from the platform registry
+ *  (§9) rather than declared here — see `dto/create-integration-body.ts`
+ *  (`buildCreateIntegrationBody`), which the create route folds from
+ *  `deps.platforms` at container-build time. */
 
 /** `POST /integrations/telegram/check` — preflight a pasted BotFather token
  * without storing it. */

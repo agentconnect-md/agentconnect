@@ -24,12 +24,12 @@
  * `deps.ensureDiscordMessageContentIntent` / `deps.syncDiscordBotProfile`),
  * injected through {@link DiscordCpProviderDeps} so tests stay offline.
  *
- * ADOPTION SEQUENCING: nothing consumes this provider yet beyond registry
- * construction in `container.ts` — the create route and `placement.ts` remain
- * the live paths. The shareable pieces ARE shared: the create-DTO credential
- * block is defined here and imported by `http/dto/index.ts`, and the §6.4
- * wire projection body is {@link discordIntegrationConfig}, called by BOTH
- * `integrationToSpec`'s discord arm and
+ * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
+ * registry — its {@link DiscordCreateCredentials} block is folded into the
+ * create body and {@link CpPlatformProvider.validateConfig} IS the route's live
+ * token check + intent enablement. `placement.ts` remains a live path; the §6.4
+ * wire projection body is therefore {@link discordIntegrationConfig}, called by
+ * BOTH `integrationToSpec`'s discord arm and
  * {@link CpPlatformProvider.projectIntegrationConfig}.
  */
 import { z } from 'zod'

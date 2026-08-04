@@ -29,13 +29,17 @@ import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js
 import { pickChannelOwner } from '../../orchestrator/httpBot.js'
 import { isDirectConversationKind } from '../../persistence/ports.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
-import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
+import { installNewSlackBot } from '../install-slack.js'
 import { installNewFeishuBot } from '../install-feishu.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
-import { discordAppIdFromBotToken } from '../discord-identity.js'
-import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { integrationPlatformAvailability, type IntegrationPlatform } from '../daemon-platform-capability.js'
+import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
+import type { CpConfigRefusal, CpValidatedIdentity } from '../../platforms/provider.js'
+import type { SlackCreateCredentials } from '../../platforms/slack/provider.js'
+import type { TelegramCreateCredentials } from '../../platforms/telegram/provider.js'
+import type { DiscordCreateCredentials } from '../../platforms/discord/provider.js'
+import type { FeishuCreateCredentials } from '../../platforms/feishu/provider.js'
 import {
-  CreateIntegrationBody,
   TelegramBotCheckBody,
   TelegramBotCheckDto,
   UpdateIntegrationChannelBody,
@@ -79,6 +83,11 @@ function toDto(i: IntegrationRecord, channels: IntegrationChannelRecord[] = []):
 export function integrationRoutes(deps: HttpDeps) {
   return async function integrationRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    // §9: the create body is FOLDED from the platform registry (one optional
+    // credential block per registered provider + its transport refinements),
+    // once per composition root — `@fastify/swagger` reads the same object to
+    // document the request body.
+    const CreateIntegrationBody = buildCreateIntegrationBody(deps.platforms)
     // The caller's active org — every read/write below is scoped to it.
     const orgIdOf = (req: { orgCtx?: { orgId: OrgId } }) => req.orgCtx!.orgId
     const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
@@ -120,7 +129,7 @@ export function integrationRoutes(deps: HttpDeps) {
     const validateShareableInstall = async (
       bot: { agentIds: string[] },
       agentId: string,
-      platform: 'slack' | 'telegram' | 'discord' | 'feishu'
+      platform: string
     ): Promise<{ code: 400 | 409; body: { error: string; statusCode: number; message: string } } | null> => {
       if (platform !== 'slack') {
         return {
@@ -143,6 +152,18 @@ export function integrationRoutes(deps: HttpDeps) {
       }
       return null
     }
+
+    // A provider's refusal from `validateConfig` (§9), sent verbatim: 400 for a
+    // DEFINITIVE credential rejection, 503 when the provider was unreachable
+    // (inconclusive, never proof the credential is bad). `code` rides along only
+    // where the platform defines one — the console branches on it.
+    const sendConfigRefusal = (reply: FastifyReply, refusal: CpConfigRefusal) =>
+      reply.code(refusal.status).send({
+        error: refusal.status === 400 ? 'Bad Request' : 'Service Unavailable',
+        statusCode: refusal.status,
+        ...(refusal.code ? { code: refusal.code } : {}),
+        message: refusal.message
+      })
 
     const replicateRemove = async (integrationId: string, daemonId: string | null): Promise<void> => {
       if (!daemonId) return
@@ -197,6 +218,9 @@ export function integrationRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const orgId = orgIdOf(req)
+        // The composed body's `platform` enum IS the registry's id set, so a
+        // parsed body always names a registered provider.
+        const provider = deps.platforms.get(req.body.platform)!
         let agent = await deps.repos.agent.get(AgentId(req.body.agentId))
         // Derived visibility: installing an integration edits the agent's setup, so
         // a restricted agent the caller can't see 404s, and one they can see but not
@@ -217,7 +241,10 @@ export function integrationRoutes(deps: HttpDeps) {
           daemonId: agent.daemonId,
           orgId,
           viewer: ctxOf(req),
-          platform: req.body.platform
+          // The registry vouches for the id; the capability helper's closed
+          // union is one of the audit's remaining hand-copied platform unions
+          // (Appendix A) and converges in its own unit.
+          platform: req.body.platform as IntegrationPlatform
         })
         if (platformAvailability === 'not_found') {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
@@ -389,9 +416,12 @@ export function integrationRoutes(deps: HttpDeps) {
             return reply.code(201).send(toDto(integration))
           }
 
-          // HTTP callback ingress is implemented for Slack and Feishu. Telegram and
-          // Discord keep their daemon-owned long-lived transports.
-          if (req.body.transport === 'http' && req.body.platform !== 'slack' && req.body.platform !== 'feishu') {
+          // HTTP callback ingress exists only where the platform contributes a
+          // relay projection (§9: a missing `projectBotAssign` IS the "no relay
+          // path" signal). Telegram and Discord keep their daemon-owned
+          // long-lived transports.
+          const transport = req.body.transport ?? 'socket'
+          if (req.body.transport === 'http' && !provider.projectBotAssign) {
             return reply.code(400).send({
               error: 'Bad Request',
               statusCode: 400,
@@ -399,39 +429,22 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
 
+          // The chosen platform's credential block: validated by the provider's OWN
+          // schema (§9) and guaranteed present here by the exactly-one-of refinement.
+          // Opaque to core — each create TAIL below is what still knows the platform's
+          // field names, until §9 moves the tails behind the provider too.
+          const credentials = credentialBlockOf(req.body)
+
           // Telegram: `getMe` validates the single BotFather token and confirms
           // Group Privacy Mode is disabled before anything is stored. Telegram exposes
           // that setting as read-only; the owner still changes it in @BotFather.
           if (req.body.platform === 'telegram') {
-            const tg = req.body.telegram! // superRefine guarantees it when botId is absent
-            const checked = await deps.verifyTelegramBot(tg.botToken)
-            if (checked.status === 'invalid') {
-              return reply.code(400).send({
-                error: 'Bad Request',
-                statusCode: 400,
-                code: 'TELEGRAM_BOT_TOKEN_INVALID',
-                message: 'Telegram rejected the bot token — copy it again from @BotFather.'
-              })
-            }
-            if (checked.status === 'unreachable') {
-              return reply.code(503).send({
-                error: 'Service Unavailable',
-                statusCode: 503,
-                code: 'TELEGRAM_BOT_CHECK_UNAVAILABLE',
-                message: 'AgentConnect could not reach Telegram to check this bot. Try again in a moment.'
-              })
-            }
-            if (!checked.privacyModeDisabled) {
-              return reply.code(400).send({
-                error: 'Bad Request',
-                statusCode: 400,
-                code: 'TELEGRAM_PRIVACY_MODE_ENABLED',
-                message:
-                  'Privacy Mode is still on. In @BotFather, send /setprivacy, select this bot, choose Disable, then try again.'
-              })
-            }
+            const tg = credentials as TelegramCreateCredentials
+            const validated = await provider.validateConfig(tg, transport)
+            if (!validated.ok) return sendConfigRefusal(reply, validated)
+            const identity: CpValidatedIdentity = validated.identity
             const provided = req.body.name?.trim()
-            const name = provided || checked.name || agent.name
+            const name = provided || identity.name || agent.name
             const botId = BotId(randomUUID())
             await deps.repos.bot.create({
               id: botId,
@@ -465,44 +478,19 @@ export function integrationRoutes(deps: HttpDeps) {
           // has Message Content enabled BEFORE storing anything. The flag update is
           // idempotent; a bot that already has limited or approved access is untouched.
           if (req.body.platform === 'discord') {
-            const discord = req.body.discord! // superRefine guarantees it when botId is absent
-            const check = deps.verifyDiscordBot ? await deps.verifyDiscordBot(discord.botToken) : null
-            if (check?.status === 'invalid') {
-              return reply.code(400).send({
-                error: 'Bad Request',
-                statusCode: 400,
-                message:
-                  'Discord rejected the bot token — check you pasted the Bot token from the Developer Portal (Bot → Reset Token).'
-              })
-            }
-            const intentSetup = await deps.ensureDiscordMessageContentIntent(discord.botToken)
-            if (intentSetup === 'rejected') {
-              return reply.code(400).send({
-                error: 'Bad Request',
-                statusCode: 400,
-                code: 'DISCORD_MESSAGE_CONTENT_INTENT_SETUP_FAILED',
-                message:
-                  'AgentConnect could not enable Message Content Intent automatically. Open the Discord Developer Portal → Bot → Privileged Gateway Intents, turn on Message Content Intent, save, then try again.'
-              })
-            }
-            if (intentSetup === 'unreachable') {
-              return reply.code(503).send({
-                error: 'Service Unavailable',
-                statusCode: 503,
-                code: 'DISCORD_MESSAGE_CONTENT_INTENT_CHECK_UNAVAILABLE',
-                message:
-                  'AgentConnect could not reach Discord to check or enable Message Content Intent. Try installing again in a moment.'
-              })
-            }
+            const discord = credentials as DiscordCreateCredentials
+            const validated = await provider.validateConfig(discord, transport)
+            if (!validated.ok) return sendConfigRefusal(reply, validated)
+            const identity: CpValidatedIdentity = validated.identity
             // Name: operator-typed → users/@me-derived (best-effort) → owning agent. The
-            // daemon needs only the bot token to open the Gateway, but we ALSO decode the
-            // application (client) id from the token and persist it — public metadata, not
-            // secret — so the console can later hand out a ready-made "Add to Discord"
-            // invite URL from Settings without re-parsing the (never-returned) token.
+            // daemon needs only the bot token to open the Gateway, but the provider ALSO
+            // decodes the application (client) id from the token and hands it back as the
+            // validated identity — public metadata, not secret — so the console can later
+            // hand out a ready-made "Add to Discord" invite URL from Settings without
+            // re-parsing the (never-returned) token.
             const provided = req.body.name?.trim()
-            const derived = check?.status === 'ok' ? check.name : null
-            const name = provided || derived || agent.name
-            const discordAppId = discordAppIdFromBotToken(discord.botToken)
+            const name = provided || identity.name || agent.name
+            const discordAppId = identity.externalAppId
             const botId = BotId(randomUUID())
             await deps.repos.bot.create({
               id: botId,
@@ -523,7 +511,12 @@ export function integrationRoutes(deps: HttpDeps) {
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })
             await replicateUpsert(integration, daemonId)
-            if (deps.syncDiscordBotProfile && check?.status !== 'unreachable') {
+            // Cosmetic and best-effort: a failure is logged and the install stands.
+            // (The pre-adoption code additionally skipped the push when the users/@me
+            // probe was unreachable; the provider's validated identity carries no
+            // reachability signal, and reaching this line means the intent ensure —
+            // the very next Discord round-trip — succeeded.)
+            if (deps.syncDiscordBotProfile) {
               try {
                 await deps.syncDiscordBotProfile(discord.botToken, profileAgent)
               } catch (err) {
@@ -546,9 +539,10 @@ export function integrationRoutes(deps: HttpDeps) {
           // two credentials reuse the two-slot bot_secret (botToken = appSecret, the secret;
           // appToken = appId, the identifier — appToken already nullable since Telegram).
           if (req.body.platform === 'feishu') {
-            const feishu = req.body.feishu! // superRefine guarantees it when botId is absent
+            const feishu = credentials as FeishuCreateCredentials
             const region = feishu.region // zod-defaulted to 'lark' for new installs
-            const transport = req.body.transport ?? 'socket'
+            // Relay availability is core's 409 and is checked BEFORE the provider
+            // round-trip on this platform (order preserved from the pre-adoption arm).
             if (transport === 'http' && !deps.httpBot.hasConnectedRelay()) {
               return reply.code(409).send({
                 error: 'Conflict',
@@ -556,28 +550,9 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'HTTP callback delivery is unavailable on this deployment'
               })
             }
-            const check = deps.verifyFeishuBot
-              ? await deps.verifyFeishuBot(feishu.appId, feishu.appSecret, region)
-              : null
-            if (check?.status === 'invalid') {
-              return reply.code(400).send({
-                error: 'Bad Request',
-                statusCode: 400,
-                message:
-                  'Feishu rejected the credentials — check the App ID (cli_…) and App Secret from the Developer Console (Credentials & Basic Info).'
-              })
-            }
-            // HTTP ingress cannot call Feishu with the app secret, so the CP must
-            // resolve the bot's own open_id now. The relay uses it to distinguish
-            // @bot from mentions of ordinary users in group messages.
-            if (transport === 'http' && (check?.status !== 'ok' || !check.openId)) {
-              return reply.code(503).send({
-                error: 'Service Unavailable',
-                statusCode: 503,
-                message:
-                  'Could not resolve this app’s bot identity. Enable the bot capability in Feishu, then try again.'
-              })
-            }
+            const validated = await provider.validateConfig(feishu, transport)
+            if (!validated.ok) return sendConfigRefusal(reply, validated)
+            const identity: CpValidatedIdentity = validated.identity
             // D6 fence: one Bot per Feishu app. New rows write the tenant sentinel,
             // so the composite unique backstops the race below; this pre-check just
             // turns the common case into a clean 409 with reuse guidance.
@@ -591,8 +566,7 @@ export function integrationRoutes(deps: HttpDeps) {
               })
             }
             const provided = req.body.name?.trim()
-            const derived = check?.status === 'ok' ? check.name : null
-            const name = provided || derived || agent.name
+            const name = provided || identity.name || agent.name
             try {
               const integration = await installNewFeishuBot(deps, app.log, {
                 orgId,
@@ -602,7 +576,7 @@ export function integrationRoutes(deps: HttpDeps) {
                 appSecret: feishu.appSecret,
                 region,
                 transport,
-                ...(check?.status === 'ok' && check.openId ? { botUserId: check.openId } : {}),
+                ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
                 ...(feishu.verificationToken ? { verificationToken: feishu.verificationToken } : {}),
                 ...(feishu.encryptKey ? { encryptKey: feishu.encryptKey } : {}),
                 ...(req.principal ? { createdByUserId: req.principal.userId } : {})
@@ -622,43 +596,31 @@ export function integrationRoutes(deps: HttpDeps) {
             }
           }
 
+          // EXHAUSTIVENESS, restated. The create TAILS above are still per-platform
+          // (§9 moves them behind the provider next), but `platform` is no longer a
+          // closed union — it is whatever the registry registered, so the compiler
+          // no longer proves the fall-through below belongs to Slack. Registering a
+          // fifth provider without a tail must NOT mint a Slack bot out of that
+          // platform's credential block; refuse loudly instead. Unreachable today:
+          // the registry holds exactly the four platforms handled here.
+          if (req.body.platform !== 'slack') {
+            throw new Error(`no create tail for registered platform: ${req.body.platform}`)
+          }
+
           // Register a new Slack bot from pasted tokens. Validate against Slack BEFORE
           // we store them, so a stale / wrong-app / swapped token fails here (400)
           // instead of silently producing an integration whose socket never opens.
           // Best-effort about reachability: a network blip is inconclusive
           // (`unreachable`), NOT proof the token is bad — only a definitive rejection
           // blocks the install.
-          const slack = req.body.slack! // refine() guarantees it when botId is absent
-          const transport = req.body.transport ?? 'socket'
-          const botCheck = await deps.verifySlackBot?.(slack.botToken)
-          if (botCheck?.status === 'invalid') {
-            return reply.code(400).send({
-              error: 'Bad Request',
-              statusCode: 400,
-              message: 'Slack rejected the bot token — check you pasted the Bot User OAuth Token (xoxb-…).'
-            })
-          }
-          if (transport === 'socket') {
-            // Socket Mode: the app-level xapp token is required + validated against Slack.
-            const appCheck = await deps.verifySlackAppToken?.(slack.appToken!)
-            if (appCheck === 'invalid') {
-              return reply.code(400).send({
-                error: 'Bad Request',
-                statusCode: 400,
-                message:
-                  'Slack rejected the app-level token — check you pasted the App-Level Token (xapp-…) and gave it the connections:write scope.'
-              })
-            }
-            const appTokenAppId = slackAppIdFromAppToken(slack.appToken!)
-            if (botCheck?.status === 'ok' && botCheck.appId && appTokenAppId && botCheck.appId !== appTokenAppId) {
-              return reply.code(400).send({
-                error: 'Bad Request',
-                statusCode: 400,
-                message: 'The Slack bot token and app-level token belong to different apps.'
-              })
-            }
-          } else {
+          const slack = credentials as SlackCreateCredentials
+          const validated = await provider.validateConfig(slack, transport)
+          if (!validated.ok) return sendConfigRefusal(reply, validated)
+          const identity: CpValidatedIdentity = validated.identity
+          if (transport === 'http') {
             // HTTP mode: inbound arrives at the relay pool — a relay must be connected.
+            // Core's 409, checked AFTER the provider round-trip on this platform
+            // (order preserved from the pre-adoption arm).
             if (!deps.httpBot.hasConnectedRelay()) {
               return reply.code(409).send({
                 error: 'Conflict',
@@ -670,16 +632,15 @@ export function integrationRoutes(deps: HttpDeps) {
           // Name is optional: the app already has one. Prefer what the operator typed,
           // else the name auth.test derived, else fall back to the owning agent's name.
           const provided = req.body.name?.trim()
-          const derived = botCheck?.status === 'ok' ? botCheck.name : null
           const integration = await installNewSlackBot(deps, app.log, {
             orgId,
             agent,
-            name: provided || derived || agent.name,
+            name: provided || identity.name || agent.name,
             botToken: slack.botToken,
             transport,
-            ...(botCheck?.status === 'ok' && botCheck.appId ? { slackAppId: botCheck.appId } : {}),
-            ...(botCheck?.status === 'ok' && botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
-            ...(botCheck?.status === 'ok' && botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
+            ...(identity.externalAppId ? { slackAppId: identity.externalAppId } : {}),
+            ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
+            ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}),
             ...(slack.appToken ? { appToken: slack.appToken } : {}),
             ...(slack.signingSecret ? { signingSecret: slack.signingSecret } : {}),
             ...(req.body.shareable === true ? { shareable: true } : {}),

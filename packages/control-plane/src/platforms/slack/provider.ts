@@ -16,9 +16,9 @@
  *    statuses and user-facing copy verbatim;
  *  - `installRoutes` → the funnel plugins, injected PRE-BOUND to the route
  *    deps by the composition root. They are deliberately not imported here:
- *    the funnel route modules consume the create-DTO module
- *    (`http/dto/index.ts`), which imports this provider's credential block —
- *    binding the factories here would close a runtime import cycle;
+ *    provider construction stays one-directional (a provider never reaches back
+ *    for a route factory), which is what keeps the create route free to fold
+ *    this provider's credential block into its body schema;
  *  - `providerToolingCredentials` → `resolveUserConfigAccessToken` /
  *    `configUsable` (`http/slack-user-config.ts`), the same resolution the
  *    funnel start and the Settings→Bots refresh flow call;
@@ -27,10 +27,13 @@
  *    by BOTH the live paths (`orchestrator/placement.ts`,
  *    `orchestrator/httpBot.ts`) and the provider (one implementation).
  *
- * ADOPTION SEQUENCING: nothing consumes this provider yet beyond registry
- * construction in `container.ts` — the create route, `placement.ts`,
- * `httpBot.ts`, `server.ts` mounting, `loadConfig`'s schema fold, and
- * `startBackground()` remain the live paths, sharing the implementations above.
+ * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
+ * registry — its {@link SlackCreateCredentials} block + {@link
+ * refineSlackCreateBody} are folded into the create body, and {@link
+ * CpPlatformProvider.validateConfig} IS the route's live token check.
+ * `placement.ts`, `httpBot.ts`, `server.ts` mounting, `loadConfig`'s schema
+ * fold, and `startBackground()` remain live paths, sharing the implementations
+ * above.
  */
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'

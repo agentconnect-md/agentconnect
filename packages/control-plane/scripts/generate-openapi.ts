@@ -31,9 +31,22 @@ import { writeFileSync } from 'node:fs'
 import { buildHttpServer } from '../src/http/server.js'
 import type { HttpDeps } from '../src/http/deps.js'
 import { API_V1_PREFIX } from '../src/http/version.js'
+import { buildCpPlatformRegistry } from '../src/platforms/registry.js'
+import { createTelegramCpProvider } from '../src/platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../src/platforms/discord/provider.js'
+import { createSlackCpProvider } from '../src/platforms/slack/provider.js'
+import { createFeishuCpProvider } from '../src/platforms/feishu/provider.js'
 
-/** Only `config` is read at spec-build time; repos stay untouched (the docs/spec
- *  routes hit no DB-backed handler). Same stub shape as `openapi.test.ts`. */
+/** `config` plus the platform registry are read at spec-build time; repos stay
+ *  untouched (the docs/spec routes hit no DB-backed handler). Same stub shape as
+ *  `openapi.test.ts`.
+ *
+ *  The registry is REQUIRED, not decorative: `POST /integrations` folds each
+ *  provider's `credentialBodySchema` into its documented request body when the
+ *  route plugin registers (§9), so an absent registry fails `app.ready()` and a
+ *  provider missing HERE is a platform missing from the PUBLISHED spec. Keep the
+ *  set mirroring `container.ts`'s registration. The seams are offline stubs —
+ *  no handler runs, so none of them is ever called. */
 function stubDeps(): HttpDeps {
   const publicUrl = process.env.PUBLIC_CP_URL
   return {
@@ -42,7 +55,13 @@ function stubDeps(): HttpDeps {
       NODE_ENV: 'production',
       DEFAULT_OWNER_ID: '00000000-0000-4000-8000-000000000000',
       ...(publicUrl ? { PUBLIC_CP_URL: publicUrl } : {})
-    }
+    },
+    platforms: buildCpPlatformRegistry([
+      createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+      createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+      createSlackCpProvider({}),
+      createFeishuCpProvider({})
+    ])
   } as unknown as HttpDeps
 }
 
