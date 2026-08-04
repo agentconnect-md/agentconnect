@@ -48,6 +48,7 @@
  */
 import type { RcBotChannels, RdAck, RdMsgPlatformAction, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import type { BotAssignment, RouteTarget } from '../bot-arbitration.js'
+import type { Logger } from '../log.js'
 
 /** Demux hints a plugin extracts from one raw inbound callback BEFORE
  *  verification — the only pre-verify parse core performs on a plugin's behalf.
@@ -109,14 +110,18 @@ export interface RelayIngressHost {
   /** Forward one platform interaction as a §6.6 platform_action and return the
    *  daemon's ack — the sync-response race (see the module doc) awaits this.
    *  `msgId` is the DEDUP IDENTITY, and the plugin mints it (it derives from
-   *  parsed action semantics); core owns the dedup table on the daemon side. */
-  forwardAction(msg: RdMsgPlatformAction): Promise<RdAck>
+   *  parsed action semantics); core owns the dedup table on the daemon side.
+   *  `route` is the target the plugin resolved through the directory — the
+   *  three directory lookups are three distinct trust models, so delivery must
+   *  not re-resolve and silently substitute a different one. */
+  forwardAction(msg: RdMsgPlatformAction, route: RouteTarget): Promise<RdAck>
   /** Report the bot's channel-membership snapshot (queued while the CP link is
    *  down; a newer snapshot supersedes). */
   reportChannels(snapshot: RcBotChannels): void
-  /** Report a platform-side revocation, echoing the assignment's credential
-   *  generation so the CP's fence can refuse a stale report. */
-  reportRevoked(reason: string, eventAtMs?: number): void
+  /** Report a platform-side revocation for `botId`. Core composes the fenced
+   *  report itself (it holds the assignment's credential generation), so the
+   *  plugin states only WHAT the platform said and WHEN it happened. */
+  reportRevoked(botId: string, reason: string, eventAtMs?: number): void
   /** Arbitration reads — never the router object itself. */
   directory: {
     agents(botId: string): { agentId: string; name: string }[]
@@ -131,6 +136,19 @@ export interface RelayIngressHost {
      * answers the platform accordingly and forwards nothing).
      */
     resolveTarget(botId: string, coords: { channelId: string; threadTs: string }): RouteTarget | undefined
+    /** Exact-pair validation for an interaction that CARRIES its rendered
+     *  target AND must still hold a live routing rule (a Slack status-modal
+     *  action): stale/tampered buttons reject instead of falling through to a
+     *  channel's current owner. */
+    targetForAgent(botId: string, agentId: string, integrationId: string): RouteTarget | undefined
+    /** Rendered-target resolution through the member DIRECTORY, with no
+     *  conversation-rule requirement (a Feishu card action — the daemon's
+     *  active-card map is its terminal fence). The three lookups are three
+     *  distinct trust models; a plugin picks the one its interaction earns. */
+    integrationTarget(botId: string, agentId: string, integrationId: string): RouteTarget | undefined
+    /** The single-install fallback for an interaction whose payload embeds no
+     *  target (a pre-target Feishu card): the bot's sole routable member. */
+    soleTarget(botId: string): RouteTarget | undefined
   }
   /** Report the bot's own platform user identity once the platform reveals it
    *  (Slack resolves it lazily via auth.test on start). Arbitration's mention
@@ -148,7 +166,7 @@ export interface RelayIngressHost {
    *  CP (the 3-leg thread-affinity dance stays core). */
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   clock: { now(): number }
-  log: { info(m: string): void; warn(m: string): void; debug(m: string): void }
+  log: Logger
 }
 
 /** What handling one verified delivery produces. `syncResponse`, when present,
@@ -200,7 +218,10 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
     ingest: TIngest,
     rawBody: Buffer,
     body: unknown,
-    headers: Record<string, string | string[] | undefined>
+    headers: Record<string, string | string[] | undefined>,
+    /** Host-clock "now" (ms) — HMAC replay windows are time-based, and the
+     *  injection is what keeps verification testable under a fake clock. */
+    now: number
   ): TVerified | undefined
   /**
    * Handle one verified delivery: decode events into normalized messages and

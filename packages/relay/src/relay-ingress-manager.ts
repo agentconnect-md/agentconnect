@@ -15,20 +15,12 @@
  * on an un-mentioned follow-up it has no cached affinity for, it PULLS the persisted
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
-import { createHash } from 'node:crypto'
-import {
-  MAX_AGENT_CALL_HOPS,
-  RD_AGENT_IMPLICIT_ROUTING_V1,
-  WireFeishuCardActionResponse,
-  WireFeishuCardActionValue
-} from '@agentconnect.md/protocol'
+import { MAX_AGENT_CALL_HOPS, RD_AGENT_IMPLICIT_ROUTING_V1 } from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
-  RdMsgPlatformAction,
   RcBotChannels,
   RcBotConversation,
   RcBotRevoked,
-  WireFeishuCardActionEvent,
   WireNormalizedMessage,
   RcThreadAssign,
   RcThreadLookup
@@ -36,10 +28,13 @@ import type {
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
-import { SlackHttpIngest, type HttpSlackSessionAction, type HttpSlackSessionShortcut } from './slack-http-ingest.js'
+import { SlackHttpIngest } from './slack-http-ingest.js'
 import { FeishuHttpIngest } from './feishu-http-ingest.js'
 import type { FeishuVerifiedDelivery } from './feishu-http-ingress.js'
 import { DemuxIndex, IngressPool } from './platforms/registry.js'
+import type { RelayIngressHost, RelayPlatformIngressPlugin } from './platforms/contract.js'
+import { slackIngressPlugin } from './platforms/slack/ingress-plugin.js'
+import { feishuIngressPlugin } from './platforms/feishu/ingress-plugin.js'
 import { verifySlackSignature } from './hooks/signature.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
@@ -125,78 +120,11 @@ export interface RelayIngressManagerDeps {
   log: Logger
 }
 
-/** Stable daemon-side dedup id for one Slack interaction. The hash deliberately omits
- *  open-config's one-shot triggerId (interactionId already identifies that click), so
- *  sensitive trigger material never leaks into logs or dedup keys. */
-export function httpSlackActionMsgId(botId: string, action: HttpSlackSessionAction): string {
-  const { target, interactionId, kind } = action
-  let value: string | boolean | undefined
-  switch (action.kind) {
-    case 'set-model':
-      value = action.model
-      break
-    case 'set-effort':
-      value = action.effort
-      break
-    case 'set-permission-mode':
-      value = action.permissionMode
-      break
-    case 'set-fast':
-      value = action.fastMode
-      break
-    case 'set-output':
-      value = action.outputMode
-      break
-    case 'permission-choice':
-      value = `${action.requestId}:${action.optionId}`
-      break
-    case 'elicitation-choice':
-      value = `${action.requestId}:${action.value ?? ''}`
-      break
-    case 'open-config':
-    case 'cancel':
-      break
-  }
-  const digest = createHash('sha256')
-    .update(
-      JSON.stringify({
-        v: 1,
-        botId,
-        target: [target.v, target.agentId, target.integrationId, target.sessionKey],
-        interactionId,
-        kind,
-        value
-      })
-    )
-    .digest('hex')
-  return `slack-action:${digest}`
-}
-
-export function httpSlackShortcutMsgId(botId: string, shortcut: HttpSlackSessionShortcut): string {
-  const digest = createHash('sha256')
-    .update(
-      JSON.stringify({
-        v: 1,
-        botId,
-        channelId: shortcut.channelId,
-        threadTs: shortcut.threadTs,
-        interactionId: shortcut.interactionId
-      })
-    )
-    .digest('hex')
-  return `slack-action:${digest}`
-}
-
-export function httpFeishuActionMsgId(
-  botId: string,
-  eventId: string | undefined,
-  action: WireFeishuCardActionEvent
-): string {
-  const digest = createHash('sha256')
-    .update(JSON.stringify({ v: 1, botId, eventId, action }))
-    .digest('hex')
-  return `feishu-action:${digest}`
-}
+// The interaction dedup-id minters moved into their platform plugins (§8: the
+// plugin mints the dedup id; core owns the table). Re-exported for existing
+// importers until the route files migrate.
+export { httpSlackActionMsgId, httpSlackShortcutMsgId } from './platforms/slack/ingress-plugin.js'
+export { httpFeishuActionMsgId } from './platforms/feishu/ingress-plugin.js'
 
 export class RelayIngressManager {
   private readonly router = new BotArbitrationRouter()
@@ -208,6 +136,83 @@ export class RelayIngressManager {
   private readonly feishuPool = new IngressPool<FeishuHttpIngest>('feishu')
   private readonly slackDemux = new DemuxIndex()
   private readonly feishuDemux = new DemuxIndex()
+  /** §8 plugin registry: adding a platform adds one entry — assign() never
+   *  grows a branch. The typed pools above stay for the typed read sites
+   *  (resolveVerified pair), aliased into the entries here. */
+  private readonly ingressPlugins = new Map<
+    string,
+    {
+      plugin: RelayPlatformIngressPlugin<SlackHttpIngest | FeishuHttpIngest, unknown>
+      pool: IngressPool<SlackHttpIngest | FeishuHttpIngest>
+      demux: DemuxIndex
+    }
+  >([
+    [
+      'slack',
+      {
+        plugin: slackIngressPlugin as never,
+        pool: this.slackPool as IngressPool<SlackHttpIngest | FeishuHttpIngest>,
+        demux: this.slackDemux
+      }
+    ],
+    [
+      'feishu',
+      {
+        plugin: feishuIngressPlugin as never,
+        pool: this.feishuPool as IngressPool<SlackHttpIngest | FeishuHttpIngest>,
+        demux: this.feishuDemux
+      }
+    ]
+  ])
+  /** Core's side of the §8 contract — what a plugin's ingest may call back
+   *  into. Every member maps onto the same manager/router machinery the
+   *  pre-plugin callbacks used; nothing here is platform-shaped. */
+  private get ingressHost(): RelayIngressHost {
+    return (this.ingressHostMemo ??= this.buildIngressHost())
+  }
+  private ingressHostMemo?: RelayIngressHost
+  private buildIngressHost(): RelayIngressHost {
+    return {
+      forward: (botId, message) => this.forward(botId, message),
+      forwardAction: async (msg, route) => {
+        const daemon = this.deps.getDaemon(route.daemonId)
+        if (!daemon) {
+          this.deps.log.warn(`relay-ingress(${msg.botId}): daemon ${route.daemonId} offline — interaction dropped`)
+          return { msgId: msg.msgId, accepted: false, reason: 'offline' }
+        }
+        return daemon.sendMsg(msg)
+      },
+      reportChannels: (snapshot) => this.reportChannels(snapshot),
+      reportRevoked: (botId, reason, eventAtMs) => {
+        // Core composes the fenced report: it holds the assignment's credential
+        // generation, which the CP uses to refuse a report a re-install overtook.
+        const credentialRevision = this.router.get(botId)?.credentialRevision
+        this.reportRevoked({
+          botId,
+          reason: reason as 'app_uninstalled' | 'tokens_revoked',
+          ...(credentialRevision !== undefined ? { credentialRevision } : {}),
+          ...(eventAtMs !== undefined ? { eventAtMs } : {})
+        })
+      },
+      directory: {
+        agents: (botId) => this.router.get(botId)?.agents ?? [],
+        channelOwner: (botId, channelId) => this.router.channelOwner(botId, channelId),
+        targetForAgentId: (botId, agentId) => this.router.targetForAgentId(botId, agentId),
+        resolveTarget: (botId, coords) => this.resolveConversationTarget(botId, coords),
+        targetForAgent: (botId, agentId, integrationId) => this.router.targetForAgent(botId, agentId, integrationId),
+        integrationTarget: (botId, agentId, integrationId) =>
+          this.router.integrationTarget(botId, agentId, integrationId),
+        soleTarget: (botId) => this.router.soleTarget(botId)
+      },
+      setChannelAgent: (botId, channelId, agentId) => this.deps.setChannelAgent(botId, channelId, agentId),
+      selectThreadAgent: (botId, channelId, threadTs, agentId) =>
+        this.selectThreadAgent(botId, channelId, threadTs, agentId),
+      reportBotUserId: (botId, botUserId) => this.router.setBotUserId(botId, botUserId),
+      clock: { now: () => this.deps.clock.now() },
+      log: this.deps.log
+    }
+  }
+
   /** Bounded-loss counters (per bot) — messages dropped because no daemon connection. */
   private readonly dropped = new Map<string, number>()
   /** Thread-assign reports dropped because the CP link wasn't READY, keyed
@@ -345,67 +350,23 @@ export class RelayIngressManager {
     this.slackDemux.forget(a.botId)
     this.feishuDemux.forget(a.botId)
 
-    if (a.platform === 'feishu') {
-      if (!a.apiAppId || !('verificationToken' in a.secrets)) {
-        this.deps.log.warn(`relay-ingress(${a.botId}): incomplete Feishu HTTP assignment`)
-        return
-      }
-      const ingest = new FeishuHttpIngest(a.botId, a.apiAppId, a.secrets, {
-        onMessage: (message) => this.forward(a.botId, message),
-        onCardAction: (action, eventId) => this.forwardFeishuAction(a.botId, action, eventId),
-        now: () => this.deps.clock.now()
-      })
-      this.feishuPool.set(a.botId, ingest)
-      this.feishuDemux.indexAssign(a.botId, { appId: a.apiAppId })
-      return
-    }
-    if (a.platform !== 'slack') {
+    // §8 plugin registry: the platform's plugin validates the assignment shape
+    // and builds the per-bot ingest; the demux index derives the identity scope
+    // from the assignment itself. An unregistered platform is refused with the
+    // same warn-and-skip the old else arm carried.
+    const entry = this.ingressPlugins.get(a.platform)
+    if (!entry) {
       this.deps.log.warn(`relay-ingress(${a.botId}): platform '${a.platform}' ingest not yet supported (milestone C)`)
       return
     }
-    if (!('botToken' in a.secrets)) {
-      this.deps.log.warn(`relay-ingress(${a.botId}): incomplete Slack HTTP assignment`)
-      return
-    }
-    // Deterministic demux when the CP stamped the app id: the index owns the
-    // composite/app-only decision from the assignment's shape (a team-scoped bot
-    // enters ONLY the composite index; gaining a teamId evicts the stale
-    // app-only entry — both invariants are pinned in registry.test.ts).
-    this.slackDemux.indexAssign(a.botId, {
+    const ingest = entry.plugin.buildIngest(a, this.ingressHost)
+    if (!ingest) return
+    entry.pool.set(a.botId, ingest)
+    entry.demux.indexAssign(a.botId, {
       ...(a.apiAppId ? { appId: a.apiAppId } : {}),
       ...(a.teamId ? { tenantId: a.teamId } : {})
     })
-    const ingest = new SlackHttpIngest(
-      a.botId,
-      { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
-      {
-        onMessage: (msg) => this.forward(a.botId, msg),
-        onBotUserId: (uid) => this.router.setBotUserId(a.botId, uid),
-        onChannelsChanged: (channels) => this.reportChannels({ botId: a.botId, channels }),
-        agents: () => this.router.get(a.botId)?.agents ?? [],
-        currentOwner: (channelId) => this.router.channelOwner(a.botId, channelId),
-        onSetChannelAgent: (channelId, agentId) => this.deps.setChannelAgent(a.botId, channelId, agentId),
-        onSelectThreadAgent: (channelId, threadTs, agentId) =>
-          this.selectThreadAgent(a.botId, channelId, threadTs, agentId),
-        onSessionAction: (action) => this.forwardSessionAction(a.botId, action),
-        onSessionShortcut: (shortcut) => this.forwardSessionShortcut(a.botId, shortcut),
-        onBotRevoked: (reason, eventAtMs) => {
-          this.deps.log.warn(`relay-ingress(${a.botId}): workspace revoked the app (${reason})`)
-          // Echo the generation this assignment carries + when Slack says the
-          // event happened: the CP refuses the report if a re-install has since
-          // replaced the credential (lifecycle events are not ordered).
-          this.reportRevoked({
-            botId: a.botId,
-            reason,
-            ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
-            ...(eventAtMs !== undefined ? { eventAtMs } : {})
-          })
-        },
-        log: this.deps.log
-      }
-    )
-    this.slackPool.set(a.botId, ingest)
-    await ingest.start()
+    await (ingest as { start?: () => Promise<void> }).start?.()
   }
 
   /** `rc/routes` — hot-update routes/members/default WITHOUT re-opening the ingest. */
@@ -921,116 +882,33 @@ export class RelayIngressManager {
     }
   }
 
-  /** Forward an HTTP Slack status-modal action to the exact agent that rendered
-   *  the button. This intentionally does not use channel ownership: the operator may
-   *  click an older Bob session after switching the channel default to Alice. */
-  private forwardSessionAction(botId: string, action: HttpSlackSessionAction): void {
-    const { target, interactionId: _interactionId, userId, ...payload } = action
-    const route = this.router.targetForAgent(botId, target.agentId, target.integrationId)
-    if (!route) {
-      this.deps.log.warn(`relay-ingress(${botId}): ignored stale session action for agent ${target.agentId}`)
-      return
-    }
-    const daemon = this.deps.getDaemon(route.daemonId)
-    if (!daemon) {
-      this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — session action dropped`)
-      return
-    }
-    // §6.6 emission flip: the relay now speaks the platform_action envelope —
-    // the daemon's per-platform decoder validates the opaque payload against
-    // Slack's own wire schema (gate 2 closed: the fleet reads it since #521).
-    const rd: RdMsgPlatformAction = {
-      source: 'platform_action',
-      platformId: 'slack',
-      agentId: route.agentId,
-      integrationId: route.integrationId,
-      sessionKey: target.sessionKey,
-      msgId: httpSlackActionMsgId(botId, action),
-      botId,
-      ...(userId ? { userId } : {}),
-      payload
-    }
-    void daemon
-      .sendMsg(rd)
-      .then((ack) => {
-        if (!ack.accepted)
-          this.deps.log.warn(`relay-ingress(${botId}): daemon rejected session action (${ack.reason ?? 'unknown'})`)
-      })
-      .catch((err) =>
-        this.deps.log.warn(`relay-ingress(${botId}): session action forward failed: ${(err as Error).message}`)
-      )
-  }
-
-  /** Forward one verified Lark / Feishu card callback to the sole integration that
-   * rendered it. The daemon resolves the provider message id against its local
-   * active-card map and returns the callback response for the HTTP edge. */
-  private async forwardFeishuAction(
+  /**
+   * CORE-owned resolution of bare conversation coordinates to a routable target
+   * (§8 directory.resolveTarget): live thread affinity, then channel owner, then
+   * the default agent — with the mute and gating fences applied at every rung.
+   * Extracted verbatim from the Slack message-shortcut forwarder when it moved
+   * into its plugin; the ladder is platform-free arbitration policy.
+   */
+  private resolveConversationTarget(
     botId: string,
-    action: WireFeishuCardActionEvent,
-    eventId: string | undefined
-  ): Promise<WireFeishuCardActionResponse | undefined> {
-    const value = WireFeishuCardActionValue.safeParse(action.action?.value)
-    const route =
-      value.success && value.data.target
-        ? this.router.integrationTarget(botId, value.data.target.agentId, value.data.target.integrationId)
-        : this.router.soleTarget(botId)
-    if (!route) {
-      this.deps.log.warn(`relay-ingress(${botId}): Feishu card action has no current integration target`)
-      return undefined
-    }
-    const daemon = this.deps.getDaemon(route.daemonId)
-    if (!daemon) {
-      this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — Feishu action dropped`)
-      return undefined
-    }
-    const messageId = action.context?.open_message_id ?? action.open_message_id
-    if (!messageId) return undefined
-    const msgId = httpFeishuActionMsgId(botId, eventId, action)
-    const rd: RdMsgPlatformAction = {
-      source: 'platform_action',
-      platformId: 'feishu',
-      agentId: route.agentId,
-      integrationId: route.integrationId,
-      sessionKey: `feishu-action:${messageId}`,
-      msgId,
-      botId,
-      payload: action
-    }
-    try {
-      const ack = await daemon.sendMsg(rd)
-      if (!ack.accepted) {
-        this.deps.log.warn(`relay-ingress(${botId}): daemon rejected Feishu card action (${ack.reason ?? 'unknown'})`)
-      }
-      // §6.6: the generic opaque `response` is the ONE answer slot — the
-      // Feishu-named rd/ack member retired with the legacy interaction members
-      // (every fleet daemon has filled `response` since #521).
-      const generic = WireFeishuCardActionResponse.safeParse(ack.response)
-      return generic.success && ack.response !== undefined ? generic.data : undefined
-    } catch (err) {
-      this.deps.log.warn(`relay-ingress(${botId}): Feishu card action forward failed: ${(err as Error).message}`)
-      return undefined
-    }
-  }
-
-  /** Resolve a message shortcut from live conversation ownership, then let the
-   *  daemon resolve the exact bot-scoped session before it opens the modal. */
-  private forwardSessionShortcut(botId: string, shortcut: HttpSlackSessionShortcut): boolean {
-    const sessionKey = sessionKeyOf({ channel: shortcut.channelId, thread: shortcut.threadTs })
+    coords: { channelId: string; threadTs: string }
+  ): RouteTarget | undefined {
+    const sessionKey = sessionKeyOf({ channel: coords.channelId, thread: coords.threadTs })
     const assignment = this.router.get(botId)
-    if (!assignment) return false
+    if (!assignment) return undefined
     // A channel switched Off takes no shortcut either — the modal it opens acts on a
     // session in a conversation the operator has silenced.
-    if (assignment.mutedChannels?.includes(shortcut.channelId)) return false
+    if (assignment.mutedChannels?.includes(coords.channelId)) return undefined
     const allowedInChannel = (agentId: string): boolean =>
       !assignment.gatedAgentIds?.includes(agentId) ||
-      assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === shortcut.channelId)
+      assignment.routes.some((route) => route.agentId === agentId && route.scope?.channel === coords.channelId)
     const affinity = this.router.peekAffinity(botId, sessionKey)
     const affinityRoute =
       affinity && allowedInChannel(affinity.agentId)
         ? this.router.targetForAgent(botId, affinity.agentId, affinity.integrationId)
         : undefined
-    const channelOwner = this.router.channelOwner(botId, shortcut.channelId)
-    const route =
+    const channelOwner = this.router.channelOwner(botId, coords.channelId)
+    return (
       affinityRoute ??
       (channelOwner && allowedInChannel(channelOwner)
         ? this.router.targetForAgentId(botId, channelOwner)
@@ -1038,34 +916,6 @@ export class RelayIngressManager {
       (assignment.defaultAgentId && allowedInChannel(assignment.defaultAgentId)
         ? this.router.targetForAgentId(botId, assignment.defaultAgentId)
         : undefined)
-    if (!route) return false
-    const daemon = this.deps.getDaemon(route.daemonId)
-    if (!daemon) return false
-    const rd: RdMsgPlatformAction = {
-      source: 'platform_action',
-      platformId: 'slack',
-      agentId: route.agentId,
-      integrationId: route.integrationId,
-      sessionKey,
-      msgId: httpSlackShortcutMsgId(botId, shortcut),
-      botId,
-      ...(shortcut.userId ? { userId: shortcut.userId } : {}),
-      payload: {
-        kind: 'open-config-for-thread',
-        triggerId: shortcut.triggerId,
-        channelId: shortcut.channelId,
-        threadTs: shortcut.threadTs
-      }
-    }
-    void daemon
-      .sendMsg(rd)
-      .then((ack) => {
-        if (!ack.accepted)
-          this.deps.log.warn(`relay-ingress(${botId}): daemon rejected session shortcut (${ack.reason ?? 'unknown'})`)
-      })
-      .catch((err) =>
-        this.deps.log.warn(`relay-ingress(${botId}): session shortcut forward failed: ${(err as Error).message}`)
-      )
-    return true
+    )
   }
 }
