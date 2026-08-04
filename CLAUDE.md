@@ -79,7 +79,11 @@ Layer-2 turn-output surface, which is what removed the hardcoded `github` case
 from the dispatch path. Webchat is core-owned for the same kind of reason: it is
 the console's own surface and shares almost nothing with an external transport.
 Do not "finish the job" by forcing either into `WebPlatformModule` — §2 of the
-design records why that is the wrong shape.
+design records why that is the wrong shape. The code-host seam gets its own
+provider contract when GitLab arrives and makes it a two-implementer seam
+([`gitlab-com-integration.md`](docs/designs/gitlab-com-integration.md) §1.6,
+§8.1 `CodeHostRepository`); extracting it earlier, from one implementer, would
+be guessing at an interface.
 
 Two rules this refactor exists to enforce: **a platform name is never core
 knowledge** — core reads a capability, a manifest field, or a registry entry
