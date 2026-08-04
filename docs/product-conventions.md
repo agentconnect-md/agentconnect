@@ -816,8 +816,12 @@ the main checkout's live branch, never a generic "Primary checkout" label. With 
 session worktree it is a static branch label with no menu; otherwise it switches
 between that branch and the available worktrees. Worktree choices keep their
 Session link so changing the viewed files and opening the originating conversation
-remain distinct actions. The Source card remains directly above the browser and
-names only the repository or scratch workspace; it does not repeat the branch.
+remain distinct actions. Menu choices match the closed control's compact height,
+while the menu itself may extend wider to keep titles legible. Their session time
+stays out of the row and appears in its tooltip instead. Session links use their
+message icon and label without a redundant external-link arrow. The Source card
+remains directly above the browser and names only the repository or scratch
+workspace; it does not repeat the branch.
 
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes
