@@ -131,7 +131,6 @@ import {
   type TelegramObservedChat
 } from './telegram/connection.js'
 import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord/connection.js'
-import { collapseDiscordChannels, collapseNameLookupIds } from './discord/channels.js'
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { manifestFor } from './platforms/manifest.js'
@@ -142,6 +141,12 @@ import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
 import { registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
+import {
+  observedChannelsFor,
+  registerObservedChannels,
+  type ObservedChannelsHost
+} from './platforms/observed-channels.js'
+import { discordObservedChannels } from './platforms/discord/observed-channels.js'
 import { CommandChromeRegistry, type SelectKind } from './platforms/command-chrome.js'
 import { slackCommandChrome } from './platforms/slack/command-chrome.js'
 import {
@@ -1473,6 +1478,7 @@ function pendingSessionKey(p: Pending): SessionKey {
 // channel @mention in a freshly opened thread. Registered at module scope so
 // every Daemon instance (including test constructions) sees the same registry.
 registerThreadPromotion(discordThreadPromotion)
+registerObservedChannels(discordObservedChannels)
 
 export class Daemon {
   private readonly evaluation: EvaluationEventEmitter
@@ -3780,12 +3786,9 @@ export class Daemon {
       if (!row.transportScope) continue
       const integrationId = this.integrationIdForTransportScope(row.agentId, row.platform, row.transportScope)
       if (!integrationId) continue
-      const conn =
-        row.platform === 'discord'
-          ? this.dcConnByIntegration.get(integrationId)
-          : row.platform === 'telegram'
-            ? this.tgConnByIntegration.get(integrationId)
-            : this.fsConnByIntegration.get(integrationId)
+      // The integration id already names its platform's binding — no need to pick
+      // a map by platform (§7.5 read side).
+      const conn = this.connForIntegration(integrationId)
       if (!conn) continue
       if (row.triggeredBy) {
         resolver.noteMessage(conn, {
@@ -3883,7 +3886,7 @@ export class Daemon {
               const name = names.get(c.id)
               // A retained row has no session behind it (a gated Off channel), so its
               // space is looked up directly rather than coming out of the collapse.
-              const found = platform === 'discord' ? this.spaceFor(c.id) : undefined
+              const found = this.spaceFor(platform, c.id)
               const spaceId = found?.id ?? c.spaceId
               const space = found?.name ?? c.space
               const next = {
@@ -4026,13 +4029,20 @@ export class Daemon {
    * never enters `onInbound` or creates an agent turn.
    */
   private observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): void {
+    this.observePlatformChat('telegram', chat, integrationIds)
+  }
+
+  /** Record one observed chat row for a platform that cannot enumerate its bot's
+   *  chats. The event's own platform filters the fan-out — a caller is already
+   *  platform-specific and names it as data, not a branch. */
+  private observePlatformChat(platform: string, chat: TelegramObservedChat, integrationIds: readonly string[]): void {
     if (chat.name) {
       this.store.setDisplayName(chat.id, chat.name, Date.now())
       this.emitSessionMetadataSnapshotsForDisplayName(chat.id)
     }
     for (const integrationId of integrationIds) {
       const integration = this.integrationConfigById(integrationId)
-      if (!integration || integration.platform !== 'telegram') continue
+      if (!integration || integration.platform !== platform) continue
       const prior = this.channelSnapshots.get(integrationId)?.channels ?? []
       const current = prior.find((channel) => channel.id === chat.id)
       const observed: IntegrationChannel = {
@@ -4057,14 +4067,18 @@ export class Daemon {
     }
   }
 
-  /** The space (Discord guild) a channel sits in — the id that keeps one bot's several
-   *  "#general" rows apart, plus its display name once resolved. Undefined until the
-   *  channel's name lookup has recorded its guild. */
-  private spaceFor(channelId: string): { id: string; name?: string } | undefined {
-    const id = this.store.getChannelScopes([channelId]).get(channelId)?.spaceId
-    if (!id) return undefined
-    const name = this.store.getDisplayNames([id]).get(id)
-    return { id, ...(name ? { name } : {}) }
+  /** Store-backed host for the observed-channels strategies (§7.4): channel
+   *  scopes and display names are core bookkeeping the strategies read through. */
+  private readonly observedChannelsHost: ObservedChannelsHost = {
+    channelScopes: (ids) => this.store.getChannelScopes(ids),
+    displayNames: (ids) => this.store.getDisplayNames(ids)
+  }
+
+  /** The space a channel sits in, per its platform's strategy — the id that keeps
+   *  one bot's several same-named rows apart (Discord guilds). Undefined on
+   *  platforms without the notion, or until the lookup has recorded it. */
+  private spaceFor(platform: string, channelId: string): { id: string; name?: string } | undefined {
+    return observedChannelsFor(platform)?.spaceFor(this.observedChannelsHost, channelId)
   }
 
   /**
@@ -4077,16 +4091,9 @@ export class Daemon {
    */
   private collapseObserved(
     observed: { id: string; name?: string }[],
-    platform: 'telegram' | 'discord' | 'feishu'
+    platform: string
   ): { id: string; name?: string; spaceId?: string; space?: string }[] {
-    if (platform !== 'discord') return observed
-    // Two-step: the observed (thread) ids first, then the channels they fold onto —
-    // whose OWN scope carries the guild, which a thread row may never have recorded.
-    const scopes = this.store.getChannelScopes(observed.map((c) => c.id))
-    const parents = [...scopes.values()].map((s) => s.parentId).filter((id): id is string => !!id)
-    for (const [id, scope] of this.store.getChannelScopes(parents)) scopes.set(id, scope)
-    const names = this.store.getDisplayNames(collapseNameLookupIds(observed, scopes))
-    return collapseDiscordChannels(observed, scopes, names)
+    return observedChannelsFor(platform)?.collapse(this.observedChannelsHost, observed) ?? observed
   }
 
   /**
@@ -14716,7 +14723,7 @@ export class Daemon {
     const kind = observed === 'channel' && current?.kind === 'mpim' ? ('mpim' as const) : observed
     const known = this.store.getDisplayNames([channel]).get(channel)
     // Which Discord server the channel belongs to — see spaceFor. Direct rows have none.
-    const found = kind === 'channel' && msg.platform === 'discord' ? this.spaceFor(channel) : undefined
+    const found = kind === 'channel' ? this.spaceFor(msg.platform, channel) : undefined
     const space = found ? { spaceId: found.id, ...(found.name ? { space: found.name } : {}) } : undefined
     // Compare against what a write would actually change — a partially resolved space
     // (id known, name not yet) must not re-emit the snapshot on every message.
@@ -14814,15 +14821,22 @@ export class Daemon {
   }
 
   /** The live platform connection serving `integrationId`, any platform. */
+  /** Every platform's per-integration binding map, in one iterable — the read
+   *  side of the §7.5 registry. An integration id belongs to exactly one
+   *  platform, so first-hit lookup is total and unambiguous; adding a platform
+   *  adds its map here, and no lookup grows a branch. */
+  private readonly integrationBindings: ReadonlyArray<
+    ReadonlyMap<string, SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection>
+  > = [this.connByIntegration, this.tgConnByIntegration, this.dcConnByIntegration, this.fsConnByIntegration]
+
   private connForIntegration(
     integrationId: string
   ): SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined {
-    return (
-      this.connByIntegration.get(integrationId) ??
-      this.tgConnByIntegration.get(integrationId) ??
-      this.dcConnByIntegration.get(integrationId) ??
-      this.fsConnByIntegration.get(integrationId)
-    )
+    for (const bindings of this.integrationBindings) {
+      const conn = bindings.get(integrationId)
+      if (conn) return conn
+    }
+    return undefined
   }
 
   private replyConnFor(
